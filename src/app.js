@@ -7,6 +7,7 @@ import rateLimit from 'express-rate-limit';
 
 import { env, isProduction } from './config/env.js';
 import routes from './routes/index.js';
+import healthRoutes from './routes/health.routes.js';
 import { notFoundHandler, errorHandler } from './middleware/error.js';
 
 const app = express();
@@ -36,9 +37,8 @@ app.use(
 );
 app.use('/api', rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false }));
 
-app.get('/health', (_req, res) =>
-  res.json({ success: true, status: 'ok', service: 'npt-erp-api', time: new Date().toISOString() })
-);
+// Outside /api, so the rate limiters above do not apply — probes must never be throttled.
+app.use('/health', healthRoutes);
 
 app.use('/api', routes);
 

@@ -19,7 +19,8 @@ npm run seed              # optional: one account per role
 npm run dev
 ```
 
-The API listens on `http://localhost:5000`. Health check: `GET /health`.
+The API listens on `http://localhost:5000`. Health checks: `GET /health` and
+`GET /health/ready` — see [Health checks](#health-checks).
 
 ### Seeded logins
 
@@ -93,6 +94,63 @@ All routes are under `/api`. Everything except register, login and the OTP pair 
 | POST | `/auth/verify/confirm` | Confirm that code |
 
 Responses are `{ success, data }`; errors are `{ success: false, message, details? }`.
+
+## Health checks
+
+Both are unauthenticated, since load balancers and orchestrators cannot present a token, and
+neither is rate limited.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/health` | Liveness — is the process running and answering? |
+| GET | `/health/live` | Alias for `/health` |
+| GET | `/health/ready` | Readiness — can this instance actually serve requests? |
+
+**Liveness** deliberately touches no dependency. A failure here means "restart me", and a
+database outage is not a reason to restart a healthy process.
+
+```json
+{
+  "success": true,
+  "status": "ok",
+  "service": "npt-server",
+  "version": "1.0.0",
+  "environment": "production",
+  "uptimeSeconds": 1483,
+  "timestamp": "2026-08-25T13:42:30.340Z"
+}
+```
+
+**Readiness** pings MongoDB, so a connection that is open but unresponsive still reads as
+down, and returns **503** when it is unavailable — a load balancer then stops sending traffic
+to this instance rather than letting every request fail.
+
+```json
+{
+  "success": true,
+  "status": "ready",
+  "checks": { "database": { "status": "up", "state": "connected", "latencyMs": 6 } },
+  "delivery": { "email": "smtp", "sms": "twilio" }
+}
+```
+
+`delivery` is informational: it reports whether codes will go out through a real provider or
+fall back to the console. A missing provider is a configuration smell, not an outage, so it
+never fails the check — the server already refuses to boot without one in production.
+
+Readiness is cached for 2 seconds. Each call costs a database round trip, and caching bounds
+that load however often this unauthenticated endpoint is hit. The trade-off is that a
+dependency failure can take up to 2 seconds to show, which is well inside any sensible probe
+interval.
+
+Point Kubernetes at both:
+
+```yaml
+livenessProbe:
+  httpGet: { path: /health, port: 5000 }
+readinessProbe:
+  httpGet: { path: /health/ready, port: 5000 }
+```
 
 ## Roles, departments and feature access
 
