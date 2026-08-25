@@ -4,6 +4,18 @@ import { normalisePhone } from '../utils/phone.js';
 
 export const ROLES = ['admin', 'sales', 'production', 'inventory', 'accounts', 'viewer'];
 
+export const DEPARTMENTS = [
+  'management',
+  'sales',
+  'production',
+  'stores',
+  'accounts',
+  'quality',
+  'maintenance',
+  'hr',
+  'other',
+];
+
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
@@ -17,6 +29,7 @@ const userSchema = new mongoose.Schema(
     /** Optional: an account may be OTP-only and never set a password. */
     password: { type: String, minlength: 8, select: false },
     role: { type: String, enum: ROLES, default: 'viewer' },
+    department: { type: String, enum: DEPARTMENTS, default: 'other' },
     /** Stored in E.164 so an OTP request can look it up unambiguously. */
     phone: {
       type: String,

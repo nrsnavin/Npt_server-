@@ -5,17 +5,22 @@ import { signToken } from '../middleware/auth.js';
 import { issueOtp, resolveIdentifier, verifyOtp } from '../services/otp.service.js';
 import { env } from '../config/env.js';
 import { maskIdentifier } from '../utils/phone.js';
+import { featuresForRole } from '../config/features.js';
 
 const publicUser = (user) => ({
   id: user._id,
   name: user.name,
   email: user.email,
   role: user.role,
+  department: user.department,
   phone: user.phone,
   emailVerified: user.emailVerified,
   phoneVerified: user.phoneVerified,
   hasPassword: Boolean(user.password) || user.hasPassword?.() || false,
   isActive: user.isActive,
+  lastLoginAt: user.lastLoginAt,
+  lastLoginMethod: user.lastLoginMethod,
+  createdAt: user.createdAt,
 });
 
 /** Records the sign-in and returns the standard auth payload. */
@@ -28,7 +33,7 @@ async function completeSignIn(user, method) {
 }
 
 export const register = asyncHandler(async (req, res) => {
-  const { name, email, password, role, phone } = req.body;
+  const { name, email, password, role, phone, department } = req.body;
 
   const existing = await User.findOne({ email });
   if (existing) throw ApiError.conflict('An account with this email already exists');
@@ -47,6 +52,7 @@ export const register = asyncHandler(async (req, res) => {
     email,
     password,
     phone,
+    department,
     role: isFirstUser ? 'admin' : role || 'viewer',
   });
 
@@ -123,14 +129,18 @@ export const verifyLoginOtp = asyncHandler(async (req, res) => {
 });
 
 export const me = asyncHandler(async (req, res) => {
-  res.json({ success: true, data: publicUser(req.user) });
+  res.json({
+    success: true,
+    data: { ...publicUser(req.user), features: featuresForRole(req.user.role) },
+  });
 });
 
 export const updateProfile = asyncHandler(async (req, res) => {
-  const { name, phone } = req.body;
+  const { name, phone, department } = req.body;
   const user = await User.findById(req.user._id);
 
   if (name) user.name = name;
+  if (department) user.department = department;
 
   if (phone !== undefined) {
     const next = phone ? resolveIdentifier(phone).identifier : undefined;
@@ -145,7 +155,10 @@ export const updateProfile = asyncHandler(async (req, res) => {
   }
 
   await user.save();
-  res.json({ success: true, data: publicUser(user) });
+  res.json({
+    success: true,
+    data: { ...publicUser(user), features: featuresForRole(user.role) },
+  });
 });
 
 /** Sends a code to the signed-in user's own email or phone to verify it. */

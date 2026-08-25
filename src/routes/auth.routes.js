@@ -21,6 +21,7 @@ import {
   verifyOtpSchema,
   requestVerificationSchema,
   confirmVerificationSchema,
+  updateProfileSchema,
 } from '../validators/schemas.js';
 
 const router = Router();
@@ -52,7 +53,7 @@ router.post('/otp/request', otpRequestLimiter, validate(requestOtpSchema), reque
 router.post('/otp/verify', otpVerifyLimiter, validate(verifyOtpSchema), verifyLoginOtp);
 
 router.get('/me', authenticate, me);
-router.patch('/me', authenticate, updateProfile);
+router.patch('/me', authenticate, validate(updateProfileSchema), updateProfile);
 router.post('/change-password', authenticate, validate(changePasswordSchema), changePassword);
 
 router.post(

@@ -47,6 +47,7 @@ test.before(async () => {
       email: 'admin@npthangers.com',
       password: 'Admin@12345',
       phone: '9876543210',
+      department: 'management',
     },
   });
 });
@@ -232,23 +233,14 @@ test('rejects an identifier that is neither an email nor a phone number', async 
 });
 
 test('will not sign in a deactivated account by OTP', async () => {
-  const { json: session } = await api('/api/auth/login', {
-    method: 'POST',
-    body: { email: 'admin@npthangers.com', password: 'Admin@12345' },
+  const { default: User } = await import('../src/models/User.js');
+  await User.create({
+    name: 'Suspended Staff',
+    email: 'suspended@npthangers.com',
+    password: 'Temp@123456',
+    role: 'sales',
+    isActive: false,
   });
-
-  const created = await api('/api/users', {
-    method: 'POST',
-    token: session.data.token,
-    body: {
-      name: 'Suspended Staff',
-      email: 'suspended@npthangers.com',
-      password: 'Temp@123456',
-      role: 'sales',
-      isActive: false,
-    },
-  });
-  assert.equal(created.status, 201);
 
   const requested = await api('/api/auth/otp/request', {
     method: 'POST',
@@ -258,6 +250,65 @@ test('will not sign in a deactivated account by OTP', async () => {
   // Treated exactly like an unknown account: a generic reply and no code sent.
   assert.equal(requested.status, 200);
   assert.equal(requested.json.data.devCode, undefined);
+});
+
+test('reports the department and the feature catalogue for the signed-in user', async () => {
+  const { json: session } = await api('/api/auth/login', {
+    method: 'POST',
+    body: { email: 'admin@npthangers.com', password: 'Admin@12345' },
+  });
+
+  const { status, json } = await api('/api/auth/me', { token: session.data.token });
+
+  assert.equal(status, 200);
+  assert.equal(json.data.role, 'admin');
+  assert.ok(Array.isArray(json.data.features));
+
+  // Admin passes every check, so nothing in the catalogue is withheld.
+  assert.ok(json.data.features.every((feature) => feature.allowed));
+  assert.ok(json.data.features.some((feature) => feature.key === 'profile'));
+});
+
+test('withholds features a role may not use', async () => {
+  const { default: User } = await import('../src/models/User.js');
+  await User.create({
+    name: 'Read Only',
+    email: 'viewer@npthangers.com',
+    password: 'View@123456',
+    role: 'viewer',
+    department: 'quality',
+  });
+
+  const { json: session } = await api('/api/auth/login', {
+    method: 'POST',
+    body: { email: 'viewer@npthangers.com', password: 'View@123456' },
+  });
+  const { json } = await api('/api/auth/me', { token: session.data.token });
+
+  const allowed = json.data.features.filter((feature) => feature.allowed).map((f) => f.key);
+  assert.deepEqual(allowed, ['profile']);
+  assert.equal(json.data.department, 'quality');
+});
+
+test('updates the department from the profile screen', async () => {
+  const { json: session } = await api('/api/auth/login', {
+    method: 'POST',
+    body: { email: 'admin@npthangers.com', password: 'Admin@12345' },
+  });
+
+  const updated = await api('/api/auth/me', {
+    method: 'PATCH',
+    token: session.data.token,
+    body: { department: 'production' },
+  });
+  assert.equal(updated.json.data.department, 'production');
+
+  const rejected = await api('/api/auth/me', {
+    method: 'PATCH',
+    token: session.data.token,
+    body: { department: 'not-a-department' },
+  });
+  assert.equal(rejected.status, 400);
 });
 
 test('verifies a phone number for the signed-in user', async () => {

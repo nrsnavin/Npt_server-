@@ -1,17 +1,21 @@
-# NPT Server — CRM + ERP API
+# NPT Server — authentication API
 
-Backend for a hanger manufacturing business: CRM (leads, customers, quotations),
-manufacturing (BOM, production orders), inventory (materials, finished goods, stock ledger),
-purchasing and accounts receivable.
+Backend for the Navin Hangers console. Currently scoped to authentication and the
+user profile: sign-in by password or one-time code, the signed-in user's own details,
+and the feature catalogue that says what their role may use.
 
 Node.js + Express + MongoDB (Mongoose), JWT auth with role-based access.
+
+> The CRM and ERP modules (leads, customers, quotations, orders, production, inventory,
+> purchasing, invoicing) were removed to reduce the app to this foundation. They remain in
+> the git history if any of it is worth recovering.
 
 ## Getting started
 
 ```bash
 npm install
 cp .env.example .env      # set MONGO_URI and a real JWT_SECRET
-npm run seed              # optional: demo data for a hanger plant
+npm run seed              # optional: one account per role
 npm run dev
 ```
 
@@ -19,13 +23,16 @@ The API listens on `http://localhost:5000`. Health check: `GET /health`.
 
 ### Seeded logins
 
-| Email | Password | Role |
-| --- | --- | --- |
-| admin@npthangers.com | Admin@12345 | admin |
-| sales@npthangers.com | Sales@12345 | sales |
-| production@npthangers.com | Prod@123456 | production |
-| stores@npthangers.com | Store@12345 | inventory |
-| accounts@npthangers.com | Accts@12345 | accounts |
+| Email | Password | Role | Department |
+| --- | --- | --- | --- |
+| admin@npthangers.com | Admin@12345 | admin | management |
+| sales@npthangers.com | Sales@12345 | sales | sales |
+| production@npthangers.com | Prod@123456 | production | production |
+| stores@npthangers.com | Store@12345 | inventory | stores |
+| accounts@npthangers.com | Accts@12345 | accounts | accounts |
+| quality@npthangers.com | Qual@123456 | viewer | quality |
+
+Each also has a phone number (`+9198765000 01`–`06`) for SMS sign-in.
 
 ## Tests
 
@@ -35,34 +42,63 @@ npm test
 
 Runs against an in-memory MongoDB — no local `mongod` needed.
 
-`tests/smoke.test.js` walks the whole business flow: register, catalogue, BOM, purchase
-receipt, quotation, sales order, production issue and output, dispatch, invoice and payment.
+- `tests/auth.test.js` — password sign-in, OTP sign-in over email and SMS, phone
+  normalisation, department and feature access, and the abuse protections: single use,
+  code rotation, attempt lockout, account enumeration and duplicate phone numbers.
+- `tests/twilio.test.js` and `tests/otp-delivery.test.js` — the Twilio integration against
+  a stubbed `fetch`: request shape, credential handling, error translation, retries,
+  timeouts, and the guarantee that a failed send does not consume the resend cooldown.
+  They never touch the network or cost a message.
 
-`tests/auth.test.js` covers password sign-in, OTP sign-in over both email and SMS, phone
-normalisation, and the abuse protections: single use, code rotation, attempt lockout,
-account enumeration and duplicate phone numbers.
+## API
 
-`tests/twilio.test.js` and `tests/otp-delivery.test.js` cover the Twilio integration against
-a stubbed `fetch` — request shape, credential handling, error translation, retries, timeouts,
-and the guarantee that a failed send does not consume the user's resend cooldown. They never
-touch the network or cost a message.
+All routes are under `/api`. Everything except register, login and the OTP pair needs
+`Authorization: Bearer <token>`.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/auth/register` | Create an account (first one becomes admin) |
+| POST | `/auth/login` | Sign in with email and password, returns a JWT |
+| POST | `/auth/otp/request` | Send a one-time code to an email address or phone number |
+| POST | `/auth/otp/verify` | Exchange a valid code for a JWT |
+| GET | `/auth/me` | The signed-in user, with their feature catalogue |
+| PATCH | `/auth/me` | Update own name, phone or department |
+| POST | `/auth/change-password` | Change own password |
+| POST | `/auth/verify/request` | Send a code to verify your own email or phone |
+| POST | `/auth/verify/confirm` | Confirm that code |
+
+Responses are `{ success, data }`; errors are `{ success: false, message, details? }`.
+
+## Roles, departments and feature access
+
+**Roles** govern access: `admin` (full), `sales`, `production`, `inventory`, `accounts`,
+`viewer` (read only). The first account registered on an empty database becomes `admin`.
+
+**Departments** are organisational, not permissions: `management`, `sales`, `production`,
+`stores`, `accounts`, `quality`, `maintenance`, `hr`, `other`. A user can set their own.
+
+**Feature access** is declared in `src/config/features.js` — one entry per module with the
+roles allowed to use it. `GET /auth/me` returns the whole catalogue annotated with
+`allowed` for the caller's role, which is what the profile screen renders.
+
+Entries marked `available: false` are modules that are planned but not built yet; their
+access is already defined, so the moment one ships the right people have it. When you add a
+feature, register it here **and** guard its routes with `authorize(...roles)`, so what a user
+is told they can do always matches what the API actually permits.
 
 ## Authentication
 
-Two ways to sign in, both returning the same JWT:
+Two ways to sign in, both returning the same JWT.
 
 **Email and password** — `POST /auth/login` with `{ email, password }`.
 
 **One-time code** — works with either an email address or a phone number:
 
 ```bash
-# 1. Ask for a code. The identifier can be an email or a phone number in any
-#    common format: 9876543210, 09876543210, +91 98765 43210.
 curl -X POST localhost:5000/api/auth/otp/request \
   -H 'Content-Type: application/json' \
   -d '{"identifier":"admin@npthangers.com"}'
 
-# 2. Exchange the code for a token.
 curl -X POST localhost:5000/api/auth/otp/verify \
   -H 'Content-Type: application/json' \
   -d '{"identifier":"admin@npthangers.com","code":"418302"}'
@@ -126,102 +162,6 @@ Every limit above is configurable — see `.env.example`.
 
 ### Accounts without a password
 
-`password` is optional on the user record, so an admin can create staff who only ever sign in
-by OTP. Such a user can set a first password through `/auth/change-password` without supplying
-a current one; everyone else must still prove the old password.
-
-## Roles
-
-`admin` (full access), `sales`, `production`, `inventory`, `accounts`, `viewer` (read only).
-Every authenticated user can read; writes are restricted per module. The first account
-registered on an empty database automatically becomes `admin`.
-
-## API
-
-All routes are under `/api` and need `Authorization: Bearer <token>` except register and login.
-
-### Auth
-| Method | Path | Purpose |
-| --- | --- | --- |
-| POST | `/auth/register` | Create an account (first one becomes admin) |
-| POST | `/auth/login` | Sign in with email and password, returns a JWT |
-| POST | `/auth/otp/request` | Send a one-time code to an email address or phone number |
-| POST | `/auth/otp/verify` | Exchange a valid code for a JWT |
-| GET | `/auth/me` | Current user |
-| PATCH | `/auth/me` | Update own name/phone |
-| POST | `/auth/change-password` | Change own password |
-| POST | `/auth/verify/request` | Send a code to verify your own email or phone |
-| POST | `/auth/verify/confirm` | Confirm that code |
-
-See [Authentication](#authentication) below for how OTP sign-in works.
-
-### CRM
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET/POST | `/customers` | List and create customers |
-| GET/PATCH/DELETE | `/customers/:id` | Read, update, delete |
-| GET/POST | `/leads` | List and create leads |
-| GET | `/leads/pipeline` | Lead count and value per stage |
-| POST | `/leads/:id/activities` | Log a call, meeting, sample or note |
-| POST | `/leads/:id/convert` | Convert a won lead into a customer |
-
-### Catalogue and manufacturing data
-`/products`, `/materials`, `/boms`, `/suppliers`, `/warehouses` — full CRUD on each.
-
-### Sales
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET/POST | `/quotations` | Quotations with auto-calculated totals |
-| POST | `/quotations/:id/convert` | Raise a sales order from a quotation |
-| GET/POST | `/sales-orders` | Sales orders |
-| POST | `/sales-orders/:id/plan-production` | Raise production orders for the shortfall |
-| POST | `/sales-orders/:id/dispatch` | Issue finished goods against the order |
-| POST | `/sales-orders/:id/invoice` | Raise the invoice |
-
-### Production
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET/POST | `/production-orders` | Orders, with the BOM exploded on create |
-| GET | `/production-orders/workload` | Counts and units per status |
-| POST | `/production-orders/:id/issue-materials` | Consume BOM materials from the raw store |
-| POST | `/production-orders/:id/output` | Record good and scrapped output |
-
-### Purchasing
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET/POST | `/purchase-orders` | Purchase orders |
-| POST | `/purchase-orders/:id/receive` | Receive material into the raw store |
-
-### Inventory
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET | `/stock` | On-hand balances with value and reorder flags |
-| GET | `/stock/movements` | The stock ledger |
-| GET | `/stock/reorder` | Items below their reorder level |
-| POST | `/stock/adjust` | Manual correction after a physical count |
-
-### Accounts
-| Method | Path | Purpose |
-| --- | --- | --- |
-| GET/POST | `/invoices` | Invoices |
-| GET | `/invoices/ageing` | Receivables bucketed by days overdue |
-| POST | `/invoices/:id/payments` | Record a receipt |
-| GET | `/payments` | Payment history |
-
-### Dashboard
-`/dashboard/summary`, `/dashboard/sales-trend?months=6`, `/dashboard/top-products?limit=5`.
-
-## Query conventions
-
-List endpoints accept `?page=`, `?limit=`, `?sort=-createdAt`, `?search=`, plain field filters
-(`?status=confirmed`), comma lists (`?status=confirmed,in_production`) and range operators
-(`?orderDate[gte]=2026-01-01`).
-
-Responses are `{ success, data, pagination? }`; errors are `{ success: false, message, details? }`.
-
-## How stock works
-
-`Stock` holds the current balance per item per warehouse and `StockMovement` is the append-only
-ledger behind it. Everything that moves stock — purchase receipt, material issue, production
-output, dispatch, adjustment — goes through `services/inventory.service.js`, which refuses to
-drive a balance negative and maintains a weighted average cost on receipts.
+`password` is optional on the user record, so an account can sign in by OTP only. Such a user
+can set a first password through `/auth/change-password` without supplying a current one;
+everyone else must still prove the old password.
