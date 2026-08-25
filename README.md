@@ -34,6 +34,31 @@ The API listens on `http://localhost:5000`. Health check: `GET /health`.
 
 Each also has a phone number (`+9198765000 01`–`06`) for SMS sign-in.
 
+## Creating an account from the command line
+
+```bash
+npm run create-user -- rsnavin1@gmail.com navin27
+```
+
+Creates the account and fills everything else — name, role, department, phone, verification
+flags — with random but valid values, then prints what it made and which features that role
+gets. Overrides:
+
+| Flag | Effect |
+| --- | --- |
+| `--name="Navin R"` | Set the name instead of randomising it |
+| `--role=admin` | Set the role (must be one of the roles above) |
+| `--department=sales` | Set the department |
+| `--phone=9876543210` | Set the phone, normalised to E.164 |
+| `--replace` | Overwrite the account if that email already exists |
+
+Without `--replace` the script refuses to touch an existing email and exits non-zero.
+Accounts are always created active, since a deactivated one cannot sign in.
+
+The schema requires a password of at least 8 characters. This script is an operator tool, so
+it will accept a shorter one and skip validation — but it warns when it does, because
+`/auth/change-password` still enforces the minimum and will refuse to set that password again.
+
 ## Tests
 
 ```bash
