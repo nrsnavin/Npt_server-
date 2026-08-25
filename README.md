@@ -33,9 +33,68 @@ The API listens on `http://localhost:5000`. Health check: `GET /health`.
 npm test
 ```
 
-Runs an end-to-end smoke test against an in-memory MongoDB — no local `mongod` needed.
-It walks the whole flow: register, catalogue, BOM, purchase receipt, quotation,
-sales order, production issue and output, dispatch, invoice and payment.
+Runs against an in-memory MongoDB — no local `mongod` needed.
+
+`tests/smoke.test.js` walks the whole business flow: register, catalogue, BOM, purchase
+receipt, quotation, sales order, production issue and output, dispatch, invoice and payment.
+
+`tests/auth.test.js` covers password sign-in, OTP sign-in over both email and SMS, phone
+normalisation, and the abuse protections: single use, code rotation, attempt lockout,
+account enumeration and duplicate phone numbers.
+
+## Authentication
+
+Two ways to sign in, both returning the same JWT:
+
+**Email and password** — `POST /auth/login` with `{ email, password }`.
+
+**One-time code** — works with either an email address or a phone number:
+
+```bash
+# 1. Ask for a code. The identifier can be an email or a phone number in any
+#    common format: 9876543210, 09876543210, +91 98765 43210.
+curl -X POST localhost:5000/api/auth/otp/request \
+  -H 'Content-Type: application/json' \
+  -d '{"identifier":"admin@npthangers.com"}'
+
+# 2. Exchange the code for a token.
+curl -X POST localhost:5000/api/auth/otp/verify \
+  -H 'Content-Type: application/json' \
+  -d '{"identifier":"admin@npthangers.com","code":"418302"}'
+```
+
+The channel is chosen from the identifier: anything matching an email pattern goes by
+email, everything else is normalised to E.164 (using `DEFAULT_COUNTRY_CODE`) and sent by SMS.
+Redeeming a code marks that email or phone verified, since it proves control of it.
+
+### Delivery providers
+
+Email uses SMTP through nodemailer (`SMTP_HOST` and friends); SMS uses the Twilio REST API
+(`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`). With neither configured
+in development, codes are printed to the API console instead — and with
+`OTP_EXPOSE_IN_RESPONSE=true` the code also comes back in the response as `devCode`, so the
+login screen is usable with no provider account. Both fallbacks are disabled when
+`NODE_ENV=production`: a missing provider raises an error rather than silently dropping the code.
+
+### How codes are protected
+
+- Codes are generated with a CSPRNG and stored only as a bcrypt hash — a database dump
+  yields no working codes.
+- Six digits, valid for 5 minutes, single use. Mongo expires the records automatically.
+- Requesting a new code invalidates the previous one, so only the newest can be redeemed.
+- Five wrong attempts discards the code entirely; the correct code stops working too.
+- Per identifier: a 60-second resend cooldown and a cap of 5 codes an hour.
+  Per IP: 20 requests and 30 verification attempts an hour.
+- `/auth/otp/request` answers identically for known, unknown and deactivated accounts,
+  so it cannot be used to find out who has an account. No code is sent in those cases.
+
+Every limit above is configurable — see `.env.example`.
+
+### Accounts without a password
+
+`password` is optional on the user record, so an admin can create staff who only ever sign in
+by OTP. Such a user can set a first password through `/auth/change-password` without supplying
+a current one; everyone else must still prove the old password.
 
 ## Roles
 
@@ -51,10 +110,16 @@ All routes are under `/api` and need `Authorization: Bearer <token>` except regi
 | Method | Path | Purpose |
 | --- | --- | --- |
 | POST | `/auth/register` | Create an account (first one becomes admin) |
-| POST | `/auth/login` | Sign in, returns a JWT |
+| POST | `/auth/login` | Sign in with email and password, returns a JWT |
+| POST | `/auth/otp/request` | Send a one-time code to an email address or phone number |
+| POST | `/auth/otp/verify` | Exchange a valid code for a JWT |
 | GET | `/auth/me` | Current user |
 | PATCH | `/auth/me` | Update own name/phone |
 | POST | `/auth/change-password` | Change own password |
+| POST | `/auth/verify/request` | Send a code to verify your own email or phone |
+| POST | `/auth/verify/confirm` | Confirm that code |
+
+See [Authentication](#authentication) below for how OTP sign-in works.
 
 ### CRM
 | Method | Path | Purpose |

@@ -16,8 +16,30 @@ export const loginSchema = z.object({
 });
 
 export const changePasswordSchema = z.object({
-  currentPassword: z.string().min(1),
+  // Optional so an OTP-only account can set its first password.
+  currentPassword: z.string().optional(),
   newPassword: z.string().min(8, 'New password must be at least 8 characters'),
+});
+
+/** An email address or a phone number in any common local or international format. */
+export const requestOtpSchema = z.object({
+  identifier: z.string().min(3, 'Enter an email address or phone number'),
+});
+
+export const verifyOtpSchema = z.object({
+  identifier: z.string().min(3, 'Enter an email address or phone number'),
+  code: z
+    .string()
+    .regex(/^\d{4,8}$/, 'Enter the numeric code from your email or SMS'),
+});
+
+export const requestVerificationSchema = z.object({
+  target: z.enum(['email', 'phone']).default('email'),
+});
+
+export const confirmVerificationSchema = z.object({
+  target: z.enum(['email', 'phone']).default('email'),
+  code: z.string().regex(/^\d{4,8}$/, 'Enter the numeric code'),
 });
 
 const salesLineSchema = z.object({

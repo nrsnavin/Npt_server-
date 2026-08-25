@@ -24,6 +24,7 @@ import Payment from '../models/Payment.js';
 import Stock from '../models/Stock.js';
 import StockMovement from '../models/StockMovement.js';
 import Counter from '../models/Counter.js';
+import OtpToken from '../models/OtpToken.js';
 import { calculateTotals } from '../utils/money.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { postMovement } from '../services/inventory.service.js';
@@ -50,6 +51,7 @@ async function clearAll() {
       Stock,
       StockMovement,
       Counter,
+      OtpToken,
     ].map((model) => model.deleteMany({}))
   );
 }
@@ -60,11 +62,11 @@ async function seed() {
   await clearAll();
 
   const users = await User.create([
-    { name: 'Navin R', email: 'admin@npthangers.com', password: 'Admin@12345', role: 'admin' },
-    { name: 'Priya Sales', email: 'sales@npthangers.com', password: 'Sales@12345', role: 'sales' },
-    { name: 'Ramesh Plant', email: 'production@npthangers.com', password: 'Prod@123456', role: 'production' },
-    { name: 'Anita Stores', email: 'stores@npthangers.com', password: 'Store@12345', role: 'inventory' },
-    { name: 'Kiran Accounts', email: 'accounts@npthangers.com', password: 'Accts@12345', role: 'accounts' },
+    { name: 'Navin R', email: 'admin@npthangers.com', password: 'Admin@12345', role: 'admin', phone: '9876500001', emailVerified: true, phoneVerified: true },
+    { name: 'Priya Sales', email: 'sales@npthangers.com', password: 'Sales@12345', role: 'sales', phone: '9876500002', emailVerified: true },
+    { name: 'Ramesh Plant', email: 'production@npthangers.com', password: 'Prod@123456', role: 'production', phone: '9876500003', emailVerified: true },
+    { name: 'Anita Stores', email: 'stores@npthangers.com', password: 'Store@12345', role: 'inventory', phone: '9876500004', emailVerified: true },
+    { name: 'Kiran Accounts', email: 'accounts@npthangers.com', password: 'Accts@12345', role: 'accounts', phone: '9876500005', emailVerified: true },
   ]);
   const [admin, salesUser, productionUser, storesUser] = users;
 
@@ -348,12 +350,14 @@ async function seed() {
     outstandingAmount: invoice.grandTotal - invoice.amountPaid,
   });
 
-  console.log('\nSeed complete. Sign in with:');
-  console.log('  admin@npthangers.com      / Admin@12345   (admin)');
-  console.log('  sales@npthangers.com      / Sales@12345   (sales)');
-  console.log('  production@npthangers.com / Prod@123456   (production)');
-  console.log('  stores@npthangers.com     / Store@12345   (inventory)');
-  console.log('  accounts@npthangers.com   / Accts@12345   (accounts)');
+  console.log('\nSeed complete. Sign in with a password:');
+  console.log('  admin@npthangers.com      / Admin@12345   (admin)      +919876500001');
+  console.log('  sales@npthangers.com      / Sales@12345   (sales)      +919876500002');
+  console.log('  production@npthangers.com / Prod@123456   (production) +919876500003');
+  console.log('  stores@npthangers.com     / Store@12345   (inventory)  +919876500004');
+  console.log('  accounts@npthangers.com   / Accts@12345   (accounts)   +919876500005');
+  console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
+  console.log('Without SMTP/Twilio configured the code is printed to the API console.');
   console.log(`\nScrap warehouse ready: ${scrapStore.code}`);
 
   await disconnectDatabase();

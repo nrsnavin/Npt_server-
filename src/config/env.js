@@ -20,6 +20,36 @@ export const env = {
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean),
+
+  /** Bare local phone numbers are assumed to belong to this country. */
+  defaultCountryCode: process.env.DEFAULT_COUNTRY_CODE || '+91',
+
+  otp: {
+    length: Number(process.env.OTP_LENGTH || 6),
+    ttlMinutes: Number(process.env.OTP_TTL_MINUTES || 5),
+    maxAttempts: Number(process.env.OTP_MAX_ATTEMPTS || 5),
+    resendCooldownSeconds: Number(process.env.OTP_RESEND_COOLDOWN_SECONDS || 60),
+    maxPerHour: Number(process.env.OTP_MAX_PER_HOUR || 5),
+    /**
+     * Returns the code in the API response so a developer without SMTP or Twilio
+     * can still sign in. Ignored outside development.
+     */
+    exposeInResponse: process.env.OTP_EXPOSE_IN_RESPONSE === 'true',
+  },
+
+  smtp: {
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT || 587),
+    user: process.env.SMTP_USER,
+    password: process.env.SMTP_PASSWORD,
+    from: process.env.SMTP_FROM || 'NPT Hangers <no-reply@npthangers.com>',
+  },
+
+  twilio: {
+    accountSid: process.env.TWILIO_ACCOUNT_SID,
+    authToken: process.env.TWILIO_AUTH_TOKEN,
+    fromNumber: process.env.TWILIO_FROM_NUMBER,
+  },
 };
 
 export const isProduction = env.nodeEnv === 'production';
