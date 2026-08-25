@@ -252,6 +252,26 @@ test('will not sign in a deactivated account by OTP', async () => {
   assert.equal(requested.json.data.devCode, undefined);
 });
 
+test('returns the feature catalogue on sign-in, not only on /auth/me', async () => {
+  // The client stores the user from this response, so a missing catalogue here
+  // leaves the profile screen showing no access at all until a reload.
+  const password = await api('/api/auth/login', {
+    method: 'POST',
+    body: { email: 'admin@npthangers.com', password: 'Admin@12345' },
+  });
+  assert.ok(password.json.data.user.features?.length, 'password login carries features');
+
+  const requested = await api('/api/auth/otp/request', {
+    method: 'POST',
+    body: { identifier: 'admin@npthangers.com' },
+  });
+  const otp = await api('/api/auth/otp/verify', {
+    method: 'POST',
+    body: { identifier: 'admin@npthangers.com', code: requested.json.data.devCode },
+  });
+  assert.ok(otp.json.data.user.features?.length, 'OTP login carries features');
+});
+
 test('reports the department and the feature catalogue for the signed-in user', async () => {
   const { json: session } = await api('/api/auth/login', {
     method: 'POST',

@@ -21,6 +21,7 @@ const publicUser = (user) => ({
   lastLoginAt: user.lastLoginAt,
   lastLoginMethod: user.lastLoginMethod,
   createdAt: user.createdAt,
+  features: featuresForRole(user.role),
 });
 
 /** Records the sign-in and returns the standard auth payload. */
@@ -129,10 +130,7 @@ export const verifyLoginOtp = asyncHandler(async (req, res) => {
 });
 
 export const me = asyncHandler(async (req, res) => {
-  res.json({
-    success: true,
-    data: { ...publicUser(req.user), features: featuresForRole(req.user.role) },
-  });
+  res.json({ success: true, data: publicUser(req.user) });
 });
 
 export const updateProfile = asyncHandler(async (req, res) => {
@@ -155,10 +153,7 @@ export const updateProfile = asyncHandler(async (req, res) => {
   }
 
   await user.save();
-  res.json({
-    success: true,
-    data: { ...publicUser(user), features: featuresForRole(user.role) },
-  });
+  res.json({ success: true, data: publicUser(user) });
 });
 
 /** Sends a code to the signed-in user's own email or phone to verify it. */
