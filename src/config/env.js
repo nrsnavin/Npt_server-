@@ -49,6 +49,11 @@ export const env = {
     accountSid: process.env.TWILIO_ACCOUNT_SID,
     authToken: process.env.TWILIO_AUTH_TOKEN,
     fromNumber: process.env.TWILIO_FROM_NUMBER,
+    /** Preferred over a single from-number in production: number pool and compliance. */
+    messagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID,
+    timeoutMs: Number(process.env.TWILIO_TIMEOUT_MS || 10000),
+    /** Total attempts, including the first, for transient network and 5xx failures. */
+    maxAttempts: Number(process.env.TWILIO_MAX_ATTEMPTS || 2),
   },
 };
 

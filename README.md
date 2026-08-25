@@ -42,6 +42,11 @@ receipt, quotation, sales order, production issue and output, dispatch, invoice 
 normalisation, and the abuse protections: single use, code rotation, attempt lockout,
 account enumeration and duplicate phone numbers.
 
+`tests/twilio.test.js` and `tests/otp-delivery.test.js` cover the Twilio integration against
+a stubbed `fetch` — request shape, credential handling, error translation, retries, timeouts,
+and the guarantee that a failed send does not consume the user's resend cooldown. They never
+touch the network or cost a message.
+
 ## Authentication
 
 Two ways to sign in, both returning the same JWT:
@@ -69,12 +74,41 @@ Redeeming a code marks that email or phone verified, since it proves control of 
 
 ### Delivery providers
 
-Email uses SMTP through nodemailer (`SMTP_HOST` and friends); SMS uses the Twilio REST API
-(`TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`). With neither configured
-in development, codes are printed to the API console instead — and with
-`OTP_EXPOSE_IN_RESPONSE=true` the code also comes back in the response as `devCode`, so the
-login screen is usable with no provider account. Both fallbacks are disabled when
-`NODE_ENV=production`: a missing provider raises an error rather than silently dropping the code.
+Email uses SMTP through nodemailer (`SMTP_HOST` and friends). **SMS uses Twilio.**
+
+With neither configured in development, codes are printed to the API console instead — and
+with `OTP_EXPOSE_IN_RESPONSE=true` the code also comes back in the response as `devCode`, so
+the login screen is usable with no provider account. Both fallbacks are disabled when
+`NODE_ENV=production`: the server refuses to start rather than silently dropping codes.
+
+#### Twilio setup
+
+1. From the [Twilio console](https://console.twilio.com), copy your **Account SID** and
+   **Auth Token** into `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`.
+2. Set a sender — either a single SMS-capable number in `TWILIO_FROM_NUMBER`, or a
+   **Messaging Service SID** in `TWILIO_MESSAGING_SERVICE_SID`. Prefer the messaging service
+   in production: it manages the number pool, sender selection and local compliance.
+   If both are set, the messaging service wins.
+3. Under **Messaging → Geo permissions**, enable the countries you send to. India is off by
+   default on new accounts and is the usual cause of a silent failure.
+4. For Indian recipients, register your sender and template under DLT — unregistered traffic
+   to Indian numbers is rejected by the carriers, not by Twilio.
+
+On boot the server prints which sender it will use, and refuses to start on a half-filled
+config (for example a SID with no auth token) rather than failing on the first real send.
+
+The integration lives in `src/providers/twilio.js` and:
+
+- times out after `TWILIO_TIMEOUT_MS` (default 10s) so a hung Twilio call cannot hold an API
+  request open, and retries once on a timeout, a 429 or a 5xx;
+- translates Twilio error codes into useful outcomes — an invalid or opted-out number becomes
+  a 400 the user can act on, while an account or geo-permission problem becomes a generic 500
+  for the client and a specific line in the server log;
+- never puts Twilio's raw response, error text or account SID into an API response;
+- returns the message SID, so a delivery can be traced in the Twilio console.
+
+If a send fails, the code is deleted rather than left behind — otherwise the resend cooldown
+would lock the user out for a minute over a message they never received.
 
 ### How codes are protected
 

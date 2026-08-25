@@ -78,13 +78,20 @@ export async function issueOtp({ identifier, channel, purpose = 'login', user, r
     requestIp,
   });
 
-  await sendOtp({
-    identifier,
-    channel,
-    code,
-    purpose,
-    ttlMinutes: env.otp.ttlMinutes,
-  });
+  try {
+    await sendOtp({
+      identifier,
+      channel,
+      code,
+      purpose,
+      ttlMinutes: env.otp.ttlMinutes,
+    });
+  } catch (error) {
+    // A code nobody received must not hold the resend cooldown open, or the user is
+    // locked out for a minute over our delivery failure.
+    await OtpToken.deleteOne({ _id: token._id });
+    throw error;
+  }
 
   return {
     tokenId: token._id,

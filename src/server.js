@@ -1,9 +1,36 @@
 import app from './app.js';
-import { env } from './config/env.js';
+import { env, isProduction } from './config/env.js';
 import { connectDatabase } from './config/db.js';
+import { configurationProblem, isConfigured } from './providers/twilio.js';
+
+/** Reports how one-time codes will actually reach people on this deployment. */
+function checkOtpDelivery() {
+  const problem = configurationProblem();
+  if (problem) throw new Error(problem);
+
+  if (isConfigured()) {
+    const { messagingServiceSid, fromNumber } = env.twilio;
+    console.log(
+      `SMS delivery: Twilio (${messagingServiceSid ? `messaging service ${messagingServiceSid}` : `from ${fromNumber}`})`
+    );
+  } else if (isProduction) {
+    throw new Error('No SMS provider configured. Set the TWILIO_* environment variables.');
+  } else {
+    console.warn('SMS delivery: not configured — codes will be printed to this console');
+  }
+
+  if (!env.smtp.host) {
+    if (isProduction) throw new Error('No email provider configured. Set the SMTP_* variables.');
+    console.warn('Email delivery: not configured — codes will be printed to this console');
+  } else {
+    console.log(`Email delivery: SMTP via ${env.smtp.host}`);
+  }
+}
 
 async function start() {
   try {
+    checkOtpDelivery();
+
     await connectDatabase();
     console.log('MongoDB connected');
 

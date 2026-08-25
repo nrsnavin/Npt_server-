@@ -1,4 +1,5 @@
 import { env, isProduction } from '../config/env.js';
+import { isConfigured as twilioConfigured, sendSms as twilioSendSms } from '../providers/twilio.js';
 
 /**
  * Delivery of OTP codes. Both channels fall back to logging the message when no
@@ -55,31 +56,12 @@ export async function sendEmail({ to, subject, text, html }) {
 }
 
 export async function sendSms({ to, body }) {
-  const { accountSid, authToken, fromNumber } = env.twilio;
-
-  if (!accountSid || !authToken || !fromNumber) {
+  if (!twilioConfigured()) {
     logFallback('sms', to, body);
     return { delivered: false, channel: 'sms' };
   }
 
-  const response = await fetch(
-    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({ To: to, From: fromNumber, Body: body }),
-    }
-  );
-
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`SMS delivery failed (${response.status}): ${detail}`);
-  }
-
-  return { delivered: true, channel: 'sms' };
+  return twilioSendSms({ to, body });
 }
 
 const OTP_SUBJECTS = {
