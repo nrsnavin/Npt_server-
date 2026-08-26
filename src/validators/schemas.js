@@ -1,33 +1,50 @@
 import { z } from 'zod';
+import { MODULE_KEYS, DEPARTMENT_KEYS, ACCESS_LEVELS } from '../config/modules.js';
 
 export const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Must be a valid id');
 
-export const ROLE_VALUES = ['admin', 'sales', 'production', 'inventory', 'accounts', 'viewer'];
-export const DEPARTMENT_VALUES = [
-  'management',
-  'sales',
-  'production',
-  'stores',
-  'accounts',
-  'quality',
-  'maintenance',
-  'hr',
-  'other',
-];
+export const ROLE_VALUES = ['admin', 'member'];
+
+const moduleGrant = z.object({
+  module: z.enum(MODULE_KEYS),
+  level: z.enum(ACCESS_LEVELS),
+});
 
 export const registerSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
   password: z.string().min(8, 'Password must be at least 8 characters'),
-  role: z.enum(ROLE_VALUES).optional(),
-  department: z.enum(DEPARTMENT_VALUES).optional(),
+  department: z.enum(DEPARTMENT_KEYS).optional(),
   phone: z.string().optional(),
 });
 
+/** A user may change their own name and phone; department and access are an admin's call. */
 export const updateProfileSchema = z.object({
   name: z.string().min(2).optional(),
   phone: z.string().optional(),
-  department: z.enum(DEPARTMENT_VALUES).optional(),
+});
+
+export const createUserSchema = z.object({
+  name: z.string().min(2),
+  email: z.string().email(),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+  role: z.enum(ROLE_VALUES).optional(),
+  department: z.enum(DEPARTMENT_KEYS),
+  phone: z.string().optional(),
+  /** Omit to accept the department's defaults. */
+  moduleAccess: z.array(moduleGrant).optional(),
+});
+
+export const updateUserSchema = z.object({
+  name: z.string().min(2).optional(),
+  role: z.enum(ROLE_VALUES).optional(),
+  department: z.enum(DEPARTMENT_KEYS).optional(),
+  phone: z.string().optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const setAccessSchema = z.object({
+  moduleAccess: z.array(moduleGrant),
 });
 
 export const loginSchema = z.object({

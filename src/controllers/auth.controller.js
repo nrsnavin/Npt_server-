@@ -5,7 +5,7 @@ import { signToken } from '../middleware/auth.js';
 import { issueOtp, resolveIdentifier, verifyOtp } from '../services/otp.service.js';
 import { env } from '../config/env.js';
 import { maskIdentifier } from '../utils/phone.js';
-import { featuresForRole } from '../config/features.js';
+import { moduleAccessFor } from '../services/access.service.js';
 
 const publicUser = (user) => ({
   id: user._id,
@@ -21,7 +21,8 @@ const publicUser = (user) => ({
   lastLoginAt: user.lastLoginAt,
   lastLoginMethod: user.lastLoginMethod,
   createdAt: user.createdAt,
-  features: featuresForRole(user.role),
+  /** Every response carrying a user carries their access, so the client is never guessing. */
+  modules: moduleAccessFor(user),
 });
 
 /** Records the sign-in and returns the standard auth payload. */
@@ -34,7 +35,7 @@ async function completeSignIn(user, method) {
 }
 
 export const register = asyncHandler(async (req, res) => {
-  const { name, email, password, role, phone, department } = req.body;
+  const { name, email, password, phone, department } = req.body;
 
   const existing = await User.findOne({ email });
   if (existing) throw ApiError.conflict('An account with this email already exists');
@@ -46,7 +47,11 @@ export const register = asyncHandler(async (req, res) => {
     }
   }
 
-  // The very first account bootstraps the system as an admin.
+  /*
+   * The very first account bootstraps the system as an admin. Everyone after that is a
+   * member with no grants at all — an admin allocates them a department and access.
+   * Self-registration must never be a way to award yourself permissions.
+   */
   const isFirstUser = (await User.estimatedDocumentCount()) === 0;
   const user = await User.create({
     name,
@@ -54,7 +59,8 @@ export const register = asyncHandler(async (req, res) => {
     password,
     phone,
     department,
-    role: isFirstUser ? 'admin' : role || 'viewer',
+    role: isFirstUser ? 'admin' : 'member',
+    moduleAccess: [],
   });
 
   res.status(201).json({ success: true, data: { user: publicUser(user), token: signToken(user) } });
@@ -134,11 +140,10 @@ export const me = asyncHandler(async (req, res) => {
 });
 
 export const updateProfile = asyncHandler(async (req, res) => {
-  const { name, phone, department } = req.body;
+  const { name, phone } = req.body;
   const user = await User.findById(req.user._id);
 
   if (name) user.name = name;
-  if (department) user.department = department;
 
   if (phone !== undefined) {
     const next = phone ? resolveIdentifier(phone).identifier : undefined;

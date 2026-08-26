@@ -1,5 +1,6 @@
 /**
- * Seeds one account per role so the login and profile screens can be exercised.
+ * Seeds one account per department, each with that department's default module access,
+ * plus an admin. Enough to exercise sign-in, the profile and user administration.
  *
  * Usage: npm run seed
  */
@@ -7,14 +8,17 @@ import mongoose from 'mongoose';
 import { connectDatabase, disconnectDatabase } from '../config/db.js';
 import User from '../models/User.js';
 import OtpToken from '../models/OtpToken.js';
+import { defaultAccessFor, DEPARTMENTS } from '../config/modules.js';
 
-const USERS = [
+const PEOPLE = [
   { name: 'Navin R', email: 'admin@npthangers.com', password: 'Admin@12345', role: 'admin', department: 'management', phone: '9876500001' },
-  { name: 'Priya Sales', email: 'sales@npthangers.com', password: 'Sales@12345', role: 'sales', department: 'sales', phone: '9876500002' },
-  { name: 'Ramesh Plant', email: 'production@npthangers.com', password: 'Prod@123456', role: 'production', department: 'production', phone: '9876500003' },
-  { name: 'Anita Stores', email: 'stores@npthangers.com', password: 'Store@12345', role: 'inventory', department: 'stores', phone: '9876500004' },
-  { name: 'Kiran Accounts', email: 'accounts@npthangers.com', password: 'Accts@12345', role: 'accounts', department: 'accounts', phone: '9876500005' },
-  { name: 'Sunil Quality', email: 'quality@npthangers.com', password: 'Qual@123456', role: 'viewer', department: 'quality', phone: '9876500006' },
+  { name: 'Meera Sampling', email: 'sampling@npthangers.com', password: 'Sample@1234', department: 'sampling', phone: '9876500002' },
+  { name: 'Priya Orders', email: 'orders@npthangers.com', password: 'Orders@1234', department: 'order_confirmation', phone: '9876500003' },
+  { name: 'Ramesh Plant', email: 'production@npthangers.com', password: 'Prod@123456', department: 'production', phone: '9876500004' },
+  { name: 'Sunil Quality', email: 'quality@npthangers.com', password: 'Qual@123456', department: 'quality', phone: '9876500005' },
+  { name: 'Anita Despatch', email: 'despatch@npthangers.com', password: 'Desp@123456', department: 'despatch', phone: '9876500006' },
+  { name: 'Kiran Accounts', email: 'accounts@npthangers.com', password: 'Accts@12345', department: 'accounts', phone: '9876500007' },
+  { name: 'Divya Comms', email: 'comms@npthangers.com', password: 'Comms@12345', department: 'communications', phone: '9876500008' },
 ];
 
 async function seed() {
@@ -22,11 +26,24 @@ async function seed() {
   console.log('Connected. Clearing existing data...');
   await Promise.all([User.deleteMany({}), OtpToken.deleteMany({})]);
 
-  await User.create(USERS.map((user) => ({ ...user, emailVerified: true })));
+  await User.create(
+    PEOPLE.map((person) => ({
+      ...person,
+      role: person.role || 'member',
+      emailVerified: true,
+      // Admins need no grants; everyone else starts on their department's template.
+      moduleAccess: person.role === 'admin' ? [] : defaultAccessFor(person.department),
+    }))
+  );
 
-  console.log('\nSeed complete. Sign in with a password:');
-  for (const user of USERS) {
-    console.log(`  ${user.email.padEnd(26)} ${user.password.padEnd(14)} ${user.role}`);
+  const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));
+
+  console.log('\nSeed complete. Sign in with a password:\n');
+  for (const person of PEOPLE) {
+    const grants = person.role === 'admin' ? 'all modules' : `${defaultAccessFor(person.department).length} modules`;
+    console.log(
+      `  ${person.email.padEnd(28)} ${person.password.padEnd(13)} ${(labels[person.department] || '').padEnd(26)} ${grants}`
+    );
   }
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');

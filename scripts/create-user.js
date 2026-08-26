@@ -8,8 +8,8 @@
  *
  * Options:
  *   --name="Full Name"     override the random name
- *   --role=admin           override the random role
- *   --department=sales     override the random department
+ *   --role=admin           override the random role (admin or member)
+ *   --department=sampling  override the random department
  *   --phone=9876543210     override the random phone number
  *   --replace              overwrite the account if the email already exists
  *
@@ -17,8 +17,9 @@
  */
 import mongoose from 'mongoose';
 import { connectDatabase, disconnectDatabase } from '../src/config/db.js';
-import User, { ROLES, DEPARTMENTS } from '../src/models/User.js';
-import { featuresForRole } from '../src/config/features.js';
+import User, { ROLES } from '../src/models/User.js';
+import { DEPARTMENT_KEYS, defaultAccessFor, findDepartment } from '../src/config/modules.js';
+import { moduleAccessFor } from '../src/services/access.service.js';
 import { normalisePhone } from '../src/utils/phone.js';
 
 const FIRST_NAMES = [
@@ -72,8 +73,8 @@ async function main() {
   if (options.role && !ROLES.includes(options.role)) {
     throw new Error(`--role must be one of: ${ROLES.join(', ')}`);
   }
-  if (options.department && !DEPARTMENTS.includes(options.department)) {
-    throw new Error(`--department must be one of: ${DEPARTMENTS.join(', ')}`);
+  if (options.department && !DEPARTMENT_KEYS.includes(options.department)) {
+    throw new Error(`--department must be one of: ${DEPARTMENT_KEYS.join(', ')}`);
   }
 
   await connectDatabase();
@@ -96,16 +97,21 @@ async function main() {
   const phone = options.phone ? normalisePhone(options.phone) : await randomFreePhone();
   if (options.phone && !phone) throw new Error(`--phone is not a valid number: ${options.phone}`);
 
+  const role = options.role || pick(ROLES);
+  const department = options.department || pick(DEPARTMENT_KEYS);
+
   const user = new User({
     name: options.name || `${pick(FIRST_NAMES)} ${pick(LAST_NAMES)}`,
     email,
-    role: options.role || pick(ROLES),
-    department: options.department || pick(DEPARTMENTS),
+    role,
+    department,
     phone,
     emailVerified: chance(0.5),
     phoneVerified: chance(0.5),
     // Always active: a deactivated account cannot sign in, which would defeat the point.
     isActive: true,
+    // Admins need no grants; members start on their department's template.
+    moduleAccess: role === 'admin' ? [] : defaultAccessFor(department),
   });
   user.password = password;
 
@@ -124,19 +130,24 @@ async function main() {
   }
   await user.save({ validateBeforeSave: !tooShort });
 
-  const granted = featuresForRole(user.role).filter((feature) => feature.allowed);
+  const modules = moduleAccessFor(user);
+  const readable = modules.filter((module) => module.canRead);
+  const writable = modules.filter((module) => module.canWrite);
 
   console.log('Account created:\n');
   console.log(`  Name        ${user.name}`);
   console.log(`  Email       ${user.email}`);
   console.log(`  Password    ${password}`);
   console.log(`  Role        ${user.role}`);
-  console.log(`  Department  ${user.department}`);
+  console.log(`  Department  ${findDepartment(user.department)?.label || user.department}`);
   console.log(`  Phone       ${user.phone}`);
   console.log(`  Email seen  ${user.emailVerified ? 'verified' : 'unverified'}`);
   console.log(`  Phone seen  ${user.phoneVerified ? 'verified' : 'unverified'}`);
-  console.log(`\n  Feature access: ${granted.length} of ${featuresForRole(user.role).length}`);
-  console.log(`  ${granted.map((feature) => feature.label).join(', ')}\n`);
+  console.log(`\n  Module access: ${readable.length} of ${modules.length} readable, ${writable.length} writable`);
+  for (const module of readable) {
+    console.log(`    ${module.level.padEnd(5)}  ${module.label}`);
+  }
+  console.log('');
 
   await disconnectDatabase();
 }

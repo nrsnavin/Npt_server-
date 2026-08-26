@@ -238,7 +238,7 @@ test('will not sign in a deactivated account by OTP', async () => {
     name: 'Suspended Staff',
     email: 'suspended@npthangers.com',
     password: 'Temp@123456',
-    role: 'sales',
+    role: 'member',
     isActive: false,
   });
 
@@ -252,14 +252,14 @@ test('will not sign in a deactivated account by OTP', async () => {
   assert.equal(requested.json.data.devCode, undefined);
 });
 
-test('returns the feature catalogue on sign-in, not only on /auth/me', async () => {
-  // The client stores the user from this response, so a missing catalogue here
-  // leaves the profile screen showing no access at all until a reload.
+test('returns module access on sign-in, not only on /auth/me', async () => {
+  // The client stores the user from this response, so missing access here leaves the
+  // profile screen showing nothing until a reload.
   const password = await api('/api/auth/login', {
     method: 'POST',
     body: { email: 'admin@npthangers.com', password: 'Admin@12345' },
   });
-  assert.ok(password.json.data.user.features?.length, 'password login carries features');
+  assert.ok(password.json.data.user.modules?.length, 'password login carries modules');
 
   const requested = await api('/api/auth/otp/request', {
     method: 'POST',
@@ -269,10 +269,10 @@ test('returns the feature catalogue on sign-in, not only on /auth/me', async () 
     method: 'POST',
     body: { identifier: 'admin@npthangers.com', code: requested.json.data.devCode },
   });
-  assert.ok(otp.json.data.user.features?.length, 'OTP login carries features');
+  assert.ok(otp.json.data.user.modules?.length, 'OTP login carries modules');
 });
 
-test('reports the department and the feature catalogue for the signed-in user', async () => {
+test('reports the department and module access for the signed-in user', async () => {
   const { json: session } = await api('/api/auth/login', {
     method: 'POST',
     body: { email: 'admin@npthangers.com', password: 'Admin@12345' },
@@ -282,35 +282,38 @@ test('reports the department and the feature catalogue for the signed-in user', 
 
   assert.equal(status, 200);
   assert.equal(json.data.role, 'admin');
-  assert.ok(Array.isArray(json.data.features));
-
-  // Admin passes every check, so nothing in the catalogue is withheld.
-  assert.ok(json.data.features.every((feature) => feature.allowed));
-  assert.ok(json.data.features.some((feature) => feature.key === 'profile'));
+  assert.equal(json.data.department, 'management');
+  assert.ok(json.data.modules.every((module) => module.canWrite));
 });
 
-test('withholds features a role may not use', async () => {
+test('a member sees only the modules granted to them', async () => {
   const { default: User } = await import('../src/models/User.js');
   await User.create({
-    name: 'Read Only',
-    email: 'viewer@npthangers.com',
-    password: 'View@123456',
-    role: 'viewer',
-    department: 'quality',
+    name: 'Despatch Clerk',
+    email: 'clerk@npthangers.com',
+    password: 'Clerk@12345',
+    role: 'member',
+    department: 'despatch',
+    moduleAccess: [
+      { module: 'despatch', level: 'write' },
+      { module: 'orders', level: 'read' },
+    ],
   });
 
   const { json: session } = await api('/api/auth/login', {
     method: 'POST',
-    body: { email: 'viewer@npthangers.com', password: 'View@123456' },
+    body: { email: 'clerk@npthangers.com', password: 'Clerk@12345' },
   });
   const { json } = await api('/api/auth/me', { token: session.data.token });
 
-  const allowed = json.data.features.filter((feature) => feature.allowed).map((f) => f.key);
-  assert.deepEqual(allowed, ['profile']);
-  assert.equal(json.data.department, 'quality');
+  const byKey = Object.fromEntries(json.data.modules.map((m) => [m.key, m]));
+  assert.equal(byKey.despatch.canWrite, true);
+  assert.equal(byKey.orders.canRead, true);
+  assert.equal(byKey.orders.canWrite, false);
+  assert.equal(byKey.accounts.canRead, false);
 });
 
-test('updates the department from the profile screen', async () => {
+test('a user may change their own name and phone but not their department', async () => {
   const { json: session } = await api('/api/auth/login', {
     method: 'POST',
     body: { email: 'admin@npthangers.com', password: 'Admin@12345' },
@@ -319,16 +322,17 @@ test('updates the department from the profile screen', async () => {
   const updated = await api('/api/auth/me', {
     method: 'PATCH',
     token: session.data.token,
-    body: { department: 'production' },
+    body: { name: 'Navin Rajan' },
   });
-  assert.equal(updated.json.data.department, 'production');
+  assert.equal(updated.json.data.name, 'Navin Rajan');
 
+  // Department is an admin's call, so the schema rejects it here.
   const rejected = await api('/api/auth/me', {
     method: 'PATCH',
     token: session.data.token,
-    body: { department: 'not-a-department' },
+    body: { department: 'production' },
   });
-  assert.equal(rejected.status, 400);
+  assert.equal(rejected.json.data.department, 'management', 'department is unchanged');
 });
 
 test('verifies a phone number for the signed-in user', async () => {
@@ -344,7 +348,7 @@ test('verifies a phone number for the signed-in user', async () => {
     body: { phone: '9000011111' },
   });
   assert.equal(updated.json.data.phone, '+919000011111');
-  assert.equal(updated.json.data.phoneVerified, false);
+  assert.equal(updated.json.data.phoneVerified, false, 'a new number is not yet proven');
 
   const requested = await api('/api/auth/verify/request', {
     method: 'POST',
