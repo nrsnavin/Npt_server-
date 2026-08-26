@@ -64,3 +64,42 @@ test('a complete block passes', async () => {
 test('a host alone passes — a relay that needs no login is normal', async () => {
   assert.equal(checkWith({ SMTP_HOST: 'localhost', SMTP_PORT: '25' }), null);
 });
+
+/* ----------------------------- Reading the variables ----------------------------- */
+
+/**
+ * `env.js` reads process.env when it is evaluated and imports nothing that caches those
+ * values, so a query string on the specifier gives a genuine fresh read.
+ */
+const freshEnv = async (vars, tag) => {
+  for (const key of ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASSWORD', 'SMTP_PASS']) {
+    delete process.env[key];
+  }
+  Object.assign(process.env, vars);
+  const module = await import(`../src/config/env.js?smtp=${tag}`);
+  return module.env.smtp;
+};
+
+test('SMTP_PASS is accepted as well as SMTP_PASSWORD', async () => {
+  // nodemailer's own docs call it `pass`, so this is what people write. Reading only the
+  // longer name produced an empty password and an EAUTH naming neither variable.
+  const viaAlias = await freshEnv(
+    { SMTP_HOST: 'smtp.hostinger.com', SMTP_USER: 'info@example.com', SMTP_PASS: 'from-alias' },
+    'alias'
+  );
+  assert.equal(viaAlias.password, 'from-alias');
+  assert.equal(configurationProblem(viaAlias), null);
+
+  const viaFullName = await freshEnv(
+    { SMTP_HOST: 'smtp.hostinger.com', SMTP_USER: 'info@example.com', SMTP_PASSWORD: 'from-full' },
+    'full'
+  );
+  assert.equal(viaFullName.password, 'from-full');
+});
+
+test('port 465 is treated as implicit TLS', async () => {
+  // Hostinger, Zoho and others use 465, where TLS is not negotiated after connecting but
+  // assumed from the first byte. Getting this wrong looks like a hang, not a config error.
+  const smtp = await freshEnv({ SMTP_HOST: 'smtp.hostinger.com', SMTP_PORT: '465' }, 'tls');
+  assert.equal(smtp.port, 465);
+});

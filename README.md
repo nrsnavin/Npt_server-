@@ -138,7 +138,8 @@ applied inside the controllers because it varies by department.
 | POST | `/enquiries/:id/status` | Move a stage, with the reason a close or hold needs |
 | POST | `/enquiries/:id/promote-product` | Turn an approved new development into a catalogue model |
 | GET | `/enquiries/pipeline` | Count and value per stage, for the funnel |
-| GET/POST | `/samples` | Sample requests; `?open=`, `?overdue=`, `?unassigned=`, `?mine=`, `?enquiry=` |
+| GET/POST | `/samples` | Sample requests; `?open=`, `?overdue=`, `?unassigned=`, `?mine=`, `?enquiry=`. The enquiry and customer are optional on POST |
+| POST | `/samples/:id/link-enquiry` | Attach a standalone request to an enquiry raised later |
 | POST | `/samples/:id/status` | Move it along the bench; dispatch demands courier, AWB and quantity |
 | PATCH | `/samples/:id/dispatch-details` | Record or correct the courier, tracking number, date and quantity |
 | GET/POST | `/samples/:id/logs` | The working record: notes and photos. POST is multipart when a photo is attached |
@@ -317,6 +318,35 @@ which only describes a request that runs to an answer.
 Marketing's ownership on samples runs through `requestedBy` rather than `assignedTo` — the
 sample is worked by the sample team, so scoping on who is doing the work would hide every
 sample from the person who asked for it.
+
+#### Requests without an enquiry
+
+A sample is not always the child of an enquiry. A buyer asks at the counter before anyone
+writes one; a customer phones and asks directly; the plant trials a new mould for nobody in
+particular. Requiring an enquiry would mean inventing one, and an invented enquiry pollutes
+the funnel it exists to describe — so both the enquiry and the customer are optional, and a
+standalone request has to say what to make instead of inheriting it.
+
+Such a request walks the same twelve statuses as any other. The enquiry handovers simply have
+nothing to move, and the customer notifications have nobody to notify, so both no-op rather
+than needing a second path.
+
+Two rules change when there is no customer, because both exist to protect the customer's
+verdict and there isn't one:
+
+- The bench may record the outcome itself. With a customer that stays on `enquiries` write —
+  the maker does not mark their own work approved — but an internal trial is the bench's to
+  judge.
+- It is judged once it has been **made**, not once it has been dispatched. Nobody is posting
+  a trial to themselves.
+
+Raising a request is open to `samples` write *or* `enquiries` write: a counter request is
+marketing's to raise, an internal trial is the bench's, and one grant would exclude one of
+them. Making the sample stays on `samples` write either way.
+
+`POST /samples/:id/link-enquiry` attaches a request to the enquiry that turns up after it —
+the Monday walk-in whose enquiry gets written on Thursday. Only ever set, never moved:
+re-pointing a sample at a different enquiry would rewrite what was made for whom.
 
 #### The working record
 

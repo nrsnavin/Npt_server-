@@ -1,20 +1,20 @@
 import { Router } from 'express';
 import {
   listSamples, getSample, createSample, updateSample, assignSample,
-  setSampleStatus, setDispatchDetails, recordFeedback, resample, samplePipeline,
+  setSampleStatus, setDispatchDetails, recordFeedback, resample, samplePipeline, linkEnquiry,
   previewCustomerMessage, sendCustomerMessage, listCustomerMessages,
 } from '../controllers/sample.controller.js';
 import {
   listSampleLogs, addSampleLog, addLogComment, removeSampleLog, removeLogComment,
   downloadAttachment, setReferencePhoto, clearReferencePhoto,
 } from '../controllers/sampleLog.controller.js';
-import { authenticate, requireModule } from '../middleware/auth.js';
+import { authenticate, requireAnyModule, requireModule } from '../middleware/auth.js';
 import { singleImage } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
 import {
   sampleSchema, sampleUpdateSchema, sampleAssignSchema,
   sampleStatusSchema, sampleFeedbackSchema, resampleSchema, customerMessageSchema,
-  dispatchDetailsSchema, sampleLogSchema, logCommentSchema,
+  dispatchDetailsSchema, sampleLogSchema, logCommentSchema, linkEnquirySchema,
 } from '../validators/sample.schemas.js';
 
 const router = Router();
@@ -30,7 +30,17 @@ router.use(authenticate);
 
 router.get('/pipeline', requireModule('samples'), samplePipeline);
 router.get('/', requireModule('samples'), listSamples);
-router.post('/', requireModule('samples', 'write'), validate(sampleSchema), createSample);
+/*
+ * Raising a request is not the same as working one. A buyer asking at the counter is
+ * marketing's to raise; an internal trial is the bench's. Making the sample stays on
+ * `samples` write either way.
+ */
+router.post(
+  '/',
+  requireAnyModule(['samples', 'write'], ['enquiries', 'write']),
+  validate(sampleSchema),
+  createSample
+);
 router.get('/:id', requireModule('samples'), getSample);
 router.patch('/:id', requireModule('samples', 'write'), validate(sampleUpdateSchema), updateSample);
 router.post('/:id/assign', requireModule('samples', 'write'), validate(sampleAssignSchema), assignSample);
@@ -41,8 +51,21 @@ router.patch(
   validate(dispatchDetailsSchema),
   setDispatchDetails
 );
-router.post('/:id/feedback', requireModule('enquiries', 'write'), validate(sampleFeedbackSchema), recordFeedback);
+/*
+ * Recording the outcome needs `enquiries` write, because it is the customer's verdict and
+ * only whoever spoke to them knows it. A request with no customer — an internal trial — has
+ * no such verdict, so the bench's own is the verdict; that case is allowed inside the
+ * controller rather than here, where the sample is not loaded yet.
+ */
+router.post(
+  '/:id/feedback',
+  requireAnyModule(['enquiries', 'write'], ['samples', 'write']),
+  validate(sampleFeedbackSchema),
+  recordFeedback
+);
 router.post('/:id/resample', requireModule('samples', 'write'), validate(resampleSchema), resample);
+// A request raised before its enquiry existed joins it when it does.
+router.post('/:id/link-enquiry', requireModule('samples', 'write'), validate(linkEnquirySchema), linkEnquiry);
 
 /*
  * Talking to the customer is its own grant [§42]. Sampling updates internal status; what

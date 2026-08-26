@@ -402,6 +402,273 @@ test('only a modification can be re-sampled', async () => {
   assert.equal(status, 400);
 });
 
+/* --------------------------- Requests with no enquiry --------------------------- */
+
+test('a sample can be raised with no enquiry behind it', async () => {
+  const { status, json } = await api('/api/samples', {
+    method: 'POST',
+    token: meera,
+    body: {
+      modelNumber: 'NPT-400S',
+      colour: 'White',
+      quantity: 4,
+      purpose: 'new_development',
+      standaloneReason: 'Trialling the recycled blend on the 400 tool',
+    },
+  });
+
+  assert.equal(status, 201);
+  assert.equal(json.data.enquiry, undefined);
+  assert.equal(json.data.customer, undefined, 'an internal trial belongs to nobody');
+  assert.equal(json.data.isStandalone, true);
+  assert.equal(json.data.autoCreated, false);
+  // Whoever raised it is who it is for, since no enquiry named anyone.
+  assert.equal(json.data.requestedBy.name, 'Meera S');
+  assert.ok(json.data.requiredDate, 'the bench still gets a date');
+});
+
+test('a walk-in sample can name a customer without an enquiry', async () => {
+  const { json: customers } = await api('/api/customers?search=SCM', { token: nandhini });
+  const customer = customers.data[0];
+
+  const { status, json } = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customer._id,
+      modelNumber: 'NPT-400S',
+      quantity: 2,
+      purpose: 'buyer_approval',
+      standaloneReason: 'Asked for one at the counter',
+    },
+  });
+
+  assert.equal(status, 201);
+  assert.equal(json.data.customer._id, customer._id);
+  assert.equal(json.data.enquiry, undefined);
+});
+
+test('a request with no enquiry must still say what to make', async () => {
+  const { status, json } = await api('/api/samples', {
+    method: 'POST',
+    token: meera,
+    body: { quantity: 2, purpose: 'fit_test' },
+  });
+
+  assert.equal(status, 400);
+  assert.match(json.message, /Pick a model, or describe what to make/);
+});
+
+test('a standalone request walks the whole status cycle', async () => {
+  const created = await api('/api/samples', {
+    method: 'POST',
+    token: meera,
+    body: { modelNumber: 'NPT-400S', quantity: 3, standaloneReason: 'Counter request' },
+  });
+  const id = created.json.data._id;
+
+  // Every stage the automation-raised ones use, with nothing to inherit from.
+  for (const status of ['checking_stock', 'production_required', 'printing_required', 'sample_ready']) {
+    const moved = await api(`/api/samples/${id}/status`, {
+      method: 'POST',
+      token: meera,
+      body: { status },
+    });
+    assert.equal(moved.status, 200, `should reach ${status}`);
+    assert.equal(moved.json.data.status, status);
+  }
+
+  // The dispatch rule holds here too.
+  const bare = await api(`/api/samples/${id}/status`, {
+    method: 'POST',
+    token: meera,
+    body: { status: 'dispatched' },
+  });
+  assert.equal(bare.status, 400);
+
+  const dispatched = await api(`/api/samples/${id}/status`, {
+    method: 'POST',
+    token: meera,
+    body: { status: 'dispatched', courier: 'Blue Dart', awbNumber: '99001122334', dispatchedQuantity: 3 },
+  });
+  assert.equal(dispatched.status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+
+  // Feedback closes it, and the enquiry handover simply has nothing to move.
+  const feedback = await api(`/api/samples/${id}/feedback`, {
+    method: 'POST',
+    token: meera,
+    body: { outcome: 'approved', note: 'Blend is fine' },
+  });
+  assert.equal(feedback.status, 200);
+  assert.equal(feedback.json.data.status, 'approved');
+
+  const history = feedback.json.data.statusHistory.map((entry) => entry.to);
+  assert.deepEqual(history, [
+    'request_received',
+    'checking_stock',
+    'production_required',
+    'printing_required',
+    'sample_ready',
+    'dispatched',
+    'approved',
+  ]);
+});
+
+test('a standalone request can be re-sampled', async () => {
+  const created = await api('/api/samples', {
+    method: 'POST',
+    token: meera,
+    body: { modelNumber: 'NPT-400S', quantity: 2, standaloneReason: 'Counter request' },
+  });
+  const id = created.json.data._id;
+
+  for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
+    await api(`/api/samples/${id}/status`, { method: 'POST', token: meera, body: { status } });
+  }
+  await api(`/api/samples/${id}/status`, {
+    method: 'POST',
+    token: meera,
+    body: { status: 'dispatched', courier: 'Blue Dart', awbNumber: '99001122335', dispatchedQuantity: 2 },
+  });
+  await api(`/api/samples/${id}/feedback`, {
+    method: 'POST',
+    token: meera,
+    body: { outcome: 'modification_required', note: 'Thicker hook' },
+  });
+
+  const { status, json } = await api(`/api/samples/${id}/resample`, {
+    method: 'POST',
+    token: meera,
+    body: {},
+  });
+
+  assert.equal(status, 201);
+  assert.equal(json.data.sample.enquiry, undefined);
+  assert.equal(json.data.sample.modelNumber, 'NPT-400S');
+  assert.equal(idOf(json.data.sample.previousSample), id);
+});
+
+test('a request raised before its enquiry can be attached to it afterwards', async () => {
+  const { json: customers } = await api('/api/customers?search=SCM', { token: nandhini });
+  const customer = customers.data[0];
+
+  const created = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: { customer: customer._id, modelNumber: 'NPT-400S', quantity: 2 },
+  });
+  const id = created.json.data._id;
+
+  const enquiry = await raiseEnquiry();
+
+  const linked = await api(`/api/samples/${id}/link-enquiry`, {
+    method: 'POST',
+    token: meera,
+    body: { enquiry: enquiry._id },
+  });
+
+  assert.equal(linked.status, 200);
+  assert.equal(idOf(linked.json.data.enquiry), enquiry._id);
+  assert.equal(linked.json.data.isStandalone, false);
+  assert.ok(
+    linked.json.data.statusHistory.some((entry) => entry.note?.includes(enquiry.number)),
+    'the record says when it joined'
+  );
+
+  // Never moved once set: re-pointing it would rewrite what was made for whom.
+  const again = await api(`/api/samples/${id}/link-enquiry`, {
+    method: 'POST',
+    token: meera,
+    body: { enquiry: enquiry._id },
+  });
+  assert.equal(again.status, 400);
+});
+
+test('a request cannot be attached to another customer’s enquiry', async () => {
+  const { json: customers } = await api('/api/customers?search=SCM', { token: nandhini });
+
+  const created = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: { customer: customers.data[0]._id, modelNumber: 'NPT-400S', quantity: 1 },
+  });
+
+  const other = await api('/api/customers', {
+    method: 'POST',
+    token: nandhini,
+    body: { name: 'Somebody Else Ltd', mobile: '9876590001' },
+  });
+  const otherEnquiry = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: other.json.data._id,
+      product: productId,
+      requirement: { modelNumber: 'NPT-400S', quantity: 100 },
+      ...followUp,
+    },
+  });
+
+  const { status } = await api(`/api/samples/${created.json.data._id}/link-enquiry`, {
+    method: 'POST',
+    token: meera,
+    body: { enquiry: otherEnquiry.json.data._id },
+  });
+  assert.equal(status, 400);
+});
+
+
+test('an internal trial is judged once it is made, not once it is posted', async () => {
+  const created = await api('/api/samples', {
+    method: 'POST',
+    token: meera,
+    body: { modelNumber: 'NPT-400S', quantity: 2, standaloneReason: 'Mould trial' },
+  });
+  const id = created.json.data._id;
+
+  // Nothing has been made yet, so there is nothing to judge.
+  const early = await api(`/api/samples/${id}/feedback`, {
+    method: 'POST',
+    token: meera,
+    body: { outcome: 'approved' },
+  });
+  assert.equal(early.status, 400);
+  assert.match(early.json.message, /once it has been made/);
+
+  await api(`/api/samples/${id}/status`, { method: 'POST', token: meera, body: { status: 'sample_ready' } });
+
+  // With no customer, the bench judges it from the bench — no dispatch involved.
+  const { status, json } = await api(`/api/samples/${id}/feedback`, {
+    method: 'POST',
+    token: meera,
+    body: { outcome: 'approved', note: 'Blend holds up' },
+  });
+  assert.equal(status, 200);
+  assert.equal(json.data.status, 'approved');
+});
+
+test('a trial with a customer still waits for the customer', async () => {
+  const { json: customers } = await api('/api/customers?search=SCM', { token: nandhini });
+
+  const created = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: { customer: customers.data[0]._id, modelNumber: 'NPT-400S', quantity: 1 },
+  });
+  const id = created.json.data._id;
+
+  await api(`/api/samples/${id}/status`, { method: 'POST', token: meera, body: { status: 'sample_ready' } });
+
+  const { status, json } = await api(`/api/samples/${id}/feedback`, {
+    method: 'POST',
+    token: nandhini,
+    body: { outcome: 'approved' },
+  });
+  assert.equal(status, 400, 'a customer who has not seen it has no verdict');
+  assert.match(json.message, /has not reached them/);
+});
+
 /* ------------------------------ Access and ownership ------------------------------ */
 
 test('marketing sees the samples it asked for, and not a colleague’s', async () => {
@@ -461,15 +728,19 @@ test('the queue can be narrowed to what nobody has picked up', async () => {
   const enquiry = await raiseEnquiry();
   const sample = await requestSample(enquiry._id);
 
-  const before = await api('/api/samples?unassigned=true', { token: meera });
+  // Scoped to this enquiry so the assertion does not depend on where the sample lands in a
+  // paged queue — the fixtures grow, and a page-one scan quietly stops proving anything.
+  const queue = `/api/samples?unassigned=true&enquiry=${enquiry._id}`;
+
+  const before = await api(queue, { token: meera });
   assert.ok(before.json.data.some((row) => row._id === sample._id));
 
   await api(`/api/samples/${sample._id}/assign`, { method: 'POST', token: meera, body: {} });
 
-  const after = await api('/api/samples?unassigned=true', { token: meera });
+  const after = await api(queue, { token: meera });
   assert.ok(!after.json.data.some((row) => row._id === sample._id));
 
-  const mine = await api('/api/samples?mine=true', { token: meera });
+  const mine = await api(`/api/samples?mine=true&enquiry=${enquiry._id}`, { token: meera });
   assert.ok(mine.json.data.some((row) => row._id === sample._id));
 });
 

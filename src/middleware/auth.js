@@ -59,6 +59,33 @@ export const requireModule =
     );
   };
 
+/**
+ * Passes when the caller holds any one of several grants.
+ *
+ * Some actions belong to more than one job. Raising a sample request is marketing's when a
+ * buyer asks at the counter and the bench's when it is an internal trial — one grant would
+ * have to exclude one of them, and both are right. The refusal names every way in, because
+ * "you do not have access" without saying to what is a dead end.
+ */
+export const requireAnyModule =
+  (...requirements) =>
+  (req, _res, next) => {
+    if (!req.user) return next(ApiError.unauthorized());
+
+    for (const [moduleKey, required = 'read'] of requirements) {
+      if (!findModule(moduleKey)) {
+        return next(new ApiError(500, `Unknown module: ${moduleKey}`));
+      }
+      if (levelSatisfies(accessLevel(req.user, moduleKey), required)) return next();
+    }
+
+    const ways = requirements
+      .map(([moduleKey, required = 'read']) => `${required} on ${findModule(moduleKey).label}`)
+      .join(', or ');
+
+    return next(ApiError.forbidden(`This needs ${ways}.`));
+  };
+
 /** Restricts a route to the listed roles; admin always passes. */
 export const authorize =
   (...roles) =>

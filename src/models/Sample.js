@@ -78,8 +78,16 @@ const sampleSchema = new mongoose.Schema(
     number: { type: String, required: true, unique: true },
     requestedAt: { type: Date, default: Date.now },
 
-    customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true, index: true },
-    enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', required: true, index: true },
+    /**
+     * Both optional, because a sample is not always the child of an enquiry.
+     *
+     * A buyer walks in and asks for one before anybody raises an enquiry; a customer phones
+     * and asks directly; the plant trials a new mould or material for nobody in particular.
+     * Requiring an enquiry would mean inventing one, and an invented enquiry pollutes the
+     * funnel it was meant to describe.
+     */
+    customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', index: true },
+    enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
     /** The marketing person who needs it back. Ownership for marketing runs through here. */
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     /** The sample-team member working it. Empty until someone picks it up. */
@@ -129,12 +137,19 @@ const sampleSchema = new mongoose.Schema(
 
     /** True when this request was raised by the enquiry automation rather than by hand [§6]. */
     autoCreated: { type: Boolean, default: false },
+    /** Why one was raised with no enquiry behind it, so the register explains itself. */
+    standaloneReason: { type: String, trim: true },
   },
   { timestamps: true }
 );
 
 sampleSchema.index({ status: 1, requiredDate: 1 });
 sampleSchema.index({ number: 'text', modelNumber: 'text' });
+
+/** True for a request that is not attached to an enquiry. */
+sampleSchema.virtual('isStandalone').get(function isStandalone() {
+  return !this.enquiry;
+});
 
 sampleSchema.virtual('isOpen').get(function isOpen() {
   return !CLOSED_SAMPLE_STATUSES.includes(this.status);

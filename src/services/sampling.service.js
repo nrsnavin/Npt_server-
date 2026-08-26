@@ -51,25 +51,57 @@ export async function openSampleFor(enquiryId) {
 }
 
 /**
- * Creates the sample request. Shared by the enquiry automation and by the sample team
- * raising one directly, so both produce the same record.
+ * Creates the sample request.
+ *
+ * One function for every way a request arrives — the enquiry automation, the sample team
+ * raising one by hand, a re-sample, and a request with no enquiry behind it at all — so all
+ * four produce the same record and walk the same status cycle afterwards.
+ *
+ * With an enquiry, everything the enquiry already knows is carried over so nothing is
+ * re-keyed [§41.4]. Without one, the caller supplies it, and the deduplication that stops a
+ * re-applied status raising a second request does not apply: there is no enquiry to
+ * deduplicate on, and two walk-ins asking for the same model are two requests.
  */
-export async function createSampleForEnquiry(enquiry, overrides = {}, { autoCreated = false } = {}) {
-  const existing = await openSampleFor(enquiry._id);
-  if (existing) return { sample: existing, created: false };
+export async function createSampleRequest(
+  { enquiry = null, ...input },
+  user,
+  { autoCreated = false } = {}
+) {
+  if (enquiry) {
+    const existing = await openSampleFor(enquiry._id);
+    if (existing) return { sample: existing, created: false };
+  }
 
-  const purpose = overrides.purpose || (enquiry.isNewDevelopment ? 'new_development' : 'existing_model');
+  const inherited = enquiry ? fromEnquiry(enquiry) : {};
+  const purpose =
+    input.purpose || (enquiry?.isNewDevelopment ? 'new_development' : 'existing_model');
 
   const sample = await Sample.create({
-    ...fromEnquiry(enquiry),
-    ...overrides,
+    ...inherited,
+    ...input,
     purpose,
     number: await nextNumber('SMP'),
-    requiredDate: overrides.requiredDate || defaultRequiredDate(enquiry),
+    requiredDate: input.requiredDate || defaultRequiredDate(enquiry),
+    // Whoever asked for it. From the enquiry when there is one, otherwise whoever is asking.
+    requestedBy: input.requestedBy || inherited.requestedBy || user._id,
     autoCreated,
-    statusHistory: [{ to: 'request_received', note: autoCreated ? 'Raised by the enquiry moving to sample required' : undefined }],
+    statusHistory: [
+      {
+        to: 'request_received',
+        by: autoCreated ? undefined : user._id,
+        note: autoCreated ? 'Raised by the enquiry moving to sample required' : undefined,
+      },
+    ],
   });
 
   publish(EVENTS.SAMPLE_CREATED, { sample, enquiry, autoCreated });
   return { sample, created: true };
 }
+
+/** The enquiry automation's entry point, kept named for what it does [§6]. */
+export const createSampleForEnquiry = (enquiry, overrides = {}, options = {}) =>
+  createSampleRequest(
+    { enquiry, ...overrides },
+    { _id: enquiry.assignedTo?._id || enquiry.assignedTo },
+    options
+  );

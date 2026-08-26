@@ -24,7 +24,21 @@ const sampleCore = {
   assignedTo: objectId.optional(),
 };
 
-export const sampleSchema = z.object({ enquiry: objectId, ...sampleCore });
+/**
+ * A request raised by hand. Everything about what to make is optional when an enquiry is
+ * given, because the enquiry already holds it; without one the caller has to say what the
+ * sample is, which the controller checks — a schema cannot express "one of these two".
+ */
+export const sampleSchema = z.object({
+  enquiry: objectId.optional(),
+  customer: objectId.optional(),
+  requestedBy: objectId.optional(),
+  standaloneReason: z.string().max(300).optional(),
+  ...sampleCore,
+});
+
+/** Attaching a request to the enquiry that turns up after it. */
+export const linkEnquirySchema = z.object({ enquiry: objectId });
 
 export const sampleUpdateSchema = z.object(sampleCore).partial();
 

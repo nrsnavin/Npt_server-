@@ -41,7 +41,13 @@ export const env = {
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT || 587),
     user: process.env.SMTP_USER,
-    password: process.env.SMTP_PASSWORD,
+    /*
+     * `SMTP_PASS` is what nodemailer's own documentation calls it, so it is what people
+     * write. Reading only SMTP_PASSWORD meant a correct-looking .env produced an empty
+     * password and an EAUTH that named neither variable — accept both rather than make
+     * everyone find that out once.
+     */
+    password: process.env.SMTP_PASSWORD || process.env.SMTP_PASS,
     from: process.env.SMTP_FROM || 'NPT Hangers <no-reply@npthangers.com>',
   },
 

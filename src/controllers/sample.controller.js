@@ -3,11 +3,13 @@ import Sample, {
   SAMPLE_STATUSES, WITH_CUSTOMER_STATUSES,
 } from '../models/Sample.js';
 import Enquiry from '../models/Enquiry.js';
+import Customer from '../models/Customer.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
+import { canWrite } from '../services/access.service.js';
 import { EVENTS, publish, sampleStatusEvent } from '../services/events.service.js';
-import { createSampleForEnquiry, defaultRequiredDate } from '../services/sampling.service.js';
+import { createSampleRequest, defaultRequiredDate } from '../services/sampling.service.js';
 import { notifyCustomer, previewFor } from '../services/customerMessage.service.js';
 import CustomerMessage from '../models/CustomerMessage.js';
 import { listParams, paginated } from '../utils/query.js';
@@ -93,12 +95,39 @@ export const getSample = asyncHandler(async (req, res) => {
  * a request the sample team takes directly.
  */
 export const createSample = asyncHandler(async (req, res) => {
-  const enquiry = await Enquiry.findById(req.body.enquiry);
-  if (!enquiry) throw ApiError.badRequest('That enquiry does not exist');
-  // Raising a request against an enquiry you cannot see would put it in its owner's list.
-  if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+  const { enquiry: enquiryId, customer: customerId, ...input } = req.body;
 
-  const { sample, created } = await createSampleForEnquiry(enquiry, req.body);
+  let enquiry = null;
+  if (enquiryId) {
+    enquiry = await Enquiry.findById(enquiryId);
+    if (!enquiry) throw ApiError.badRequest('That enquiry does not exist');
+    // Raising a request against an enquiry you cannot see would put it in its owner's list.
+    if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+  }
+
+  let customer = null;
+  if (customerId) {
+    customer = await Customer.findById(customerId);
+    if (!customer) throw ApiError.badRequest('That customer does not exist');
+    if (!ownsRecord(req.user, customer)) throw ApiError.notFound('Customer not found');
+  }
+
+  /*
+   * With no enquiry to inherit from, the request has to say what to make on its own. A
+   * sample nobody can identify is a job the bench cannot start, so this is refused here
+   * rather than discovered at the bench.
+   */
+  if (!enquiry && !input.product && !input.modelNumber) {
+    throw ApiError.badRequest(
+      'Pick a model, or describe what to make, when there is no enquiry to take it from'
+    );
+  }
+
+  const { sample, created } = await createSampleRequest(
+    { enquiry, customer: customer?._id ?? undefined, ...input },
+    req.user
+  );
+
   if (!created) {
     throw ApiError.conflict(
       `${sample.number} is already open against ${enquiry.number}. Work that one, or record its outcome first.`
@@ -106,6 +135,39 @@ export const createSample = asyncHandler(async (req, res) => {
   }
 
   res.status(201).json({ success: true, data: await withRefs(sample) });
+});
+
+/**
+ * Attaches a standalone request to the enquiry that turns up after it.
+ *
+ * The walk-in who asked for a sample on Monday raises an enquiry on Thursday, and the two
+ * should be one story. Only ever set, never moved: re-pointing a sample at a different
+ * enquiry would rewrite what was made for whom.
+ */
+export const linkEnquiry = asyncHandler(async (req, res) => {
+  const sample = await Sample.findById(req.params.id);
+  if (!sample) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
+  if (sample.enquiry) throw ApiError.badRequest('This request already belongs to an enquiry');
+
+  const enquiry = await Enquiry.findById(req.body.enquiry);
+  if (!enquiry) throw ApiError.badRequest('That enquiry does not exist');
+  if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+  if (sample.customer && String(sample.customer) !== String(enquiry.customer)) {
+    throw ApiError.badRequest('That enquiry belongs to a different customer');
+  }
+
+  sample.enquiry = enquiry._id;
+  if (!sample.customer) sample.customer = enquiry.customer;
+  sample.statusHistory.push({
+    from: sample.status,
+    to: sample.status,
+    by: req.user._id,
+    note: `Attached to ${enquiry.number}`,
+  });
+  await sample.save();
+
+  res.json({ success: true, data: await withRefs(sample) });
 });
 
 export const updateSample = asyncHandler(async (req, res) => {
@@ -236,12 +298,34 @@ export const recordFeedback = asyncHandler(async (req, res) => {
 
   const { outcome, note } = req.body;
 
+  /*
+   * The rule that the maker does not mark their own work approved protects the customer's
+   * verdict. A request with no customer has none to protect — an internal trial is the
+   * bench's to judge — so the check applies only where there is somebody to have spoken to.
+   */
+  if (sample.customer && !canWrite(req.user, 'enquiries')) {
+    throw ApiError.forbidden(
+      'Recording what the customer said needs write access to enquiries — the person who spoke to them.'
+    );
+  }
+
   if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) {
     throw ApiError.badRequest(`This sample was already ${sample.status}`);
   }
-  if (!WITH_CUSTOMER_STATUSES.includes(sample.status)) {
+  /*
+   * A verdict needs the sample to have reached whoever gives it. For a customer that means
+   * dispatched; for an internal trial with no customer it means made, since the bench is
+   * looking at the thing on its own bench.
+   */
+  const ready = sample.customer
+    ? WITH_CUSTOMER_STATUSES.includes(sample.status)
+    : ['sample_ready', ...WITH_CUSTOMER_STATUSES].includes(sample.status);
+
+  if (!ready) {
     throw ApiError.badRequest(
-      'The customer cannot have an opinion on a sample that has not reached them yet'
+      sample.customer
+        ? 'The customer cannot have an opinion on a sample that has not reached them yet'
+        : 'Judge it once it has been made — move it to sample ready first'
     );
   }
 
@@ -273,10 +357,20 @@ export const resample = asyncHandler(async (req, res) => {
   }
   if (previous.supersededBy) throw ApiError.conflict('A follow-up sample already exists');
 
-  const enquiry = await Enquiry.findById(previous.enquiry);
-  if (!enquiry) throw ApiError.badRequest('The enquiry behind this sample no longer exists');
+  // A standalone request re-samples too: there is simply no enquiry to inherit from.
+  const enquiry = previous.enquiry ? await Enquiry.findById(previous.enquiry) : null;
+  if (previous.enquiry && !enquiry) {
+    throw ApiError.badRequest('The enquiry behind this sample no longer exists');
+  }
 
   const carried = {
+    customer: previous.customer,
+    product: previous.product,
+    modelNumber: previous.modelNumber,
+    category: previous.category,
+    sizeMm: previous.sizeMm,
+    material: previous.material,
+    standaloneReason: previous.standaloneReason,
     colour: previous.colour,
     printing: previous.printing,
     hookType: previous.hookType,
@@ -288,7 +382,7 @@ export const resample = asyncHandler(async (req, res) => {
     requiredDate: req.body.requiredDate || defaultRequiredDate(enquiry),
   };
 
-  const { sample, created } = await createSampleForEnquiry(enquiry, carried);
+  const { sample, created } = await createSampleRequest({ enquiry, ...carried }, req.user);
   if (!created) throw ApiError.conflict(`${sample.number} is already open against ${enquiry.number}`);
 
   previous.supersededBy = sample._id;
