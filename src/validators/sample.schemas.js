@@ -78,3 +78,12 @@ export const customerMessageSchema = z.object({
   /** Sends again despite the duplicate warning [§42.7]. */
   force: z.boolean().optional(),
 });
+
+/** A note, a photo caption, or a comment. Text is optional when a photo carries the meaning. */
+export const sampleLogSchema = z.object({
+  body: z.string().max(4000).optional(),
+});
+
+export const logCommentSchema = z.object({
+  body: z.string().min(1, 'Write something first').max(2000),
+});

@@ -101,6 +101,9 @@ Runs against an in-memory MongoDB — no local `mongod` needed.
 - `tests/customer-messages.test.js` — the automatic sends, what may and may not appear in
   them, opt-out, the duplicate rule, provider failure, and the preview-edit-send flow. Twilio
   is intercepted, so no test costs a message or touches the network.
+- `tests/sample-log.test.js` — notes, photo upload and byte-exact download, comments from a
+  read-only caller, the file-type check, deletion taking the file with it, and the ownership
+  and traversal checks on the file route.
 - `tests/workspace.test.js` and `tests/health.test.js` — the dock and the probes.
 
 ## API
@@ -138,6 +141,10 @@ applied inside the controllers because it varies by department.
 | GET/POST | `/samples` | Sample requests; `?open=`, `?overdue=`, `?unassigned=`, `?mine=`, `?enquiry=` |
 | POST | `/samples/:id/status` | Move it along the bench; dispatch demands courier, AWB and quantity |
 | PATCH | `/samples/:id/dispatch-details` | Record or correct the courier, tracking number, date and quantity |
+| GET/POST | `/samples/:id/logs` | The working record: notes and photos. POST is multipart when a photo is attached |
+| POST | `/samples/:id/logs/:logId/comments` | Comment on a note or a photo |
+| PUT | `/samples/:id/reference-photo` | The buyer's own reference, uploaded |
+| GET | `/files/:key` | A stored file, checked against the record it hangs off |
 | POST | `/samples/:id/feedback` | What the customer said — on marketing's grant, not the sample team's |
 | POST | `/samples/:id/assign` | Pick a request off the shared queue |
 | POST | `/samples/:id/resample` | The next attempt after a modification, linked to the last |
@@ -310,6 +317,29 @@ which only describes a request that runs to an answer.
 Marketing's ownership on samples runs through `requestedBy` rather than `assignedTo` — the
 sample is worked by the sample team, so scoping on who is doing the work would hide every
 sample from the person who asked for it.
+
+#### The working record
+
+Each sample carries a log of notes and photos, and either can be commented on: the bench
+posts a photo of the first shot, marketing says the shoulder looks wrong, the bench replies
+with another photo. The whole exchange sits on the sample instead of in a WhatsApp thread
+nobody else can see [§41.6 by analogy — photos and artwork stay on the record]. Separate from
+`statusHistory`, which records what the process did rather than what the people did.
+
+**Read access is enough to take part.** Marketing holds only `samples` read, and marketing is
+exactly who has to look at that photo and say what the buyer thinks. Requiring write would
+push the conversation back where it came from. Record ownership still decides which samples
+anyone can reach at all, and only an author can remove what they wrote.
+
+The sample also carries the **buyer's own reference** photo — what they handed over, as
+opposed to what the bench produced. One photo, replaced rather than accumulated.
+
+Files are stored on local disk behind `services/storage.service.js`, whose whole surface is
+`put`, `streamOf` and `remove` — moving to S3 is a change to that file and nothing else. Keys
+are random, so the store cannot be walked, and `GET /files/:key` resolves the attachment to
+the record it hangs off and checks the caller against it before sending a byte: a photo of a
+buyer's sample is exactly as confidential as the sample. Only images are accepted, up to
+12MB.
 
 ### Telling the customer [§42]
 

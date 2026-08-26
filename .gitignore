@@ -12,3 +12,4 @@ dist/
 .verify-script.mjs
 .dev-stack.mjs
 .seed-check.mjs
+uploads/

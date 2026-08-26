@@ -99,7 +99,10 @@ const sampleSchema = new mongoose.Schema(
 
     purpose: { type: String, enum: SAMPLE_PURPOSES, default: 'existing_model' },
     requiredDate: { type: Date, index: true },
+    /** A link, when the buyer sent one. Kept for what the enquiry carries over. */
     referenceImageUrl: String,
+    /** An uploaded photo — what the buyer actually handed over, or a shot of it. */
+    referencePhoto: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
     remarks: String,
 
     status: { type: String, enum: SAMPLE_STATUSES, default: 'request_received', index: true },

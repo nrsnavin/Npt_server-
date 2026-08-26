@@ -4,12 +4,17 @@ import {
   setSampleStatus, setDispatchDetails, recordFeedback, resample, samplePipeline,
   previewCustomerMessage, sendCustomerMessage, listCustomerMessages,
 } from '../controllers/sample.controller.js';
+import {
+  listSampleLogs, addSampleLog, addLogComment, removeSampleLog, removeLogComment,
+  downloadAttachment, setReferencePhoto, clearReferencePhoto,
+} from '../controllers/sampleLog.controller.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
+import { singleImage } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
 import {
   sampleSchema, sampleUpdateSchema, sampleAssignSchema,
   sampleStatusSchema, sampleFeedbackSchema, resampleSchema, customerMessageSchema,
-  dispatchDetailsSchema,
+  dispatchDetailsSchema, sampleLogSchema, logCommentSchema,
 } from '../validators/sample.schemas.js';
 
 const router = Router();
@@ -52,5 +57,23 @@ router.post(
   validate(customerMessageSchema),
   sendCustomerMessage
 );
+
+/*
+ * The working record: notes, photos and comments on either.
+ *
+ * Read access is enough to take part. Marketing holds only `samples` read, and marketing is
+ * exactly who has to look at a photo of the first shot and say the shoulder is wrong —
+ * requiring write would push that conversation back into WhatsApp, which is what this
+ * replaces. Record ownership still decides which samples anyone can reach.
+ */
+router.get('/:id/logs', requireModule('samples'), listSampleLogs);
+router.post('/:id/logs', requireModule('samples'), singleImage('photo'), validate(sampleLogSchema), addSampleLog);
+router.delete('/:id/logs/:logId', requireModule('samples'), removeSampleLog);
+router.post('/:id/logs/:logId/comments', requireModule('samples'), validate(logCommentSchema), addLogComment);
+router.delete('/:id/logs/:logId/comments/:commentId', requireModule('samples'), removeLogComment);
+
+// The buyer's own reference, as opposed to what the bench produced.
+router.put('/:id/reference-photo', requireModule('samples', 'write'), singleImage('photo'), setReferencePhoto);
+router.delete('/:id/reference-photo', requireModule('samples', 'write'), clearReferencePhoto);
 
 export default router;

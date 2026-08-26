@@ -26,6 +26,7 @@ const POPULATE = [
   { path: 'requestedBy', select: 'name' },
   { path: 'assignedTo', select: 'name' },
   { path: 'product', select: 'modelCode name' },
+  { path: 'referencePhoto', select: 'key filename mimeType size' },
 ];
 
 const LINKED = [
