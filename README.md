@@ -162,12 +162,17 @@ first WhatsApp message to payment, and completing a stage hands the next departm
 task. The lifecycle, in order:
 
 ```
-1 whatsapp → 2 enquiries → 3 samples → 4 pricing → 5 quotations
-→ 6 orders → 7 production → 8 quality → 9 dispatch → 10 payments
+1 enquiries → 2 samples → 3 pricing → 4 quotations → 5 orders
+→ 6 production → 7 quality → 8 dispatch → 9 payments
 ```
 
 Alongside it sit the masters (`customers`, `products`), communication (`customer_comms`,
-`announcements`), workspace (`tasks`, `reports`) and `users`.
+`whatsapp`), workspace (`announcements`, `tasks`, `reports`) and `users`.
+
+**`whatsapp` is deferred.** The blueprint opens the chain with it as the front door, but the
+integration is wired up last, once the modules it feeds exist. Enquiries are raised by hand
+until then. A few cheap decisions in Phase 1 keep that door open —
+see [BLUEPRINT §8](docs/BLUEPRINT.md#8-whatsapp-as-the-front-door-41--deferred).
 
 Only `announcements` and `users` are built. The rest exist in the catalogue so access is
 defined ahead of the feature — see [Build order](docs/BLUEPRINT.md#11-build-order-39).

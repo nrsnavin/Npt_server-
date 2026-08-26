@@ -29,26 +29,21 @@ const LEVEL_RANK = { read: 1, write: 2 };
 
 /**
  * `stage` places a module on the order lifecycle, in the order work actually moves.
- * Masters, workspace tools and administration sit outside that chain and carry null.
- * `blueprint` names the section of docs/BLUEPRINT.md that specifies the module.
+ * Masters, communication, workspace tools and administration sit outside that chain and
+ * carry null. `blueprint` names the section of docs/BLUEPRINT.md that specifies the module.
+ * `deferred` marks a module deliberately held back, with the reason.
+ *
+ * The blueprint opens the lifecycle with WhatsApp, but that integration is being wired up
+ * last, so the chain starts at `enquiries` and enquiries are raised by hand. Anything built
+ * on the chain must not assume a WhatsApp origin — see the source note in BLUEPRINT §8.
  */
 export const MODULES = [
-  {
-    key: 'whatsapp',
-    label: 'WhatsApp inbox',
-    description: 'The front door: incoming messages matched to customers, de-duplicated, assigned and converted to enquiries.',
-    group: 'Pipeline',
-    stage: 1,
-    ownerDepartment: 'communications',
-    blueprint: '41',
-    available: false,
-  },
   {
     key: 'enquiries',
     label: 'Leads & enquiries',
     description: 'The first customer requirement: product, quantity, target price and required date, with a next action always set.',
     group: 'Pipeline',
-    stage: 2,
+    stage: 1,
     ownerDepartment: 'marketing',
     blueprint: '3',
     available: false,
@@ -58,7 +53,7 @@ export const MODULES = [
     label: 'Sampling',
     description: 'Sample requests raised from an enquiry, through preparation, dispatch and customer approval.',
     group: 'Pipeline',
-    stage: 3,
+    stage: 2,
     ownerDepartment: 'sampling',
     blueprint: '4-6',
     available: false,
@@ -68,7 +63,7 @@ export const MODULES = [
     label: 'Pricing & costing',
     description: 'Cost build-up, calculated and approved selling price, and the approval route below the minimum price.',
     group: 'Pipeline',
-    stage: 4,
+    stage: 3,
     ownerDepartment: 'pricing',
     blueprint: '7-9',
     available: false,
@@ -78,7 +73,7 @@ export const MODULES = [
     label: 'Quotations',
     description: 'Quotations with full revision history, and the negotiation that follows them.',
     group: 'Pipeline',
-    stage: 5,
+    stage: 4,
     ownerDepartment: 'marketing',
     blueprint: '10-11',
     available: false,
@@ -88,7 +83,7 @@ export const MODULES = [
     label: 'Sales orders',
     description: 'Customer PO capture, order verification, and release to production once every check is complete.',
     group: 'Pipeline',
-    stage: 6,
+    stage: 5,
     ownerDepartment: 'order_confirmation',
     blueprint: '12-13',
     available: false,
@@ -98,7 +93,7 @@ export const MODULES = [
     label: 'Production status',
     description: 'Customer-facing production visibility: planned, produced, ready and balance quantity, with part release.',
     group: 'Pipeline',
-    stage: 7,
+    stage: 6,
     ownerDepartment: 'production',
     blueprint: '14-17',
     available: false,
@@ -108,7 +103,7 @@ export const MODULES = [
     label: 'Quality',
     description: 'In-process and final inspection, passed quantity and quality holds against a production order.',
     group: 'Pipeline',
-    stage: 8,
+    stage: 7,
     ownerDepartment: 'quality',
     blueprint: '15',
     available: false,
@@ -118,7 +113,7 @@ export const MODULES = [
     label: 'Dispatch',
     description: 'Dispatch requests raised from ready quantity, through packing, loading, invoice, LR and delivery.',
     group: 'Pipeline',
-    stage: 9,
+    stage: 8,
     ownerDepartment: 'despatch',
     blueprint: '18-19',
     available: false,
@@ -128,7 +123,7 @@ export const MODULES = [
     label: 'Payments',
     description: 'Invoice value, due date, amount received, balance and follow-up, visible to accounts and marketing.',
     group: 'Pipeline',
-    stage: 10,
+    stage: 9,
     ownerDepartment: 'accounts',
     blueprint: '20',
     available: false,
@@ -155,6 +150,22 @@ export const MODULES = [
     available: false,
   },
 
+  {
+    key: 'whatsapp',
+    label: 'WhatsApp inbox',
+    description: 'The front door: incoming messages matched to customers, de-duplicated, assigned and converted to enquiries.',
+    group: 'Communication',
+    stage: null,
+    ownerDepartment: 'communications',
+    blueprint: '41',
+    available: false,
+    /**
+     * Held back until every other module is built. It is the blueprint's front door, but
+     * it feeds the enquiry module rather than replacing it — enquiries are entered by hand
+     * until this lands, and must keep working that way afterwards.
+     */
+    deferred: 'Wired up last, once the modules it feeds exist.',
+  },
   {
     key: 'customer_comms',
     label: 'Send to customer',
@@ -368,6 +379,9 @@ export const findDepartment = (key) => DEPARTMENTS.find((department) => departme
 /** The order lifecycle, in sequence — the spine the blueprint is built around. */
 export const lifecycle = () =>
   MODULES.filter((module) => module.stage !== null).sort((a, b) => a.stage - b.stage);
+
+/** Modules deliberately held back, and why. */
+export const deferredModules = () => MODULES.filter((module) => module.deferred);
 
 /** True when `held` satisfies a requirement for `required`. */
 export const levelSatisfies = (held, required) =>

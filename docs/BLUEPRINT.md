@@ -15,9 +15,15 @@ Not a Lead → Follow-up → Close system. A **Customer Order Lifecycle CRM** th
 five departments against one record:
 
 ```
-WhatsApp → Lead/Enquiry → Sampling → Pricing → Quotation → Negotiation
-        → PO / Sales Order → Production → Quality → Dispatch → Payment → Closed
+Lead/Enquiry → Sampling → Pricing → Quotation → Negotiation
+             → PO / Sales Order → Production → Quality → Dispatch → Payment → Closed
 ```
+
+> **WhatsApp is deferred.** The blueprint opens this chain with WhatsApp as the front door
+> [§41]. That integration is being wired up **last**, once the modules it feeds exist. Until
+> then the chain starts at Enquiries and enquiries are raised by hand — which the blueprint
+> already specifies [§3], so nothing is lost. See §8 below for what to build now so the
+> integration slots in later without rework.
 
 **The governing principle [§C.1, §34]:** one department completing a stage must
 automatically create and assign the next department's task. The process must not depend on
@@ -37,19 +43,19 @@ received; **who has the next action**.
 
 | Module | Stage | Owner | Blueprint |
 | --- | --- | --- | --- |
-| `whatsapp` — WhatsApp inbox | 1 | Communications | §41 |
-| `enquiries` — Leads & enquiries | 2 | Marketing | §3 |
-| `samples` — Sampling | 3 | Sample team | §4–6 |
-| `pricing` — Pricing & costing | 4 | Pricing | §7–9 |
-| `quotations` — Quotations & negotiation | 5 | Marketing | §10–11 |
-| `orders` — Sales orders | 6 | Order confirmation | §12–13 |
-| `production` — Production status | 7 | Production | §14–17 |
-| `quality` — Quality | 8 | Quality | §15 |
-| `dispatch` — Dispatch | 9 | Despatch | §18–19 |
-| `payments` — Payments | 10 | Accounts | §20 |
+| `enquiries` — Leads & enquiries | 1 | Marketing | §3 |
+| `samples` — Sampling | 2 | Sample team | §4–6 |
+| `pricing` — Pricing & costing | 3 | Pricing | §7–9 |
+| `quotations` — Quotations & negotiation | 4 | Marketing | §10–11 |
+| `orders` — Sales orders | 5 | Order confirmation | §12–13 |
+| `production` — Production status | 6 | Production | §14–17 |
+| `quality` — Quality | 7 | Quality | §15 |
+| `dispatch` — Dispatch | 8 | Despatch | §18–19 |
+| `payments` — Payments | 9 | Accounts | §20 |
 | `customers` — Customer master | — | Marketing | §2 |
 | `products` — Product master | — | Sample team | §28 |
 | `customer_comms` — Send to customer | — | Marketing | §42 |
+| `whatsapp` — WhatsApp inbox | **deferred** | Communications | §41 |
 | `announcements` — Announcements | — | Communications | §26 |
 | `tasks` — Tasks & follow-ups | — | Marketing | §35 |
 | `reports` — Reports & dashboards | — | Management | §21–24, §37–38 |
@@ -217,7 +223,34 @@ another in-module ownership rule, not a module grant.
 
 ---
 
-## 8. WhatsApp as the front door [§41]
+## 8. WhatsApp as the front door [§41] — deferred
+
+**Not being built yet.** It is wired up last, after every other module exists. This section
+stays here as the specification for that work, plus what to do *now* so it slots in cleanly.
+
+### What to build now so this lands without rework
+
+The blueprint requires a qualified WhatsApp lead to convert into an enquiry **without
+re-entering core data** [§41.4]. That only works if the enquiry module is built with the
+right shape from the start:
+
+- **`source` on every enquiry and customer** — `manual`, `whatsapp`, `phone`, `email`,
+  `referral`, `trade_show`. Add it in Phase 1 with `manual` as the default. Retrofitting an
+  origin field across live enquiries later is a migration nobody wants.
+- **An optional conversation reference** on the enquiry, left null until the integration
+  exists. §41.6 requires conversation history to stay linked to the lead, contact, customer
+  and enquiry.
+- **Attachments from day one** [§27] — the integration attaches product photos and artwork
+  received over WhatsApp to the same record, so the attachment model must already exist.
+- **Contact lookup by mobile number** on the customer master. §41.2 makes de-duplication
+  mandatory, and it is a number search against existing contacts. Index `phone` and
+  `whatsapp` on the customer record now.
+- **Round-robin assignment** [§41.3] is a marketing-team rule, not a WhatsApp rule. Build it
+  with the enquiry module; WhatsApp then reuses it.
+
+Nothing above requires the integration itself, and each item is cheap now and expensive later.
+
+### The specification, for when it is built
 
 ```
 WhatsApp enquiry → CRM lead → marketing assignment → qualification → enquiry
@@ -315,8 +348,15 @@ Build and stabilise each phase — do not build everything at once.
 | 3 | Pricing & quoting | `pricing`, `quotations`, negotiation, approval route |
 | 4 | Order coordination | `orders`, `production`, `quality` |
 | 5 | Dispatch & payment | `dispatch` incl. part dispatch, `payments` |
-| 6 | Automation & dashboards | escalations, notifications, `reports` |
-| 7 | WhatsApp & customer comms | `whatsapp` front door, `customer_comms` |
+| 6 | Automation & dashboards | escalations, notifications, `tasks`, `reports` |
+| 7 | Customer communication | `customer_comms` — email channel first |
+| 8 | WhatsApp | `whatsapp` front door, and WhatsApp as a `customer_comms` channel |
+
+**Phase 8 is deliberately last.** WhatsApp is an external integration with its own
+credentials, approvals and failure modes; wiring it before the modules it feeds exist would
+mean building against moving targets. `customer_comms` can ship in Phase 7 over email alone —
+§42's send control, preview, edit, audit trail and duplicate warning are all channel-agnostic
+— and gain WhatsApp as a second channel in Phase 8.
 
 > The source blueprint recommends Zoho CRM plus custom modules. We are building this
 > directly instead, so the platform advice in §33 and Part D does not apply — the module map,

@@ -287,7 +287,17 @@ test('the catalogue exposes modules and department templates', async () => {
     .filter((module) => module.stage !== null)
     .map((module) => module.stage)
     .sort((a, b) => a - b);
-  assert.deepEqual(stages, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.deepEqual(stages, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+  // WhatsApp is held back, so it must carry a reason and sit off the lifecycle.
+  const whatsapp = json.data.modules.find((module) => module.key === 'whatsapp');
+  assert.equal(whatsapp.stage, null);
+  assert.ok(whatsapp.deferred, 'a deferred module states why');
+  assert.equal(whatsapp.available, false);
+
+  // Enquiries heads the chain now that the front door is deferred.
+  const head = json.data.modules.find((module) => module.stage === 1);
+  assert.equal(head.key, 'enquiries');
 });
 
 test('a member cannot reach user administration at all', async () => {
