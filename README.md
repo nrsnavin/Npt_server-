@@ -446,6 +446,17 @@ Redeeming a code marks that email or phone verified, since it proves control of 
 
 ### Delivery providers
 
+Both are checked at startup, not at first use. A half-filled block — a host with a user but
+no password, say — is refused by name, because the error it otherwise produces
+(`Missing credentials for PLAIN`, `EAUTH`) names neither the variable nor the fix, and only
+appears when somebody tries to sign in.
+
+For **Gmail**, `SMTP_PASSWORD` must be a 16-character App Password from the Google account's
+security settings, not the account password; 2-Step Verification has to be on before that
+option appears. Outside production, a mail server that refuses us logs the reason and falls
+back to printing the code, so a wrong app password cannot lock you out of your own
+development environment.
+
 Email uses SMTP through nodemailer (`SMTP_HOST` and friends). **SMS uses Twilio.**
 
 With neither configured in development, codes are printed to the API console instead — and

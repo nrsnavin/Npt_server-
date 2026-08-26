@@ -1,4 +1,5 @@
 import { env, isProduction } from '../config/env.js';
+import ApiError from '../utils/ApiError.js';
 import { isConfigured as twilioConfigured, sendSms as twilioSendSms } from '../providers/twilio.js';
 
 /**
@@ -9,6 +10,34 @@ import { isConfigured as twilioConfigured, sendSms as twilioSendSms } from '../p
  * in development without SMTP or Twilio credentials. In production a missing provider is an
  * error rather than a silent no-op.
  */
+
+/**
+ * Explains a half-filled SMTP block, so it fails at startup rather than on the first sign-in.
+ *
+ * The failure this catches is specific and unhelpful when it happens live: a host with a user
+ * but no password builds a transport happily, then nodemailer attempts PLAIN auth with
+ * nothing to send and the server answers `Missing credentials for PLAIN`. Twilio has had this
+ * check since it was wired up; SMTP was missing it.
+ *
+ * Takes the block to check so it can be exercised directly. Reading `env` alone would make
+ * every case need its own module instance, and a check that awkward to test is one nobody
+ * trusts enough to extend.
+ */
+export function configurationProblem(smtp = env.smtp) {
+  const { host, user, password } = smtp;
+  // Nothing set at all is a valid choice: codes go to the console.
+  if (!host && !user && !password) return null;
+
+  const missing = [];
+  if (!host) missing.push('SMTP_HOST');
+  if (user && !password) missing.push('SMTP_PASSWORD');
+  if (password && !user) missing.push('SMTP_USER');
+
+  return missing.length
+    ? `SMTP is partially configured — missing ${missing.join(', ')}. ` +
+      'Set it, or clear SMTP_HOST to print codes to the console instead.'
+    : null;
+}
 
 let transporterPromise = null;
 
@@ -54,9 +83,43 @@ export async function sendEmail({ to, subject, text, html }) {
     return { delivered: false, channel: 'email' };
   }
 
-  const info = await transporter.sendMail({ from: env.smtp.from, to, subject, text, html });
-  // The message id is what makes a delivery traceable in the mail server's own logs.
-  return { delivered: true, channel: 'email', messageId: info?.messageId };
+  try {
+    const info = await transporter.sendMail({ from: env.smtp.from, to, subject, text, html });
+    // The message id is what makes a delivery traceable in the mail server's own logs.
+    return { delivered: true, channel: 'email', messageId: info?.messageId };
+  } catch (error) {
+    return handleSendFailure(error, to, `${subject}\n${text}`);
+  }
+}
+
+/** Mail-server refusals worth naming, because each has a different fix. */
+const SMTP_HINTS = {
+  EAUTH:
+    'the mail server rejected the credentials — check SMTP_USER and SMTP_PASSWORD. ' +
+    'Gmail needs an app password, not the account password.',
+  ECONNECTION: 'the mail server could not be reached — check SMTP_HOST and SMTP_PORT.',
+  ETIMEDOUT: 'the mail server did not answer — check SMTP_HOST, SMTP_PORT and any firewall.',
+  ESOCKET: 'the connection to the mail server failed — check SMTP_PORT and whether it needs TLS.',
+};
+
+/**
+ * A mail server that refuses us is our problem, not the user's.
+ *
+ * The operator gets the real cause named, with what to change. Outside production the message
+ * still goes to the console, because being unable to sign in to your own development
+ * environment over a wrong app password helps nobody — and the warning above it is loud.
+ */
+function handleSendFailure(error, to, body) {
+  const hint = SMTP_HINTS[error.code] || error.message;
+  console.error(`[email] send to ${to} failed: ${hint}`);
+
+  if (isProduction) {
+    throw new ApiError(502, 'We could not send that email right now. Please try again shortly.');
+  }
+
+  console.warn('[email] falling back to the console because delivery failed');
+  logFallback('email', to, body);
+  return { delivered: false, channel: 'email', fallback: true };
 }
 
 export async function sendSms({ to, body }) {

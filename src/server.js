@@ -2,6 +2,7 @@ import app from './app.js';
 import { env, isProduction } from './config/env.js';
 import { connectDatabase } from './config/db.js';
 import { configurationProblem, isConfigured } from './providers/twilio.js';
+import { configurationProblem as smtpConfigurationProblem } from './services/notification.service.js';
 
 /** Reports how one-time codes will actually reach people on this deployment. */
 function checkOtpDelivery() {
@@ -19,11 +20,19 @@ function checkOtpDelivery() {
     console.warn('SMS delivery: not configured — codes will be printed to this console');
   }
 
+  // A half-filled SMTP block is the one that hurts: it boots, then fails on the first
+  // sign-in with an error naming neither the variable nor the fix.
+  const smtpProblem = smtpConfigurationProblem();
+  if (smtpProblem) throw new Error(smtpProblem);
+
   if (!env.smtp.host) {
     if (isProduction) throw new Error('No email provider configured. Set the SMTP_* variables.');
     console.warn('Email delivery: not configured — codes will be printed to this console');
   } else {
-    console.log(`Email delivery: SMTP via ${env.smtp.host}`);
+    console.log(
+      `Email delivery: SMTP via ${env.smtp.host}:${env.smtp.port}` +
+        (env.smtp.user ? ` as ${env.smtp.user}` : ' without authentication')
+    );
   }
 }
 
