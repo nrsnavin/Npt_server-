@@ -6,9 +6,12 @@ and the feature catalogue that says what their role may use.
 
 Node.js + Express + MongoDB (Mongoose), JWT auth with role-based access.
 
-> The CRM and ERP modules (leads, customers, quotations, orders, production, inventory,
-> purchasing, invoicing) were removed to reduce the app to this foundation. They remain in
-> the git history if any of it is worth recovering.
+> **Building against a blueprint.** [`docs/BLUEPRINT.md`](docs/BLUEPRINT.md) is the
+> implementation guide, distilled from the Navin Plastic Tech CRM blueprint: module map,
+> field dictionary, status matrices, automation and escalation rules, the WhatsApp front
+> door, send-to-customer control, dashboards and the phase order to build in. The module
+> catalogue in `src/config/modules.js` mirrors it, and every module carries the blueprint
+> section that specifies it. Read it before building any module.
 
 ## Getting started
 
@@ -152,22 +155,48 @@ readinessProbe:
   httpGet: { path: /health/ready, port: 5000 }
 ```
 
+## Modules
+
+The app is a **Customer Order Lifecycle CRM**: one master record carries an order from the
+first WhatsApp message to payment, and completing a stage hands the next department its
+task. The lifecycle, in order:
+
+```
+1 whatsapp → 2 enquiries → 3 samples → 4 pricing → 5 quotations
+→ 6 orders → 7 production → 8 quality → 9 dispatch → 10 payments
+```
+
+Alongside it sit the masters (`customers`, `products`), communication (`customer_comms`,
+`announcements`), workspace (`tasks`, `reports`) and `users`.
+
+Only `announcements` and `users` are built. The rest exist in the catalogue so access is
+defined ahead of the feature — see [Build order](docs/BLUEPRINT.md#11-build-order-39).
+
 ## Roles, departments and feature access
 
 **Roles** govern access: `admin` (full), `sales`, `production`, `inventory`, `accounts`,
 `viewer` (read only). The first account registered on an empty database becomes `admin`.
 
-**Departments** are organisational, not permissions: `management`, `sales`, `production`,
-`stores`, `accounts`, `quality`, `maintenance`, `hr`, `other`. A user can set their own.
+**Departments** are organisational, not permissions: `marketing`, `sampling`, `pricing`,
+`order_confirmation`, `production`, `quality`, `despatch`, `accounts`, `communications`,
+`management`. Each carries a default grant set — write on what the team owns, read on what
+it must see — applied when an admin creates someone in it.
 
-**Feature access** is declared in `src/config/features.js` — one entry per module with the
-roles allowed to use it. `GET /auth/me` returns the whole catalogue annotated with
-`allowed` for the caller's role, which is what the profile screen renders.
+**Module access** is declared in `src/config/modules.js` — one entry per module, granted per
+user at `read` or `write`. `GET /auth/me` returns the catalogue annotated for the caller,
+which is what the profile screen renders and what the client gates navigation on.
 
-Entries marked `available: false` are modules that are planned but not built yet; their
-access is already defined, so the moment one ships the right people have it. When you add a
-feature, register it here **and** guard its routes with `authorize(...roles)`, so what a user
-is told they can do always matches what the API actually permits.
+When you build a module, guard its routes with `requireModule(key, level)` — it is the only
+thing between a grant and the data, and it is the same resolver the profile reports from.
+
+Two rules the module level **cannot** express, and which each module must enforce itself:
+
+- **Pricing field visibility** — marketing sees quoted price, MOQ, validity and terms, never
+  the cost build-up, margin or minimum price.
+- **Outbound customer messages** — operational departments update internal status only;
+  contacting the customer stays with the assigned marketing person.
+
+Both are set out in [BLUEPRINT §7](docs/BLUEPRINT.md#7-permissions-29).
 
 ## Authentication
 

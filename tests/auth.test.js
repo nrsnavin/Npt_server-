@@ -295,7 +295,7 @@ test('a member sees only the modules granted to them', async () => {
     role: 'member',
     department: 'despatch',
     moduleAccess: [
-      { module: 'despatch', level: 'write' },
+      { module: 'dispatch', level: 'write' },
       { module: 'orders', level: 'read' },
     ],
   });
@@ -307,10 +307,10 @@ test('a member sees only the modules granted to them', async () => {
   const { json } = await api('/api/auth/me', { token: session.data.token });
 
   const byKey = Object.fromEntries(json.data.modules.map((m) => [m.key, m]));
-  assert.equal(byKey.despatch.canWrite, true);
+  assert.equal(byKey.dispatch.canWrite, true);
   assert.equal(byKey.orders.canRead, true);
   assert.equal(byKey.orders.canWrite, false);
-  assert.equal(byKey.accounts.canRead, false);
+  assert.equal(byKey.payments.canRead, false);
 });
 
 test('a user may change their own name and phone but not their department', async () => {

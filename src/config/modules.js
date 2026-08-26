@@ -1,6 +1,12 @@
 /**
  * Modules, departments and the access model.
  *
+ * The catalogue follows the Navin Plastic Tech CRM blueprint (docs/BLUEPRINT.md), which
+ * describes a Customer Order Lifecycle CRM rather than a sales CRM: one master record
+ * carries an order from the first WhatsApp message through sampling, pricing, quotation,
+ * PO, production, quality, dispatch and payment, and completing a stage hands the next
+ * department its task automatically.
+ *
  * Access is granted per user, per module, at one of two levels. A user may use a module
  * only if they hold a grant for it; the level decides whether they may change anything.
  * Admins bypass grants entirely.
@@ -10,6 +16,10 @@
  * the admin can then adjust. What is stored on the user is always the explicit grant,
  * never the department, so access stays auditable and a department change never silently
  * alters what somebody can already do.
+ *
+ * Nothing here is built yet apart from announcements and user administration. The entries
+ * exist so access is defined ahead of the feature, and so the blueprint's module map has
+ * one home in the code.
  */
 
 /** Ordered weakest to strongest; `write` implies `read`. */
@@ -18,109 +28,174 @@ export const ACCESS_LEVELS = ['read', 'write'];
 const LEVEL_RANK = { read: 1, write: 2 };
 
 /**
- * The business workflow, in the order work moves through the factory.
- * `stage` positions a module on that chain; masters and administration sit outside it.
+ * `stage` places a module on the order lifecycle, in the order work actually moves.
+ * Masters, workspace tools and administration sit outside that chain and carry null.
+ * `blueprint` names the section of docs/BLUEPRINT.md that specifies the module.
  */
 export const MODULES = [
   {
-    key: 'samples',
-    label: 'Samples',
-    description: 'Sample requests, development and buyer approval.',
-    group: 'Pre-sales',
+    key: 'whatsapp',
+    label: 'WhatsApp inbox',
+    description: 'The front door: incoming messages matched to customers, de-duplicated, assigned and converted to enquiries.',
+    group: 'Pipeline',
     stage: 1,
+    ownerDepartment: 'communications',
+    blueprint: '41',
+    available: false,
+  },
+  {
+    key: 'enquiries',
+    label: 'Leads & enquiries',
+    description: 'The first customer requirement: product, quantity, target price and required date, with a next action always set.',
+    group: 'Pipeline',
+    stage: 2,
+    ownerDepartment: 'marketing',
+    blueprint: '3',
+    available: false,
+  },
+  {
+    key: 'samples',
+    label: 'Sampling',
+    description: 'Sample requests raised from an enquiry, through preparation, dispatch and customer approval.',
+    group: 'Pipeline',
+    stage: 3,
     ownerDepartment: 'sampling',
+    blueprint: '4-6',
+    available: false,
+  },
+  {
+    key: 'pricing',
+    label: 'Pricing & costing',
+    description: 'Cost build-up, calculated and approved selling price, and the approval route below the minimum price.',
+    group: 'Pipeline',
+    stage: 4,
+    ownerDepartment: 'pricing',
+    blueprint: '7-9',
+    available: false,
+  },
+  {
+    key: 'quotations',
+    label: 'Quotations',
+    description: 'Quotations with full revision history, and the negotiation that follows them.',
+    group: 'Pipeline',
+    stage: 5,
+    ownerDepartment: 'marketing',
+    blueprint: '10-11',
     available: false,
   },
   {
     key: 'orders',
-    label: 'Orders',
-    description: 'Order confirmation, sales orders and delivery schedules.',
-    group: 'Sales',
-    stage: 2,
+    label: 'Sales orders',
+    description: 'Customer PO capture, order verification, and release to production once every check is complete.',
+    group: 'Pipeline',
+    stage: 6,
     ownerDepartment: 'order_confirmation',
+    blueprint: '12-13',
     available: false,
   },
   {
     key: 'production',
-    label: 'Production',
-    description: 'Production planning, shop floor issue and output.',
-    group: 'Plant',
-    stage: 3,
+    label: 'Production status',
+    description: 'Customer-facing production visibility: planned, produced, ready and balance quantity, with part release.',
+    group: 'Pipeline',
+    stage: 7,
     ownerDepartment: 'production',
+    blueprint: '14-17',
     available: false,
   },
   {
     key: 'quality',
     label: 'Quality',
-    description: 'In-process checks, final inspection and rejections.',
-    group: 'Plant',
-    stage: 4,
+    description: 'In-process and final inspection, passed quantity and quality holds against a production order.',
+    group: 'Pipeline',
+    stage: 8,
     ownerDepartment: 'quality',
+    blueprint: '15',
     available: false,
   },
   {
-    key: 'despatch',
-    label: 'Despatch',
-    description: 'Packing, dispatch documents and delivery tracking.',
-    group: 'Fulfilment',
-    stage: 5,
+    key: 'dispatch',
+    label: 'Dispatch',
+    description: 'Dispatch requests raised from ready quantity, through packing, loading, invoice, LR and delivery.',
+    group: 'Pipeline',
+    stage: 9,
     ownerDepartment: 'despatch',
+    blueprint: '18-19',
     available: false,
   },
   {
-    key: 'accounts',
-    label: 'Accounts',
-    description: 'Invoices, payments and receivables.',
-    group: 'Finance',
-    stage: 6,
+    key: 'payments',
+    label: 'Payments',
+    description: 'Invoice value, due date, amount received, balance and follow-up, visible to accounts and marketing.',
+    group: 'Pipeline',
+    stage: 10,
     ownerDepartment: 'accounts',
+    blueprint: '20',
     available: false,
   },
-  {
-    key: 'communications',
-    label: 'Communications',
-    description: 'Buyer correspondence, notices and follow-ups.',
-    group: 'Sales',
-    stage: null,
-    ownerDepartment: 'communications',
-    available: false,
-  },
+
   {
     key: 'customers',
     label: 'Customers',
-    description: 'Customer master, contacts and payment terms.',
+    description: 'One master record per customer, with the full timeline of enquiries, samples, orders, dispatch and payments.',
     group: 'Masters',
     stage: null,
-    ownerDepartment: 'order_confirmation',
+    ownerDepartment: 'marketing',
+    blueprint: '2',
     available: false,
   },
   {
-    key: 'catalogue',
-    label: 'Hanger catalogue',
-    description: 'Hanger SKUs, specifications and price list.',
+    key: 'products',
+    label: 'Product master',
+    description: 'Model code, size, material, weight, colours, mould availability, standard price, MOQ and packing.',
     group: 'Masters',
     stage: null,
     ownerDepartment: 'sampling',
+    blueprint: '28',
     available: false,
   },
+
   {
-    key: 'inventory',
-    label: 'Inventory',
-    description: 'Raw material and finished goods stock.',
-    group: 'Plant',
+    key: 'customer_comms',
+    label: 'Send to customer',
+    description: 'Controlled outbound updates over WhatsApp or email, with preview, edit and a full audit trail.',
+    group: 'Communication',
     stage: null,
-    ownerDepartment: 'production',
+    ownerDepartment: 'marketing',
+    blueprint: '42',
     available: false,
   },
   {
     key: 'announcements',
     label: 'Announcements',
-    description: 'Notices published to the whole plant or to chosen teams.',
+    description: 'Internal notices published to the whole plant or to chosen teams.',
     group: 'Workspace',
     stage: null,
     ownerDepartment: 'communications',
+    blueprint: '26',
     available: true,
   },
+  {
+    key: 'tasks',
+    label: 'Tasks & follow-ups',
+    description: 'Departmental tasks created automatically as stages complete, plus the next-action discipline on every open record.',
+    group: 'Workspace',
+    stage: null,
+    ownerDepartment: 'marketing',
+    blueprint: '35',
+    available: false,
+  },
+  {
+    key: 'reports',
+    label: 'Reports & dashboards',
+    description: 'Marketing, department and MD exception dashboards, conversion rates and the weekly review.',
+    group: 'Workspace',
+    stage: null,
+    ownerDepartment: 'management',
+    blueprint: '21-24, 37-38',
+    available: false,
+  },
+
   {
     key: 'users',
     label: 'User administration',
@@ -128,6 +203,7 @@ export const MODULES = [
     group: 'Administration',
     stage: null,
     ownerDepartment: 'management',
+    blueprint: '29',
     available: true,
   },
 ];
@@ -135,16 +211,60 @@ export const MODULES = [
 export const MODULE_KEYS = MODULES.map((module) => module.key);
 
 /**
- * Defaults describe the access a department normally needs: write on what it owns,
- * read on what it must see to do its job.
+ * Defaults follow the blueprint's permission section: write on what a department owns,
+ * read on what it must see to do its job without telephoning another department.
+ *
+ * Two limits are worth knowing. Pricing is granted to marketing as read, but the
+ * blueprint also restricts *which fields* they see — marketing gets quoted price, MOQ,
+ * validity and terms, never the cost build-up or margin. And `customer_comms` write is
+ * deliberately narrow: operational departments update internal status only, and outbound
+ * customer messages stay with marketing and management. Neither is expressible as a
+ * module level, so both must be enforced inside those modules when they are built.
  */
 export const DEPARTMENTS = [
+  {
+    key: 'marketing',
+    label: 'Marketing',
+    defaultAccess: {
+      enquiries: 'write',
+      quotations: 'write',
+      customers: 'write',
+      customer_comms: 'write',
+      tasks: 'write',
+      whatsapp: 'read',
+      samples: 'read',
+      pricing: 'read',
+      orders: 'read',
+      production: 'read',
+      quality: 'read',
+      dispatch: 'read',
+      payments: 'read',
+      products: 'read',
+      reports: 'read',
+      announcements: 'read',
+    },
+  },
   {
     key: 'sampling',
     label: 'Sample team',
     defaultAccess: {
       samples: 'write',
-      catalogue: 'write',
+      products: 'write',
+      tasks: 'write',
+      enquiries: 'read',
+      customers: 'read',
+      announcements: 'read',
+    },
+  },
+  {
+    key: 'pricing',
+    label: 'Pricing & costing',
+    defaultAccess: {
+      pricing: 'write',
+      tasks: 'write',
+      enquiries: 'read',
+      quotations: 'read',
+      products: 'read',
       customers: 'read',
       orders: 'read',
       announcements: 'read',
@@ -156,10 +276,14 @@ export const DEPARTMENTS = [
     defaultAccess: {
       orders: 'write',
       customers: 'write',
+      tasks: 'write',
+      enquiries: 'read',
+      quotations: 'read',
       samples: 'read',
-      catalogue: 'read',
+      pricing: 'read',
       production: 'read',
-      despatch: 'read',
+      dispatch: 'read',
+      products: 'read',
       announcements: 'read',
     },
   },
@@ -168,11 +292,11 @@ export const DEPARTMENTS = [
     label: 'Production department',
     defaultAccess: {
       production: 'write',
-      inventory: 'write',
+      tasks: 'write',
       orders: 'read',
       quality: 'read',
-      catalogue: 'read',
       samples: 'read',
+      products: 'read',
       announcements: 'read',
     },
   },
@@ -181,10 +305,11 @@ export const DEPARTMENTS = [
     label: 'Quality team',
     defaultAccess: {
       quality: 'write',
+      tasks: 'write',
       production: 'read',
       orders: 'read',
-      despatch: 'read',
-      catalogue: 'read',
+      samples: 'read',
+      products: 'read',
       announcements: 'read',
     },
   },
@@ -192,9 +317,10 @@ export const DEPARTMENTS = [
     key: 'despatch',
     label: 'Despatch team',
     defaultAccess: {
-      despatch: 'write',
-      inventory: 'read',
+      dispatch: 'write',
+      tasks: 'write',
       orders: 'read',
+      production: 'read',
       quality: 'read',
       customers: 'read',
       announcements: 'read',
@@ -204,10 +330,11 @@ export const DEPARTMENTS = [
     key: 'accounts',
     label: 'Accounts department',
     defaultAccess: {
-      accounts: 'write',
+      payments: 'write',
+      tasks: 'write',
       orders: 'read',
       customers: 'read',
-      despatch: 'read',
+      dispatch: 'read',
       announcements: 'read',
     },
   },
@@ -215,12 +342,15 @@ export const DEPARTMENTS = [
     key: 'communications',
     label: 'Communications team',
     defaultAccess: {
-      communications: 'write',
+      whatsapp: 'write',
+      customer_comms: 'write',
       customers: 'write',
-      orders: 'read',
-      samples: 'read',
-      despatch: 'read',
       announcements: 'write',
+      tasks: 'write',
+      enquiries: 'read',
+      samples: 'read',
+      orders: 'read',
+      dispatch: 'read',
     },
   },
   {
@@ -234,6 +364,10 @@ export const DEPARTMENT_KEYS = DEPARTMENTS.map((department) => department.key);
 
 export const findModule = (key) => MODULES.find((module) => module.key === key);
 export const findDepartment = (key) => DEPARTMENTS.find((department) => department.key === key);
+
+/** The order lifecycle, in sequence — the spine the blueprint is built around. */
+export const lifecycle = () =>
+  MODULES.filter((module) => module.stage !== null).sort((a, b) => a.stage - b.stage);
 
 /** True when `held` satisfies a requirement for `required`. */
 export const levelSatisfies = (held, required) =>

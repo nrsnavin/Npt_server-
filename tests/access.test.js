@@ -102,7 +102,7 @@ test('creating a user applies the department template', async () => {
   const byKey = Object.fromEntries(json.data.modules.map((m) => [m.key, m]));
   assert.equal(byKey.quality.level, 'write');
   assert.equal(byKey.production.level, 'read');
-  assert.equal(byKey.accounts.level, null);
+  assert.equal(byKey.payments.level, null);
 });
 
 test('read access allows reading and refuses writing', async () => {
@@ -157,7 +157,7 @@ test('access can be replaced wholesale', async () => {
     body: {
       moduleAccess: [
         { module: 'orders', level: 'write' },
-        { module: 'despatch', level: 'read' },
+        { module: 'dispatch', level: 'read' },
       ],
     },
   });
@@ -165,7 +165,7 @@ test('access can be replaced wholesale', async () => {
   assert.equal(status, 200);
   assert.deepEqual(json.data.moduleAccess, [
     { module: 'orders', level: 'write' },
-    { module: 'despatch', level: 'read' },
+    { module: 'dispatch', level: 'read' },
   ]);
 
   // The previous quality grant is gone, because the request is the complete state.
@@ -276,11 +276,18 @@ test('the catalogue exposes modules and department templates', async () => {
   const { status, json } = await api('/api/users/catalogue', { token: adminToken });
 
   assert.equal(status, 200);
-  assert.ok(json.data.modules.some((module) => module.key === 'despatch'));
-  assert.equal(json.data.departments.length, 8);
+  assert.ok(json.data.modules.some((module) => module.key === 'dispatch'));
+  assert.equal(json.data.departments.length, 10);
 
   const sampling = json.data.departments.find((d) => d.key === 'sampling');
   assert.ok(sampling.defaultAccess.some((g) => g.module === 'samples' && g.level === 'write'));
+
+  // The order lifecycle must be a complete, gapless sequence from 1.
+  const stages = json.data.modules
+    .filter((module) => module.stage !== null)
+    .map((module) => module.stage)
+    .sort((a, b) => a - b);
+  assert.deepEqual(stages, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 });
 
 test('a member cannot reach user administration at all', async () => {

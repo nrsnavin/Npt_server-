@@ -21,15 +21,18 @@ const days = (offset, hour = 17) => {
   return date;
 };
 
+/** One account per department, so every default grant set can be exercised. */
 const PEOPLE = [
   { name: 'Navin R', email: 'admin@npthangers.com', password: 'Admin@12345', role: 'admin', department: 'management', phone: '9876500001' },
-  { name: 'Meera Sampling', email: 'sampling@npthangers.com', password: 'Sample@1234', department: 'sampling', phone: '9876500002' },
-  { name: 'Priya Orders', email: 'orders@npthangers.com', password: 'Orders@1234', department: 'order_confirmation', phone: '9876500003' },
-  { name: 'Ramesh Plant', email: 'production@npthangers.com', password: 'Prod@123456', department: 'production', phone: '9876500004' },
-  { name: 'Sunil Quality', email: 'quality@npthangers.com', password: 'Qual@123456', department: 'quality', phone: '9876500005' },
-  { name: 'Anita Despatch', email: 'despatch@npthangers.com', password: 'Desp@123456', department: 'despatch', phone: '9876500006' },
-  { name: 'Kiran Accounts', email: 'accounts@npthangers.com', password: 'Accts@12345', department: 'accounts', phone: '9876500007' },
-  { name: 'Divya Comms', email: 'comms@npthangers.com', password: 'Comms@12345', department: 'communications', phone: '9876500008' },
+  { name: 'Nandhini S', email: 'marketing@npthangers.com', password: 'Mktg@123456', department: 'marketing', phone: '9876500002' },
+  { name: 'Meera Sampling', email: 'sampling@npthangers.com', password: 'Sample@1234', department: 'sampling', phone: '9876500003' },
+  { name: 'Vinoth Costing', email: 'pricing@npthangers.com', password: 'Price@12345', department: 'pricing', phone: '9876500004' },
+  { name: 'Priya Orders', email: 'orders@npthangers.com', password: 'Orders@1234', department: 'order_confirmation', phone: '9876500005' },
+  { name: 'Ramesh Plant', email: 'production@npthangers.com', password: 'Prod@123456', department: 'production', phone: '9876500006' },
+  { name: 'Sunil Quality', email: 'quality@npthangers.com', password: 'Qual@123456', department: 'quality', phone: '9876500007' },
+  { name: 'Anita Despatch', email: 'despatch@npthangers.com', password: 'Desp@123456', department: 'despatch', phone: '9876500008' },
+  { name: 'Kiran Accounts', email: 'accounts@npthangers.com', password: 'Accts@12345', department: 'accounts', phone: '9876500009' },
+  { name: 'Divya Comms', email: 'comms@npthangers.com', password: 'Comms@12345', department: 'communications', phone: '9876500010' },
 ];
 
 async function seed() {
