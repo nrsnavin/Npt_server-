@@ -113,6 +113,15 @@ export const MODULES = [
     available: false,
   },
   {
+    key: 'announcements',
+    label: 'Announcements',
+    description: 'Notices published to the whole plant or to chosen teams.',
+    group: 'Workspace',
+    stage: null,
+    ownerDepartment: 'communications',
+    available: true,
+  },
+  {
     key: 'users',
     label: 'User administration',
     description: 'Create accounts, allocate departments and grant module access.',
@@ -133,7 +142,13 @@ export const DEPARTMENTS = [
   {
     key: 'sampling',
     label: 'Sample team',
-    defaultAccess: { samples: 'write', catalogue: 'write', customers: 'read', orders: 'read' },
+    defaultAccess: {
+      samples: 'write',
+      catalogue: 'write',
+      customers: 'read',
+      orders: 'read',
+      announcements: 'read',
+    },
   },
   {
     key: 'order_confirmation',
@@ -145,6 +160,7 @@ export const DEPARTMENTS = [
       catalogue: 'read',
       production: 'read',
       despatch: 'read',
+      announcements: 'read',
     },
   },
   {
@@ -157,6 +173,7 @@ export const DEPARTMENTS = [
       quality: 'read',
       catalogue: 'read',
       samples: 'read',
+      announcements: 'read',
     },
   },
   {
@@ -168,6 +185,7 @@ export const DEPARTMENTS = [
       orders: 'read',
       despatch: 'read',
       catalogue: 'read',
+      announcements: 'read',
     },
   },
   {
@@ -179,12 +197,19 @@ export const DEPARTMENTS = [
       orders: 'read',
       quality: 'read',
       customers: 'read',
+      announcements: 'read',
     },
   },
   {
     key: 'accounts',
     label: 'Accounts department',
-    defaultAccess: { accounts: 'write', orders: 'read', customers: 'read', despatch: 'read' },
+    defaultAccess: {
+      accounts: 'write',
+      orders: 'read',
+      customers: 'read',
+      despatch: 'read',
+      announcements: 'read',
+    },
   },
   {
     key: 'communications',
@@ -195,6 +220,7 @@ export const DEPARTMENTS = [
       orders: 'read',
       samples: 'read',
       despatch: 'read',
+      announcements: 'write',
     },
   },
   {

@@ -47,6 +47,50 @@ export const setAccessSchema = z.object({
   moduleAccess: z.array(moduleGrant),
 });
 
+/* ----------------------------- Workspace ----------------------------- */
+
+const PRIORITIES = ['low', 'normal', 'high'];
+const NOTE_COLOURS = ['amber', 'lime', 'sky', 'rose', 'violet'];
+const ANNOUNCEMENT_CATEGORIES = ['general', 'production', 'quality', 'people', 'urgent'];
+
+export const todoSchema = z.object({
+  title: z.string().min(1, 'Give the task a title').max(200),
+  notes: z.string().max(2000).optional(),
+  dueDate: z.coerce.date().optional(),
+  priority: z.enum(PRIORITIES).optional(),
+});
+
+export const todoUpdateSchema = z.object({
+  title: z.string().min(1).max(200).optional(),
+  notes: z.string().max(2000).optional(),
+  /** Null clears the date; a value sets it. */
+  dueDate: z.union([z.coerce.date(), z.null()]).optional(),
+  priority: z.enum(PRIORITIES).optional(),
+  completed: z.boolean().optional(),
+});
+
+export const noteSchema = z.object({
+  content: z.string().min(1, 'Write something first').max(2000),
+  colour: z.enum(NOTE_COLOURS).optional(),
+  pinned: z.boolean().optional(),
+});
+
+export const noteUpdateSchema = z.object({
+  content: z.string().min(1).max(2000).optional(),
+  colour: z.enum(NOTE_COLOURS).optional(),
+  pinned: z.boolean().optional(),
+});
+
+export const announcementSchema = z.object({
+  title: z.string().min(1, 'Give the announcement a title').max(200),
+  body: z.string().min(1, 'Write the announcement').max(4000),
+  category: z.enum(ANNOUNCEMENT_CATEGORIES).optional(),
+  /** Empty means everyone sees it. */
+  departments: z.array(z.enum(DEPARTMENT_KEYS)).optional(),
+  pinned: z.boolean().optional(),
+  expiresAt: z.coerce.date().optional(),
+});
+
 export const loginSchema = z.object({
   email: z.string().email(),
   password: z.string().min(1),
