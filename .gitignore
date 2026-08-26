@@ -5,3 +5,8 @@ node_modules/
 coverage/
 dist/
 .DS_Store
+
+# Throwaway harnesses used to drive the app in a browser during development
+.browser-test.mjs
+.health-demo.mjs
+.verify-script.mjs
