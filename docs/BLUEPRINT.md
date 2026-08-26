@@ -46,7 +46,7 @@ received; **who has the next action**.
 | --- | --- | --- | --- |
 | `enquiries` — Leads & enquiries | 1 | Marketing | §3 |
 | `samples` — Sampling | 2 | Sample team | §4–6 |
-| `pricing` — Pricing & costing | 3 | Pricing | §7–9 |
+| `pricing` — Pricing & costing | 3 | Management | §7–9 |
 | `quotations` — Quotations & negotiation | 4 | Marketing | §10–11 |
 | `orders` — Sales orders | 5 | Order confirmation | §12–13 |
 | `production` — Production status | 6 | Production | §14–17 |
@@ -56,8 +56,8 @@ received; **who has the next action**.
 | `customers` — Customer master | — | Marketing | §2 |
 | `products` — Product master | — | Sample team | §28 |
 | `customer_comms` — Send to customer | — | Marketing | §42 |
-| `whatsapp` — WhatsApp inbox | **deferred** | Communications | §41 |
-| `announcements` — Announcements | — | Communications | §26 |
+| `whatsapp` — WhatsApp inbox | **deferred** | Marketing | §41 |
+| `announcements` — Announcements | — | Management | §26 |
 | `tasks` — Tasks & follow-ups | — | Marketing | §35 |
 | `reports` — Reports & dashboards | — | Management | §21–24, §37–38 |
 | `users` — User administration | — | Management | §29 |
@@ -207,8 +207,22 @@ dispatch done · payment overdue.
 
 ## 7. Permissions [§29]
 
-Mapped onto `src/config/modules.js` department defaults. Two constraints the module system
-cannot express and which must be enforced **inside** the modules when they are built:
+Mapped onto `src/config/modules.js` department defaults.
+
+**Eight departments**, not the blueprint's ten. The blueprint assumes a separate costing
+function and a separate communications function; this organisation has neither as its own
+team. The modules still exist — costing and announcements sit with **management**, and the
+WhatsApp front door and customer messages sit with **marketing**, who own the customer
+anyway. If either team is ever formed, adding the department back is one entry plus a
+default grant set; the modules do not change.
+
+> One consequence worth knowing: with no costing team, `pricing: write` belongs to
+> management alone. Nobody but an admin can price a job by default. That is a deliberate
+> control — §9 already routes prices below the minimum to MD approval — but if a marketing
+> person should be able to build a costing, grant them `pricing: write` explicitly.
+
+Two constraints the module system cannot express and which must be enforced **inside** the
+modules when they are built:
 
 1. **Pricing field visibility [§8].** Marketing sees quoted price, MOQ, validity, payment and
    delivery terms. Raw material rate, full cost, gross margin, minimum approved price and

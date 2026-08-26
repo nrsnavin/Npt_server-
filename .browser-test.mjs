@@ -1,0 +1,12 @@
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import mongoose from 'mongoose';
+process.env.JWT_SECRET = 'browser-test-secret-value';
+process.env.CORS_ORIGIN = 'http://localhost:4173';
+process.env.PORT = '5000';
+const mongo = await MongoMemoryServer.create();
+process.env.MONGO_URI = mongo.getUri();
+await import('/home/user/Npt_server-/src/seed/index.js');
+await new Promise((r) => setTimeout(r, 4000));
+await mongoose.connect(process.env.MONGO_URI);
+const { default: app } = await import('/home/user/Npt_server-/src/app.js');
+app.listen(5000, () => console.log('API ready'));

@@ -277,7 +277,12 @@ test('the catalogue exposes modules and department templates', async () => {
 
   assert.equal(status, 200);
   assert.ok(json.data.modules.some((module) => module.key === 'dispatch'));
-  assert.equal(json.data.departments.length, 10);
+  assert.equal(json.data.departments.length, 8);
+
+  // Every module must be owned by a department that still exists.
+  const departmentKeys = json.data.departments.map((d) => d.key);
+  const orphans = json.data.modules.filter((m) => !departmentKeys.includes(m.ownerDepartment));
+  assert.deepEqual(orphans, [], 'no module may point at a removed department');
 
   const sampling = json.data.departments.find((d) => d.key === 'sampling');
   assert.ok(sampling.defaultAccess.some((g) => g.module === 'samples' && g.level === 'write'));

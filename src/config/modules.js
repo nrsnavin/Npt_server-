@@ -66,7 +66,7 @@ export const MODULES = [
     description: 'Cost build-up, calculated and approved selling price, and the approval route below the minimum price.',
     group: 'Pipeline',
     stage: 3,
-    ownerDepartment: 'pricing',
+    ownerDepartment: 'management',
     blueprint: '7-9',
     available: false,
   },
@@ -158,7 +158,7 @@ export const MODULES = [
     description: 'The front door: incoming messages matched to customers, de-duplicated, assigned and converted to enquiries.',
     group: 'Communication',
     stage: null,
-    ownerDepartment: 'communications',
+    ownerDepartment: 'marketing',
     blueprint: '41',
     available: false,
     /**
@@ -184,7 +184,7 @@ export const MODULES = [
     description: 'Internal notices published to the whole plant or to chosen teams.',
     group: 'Workspace',
     stage: null,
-    ownerDepartment: 'communications',
+    ownerDepartment: 'management',
     blueprint: '26',
     available: true,
   },
@@ -227,6 +227,11 @@ export const MODULE_KEYS = MODULES.map((module) => module.key);
  * Defaults follow the blueprint's permission section: write on what a department owns,
  * read on what it must see to do its job without telephoning another department.
  *
+ * The blueprint names a separate costing function and a communications function; this
+ * organisation has neither as its own team. The `pricing`, `whatsapp` and `customer_comms`
+ * modules still exist — costing and announcements sit with management, and the WhatsApp
+ * front door and customer messages sit with marketing, who own the customer anyway.
+ *
  * Two limits are worth knowing. Pricing is granted to marketing as read, but the
  * blueprint also restricts *which fields* they see — marketing gets quoted price, MOQ,
  * validity and terms, never the cost build-up or margin. And `customer_comms` write is
@@ -243,8 +248,8 @@ export const DEPARTMENTS = [
       quotations: 'write',
       customers: 'write',
       customer_comms: 'write',
+      whatsapp: 'write',
       tasks: 'write',
-      whatsapp: 'read',
       samples: 'read',
       pricing: 'read',
       orders: 'read',
@@ -266,20 +271,6 @@ export const DEPARTMENTS = [
       tasks: 'write',
       enquiries: 'read',
       customers: 'read',
-      announcements: 'read',
-    },
-  },
-  {
-    key: 'pricing',
-    label: 'Pricing & costing',
-    defaultAccess: {
-      pricing: 'write',
-      tasks: 'write',
-      enquiries: 'read',
-      quotations: 'read',
-      products: 'read',
-      customers: 'read',
-      orders: 'read',
       announcements: 'read',
     },
   },
@@ -349,21 +340,6 @@ export const DEPARTMENTS = [
       customers: 'read',
       dispatch: 'read',
       announcements: 'read',
-    },
-  },
-  {
-    key: 'communications',
-    label: 'Communications team',
-    defaultAccess: {
-      whatsapp: 'write',
-      customer_comms: 'write',
-      customers: 'write',
-      announcements: 'write',
-      tasks: 'write',
-      enquiries: 'read',
-      samples: 'read',
-      orders: 'read',
-      dispatch: 'read',
     },
   },
   {
