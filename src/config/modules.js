@@ -170,12 +170,12 @@ export const MODULES = [
   {
     key: 'customer_comms',
     label: 'Send to customer',
-    description: 'Controlled outbound updates over WhatsApp or email, with preview, edit and a full audit trail.',
+    description: 'Outbound updates over WhatsApp or email, with preview, edit and a full audit trail.',
     group: 'Communication',
     stage: null,
     ownerDepartment: 'marketing',
     blueprint: '42',
-    available: false,
+    available: true,
   },
   {
     key: 'announcements',

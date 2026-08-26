@@ -4,6 +4,7 @@ import User from '../models/User.js';
 import { EVENTS, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
 import { createSampleForEnquiry } from '../services/sampling.service.js';
 import { raiseTask, resolveTasks } from '../services/task.service.js';
+import { AUTOMATIC, notifyCustomer } from '../services/customerMessage.service.js';
 
 /**
  * The automation the blueprint is built around [§C.1, §6]: completing a stage creates the
@@ -122,6 +123,24 @@ export function registerSamplingSubscribers() {
         link: `/samples/${sample._id}`,
         originKey: key(sample, 'acknowledged'),
       });
+    })
+  );
+
+  subscribe(
+    EVENTS.SAMPLE_READY,
+    safely('customer notice', async ({ sample }) => {
+      if (AUTOMATIC.has('sample_ready')) {
+        await notifyCustomer({ sample, event: 'sample_ready' });
+      }
+    })
+  );
+
+  subscribe(
+    EVENTS.SAMPLE_DISPATCHED,
+    safely('customer dispatch notice', async ({ sample }) => {
+      if (AUTOMATIC.has('sample_dispatched')) {
+        await notifyCustomer({ sample, event: 'sample_dispatched' });
+      }
     })
   );
 

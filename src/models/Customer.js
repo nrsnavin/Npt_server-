@@ -63,6 +63,22 @@ const customerSchema = new mongoose.Schema(
     source: { type: String, enum: CUSTOMER_SOURCES, default: 'manual' },
     convertedFromLead: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead' },
 
+    /**
+     * Whether this customer accepts automatic updates, per channel [§42].
+     *
+     * On by default: these are transactional updates about work the customer asked for, to
+     * a business we are already trading with, on numbers they gave us. Off is a real choice
+     * a buyer can make, and it is honoured before anything is sent.
+     *
+     * WhatsApp additionally needs opt-in under Meta's own rules, which this flag records but
+     * cannot prove. Getting that consent is the operator's job, not the schema's — see the
+     * README.
+     */
+    notifications: {
+      whatsapp: { type: Boolean, default: true },
+      email: { type: Boolean, default: true },
+    },
+
     status: { type: String, enum: ['active', 'on_hold', 'inactive'], default: 'active' },
     notes: String,
   },

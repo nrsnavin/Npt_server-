@@ -56,6 +56,9 @@ export const customerSchema = z.object({
   paymentTerms: z.string().optional(),
   rating: z.enum(RATINGS).optional(),
   source: z.enum(CUSTOMER_SOURCES).optional(),
+  notifications: z
+    .object({ whatsapp: z.boolean().optional(), email: z.boolean().optional() })
+    .optional(),
   status: z.enum(['active', 'on_hold', 'inactive']).optional(),
   notes: z.string().optional(),
 });

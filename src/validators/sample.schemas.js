@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from '../models/Product.js';
 import { SAMPLE_PURPOSES, SAMPLE_STATUSES, FEEDBACK_STATUSES } from '../models/Sample.js';
+import { MESSAGE_CHANNELS } from '../models/CustomerMessage.js';
+import { EVENT_KEYS } from '../services/customerMessage.templates.js';
 
 const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Must be a valid id');
 
@@ -50,4 +52,17 @@ export const sampleStatusSchema = z.object({
 export const sampleFeedbackSchema = z.object({
   outcome: z.enum(FEEDBACK_STATUSES),
   note: z.string().optional(),
+});
+
+/**
+ * A send to the customer. Everything is optional: omitting the event takes it from the
+ * sample's own stage, and omitting the text sends the generated draft unedited.
+ */
+export const customerMessageSchema = z.object({
+  event: z.enum(EVENT_KEYS).optional(),
+  channels: z.array(z.enum(MESSAGE_CHANNELS)).min(1).optional(),
+  subject: z.string().max(200).optional(),
+  body: z.string().max(4000).optional(),
+  /** Sends again despite the duplicate warning [§42.7]. */
+  force: z.boolean().optional(),
 });

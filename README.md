@@ -98,6 +98,9 @@ Runs against an in-memory MongoDB — no local `mongod` needed.
 - `tests/audit.test.js` — the gaps found auditing the two modules above, each written to fail
   first: half-finished conversions, partial enquiry groups, ownership on write routes, work
   left on the bench behind a lost enquiry, and what the duplicate check may reveal.
+- `tests/customer-messages.test.js` — the automatic sends, what may and may not appear in
+  them, opt-out, the duplicate rule, provider failure, and the preview-edit-send flow. Twilio
+  is intercepted, so no test costs a message or touches the network.
 - `tests/workspace.test.js` and `tests/health.test.js` — the dock and the probes.
 
 ## API
@@ -138,6 +141,9 @@ applied inside the controllers because it varies by department.
 | POST | `/samples/:id/assign` | Pick a request off the shared queue |
 | POST | `/samples/:id/resample` | The next attempt after a modification, linked to the last |
 | GET | `/samples/pipeline` | Count and overdue per stage |
+| GET | `/samples/:id/customer-message/preview` | The draft a person would send, and what has already gone |
+| POST | `/samples/:id/customer-message` | Send it, optionally edited, on chosen channels |
+| GET | `/samples/:id/customer-messages` | Everything ever sent to this customer about this sample |
 
 Responses are `{ success, data }`; list routes add `{ pagination }`. Errors are
 `{ success: false, message, details? }`.
@@ -295,6 +301,59 @@ which only describes a request that runs to an answer.
 Marketing's ownership on samples runs through `requestedBy` rather than `assignedTo` — the
 sample is worked by the sample team, so scoping on who is doing the work would hide every
 sample from the person who asked for it.
+
+### Telling the customer [§42]
+
+Sample ready and sample dispatched are sent to the customer automatically, over **WhatsApp
+and email**, on every channel that customer accepts.
+
+**This is a deliberate departure from the blueprint.** §42's core rule is that an internal
+status update is *not* a customer notification — no sampling change may reach a buyer merely
+because an internal status changed, and a person is meant to preview, edit and confirm each
+one. This organisation asked for those two stages to go on their own. Both stages are on
+§42.5's own eligible list, so what the rule protects is *what* gets said rather than *that*
+it gets said, and everything else §42 asks for is kept:
+
+- **Only customer-safe fields reach a draft** [§42.8]. `contextFor` in
+  `services/customerMessage.templates.js` is the only thing that decides what leaves the
+  building, so a field it does not carry cannot reach a customer even if a template is added
+  later. Sample remarks, enquiry remarks, feedback notes and stage-history notes are all
+  deliberately absent, and a test asserts it.
+- **Every send is audited** [§42.6] — channel, recipient, the final text as sent, when, and
+  by whom. An automatic send is recorded as automatic rather than credited to a person.
+  Skips are recorded too, with the reason: a gap in the log is not an answer.
+- **The same update is not sent twice** [§42.7]. A second attempt is refused with who sent
+  the first and when, and can be overridden deliberately.
+- **A customer can opt out per channel**, and that is honoured before anything is sent.
+- **Sending stays with marketing.** The routes sit on `customer_comms`, which the sample team
+  does not hold — sampling updates internal status, and the relationship is marketing's
+  [§42.4]. The automatic path has no user at all, which is why it is not bound by that grant.
+
+Which stages send themselves is one line — `AUTOMATIC` in
+`services/customerMessage.service.js`. Removing a stage from that set turns it back into
+§42's manual flow, which is fully built and reachable from the same screen.
+
+A failed send never undoes the work that triggered it. The sample really is ready; a provider
+outage is logged against the record and can be re-sent by hand.
+
+#### WhatsApp
+
+Sent through Twilio, on the same Messages API as the OTP SMS. Two things are worth knowing
+before this goes live:
+
+1. **Templates are not optional.** Meta only allows free text within 24 hours of the
+   customer's own last message. A sample update is business-initiated and arbitrary in
+   timing, so outside that window it must be a template approved in advance — otherwise
+   WhatsApp refuses it with error 63016. Register the two templates in Twilio's Content
+   Template Builder and set `WHATSAPP_TEMPLATE_SAMPLE_READY` and
+   `WHATSAPP_TEMPLATE_SAMPLE_DISPATCHED`. Without them the code falls back to a plain body,
+   which works in the sandbox and inside an open conversation and fails elsewhere.
+2. **Opt-in is the operator's responsibility.** The `notifications.whatsapp` flag records a
+   customer's choice but cannot prove consent, which Meta requires. Collect it the way you
+   already collect a phone number.
+
+Without a WhatsApp sender configured, development logs the message to the console exactly as
+OTP does, so the whole flow is exercisable without an account.
 
 Pricing subscribes to `enquiry.pricing_required` in Phase 3.
 

@@ -8,6 +8,8 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { EVENTS, publish, sampleStatusEvent } from '../services/events.service.js';
 import { createSampleForEnquiry, defaultRequiredDate } from '../services/sampling.service.js';
+import { notifyCustomer, previewFor } from '../services/customerMessage.service.js';
+import CustomerMessage from '../models/CustomerMessage.js';
 import { listParams, paginated } from '../utils/query.js';
 
 /**
@@ -300,6 +302,70 @@ export const samplePipeline = asyncHandler(async (req, res) => {
   const data = SAMPLE_STATUSES.map(
     (status) => byStatus[status] || { status, count: 0, overdue: 0 }
   );
+
+  res.json({ success: true, data });
+});
+
+/* --------------------------- Telling the customer [§42] --------------------------- */
+
+/** Which eligible update a stage corresponds to, if any [§42.5]. */
+const eventForStatus = (status) =>
+  ({ sample_ready: 'sample_ready', dispatched: 'sample_dispatched' })[status] || null;
+
+/**
+ * The draft a person sees before sending, and what has already gone [§42.7].
+ *
+ * Rendered from the same context the automation uses, so what is approved here is what
+ * would otherwise have been sent.
+ */
+export const previewCustomerMessage = asyncHandler(async (req, res) => {
+  const sample = await Sample.findById(req.params.id);
+  if (!sample) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
+
+  const event = req.query.event || eventForStatus(sample.status);
+  if (!event) throw ApiError.badRequest('There is nothing to tell the customer at this stage');
+
+  res.json({ success: true, data: await previewFor(sample, event) });
+});
+
+/**
+ * Sends it, after the person has read and possibly edited the draft.
+ *
+ * This is §42's own flow, kept alongside the automatic path: a stage that stops sending
+ * itself is still reachable by hand, and a failed automatic send can be retried without
+ * moving the sample backwards.
+ */
+export const sendCustomerMessage = asyncHandler(async (req, res) => {
+  const sample = await Sample.findById(req.params.id);
+  if (!sample) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
+
+  const event = req.body.event || eventForStatus(sample.status);
+  if (!event) throw ApiError.badRequest('There is nothing to tell the customer at this stage');
+
+  const messages = await notifyCustomer({
+    sample,
+    event,
+    user: req.user,
+    channels: req.body.channels,
+    subject: req.body.subject,
+    body: req.body.body,
+    force: req.body.force,
+  });
+
+  res.status(201).json({ success: true, data: messages });
+});
+
+/** Everything ever sent to this customer about this sample [§42.6]. */
+export const listCustomerMessages = asyncHandler(async (req, res) => {
+  const sample = await Sample.findById(req.params.id);
+  if (!sample) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
+
+  const data = await CustomerMessage.find({ sample: sample._id })
+    .populate('sentBy', 'name')
+    .sort('-sentAt');
 
   res.json({ success: true, data });
 });

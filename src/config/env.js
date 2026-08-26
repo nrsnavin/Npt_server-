@@ -51,10 +51,25 @@ export const env = {
     fromNumber: process.env.TWILIO_FROM_NUMBER,
     /** Preferred over a single from-number in production: number pool and compliance. */
     messagingServiceSid: process.env.TWILIO_MESSAGING_SERVICE_SID,
+    /** A WhatsApp-enabled sender, which is not the same number as the SMS one. */
+    whatsappFrom: process.env.TWILIO_WHATSAPP_FROM,
     timeoutMs: Number(process.env.TWILIO_TIMEOUT_MS || 10000),
     /** Total attempts, including the first, for transient network and 5xx failures. */
     maxAttempts: Number(process.env.TWILIO_MAX_ATTEMPTS || 2),
   },
+};
+
+/**
+ * Approved WhatsApp templates, by the event that sends them.
+ *
+ * Meta refuses free text for a business-initiated message outside the 24-hour window, so a
+ * scheduled update has to go as a template registered in advance. Each value is the Twilio
+ * content SID for that template; without one the send falls back to a plain body, which
+ * works in the sandbox and inside an open conversation and is refused otherwise.
+ */
+export const whatsappTemplates = {
+  sample_ready: process.env.WHATSAPP_TEMPLATE_SAMPLE_READY,
+  sample_dispatched: process.env.WHATSAPP_TEMPLATE_SAMPLE_DISPATCHED,
 };
 
 export const isProduction = env.nodeEnv === 'production';

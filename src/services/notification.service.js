@@ -2,9 +2,12 @@ import { env, isProduction } from '../config/env.js';
 import { isConfigured as twilioConfigured, sendSms as twilioSendSms } from '../providers/twilio.js';
 
 /**
- * Delivery of OTP codes. Both channels fall back to logging the message when no
- * provider is configured, so the API is usable in development without SMTP or Twilio
- * credentials. In production a missing provider is an error rather than a silent no-op.
+ * Message delivery: OTP codes over email and SMS, and the customer updates in
+ * `customerMessage.service.js` reuse `sendEmail` from here.
+ *
+ * Every channel falls back to logging when no provider is configured, so the API is usable
+ * in development without SMTP or Twilio credentials. In production a missing provider is an
+ * error rather than a silent no-op.
  */
 
 let transporterPromise = null;
@@ -51,8 +54,9 @@ export async function sendEmail({ to, subject, text, html }) {
     return { delivered: false, channel: 'email' };
   }
 
-  await transporter.sendMail({ from: env.smtp.from, to, subject, text, html });
-  return { delivered: true, channel: 'email' };
+  const info = await transporter.sendMail({ from: env.smtp.from, to, subject, text, html });
+  // The message id is what makes a delivery traceable in the mail server's own logs.
+  return { delivered: true, channel: 'email', messageId: info?.messageId };
 }
 
 export async function sendSms({ to, body }) {
