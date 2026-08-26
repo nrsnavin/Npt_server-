@@ -33,9 +33,11 @@ const LEVEL_RANK = { read: 1, write: 2 };
  * carry null. `blueprint` names the section of docs/BLUEPRINT.md that specifies the module.
  * `deferred` marks a module deliberately held back, with the reason.
  *
- * The blueprint opens the lifecycle with WhatsApp, but that integration is being wired up
- * last, so the chain starts at `enquiries` and enquiries are raised by hand. Anything built
- * on the chain must not assume a WhatsApp origin — see the source note in BLUEPRINT §8.
+ * The blueprint opens the lifecycle with WhatsApp, but that integration is wired up last.
+ * Manual entry is the primary way data gets in, and stays that way permanently — walk-ins,
+ * phone calls, trade shows and email are never going to arrive over WhatsApp. When the
+ * integration lands it adds a source; it does not become the only one, so nothing on the
+ * chain may assume a conversation exists. See BLUEPRINT §8.
  */
 export const MODULES = [
   {
@@ -160,11 +162,11 @@ export const MODULES = [
     blueprint: '41',
     available: false,
     /**
-     * Held back until every other module is built. It is the blueprint's front door, but
-     * it feeds the enquiry module rather than replacing it — enquiries are entered by hand
-     * until this lands, and must keep working that way afterwards.
+     * Held back until every other module is built. It feeds the enquiry module rather than
+     * replacing it: manual entry is the primary path and remains fully supported after this
+     * lands, because most enquiries will never arrive over WhatsApp.
      */
-    deferred: 'Wired up last, once the modules it feeds exist.',
+    deferred: 'Automated last. Data is entered manually until then, and manual entry stays.',
   },
   {
     key: 'customer_comms',

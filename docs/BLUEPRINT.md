@@ -19,11 +19,12 @@ Lead/Enquiry → Sampling → Pricing → Quotation → Negotiation
              → PO / Sales Order → Production → Quality → Dispatch → Payment → Closed
 ```
 
-> **WhatsApp is deferred.** The blueprint opens this chain with WhatsApp as the front door
-> [§41]. That integration is being wired up **last**, once the modules it feeds exist. Until
-> then the chain starts at Enquiries and enquiries are raised by hand — which the blueprint
-> already specifies [§3], so nothing is lost. See §8 below for what to build now so the
-> integration slots in later without rework.
+> **Data is entered manually; automation comes last.** The blueprint opens this chain with
+> WhatsApp as the front door [§41], but that integration is wired up **after** every module
+> exists. Manual entry is the primary path — which the blueprint already specifies [§3] — and
+> it is **permanent, not a stopgap**: walk-ins, phone calls, trade shows and email will never
+> arrive over WhatsApp. When the integration lands it adds a source, it does not replace one.
+> See §8 for what to build now so it slots in without rework.
 
 **The governing principle [§C.1, §34]:** one department completing a stage must
 automatically create and assign the next department's task. The process must not depend on
@@ -225,18 +226,32 @@ another in-module ownership rule, not a module grant.
 
 ## 8. WhatsApp as the front door [§41] — deferred
 
-**Not being built yet.** It is wired up last, after every other module exists. This section
+**Not being built yet.** It is automated last, after every other module exists. This section
 stays here as the specification for that work, plus what to do *now* so it slots in cleanly.
 
-### What to build now so this lands without rework
+### Manual entry is the primary path
+
+Every module is built for a person typing the record in. That is not a temporary measure
+while the integration is missing — it is how most data will always arrive, and it must stay
+fully supported after WhatsApp lands. Two consequences for design:
+
+- **Never require a conversation.** A conversation reference on an enquiry is optional
+  forever. An enquiry with no WhatsApp thread behind it is the normal case, not a defect.
+- **Manual entry must be fast.** If typing an enquiry is tedious, the CRM loses to the
+  notebook. Product selection comes from the master [§28] rather than typed model names, and
+  the next-action rule [§3] is the only mandatory extra field.
+
+### What to build now so the integration lands without rework
 
 The blueprint requires a qualified WhatsApp lead to convert into an enquiry **without
 re-entering core data** [§41.4]. That only works if the enquiry module is built with the
 right shape from the start:
 
-- **`source` on every enquiry and customer** — `manual`, `whatsapp`, `phone`, `email`,
-  `referral`, `trade_show`. Add it in Phase 1 with `manual` as the default. Retrofitting an
-  origin field across live enquiries later is a migration nobody wants.
+- **`source` on every enquiry and customer** — `manual`, `phone`, `email`, `walk_in`,
+  `referral`, `trade_show`, and later `whatsapp`. Add it in Phase 1 with `manual` as the
+  default. Retrofitting an origin field across live enquiries is a migration nobody wants,
+  and the field earns its place immediately: it is what §23's source-wise conversion
+  reporting is built on.
 - **An optional conversation reference** on the enquiry, left null until the integration
   exists. §41.6 requires conversation history to stay linked to the lead, contact, customer
   and enquiry.
