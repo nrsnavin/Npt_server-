@@ -19,6 +19,22 @@ const describe = (sample) =>
   [sample.modelNumber, sample.colour].filter(Boolean).join(' in ') || 'your sample';
 
 /**
+ * What we can tell the customer about how it is travelling.
+ *
+ * The courier is often arranged before the sample leaves the bench, and when it is, saying
+ * so in the ready message saves the customer asking. When it is not yet known the sentence
+ * says that instead — an approved WhatsApp template has a fixed shape, so this has to be one
+ * variable that is always present rather than a line that appears and disappears.
+ */
+function courierLine(sample) {
+  if (sample.courier && sample.awbNumber) {
+    return `It will be sent by ${sample.courier}, tracking number ${sample.awbNumber}.`;
+  }
+  if (sample.courier) return `It will be sent by ${sample.courier}.`;
+  return 'We will confirm the courier details shortly.';
+}
+
+/**
  * The whole of what a template may know. Built from the sample, its enquiry and its
  * customer, and nothing else.
  */
@@ -35,6 +51,7 @@ export function contextFor({ sample, enquiry, customer }) {
     courier: sample.courier,
     awbNumber: sample.awbNumber,
     dispatchedQuantity: sample.dispatchedQuantity,
+    courierLine: courierLine(sample),
     company: 'Navin Plastic Tech',
   };
 }
@@ -55,7 +72,7 @@ export const TEMPLATES = {
       `Hello ${ctx.customerName},\n\n` +
       `Your sample ${ctx.sampleNumber} — ${ctx.description}, ${formatNumber.format(ctx.quantity)} pc — ` +
       `is ready.\n\n` +
-      `We will confirm the courier details shortly. Please let us know if the delivery address has changed.\n\n` +
+      `${ctx.courierLine} Please let us know if the delivery address has changed.\n\n` +
       `${ctx.company}`,
     variables: (ctx) => ({
       1: ctx.customerName,
@@ -63,6 +80,7 @@ export const TEMPLATES = {
       3: ctx.model,
       4: ctx.colour || '-',
       5: String(ctx.quantity),
+      6: ctx.courierLine,
     }),
     contentSid: () => whatsappTemplates.sample_ready,
   },

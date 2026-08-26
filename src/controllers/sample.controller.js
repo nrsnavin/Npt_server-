@@ -136,6 +136,30 @@ export const assignSample = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Courier, tracking number, date and quantity — recorded whenever they are known.
+ *
+ * Separate from the dispatch move for two reasons. They are often arranged before the sample
+ * leaves, and knowing them early changes what the customer is told when it is ready. And a
+ * tracking number typed wrong is worth correcting afterwards, which the move cannot do
+ * because a sample only dispatches once.
+ */
+export const setDispatchDetails = asyncHandler(async (req, res) => {
+  const sample = await Sample.findById(req.params.id);
+  if (!sample) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
+  if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) {
+    throw ApiError.badRequest(`A ${sample.status} sample can no longer be edited`);
+  }
+
+  for (const field of ['courier', 'awbNumber', 'dispatchedAt', 'dispatchedQuantity']) {
+    if (req.body[field] !== undefined) sample[field] = req.body[field] ?? undefined;
+  }
+
+  await sample.save();
+  res.json({ success: true, data: await withRefs(sample) });
+});
+
+/**
  * Moves a sample to a new stage.
  *
  * Two rules from §6 are enforced here rather than reported afterwards. Dispatching demands
@@ -161,20 +185,26 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
   }
 
   if (status === 'dispatched') {
+    // Whatever was arranged earlier stands unless this call overrides it, so details entered
+    // in advance do not have to be typed a second time to get the sample out of the door.
+    const details = {
+      courier: courier ?? sample.courier,
+      awbNumber: awbNumber ?? sample.awbNumber,
+      dispatchedQuantity: dispatchedQuantity ?? sample.dispatchedQuantity,
+    };
+
     const missing = [
-      !courier && 'courier',
-      !awbNumber && 'AWB number',
-      dispatchedQuantity == null && 'dispatched quantity',
+      !details.courier && 'courier',
+      !details.awbNumber && 'AWB number',
+      details.dispatchedQuantity == null && 'dispatched quantity',
     ].filter(Boolean);
 
     if (missing.length) {
       throw ApiError.badRequest(`Dispatching needs the ${missing.join(', ')}`);
     }
 
-    sample.courier = courier;
-    sample.awbNumber = awbNumber;
-    sample.dispatchedAt = dispatchedAt || new Date();
-    sample.dispatchedQuantity = dispatchedQuantity;
+    Object.assign(sample, details);
+    sample.dispatchedAt = dispatchedAt || sample.dispatchedAt || new Date();
   }
 
   if (status === 'delivered') sample.deliveredAt = new Date();

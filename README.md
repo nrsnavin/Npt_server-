@@ -137,6 +137,7 @@ applied inside the controllers because it varies by department.
 | GET | `/enquiries/pipeline` | Count and value per stage, for the funnel |
 | GET/POST | `/samples` | Sample requests; `?open=`, `?overdue=`, `?unassigned=`, `?mine=`, `?enquiry=` |
 | POST | `/samples/:id/status` | Move it along the bench; dispatch demands courier, AWB and quantity |
+| PATCH | `/samples/:id/dispatch-details` | Record or correct the courier, tracking number, date and quantity |
 | POST | `/samples/:id/feedback` | What the customer said — on marketing's grant, not the sample team's |
 | POST | `/samples/:id/assign` | Pick a request off the shared queue |
 | POST | `/samples/:id/resample` | The next attempt after a modification, linked to the last |
@@ -279,6 +280,14 @@ dispatched, delivered. Two rules are enforced rather than reported:
 - **Dispatching demands the courier, AWB and quantity** [§6]. A sample the customer cannot be
   told how to expect is a sample nobody chases. Dispatching also moves the enquiry to sample
   feedback pending.
+
+  Those details can be recorded at any open stage through `PATCH /samples/:id/dispatch-details`,
+  not only in the move. Two reasons: the courier is usually arranged before the sample leaves,
+  and when it is known the ready update tells the customer how it is coming instead of
+  promising to confirm later; and a tracking number typed wrong needs correcting afterwards,
+  which the move cannot do because a sample dispatches once. Details already recorded satisfy
+  the dispatch check, so nothing is typed twice. A re-sample deliberately starts without them —
+  it is a different journey.
 - **The maker does not mark their own work approved.** Approved, modification required and
   rejected are set through a separate feedback action gated on `enquiries` write, because only
   the person who spoke to the customer knows the answer. Approving sends the enquiry on to

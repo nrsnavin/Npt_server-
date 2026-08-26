@@ -31,6 +31,18 @@ export const sampleUpdateSchema = z.object(sampleCore).partial();
 /** A re-sample inherits the previous attempt; everything here is an override. */
 export const resampleSchema = z.object(sampleCore).partial();
 
+/**
+ * How the sample travels. Deliberately not part of `sampleCore`: these describe one journey,
+ * so a re-sample must start without them rather than inheriting the last attempt's tracking
+ * number. Every field is optional so details can be filled in as they are arranged.
+ */
+export const dispatchDetailsSchema = z.object({
+  courier: z.string().max(80).nullable().optional(),
+  awbNumber: z.string().max(60).nullable().optional(),
+  dispatchedAt: z.coerce.date().nullable().optional(),
+  dispatchedQuantity: z.number().nonnegative().nullable().optional(),
+});
+
 /** An explicit null hands the request back to the shared queue. */
 export const sampleAssignSchema = z.object({ assignedTo: objectId.nullable().optional() });
 

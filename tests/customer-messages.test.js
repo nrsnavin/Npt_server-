@@ -239,6 +239,115 @@ test('internal notes never reach the customer', async () => {
   }
 });
 
+/* --------------------------- Courier details, when known --------------------------- */
+
+test('courier details arranged in advance reach the ready message', async () => {
+  const { sample } = await pipelineTo('sample_available');
+
+  await api(`/api/samples/${sample._id}/dispatch-details`, {
+    method: 'PATCH',
+    token: meera,
+    body: { courier: 'Blue Dart', awbNumber: '77213904118' },
+  });
+
+  await api(`/api/samples/${sample._id}/status`, {
+    method: 'POST',
+    token: meera,
+    body: { status: 'sample_ready' },
+  });
+  await settle();
+
+  const message = await CustomerMessage.findOne({
+    sample: sample._id,
+    event: 'sample_ready',
+    channel: 'email',
+  });
+
+  assert.match(message.body, /Blue Dart/);
+  assert.match(message.body, /77213904118/);
+  assert.ok(!message.body.includes('confirm the courier details'), 'we already know them');
+});
+
+test('an unknown courier still reads as a sentence, not a gap', async () => {
+  const { sample } = await pipelineTo('sample_ready');
+
+  const message = await CustomerMessage.findOne({
+    sample: sample._id,
+    event: 'sample_ready',
+    channel: 'email',
+  });
+  assert.match(message.body, /confirm the courier details shortly/);
+
+  // The WhatsApp template has a fixed shape, so the slot is filled either way.
+  const call = sent.find((params) => params.To?.startsWith('whatsapp:'));
+  assert.ok(call, 'a WhatsApp message went');
+});
+
+test('details entered in advance do not have to be typed again to dispatch', async () => {
+  const { sample } = await pipelineTo('sample_ready');
+
+  await api(`/api/samples/${sample._id}/dispatch-details`, {
+    method: 'PATCH',
+    token: meera,
+    body: { courier: 'Professional Couriers', awbNumber: '55910233741', dispatchedQuantity: 5 },
+  });
+
+  const { status, json } = await api(`/api/samples/${sample._id}/status`, {
+    method: 'POST',
+    token: meera,
+    body: { status: 'dispatched' },
+  });
+
+  assert.equal(status, 200, 'the move should accept what was already arranged');
+  assert.equal(json.data.courier, 'Professional Couriers');
+  assert.ok(json.data.dispatchedAt);
+});
+
+test('a tracking number typed wrong can be corrected after dispatch', async () => {
+  const { sample } = await pipelineTo('dispatched');
+
+  const { status, json } = await api(`/api/samples/${sample._id}/dispatch-details`, {
+    method: 'PATCH',
+    token: meera,
+    body: { awbNumber: '99999999999' },
+  });
+
+  assert.equal(status, 200);
+  assert.equal(json.data.awbNumber, '99999999999');
+  assert.equal(json.data.courier, 'Blue Dart', 'correcting one field leaves the others');
+
+  // Correcting the record does not message the customer on its own — that stays a decision.
+  const messages = await CustomerMessage.find({ sample: sample._id, event: 'sample_dispatched' });
+  assert.equal(messages.filter((message) => message.status === 'sent').length, 2);
+
+  // Re-sending it is what puts the correction in front of them, and says the new number.
+  const resent = await api(`/api/samples/${sample._id}/customer-message`, {
+    method: 'POST',
+    token: nandhini,
+    body: { event: 'sample_dispatched', channels: ['email'], force: true },
+  });
+  assert.match(resent.json.data[0].body, /99999999999/);
+});
+
+test('a re-sample does not inherit the last attempt’s tracking number', async () => {
+  const { sample } = await pipelineTo('dispatched');
+
+  await api(`/api/samples/${sample._id}/feedback`, {
+    method: 'POST',
+    token: nandhini,
+    body: { outcome: 'modification_required', note: 'Shoulder 5mm wider' },
+  });
+
+  const { json } = await api(`/api/samples/${sample._id}/resample`, {
+    method: 'POST',
+    token: meera,
+    body: {},
+  });
+
+  assert.equal(json.data.sample.courier, undefined, 'a new attempt travels on its own journey');
+  assert.equal(json.data.sample.awbNumber, undefined);
+});
+
 /* ------------------------------ Consent and silence ------------------------------ */
 
 test('a customer who has opted out of a channel is not messaged on it', async () => {
