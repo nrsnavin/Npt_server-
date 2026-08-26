@@ -7,6 +7,7 @@ import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import Enquiry from '../models/Enquiry.js';
+import Sample from '../models/Sample.js';
 import Counter from '../models/Counter.js';
 import { nextNumber } from '../services/numbering.service.js';
 
@@ -173,12 +174,13 @@ const PRODUCTS = [
   },
 ];
 
-export async function seedPipeline({ nandhini, arun }) {
+export async function seedPipeline({ nandhini, arun, meera }) {
   await Promise.all([
     Product.deleteMany({}),
     Customer.deleteMany({}),
     Lead.deleteMany({}),
     Enquiry.deleteMany({}),
+    Sample.deleteMany({}),
     Counter.deleteMany({}),
   ]);
 
@@ -531,5 +533,106 @@ export async function seedPipeline({ nandhini, arun }) {
     );
   }
 
-  return { products: products.length, customers: customers.length, leads: leads.length, enquiries: enquiries.length };
+  const byNumber = Object.fromEntries(enquiries.map((enquiry) => [enquiry.number, enquiry]));
+
+  /**
+   * Samples at four points of their life, so the queue, the overdue escalation and the
+   * feedback loop all have something real behind them.
+   */
+  const sampleRows = [
+    {
+      // Overdue and still unassigned — the case §25 escalates.
+      enquiry: byNumber['ENQ-2026-0004'],
+      status: 'production_required',
+      purpose: 'new_development',
+      colour: 'Matte White',
+      quantity: 5,
+      requiredDate: days(-2, 17),
+      requestedAt: days(-5),
+      autoCreated: true,
+      remarks: 'Matte finish trial. Buyer supplied a competitor piece for reference.',
+    },
+    {
+      // With the customer, waiting on their answer.
+      enquiry: byNumber['ENQ-2026-0003'],
+      status: 'dispatched',
+      purpose: 'colour_approval',
+      colour: 'Charcoal',
+      quantity: 10,
+      requiredDate: days(-6, 17),
+      requestedAt: days(-12),
+      assignedTo: meera?._id,
+      courier: 'Blue Dart',
+      awbNumber: '77213904118',
+      dispatchedAt: days(-4),
+      dispatchedQuantity: 10,
+      autoCreated: true,
+    },
+    {
+      // Ready on the bench, waiting for marketing to arrange the courier.
+      enquiry: byNumber['ENQ-2026-0002'],
+      status: 'sample_ready',
+      purpose: 'existing_model',
+      colour: 'Black',
+      quantity: 6,
+      requiredDate: days(1, 17),
+      requestedAt: days(-3),
+      assignedTo: meera?._id,
+    },
+    {
+      // Settled: this is what an approved sample looks like in the register.
+      enquiry: byNumber['ENQ-2026-0007'],
+      status: 'approved',
+      purpose: 'buyer_approval',
+      colour: 'Assorted',
+      quantity: 12,
+      requiredDate: days(-30, 17),
+      requestedAt: days(-36),
+      assignedTo: meera?._id,
+      courier: 'Professional Couriers',
+      awbNumber: '55910233741',
+      dispatchedAt: days(-31),
+      dispatchedQuantity: 12,
+      deliveredAt: days(-29),
+      feedbackAt: days(-27),
+      feedbackBy: nandhini._id,
+      feedbackNote: 'Buyer approved all four colours. Proceed to pricing.',
+    },
+  ];
+
+  const samples = [];
+  for (const row of sampleRows) {
+    const { enquiry, ...rest } = row;
+    if (!enquiry) continue;
+
+    samples.push(
+      await Sample.create({
+        ...rest,
+        number: await nextNumber('SMP'),
+        customer: enquiry.customer,
+        enquiry: enquiry._id,
+        requestedBy: enquiry.assignedTo,
+        product: enquiry.product,
+        modelNumber: enquiry.requirement.modelNumber,
+        category: enquiry.requirement.category,
+        sizeMm: enquiry.requirement.sizeMm,
+        material: enquiry.requirement.material,
+        printing: enquiry.requirement.printing,
+        statusHistory: [
+          { to: 'request_received', at: rest.requestedAt },
+          ...(rest.status === 'request_received'
+            ? []
+            : [{ from: 'request_received', to: rest.status, at: rest.requestedAt }]),
+        ],
+      })
+    );
+  }
+
+  return {
+    products: products.length,
+    customers: customers.length,
+    leads: leads.length,
+    enquiries: enquiries.length,
+    samples: samples.length,
+  };
 }

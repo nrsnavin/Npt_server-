@@ -140,6 +140,7 @@ async function seed() {
   const counts = await seedPipeline({
     nandhini: byEmail['marketing@npthangers.com'],
     arun: byEmail['marketing2@npthangers.com'],
+    meera: byEmail['sampling@npthangers.com'],
   });
 
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));
@@ -154,7 +155,7 @@ async function seed() {
   console.log('\n  Sample data: 13 tasks, 5 sticky notes, 5 announcements.');
   console.log(
     `  Phase 1: ${counts.products} products, ${counts.customers} customers, ` +
-      `${counts.leads} leads, ${counts.enquiries} enquiries.`
+      `${counts.leads} leads, ${counts.enquiries} enquiries, ${counts.samples} samples.`
   );
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');

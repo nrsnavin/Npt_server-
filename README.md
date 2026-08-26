@@ -1,8 +1,8 @@
 # NPT Server — authentication API
 
-Backend for the Navin Hangers console. Currently scoped to authentication and the
-user profile: sign-in by password or one-time code, the signed-in user's own details,
-and the feature catalogue that says what their role may use.
+Backend for the Navin Hangers console: a Customer Order Lifecycle CRM for a hanger
+manufacturer. Authentication and per-user module access, the pipeline from a lead to a
+customer to an enquiry, and the sampling module that enquiry hands its work to.
 
 Node.js + Express + MongoDB (Mongoose), JWT auth with role-based access.
 
@@ -18,7 +18,7 @@ Node.js + Express + MongoDB (Mongoose), JWT auth with role-based access.
 ```bash
 npm install
 cp .env.example .env      # set MONGO_URI and a real JWT_SECRET
-npm run seed              # optional: one account per role
+npm run seed              # optional: one account per department, plus working data
 npm run dev
 ```
 
@@ -44,8 +44,9 @@ Each also has a phone number (`+9198765000 01`–`09`) for SMS sign-in.
 There are two marketing accounts on purpose: sign in as each to see the ownership rule, since
 neither can open the other's customers, leads or enquiries.
 
-The seed also loads Phase 1 sample data — 10 hanger models, 6 customers, 4 leads and 9
-enquiries spread across the funnel, including one new development and one lost enquiry.
+The seed also loads a working data set — 10 hanger models, 6 customers, 4 leads, 9 enquiries
+across the funnel and 4 sample requests, including one new development, one lost enquiry and
+one sample already overdue.
 
 ## Creating an account from the command line
 
@@ -87,6 +88,14 @@ Runs against an in-memory MongoDB — no local `mongod` needed.
   a stubbed `fetch`: request shape, credential handling, error translation, retries,
   timeouts, and the guarantee that a failed send does not consume the resend cooldown.
   They never touch the network or cost a message.
+- `tests/access.test.js` — module grants, the department templates and the `requireModule`
+  middleware.
+- `tests/pipeline.test.js` — products, customers, leads and enquiries: lead conversion,
+  duplicate detection, the enquiry stage machine, the next-action rule and record ownership.
+- `tests/sampling.test.js` — the enquiry-to-sample automation, the dispatch rule, the split
+  between making a sample and recording what the customer said, re-sampling, and the overdue
+  escalation query.
+- `tests/workspace.test.js` and `tests/health.test.js` — the dock and the probes.
 
 ## API
 
@@ -120,6 +129,12 @@ applied inside the controllers because it varies by department.
 | POST | `/enquiries/:id/status` | Move a stage, with the reason a close or hold needs |
 | POST | `/enquiries/:id/promote-product` | Turn an approved new development into a catalogue model |
 | GET | `/enquiries/pipeline` | Count and value per stage, for the funnel |
+| GET/POST | `/samples` | Sample requests; `?open=`, `?overdue=`, `?unassigned=`, `?mine=`, `?enquiry=` |
+| POST | `/samples/:id/status` | Move it along the bench; dispatch demands courier, AWB and quantity |
+| POST | `/samples/:id/feedback` | What the customer said — on marketing's grant, not the sample team's |
+| POST | `/samples/:id/assign` | Pick a request off the shared queue |
+| POST | `/samples/:id/resample` | The next attempt after a modification, linked to the last |
+| GET | `/samples/pipeline` | Count and overdue per stage |
 
 Responses are `{ success, data }`; list routes add `{ pagination }`. Errors are
 `{ success: false, message, details? }`.
@@ -200,9 +215,9 @@ integration is wired up last, once the modules it feeds exist. Enquiries are rai
 until then. A few cheap decisions in Phase 1 keep that door open —
 see [BLUEPRINT §8](docs/BLUEPRINT.md#8-whatsapp-as-the-front-door-41--deferred).
 
-**Phase 1 is built**: `customers`, `products` and `enquiries` (which covers leads), alongside
-`announcements` and `users`. The rest exist in the catalogue so access is defined ahead of the
-feature — see [Build order](docs/BLUEPRINT.md#11-build-order-39).
+**Built so far**: `customers`, `products`, `enquiries` (which covers leads) and `samples`,
+alongside `announcements` and `users`. The rest exist in the catalogue so access is defined
+ahead of the feature — see [Build order](docs/BLUEPRINT.md#11-build-order-39).
 
 ### Phase 1: the pipeline
 
@@ -227,8 +242,40 @@ Two rules are enforced on write rather than reported afterwards:
   customer. See `src/services/ownership.service.js`.
 
 Stage changes are recorded on the enquiry and published on an internal event bus
-(`src/services/events.service.js`). Nothing subscribes yet: sampling picks up
-`sample_required` in Phase 2 and pricing picks up `pricing_required` in Phase 3.
+(`src/services/events.service.js`), which is how the modules hand work to each other without
+knowing about each other.
+
+### Phase 2: sampling
+
+Moving an enquiry to **sample required** raises the sample request on its own, fills it from
+the enquiry, sets a due date and queues it for the sample team — the blueprint's core
+principle that completing a stage creates the next department's task [§C.1, §6]. Re-applying
+the status does not raise a second request.
+
+The request then walks the bench: checking stock, production or printing required, ready,
+dispatched, delivered. Two rules are enforced rather than reported:
+
+- **Dispatching demands the courier, AWB and quantity** [§6]. A sample the customer cannot be
+  told how to expect is a sample nobody chases. Dispatching also moves the enquiry to sample
+  feedback pending.
+- **The maker does not mark their own work approved.** Approved, modification required and
+  rejected are set through a separate feedback action gated on `enquiries` write, because only
+  the person who spoke to the customer knows the answer. Approving sends the enquiry on to
+  pricing; a rejection leaves it open, since whether to close it is marketing's call.
+
+A modification produces a linked second attempt carrying the customer's own words forward, so
+the register reads as a sequence of attempts rather than unrelated requests.
+
+Handover tasks land in the dock people already work from, not a separate notification centre
+[§35], and are deduplicated on their origin so a corrected status cannot queue the same
+instruction twice. `GET /samples?overdue=true` is the escalation query from §25; a sample
+sitting with the customer is excluded, because that delay is not the plant's.
+
+Marketing's ownership on samples runs through `requestedBy` rather than `assignedTo` — the
+sample is worked by the sample team, so scoping on who is doing the work would hide every
+sample from the person who asked for it.
+
+Pricing subscribes to `enquiry.pricing_required` in Phase 3.
 
 ## Roles, departments and feature access
 

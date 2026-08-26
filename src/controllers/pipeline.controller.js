@@ -8,29 +8,7 @@ import { nextNumber } from '../services/numbering.service.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { EVENTS, publish, statusEvent } from '../services/events.service.js';
 import { normalisePhone } from '../utils/phone.js';
-
-/** Shared list plumbing: paging, sorting and a safe text search. */
-function listParams(query, { searchFields = [], defaultSort = '-createdAt' } = {}) {
-  const page = Math.max(Number(query.page) || 1, 1);
-  const limit = Math.min(Math.max(Number(query.limit) || 25, 1), 200);
-  const sort = query.sort || defaultSort;
-
-  const filter = {};
-  if (query.search && searchFields.length) {
-    const escaped = String(query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(escaped, 'i');
-    filter.$or = searchFields.map((field) => ({ [field]: regex }));
-  }
-
-  return { page, limit, sort, filter };
-}
-
-const paginated = (res, data, { page, limit, total }) =>
-  res.json({
-    success: true,
-    data,
-    pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
-  });
+import { listParams, paginated } from '../utils/query.js';
 
 /* ------------------------------- Products ------------------------------- */
 

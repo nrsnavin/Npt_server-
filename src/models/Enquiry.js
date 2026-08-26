@@ -2,11 +2,18 @@ import mongoose from 'mongoose';
 import { CUSTOMER_SOURCES } from './Customer.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Product.js';
 
-/** The eleven enquiry statuses [BLUEPRINT §3], in the order work moves through them. */
+/**
+ * The enquiry statuses [BLUEPRINT §3], in the order work moves through them.
+ *
+ * `sample_feedback_pending` is not in the §3 matrix but §6 requires it: dispatching a sample
+ * moves the enquiry there. Without it the enquiry would sit on `sample_required` while the
+ * sample is already with the customer, which is the opposite of what marketing needs to see.
+ */
 export const ENQUIRY_STATUSES = [
   'new',
   'requirement_clarification',
   'sample_required',
+  'sample_feedback_pending',
   'pricing_required',
   'quote_submitted',
   'negotiation',

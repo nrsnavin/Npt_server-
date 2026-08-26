@@ -12,11 +12,22 @@ const todoSchema = new mongoose.Schema(
     priority: { type: String, enum: PRIORITIES, default: 'normal' },
     completed: { type: Boolean, default: false },
     completedAt: { type: Date },
+
+    /**
+     * Raised by automation rather than typed [BLUEPRINT §35]: completing a stage creates the
+     * next person's task. `link` points the dock at the record, and `originKey` identifies
+     * what raised it so the same handover cannot queue twice.
+     */
+    system: { type: Boolean, default: false },
+    link: { type: String, trim: true },
+    originKey: { type: String, trim: true },
   },
   { timestamps: true }
 );
 
 // The dock lists open tasks by due date, so index the query it actually runs.
 todoSchema.index({ user: 1, completed: 1, dueDate: 1 });
+// Automated tasks are deduplicated on their origin, which is unique per user.
+todoSchema.index({ user: 1, originKey: 1 }, { sparse: true });
 
 export default mongoose.model('Todo', todoSchema);

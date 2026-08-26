@@ -27,6 +27,16 @@ export const EVENTS = {
   ENQUIRY_PRICING_REQUIRED: 'enquiry.pricing_required',
   ENQUIRY_WON: 'enquiry.won',
   ENQUIRY_LOST: 'enquiry.lost',
+
+  SAMPLE_CREATED: 'sample.created',
+  SAMPLE_STATUS_CHANGED: 'sample.status_changed',
+  /** Marketing is told the moment the sample is ready to go out [§6]. */
+  SAMPLE_READY: 'sample.ready',
+  /** Moves the enquiry to sample feedback pending [§6]. */
+  SAMPLE_DISPATCHED: 'sample.dispatched',
+  SAMPLE_APPROVED: 'sample.approved',
+  SAMPLE_MODIFICATION_REQUIRED: 'sample.modification_required',
+  SAMPLE_REJECTED: 'sample.rejected',
 };
 
 export function publish(event, payload) {
@@ -50,4 +60,14 @@ export const statusEvent = (status) =>
     pricing_required: EVENTS.ENQUIRY_PRICING_REQUIRED,
     won: EVENTS.ENQUIRY_WON,
     lost: EVENTS.ENQUIRY_LOST,
+  })[status] || null;
+
+/** The same, for a sample status [§6]. */
+export const sampleStatusEvent = (status) =>
+  ({
+    sample_ready: EVENTS.SAMPLE_READY,
+    dispatched: EVENTS.SAMPLE_DISPATCHED,
+    approved: EVENTS.SAMPLE_APPROVED,
+    modification_required: EVENTS.SAMPLE_MODIFICATION_REQUIRED,
+    rejected: EVENTS.SAMPLE_REJECTED,
   })[status] || null;

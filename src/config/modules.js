@@ -17,9 +17,8 @@
  * never the department, so access stays auditable and a department change never silently
  * alters what somebody can already do.
  *
- * Nothing here is built yet apart from announcements and user administration. The entries
- * exist so access is defined ahead of the feature, and so the blueprint's module map has
- * one home in the code.
+ * `available` marks what is actually built. The unbuilt entries exist so access is defined
+ * ahead of the feature, and so the blueprint's module map has one home in the code.
  */
 
 /** Ordered weakest to strongest; `write` implies `read`. */
@@ -58,7 +57,7 @@ export const MODULES = [
     stage: 2,
     ownerDepartment: 'sampling',
     blueprint: '4-6',
-    available: false,
+    available: true,
   },
   {
     key: 'pricing',

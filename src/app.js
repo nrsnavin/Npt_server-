@@ -9,6 +9,7 @@ import { env, isProduction } from './config/env.js';
 import routes from './routes/index.js';
 import healthRoutes from './routes/health.routes.js';
 import { notFoundHandler, errorHandler } from './middleware/error.js';
+import { registerSamplingSubscribers } from './subscribers/sampling.subscriber.js';
 
 const app = express();
 
@@ -41,6 +42,10 @@ app.use('/api', rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true
 app.use('/health', healthRoutes);
 
 app.use('/api', routes);
+
+// Cross-module automation: completing a stage creates the next department's task [§C.1].
+// Registered once here rather than inside a module, so the modules stay unaware of each other.
+registerSamplingSubscribers();
 
 app.use(notFoundHandler);
 app.use(errorHandler);
