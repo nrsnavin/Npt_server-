@@ -1,5 +1,6 @@
 import Sample, {
-  CLOSED_SAMPLE_STATUSES, FEEDBACK_STATUSES, SAMPLE_STATUSES,
+  CLOSED_SAMPLE_STATUSES, FEEDBACK_STATUSES, NOT_ESCALATED_STATUSES,
+  SAMPLE_STATUSES, WITH_CUSTOMER_STATUSES,
 } from '../models/Sample.js';
 import Enquiry from '../models/Enquiry.js';
 import ApiError from '../utils/ApiError.js';
@@ -51,19 +52,18 @@ export const listSamples = asyncHandler(async (req, res) => {
   if (req.query.purpose) filter.purpose = req.query.purpose;
   if (req.query.customer) filter.customer = req.query.customer;
   if (req.query.enquiry) filter.enquiry = req.query.enquiry;
-  if (req.query.unassigned === 'true') filter.assignedTo = { $exists: false };
+  // Matches a field that was never set and one that was cleared, which are the same thing
+  // to the queue but not to Mongo.
+  if (req.query.unassigned === 'true') filter.assignedTo = null;
   if (req.query.mine === 'true') filter.assignedTo = req.user._id;
 
   /**
    * The escalation query [§25]. Overdue is a virtual on the model, so it cannot be sorted or
-   * paged on — this repeats the same definition as a filter, and the two are kept in step by
-   * the test that asserts the endpoint and the virtual agree.
+   * paged on; this expresses the same rule as a filter, from the same list of exclusions.
    */
   if (req.query.overdue === 'true') {
     filter.requiredDate = { $lt: new Date() };
-    filter.status = {
-      $nin: [...CLOSED_SAMPLE_STATUSES, 'dispatched', 'delivered', 'customer_feedback_pending'],
-    };
+    filter.status = { $nin: NOT_ESCALATED_STATUSES };
   }
 
   const [data, total] = await Promise.all([
@@ -92,6 +92,8 @@ export const getSample = asyncHandler(async (req, res) => {
 export const createSample = asyncHandler(async (req, res) => {
   const enquiry = await Enquiry.findById(req.body.enquiry);
   if (!enquiry) throw ApiError.badRequest('That enquiry does not exist');
+  // Raising a request against an enquiry you cannot see would put it in its owner's list.
+  if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
 
   const { sample, created } = await createSampleForEnquiry(enquiry, req.body);
   if (!created) {
@@ -106,6 +108,7 @@ export const createSample = asyncHandler(async (req, res) => {
 export const updateSample = asyncHandler(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
   if (req.body.status) {
     throw ApiError.badRequest('Use the status action to move a sample through its stages');
   }
@@ -122,8 +125,10 @@ export const updateSample = asyncHandler(async (req, res) => {
 export const assignSample = asyncHandler(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
 
-  sample.assignedTo = req.body.assignedTo || req.user._id;
+  // An explicit null hands it back to the shared queue; omitting it takes it yourself.
+  sample.assignedTo = req.body.assignedTo === null ? null : req.body.assignedTo || req.user._id;
   await sample.save();
   res.json({ success: true, data: await withRefs(sample) });
 });
@@ -139,6 +144,7 @@ export const assignSample = asyncHandler(async (req, res) => {
 export const setSampleStatus = asyncHandler(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
 
   const { status, note, courier, awbNumber, dispatchedAt, dispatchedQuantity } = req.body;
 
@@ -200,7 +206,7 @@ export const recordFeedback = asyncHandler(async (req, res) => {
   if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) {
     throw ApiError.badRequest(`This sample was already ${sample.status}`);
   }
-  if (!['dispatched', 'delivered', 'customer_feedback_pending'].includes(sample.status)) {
+  if (!WITH_CUSTOMER_STATUSES.includes(sample.status)) {
     throw ApiError.badRequest(
       'The customer cannot have an opinion on a sample that has not reached them yet'
     );
@@ -228,6 +234,7 @@ export const recordFeedback = asyncHandler(async (req, res) => {
 export const resample = asyncHandler(async (req, res) => {
   const previous = await Sample.findById(req.params.id);
   if (!previous) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, previous)) throw ApiError.notFound('Sample not found');
   if (previous.status !== 'modification_required') {
     throw ApiError.badRequest('Only a sample the customer asked to modify can be re-sampled');
   }
@@ -275,16 +282,7 @@ export const samplePipeline = asyncHandler(async (req, res) => {
                 $and: [
                   { $ne: ['$requiredDate', null] },
                   { $lt: ['$requiredDate', now] },
-                  {
-                    $not: [
-                      {
-                        $in: [
-                          '$status',
-                          [...CLOSED_SAMPLE_STATUSES, 'dispatched', 'delivered', 'customer_feedback_pending'],
-                        ],
-                      },
-                    ],
-                  },
+                  { $not: [{ $in: ['$status', NOT_ESCALATED_STATUSES] }] },
                 ],
               },
               1,

@@ -134,7 +134,10 @@ async function findDuplicateCustomer({ gstin, mobile, whatsapp }, excludeId) {
   const base = excludeId ? { _id: { $ne: excludeId } } : {};
 
   if (gstin) {
-    const match = await Customer.findOne({ ...base, gstin: gstin.toUpperCase() });
+    const match = await Customer.findOne({ ...base, gstin: gstin.toUpperCase() }).populate(
+      'assignedTo',
+      'name'
+    );
     if (match) return Object.assign(match, { matchedOn: 'GST number' });
   }
 
@@ -143,21 +146,37 @@ async function findDuplicateCustomer({ gstin, mobile, whatsapp }, excludeId) {
     const match = await Customer.findOne({
       ...base,
       $or: [{ mobile: { $in: numbers } }, { whatsapp: { $in: numbers } }],
-    });
+    }).populate('assignedTo', 'name');
     if (match) return Object.assign(match, { matchedOn: 'phone number' });
   }
 
   return null;
 }
 
-/** Exposed so the UI can warn before submitting, and so WhatsApp can reuse it later. */
+/**
+ * Exposed so the UI can warn before submitting, and so WhatsApp can reuse it later.
+ *
+ * The search deliberately ignores ownership — a duplicate the caller cannot see is still a
+ * duplicate, and answering "no match" would produce the second master record the rule exists
+ * to prevent. What it returns does respect ownership: someone else's customer is reported as
+ * existing, with who to talk to, but never handed over.
+ */
 export const checkDuplicateCustomer = asyncHandler(async (req, res) => {
   const match = await findDuplicateCustomer(req.query);
+
+  if (!match) return res.json({ success: true, data: { duplicate: false } });
+
+  const visible = ownsRecord(req.user, match);
   res.json({
     success: true,
-    data: match
-      ? { duplicate: true, matchedOn: match.matchedOn, customer: { id: match._id, code: match.code, name: match.name } }
-      : { duplicate: false },
+    data: {
+      duplicate: true,
+      matchedOn: match.matchedOn,
+      owner: match.assignedTo?.name,
+      ...(visible
+        ? { customer: { id: match._id, code: match.code, name: match.name } }
+        : {}),
+    },
   });
 });
 
@@ -206,6 +225,12 @@ export const updateLead = asyncHandler(async (req, res) => {
   if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
   if (lead.status === 'converted') {
     throw ApiError.badRequest('This lead has been converted and can no longer be edited');
+  }
+
+  // Giving a relationship away is management's call, not the holder's — the same rule
+  // customers already carry.
+  if (req.body.assignedTo && req.user.role !== 'admin') {
+    throw ApiError.forbidden('Only an administrator can reassign a lead');
   }
 
   const { status, disqualifyReason } = req.body;
@@ -263,6 +288,15 @@ export const convertLead = asyncHandler(async (req, res) => {
       `${duplicate.name} (${duplicate.code}) already exists with the same ${duplicate.matchedOn}. ` +
         'Link the enquiry to that customer instead of converting.'
     );
+  }
+
+  /*
+   * Conversion writes three records and must not half-happen. A customer left behind by a
+   * rejected enquiry would match the duplicate check on the retry, and the lead could then
+   * never be converted at all — so the enquiry is judged before the customer is written.
+   */
+  if (enquiryInput) {
+    await assertEnquiryValid({ ...enquiryInput, assignedTo: lead.assignedTo });
   }
 
   const customer = await Customer.create({
@@ -336,8 +370,15 @@ function assertNextAction(enquiry) {
   }
 }
 
-/** Shared by the create endpoint and by lead conversion. */
-async function createEnquiryRecord(input, user) {
+/**
+ * Everything about a proposed enquiry that can be judged before anything is written.
+ *
+ * Separated from creation so a caller that writes other records first — lead conversion
+ * writes a customer, a group writes several enquiries — can find out it is going to fail
+ * before it has left half a conversion behind. Rolling back afterwards is not equivalent:
+ * this database is not necessarily a replica set, so there is no transaction to lean on.
+ */
+async function assertEnquiryValid(input) {
   const { product, isNewDevelopment } = input;
 
   if (!product && !isNewDevelopment) {
@@ -345,13 +386,24 @@ async function createEnquiryRecord(input, user) {
       'Pick a model from the catalogue, or mark this as a new development'
     );
   }
+  if (isNewDevelopment && !input.requirement?.modelNumber && !input.remarks) {
+    throw ApiError.badRequest('Describe the new development in the model number or remarks');
+  }
+  if (
+    !CLOSED_STATUSES.includes(input.status || 'new') &&
+    (!input.nextAction || !input.nextFollowUpDate)
+  ) {
+    throw ApiError.badRequest('An open enquiry needs a next action and a follow-up date');
+  }
   if (product) {
     const exists = await Product.findById(product);
     if (!exists) throw ApiError.badRequest('That model is not in the catalogue');
   }
-  if (isNewDevelopment && !input.requirement?.modelNumber && !input.remarks) {
-    throw ApiError.badRequest('Describe the new development in the model number or remarks');
-  }
+}
+
+/** Shared by the create endpoint and by lead conversion. */
+async function createEnquiryRecord(input, user) {
+  await assertEnquiryValid(input);
 
   const enquiry = new Enquiry({
     ...input,
@@ -360,7 +412,6 @@ async function createEnquiryRecord(input, user) {
     statusHistory: [{ to: input.status || 'new', by: user._id }],
   });
 
-  assertNextAction(enquiry);
   await enquiry.save();
 
   publish(EVENTS.ENQUIRY_CREATED, { enquiry, by: user });
@@ -437,22 +488,20 @@ export const createEnquiryGroup = asyncHandler(async (req, res) => {
     throw ApiError.forbidden('That customer belongs to another marketing person');
   }
 
+  // Every model is judged first: a group that stops half way is worse than one refused.
+  const items = req.body.enquiries.map((item) => ({
+    ...req.body.shared,
+    ...item,
+    customer: customer._id,
+    assignedTo: customer.assignedTo,
+  }));
+  for (const item of items) await assertEnquiryValid(item);
+
   const groupRef = await nextNumber('GRP');
   const created = [];
 
-  for (const item of req.body.enquiries) {
-    created.push(
-      await createEnquiryRecord(
-        {
-          ...req.body.shared,
-          ...item,
-          customer: customer._id,
-          assignedTo: customer.assignedTo,
-          groupRef,
-        },
-        req.user
-      )
-    );
+  for (const item of items) {
+    created.push(await createEnquiryRecord({ ...item, groupRef }, req.user));
   }
 
   res.status(201).json({ success: true, data: { groupRef, enquiries: created } });

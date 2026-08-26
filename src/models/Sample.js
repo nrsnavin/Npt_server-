@@ -1,7 +1,14 @@
 import mongoose from 'mongoose';
 import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from './Product.js';
 
-/** The twelve sample statuses [BLUEPRINT §4], in the order work moves through them. */
+/**
+ * The sample statuses [BLUEPRINT §4], in the order work moves through them.
+ *
+ * `cancelled` is not in the §4 matrix. It is needed because §4 only describes a request that
+ * runs to an answer, and a request can also stop being wanted: losing the enquiry behind a
+ * sample must take it off the bench, or the team keeps making something nobody will buy and
+ * it escalates as overdue forever.
+ */
 export const SAMPLE_STATUSES = [
   'request_received',
   'checking_stock',
@@ -15,16 +22,27 @@ export const SAMPLE_STATUSES = [
   'approved',
   'modification_required',
   'rejected',
+  'cancelled',
 ];
 
-/** Statuses that end the request. A rejection or an approval closes this attempt. */
-export const CLOSED_SAMPLE_STATUSES = ['approved', 'rejected'];
+/** Statuses that end the request: it has been answered, or it is no longer wanted. */
+export const CLOSED_SAMPLE_STATUSES = ['approved', 'rejected', 'cancelled'];
 
 /**
  * Statuses that mean the customer has the sample and the answer is theirs to give. Only
  * marketing may move out of these, because only marketing talks to the customer.
  */
 export const FEEDBACK_STATUSES = ['approved', 'modification_required', 'rejected'];
+
+/** With the customer: any delay from here is theirs, not the plant's. */
+export const WITH_CUSTOMER_STATUSES = ['dispatched', 'delivered', 'customer_feedback_pending'];
+
+/**
+ * What the §25 escalation ignores. Named once because it is needed in two places that
+ * cannot share code — the virtual below reads a loaded document, the list endpoint has to
+ * express the same thing as a query — and two copies would drift.
+ */
+export const NOT_ESCALATED_STATUSES = [...CLOSED_SAMPLE_STATUSES, ...WITH_CUSTOMER_STATUSES];
 
 /** Why the sample is being made [§4]. Drives what "approved" actually settles. */
 export const SAMPLE_PURPOSES = [
@@ -124,9 +142,7 @@ sampleSchema.virtual('isOpen').get(function isOpen() {
  * crossed, and again a day later. Computed rather than stored, so it can never go stale.
  */
 sampleSchema.virtual('isOverdue').get(function isOverdue() {
-  if (!this.requiredDate || CLOSED_SAMPLE_STATUSES.includes(this.status)) return false;
-  // Once it is with the customer the delay is theirs, not the plant's.
-  if (['dispatched', 'delivered', 'customer_feedback_pending'].includes(this.status)) return false;
+  if (!this.requiredDate || NOT_ESCALATED_STATUSES.includes(this.status)) return false;
   return this.requiredDate < new Date();
 });
 

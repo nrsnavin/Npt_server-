@@ -95,6 +95,9 @@ Runs against an in-memory MongoDB — no local `mongod` needed.
 - `tests/sampling.test.js` — the enquiry-to-sample automation, the dispatch rule, the split
   between making a sample and recording what the customer said, re-sampling, and the overdue
   escalation query.
+- `tests/audit.test.js` — the gaps found auditing the two modules above, each written to fail
+  first: half-finished conversions, partial enquiry groups, ownership on write routes, work
+  left on the bench behind a lost enquiry, and what the duplicate check may reveal.
 - `tests/workspace.test.js` and `tests/health.test.js` — the dock and the probes.
 
 ## API
@@ -232,6 +235,12 @@ sharing a `groupRef`, so sample and price stay answerable per model while follow
 them together. A requirement with no catalogue match is flagged `isNewDevelopment` and
 promoted into the product master once sampling has developed it and the buyer has approved.
 
+Conversion writes three records and must not half-happen, so the enquiry is judged before
+the customer is written: a customer left behind by a rejected enquiry would match the
+duplicate check on the retry, and the lead could then never be converted at all. A grouped
+enquiry is validated in full before any of it is written, for the same reason. Neither leans
+on a transaction, because this database is not necessarily a replica set.
+
 Two rules are enforced on write rather than reported afterwards:
 
 - **An open enquiry always has a next action and a follow-up date.** An enquiry with no next
@@ -239,7 +248,13 @@ Two rules are enforced on write rather than reported afterwards:
 - **Marketing sees only its own records.** A marketing person cannot open another's
   customers, leads or enquiries — those carry the relationship. Every other department sees
   whatever its module grant already allows, because none of them compete for the same
-  customer. See `src/services/ownership.service.js`.
+  customer. See `src/services/ownership.service.js`. Reassigning a customer or a lead is an
+  administrator's decision, not the holder's.
+
+The duplicate check is the one place ownership is deliberately crossed: a duplicate the
+caller cannot see is still a duplicate, and answering "no match" would produce the second
+master record the rule exists to prevent. It reports that one exists and who owns it, without
+handing the record over.
 
 Stage changes are recorded on the enquiry and published on an internal event bus
 (`src/services/events.service.js`), which is how the modules hand work to each other without
@@ -268,8 +283,14 @@ the register reads as a sequence of attempts rather than unrelated requests.
 
 Handover tasks land in the dock people already work from, not a separate notification centre
 [§35], and are deduplicated on their origin so a corrected status cannot queue the same
-instruction twice. `GET /samples?overdue=true` is the escalation query from §25; a sample
-sitting with the customer is excluded, because that delay is not the plant's.
+instruction twice. They go to whoever holds `samples` write, falling back to admins only when
+nobody does — being able to do everything is not a reason to be handed the bench's queue.
+
+`GET /samples?overdue=true` is the escalation query from §25; a sample sitting with the
+customer is excluded, because that delay is not the plant's. Losing the enquiry behind a
+sample cancels it, so the bench does not keep making something nobody will buy and the
+escalation list stays worth reading. `cancelled` is the one status not in the §4 matrix,
+which only describes a request that runs to an answer.
 
 Marketing's ownership on samples runs through `requestedBy` rather than `assignedTo` — the
 sample is worked by the sample team, so scoping on who is doing the work would hide every

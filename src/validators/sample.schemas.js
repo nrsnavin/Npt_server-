@@ -29,7 +29,8 @@ export const sampleUpdateSchema = z.object(sampleCore).partial();
 /** A re-sample inherits the previous attempt; everything here is an override. */
 export const resampleSchema = z.object(sampleCore).partial();
 
-export const sampleAssignSchema = z.object({ assignedTo: objectId.optional() });
+/** An explicit null hands the request back to the shared queue. */
+export const sampleAssignSchema = z.object({ assignedTo: objectId.nullable().optional() });
 
 /**
  * The three feedback statuses are excluded: they arrive through the feedback action, which

@@ -509,8 +509,13 @@ test('an action answers with the same shape the screen was already showing', asy
 test('the pipeline reports every stage, including the empty ones', async () => {
   const { status, json } = await api('/api/samples/pipeline', { token: meera });
 
+  const { SAMPLE_STATUSES } = await import('../src/models/Sample.js');
+
   assert.equal(status, 200);
-  assert.equal(json.data.length, 12);
-  assert.equal(json.data[0].status, 'request_received');
+  assert.deepEqual(
+    json.data.map((row) => row.status),
+    SAMPLE_STATUSES,
+    'every stage is reported, in lifecycle order — a funnel with gaps hides where work stalls'
+  );
   assert.ok(json.data.every((row) => typeof row.count === 'number' && typeof row.overdue === 'number'));
 });

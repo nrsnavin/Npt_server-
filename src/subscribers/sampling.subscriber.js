@@ -1,4 +1,5 @@
 import Enquiry from '../models/Enquiry.js';
+import Sample, { CLOSED_SAMPLE_STATUSES } from '../models/Sample.js';
 import User from '../models/User.js';
 import { EVENTS, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
 import { createSampleForEnquiry } from '../services/sampling.service.js';
@@ -59,10 +60,19 @@ async function advanceEnquiry(enquiryId, to, note) {
  * open on someone's screen.
  */
 async function sampleTeam() {
-  return User.find({
+  const holders = await User.find({
     isActive: { $ne: false },
-    $or: [{ role: 'admin' }, { moduleAccess: { $elemMatch: { module: 'samples', level: 'write' } } }],
+    moduleAccess: { $elemMatch: { module: 'samples', level: 'write' } },
   }).select('_id');
+
+  if (holders.length) return holders;
+
+  /*
+   * Nobody holds the grant yet, so the request would land nowhere. Admins get it instead —
+   * but only as a fallback: being able to do everything is not a reason to be handed the
+   * bench's queue every time an enquiry needs a sample.
+   */
+  return User.find({ isActive: { $ne: false }, role: 'admin' }).select('_id');
 }
 
 /**
@@ -173,6 +183,38 @@ export function registerSamplingSubscribers() {
         link: `/samples/${sample._id}`,
         originKey: key(sample, 'rejected'),
       });
+    })
+  );
+
+  subscribe(
+    EVENTS.ENQUIRY_LOST,
+    safely('cancel work behind a lost enquiry', async ({ enquiry }) => {
+      /*
+       * A lost enquiry's sample is work nobody will buy. Left open it stays on the bench and
+       * escalates as overdue forever, which is how an escalation list stops being read.
+       *
+       * Only losing does this. A won enquiry may still be waiting on a sample the customer
+       * asked for, and cancelling that would destroy the record of what was sent.
+       */
+      const open = await Sample.find({
+        enquiry: enquiry._id,
+        status: { $nin: CLOSED_SAMPLE_STATUSES },
+      });
+
+      for (const sample of open) {
+        const from = sample.status;
+        sample.status = 'cancelled';
+        sample.statusHistory.push({
+          from,
+          to: 'cancelled',
+          note: `${enquiry.number} was lost`,
+        });
+        await sample.save();
+
+        for (const kind of ['prepare', 'acknowledged', 'ready', 'feedback']) {
+          await resolveTasks(key(sample, kind));
+        }
+      }
     })
   );
 
