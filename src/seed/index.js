@@ -12,6 +12,7 @@ import Todo from '../models/Todo.js';
 import StickyNote from '../models/StickyNote.js';
 import Announcement from '../models/Announcement.js';
 import { defaultAccessFor, DEPARTMENTS } from '../config/modules.js';
+import { seedPipeline } from './pipeline.js';
 
 /** Dates relative to today, so the reminder feed always has something to show. */
 const days = (offset, hour = 17) => {
@@ -25,6 +26,9 @@ const days = (offset, hour = 17) => {
 const PEOPLE = [
   { name: 'Navin R', email: 'admin@npthangers.com', password: 'Admin@12345', role: 'admin', department: 'management', phone: '9876500001' },
   { name: 'Nandhini S', email: 'marketing@npthangers.com', password: 'Mktg@123456', department: 'marketing', phone: '9876500002' },
+  // A second marketing account, so the ownership rule [§29] is visible: neither of them
+  // can open the other's customers or enquiries.
+  { name: 'Arun K', email: 'marketing2@npthangers.com', password: 'Mktg@654321', department: 'marketing', phone: '9876500004' },
   { name: 'Meera Sampling', email: 'sampling@npthangers.com', password: 'Sample@1234', department: 'sampling', phone: '9876500003' },
   { name: 'Priya Orders', email: 'orders@npthangers.com', password: 'Orders@1234', department: 'order_confirmation', phone: '9876500005' },
   { name: 'Ramesh Plant', email: 'production@npthangers.com', password: 'Prod@123456', department: 'production', phone: '9876500006' },
@@ -132,6 +136,12 @@ async function seed() {
     },
   ]);
 
+  console.log('Adding the product master, customers, leads and enquiries...');
+  const counts = await seedPipeline({
+    nandhini: byEmail['marketing@npthangers.com'],
+    arun: byEmail['marketing2@npthangers.com'],
+  });
+
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));
 
   console.log('\nSeed complete. Sign in with a password:\n');
@@ -142,6 +152,10 @@ async function seed() {
     );
   }
   console.log('\n  Sample data: 13 tasks, 5 sticky notes, 5 announcements.');
+  console.log(
+    `  Phase 1: ${counts.products} products, ${counts.customers} customers, ` +
+      `${counts.leads} leads, ${counts.enquiries} enquiries.`
+  );
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');
 

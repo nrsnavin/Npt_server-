@@ -10,3 +10,5 @@ dist/
 .browser-test.mjs
 .health-demo.mjs
 .verify-script.mjs
+.dev-stack.mjs
+.seed-check.mjs

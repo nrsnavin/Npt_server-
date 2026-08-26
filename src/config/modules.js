@@ -48,7 +48,7 @@ export const MODULES = [
     stage: 1,
     ownerDepartment: 'marketing',
     blueprint: '3',
-    available: false,
+    available: true,
   },
   {
     key: 'samples',
@@ -139,7 +139,7 @@ export const MODULES = [
     stage: null,
     ownerDepartment: 'marketing',
     blueprint: '2',
-    available: false,
+    available: true,
   },
   {
     key: 'products',
@@ -149,7 +149,7 @@ export const MODULES = [
     stage: null,
     ownerDepartment: 'sampling',
     blueprint: '28',
-    available: false,
+    available: true,
   },
 
   {

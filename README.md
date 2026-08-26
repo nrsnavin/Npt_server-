@@ -27,16 +27,25 @@ The API listens on `http://localhost:5000`. Health checks: `GET /health` and
 
 ### Seeded logins
 
-| Email | Password | Role | Department |
-| --- | --- | --- | --- |
-| admin@npthangers.com | Admin@12345 | admin | management |
-| sales@npthangers.com | Sales@12345 | sales | sales |
-| production@npthangers.com | Prod@123456 | production | production |
-| stores@npthangers.com | Store@12345 | inventory | stores |
-| accounts@npthangers.com | Accts@12345 | accounts | accounts |
-| quality@npthangers.com | Qual@123456 | viewer | quality |
+| Email | Password | Department |
+| --- | --- | --- |
+| admin@npthangers.com | Admin@12345 | management (admin) |
+| marketing@npthangers.com | Mktg@123456 | marketing |
+| marketing2@npthangers.com | Mktg@654321 | marketing |
+| sampling@npthangers.com | Sample@1234 | sampling |
+| orders@npthangers.com | Orders@1234 | order confirmation |
+| production@npthangers.com | Prod@123456 | production |
+| quality@npthangers.com | Qual@123456 | quality |
+| despatch@npthangers.com | Desp@123456 | despatch |
+| accounts@npthangers.com | Accts@12345 | accounts |
 
-Each also has a phone number (`+9198765000 01`–`06`) for SMS sign-in.
+Each also has a phone number (`+9198765000 01`–`09`) for SMS sign-in.
+
+There are two marketing accounts on purpose: sign in as each to see the ownership rule, since
+neither can open the other's customers, leads or enquiries.
+
+The seed also loads Phase 1 sample data — 10 hanger models, 6 customers, 4 leads and 9
+enquiries spread across the funnel, including one new development and one lost enquiry.
 
 ## Creating an account from the command line
 
@@ -96,7 +105,24 @@ All routes are under `/api`. Everything except register, login and the OTP pair 
 | POST | `/auth/verify/request` | Send a code to verify your own email or phone |
 | POST | `/auth/verify/confirm` | Confirm that code |
 
-Responses are `{ success, data }`; errors are `{ success: false, message, details? }`.
+Phase 1 adds the pipeline. Every route is gated on a module grant, and record ownership is
+applied inside the controllers because it varies by department.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET/POST | `/products` | The hanger catalogue; `GET /products/:id`, `PATCH /products/:id` |
+| GET/POST | `/customers` | Customer masters; `GET /customers/:id` returns the record plus its enquiry timeline |
+| GET | `/customers/check-duplicate` | GST-then-number duplicate check, before submitting |
+| GET/POST | `/leads` | Leads; `POST /leads/:id/activities` logs contact |
+| POST | `/leads/:id/convert` | Creates the customer, its first contact and optionally the first enquiry |
+| GET/POST | `/enquiries` | Enquiries; `?open=true`, `?dueBy=`, `?groupRef=`, `?customer=` |
+| POST | `/enquiries/group` | Several models from one conversation, under a shared group reference |
+| POST | `/enquiries/:id/status` | Move a stage, with the reason a close or hold needs |
+| POST | `/enquiries/:id/promote-product` | Turn an approved new development into a catalogue model |
+| GET | `/enquiries/pipeline` | Count and value per stage, for the funnel |
+
+Responses are `{ success, data }`; list routes add `{ pagination }`. Errors are
+`{ success: false, message, details? }`.
 
 ## Health checks
 
@@ -174,8 +200,35 @@ integration is wired up last, once the modules it feeds exist. Enquiries are rai
 until then. A few cheap decisions in Phase 1 keep that door open —
 see [BLUEPRINT §8](docs/BLUEPRINT.md#8-whatsapp-as-the-front-door-41--deferred).
 
-Only `announcements` and `users` are built. The rest exist in the catalogue so access is
-defined ahead of the feature — see [Build order](docs/BLUEPRINT.md#11-build-order-39).
+**Phase 1 is built**: `customers`, `products` and `enquiries` (which covers leads), alongside
+`announcements` and `users`. The rest exist in the catalogue so access is defined ahead of the
+feature — see [Build order](docs/BLUEPRINT.md#11-build-order-39).
+
+### Phase 1: the pipeline
+
+A party we are not working yet is a **lead**. Logging contact moves it off `new`; qualifying
+it says the volume and the buyer are real; converting it creates the **customer**, its first
+contact and optionally the first **enquiry** in one action, so nothing is re-keyed. A
+customer already matching on GST or phone blocks the conversion rather than producing a
+second master record.
+
+An enquiry carries **one model**. A buyer asking about three models produces three enquiries
+sharing a `groupRef`, so sample and price stay answerable per model while follow-up keeps
+them together. A requirement with no catalogue match is flagged `isNewDevelopment` and
+promoted into the product master once sampling has developed it and the buyer has approved.
+
+Two rules are enforced on write rather than reported afterwards:
+
+- **An open enquiry always has a next action and a follow-up date.** An enquiry with no next
+  step is exactly the one that goes quiet. Closing it clears both.
+- **Marketing sees only its own records.** A marketing person cannot open another's
+  customers, leads or enquiries — those carry the relationship. Every other department sees
+  whatever its module grant already allows, because none of them compete for the same
+  customer. See `src/services/ownership.service.js`.
+
+Stage changes are recorded on the enquiry and published on an internal event bus
+(`src/services/events.service.js`). Nothing subscribes yet: sampling picks up
+`sample_required` in Phase 2 and pricing picks up `pricing_required` in Phase 3.
 
 ## Roles, departments and feature access
 
