@@ -9,6 +9,7 @@ import {
 import { defaultAccessFor, findDepartment } from '../config/modules.js';
 import { resolveIdentifier } from '../services/otp.service.js';
 import { transferBook, workloadOf } from '../services/offboarding.service.js';
+import { recordChange } from '../services/audit.service.js';
 
 const publicUser = (user) => ({
   id: user._id,
@@ -239,6 +240,17 @@ export const remove = asyncHandler(async (req, res) => {
     }
 
     moved = await transferBook(user._id, successor._id);
+
+    // A whole book changing hands is the single largest ownership event the system has, and
+    // the one somebody will ask about later.
+    await recordChange({
+      model: 'User',
+      doc: user,
+      by: req.user,
+      action: 'transferred',
+      label: user.name,
+      note: `Book transferred to ${successor.name}: ${JSON.stringify(moved)}`,
+    });
   }
 
   user.isActive = false;

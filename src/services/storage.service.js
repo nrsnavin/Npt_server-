@@ -22,6 +22,17 @@ const ROOT = path.resolve(
 /** Only what a phone camera or a scanner produces. No documents, no archives, no SVG. */
 export const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'];
 
+/**
+ * What may be attached to a customer or an enquiry [§27].
+ *
+ * Wider than the sample log's photos, because these are documents rather than shots of a
+ * shot: a buyer's drawing, print artwork, a signed approval. They arrive as PDFs at least as
+ * often as images, and refusing one means it goes back to living in somebody's email.
+ */
+export const ALLOWED_DOCUMENT_TYPES = [...ALLOWED_TYPES, 'application/pdf'];
+
+export const isAllowedDocument = (mimeType) => ALLOWED_DOCUMENT_TYPES.includes(mimeType);
+
 export const MAX_BYTES = 12 * 1024 * 1024;
 
 const EXTENSIONS = {

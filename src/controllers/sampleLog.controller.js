@@ -1,4 +1,6 @@
 import Sample from '../models/Sample.js';
+import Customer from '../models/Customer.js';
+import Enquiry from '../models/Enquiry.js';
 import SampleLog from '../models/SampleLog.js';
 import Attachment from '../models/Attachment.js';
 import ApiError from '../utils/ApiError.js';
@@ -160,6 +162,29 @@ export const removeLogComment = asyncHandler(async (req, res) => {
 });
 
 /**
+ * The record a file belongs to, and the field that decides who owns it.
+ *
+ * Exactly one of these is set on any attachment. Returning the field name alongside the
+ * record keeps the ownership rule with the model it applies to — a sample is marketing's
+ * through `requestedBy`, everything else through `assignedTo`.
+ */
+async function ownerOf(attachment) {
+  if (attachment.sample) {
+    const record = await Sample.findById(attachment.sample);
+    return record && { record, ownership: 'requestedBy' };
+  }
+  if (attachment.customer) {
+    const record = await Customer.findById(attachment.customer);
+    return record && { record, ownership: 'assignedTo' };
+  }
+  if (attachment.enquiry) {
+    const record = await Enquiry.findById(attachment.enquiry);
+    return record && { record, ownership: 'assignedTo' };
+  }
+  return null;
+}
+
+/**
  * Serves a stored file.
  *
  * The key alone is not authority. Every file hangs off a record, and the caller is checked
@@ -170,9 +195,15 @@ export const downloadAttachment = asyncHandler(async (req, res) => {
   const attachment = await Attachment.findOne({ key: req.params.key });
   if (!attachment) throw ApiError.notFound('File not found');
 
-  const sample = await Sample.findById(attachment.sample);
-  if (!sample) throw ApiError.notFound('File not found');
-  if (!ownsRecord(req.user, sample, 'requestedBy')) throw ApiError.notFound('File not found');
+  /*
+   * Access is the owning record's, and a file now hangs off a sample, a customer or an
+   * enquiry [§27]. Checking only the sample would have served every customer drawing to
+   * anybody holding the key — and the keys are random, but "unguessable" is not a permission
+   * model. A file whose owner cannot be resolved is served to nobody.
+   */
+  const owner = await ownerOf(attachment);
+  if (!owner) throw ApiError.notFound('File not found');
+  if (!ownsRecord(req.user, owner.record, owner.ownership)) throw ApiError.notFound('File not found');
 
   const stream = streamOf(attachment.key);
   if (!stream) throw ApiError.notFound('File not found');

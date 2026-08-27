@@ -5,8 +5,15 @@ import {
   listLeads, getLead, createLead, updateLead, addLeadActivity, convertLead,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, promoteToProduct, enquiryPipeline,
+  exportCustomers,
+  exportLeads,
+  exportEnquiries,
+  exportProducts,
+  bulkReassign,
 } from '../controllers/pipeline.controller.js';
 import { marketingDashboard } from '../controllers/marketingDashboard.controller.js';
+import { addDocument, listDocuments, removeDocument } from '../controllers/document.controller.js';
+import { singleDocument } from '../middleware/upload.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -14,7 +21,7 @@ import {
   customerSchema, customerUpdateSchema,
   leadSchema, leadUpdateSchema, leadActivitySchema, convertLeadSchema,
   enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema,
-  promoteProductSchema,
+  promoteProductSchema, bulkReassignSchema,
 } from '../validators/pipeline.schemas.js';
 
 const router = Router();
@@ -28,12 +35,15 @@ router.use(authenticate);
  */
 
 // Products
+// Above `/:id` so the literal segment wins; on the read grant, because an export is a read.
+router.get('/products/export', requireModule('products'), exportProducts);
 router.get('/products', requireModule('products'), listProducts);
 router.post('/products', requireModule('products', 'write'), validate(productSchema), createProduct);
 router.get('/products/:id', requireModule('products'), getProduct);
 router.patch('/products/:id', requireModule('products', 'write'), validate(productUpdateSchema), updateProduct);
 
 // Customers
+router.get('/customers/export', requireModule('customers'), exportCustomers);
 router.get('/customers/check-duplicate', requireModule('customers'), checkDuplicateCustomer);
 router.get('/customers', requireModule('customers'), listCustomers);
 router.post('/customers', requireModule('customers', 'write'), validate(customerSchema), createCustomer);
@@ -41,6 +51,7 @@ router.get('/customers/:id', requireModule('customers'), getCustomer);
 router.patch('/customers/:id', requireModule('customers', 'write'), validate(customerUpdateSchema), updateCustomer);
 
 // Leads
+router.get('/leads/export', requireModule('enquiries'), exportLeads);
 router.get('/leads', requireModule('enquiries'), listLeads);
 router.post('/leads', requireModule('enquiries', 'write'), validate(leadSchema), createLead);
 router.get('/leads/:id', requireModule('enquiries'), getLead);
@@ -56,6 +67,26 @@ router.post(
 );
 
 // Enquiries
+router.get('/enquiries/export', requireModule('enquiries'), exportEnquiries);
+/*
+ * Moving a batch to another owner. One route rather than four, because the rule and the
+ * audit trail are identical and only the collection differs.
+ */
+router.post(
+  '/bulk/:collection/reassign',
+  requireModule('users', 'write'),
+  validate(bulkReassignSchema),
+  bulkReassign
+);
+
+/*
+ * Documents on the records that have them [§27]. One set of routes rather than a pair per
+ * collection: the rule is the record's own access, and only the collection differs.
+ */
+router.get('/:collection/:id/documents', authenticate, listDocuments);
+router.post('/:collection/:id/documents', authenticate, singleDocument('file'), addDocument);
+router.delete('/:collection/:id/documents/:documentId', authenticate, removeDocument);
+
 router.get('/enquiries/pipeline', requireModule('enquiries'), enquiryPipeline);
 // Marketing's own dashboard [§21]. On the enquiries grant, since that is the module it is
 // mostly built from; ownership then decides whose figures it shows.

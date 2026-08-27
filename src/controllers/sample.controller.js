@@ -14,6 +14,7 @@ import { notifyCustomer, previewFor } from '../services/customerMessage.service.
 import CustomerMessage from '../models/CustomerMessage.js';
 import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
+import { recordChange, snapshot } from '../services/audit.service.js';
 
 /**
  * Marketing's view of a sample runs through `requestedBy`, not `assignedTo` — the sample is
@@ -221,8 +222,11 @@ export const updateSample = asyncHandler(async (req, res) => {
   }
 
   expectVersion(sample, req.body);
+  const before = snapshot(sample);
   Object.assign(sample, withoutVersion(req.body));
   await sample.save();
+  await recordChange({ model: 'Sample', doc: sample, before, by: req.user });
+
   res.json({ success: true, data: await withRefs(sample) });
 });
 

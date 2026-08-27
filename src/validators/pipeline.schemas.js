@@ -153,8 +153,15 @@ export const enquirySchema = z.object({
   ...enquiryCore,
 });
 
+/*
+ * `assignedTo` is named here as well as on create, because leaving it out did not refuse a
+ * reassignment — it dropped one. Validation strips what it does not know, so an admin moving
+ * an enquiry got a 200 and an unchanged owner, which is the worst of both: the screen said it
+ * worked. Customers and leads always accepted the field; the controller decides who may use
+ * it.
+ */
 export const enquiryUpdateSchema = z
-  .object({ ...enquiryCore, requirement: requirementSchema.optional() })
+  .object({ ...enquiryCore, assignedTo: objectId, requirement: requirementSchema.optional() })
   .partial()
   .extend(versioned);
 
@@ -190,4 +197,10 @@ export const promoteProductSchema = productSchema.partial().required({ modelCode
 export const convertLeadSchema = z.object({
   customer: customerSchema.partial().optional(),
   enquiry: z.object(enquiryCore).optional(),
+});
+
+/** Moving a batch of records to another owner. */
+export const bulkReassignSchema = z.object({
+  ids: z.array(objectId).min(1, 'Pick at least one record').max(500, 'Too many at once'),
+  assignTo: objectId,
 });

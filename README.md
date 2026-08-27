@@ -179,9 +179,99 @@ applied inside the controllers because it varies by department.
 | GET | `/samples/:id/customer-message/preview` | The draft a person would send, and what has already gone |
 | POST | `/samples/:id/customer-message` | Send it, optionally edited, on chosen channels |
 | GET | `/samples/:id/customer-messages` | Everything ever sent to this customer about this sample |
+| GET | `/history/:model/:id` | Who changed what on one record, newest first |
+| GET | `/customers/export` | The customers on screen, as CSV — same filters as the list route |
+| GET | `/leads/export`, `/enquiries/export`, `/products/export` | The same, for each list |
+| POST | `/bulk/:collection/reassign` | Move a batch to another owner; administrators only |
+| GET/POST | `/:collection/:id/documents` | Files on a customer or an enquiry [§27] |
+| DELETE | `/:collection/:id/documents/:documentId` | Remove one — its uploader or an administrator |
 
 Responses are `{ success, data }`; list routes add `{ pagination }`. Errors are
 `{ success: false, message, details? }`.
+
+### Who changed what
+
+The status histories say how a record moved through its stages, which is the part the
+process cares about. `AuditLog` is the part a dispute cares about: somebody shortened a
+required date or dropped a credit term, and three weeks later nobody can say who. A stage
+matrix cannot answer that, because none of those are stages.
+
+One row per save listing the fields that actually moved, not a copy of the record. Snapshots
+are easier to write and answer the wrong question — the reader wants "who shortened the
+delivery date", and finding that between two copies is work they should not have to do. It
+also keeps the collection proportional to editing rather than to record size.
+
+Three things it deliberately does not log. `updatedAt` and the status arrays, which are
+noise or are already recorded elsewhere. Fields where nothing moved: absent, `null` and `''`
+are one value, because a form posts an empty string for every optional box the user left
+alone, and reading those as three values filled every history with "Notes: nothing →
+nothing". And a save with no `before` at all — attaching a document does not change the
+customer it hangs off, so it records the note and no fields; passing `{}` for the previous
+state used to read as a record that had just come into existence, and one attachment wrote
+twenty lines saying every field had changed from nothing.
+
+References are stored as ids and resolved to names on the way out. The log keeps the id
+because names change, and a trail that recorded the name at the time would disagree with
+itself after a marriage; but "Priya → Arun" is what the reader wants, not two ObjectIds. An
+id that no longer resolves is left as it is, since blanking it would say the change never
+named anybody.
+
+Reading a history is reading the record: `GET /history/:model/:id` checks the caller against
+the *record*, not the log. A log that answers questions about records you may not open is a
+way around the permission system with an innocent name.
+
+A failure here never fails the write it describes. Losing an audit row is bad; refusing
+somebody's edit because the audit collection had a bad moment is worse, and turns a log
+nobody reads into an outage everybody notices.
+
+### Handing a record to somebody else
+
+One rule, in `assertReassignment`: giving a relationship away is management's call, not the
+holder's [§29], and the person it goes to has to exist and still be active.
+
+Both halves had gaps. Customers and leads enforced the first and neither enforced the
+second, so an administrator working from a stale screen could hand a customer to somebody
+who had already left — the record then belongs to nobody, because ownership scoping hides it
+from every marketing user and only an administrator can see it has gone missing.
+
+Enquiries enforced neither, and worse: `assignedTo` was not in `enquiryUpdateSchema` at all.
+Validation strips what it does not know, so the field was not refused, it was *dropped* — an
+administrator moving an enquiry got a 200 and an unchanged owner. A rule applied to two of
+three records is not a rule, and a rule that answers 200 without doing anything is worse than
+no rule at all.
+
+### Export
+
+Every list screen has one, built from the same `listParams` the list route uses, so the file
+is the screen's own filters rather than a second query that drifts from them. Exporting
+"overdue follow-ups" and getting every enquiry would be worse than having no export, because
+the file looks right. Ownership and grants apply exactly as they do on screen: an export is a
+read.
+
+Two details in `utils/csv.js` decide whether the file opens correctly on the machines it
+lands on. It is prefixed with a **byte-order mark**, without which Excel reads UTF-8 as the
+local codepage and every non-ASCII name arrives as mojibake — the person who exported it then
+concludes the data is wrong rather than the file. And a leading `=`, `+`, `-` or `@` is
+**neutralised with a quote**: those are formulas, not text, executed when the sheet opens,
+and the field they most often appear in is the free-text one somebody pasted from an email.
+
+Worth knowing when testing this: the UTF-8 decoder strips a leading BOM, so reading the
+response as text will never show it. Assert on the bytes.
+
+### Documents [§27]
+
+The blueprint asks for attachments on every relevant record — the drawing, the artwork, the
+approval, the PO, the LR. Only samples had them, so everything else lived in somebody's
+email, which is the filing cabinet this replaces. Customers and enquiries are the two that
+exist now; orders and dispatch add themselves to `OWNERS` when they land.
+
+Access is the record's, never the file's. A drawing is exactly as confidential as the
+customer it belongs to, so every route resolves the owning record first and checks the caller
+against that — which is also why an attachment names its owner as a real reference rather
+than a `{ type, id }` pair: the check needs to know which model to ask. The download route
+was widened at the same time; checking only the sample would have served every customer
+drawing to anybody holding the key, and the keys are random, but "unguessable" is not a
+permission model.
 
 ### Two people, one record
 
@@ -714,6 +804,19 @@ would lock the user out for a minute over a message they never received.
   so it cannot be used to find out who has an account. No code is sent in those cases.
 
 Every limit above is configurable — see `.env.example`.
+
+### Two rate limiters, not one
+
+Credential routes — `/auth/login`, `/auth/register`, `/auth/otp` — allow 50 requests per
+quarter hour, which is what a brute-force guard should cost. Everything else under `/api`
+allows 300 a minute.
+
+They were one limiter, applied to the whole of `/auth`, and the strict number therefore also
+governed `/auth/me` — the call the app makes on every page load and every token refresh. A
+person clicking around a busy morning could spend their whole login budget on reading their
+own profile and be locked out of signing in, having failed no password. The strict limit
+belongs on the routes where a wrong answer is an attempt at somebody's account, not on the
+route that asks who you already are.
 
 ### Accounts without a password
 

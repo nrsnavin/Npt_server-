@@ -3,6 +3,7 @@ import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
+import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
@@ -12,6 +13,18 @@ import { EVENTS, publish, statusEvent } from '../services/events.service.js';
 import { normalisePhone } from '../utils/phone.js';
 import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
+import { recordChange, snapshot } from '../services/audit.service.js';
+import { sendCsv } from '../utils/csv.js';
+
+/**
+ * How many rows an export may take.
+ *
+ * Higher than a page because the point of an export is to get the lot, and low enough that
+ * one click cannot spool the database into memory. When it bites, the file says so in a
+ * final row rather than quietly stopping — a truncated export that looks complete is how a
+ * wrong figure ends up in a meeting.
+ */
+const EXPORT_LIMIT = 5000;
 
 /**
  * True when a write actually moves a record to a different owner.
@@ -24,6 +37,40 @@ const isReassignment = (current, incoming) => {
   const next = String(incoming?._id ?? incoming);
   return next !== String(current?._id ?? current);
 };
+
+/**
+ * Refuses an owner who cannot hold the work.
+ *
+ * `bulkReassign` checked this from the start and the single-record paths did not, so an
+ * administrator working from a stale screen could hand a customer to somebody who had
+ * already left. The record then belongs to nobody: ownership scoping hides it from every
+ * marketing user, and only an administrator can even see that it has gone missing — which is
+ * the worst kind of bug, because the record looks fine to the person who caused it.
+ */
+async function assertAssignable(assignTo) {
+  const successor = await User.findById(assignTo?._id ?? assignTo);
+  if (!successor) throw ApiError.badRequest('That colleague does not exist');
+  if (successor.isActive === false) {
+    throw ApiError.badRequest(`${successor.name} is not active, so the work would go nowhere`);
+  }
+}
+
+/**
+ * The whole rule for handing a record to somebody else, in one place.
+ *
+ * Giving a relationship away is management's call, not the holder's, and the person it goes
+ * to has to exist. Both halves belong together: customers and leads enforced the first and
+ * neither enforced the second, and enquiries — the record the follow-up sweep chases and the
+ * one most worth taking — enforced neither. A rule applied to two of three records is not a
+ * rule, it is a gap with two witnesses.
+ */
+async function assertReassignment(current, incoming, user) {
+  if (!isReassignment(current, incoming)) return;
+  if (user.role !== 'admin') {
+    throw ApiError.forbidden('Only an administrator can change who a record belongs to');
+  }
+  await assertAssignable(incoming);
+}
 
 /** How much of a customer's enquiry history the detail screen carries inline. */
 const TIMELINE_PAGE = 10;
@@ -74,10 +121,229 @@ export const updateProduct = asyncHandler(async (req, res) => {
   // Read first so the version can be checked; the catalogue is shared, so two people
   // correcting the same model at once is the ordinary case rather than the unlucky one.
   expectVersion(product, req.body);
+  const before = snapshot(product);
   Object.assign(product, withoutVersion(req.body));
   await product.save();
+  await recordChange({ model: 'Product', doc: product, before, by: req.user });
 
   res.json({ success: true, data: product });
+});
+
+
+
+/* ------------------------------ Bulk actions ------------------------------ */
+
+/**
+ * Moving a batch of records to another owner.
+ *
+ * Offboarding already hands over a whole book, but the ordinary case is smaller and just as
+ * common: somebody goes on leave, a territory is split, a colleague picks up a handful of
+ * accounts. Doing that one record at a time through the detail screen is where people give
+ * up and keep a spreadsheet instead.
+ *
+ * An administrator's action, the same as reassigning one record is — giving a relationship
+ * away is management's call [§29], and doing it in bulk does not change whose call it is.
+ */
+const REASSIGNABLE = {
+  customers: { model: Customer, module: 'customers', field: 'assignedTo', label: 'Customer' },
+  leads: { model: Lead, module: 'enquiries', field: 'assignedTo', label: 'Lead' },
+  enquiries: { model: Enquiry, module: 'enquiries', field: 'assignedTo', label: 'Enquiry' },
+  samples: { model: Sample, module: 'samples', field: 'requestedBy', label: 'Sample' },
+};
+
+export const bulkReassign = asyncHandler(async (req, res) => {
+  const source = REASSIGNABLE[req.params.collection];
+  if (!source) throw ApiError.notFound('Nothing of that kind can be reassigned');
+
+  if (req.user.role !== 'admin') {
+    throw ApiError.forbidden('Only an administrator can reassign records');
+  }
+
+  const { ids, assignTo } = req.body;
+  const successor = await User.findById(assignTo);
+  if (!successor) throw ApiError.badRequest('That colleague does not exist');
+  if (successor.isActive === false) {
+    throw ApiError.badRequest(`${successor.name} is not active, so the work would go nowhere`);
+  }
+
+  /*
+   * Read them first. The update itself is one statement, but the trail is per record — an
+   * ownership move nobody can attribute afterwards is exactly what the audit trail exists
+   * to prevent, and a bulk action is the one most worth attributing.
+   */
+  const records = await source.model.find({ _id: { $in: ids } });
+  if (!records.length) throw ApiError.badRequest('None of those records exist');
+
+  await source.model.updateMany(
+    { _id: { $in: records.map((row) => row._id) } },
+    { $set: { [source.field]: successor._id } }
+  );
+
+  await Promise.all(
+    records.map((record) =>
+      recordChange({
+        model: source.label,
+        doc: record,
+            by: req.user,
+        action: 'transferred',
+        note: `Reassigned to ${successor.name}`,
+      })
+    )
+  );
+
+  res.json({
+    success: true,
+    data: { moved: records.length, assignTo: successor._id, requested: ids.length },
+  });
+});
+
+/* -------------------------------- Exports -------------------------------- */
+
+/**
+ * The list somebody is looking at, as a file.
+ *
+ * Deliberately built from the same `listParams` the list route uses, so an export is the
+ * screen's own filters rather than a second query that drifts from them: exporting "overdue
+ * follow-ups" and getting every enquiry is worse than having no export, because the file
+ * looks right.
+ *
+ * Ownership and grants apply exactly as they do on screen. An export is a read.
+ */
+export const exportCustomers = asyncHandler(async (req, res) => {
+  const { sort, filter } = listParams(req.query, {
+    searchFields: ['name', 'code', 'gstin', 'mobile', 'whatsapp', 'email'],
+    defaultSort: 'name',
+  });
+
+  Object.assign(filter, ownershipFilter(req.user));
+  if (req.query.customerType) filter.customerType = req.query.customerType;
+  if (req.query.rating) filter.rating = req.query.rating;
+  if (req.query.status) filter.status = req.query.status;
+
+  const rows = await Customer.find(filter).populate('assignedTo', 'name').sort(sort).limit(EXPORT_LIMIT);
+
+  sendCsv(res, 'customers', rows, [
+    ['Code', (row) => row.code],
+    ['Name', (row) => row.name],
+    ['Type', (row) => row.customerType],
+    ['Rating', (row) => row.rating],
+    ['Mobile', (row) => row.mobile],
+    ['WhatsApp', (row) => row.whatsapp],
+    ['Email', (row) => row.email],
+    ['GST number', (row) => row.gstin],
+    ['City', (row) => row.city],
+    ['State', (row) => row.state],
+    ['Country', (row) => row.country],
+    ['Credit terms (days)', (row) => row.creditTermsDays],
+    ['Payment terms', (row) => row.paymentTerms],
+    ['Owner', (row) => row.assignedTo?.name],
+    ['Source', (row) => row.source],
+    ['Status', (row) => row.status],
+    ['Created', (row) => row.createdAt],
+  ]);
+});
+
+export const exportLeads = asyncHandler(async (req, res) => {
+  const { sort, filter } = listParams(req.query, {
+    searchFields: ['company', 'contactName', 'mobile', 'email', 'number'],
+  });
+
+  Object.assign(filter, ownershipFilter(req.user));
+  if (req.query.status) filter.status = req.query.status;
+  if (req.query.source) filter.source = req.query.source;
+  if (req.query.open === 'true') filter.status = { $nin: ['converted', 'disqualified'] };
+
+  const rows = await Lead.find(filter).populate('assignedTo', 'name').sort(sort).limit(EXPORT_LIMIT);
+
+  sendCsv(res, 'leads', rows, [
+    ['Number', (row) => row.number],
+    ['Company', (row) => row.company],
+    ['Contact', (row) => row.contactName],
+    ['Mobile', (row) => row.mobile],
+    ['Email', (row) => row.email],
+    ['City', (row) => row.city],
+    ['Status', (row) => row.status],
+    ['Interest', (row) => row.productInterest],
+    ['Est. quantity', (row) => row.estimatedQuantity],
+    ['Est. value', (row) => row.estimatedValue],
+    ['Owner', (row) => row.assignedTo?.name],
+    ['Source', (row) => row.source],
+    ['Next action', (row) => row.nextAction],
+    ['Next follow-up', (row) => row.nextFollowUpDate],
+    ['Created', (row) => row.createdAt],
+  ]);
+});
+
+export const exportEnquiries = asyncHandler(async (req, res) => {
+  const { sort, filter } = listParams(req.query, {
+    searchFields: ['number', 'requirement.modelNumber', 'remarks'],
+    defaultSort: '-enquiryDate',
+  });
+
+  Object.assign(filter, ownershipFilter(req.user));
+  if (req.query.customer) filter.customer = req.query.customer;
+  if (req.query.status) filter.status = { $in: String(req.query.status).split(',') };
+  if (req.query.open === 'true') filter.status = { $nin: CLOSED_STATUSES };
+  if (req.query.dueBy) filter.nextFollowUpDate = { $lte: new Date(req.query.dueBy) };
+
+  const rows = await Enquiry.find(filter)
+    .populate('customer', 'code name')
+    .populate('assignedTo', 'name')
+    .sort(sort)
+    .limit(EXPORT_LIMIT);
+
+  sendCsv(res, 'enquiries', rows, [
+    ['Number', (row) => row.number],
+    ['Date', (row) => row.enquiryDate],
+    ['Customer', (row) => row.customer?.name],
+    ['Customer code', (row) => row.customer?.code],
+    ['Model', (row) => row.requirement?.modelNumber],
+    ['Category', (row) => row.requirement?.category],
+    ['Size (mm)', (row) => row.requirement?.sizeMm],
+    ['Material', (row) => row.requirement?.material],
+    ['Colour', (row) => row.requirement?.colour],
+    ['Quantity', (row) => row.requirement?.quantity],
+    ['Printing', (row) => row.requirement?.printing],
+    ['Packing', (row) => row.requirement?.packing],
+    ['Target price', (row) => row.targetPrice],
+    ['Required delivery', (row) => row.requiredDeliveryDate],
+    ['Stage', (row) => row.status],
+    ['Est. value', (row) => row.estimatedValue],
+    ['Owner', (row) => row.assignedTo?.name],
+    ['Next action', (row) => row.nextAction],
+    ['Next follow-up', (row) => row.nextFollowUpDate],
+    ['Lost reason', (row) => row.lostReason],
+    ['Source', (row) => row.source],
+  ]);
+});
+
+export const exportProducts = asyncHandler(async (req, res) => {
+  const { sort, filter } = listParams(req.query, {
+    searchFields: ['modelCode', 'name', 'mouldNumber'],
+    defaultSort: 'modelCode',
+  });
+
+  if (req.query.category) filter.category = req.query.category;
+  if (req.query.material) filter.material = req.query.material;
+
+  const rows = await Product.find(filter).sort(sort).limit(EXPORT_LIMIT);
+
+  sendCsv(res, 'products', rows, [
+    ['Model code', (row) => row.modelCode],
+    ['Name', (row) => row.name],
+    ['Category', (row) => row.category],
+    ['Size (mm)', (row) => row.sizeMm],
+    ['Material', (row) => row.material],
+    ['Hook', (row) => row.hookType],
+    ['Weight (g)', (row) => row.standardWeightGrams],
+    ['Colours', (row) => (row.availableColours || []).join(' / ')],
+    ['Mould available', (row) => (row.mouldAvailable ? 'Yes' : 'No')],
+    ['Mould number', (row) => row.mouldNumber],
+    ['Standard price', (row) => row.standardPrice],
+    ['MOQ', (row) => row.moq],
+    ['Packing qty', (row) => row.packingQty],
+    ['Active', (row) => (row.isActive === false ? 'No' : 'Yes')],
+  ]);
 });
 
 /* ------------------------------- Customers ------------------------------- */
@@ -151,6 +417,8 @@ export const createCustomer = asyncHandler(async (req, res) => {
     );
   }
 
+  if (req.body.assignedTo) await assertAssignable(req.body.assignedTo);
+
   const customer = await Customer.create({
     ...req.body,
     code: await nextNumber('CUST'),
@@ -173,13 +441,14 @@ export const updateCustomer = asyncHandler(async (req, res) => {
    * refused every save the owner made from their own screen, naming a field they never
    * touched.
    */
-  if (isReassignment(customer.assignedTo, req.body.assignedTo) && req.user.role !== 'admin') {
-    throw ApiError.forbidden('Only an administrator can reassign a customer');
-  }
+  await assertReassignment(customer.assignedTo, req.body.assignedTo, req.user);
 
   expectVersion(customer, req.body);
+  const before = snapshot(customer);
   Object.assign(customer, withoutVersion(req.body));
   await customer.save();
+  await recordChange({ model: 'Customer', doc: customer, before, by: req.user });
+
   res.json({ success: true, data: customer });
 });
 
@@ -274,6 +543,7 @@ export const createLead = asyncHandler(async (req, res) => {
   if (req.body.assignedTo && req.user.role !== 'admin') {
     throw ApiError.forbidden('Only an administrator can assign a lead to someone else');
   }
+  if (req.body.assignedTo) await assertAssignable(req.body.assignedTo);
 
   // Round-robin across marketing for a lead that arrives with nobody attached [§41.3]. A
   // marketing person entering their own call keeps it; see the service for why.
@@ -306,11 +576,7 @@ export const updateLead = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('This lead has been converted and can no longer be edited');
   }
 
-  // Giving a relationship away is management's call, not the holder's — the same rule
-  // customers already carry, and on an actual change rather than on the field's presence.
-  if (isReassignment(lead.assignedTo, req.body.assignedTo) && req.user.role !== 'admin') {
-    throw ApiError.forbidden('Only an administrator can reassign a lead');
-  }
+  await assertReassignment(lead.assignedTo, req.body.assignedTo, req.user);
 
   const { status, disqualifyReason } = req.body;
   if (status === 'disqualified' && !disqualifyReason && !lead.disqualifyReason) {
@@ -321,8 +587,11 @@ export const updateLead = asyncHandler(async (req, res) => {
   }
 
   expectVersion(lead, req.body);
+  const before = snapshot(lead);
   Object.assign(lead, withoutVersion(req.body));
   await lead.save();
+  await recordChange({ model: 'Lead', doc: lead, before, by: req.user });
+
   res.json({ success: true, data: lead });
 });
 
@@ -483,6 +752,7 @@ async function assertEnquiryValid(input) {
     const exists = await Product.findById(product);
     if (!exists) throw ApiError.badRequest('That model is not in the catalogue');
   }
+  if (input.assignedTo) await assertAssignable(input.assignedTo);
 }
 
 /** Shared by the create endpoint and by lead conversion. */
@@ -599,10 +869,14 @@ export const updateEnquiry = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('Use the status action to move an enquiry through its stages');
   }
 
+  await assertReassignment(enquiry.assignedTo, req.body.assignedTo, req.user);
+
   expectVersion(enquiry, req.body);
+  const before = snapshot(enquiry);
   Object.assign(enquiry, withoutVersion(req.body));
   assertNextAction(enquiry);
   await enquiry.save();
+  await recordChange({ model: 'Enquiry', doc: enquiry, before, by: req.user });
 
   res.json({ success: true, data: enquiry });
 });

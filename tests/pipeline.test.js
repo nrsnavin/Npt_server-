@@ -591,3 +591,84 @@ test('a customer with a long history says how long it is', async () => {
   assert.equal(enquiries.length, 10);
   assert.equal(total, 14);
 });
+
+/* --------------------------- Handing work over --------------------------- */
+
+test('an enquiry cannot be handed over by the person holding it', async () => {
+  // Customers and leads enforced this from the start and enquiries did not, which made it a
+  // gap rather than a rule: the record the follow-up sweep chases was the one anybody could
+  // take. Doing in one PATCH what two other screens refuse is the whole shape of the bug.
+  const customer = await api('/api/customers', {
+    method: 'POST',
+    token: nandhini,
+    body: { name: 'Handover Garments', mobile: '9812200033' },
+  });
+  const enquiry = (await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customer.json.data._id,
+      isNewDevelopment: true,
+      requirement: { quantity: 2000, modelNumber: 'Trial shape' },
+      ...followUp,
+    },
+  })).json.data;
+  const priyaId = (await api('/api/users?search=Priya', { token: admin })).json.data[0].id;
+
+  const refused = await api(`/api/enquiries/${enquiry._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { assignedTo: priyaId },
+  });
+  assert.equal(refused.status, 403, refused.json.message);
+
+  const allowed = await api(`/api/enquiries/${enquiry._id}`, {
+    method: 'PATCH',
+    token: admin,
+    body: { assignedTo: priyaId },
+  });
+  assert.equal(allowed.status, 200, 'management may still move it');
+  assert.equal(
+    String(allowed.json.data.assignedTo),
+    String(priyaId),
+    'and the move actually happens — validation used to drop the field and answer 200'
+  );
+});
+
+test('a record cannot be handed to somebody who is not there', async () => {
+  // The record would belong to nobody: ownership scoping hides it from every marketing user,
+  // and only an administrator can see that it has gone missing.
+  const customer = (await api('/api/customers', {
+    method: 'POST',
+    token: nandhini,
+    body: { name: 'Ghost Owner Mills', mobile: '9812200044' },
+  })).json.data;
+
+  const ghost = await api(`/api/customers/${customer._id}`, {
+    method: 'PATCH',
+    token: admin,
+    body: { assignedTo: '6a8f0000000000000000dead' },
+  });
+  assert.equal(ghost.status, 400, ghost.json.message);
+
+  const leaver = await api('/api/users', {
+    method: 'POST',
+    token: admin,
+    body: {
+      name: 'Gone G',
+      email: `gone${Date.now()}@np.com`,
+      password: 'Passw0rd@123',
+      department: 'marketing',
+    },
+  });
+  const leaverId = leaver.json.data.id || leaver.json.data._id;
+  await api(`/api/users/${leaverId}`, { method: 'PATCH', token: admin, body: { isActive: false } });
+
+  const departed = await api(`/api/customers/${customer._id}`, {
+    method: 'PATCH',
+    token: admin,
+    body: { assignedTo: leaverId },
+  });
+  assert.equal(departed.status, 400, 'work sent after somebody has left goes nowhere');
+  assert.match(departed.json.message, /not active/i);
+});
