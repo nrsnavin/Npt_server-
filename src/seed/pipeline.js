@@ -18,6 +18,21 @@ const days = (offset, hour = 11) => {
   return date;
 };
 
+/**
+ * Turns `[status, dayOffset, hour]` steps into a status history.
+ *
+ * Written out step by step rather than jumping from the request straight to the current
+ * status, because the analytics reads the gaps between entries. A history that stamps every
+ * change at the moment of the request describes a plant that finishes everything instantly.
+ */
+const walk = (requestedAt, steps) => {
+  const history = [{ to: 'request_received', at: requestedAt }];
+  for (const [to, offset, hour] of steps) {
+    history.push({ from: history[history.length - 1].to, to, at: days(offset, hour) });
+  }
+  return history;
+};
+
 /** The catalogue. Model codes follow the plant's own convention: NPT-<size><letter>. */
 const PRODUCTS = [
   {
@@ -186,6 +201,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
 
   const products = await Product.create(PRODUCTS);
   const byCode = Object.fromEntries(products.map((product) => [product.modelCode, product]));
+  const byId = Object.fromEntries(products.map((product) => [String(product._id), product]));
 
   const customerRows = [
     {
@@ -551,6 +567,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       requestedAt: days(-5),
       autoCreated: true,
       remarks: 'Matte finish trial. Buyer supplied a competitor piece for reference.',
+      history: [['checking_stock', -5, 15], ['production_required', -4, 10]],
     },
     {
       // With the customer, waiting on their answer.
@@ -567,6 +584,12 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       dispatchedAt: days(-4),
       dispatchedQuantity: 10,
       autoCreated: true,
+      history: [
+        ['checking_stock', -12, 15],
+        ['production_required', -11, 10],
+        ['sample_ready', -5, 16],
+        ['dispatched', -4, 11],
+      ],
     },
     {
       // Ready on the bench, waiting for marketing to arrange the courier.
@@ -578,6 +601,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       requiredDate: days(1, 17),
       requestedAt: days(-3),
       assignedTo: meera?._id,
+      history: [['sample_available', -3, 14], ['sample_ready', -1, 12]],
     },
     {
       // Settled: this is what an approved sample looks like in the register.
@@ -597,13 +621,49 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       feedbackAt: days(-27),
       feedbackBy: nandhini._id,
       feedbackNote: 'Buyer approved all four colours. Proceed to pricing.',
+      history: [
+        ['checking_stock', -36, 15],
+        ['production_required', -35, 10],
+        ['printing_required', -34, 12],
+        ['sample_ready', -32, 16],
+        ['dispatched', -31, 11],
+        ['delivered', -29, 14],
+        ['approved', -27, 10],
+      ],
     },
+  ];
+
+  /**
+   * Settled requests from earlier months.
+   *
+   * The four above describe the queue as it stands, which is what the sampling screens are
+   * for. The analytics page asks a different question — how long we take, and what makes the
+   * difference — and cannot answer it from four rows in one month. These carry the spread it
+   * reads: printed against plain, hook types, and a turnaround that varies by more than noise.
+   */
+  const historicalRows = [
+    { model: 'NPT-380S', purpose: 'existing_model', quantity: 4, took: 3, agoDays: 12, printing: '' },
+    { model: 'NPT-400S', purpose: 'colour_approval', quantity: 6, took: 4, agoDays: 20, printing: '' },
+    { model: 'NPT-400S', purpose: 'existing_model', quantity: 3, took: 3, agoDays: 26, printing: '' },
+    { model: 'NPT-360W', purpose: 'buyer_approval', quantity: 8, took: 6, agoDays: 34, printing: '' },
+    { model: 'NPT-380S', purpose: 'print_approval', quantity: 5, took: 9, agoDays: 41, printing: 'Two-colour logo, front face' },
+    { model: 'NPT-400S', purpose: 'print_approval', quantity: 6, took: 11, agoDays: 48, printing: 'Buyer brand mark, both faces' },
+    { model: 'NPT-360W', purpose: 'new_development', quantity: 10, took: 21, agoDays: 55, printing: '' },
+    { model: 'NPT-380S', purpose: 'existing_model', quantity: 2, took: 2, agoDays: 62, printing: '' },
+    { model: 'NPT-400S', purpose: 'fit_test', quantity: 5, took: 5, agoDays: 70, printing: '' },
+    { model: 'NPT-380S', purpose: 'print_approval', quantity: 4, took: 10, agoDays: 78, printing: 'Single-colour size mark' },
+    // The one that went wrong. It is why the report shows the worst case beside the average:
+    // at this volume p90 sits below it, and this is the one worth the conversation.
+    { model: 'NPT-360W', purpose: 'new_development', quantity: 12, took: 38, agoDays: 90, printing: '', outcome: 'modification_required' },
+    { model: 'NPT-400S', purpose: 'colour_approval', quantity: 6, took: 4, agoDays: 96, printing: '' },
   ];
 
   const samples = [];
   for (const row of sampleRows) {
-    const { enquiry, ...rest } = row;
+    const { enquiry, history = [], ...rest } = row;
     if (!enquiry) continue;
+
+    const product = enquiry.product ? byId[String(enquiry.product)] : null;
 
     samples.push(
       await Sample.create({
@@ -618,12 +678,60 @@ export async function seedPipeline({ nandhini, arun, meera }) {
         sizeMm: enquiry.requirement.sizeMm,
         material: enquiry.requirement.material,
         printing: enquiry.requirement.printing,
-        statusHistory: [
-          { to: 'request_received', at: rest.requestedAt },
-          ...(rest.status === 'request_received'
-            ? []
-            : [{ from: 'request_received', to: rest.status, at: rest.requestedAt }]),
-        ],
+        // Inherited from the model, the way a request raised through the API inherits it.
+        hookType: product?.hookType,
+        statusHistory: walk(rest.requestedAt, history),
+      })
+    );
+  }
+
+  /* The settled back-catalogue the analytics page reads. */
+  for (const row of historicalRows) {
+    const product = byCode[row.model];
+    const customer = customers[samples.length % customers.length];
+    const outcome = row.outcome || 'approved';
+
+    // A plausible run through the stages, ending at the outcome. The two dates that matter
+    // analytically are the request and the ready tick; the rest give the stage breakdown
+    // something to divide up.
+    const raised = days(-(row.agoDays + row.took));
+    const history = [
+      ['checking_stock', -(row.agoDays + row.took), 15],
+      [row.printing ? 'printing_required' : 'production_required', -(row.agoDays + row.took) + 1, 10],
+      ['sample_ready', -row.agoDays, 16],
+      ['dispatched', -row.agoDays + 1, 11],
+      ['delivered', -row.agoDays + 3, 14],
+      [outcome, -row.agoDays + 5, 10],
+    ];
+
+    samples.push(
+      await Sample.create({
+        number: await nextNumber('SMP'),
+        customer: customer._id,
+        requestedBy: nandhini._id,
+        assignedTo: meera?._id,
+        product: product?._id,
+        modelNumber: product?.modelCode,
+        category: product?.category,
+        sizeMm: product?.sizeMm,
+        material: product?.material,
+        hookType: product?.hookType,
+        printing: row.printing,
+        colour: product?.availableColours?.[0],
+        quantity: row.quantity,
+        purpose: row.purpose,
+        status: outcome,
+        requestedAt: raised,
+        // Promised a week; the slow ones therefore miss it, which is the point of on-time.
+        requiredDate: days(-(row.agoDays + row.took) + 7, 17),
+        courier: 'Blue Dart',
+        awbNumber: `7721${String(390000 + samples.length)}`,
+        dispatchedAt: days(-row.agoDays + 1, 11),
+        dispatchedQuantity: row.quantity,
+        deliveredAt: days(-row.agoDays + 3, 14),
+        feedbackAt: days(-row.agoDays + 5, 10),
+        feedbackBy: nandhini._id,
+        statusHistory: walk(raised, history),
       })
     );
   }

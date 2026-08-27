@@ -3,6 +3,7 @@ import Sample, {
 } from '../models/Sample.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter } from '../services/ownership.service.js';
+import { readyTime, sampleAnalytics } from '../services/sampleAnalytics.service.js';
 
 /**
  * The sampling dashboard [BLUEPRINT §22, docs/DASHBOARDS.md §4].
@@ -88,7 +89,9 @@ export const sampleDashboard = asyncHandler(async (req, res) => {
   const readyToDispatch = [];
 
   for (const sample of samples) {
-    const readyAt = reached(sample, 'sample_ready');
+    // Shared with the analytics page rather than recomputed: two screens quoting a different
+    // average turnaround for the same bench is worse than either being wrong on its own.
+    const readyAt = readyTime(sample);
     const dispatchedAt = sample.dispatchedAt || reached(sample, 'dispatched');
     const raisedAt = sample.requestedAt || sample.createdAt;
 
@@ -162,4 +165,39 @@ export const sampleDashboard = asyncHandler(async (req, res) => {
       awaitingFeedback,
     },
   });
+});
+
+/**
+ * The analytics period.
+ *
+ * Defaults to this calendar month, because "fulfilled this month" is the question people
+ * actually ask. `from` and `to` override it; `months=N` asks for the last N whole months
+ * including this one, which is what a trend needs.
+ */
+function periodFrom(query) {
+  const now = new Date();
+
+  if (query.from || query.to) {
+    const from = query.from ? new Date(query.from) : new Date(now.getFullYear(), 0, 1);
+    const to = query.to ? new Date(query.to) : now;
+    to.setHours(23, 59, 59, 999);
+    return { from, to };
+  }
+
+  const months = Math.min(Math.max(Number(query.months) || 1, 1), 24);
+  const from = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
+  const to = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  return { from, to };
+}
+
+export const sampleAnalyticsReport = asyncHandler(async (req, res) => {
+  const { from, to } = periodFrom(req.query);
+
+  const data = await sampleAnalytics({
+    scope: ownershipFilter(req.user, 'requestedBy'),
+    from,
+    to,
+  });
+
+  res.json({ success: true, data });
 });

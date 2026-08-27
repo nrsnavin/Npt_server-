@@ -8,7 +8,7 @@ import {
   listSampleLogs, addSampleLog, addLogComment, removeSampleLog, removeLogComment,
   downloadAttachment, setReferencePhoto, clearReferencePhoto,
 } from '../controllers/sampleLog.controller.js';
-import { sampleDashboard } from '../controllers/sampleDashboard.controller.js';
+import { sampleDashboard, sampleAnalyticsReport } from '../controllers/sampleDashboard.controller.js';
 import { authenticate, requireAnyModule, requireModule } from '../middleware/auth.js';
 import { singleImage } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
@@ -31,6 +31,7 @@ router.use(authenticate);
 
 router.get('/pipeline', requireModule('samples'), samplePipeline);
 router.get('/dashboard', requireModule('samples'), sampleDashboard);
+router.get('/analytics', requireModule('samples'), sampleAnalyticsReport);
 router.get('/', requireModule('samples'), listSamples);
 /*
  * Raising a request is not the same as working one. A buyer asking at the counter is

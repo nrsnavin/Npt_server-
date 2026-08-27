@@ -1,4 +1,5 @@
 import Sample from '../models/Sample.js';
+import Product from '../models/Product.js';
 import { nextNumber } from './numbering.service.js';
 import { EVENTS, publish } from './events.service.js';
 
@@ -37,6 +38,28 @@ const fromEnquiry = (enquiry) => ({
 });
 
 /**
+ * What the catalogue knows that the enquiry does not.
+ *
+ * An enquiry's requirement has no hook type — a buyer asks for a model, not for a swivel —
+ * so a sample built only from the enquiry carries none, and anything analysing turnaround by
+ * hook finds every sample blank. The model is where that lives, so the sample takes it from
+ * there. Only fills what is still missing: an explicit value on the request always wins,
+ * because a sample often exists precisely to try something the catalogue does not do.
+ */
+async function fromProduct(productId, alreadyKnown = {}) {
+  if (!productId) return {};
+
+  const product = await Product.findById(productId).select('hookType category material sizeMm');
+  if (!product) return {};
+
+  const filled = {};
+  for (const field of ['hookType', 'category', 'material', 'sizeMm']) {
+    if (alreadyKnown[field] == null && product[field] != null) filled[field] = product[field];
+  }
+  return filled;
+}
+
+/**
  * A sample raised without one already open against the same enquiry.
  *
  * Moving an enquiry to `sample_required` twice — which happens whenever marketing corrects a
@@ -73,6 +96,7 @@ export async function createSampleRequest(
   }
 
   const inherited = enquiry ? fromEnquiry(enquiry) : {};
+  Object.assign(inherited, await fromProduct(input.product ?? inherited.product, inherited));
   const purpose =
     input.purpose || (enquiry?.isNewDevelopment ? 'new_development' : 'existing_model');
 

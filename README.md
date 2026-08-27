@@ -171,6 +171,7 @@ applied inside the controllers because it varies by department.
 | POST | `/samples/:id/resample` | The next attempt after a modification, linked to the last |
 | GET | `/samples/pipeline` | Count and overdue per stage |
 | GET | `/samples/dashboard` | The §22 sampling dashboard: tiles, ageing, turnaround, rework |
+| GET | `/samples/analytics` | Turnaround over a period, and what drives it: `?months=` or `?from=&to=` |
 | GET | `/samples/:id/customer-message/preview` | The draft a person would send, and what has already gone |
 | POST | `/samples/:id/customer-message` | Send it, optionally edited, on chosen channels |
 | GET | `/samples/:id/customer-messages` | Everything ever sent to this customer about this sample |
@@ -354,6 +355,20 @@ turnaround split at ready, the oldest open requests and what is awaiting custome
 each ranked worst-first with an age — ageing beats counts, since "12 pending" hides the one
 that has sat three weeks. The rework rate is this team's quality signal: a high approval rate
 next to a high modification rate means samples are going out before they are right.
+
+`GET /samples/analytics` is the other half, and answers a different question: not what is
+late now, but how long we take and why. Turnaround over a period with its median, p90 and
+worst case, where the days are spent, and the same figures broken down by purpose, printing,
+hook, material, category and quantity — so "new developments cost us four weeks" is a figure
+rather than an impression. Every segment reports how many samples it is drawn from and is
+marked unreliable below five, because an average over two is noise dressed as insight. The
+measurement decisions, and what is deliberately not in it, are in
+[`docs/SAMPLE-ANALYTICS.md`](docs/SAMPLE-ANALYTICS.md).
+
+Both screens read turnaround through the same `readyTime()`, which falls back to the first
+status that could only follow a finished sample when the ready tick was skipped. Nothing in
+the status route forces that tick, and reading it alone would quietly compute the average
+over whoever was diligent about the boxes rather than over the work.
 
 `GET /samples?overdue=true` is the escalation query from §25; a sample sitting with the
 customer is excluded, because that delay is not the plant's. Losing the enquiry behind a
