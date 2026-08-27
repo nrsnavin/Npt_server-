@@ -78,4 +78,11 @@ export const whatsappTemplates = {
   sample_dispatched: process.env.WHATSAPP_TEMPLATE_SAMPLE_DISPATCHED,
 };
 
+/**
+ * How often the §25 sampling escalation sweeps. Hourly is the right grain for a threshold
+ * measured in days: fine enough that nothing sits unnoticed for a working morning, coarse
+ * enough that the sweep is invisible. Set to 0 to turn it off.
+ */
+export const escalationIntervalMinutes = Number(process.env.ESCALATION_INTERVAL_MINUTES ?? 60);
+
 export const isProduction = env.nodeEnv === 'production';

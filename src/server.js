@@ -1,8 +1,9 @@
 import app from './app.js';
-import { env, isProduction } from './config/env.js';
+import { env, escalationIntervalMinutes, isProduction } from './config/env.js';
 import { connectDatabase } from './config/db.js';
 import { configurationProblem, isConfigured } from './providers/twilio.js';
 import { configurationProblem as smtpConfigurationProblem } from './services/notification.service.js';
+import { runSamplingEscalations } from './services/escalation.service.js';
 
 /** Reports how one-time codes will actually reach people on this deployment. */
 function checkOtpDelivery() {
@@ -36,6 +37,38 @@ function checkOtpDelivery() {
   }
 }
 
+/**
+ * Sweeps for overdue samples on a timer [§25].
+ *
+ * Lives here rather than in app.js so importing the app — which every test does — never
+ * starts a background timer. `unref` keeps the sweep from holding the process open on its
+ * own. A failed sweep logs and waits for the next one: an escalation that crashed the
+ * process would be worse than a late one.
+ */
+function startEscalationSweep() {
+  if (escalationIntervalMinutes <= 0) {
+    console.warn('Sampling escalations: disabled (ESCALATION_INTERVAL_MINUTES=0)');
+    return null;
+  }
+
+  const sweep = async () => {
+    try {
+      const raised = await runSamplingEscalations();
+      if (raised.length) {
+        console.log(`Sampling escalations: raised ${raised.length} (${raised.map((entry) => `${entry.sample} L${entry.level}`).join(', ')})`);
+      }
+    } catch (error) {
+      console.error('Sampling escalation sweep failed:', error.message);
+    }
+  };
+
+  // Once at startup, because a process that has been down overnight has a backlog.
+  sweep();
+
+  console.log(`Sampling escalations: sweeping every ${escalationIntervalMinutes} minute(s)`);
+  return setInterval(sweep, escalationIntervalMinutes * 60 * 1000).unref();
+}
+
 async function start() {
   try {
     checkOtpDelivery();
@@ -47,8 +80,11 @@ async function start() {
       console.log(`NPT ERP API listening on port ${env.port} (${env.nodeEnv})`);
     });
 
+    const escalations = startEscalationSweep();
+
     const shutdown = (signal) => {
       console.log(`${signal} received, shutting down`);
+      clearInterval(escalations);
       server.close(() => process.exit(0));
     };
 

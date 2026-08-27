@@ -139,6 +139,13 @@ const sampleSchema = new mongoose.Schema(
     autoCreated: { type: Boolean, default: false },
     /** Why one was raised with no enquiry behind it, so the register explains itself. */
     standaloneReason: { type: String, trim: true },
+
+    /**
+     * The highest §25 tier this request has crossed: 0 none, 1 overdue, 2 more than a day.
+     * Stored so an escalation rings once rather than on every sweep, and so the dashboard
+     * can show what has already been shouted about.
+     */
+    escalationLevel: { type: Number, default: 0, min: 0, max: 2 },
   },
   { timestamps: true }
 );

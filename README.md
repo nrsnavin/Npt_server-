@@ -48,6 +48,22 @@ The seed also loads a working data set — 10 hanger models, 6 customers, 4 lead
 across the funnel and 4 sample requests, including one new development, one lost enquiry and
 one sample already overdue.
 
+## When every save starts failing
+
+A duplicate-key error naming a field this application does not have means the database is
+enforcing an index no model declares — left by an earlier schema, or by whatever used the
+database before. If that index is **unique** on absent fields, every document looks like
+`{ field: null }` to Mongo: the first save claims that value and every save afterwards
+collides. The symptom is that all record creation fails at once.
+
+```bash
+npm run doctor:indexes           # report what no model declares
+npm run doctor:indexes -- --fix  # drop it
+```
+
+The API says so too rather than repeating Mongo's message, which names a field the reader has
+never seen and offers no way forward.
+
 ## Creating an account from the command line
 
 ```bash
@@ -104,6 +120,10 @@ Runs against an in-memory MongoDB — no local `mongod` needed.
 - `tests/sample-log.test.js` — notes, photo upload and byte-exact download, comments from a
   read-only caller, the file-type check, deletion taking the file with it, and the ownership
   and traversal checks on the file route.
+- `tests/escalation.test.js` — the §25 tiers against a clock passed in, who hears at each,
+  that an alarm rings once, and the dashboard's ageing and rework arithmetic.
+- `tests/index-health.test.js` — a stale unique index, the all-creation-fails symptom it
+  causes, the message that explains it, and that dropping it restores saves.
 - `tests/workspace.test.js` and `tests/health.test.js` — the dock and the probes.
 
 ## API
@@ -150,6 +170,7 @@ applied inside the controllers because it varies by department.
 | POST | `/samples/:id/assign` | Pick a request off the shared queue |
 | POST | `/samples/:id/resample` | The next attempt after a modification, linked to the last |
 | GET | `/samples/pipeline` | Count and overdue per stage |
+| GET | `/samples/dashboard` | The §22 sampling dashboard: tiles, ageing, turnaround, rework |
 | GET | `/samples/:id/customer-message/preview` | The draft a person would send, and what has already gone |
 | POST | `/samples/:id/customer-message` | Send it, optionally edited, on chosen channels |
 | GET | `/samples/:id/customer-messages` | Everything ever sent to this customer about this sample |
@@ -308,6 +329,31 @@ Handover tasks land in the dock people already work from, not a separate notific
 [§35], and are deduplicated on their origin so a corrected status cannot queue the same
 instruction twice. They go to whoever holds `samples` write, falling back to admins only when
 nobody does — being able to do everything is not a reason to be handed the bench's queue.
+
+#### Escalation [§25]
+
+| Threshold | Escalates to |
+| --- | --- |
+| Required date crossed | The bench, and the person who asked |
+| More than a day late | Management |
+
+A sweep runs hourly (`ESCALATION_INTERVAL_MINUTES`, 0 to disable) and raises a task for each
+tier as it is crossed. Overdue was computed from the day the module was built and nothing
+acted on it — a number on a screen only escalates if somebody is looking at that screen,
+which is what an escalation exists to stop depending on.
+
+Both thresholds are strict, as §25 writes them: the date is *crossed*, and the manager hears
+at *more than* a day. A sample only climbs the tiers, never repeats one, and is never
+un-escalated when it finally moves — the delay happened, and clearing the record of it would
+hide what the alarm was for. The sweep lives in `server.js` rather than `app.js` so importing
+the app never starts a timer, and takes its clock as an argument so a threshold measured in
+days is testable without waiting one.
+
+`GET /samples/dashboard` is the §22 dashboard behind it: the tiles, queue by stage, average
+turnaround split at ready, the oldest open requests and what is awaiting customer feedback,
+each ranked worst-first with an age — ageing beats counts, since "12 pending" hides the one
+that has sat three weeks. The rework rate is this team's quality signal: a high approval rate
+next to a high modification rate means samples are going out before they are right.
 
 `GET /samples?overdue=true` is the escalation query from §25; a sample sitting with the
 customer is excluded, because that delay is not the plant's. Losing the enquiry behind a
