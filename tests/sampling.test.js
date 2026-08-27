@@ -790,3 +790,74 @@ test('the pipeline reports every stage, including the empty ones', async () => {
   );
   assert.ok(json.data.every((row) => typeof row.count === 'number' && typeof row.overdue === 'number'));
 });
+
+/* --------------------------- Naming the buyer later --------------------------- */
+
+test('a trial raised for nobody can have its customer named later', async () => {
+  // The internal trial that turns into real work. Re-keying it to attach the buyer would
+  // throw away the record of what was already made and what the bench said about it.
+  const created = await api('/api/samples', {
+    method: 'POST',
+    token: meera,
+    body: {
+      modelNumber: 'NPT-400S',
+      quantity: 2,
+      standaloneReason: 'Trial of the new matte mould',
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.json.data.customer, undefined, 'raised for nobody');
+  const id = created.json.data._id;
+
+  const customer = await api('/api/customers', {
+    method: 'POST',
+    token: nandhini,
+    body: { name: 'Walked In Exports', mobile: '9876591234' },
+  });
+
+  const linked = await api(`/api/samples/${id}/link-customer`, {
+    method: 'POST',
+    token: meera,
+    body: { customer: customer.json.data._id },
+  });
+
+  assert.equal(linked.status, 200);
+  assert.equal(idOf(linked.json.data.customer), customer.json.data._id);
+  assert.ok(
+    linked.json.data.statusHistory.some((entry) => entry.note?.includes('Walked In Exports')),
+    'the record says when the buyer was named'
+  );
+
+  // Set once, never moved: repointing would rewrite what was made for whom.
+  const again = await api(`/api/samples/${id}/link-customer`, {
+    method: 'POST',
+    token: meera,
+    body: { customer: customer.json.data._id },
+  });
+  assert.equal(again.status, 400);
+});
+
+test('a request that came from an enquiry takes its customer from there', async () => {
+  const enquiry = await raiseEnquiry();
+  const created = await api('/api/samples', {
+    method: 'POST',
+    token: meera,
+    body: { enquiry: enquiry._id, quantity: 1 },
+  });
+
+  const other = await api('/api/customers', {
+    method: 'POST',
+    token: nandhini,
+    body: { name: 'Unrelated Buyer Ltd', mobile: '9876591299' },
+  });
+
+  // Otherwise the sample and its enquiry would name two different buyers.
+  const { status, json } = await api(`/api/samples/${created.json.data._id}/link-customer`, {
+    method: 'POST',
+    token: meera,
+    body: { customer: other.json.data._id },
+  });
+
+  assert.equal(status, 400);
+  assert.match(json.message, /takes its customer from there/);
+});

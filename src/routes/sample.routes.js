@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   listSamples, getSample, createSample, updateSample, assignSample,
-  setSampleStatus, setDispatchDetails, recordFeedback, resample, samplePipeline, linkEnquiry,
+  setSampleStatus, setDispatchDetails, recordFeedback, resample, samplePipeline, linkEnquiry, linkCustomer,
   previewCustomerMessage, sendCustomerMessage, listCustomerMessages,
 } from '../controllers/sample.controller.js';
 import {
@@ -15,7 +15,7 @@ import { validate } from '../middleware/validate.js';
 import {
   sampleSchema, sampleUpdateSchema, sampleAssignSchema,
   sampleStatusSchema, sampleFeedbackSchema, resampleSchema, customerMessageSchema,
-  dispatchDetailsSchema, sampleLogSchema, logCommentSchema, linkEnquirySchema,
+  dispatchDetailsSchema, sampleLogSchema, logCommentSchema, linkEnquirySchema, linkCustomerSchema,
 } from '../validators/sample.schemas.js';
 
 const router = Router();
@@ -69,6 +69,7 @@ router.post(
 router.post('/:id/resample', requireModule('samples', 'write'), validate(resampleSchema), resample);
 // A request raised before its enquiry existed joins it when it does.
 router.post('/:id/link-enquiry', requireModule('samples', 'write'), validate(linkEnquirySchema), linkEnquiry);
+router.post('/:id/link-customer', requireModule('samples', 'write'), validate(linkCustomerSchema), linkCustomer);
 
 /*
  * Talking to the customer is its own grant [§42]. Sampling updates internal status; what

@@ -173,6 +173,7 @@ applied inside the controllers because it varies by department.
 | GET | `/samples/dashboard` | The §22 sampling dashboard: tiles, ageing, turnaround, rework |
 | GET | `/samples/analytics` | Turnaround over a period, and what drives it: `?months=` or `?from=&to=` |
 | GET | `/samples/:id/logs` | A page of the working record, newest first — 15 at a time |
+| POST | `/samples/:id/link-customer` | Names the buyer on a request raised for nobody |
 | GET | `/samples/:id/customer-message/preview` | The draft a person would send, and what has already gone |
 | POST | `/samples/:id/customer-message` | Send it, optionally edited, on chosen channels |
 | GET | `/samples/:id/customer-messages` | Everything ever sent to this customer about this sample |
@@ -391,6 +392,15 @@ customer is excluded, because that delay is not the plant's. Losing the enquiry 
 sample cancels it, so the bench does not keep making something nobody will buy and the
 escalation list stays worth reading. `cancelled` is the one status not in the §4 matrix,
 which only describes a request that runs to an answer.
+
+Both the customer and the enquiry are optional on a request, because a sample is not always
+the child of either: a buyer asks at the counter before anyone writes an enquiry, or the
+plant trials a new mould for nobody in particular. Each can be named afterwards —
+`link-enquiry` and `link-customer` — since a trial that turns into real work should keep the
+log and the photographs it already has rather than being re-raised. Both are set once and
+never moved: repointing a sample at a different buyer would rewrite what was made for whom.
+A request that came from an enquiry takes its customer from that enquiry, so `link-customer`
+refuses rather than letting the two disagree.
 
 Marketing's ownership on samples runs through `requestedBy` rather than `assignedTo` — the
 sample is worked by the sample team, so scoping on who is doing the work would hide every

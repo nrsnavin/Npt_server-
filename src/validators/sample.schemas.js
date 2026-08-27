@@ -40,6 +40,9 @@ export const sampleSchema = z.object({
 /** Attaching a request to the enquiry that turns up after it. */
 export const linkEnquirySchema = z.object({ enquiry: objectId });
 
+/** Naming the buyer on a request raised without one. */
+export const linkCustomerSchema = z.object({ customer: objectId });
+
 export const sampleUpdateSchema = z.object(sampleCore).partial();
 
 /** A re-sample inherits the previous attempt; everything here is an override. */

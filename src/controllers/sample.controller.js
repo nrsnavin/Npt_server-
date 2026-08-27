@@ -170,6 +170,44 @@ export const linkEnquiry = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await withRefs(sample) });
 });
 
+/**
+ * Names the buyer on a request raised without one.
+ *
+ * The counter request and the internal trial both start with nobody attached — that is the
+ * point of allowing it — but a trial that turns into real work needs the buyer on it, and
+ * re-keying the whole request to get them there loses the history of what was already made.
+ *
+ * Set once, like the enquiry: moving a sample to a different customer would rewrite what was
+ * made for whom. A sample that came from an enquiry takes its customer from that enquiry, so
+ * this refuses rather than letting the two disagree.
+ */
+export const linkCustomer = asyncHandler(async (req, res) => {
+  const sample = await Sample.findById(req.params.id);
+  if (!sample) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
+  if (sample.customer) throw ApiError.badRequest('This request already names a customer');
+  if (sample.enquiry) {
+    throw ApiError.badRequest(
+      'This request belongs to an enquiry, and takes its customer from there'
+    );
+  }
+
+  const customer = await Customer.findById(req.body.customer);
+  if (!customer) throw ApiError.badRequest('That customer does not exist');
+  if (!ownsRecord(req.user, customer)) throw ApiError.notFound('Customer not found');
+
+  sample.customer = customer._id;
+  sample.statusHistory.push({
+    from: sample.status,
+    to: sample.status,
+    by: req.user._id,
+    note: `Customer set to ${customer.name}`,
+  });
+  await sample.save();
+
+  res.json({ success: true, data: await withRefs(sample) });
+});
+
 export const updateSample = asyncHandler(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
