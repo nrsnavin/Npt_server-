@@ -15,7 +15,7 @@ import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { syncFollowUpReminder } from '../subscribers/leadFollowUp.subscriber.js';
 import { suggestNextStep, coachConfigured } from '../services/leadCoach.service.js';
-import { analyse, followUpQueue } from '../services/leadLog.service.js';
+import { analyse, followUpQueue, leadAnalytics, untouchedLeads } from '../services/leadLog.service.js';
 import { scoreFor, teamScoreboard } from '../services/scoreboard.service.js';
 import { sendCsv } from '../utils/csv.js';
 
@@ -633,6 +633,22 @@ export const leadLogAnalytics = asyncHandler(async (req, res) => {
 /** Whose leads need somebody today — overdue, due, undecided, and quietly cooling. */
 export const leadFollowUps = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await followUpQueue(ownershipFilter(req.user)) });
+});
+
+/**
+ * The shape of the lead book, and the leads that have gone quiet in it.
+ *
+ * One endpoint rather than two because they are read together: the funnel says how many are
+ * at each stage, and the anomaly list says how many of those are only nominally there.
+ */
+export const leadsOverview = asyncHandler(async (req, res) => {
+  const scope = ownershipFilter(req.user);
+  const [analytics, untouched] = await Promise.all([
+    leadAnalytics(scope),
+    untouchedLeads(scope),
+  ]);
+
+  res.json({ success: true, data: { ...analytics, untouchedLeads: untouched } });
 });
 
 /**

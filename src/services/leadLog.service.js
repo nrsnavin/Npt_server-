@@ -169,3 +169,119 @@ export async function followUpQueue(filter = {}, now = Date.now()) {
     goneQuiet: goneQuiet.sort(worstFirst),
   };
 }
+
+/* ------------------------------- Analytics ------------------------------- */
+
+/** Ageing bands. Open-ended at the top, because "90+" is one answer and 400 days is not. */
+const AGE_BANDS = [
+  { label: 'Under a week', max: 7 },
+  { label: '1–2 weeks', max: 14 },
+  { label: '2–4 weeks', max: 30 },
+  { label: '1–3 months', max: 90 },
+  { label: 'Over 3 months', max: Infinity },
+];
+
+const bandFor = (days) => AGE_BANDS.find((band) => days <= band.max).label;
+
+/**
+ * The shape of the lead book.
+ *
+ * Four questions a marketing person or their manager actually asks, and none of which the
+ * list screen answers: how many are at each stage, where they come from, how long the open
+ * ones have been sitting, and how many are converting.
+ *
+ * Counts rather than rates wherever both are possible. A conversion rate on nine leads is a
+ * number that swings twelve points on one deal, and a percentage with no denominator beside
+ * it is the commonest way a dashboard misleads without saying anything false.
+ */
+export async function leadAnalytics(filter = {}, now = Date.now()) {
+  const leads = await Lead.find(filter).select(
+    'status source city createdAt convertedAt activities nextFollowUpDate assignedTo'
+  );
+
+  const open = leads.filter((lead) => !['converted', 'disqualified'].includes(lead.status));
+
+  const count = (rows, key) => {
+    const tally = {};
+    for (const row of rows) {
+      const value = typeof key === 'function' ? key(row) : row[key];
+      if (value) tally[value] = (tally[value] || 0) + 1;
+    }
+    return Object.entries(tally)
+      .map(([label, value]) => ({ label, value }))
+      .sort((a, b) => b.value - a.value);
+  };
+
+  /*
+   * The funnel is kept in stage order rather than sorted by size — a funnel sorted by count
+   * is not a funnel, it is a bar chart that has lost the one thing it was drawing.
+   */
+  const byStage = LEAD_STAGE_ORDER.map((status) => ({
+    label: status,
+    value: leads.filter((lead) => lead.status === status).length,
+  }));
+
+  const ageing = AGE_BANDS.map((band) => ({
+    label: band.label,
+    value: open.filter((lead) => bandFor(daysSinceContact(lead, now)) === band.label).length,
+  }));
+
+  const converted = leads.filter((lead) => lead.status === 'converted').length;
+  const closed = converted + leads.filter((lead) => lead.status === 'disqualified').length;
+
+  return {
+    total: leads.length,
+    open: open.length,
+    byStage,
+    bySource: count(leads, 'source'),
+    byCity: count(leads, 'city').slice(0, 8),
+    ageing,
+    converted,
+    // Both, always. A rate without its denominator is the commonest way a dashboard misleads
+    // without saying anything false — 100% of two leads is not a track record.
+    conversionRatePercent: closed ? Math.round((converted / closed) * 100) : null,
+    decided: closed,
+    /** Open leads nobody has touched in a fortnight, which is the anomaly worth a name. */
+    untouched: open.filter((lead) => daysSinceContact(lead, now) >= STALE_AFTER_DAYS).length,
+  };
+}
+
+/** Stage order, so the funnel is drawn as a funnel. */
+const LEAD_STAGE_ORDER = ['new', 'contacted', 'qualified', 'converted', 'disqualified'];
+
+/** How long an open lead may go untouched before somebody should be told. */
+export const STALE_AFTER_DAYS = Number(process.env.LEAD_STALE_DAYS) || 14;
+
+/**
+ * Open leads nobody has touched, worst first.
+ *
+ * The lead equivalent of the sample stall sweep, and the same argument: a status field says
+ * "contacted" forever, so a lead nobody has spoken to since March still reads as being worked
+ * on. Nothing on any screen says otherwise, which is how a book of two hundred leads quietly
+ * becomes a book of forty and a hundred and sixty ghosts.
+ */
+export async function untouchedLeads(filter = {}, now = Date.now(), limit = 50) {
+  const leads = await Lead.find({ ...filter, status: OPEN })
+    .populate('assignedTo', 'name')
+    .select('number company contactName status assignedTo activities createdAt nextFollowUpDate');
+
+  return leads
+    .map((lead) => ({ lead, idleDays: daysSinceContact(lead, now) }))
+    .filter((row) => row.idleDays >= STALE_AFTER_DAYS)
+    .sort((a, b) => b.idleDays - a.idleDays)
+    .slice(0, limit)
+    .map(({ lead, idleDays }) => ({
+      _id: lead._id,
+      number: lead.number,
+      company: lead.company,
+      status: lead.status,
+      owner: lead.assignedTo?.name || null,
+      ownerId: lead.assignedTo?._id || lead.assignedTo,
+      idleDays,
+      contacts: (lead.activities || []).length,
+      reason: (lead.activities || []).length
+        ? `No contact for ${idleDays} days`
+        : `Never contacted — raised ${idleDays} days ago`,
+      link: `/leads/${lead._id}`,
+    }));
+}

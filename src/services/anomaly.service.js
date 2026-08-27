@@ -205,3 +205,54 @@ export async function runStallSweep({ now = Date.now() } = {}) {
 
   return raised;
 }
+
+/* ---------------------------- Leads gone quiet ---------------------------- */
+
+/**
+ * Open leads nobody has touched, told to management.
+ *
+ * The same argument as the sample stall sweep, on the other side of the pipeline. A lead's
+ * status field says "contacted" forever, so a buyer nobody has spoken to since March still
+ * reads as being worked on — and nothing on any screen says otherwise. That is how a book of
+ * two hundred leads quietly becomes a book of forty and a hundred and sixty ghosts, and
+ * nobody notices until somebody asks why the funnel stopped producing.
+ *
+ * To management rather than to the owner, deliberately. The owner already has this lead on
+ * their own screen and has not acted on it for a fortnight; telling them again is not new
+ * information. Management is who can decide it should be reassigned or written off.
+ */
+export async function runLeadStaleSweep({ now = Date.now() } = {}) {
+  const { untouchedLeads, STALE_AFTER_DAYS } = await import('./leadLog.service.js');
+
+  const stale = await untouchedLeads({}, now);
+  if (!stale.length) return [];
+
+  const managers = await management();
+  if (!managers.length) return [];
+
+  const raised = [];
+  for (const row of stale) {
+    await Promise.all(
+      managers.map((user) =>
+        raiseTask({
+          user: user._id,
+          title: `${row.company} has gone quiet — ${row.idleDays} days`,
+          notes:
+            `${row.number} · ${row.status.replace(/_/g, ' ')}` +
+            `${row.owner ? ` · ${row.owner}` : ' · unassigned'} · ${row.reason}`,
+          priority: 'high',
+          link: row.link,
+          /*
+           * Keyed on the lead and the week of silence rather than the day. A lead is going to
+           * sit for a fortnight or two by definition, and a fresh task every morning for the
+           * same lead is how a manager learns to clear this list without reading it.
+           */
+          originKey: `lead:${row._id}:stale:${Math.floor(row.idleDays / 7)}`,
+        })
+      )
+    );
+    raised.push({ lead: row.number, idleDays: row.idleDays, told: managers.length });
+  }
+
+  return raised;
+}

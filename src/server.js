@@ -4,7 +4,7 @@ import { connectDatabase } from './config/db.js';
 import { configurationProblem, isConfigured } from './providers/twilio.js';
 import { configurationProblem as smtpConfigurationProblem } from './services/notification.service.js';
 import { runSamplingEscalations } from './services/escalation.service.js';
-import { runStallSweep } from './services/anomaly.service.js';
+import { runStallSweep, runLeadStaleSweep } from './services/anomaly.service.js';
 
 /** Reports how one-time codes will actually reach people on this deployment. */
 function checkOtpDelivery() {
@@ -65,6 +65,11 @@ function startEscalationSweep() {
        * anyone has touched it — and a stall is the overdue of next week, worth catching while
        * there is still time to do something about it.
        */
+      const quietLeads = await runLeadStaleSweep();
+      if (quietLeads.length) {
+        console.log(`Quiet leads: told management about ${quietLeads.length}`);
+      }
+
       const stalled = await runStallSweep();
       if (stalled.length) {
         console.log(

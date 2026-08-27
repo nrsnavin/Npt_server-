@@ -406,3 +406,125 @@ test('management sees the team, ranked on conversions', async () => {
   const { json } = await api('/api/leads/scoreboard', { token: admin });
   assert.ok(Array.isArray(json.data.team), 'management sees the team');
 });
+
+/* ------------------------------- The lead book ------------------------------- */
+
+test('the funnel keeps stage order, because a sorted funnel is not a funnel', async () => {
+  await Lead.deleteMany({});
+  await makeLead({ status: 'new' });
+  await makeLead();
+  await makeLead();
+  const qualified = await makeLead();
+  await api(`/api/leads/${qualified._id}`, { method: 'PATCH', token: nandhini, body: { status: 'qualified' } });
+
+  const { json } = await api('/api/leads/overview', { token: nandhini });
+
+  assert.deepEqual(
+    json.data.byStage.map((row) => row.label),
+    ['new', 'contacted', 'qualified', 'converted', 'disqualified'],
+    'sorted by size it would be a bar chart that lost the thing it was drawing'
+  );
+  assert.equal(json.data.total, 4);
+});
+
+test('a rate never appears without its denominator', async () => {
+  /*
+   * The commonest way a dashboard misleads without saying anything false: 100% of two leads
+   * is not a track record, and a percentage alone cannot say so.
+   */
+  const { json } = await api('/api/leads/overview', { token: nandhini });
+
+  assert.ok('decided' in json.data, 'the denominator is returned beside the rate');
+  assert.ok('converted' in json.data);
+  if (json.data.conversionRatePercent !== null) {
+    assert.ok(json.data.decided > 0, 'a rate implies something was decided');
+  }
+});
+
+test('an open lead nobody has touched is an anomaly, however its status reads', async () => {
+  // A status field says "contacted" forever. This is what says otherwise.
+  await Lead.deleteMany({});
+  const now = Date.now();
+
+  const ghost = await makeLead({ company: 'Ghost Mills' });
+  await logged(ghost._id, [{ at: new Date(now - 40 * DAY), type: 'call' }]);
+  await Lead.updateOne({ _id: ghost._id }, { $set: { status: 'contacted' } });
+
+  await makeLead({ company: 'Worked Yesterday Ltd' });
+
+  const { json } = await api('/api/leads/overview', { token: nandhini });
+  const flagged = json.data.untouchedLeads;
+
+  assert.equal(flagged.length, 1, `got: ${flagged.map((r) => r.company)}`);
+  assert.equal(flagged[0].company, 'Ghost Mills');
+  assert.equal(flagged[0].status, 'contacted', 'which is exactly why the status could not tell you');
+  assert.ok(flagged[0].idleDays >= 40);
+  assert.match(flagged[0].reason, /No contact for/);
+});
+
+test('a lead never contacted at all says so, rather than reading as quiet', async () => {
+  await Lead.deleteMany({});
+  const never = await makeLead({ company: 'Never Called Exports' });
+  // Through the raw collection: Mongoose's timestamps middleware rewrites createdAt on a
+  // model update, so the backdate silently did not happen.
+  await mongoose.connection
+    .collection('leads')
+    .updateOne(
+      { _id: new mongoose.Types.ObjectId(String(never._id)) },
+      { $set: { createdAt: new Date(Date.now() - 30 * DAY) } }
+    );
+
+  const { json } = await api('/api/leads/overview', { token: nandhini });
+  assert.equal(json.data.untouchedLeads.length, 1);
+  assert.match(json.data.untouchedLeads[0].reason, /Never contacted/);
+  assert.equal(json.data.untouchedLeads[0].contacts, 0);
+});
+
+test('management is told about a quiet lead, and not every morning', async () => {
+  /*
+   * A lead is going to sit for a fortnight by definition. A fresh task each day for the same
+   * one is how a manager learns to clear this list without reading it — so it is keyed on the
+   * week of silence, and speaks again when the silence gets a week worse.
+   */
+  await Lead.deleteMany({});
+  await Todo.deleteMany({});
+  const now = Date.now();
+
+  const quiet = await makeLead({ company: 'Quiet Mills' });
+  await logged(quiet._id, [{ at: new Date(now - 20 * DAY) }]);
+
+  const anomaly = await import('../src/services/anomaly.service.js');
+  await anomaly.runLeadStaleSweep({ now });
+  await anomaly.runLeadStaleSweep({ now });
+
+  const raised = await Todo.find({ originKey: /:stale:/, completed: false });
+  assert.equal(raised.length, 1, 'not raised twice on the same day');
+  assert.match(raised[0].title, /Quiet Mills has gone quiet/);
+  assert.equal(raised[0].priority, 'high');
+
+  // A week worse is news again.
+  await anomaly.runLeadStaleSweep({ now: now + 8 * DAY });
+  assert.equal(await Todo.countDocuments({ originKey: /:stale:/, completed: false }), 2);
+});
+
+test('the owner is not told — they have had it on their screen for a fortnight', async () => {
+  await Lead.deleteMany({});
+  await Todo.deleteMany({});
+  const now = Date.now();
+
+  const quiet = await makeLead();
+  await logged(quiet._id, [{ at: new Date(now - 20 * DAY) }]);
+
+  const anomaly = await import('../src/services/anomaly.service.js');
+  await anomaly.runLeadStaleSweep({ now });
+
+  const nandhiniUser = await mongoose.connection
+    .collection('users')
+    .findOne({ email: 'nandhini@np.com' });
+
+  assert.equal(
+    await Todo.countDocuments({ user: nandhiniUser._id, originKey: /:stale:/ }),
+    0,
+    'telling them again is not new information; management is who can reassign or write it off'
+  );
+});

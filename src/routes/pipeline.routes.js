@@ -3,7 +3,7 @@ import {
   listProducts, getProduct, createProduct, updateProduct,
   listCustomers, getCustomer, createCustomer, updateCustomer, checkDuplicateCustomer,
   listLeads, getLead, createLead, updateLead, addLeadActivity, convertLead,
-  suggestLeadNextStep, leadLogAnalytics, leadFollowUps, leadScoreboard,
+  suggestLeadNextStep, leadLogAnalytics, leadFollowUps, leadScoreboard, leadsOverview,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, promoteToProduct, enquiryPipeline,
   exportCustomers,
@@ -59,6 +59,7 @@ router.get('/leads/export', requireModule('enquiries'), exportLeads);
  */
 router.get('/leads/follow-ups', requireModule('enquiries'), leadFollowUps);
 router.get('/leads/scoreboard', requireModule('enquiries'), leadScoreboard);
+router.get('/leads/overview', requireModule('enquiries'), leadsOverview);
 router.get('/leads', requireModule('enquiries'), listLeads);
 router.post('/leads', requireModule('enquiries', 'write'), validate(leadSchema), createLead);
 router.get('/leads/:id', requireModule('enquiries'), getLead);
