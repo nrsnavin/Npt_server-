@@ -9,6 +9,7 @@ import { downloadAttachment } from '../controllers/sampleLog.controller.js';
 import { globalSearch } from '../controllers/search.controller.js';
 import { recordHistory } from '../controllers/audit.controller.js';
 import { ask, status as jarvisStatus } from '../controllers/jarvis.controller.js';
+import { listStates, listCities } from '../controllers/place.controller.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 
 const router = Router();
@@ -33,6 +34,12 @@ router.get('/search', authenticate, globalSearch);
  */
 router.post('/jarvis/ask', authenticate, authorize('admin'), ask);
 router.get('/jarvis/status', authenticate, authorize('admin'), jarvisStatus);
+/*
+ * States and towns, suggested as somebody types one. Behind `authenticate` but on no module
+ * grant: a place name belongs to no module, and everybody who fills in an address needs them.
+ */
+router.get('/places/states', authenticate, listStates);
+router.get('/places/cities', authenticate, listCities);
 // Who changed what, on one record. Gated on the record, not on the log — see the controller.
 router.get('/history/:model/:id', authenticate, recordHistory);
 // Files are addressed by key rather than through the record they hang off, but the record is
