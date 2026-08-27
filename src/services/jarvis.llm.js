@@ -36,7 +36,7 @@ import { parse as parseByRule, KNOWN_SUBJECTS } from './jarvis.intents.js';
  */
 
 /** The aspects the answer layer implements. Shared with the schema so the two cannot drift. */
-const ASPECTS = ['record', 'overdue', 'due', 'new', 'open', 'count', 'status'];
+const ASPECTS = ['record', 'stalled', 'overdue', 'due', 'new', 'open', 'count', 'status'];
 
 /**
  * What the model may return, as JSON Schema.
@@ -99,6 +99,7 @@ const SYSTEM = `You read questions typed into the assistant of a hanger factory'
 Pick the subject the question is about, and the aspect being asked:
 
 - record — a specific document was named by its number
+- stalled — what nobody is working on: stuck, gone quiet, no progress, anomalous. Distinct from overdue: a sample can be untouched for days and still be well inside its date
 - overdue — what is late or past its date
 - due — what needs following up now
 - new — what has arrived recently

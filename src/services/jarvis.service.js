@@ -6,6 +6,7 @@ import Product from '../models/Product.js';
 import { findModule } from '../config/modules.js';
 import { canRead } from './access.service.js';
 import { ownershipFilter } from './ownership.service.js';
+import { stalledSamples, stallAfterDays } from './anomaly.service.js';
 
 /**
  * Ask Jarvis: answering the question the parser understood.
@@ -236,6 +237,41 @@ async function customerStatus(user, customer) {
   };
 }
 
+/**
+ * What nobody is working on.
+ *
+ * The question management actually asks, and the one no other report answered: not "what has
+ * passed its date" but "what has gone quiet". A sample due in ten days that nobody has opened
+ * for three is invisible to the overdue list and is exactly what becomes it.
+ */
+async function stalled(user) {
+  const rows = await stalledSamples({ filter: ownershipFilter(user, 'requestedBy') });
+
+  if (!rows.length) {
+    return reply(
+      `Nothing has gone quiet — every open sample has been touched within ${plural(stallAfterDays(), 'working day')}.`
+    );
+  }
+
+  const worst = rows[0];
+  return {
+    answer:
+      `${sentenceCase(plural(rows.length, 'sample'))} ${rows.length === 1 ? 'has' : 'have'} had no work ` +
+      `for more than ${plural(stallAfterDays(), 'working day')}. The quietest is ${worst.number}` +
+      `${worst.customer ? ` for ${worst.customer}` : ''} — ${worst.reason.toLowerCase()}.`,
+    rows: rows.slice(0, ROWS).map((row) => ({
+      _id: row._id,
+      title: row.number,
+      subtitle: [row.customer || 'Internal trial', row.modelNumber, readable(row.status)]
+        .filter(Boolean)
+        .join(' · '),
+      meta: row.reason,
+      link: row.link,
+    })),
+    total: rows.length,
+  };
+}
+
 /** What is late on the bench. */
 async function overdueSamples(user) {
   const filter = {
@@ -452,7 +488,7 @@ async function byName(user, name) {
 /* -------------------------------- Routing -------------------------------- */
 
 const ASPECTS_FOR = {
-  samples: ['what is overdue', 'what is open', 'what is new this week', 'or a number like SMP-2026-0004'],
+  samples: ['what is stuck', 'what is overdue', 'what is open', 'what is new this week', 'or a number like SMP-2026-0004'],
   enquiries: ['what is new this week', 'what follow-ups are due', 'what is open', 'or a number like ENQ-2026-0001'],
   leads: ['what is new', 'what is still open', 'or a number like LEAD-2026-0001'],
   customers: ['what is new', 'or name one — "what is happening with Trendline"'],
@@ -520,6 +556,16 @@ export async function answer(user, parsed) {
   }
 
   switch (aspect) {
+    case 'stalled':
+      /*
+       * Only samples carry a record of being worked on — a stage history and a log. Saying so
+       * beats answering about something else, or answering "none", which would read as an
+       * assurance that nothing anywhere is stuck.
+       */
+      return subject === 'samples'
+        ? stalled(user)
+        : reply(`Nothing records progress on ${subject} the way the bench does, so I cannot tell you what has gone quiet there. Ask me about samples.`);
+
     case 'overdue':
       if (subject !== 'samples') {
         // Enquiries carry a follow-up date rather than a deadline, so "overdue" means that.

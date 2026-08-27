@@ -4,6 +4,7 @@ import { connectDatabase } from './config/db.js';
 import { configurationProblem, isConfigured } from './providers/twilio.js';
 import { configurationProblem as smtpConfigurationProblem } from './services/notification.service.js';
 import { runSamplingEscalations } from './services/escalation.service.js';
+import { runStallSweep } from './services/anomaly.service.js';
 
 /** Reports how one-time codes will actually reach people on this deployment. */
 function checkOtpDelivery() {
@@ -56,6 +57,20 @@ function startEscalationSweep() {
       const raised = await runSamplingEscalations();
       if (raised.length) {
         console.log(`Sampling escalations: raised ${raised.length} (${raised.map((entry) => `${entry.sample} L${entry.level}`).join(', ')})`);
+      }
+
+      /*
+       * And the samples nobody is working on. Runs on the same timer because it answers the
+       * neighbouring question — that one asks whether a date has passed, this asks whether
+       * anyone has touched it — and a stall is the overdue of next week, worth catching while
+       * there is still time to do something about it.
+       */
+      const stalled = await runStallSweep();
+      if (stalled.length) {
+        console.log(
+          `Stalled samples: told management about ${stalled.length} ` +
+            `(${stalled.map((entry) => `${entry.sample} ${entry.idleDays}d`).join(', ')})`
+        );
       }
     } catch (error) {
       console.error('Sampling escalation sweep failed:', error.message);

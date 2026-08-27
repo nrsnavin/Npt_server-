@@ -3,6 +3,7 @@ import Sample, {
 } from '../models/Sample.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter } from '../services/ownership.service.js';
+import { stalledSamples } from '../services/anomaly.service.js';
 import { readyTime, sampleAnalytics } from '../services/sampleAnalytics.service.js';
 
 /**
@@ -46,6 +47,9 @@ export const sampleDashboard = asyncHandler(async (req, res) => {
     .populate('customer', 'name');
 
   const open = samples.filter((sample) => !CLOSED_SAMPLE_STATUSES.includes(sample.status));
+
+  // Scoped like everything else on this screen, so the bench sees the bench's.
+  const stalled = await stalledSamples({ filter: scope, now, limit: 10 });
 
   /* ------------------------------- The three tiles ------------------------------- */
 
@@ -145,6 +149,7 @@ export const sampleDashboard = asyncHandler(async (req, res) => {
         escalated: open.filter((sample) => (sample.escalationLevel || 0) > 0).length,
         openTotal: open.length,
         unassigned: open.filter((sample) => !sample.assignedTo).length,
+        stalled: stalled.length,
       },
       turnaround: {
         requestToReadyDays: averageDays(toReady),
@@ -159,6 +164,12 @@ export const sampleDashboard = asyncHandler(async (req, res) => {
         reworkRatePercent: answered.length ? Math.round((modified / answered.length) * 100) : null,
       },
       queueByStatus: countBy(open, 'status'),
+      /*
+       * What has gone quiet. Distinct from `overdue`, and the more useful of the two: overdue
+       * says a date has passed, this says nobody is working on it. A sample due in ten days
+       * that nobody has opened for three is invisible to the first and is what becomes it.
+       */
+      stalled,
       byPurpose: countBy(samples, 'purpose'),
       byRequester: countBy(open, (sample) => sample.requestedBy?.name),
       oldestOpen,

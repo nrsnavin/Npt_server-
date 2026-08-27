@@ -124,6 +124,10 @@ Runs against an in-memory MongoDB — no local `mongod` needed.
   that an alarm rings once, and the dashboard's ageing and rework arithmetic.
 - `tests/index-health.test.js` — a stale unique index, the all-creation-fails symptom it
   causes, the message that explains it, and that dropping it restores saves.
+- `tests/anomaly.test.js` — samples nobody is working on: that a weekend does not flag the
+  whole bench, that a log entry restarts the clock and the escalation sweep does not, that a
+  sample well inside its date still stalls, and that management is told once per day of
+  silence rather than once ever or once a sweep.
 - `tests/jarvis.test.js` — Ask Jarvis: the rules parser against the ways people type a document
   number, the admin gate, and the two ways an assistant becomes worthless — answering a module
   that does not exist as zero, and reaching past the permission system.
@@ -177,6 +181,7 @@ applied inside the controllers because it varies by department.
 | POST | `/samples/:id/resample` | The next attempt after a modification, linked to the last |
 | GET | `/samples/pipeline` | Count and overdue per stage |
 | GET | `/samples/dashboard` | The §22 sampling dashboard: tiles, ageing, turnaround, rework |
+| GET | `/samples/anomalies` | Samples nobody has touched for more than a working day |
 | GET | `/samples/analytics` | Turnaround over a period, and what drives it: `?months=` or `?from=&to=` |
 | GET | `/dashboard/marketing` | Marketing's own day and its own numbers [§21] |
 | GET | `/search?q=` | One search across everything the caller may read [§32] |
@@ -196,6 +201,42 @@ applied inside the controllers because it varies by department.
 
 Responses are `{ success, data }`; list routes add `{ pagination }`. Errors are
 `{ success: false, message, details? }`.
+
+### Samples nobody is working on
+
+A different question from the escalation below, and the more useful one. That asks whether a
+sample has passed its date; this asks whether anyone is working on it. A sample due in ten
+days that nobody has opened for three is invisible to the first check and is exactly what
+becomes it — a stall is next week's overdue, caught while there is still time.
+
+Two definitions decide whether the list is worth reading or is just another red badge.
+
+**What counts as being worked on.** The last stage move, or the last entry in the sample's
+log — the two things a person does to a sample. Deliberately *not* `updatedAt`: the escalation
+sweep writes `escalationLevel` to the record, so a clock built on `updatedAt` would be reset
+by the very automation flagging it, and the samples in the most trouble would be the only ones
+that never looked stalled.
+
+**What counts as a day.** Working days, skipping the weekly off. In calendar days against a
+one-day threshold, every open sample is an anomaly every Monday morning because nobody worked
+Sunday — and a list that flags everything is a list nobody reads. `ANOMALY_STALL_DAYS` sets
+the threshold and `ANOMALY_WEEKLY_OFF` the closed day.
+
+Closed samples cannot stall, and neither can ones sitting with the customer: that delay is
+real and it is marketing's to chase, so pointing a bench alarm at it would be an alarm at the
+wrong people.
+
+The reason says what to do rather than only that something is wrong — "nobody has picked it
+up" and "no progress for three working days" are different situations with different fixes.
+
+`runStallSweep` tells management, one task per sample, keyed on the sample **and its day
+count**: keyed on the sample alone it would be raised once and go quiet while the sample sat
+for another week, which is the failure it exists to prevent. It runs on the escalation timer
+and is safe to run as often as you like.
+
+Surfaced three ways: `GET /samples/anomalies` (with the threshold in `meta`, since "2 days
+idle" is a number nobody can judge without it), a count and a ranked panel on the sampling
+dashboard, and an answer from Ask Jarvis to "what is stuck".
 
 ### Ask Jarvis
 

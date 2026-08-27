@@ -12,6 +12,7 @@ import { canWrite } from '../services/access.service.js';
 import { EVENTS, publish, sampleStatusEvent } from '../services/events.service.js';
 import { createSampleRequest, defaultRequiredDate } from '../services/sampling.service.js';
 import { assertAssignable } from '../services/assignment.service.js';
+import { stalledSamples, stallAfterDays } from '../services/anomaly.service.js';
 import { notifyCustomer, previewFor } from '../services/customerMessage.service.js';
 import CustomerMessage from '../models/CustomerMessage.js';
 import { listParams, paginated } from '../utils/query.js';
@@ -81,6 +82,18 @@ export const listSamples = asyncHandler(async (req, res) => {
   ]);
 
   paginated(res, data, { page, limit, total });
+});
+
+/**
+ * Samples nobody has touched [the anomaly list].
+ *
+ * Separate from `?overdue=true`, which asks whether a date has passed. This asks whether
+ * anyone is working on it, and catches the sample that is quietly on its way to being overdue
+ * while there is still time to do something about it.
+ */
+export const listStalledSamples = asyncHandler(async (req, res) => {
+  const data = await stalledSamples({ filter: scope(req.user) });
+  res.json({ success: true, data, meta: { stallAfterDays: stallAfterDays() } });
 });
 
 export const getSample = asyncHandler(async (req, res) => {

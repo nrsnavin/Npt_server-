@@ -114,6 +114,12 @@ const SUBJECTS = [
  * like it worked.
  */
 const ASPECTS = [
+  /*
+   * Before `overdue`, because "what is stuck" and "what is late" are different questions and
+   * the words for the first are more specific. A sample can be stalled without being overdue —
+   * that is the whole reason the check exists.
+   */
+  { key: 'stalled', terms: [/\bstall(ed|ing)?\b/i, /\bstuck\b/i, /\banomal(y|ies|ous)\b/i, /\bnot (been )?(worked|touched|moved)\b/i, /\bgone quiet\b/i, /\bno progress\b/i, /\bidle\b/i, /\bsitting\b/i] },
   { key: 'overdue', terms: [/\boverdue\b/i, /\blate\b/i, /\bdelayed?\b/i, /\bbehind\b/i, /\bslipp(ed|ing)\b/i, /\bbreach/i] },
   { key: 'due', terms: [/\bdue\b/i, /\bfollow[- ]?ups?\b/i, /\bchase\b/i, /\bpending with me\b/i] },
   { key: 'new', terms: [/\bnew\b/i, /\brecent(ly)?\b/i, /\blatest\b/i, /\bcome in\b/i, /\barrived?\b/i, /\bthis week\b/i, /\btoday\b/i] },

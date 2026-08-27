@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  listSamples, getSample, createSample, updateSample, assignSample,
+  listSamples, listStalledSamples, getSample, createSample, updateSample, assignSample,
   setSampleStatus, setDispatchDetails, recordFeedback, resample, samplePipeline, linkEnquiry, linkCustomer,
   previewCustomerMessage, sendCustomerMessage, listCustomerMessages,
 } from '../controllers/sample.controller.js';
@@ -29,6 +29,8 @@ router.use(authenticate);
  * marking their own work approved.
  */
 
+// Above `/:id` so the literal segment wins.
+router.get('/anomalies', requireModule('samples'), listStalledSamples);
 router.get('/pipeline', requireModule('samples'), samplePipeline);
 router.get('/dashboard', requireModule('samples'), sampleDashboard);
 router.get('/analytics', requireModule('samples'), sampleAnalyticsReport);
