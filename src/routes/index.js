@@ -8,6 +8,7 @@ import sampleRoutes from './sample.routes.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
 import { globalSearch } from '../controllers/search.controller.js';
 import { recordHistory } from '../controllers/audit.controller.js';
+import { ask } from '../controllers/jarvis.controller.js';
 import { authenticate } from '../middleware/auth.js';
 
 const router = Router();
@@ -21,6 +22,11 @@ router.use('/samples', sampleRoutes);
  * module — it decides per record type what the caller may read, and returns only those.
  */
 router.get('/search', authenticate, globalSearch);
+/*
+ * Ask Jarvis. Like search, it belongs to no module: it decides per subject what the caller
+ * may read and answers only on those, so there is nothing to gate the route itself on.
+ */
+router.post('/jarvis/ask', authenticate, ask);
 // Who changed what, on one record. Gated on the record, not on the log — see the controller.
 router.get('/history/:model/:id', authenticate, recordHistory);
 // Files are addressed by key rather than through the record they hang off, but the record is

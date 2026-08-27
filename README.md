@@ -124,6 +124,9 @@ Runs against an in-memory MongoDB — no local `mongod` needed.
   that an alarm rings once, and the dashboard's ageing and rework arithmetic.
 - `tests/index-health.test.js` — a stale unique index, the all-creation-fails symptom it
   causes, the message that explains it, and that dropping it restores saves.
+- `tests/jarvis.test.js` — Ask Jarvis: the parser against the ways people type a document
+  number, and the two ways an assistant becomes worthless — answering a module that does not
+  exist as zero, and reaching past the permission system.
 - `tests/workspace.test.js` and `tests/health.test.js` — the dock and the probes.
 
 ## API
@@ -179,6 +182,7 @@ applied inside the controllers because it varies by department.
 | GET | `/samples/:id/customer-message/preview` | The draft a person would send, and what has already gone |
 | POST | `/samples/:id/customer-message` | Send it, optionally edited, on chosen channels |
 | GET | `/samples/:id/customer-messages` | Everything ever sent to this customer about this sample |
+| POST | `/jarvis/ask` | Ask Jarvis — one typed question, one answer from the asker's own records |
 | GET | `/history/:model/:id` | Who changed what on one record, newest first |
 | GET | `/customers/export` | The customers on screen, as CSV — same filters as the list route |
 | GET | `/leads/export`, `/enquiries/export`, `/products/export` | The same, for each list |
@@ -188,6 +192,55 @@ applied inside the controllers because it varies by department.
 
 Responses are `{ success, data }`; list routes add `{ pagination }`. Errors are
 `{ success: false, message, details? }`.
+
+### Ask Jarvis
+
+A text box that answers questions about the plant: *what is overdue on the bench*, *any new
+enquiries this week*, *where is SMP-2026-0004*, *what is happening with Trendline*. Every one
+of those is already on a screen — finding the screen is the friction, three clicks and a
+filter to learn something that fits in a line.
+
+**No language model is involved.** The parse is rules, in `services/jarvis.intents.js`, for
+three reasons that matter more here than fluency does. The questions are a closed set — five
+subjects and five aspects between them — and a model earns its keep when the space of
+questions is open, not when it fits on a page. A wrong answer is worse than no answer, because
+somebody asks how many samples are late and acts on the number: everything here is a query
+they can re-run by hand. And it costs nothing, works with the network down, and hands no
+customer names to a third party.
+
+The parse is two axes rather than a list of intents, because that is how the questions
+decompose: a **subject** (samples, enquiries, leads, customers, orders) and an **aspect**
+(this one, what is late, what is new, how many). A flat list needs an entry per combination
+and turns brittle; a grid degrades, and an unrecognised corner can say precisely which half it
+did not follow. Swapping a model in later means replacing that one file — everything
+downstream takes `{ subject, aspect, entities }` and never sees the sentence.
+
+Four rules decide whether it is trustworthy enough to act on, which is the only bar that
+matters. An assistant nobody trusts gets asked once.
+
+**It never answers zero for something that does not exist.** "How many orders are pending?"
+against a module nobody has written must not come back "0" — the reader would conclude there
+is no pending work. Orders, quotations, dispatch, payments and production each answer with
+what they are and that they are not built yet.
+
+**It never answers a different question than the one asked.** A subject it recognised with an
+aspect it did not says so and offers the aspects that subject has. Quietly falling back to a
+summary produces a confident, correct-looking answer to something nobody asked.
+
+**Grants and record ownership apply exactly as on screen.** The route is open to everyone
+rather than gated to administrators: an administrator sees the whole plant because their
+grants say so, not because the route checks a role — so the same feature serves the bench and
+marketing without a second implementation and without a hole where one sees the other's book.
+A colleague's customer is as unreachable through the box as it is through the list.
+
+**Every figure carries its records.** The reply is a sentence *and* the rows behind it, each a
+link. A number nobody can verify is a rumour, and the first one that turns out to be wrong
+with no way to check finishes the feature.
+
+It is stateless. A thread of context is what makes an assistant feel clever and what makes it
+wrong in ways nobody can retrace — the third answer resting on how the first was read. Each
+question is parsed and answered on its own, and the reply reports what it understood, because
+that is the first thing anybody asks when an answer looks wrong.
 
 ### Who changed what
 
