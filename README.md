@@ -284,6 +284,22 @@ contact and optionally the first **enquiry** in one action, so nothing is re-key
 customer already matching on GST or phone blocks the conversion rather than producing a
 second master record.
 
+**Who a new lead belongs to** [§41.3]. An existing customer's work goes to the account owner
+— an enquiry raised against a customer takes that customer's owner. A lead nobody owns yet
+goes round-robin across marketing, in the same atomic counter the document numbers use, so
+two leads arriving together cannot take the same person and a restart does not put the
+rotation back to whoever sorts first. The rota is marketing by department *and* by grant:
+department alone would hand leads to someone who cannot open an enquiry, and the grant alone
+would put every admin in the rotation, since they hold everything.
+
+A marketing person entering a call they took keeps it — the rotation is for the lead that
+arrives with nobody attached, and handing someone's own conversation to a colleague on their
+behalf would be surprising rather than fair. So it applies to an administrator typing in a
+trade-show list, and later to the WhatsApp front door, where an unknown number genuinely has
+no owner. When it rotates, the lead says so in its own activity log. §41.3 says round-robin
+rather than least-loaded, and it is the better rule as well as the stated one: under
+least-loaded, closing your leads quickly earns you more of them.
+
 An enquiry carries **one model**. A buyer asking about three models produces three enquiries
 sharing a `groupRef`, so sample and price stay answerable per model while follow-up keeps
 them together. A requirement with no catalogue match is flagged `isNewDevelopment` and
@@ -313,6 +329,16 @@ handing the record over.
 Stage changes are recorded on the enquiry and published on an internal event bus
 (`src/services/events.service.js`), which is how the modules hand work to each other without
 knowing about each other.
+
+**Built for a front door that does not exist yet** [§8]. Leads, customers and enquiries each
+carry an optional `conversation` — the provider and that provider's own id for the thread —
+and it is null on every record today. §41.6 requires conversation history to stay linked to
+the lead, the contact, the customer and the enquiry, and converting a lead carries the
+reference onto both records it produces, so the chain holds rather than ending at a lead
+nobody opens again. The field is here now because retrofitting an origin across a year of
+live enquiries is the migration nobody wants; it is optional forever, since an enquiry with
+no thread behind it is the normal case rather than a defect. Nothing sets it yet, and there
+is no UI for it: a field that is always null is not a screen.
 
 ### Phase 2: sampling
 

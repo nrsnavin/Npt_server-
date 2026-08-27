@@ -7,6 +7,7 @@ import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
+import { ownerForNewLead } from '../services/assignment.service.js';
 import { EVENTS, publish, statusEvent } from '../services/events.service.js';
 import { normalisePhone } from '../utils/phone.js';
 import { listParams, paginated } from '../utils/query.js';
@@ -243,11 +244,26 @@ export const getLead = asyncHandler(async (req, res) => {
 });
 
 export const createLead = asyncHandler(async (req, res) => {
+  // Round-robin across marketing for a lead that arrives with nobody attached [§41.3]. A
+  // marketing person entering their own call keeps it; see the service for why.
+  const owner = await ownerForNewLead({ requested: req.body.assignedTo, creator: req.user });
+
   const lead = await Lead.create({
     ...req.body,
     number: await nextNumber('LEAD'),
-    assignedTo: req.body.assignedTo || req.user._id,
+    assignedTo: owner.user,
   });
+
+  // Said out loud on the record, so nobody has to guess why it landed with them.
+  if (owner.rotated) {
+    lead.activities.push({
+      type: 'note',
+      summary: `Assigned to ${owner.name} by rotation`,
+      createdBy: req.user._id,
+    });
+    await lead.save();
+  }
+
   res.status(201).json({ success: true, data: lead });
 });
 
@@ -359,6 +375,9 @@ export const convertLead = asyncHandler(async (req, res) => {
     paymentTerms: customerOverrides.paymentTerms,
     rating: customerOverrides.rating || 'B',
     source: lead.source,
+    // §41.6: the thread stays attached to every record the lead becomes, or the history is
+    // linked to a lead nobody opens again once it has been converted.
+    conversation: lead.conversation,
     convertedFromLead: lead._id,
     notes: lead.notes,
   });
@@ -371,6 +390,7 @@ export const convertLead = asyncHandler(async (req, res) => {
         customer: customer._id,
         assignedTo: lead.assignedTo,
         source: lead.source,
+        conversation: lead.conversation,
         lead: lead._id,
       },
       req.user

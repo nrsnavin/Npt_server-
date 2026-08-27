@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { CUSTOMER_SOURCES } from './Customer.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Product.js';
+import { withConversationRef } from './conversationRef.js';
 
 /**
  * The enquiry statuses [BLUEPRINT §3], in the order work moves through them.
@@ -128,5 +129,8 @@ enquirySchema.virtual('isOpen').get(function isOpen() {
 
 enquirySchema.set('toJSON', { virtuals: true });
 enquirySchema.set('toObject', { virtuals: true });
+
+/** §8: present and null until the WhatsApp front door lands, so nothing is migrated then. */
+withConversationRef(enquirySchema);
 
 export default mongoose.model('Enquiry', enquirySchema);

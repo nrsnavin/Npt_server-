@@ -486,3 +486,81 @@ test('a customer’s timeline carries its samples, not only its enquiries', asyn
   assert.match(samples[0].number, /^SMP-/);
   assert.ok(samples[0].status, 'and says where it has got to');
 });
+
+/* ---------------- Gaps §8 asked to be closed before WhatsApp ---------------- */
+
+test('a lead with no natural owner goes round the marketing team', async () => {
+  // §41.3, and §8 is explicit that it is a marketing-team rule rather than a WhatsApp one.
+  // An administrator entering leads off a trade-show list has no claim on any of them, so
+  // they rotate; the same call the integration will make for an unknown number.
+  const owners = [];
+  for (let index = 0; index < 4; index += 1) {
+    const lead = await makeLead(admin);
+    owners.push(String(lead.assignedTo));
+  }
+
+  const distinct = new Set(owners);
+  assert.ok(distinct.size > 1, 'they did not all land on one person');
+  assert.ok(
+    owners[0] !== owners[1],
+    'consecutive leads go to different people — that is what round-robin means'
+  );
+  // Two marketing people here, so the fourth is back with the first.
+  assert.equal(owners[0], owners[2]);
+  assert.equal(owners[1], owners[3]);
+
+  // Never an administrator: they hold every grant, but they are not on the marketing rota.
+  const { json: me } = await api('/api/auth/me', { token: admin });
+  assert.ok(!owners.includes(String(me.data.id)));
+});
+
+test('a marketing person entering their own call keeps it', async () => {
+  // The rotation is for the lead that arrives with nobody attached. Handing someone's own
+  // conversation to a colleague on their behalf would be surprising, not fair.
+  const { json: me } = await api('/api/auth/me', { token: nandhini });
+  const lead = await makeLead(nandhini);
+
+  assert.equal(String(lead.assignedTo), String(me.data.id));
+});
+
+test('the rotation is recorded on the lead, so nobody has to guess', async () => {
+  const lead = await makeLead(admin);
+  const { json } = await api(`/api/leads/${lead._id}`, { token: admin });
+
+  assert.ok(
+    json.data.activities?.some((entry) => /by rotation/i.test(entry.summary)),
+    'the lead says how it was assigned'
+  );
+});
+
+test('a conversation reference survives the lead becoming a customer and an enquiry', async () => {
+  // §41.6: the thread stays linked to the lead, the customer and the enquiry. §8 asks for
+  // the field now because retrofitting an origin across live records is the migration
+  // nobody wants — it is null on everything until the front door lands.
+  const thread = { provider: 'whatsapp', reference: `wa-thread-${unique()}` };
+
+  const lead = await makeLead(nandhini, { conversation: thread });
+  assert.equal(lead.conversation?.reference, thread.reference);
+
+  const { status, json } = await api(`/api/leads/${lead._id}/convert`, {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: { customerType: 'garment_factory' },
+      enquiry: { product: productId, requirement: requirement(), ...followUp },
+    },
+  });
+
+  assert.equal(status, 201);
+  assert.equal(json.data.customer.conversation?.reference, thread.reference);
+  assert.equal(json.data.enquiry.conversation?.reference, thread.reference);
+  assert.equal(json.data.enquiry.conversation?.provider, 'whatsapp');
+});
+
+test('a record with no conversation behind it is the normal case', async () => {
+  // §8: an enquiry with no thread is not a defect, and must never be required.
+  const customer = await makeCustomer(nandhini);
+  const enquiry = await makeEnquiry(nandhini, customer._id);
+
+  assert.equal(enquiry.conversation, undefined);
+});

@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { normalisePhone } from '../utils/phone.js';
+import { withConversationRef } from './conversationRef.js';
 
 export const CUSTOMER_TYPES = [
   'garment_factory',
@@ -89,5 +90,8 @@ customerSchema.index({ name: 'text', code: 'text', gstin: 'text' });
 // The de-duplication rule [§41.2] is a number lookup, so both numbers are indexed now.
 customerSchema.index({ mobile: 1 });
 customerSchema.index({ whatsapp: 1 });
+
+/** §8: present and null until the WhatsApp front door lands, so nothing is migrated then. */
+withConversationRef(customerSchema);
 
 export default mongoose.model('Customer', customerSchema);

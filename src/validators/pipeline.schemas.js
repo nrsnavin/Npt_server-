@@ -40,6 +40,14 @@ const contactSchema = z.object({
   isPrimary: z.boolean().optional(),
 });
 
+/** §8: the thread a record came out of. Null until the WhatsApp front door lands. */
+const conversationRef = z
+  .object({
+    provider: z.string().max(40).optional(),
+    reference: z.string().max(200).optional(),
+  })
+  .optional();
+
 export const customerSchema = z.object({
   name: z.string().min(2).max(160),
   customerType: z.enum(CUSTOMER_TYPES).optional(),
@@ -56,6 +64,7 @@ export const customerSchema = z.object({
   paymentTerms: z.string().optional(),
   rating: z.enum(RATINGS).optional(),
   source: z.enum(CUSTOMER_SOURCES).optional(),
+  conversation: conversationRef,
   notifications: z
     .object({ whatsapp: z.boolean().optional(), email: z.boolean().optional() })
     .optional(),
@@ -77,6 +86,7 @@ export const leadSchema = z.object({
   city: z.string().optional(),
   state: z.string().optional(),
   source: z.enum(CUSTOMER_SOURCES).optional(),
+  conversation: conversationRef,
   productInterest: z.string().optional(),
   estimatedQuantity: z.number().nonnegative().optional(),
   estimatedValue: z.number().nonnegative().optional(),
@@ -125,6 +135,7 @@ const enquiryCore = {
   estimatedValue: z.number().nonnegative().optional(),
   probability: z.number().min(0).max(100).optional(),
   source: z.enum(CUSTOMER_SOURCES).optional(),
+  conversation: conversationRef,
 };
 
 export const enquirySchema = z.object({

@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { normalisePhone } from '../utils/phone.js';
 import { CUSTOMER_SOURCES } from './Customer.js';
+import { withConversationRef } from './conversationRef.js';
 
 export const LEAD_STATUSES = ['new', 'contacted', 'qualified', 'converted', 'disqualified'];
 
@@ -80,5 +81,8 @@ leadSchema.virtual('isOpen').get(function isOpen() {
 
 leadSchema.set('toJSON', { virtuals: true });
 leadSchema.set('toObject', { virtuals: true });
+
+/** §8: present and null until the WhatsApp front door lands, so nothing is migrated then. */
+withConversationRef(leadSchema);
 
 export default mongoose.model('Lead', leadSchema);
