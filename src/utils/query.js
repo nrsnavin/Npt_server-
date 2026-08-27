@@ -8,9 +8,17 @@
 /** Bounded so a caller cannot ask for the whole collection in one request. */
 const MAX_LIMIT = 200;
 
-export function listParams(query, { searchFields = [], defaultSort = '-createdAt' } = {}) {
+/**
+ * `defaultLimit` is per list, because what a reader wants first differs by list. A table of
+ * enquiries wants a screenful; a feed of photographs wants far fewer, since every row there
+ * costs a file download rather than a line of text.
+ */
+export function listParams(
+  query,
+  { searchFields = [], defaultSort = '-createdAt', defaultLimit = 25 } = {}
+) {
   const page = Math.max(Number(query.page) || 1, 1);
-  const limit = Math.min(Math.max(Number(query.limit) || 25, 1), MAX_LIMIT);
+  const limit = Math.min(Math.max(Number(query.limit) || defaultLimit, 1), MAX_LIMIT);
   const sort = query.sort || defaultSort;
 
   const filter = {};

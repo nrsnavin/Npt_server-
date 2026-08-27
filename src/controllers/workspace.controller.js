@@ -4,6 +4,7 @@ import Announcement from '../models/Announcement.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { canWrite } from '../services/access.service.js';
+import { listParams, paginated } from '../utils/query.js';
 
 /** Start and end of the caller's day, used by the reminder feed. */
 function dayBounds(reference = new Date()) {
@@ -21,12 +22,20 @@ export const listTodos = asyncHandler(async (req, res) => {
   if (req.query.status === 'open') filter.completed = false;
   if (req.query.status === 'done') filter.completed = true;
 
-  const todos = await Todo.find(filter)
-    // Open first, then soonest due, then newest. Undated tasks sort last.
-    .sort({ completed: 1, dueDate: 1, createdAt: -1 })
-    .limit(200);
+  // Paged, and honest about it. The old flat `.limit(200)` meant a long-running account
+  // silently stopped showing its oldest done tasks with nothing on screen to say so.
+  const { page, limit } = listParams(req.query, { defaultLimit: 50 });
 
-  res.json({ success: true, data: todos });
+  const [todos, total] = await Promise.all([
+    Todo.find(filter)
+      // Open first, then soonest due, then newest. Undated tasks sort last.
+      .sort({ completed: 1, dueDate: 1, createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+    Todo.countDocuments(filter),
+  ]);
+
+  paginated(res, todos, { page, limit, total });
 });
 
 export const createTodo = asyncHandler(async (req, res) => {

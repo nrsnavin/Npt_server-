@@ -5,6 +5,7 @@ import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownsRecord } from '../services/ownership.service.js';
 import { put, remove, streamOf } from '../services/storage.service.js';
+import { listParams, paginated } from '../utils/query.js';
 
 /**
  * The sample's working record: notes, photos, and comments on either.
@@ -30,11 +31,32 @@ async function reachableSample(req) {
   return sample;
 }
 
+/**
+ * A page of the feed, newest first.
+ *
+ * Paged rather than whole because this is the one list with no natural ceiling: a sample that
+ * ran through six attempts collects dozens of entries, most of them carrying a photograph
+ * taken on a phone. Returning all of them made opening a sample download every picture ever
+ * attached to it before anything appeared.
+ *
+ * Small default: the feed is read from the top, and the entries worth seeing on arrival are
+ * the last few. The rest are one click away.
+ */
 export const listSampleLogs = asyncHandler(async (req, res) => {
   const sample = await reachableSample(req);
+  const { page, limit } = listParams(req.query, { defaultLimit: 15 });
 
-  const data = await SampleLog.find({ sample: sample._id }).populate(POPULATE).sort('-createdAt');
-  res.json({ success: true, data });
+  const filter = { sample: sample._id };
+  const [data, total] = await Promise.all([
+    SampleLog.find(filter)
+      .populate(POPULATE)
+      .sort('-createdAt')
+      .skip((page - 1) * limit)
+      .limit(limit),
+    SampleLog.countDocuments(filter),
+  ]);
+
+  paginated(res, data, { page, limit, total });
 });
 
 /**

@@ -172,12 +172,28 @@ applied inside the controllers because it varies by department.
 | GET | `/samples/pipeline` | Count and overdue per stage |
 | GET | `/samples/dashboard` | The §22 sampling dashboard: tiles, ageing, turnaround, rework |
 | GET | `/samples/analytics` | Turnaround over a period, and what drives it: `?months=` or `?from=&to=` |
+| GET | `/samples/:id/logs` | A page of the working record, newest first — 15 at a time |
 | GET | `/samples/:id/customer-message/preview` | The draft a person would send, and what has already gone |
 | POST | `/samples/:id/customer-message` | Send it, optionally edited, on chosen channels |
 | GET | `/samples/:id/customer-messages` | Everything ever sent to this customer about this sample |
 
 Responses are `{ success, data }`; list routes add `{ pagination }`. Errors are
 `{ success: false, message, details? }`.
+
+### Every list is paged, and none of them truncate silently
+
+`listParams` and `paginated` in `utils/query.js` are the only way a list leaves the server:
+`?page=`, `?limit=` (capped at 200 however it is asked for), `?sort=` and `?search=`, with
+the total always reported beside the rows. `defaultLimit` is per list, because what a reader
+wants first differs — a table of enquiries wants a screenful, the sample log wants fifteen,
+since every row there costs a photograph.
+
+A bare `.limit(n)` is the thing this exists to prevent. Three lists had one, and each was
+worse than either paging or not: the sample log had no ceiling at all, so opening a sample
+downloaded every photograph ever attached to it; the customer timeline showed fifty of
+however many and said nothing; the to-do list stopped at two hundred equally quietly. A cap
+that removes rows without saying so is a screen disagreeing with the business, which is a
+correctness problem wearing performance clothing.
 
 ## Health checks
 

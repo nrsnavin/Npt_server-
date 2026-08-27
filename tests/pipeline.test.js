@@ -562,3 +562,32 @@ test('sampling can read enquiries but not change them', async () => {
   assert.equal(write.status, 403);
   assert.match(write.json.message, /read-only access/i);
 });
+
+test('a customer with a long history says how long it is', async () => {
+  const customer = await api('/api/customers', {
+    method: 'POST',
+    token: nandhini,
+    body: { name: 'Longhistory Exports', customerType: 'garment_factory', mobile: '9811100022' },
+  });
+  const customerId = customer.json.data._id;
+
+  for (let index = 0; index < 14; index += 1) {
+    await api('/api/enquiries', {
+      method: 'POST',
+      token: nandhini,
+      body: {
+        customer: customerId,
+        isNewDevelopment: true,
+        requirement: { quantity: 1000, modelNumber: `Trial shape ${index + 1}` },
+        ...followUp,
+      },
+    });
+  }
+
+  const { json } = await api(`/api/customers/${customerId}`, { token: nandhini });
+  const { enquiries, total } = json.data.timeline;
+
+  // Showing ten of fourteen and saying nothing is the screen disagreeing with the business.
+  assert.equal(enquiries.length, 10);
+  assert.equal(total, 14);
+});

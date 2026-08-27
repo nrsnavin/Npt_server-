@@ -387,3 +387,37 @@ test('the log reads newest first, with authors and comments attached', async () 
   const withComments = json.data.find((entry) => entry.comments.length);
   assert.ok(withComments.comments[0].author?.name, 'a comment says who wrote it');
 });
+
+/* --------------------------------- Paging --------------------------------- */
+
+test('the feed comes back a page at a time, newest first', async () => {
+  // A sample that ran through several attempts. Every entry here would be a photograph in
+  // practice, so returning the lot is a download of every picture before anything appears.
+  for (let index = 0; index < 22; index += 1) {
+    await api(`/api/samples/${sampleId}/logs`, {
+      method: 'POST',
+      token: meera,
+      body: { body: `Paging entry ${index + 1}` },
+    });
+  }
+
+  const first = await api(`/api/samples/${sampleId}/logs`, { token: meera });
+  assert.equal(first.status, 200);
+  assert.equal(first.json.data.length, 15, 'a small default: every row here costs a file fetch');
+  assert.ok(first.json.pagination.total >= 22, 'the count is reported, not implied');
+  assert.ok(first.json.pagination.pages > 1);
+  assert.match(first.json.data[0].body, /Paging entry 22/, 'newest first');
+
+  const second = await api(`/api/samples/${sampleId}/logs?page=2`, { token: meera });
+  assert.equal(second.json.pagination.page, 2);
+  assert.ok(second.json.data.length > 0);
+
+  // No entry may appear on two pages, or a "load more" feed silently duplicates rows.
+  const ids = new Set(first.json.data.map((entry) => entry._id));
+  assert.ok(second.json.data.every((entry) => !ids.has(entry._id)));
+});
+
+test('a caller cannot ask for the whole feed in one request', async () => {
+  const { json } = await api(`/api/samples/${sampleId}/logs?limit=100000`, { token: meera });
+  assert.ok(json.data.length <= 200, 'the cap holds however the limit is asked for');
+});

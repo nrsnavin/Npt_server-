@@ -10,6 +10,9 @@ import { EVENTS, publish, statusEvent } from '../services/events.service.js';
 import { normalisePhone } from '../utils/phone.js';
 import { listParams, paginated } from '../utils/query.js';
 
+/** How much of a customer's enquiry history the detail screen carries inline. */
+const TIMELINE_PAGE = 10;
+
 /* ------------------------------- Products ------------------------------- */
 
 export const listProducts = asyncHandler(async (req, res) => {
@@ -84,13 +87,24 @@ export const getCustomer = asyncHandler(async (req, res) => {
   if (!customer) throw ApiError.notFound('Customer not found');
   if (!ownsRecord(req.user, customer)) throw ApiError.notFound('Customer not found');
 
-  // The timeline the blueprint asks for [§2]. It grows as later modules land.
-  const enquiries = await Enquiry.find({ customer: customer._id })
-    .select('number enquiryDate status requirement.modelNumber requirement.quantity estimatedValue')
-    .sort('-enquiryDate')
-    .limit(50);
+  /*
+   * The timeline the blueprint asks for [§2]. It grows as later modules land.
+   *
+   * The first page only, with the count beside it. A bare `.limit(50)` was worse than either
+   * paging or not: a customer with sixty enquiries showed fifty and said nothing, so the
+   * screen quietly disagreed with the business. The rest come from `/enquiries?customer=`,
+   * which is the same list this is a preview of.
+   */
+  const filter = { customer: customer._id };
+  const [enquiries, total] = await Promise.all([
+    Enquiry.find(filter)
+      .select('number enquiryDate status requirement.modelNumber requirement.quantity estimatedValue')
+      .sort('-enquiryDate')
+      .limit(TIMELINE_PAGE),
+    Enquiry.countDocuments(filter),
+  ]);
 
-  res.json({ success: true, data: { customer, timeline: { enquiries } } });
+  res.json({ success: true, data: { customer, timeline: { enquiries, total } } });
 });
 
 export const createCustomer = asyncHandler(async (req, res) => {
