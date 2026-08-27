@@ -1,4 +1,5 @@
 import Lead from '../models/Lead.js';
+import { locate, placeKey } from '../data/places.js';
 
 /**
  * What a lead's activity log actually says.
@@ -196,7 +197,7 @@ const bandFor = (days) => AGE_BANDS.find((band) => days <= band.max).label;
  */
 export async function leadAnalytics(filter = {}, now = Date.now()) {
   const leads = await Lead.find(filter).select(
-    'status source city createdAt convertedAt activities nextFollowUpDate assignedTo'
+    'status source city state createdAt convertedAt activities nextFollowUpDate assignedTo estimatedValue'
   );
 
   const open = leads.filter((lead) => !['converted', 'disqualified'].includes(lead.status));
@@ -243,6 +244,88 @@ export async function leadAnalytics(filter = {}, now = Date.now()) {
     decided: closed,
     /** Open leads nobody has touched in a fortnight, which is the anomaly worth a name. */
     untouched: open.filter((lead) => daysSinceContact(lead, now) >= STALE_AFTER_DAYS).length,
+    geography: geographyOf(leads, now),
+  };
+}
+
+/* ------------------------------- Where they are ------------------------------- */
+
+/**
+ * The book as a map.
+ *
+ * A list of towns sorted by count answers "which town has the most" and nothing else. The
+ * questions a map answers are the ones somebody asks before planning a week of visits: is this
+ * business a Tiruppur business with a few outliers, or is it spread across four states; is
+ * there a cluster in Gujarat nobody has been to since March; is the whole of the north one
+ * customer. None of those are visible in a sorted list, because a sorted list has thrown away
+ * the one thing that would show them.
+ *
+ * Three rules it keeps.
+ *
+ * **Towns are grouped by the spelling key, not the string.** "Tirupur" and "Tiruppur" are one
+ * dot, labelled with the canonical spelling. A map that draws them as two dots two pixels
+ * apart is worse than the list it replaced.
+ *
+ * **A guess is drawn as a guess.** A town nobody bundled but whose state is known is placed in
+ * the middle of that state and marked `state` precision, so the screen can draw it hollow and
+ * say which towns are inside it. Silently placing it at a state's centre as though it were the
+ * address is how a map ends up asserting a customer is somewhere they are not.
+ *
+ * **What could not be placed is counted, by name.** Anything else and the map quietly
+ * understates the business, and a map that is missing places looks exactly like a business
+ * with no customers there.
+ */
+export function geographyOf(leads, now = Date.now()) {
+  const points = new Map();
+  const unplaced = new Map();
+
+  for (const lead of leads) {
+    const where = locate(lead);
+    const isOpen = !['converted', 'disqualified'].includes(lead.status);
+
+    if (!where) {
+      const label = lead.city || lead.state || 'No address recorded';
+      unplaced.set(label, (unplaced.get(label) || 0) + 1);
+      continue;
+    }
+
+    const id = `${where.precision}:${placeKey(where.name)}`;
+    if (!points.has(id)) {
+      points.set(id, {
+        label: where.name,
+        state: where.state,
+        lat: where.lat,
+        lng: where.lng,
+        precision: where.precision,
+        total: 0,
+        open: 0,
+        converted: 0,
+        quiet: 0,
+        value: 0,
+        // Which towns are actually inside a state-precision mark, so the tooltip can say.
+        towns: [],
+      });
+    }
+
+    const point = points.get(id);
+    point.total += 1;
+    point.value += lead.estimatedValue || 0;
+    if (lead.status === 'converted') point.converted += 1;
+    if (isOpen) {
+      point.open += 1;
+      if (daysSinceContact(lead, now) >= STALE_AFTER_DAYS) point.quiet += 1;
+    }
+    if (where.precision === 'state' && lead.city && !point.towns.includes(lead.city)) {
+      point.towns.push(lead.city);
+    }
+  }
+
+  return {
+    places: [...points.values()].sort((a, b) => b.total - a.total),
+    unplaced: [...unplaced.entries()]
+      .map(([label, value]) => ({ label, value }))
+      .sort((a, b) => b.value - a.value),
+    unplacedTotal: [...unplaced.values()].reduce((sum, value) => sum + value, 0),
   };
 }
 

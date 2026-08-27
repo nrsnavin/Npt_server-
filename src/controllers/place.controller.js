@@ -1,7 +1,7 @@
 import Lead from '../models/Lead.js';
 import Customer from '../models/Customer.js';
 import asyncHandler from '../utils/asyncHandler.js';
-import { STATES, CITIES } from '../data/places.js';
+import { STATES, CITIES, placeKey as key } from '../data/places.js';
 
 /**
  * Suggesting a state or a town as somebody types one.
@@ -29,22 +29,10 @@ import { STATES, CITIES } from '../data/places.js';
 /** A search box takes user input; a stray `(` must not throw. */
 const escape = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/**
- * The key two spellings of the same town share.
- *
- * Lowercased, punctuation dropped, and runs of the same letter collapsed — so Tiruppur,
- * tirupur and TIRUPPUR are one key. The doubled consonant is the spelling variance that
- * actually happens here, and it is the one that quietly splits a city report in two.
- *
- * Deliberately not fuzzy beyond that. Bengaluru and Bangalore are different names for the
- * same place and this will offer both, which is right: guessing that two unlike strings mean
- * one town is how a suggestion list starts hiding real answers.
+/*
+ * The key two spellings of the same town share lives in `data/places.js`, because the map and
+ * the city report have to agree with this list about what counts as the same town.
  */
-const key = (value) =>
-  String(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '')
-    .replace(/(.)\1+/g, '$1');
 
 /** Enough to choose from without becoming a page to read. */
 const LIMIT = 12;

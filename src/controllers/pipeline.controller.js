@@ -18,6 +18,7 @@ import { suggestNextStep, coachConfigured } from '../services/leadCoach.service.
 import { analyse, followUpQueue, leadAnalytics, untouchedLeads } from '../services/leadLog.service.js';
 import { scoreFor, teamScoreboard } from '../services/scoreboard.service.js';
 import { sendCsv } from '../utils/csv.js';
+import { spelledLike } from '../data/places.js';
 
 /**
  * How many rows an export may take.
@@ -28,6 +29,32 @@ import { sendCsv } from '../utils/csv.js';
  * wrong figure ends up in a meeting.
  */
 const EXPORT_LIMIT = 5000;
+
+/**
+ * The filters a lead list understands, in one place.
+ *
+ * One function rather than the same block in the list and the export, because the export's
+ * whole promise is that the file is what was on the screen. Two copies of this had already
+ * started to drift — the screen would have narrowed to a town and the download would have
+ * quietly handed over the lot, which is the kind of wrong figure that reaches a meeting.
+ */
+function leadFilters(req) {
+  const filter = { ...ownershipFilter(req.user) };
+
+  if (req.query.status) filter.status = req.query.status;
+  if (req.query.source) filter.source = req.query.source;
+  /*
+   * Narrowing to a place, so a dot on the map is something you can click through to. Matched
+   * on the spelling key rather than the string: the book holds "tirupur" beside "Tiruppur",
+   * the map draws them as one dot of eleven, and a click that returned four of them would be
+   * read as the map being wrong rather than the spelling.
+   */
+  if (req.query.city) filter.city = spelledLike(req.query.city);
+  if (req.query.state) filter.state = spelledLike(req.query.state);
+  if (req.query.open === 'true') filter.status = { $nin: ['converted', 'disqualified'] };
+
+  return filter;
+}
 
 /**
  * True when a write actually moves a record to a different owner.
@@ -230,10 +257,7 @@ export const exportLeads = asyncHandler(async (req, res) => {
     searchFields: ['company', 'contactName', 'mobile', 'email', 'number'],
   });
 
-  Object.assign(filter, ownershipFilter(req.user));
-  if (req.query.status) filter.status = req.query.status;
-  if (req.query.source) filter.source = req.query.source;
-  if (req.query.open === 'true') filter.status = { $nin: ['converted', 'disqualified'] };
+  Object.assign(filter, leadFilters(req));
 
   const rows = await Lead.find(filter).populate('assignedTo', 'name').sort(sort).limit(EXPORT_LIMIT);
 
@@ -495,10 +519,7 @@ export const listLeads = asyncHandler(async (req, res) => {
     searchFields: ['company', 'contactName', 'mobile', 'email', 'number'],
   });
 
-  Object.assign(filter, ownershipFilter(req.user));
-  if (req.query.status) filter.status = req.query.status;
-  if (req.query.source) filter.source = req.query.source;
-  if (req.query.open === 'true') filter.status = { $nin: ['converted', 'disqualified'] };
+  Object.assign(filter, leadFilters(req));
 
   const [data, total] = await Promise.all([
     Lead.find(filter).populate('assignedTo', 'name').sort(sort).skip((page - 1) * limit).limit(limit),
