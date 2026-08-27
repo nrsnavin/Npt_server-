@@ -53,6 +53,12 @@ function patternsFor(query) {
   return patterns;
 }
 
+/** `sample_required` is a database value; a person reading a list wants "Sample required". */
+const readable = (value) =>
+  typeof value === 'string' && value
+    ? value.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase())
+    : value;
+
 const anyOf = (fields, patterns) =>
   fields.flatMap((field) => patterns.map((pattern) => ({ [field]: pattern })));
 
@@ -122,7 +128,9 @@ export const globalSearch = asyncHandler(async (req, res) => {
       link: (row) => `/enquiries/${row._id}`,
       title: (row) => row.number,
       subtitle: (row) =>
-        [row.customer?.name, row.requirement?.modelNumber, row.status].filter(Boolean).join(' · '),
+        [row.customer?.name, row.requirement?.modelNumber, readable(row.status)]
+          .filter(Boolean)
+          .join(' · '),
     },
     {
       key: 'samples',
@@ -139,7 +147,7 @@ export const globalSearch = asyncHandler(async (req, res) => {
       link: (row) => `/samples/${row._id}`,
       title: (row) => row.number,
       subtitle: (row) =>
-        [row.customer?.name || 'Internal trial', row.modelNumber, row.status]
+        [row.customer?.name || 'Internal trial', row.modelNumber, readable(row.status)]
           .filter(Boolean)
           .join(' · '),
     },
@@ -154,7 +162,7 @@ export const globalSearch = asyncHandler(async (req, res) => {
       sort: '-createdAt',
       link: (row) => `/leads/${row._id}`,
       title: (row) => row.company,
-      subtitle: (row) => [row.number, row.contactName, row.status].filter(Boolean).join(' · '),
+      subtitle: (row) => [row.number, row.contactName, readable(row.status)].filter(Boolean).join(' · '),
     },
     {
       key: 'products',
@@ -168,7 +176,10 @@ export const globalSearch = asyncHandler(async (req, res) => {
       sort: 'modelCode',
       link: () => '/products',
       title: (row) => `${row.modelCode} — ${row.name}`,
-      subtitle: (row) => [row.category, row.material, row.sizeMm && `${row.sizeMm}mm`].filter(Boolean).join(' · '),
+      subtitle: (row) =>
+        [readable(row.category), readable(row.material), row.sizeMm && `${row.sizeMm}mm`]
+          .filter(Boolean)
+          .join(' · '),
     },
   ];
 

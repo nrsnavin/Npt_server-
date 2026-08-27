@@ -213,3 +213,11 @@ test('a stray bracket is a search, not a crash', async () => {
   const { status } = await api('/api/search?q=' + encodeURIComponent('Trendline ('), { token: nandhini });
   assert.equal(status, 200, 'a search box takes user input');
 });
+
+test('a status reads as words, not as a database value', async () => {
+  const { json } = await api('/api/samples', { token: nandhini });
+  const data = await search(json.data[0].number, nandhini);
+  const subtitle = group(data, 'samples').results[0].subtitle;
+
+  assert.ok(!/_/.test(subtitle), `"${subtitle}" still carries an underscore`);
+});
