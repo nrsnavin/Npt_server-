@@ -321,6 +321,18 @@ the enquiry, sets a due date and queues it for the sample team — the blueprint
 principle that completing a stage creates the next department's task [§C.1, §6]. Re-applying
 the status does not raise a second request.
 
+The queueing hangs off the sample **existing**, not off the enquiry that asked for one. That
+distinction is the whole of it: a counter request typed in by hand has no enquiry behind it
+to notice it, and manual entry is the primary path [§8], so hanging the handover on the
+enquiry would leave exactly those requests in nobody's list. Every route into a sample — the
+automation, a request raised by hand, a re-sample — queues the bench identically. Someone on
+the bench raising their own request is not also told about it.
+
+Every handover is announced by an event, including the ones the automation triggers. An
+enquiry reaching **pricing required** because the bench approved a sample is the same
+handover as marketing moving it there by hand, and the department downstream cannot care
+which route it took.
+
 The request then walks the bench: checking stock, production or printing required, ready,
 dispatched, delivered. Two rules are enforced rather than reported:
 

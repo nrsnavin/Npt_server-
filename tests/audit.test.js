@@ -359,3 +359,130 @@ test('the duplicate check warns without handing over a colleague’s record', as
   assert.equal(json.data.customer, undefined, 'a colleague’s record must not be handed over');
   assert.equal(json.data.owner, 'Nandhini S', 'say who to talk to instead');
 });
+
+/* ------------------ The handover chain [§C.1, §5, §6] ------------------ */
+
+test('the automated route into pricing raises the same handover as the manual one', async () => {
+  // §C.1 is the whole point of the CRM: completing a stage creates the next department's
+  // task. Marketing moving an enquiry to pricing publishes the handover event; the sample
+  // team approving a sample moves the same enquiry to the same status through a different
+  // code path. If only one of them announces it, half the plant's work never reaches
+  // pricing — and the half that goes missing is the half nobody typed by hand.
+  const { EVENTS, subscribe, unsubscribe } = await import('../src/services/events.service.js');
+
+  const seen = [];
+  const listener = ({ enquiry }) => seen.push(String(enquiry._id));
+  subscribe(EVENTS.ENQUIRY_PRICING_REQUIRED, listener);
+
+  try {
+    const customer = await makeCustomer(nandhini);
+    const enquiry = await makeEnquiry(nandhini, customer._id);
+
+    await api(`/api/enquiries/${enquiry._id}/status`, {
+      method: 'POST',
+      token: nandhini,
+      body: { status: 'sample_required', ...followUp },
+    });
+    await settle();
+
+    const { json: samples } = await api(`/api/samples?enquiry=${enquiry._id}`, { token: meera });
+    const sample = samples.data[0];
+    assert.ok(sample, 'the enquiry raised a sample');
+
+    for (const status of ['sample_ready', 'dispatched']) {
+      await api(`/api/samples/${sample._id}/status`, {
+        method: 'POST',
+        token: meera,
+        body: { status, courier: 'Blue Dart', awbNumber: '77219900001', dispatchedQuantity: 5 },
+      });
+    }
+    await settle();
+
+    await api(`/api/samples/${sample._id}/feedback`, {
+      method: 'POST',
+      token: nandhini,
+      body: { outcome: 'approved', note: 'Buyer approved.' },
+    });
+    await settle();
+
+    const { json: after } = await api(`/api/enquiries/${enquiry._id}`, { token: nandhini });
+    assert.equal(after.data.status, 'pricing_required', 'the enquiry did move');
+    assert.ok(
+      seen.includes(String(enquiry._id)),
+      'and said so — otherwise pricing hears nothing when Phase 3 lands'
+    );
+  } finally {
+    unsubscribe(EVENTS.ENQUIRY_PRICING_REQUIRED, listener);
+  }
+});
+
+test('a request raised by hand queues the bench, exactly as an automated one does', async () => {
+  // Manual entry is the primary path [§8] and permanent. A counter request that lands in
+  // nobody's list is the black hole the automation exists to close — and it is worse than
+  // the automated case, because there is no enquiry sitting anywhere to notice it either.
+  const customer = await makeCustomer(nandhini);
+
+  const raised = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customer._id,
+      modelNumber: 'NPT-400S',
+      quantity: 4,
+      standaloneReason: 'Asked for one at the counter',
+    },
+  });
+  assert.equal(raised.status, 201);
+  await settle();
+
+  const { json: bench } = await api('/api/workspace/todos', { token: meera });
+  const queued = bench.data.filter((todo) => todo.link === `/samples/${raised.json.data._id}`);
+
+  assert.ok(queued.length, 'the sample team was told there is a sample to make');
+  assert.match(queued[0].title, new RegExp(raised.json.data.number));
+});
+
+test('reaching pricing queues someone to do the pricing', async () => {
+  // §5 and §41.8. The pricing module is Phase 3; the handover is §C.1 and is due now, or
+  // every enquiry that reached pricing before Phase 3 landed is one nobody was ever told about.
+  const customer = await makeCustomer(nandhini);
+  const enquiry = await makeEnquiry(nandhini, customer._id, { targetPrice: 7.2 });
+
+  await api(`/api/enquiries/${enquiry._id}/status`, {
+    method: 'POST',
+    token: nandhini,
+    body: { status: 'pricing_required', ...followUp },
+  });
+  await settle();
+
+  // No costing team here, so it falls to management — the arrangement §7 describes.
+  const { json } = await api('/api/workspace/todos', { token: admin });
+  const queued = json.data.filter((todo) => todo.link === `/enquiries/${enquiry._id}`);
+
+  assert.ok(queued.length, 'somebody was asked to price it');
+  assert.match(queued[0].title, new RegExp(enquiry.number));
+  assert.match(queued[0].notes, /target/, "and told what the buyer is asking");
+});
+
+test('a customer’s timeline carries its samples, not only its enquiries', async () => {
+  // §2: opening a customer must show the whole story in one place. Sending marketing back to
+  // the bench to ask where a sample is, is the phone call §40 measures this CRM on removing.
+  const customer = await makeCustomer(nandhini);
+  const enquiry = await makeEnquiry(nandhini, customer._id);
+
+  await api(`/api/enquiries/${enquiry._id}/status`, {
+    method: 'POST',
+    token: nandhini,
+    body: { status: 'sample_required', ...followUp },
+  });
+  await settle();
+
+  const { json } = await api(`/api/customers/${customer._id}`, { token: nandhini });
+  const { samples, sampleTotal } = json.data.timeline;
+
+  assert.ok(Array.isArray(samples), 'the timeline has a samples strand');
+  assert.equal(samples.length, 1);
+  assert.equal(sampleTotal, 1);
+  assert.match(samples[0].number, /^SMP-/);
+  assert.ok(samples[0].status, 'and says where it has got to');
+});

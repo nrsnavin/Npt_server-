@@ -1,7 +1,9 @@
 import Enquiry from '../models/Enquiry.js';
 import Sample, { CLOSED_SAMPLE_STATUSES } from '../models/Sample.js';
 import User from '../models/User.js';
-import { EVENTS, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
+import {
+  EVENTS, publish, statusEvent, subscribe as busSubscribe, unsubscribe,
+} from '../services/events.service.js';
 import { createSampleForEnquiry } from '../services/sampling.service.js';
 import { raiseTask, resolveTasks } from '../services/task.service.js';
 import { AUTOMATIC, notifyCustomer } from '../services/customerMessage.service.js';
@@ -38,6 +40,12 @@ const key = (sample, kind) => `sample:${sample._id}:${kind}`;
  * This is automation, not a user action: it never touches the next action, because the
  * enquiry already carries whatever marketing last set, and blanking it would break the §3
  * rule the enquiry module enforces on write.
+ *
+ * It publishes the same events the controller does, and that is not a detail. An enquiry
+ * reaching `pricing_required` because the bench approved a sample is the same handover as
+ * marketing moving it there by hand [§C.1] — the department downstream cannot care which
+ * route it took. Announcing only the hand-typed one would give Phase 3 a pricing queue that
+ * silently omits every enquiry the automation moved, which is most of them.
  */
 async function advanceEnquiry(enquiryId, to, note) {
   const enquiry = await Enquiry.findById(enquiryId);
@@ -49,6 +57,11 @@ async function advanceEnquiry(enquiryId, to, note) {
   enquiry.status = to;
   enquiry.statusHistory.push({ from, to, note });
   await enquiry.save();
+
+  publish(EVENTS.ENQUIRY_STATUS_CHANGED, { enquiry, from, to });
+  const specific = statusEvent(to);
+  if (specific) publish(specific, { enquiry, from });
+
   return enquiry;
 }
 
@@ -95,16 +108,26 @@ export function registerSamplingSubscribers() {
   subscribe(
     EVENTS.ENQUIRY_SAMPLE_REQUIRED,
     safely('sample request', async ({ enquiry }) => {
-      const { sample, created } = await createSampleForEnquiry(enquiry, {}, { autoCreated: true });
-      if (!created) return;
+      // Raising it publishes SAMPLE_CREATED, which is what queues the bench. Doing the
+      // queueing there rather than here is the difference between "an enquiry needing a
+      // sample tells the bench" and "a sample existing tells the bench" — and only the
+      // second is true of a counter request, which nothing else in the system would notice.
+      await createSampleForEnquiry(enquiry, {}, { autoCreated: true });
+    })
+  );
 
+  subscribe(
+    EVENTS.SAMPLE_CREATED,
+    safely('queue the bench', async ({ sample, enquiry }) => {
       const team = await sampleTeam();
+      const origin = enquiry ? `for ${enquiry.number}` : sample.standaloneReason || 'raised by hand';
+
       await Promise.all(
         team.map((member) =>
           raiseTask({
             user: member._id,
             title: `Prepare sample ${sample.number}`,
-            notes: `${sample.modelNumber || 'New development'} · ${sample.quantity} pc · for ${enquiry.number}`,
+            notes: `${sample.modelNumber || 'New development'} · ${sample.quantity} pc · ${origin}`,
             dueDate: sample.requiredDate,
             priority: 'high',
             link: `/samples/${sample._id}`,
@@ -113,11 +136,18 @@ export function registerSamplingSubscribers() {
         )
       );
 
-      // Acknowledged back to marketing, so raising the request is visibly not a black hole.
+      /*
+       * Acknowledged back to whoever asked, so raising the request is visibly not a black
+       * hole — unless they are on the bench themselves, in which case they already hold the
+       * prepare task and a second row telling them about their own work is noise.
+       */
+      const onTheBench = team.some((member) => String(member._id) === String(sample.requestedBy));
+      if (onTheBench) return;
+
       await raiseTask({
         user: sample.requestedBy,
         title: `Sample ${sample.number} is with the sample team`,
-        notes: `Raised from ${enquiry.number}. Due ${sample.requiredDate.toDateString()}.`,
+        notes: `${enquiry ? `Raised from ${enquiry.number}. ` : ''}Due ${new Date(sample.requiredDate).toDateString()}.`,
         dueDate: sample.requiredDate,
         priority: 'low',
         link: `/samples/${sample._id}`,

@@ -2,6 +2,7 @@ import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
+import Sample from '../models/Sample.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
@@ -96,15 +97,32 @@ export const getCustomer = asyncHandler(async (req, res) => {
    * which is the same list this is a preview of.
    */
   const filter = { customer: customer._id };
-  const [enquiries, total] = await Promise.all([
+  const [enquiries, total, samples, sampleTotal] = await Promise.all([
     Enquiry.find(filter)
       .select('number enquiryDate status requirement.modelNumber requirement.quantity estimatedValue')
       .sort('-enquiryDate')
       .limit(TIMELINE_PAGE),
     Enquiry.countDocuments(filter),
+    /*
+     * §2 asks for the whole story on one screen — enquiries, then samples, then quotations,
+     * orders, dispatch and payments as those modules land. Each strand joins as it is built;
+     * leaving samples out while they exist is what sends marketing back to asking the bench,
+     * which is the phone call this CRM is measured on not needing [§40].
+     */
+    Sample.find(filter)
+      .select('number requestedAt status modelNumber quantity purpose requiredDate enquiry')
+      .sort('-requestedAt')
+      .limit(TIMELINE_PAGE),
+    Sample.countDocuments(filter),
   ]);
 
-  res.json({ success: true, data: { customer, timeline: { enquiries, total } } });
+  res.json({
+    success: true,
+    data: {
+      customer,
+      timeline: { enquiries, total, samples, sampleTotal },
+    },
+  });
 });
 
 export const createCustomer = asyncHandler(async (req, res) => {
@@ -540,8 +558,8 @@ export const updateEnquiry = asyncHandler(async (req, res) => {
  * Moves an enquiry to a new stage.
  *
  * Every transition is recorded, and the stages that hand work to another department
- * publish an event. Nothing subscribes yet — sampling picks up `sample_required` in
- * Phase 2 and pricing picks up `pricing_required` in Phase 3.
+ * publish an event: sampling raises the request on `sample_required`, and `pricing_required`
+ * queues whoever prices a job [§5, §41.8] until the pricing module itself lands in Phase 3.
  */
 export const setEnquiryStatus = asyncHandler(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);

@@ -10,6 +10,7 @@ import routes from './routes/index.js';
 import healthRoutes from './routes/health.routes.js';
 import { notFoundHandler, errorHandler } from './middleware/error.js';
 import { registerSamplingSubscribers } from './subscribers/sampling.subscriber.js';
+import { registerPricingSubscribers } from './subscribers/pricing.subscriber.js';
 
 const app = express();
 
@@ -46,6 +47,7 @@ app.use('/api', routes);
 // Cross-module automation: completing a stage creates the next department's task [§C.1].
 // Registered once here rather than inside a module, so the modules stay unaware of each other.
 registerSamplingSubscribers();
+registerPricingSubscribers();
 
 app.use(notFoundHandler);
 app.use(errorHandler);
