@@ -172,6 +172,8 @@ applied inside the controllers because it varies by department.
 | GET | `/samples/pipeline` | Count and overdue per stage |
 | GET | `/samples/dashboard` | The §22 sampling dashboard: tiles, ageing, turnaround, rework |
 | GET | `/samples/analytics` | Turnaround over a period, and what drives it: `?months=` or `?from=&to=` |
+| GET | `/dashboard/marketing` | Marketing's own day and its own numbers [§21] |
+| GET | `/search?q=` | One search across everything the caller may read [§32] |
 | GET | `/samples/:id/logs` | A page of the working record, newest first — 15 at a time |
 | POST | `/samples/:id/link-customer` | Names the buyer on a request raised for nobody |
 | GET | `/samples/:id/customer-message/preview` | The draft a person would send, and what has already gone |
@@ -329,6 +331,25 @@ handing the record over.
 Stage changes are recorded on the enquiry and published on an internal event bus
 (`src/services/events.service.js`), which is how the modules hand work to each other without
 knowing about each other.
+
+**One search across everything** [§32]. `GET /search?q=` answers over customers, enquiries,
+samples, leads and the catalogue at once — the rest join as their modules land. It does what
+§32 actually asks, which is not "find matching rows" but "retrieve the entire related
+history": typing a customer's name reaches their enquiries and their samples, which carry the
+customer as a reference rather than as text, so matching each collection against the words
+alone would answer a narrower question and the reader would conclude the customer has no
+samples. A phone number is matched as typed *and* normalised, because people type it the way
+it is written on the card. Grants and ownership both apply — a search that reaches past them
+is a data leak with a text box in front of it — and a record type the caller cannot read is
+absent rather than empty, since the shape of the answer would otherwise say what exists.
+
+**Marketing's dashboard** [§21] leads with what needs doing today and only then with how the
+month is going, because a dashboard that opens with a conversion chart is one you read on a
+Friday. Overdue follow-ups and late samples are ranked worst-first with an age, since "12
+pending" hides the one that has sat three weeks; every figure carries the records behind it,
+because a number nobody can open is a number nobody trusts. It also reports open enquiries
+carrying no next action — the module refuses to write that state, but a rule with no way of
+telling you it has been broken is one you hear about from the customer.
 
 **Built for a front door that does not exist yet** [§8]. Leads, customers and enquiries each
 carry an optional `conversation` — the provider and that provider's own id for the thread —

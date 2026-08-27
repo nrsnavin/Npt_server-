@@ -564,3 +564,57 @@ test('a record with no conversation behind it is the normal case', async () => {
 
   assert.equal(enquiry.conversation, undefined);
 });
+
+test('the reassignment rule holds at creation too, not only afterwards', async () => {
+  // A rule enforced on update and not on create is not a rule. Handing a lead to a
+  // colleague was refused by PATCH and allowed by POST, so anyone could do in one step
+  // what they were forbidden from doing in two.
+  const users = await api('/api/users?search=priya', { token: admin });
+  const priyaId = users.json.data[0].id;
+
+  const bySelf = await api('/api/leads', {
+    method: 'POST',
+    token: nandhini,
+    body: { company: `Handover Test ${unique()}`, mobile: `96543${String(200000 + unique()).slice(-5)}`, assignedTo: priyaId },
+  });
+  assert.equal(bySelf.status, 403, 'giving a relationship away is a management decision');
+
+  // An administrator still may, which is how a lead is placed deliberately.
+  const byAdmin = await api('/api/leads', {
+    method: 'POST',
+    token: admin,
+    body: { company: `Placed Test ${unique()}`, mobile: `96543${String(300000 + unique()).slice(-5)}`, assignedTo: priyaId },
+  });
+  assert.equal(byAdmin.status, 201);
+  assert.equal(String(byAdmin.json.data.assignedTo), String(priyaId));
+});
+
+test('a sample raised by hand against an enquiry keeps that enquiry’s customer', async () => {
+  // The request body names no customer, because the enquiry already knows who it is for.
+  // Passing the absent value through anyway overwrote the inherited one, and a sample with
+  // no customer is not a cosmetic gap: §6 and §42 tell the customer when it is ready and
+  // when it goes out, and there is nobody to tell. It fails silently, on the path a person
+  // uses rather than the automated one.
+  const customer = await makeCustomer(nandhini);
+  const enquiry = await makeEnquiry(nandhini, customer._id);
+
+  const { status, json } = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: { enquiry: enquiry._id, quantity: 6 },
+  });
+
+  assert.equal(status, 201);
+  assert.equal(
+    String(json.data.customer?._id || json.data.customer),
+    String(customer._id),
+    'the sample knows who it is for'
+  );
+
+  // Which is what makes the customer reachable at all.
+  const preview = await api(`/api/samples/${json.data._id}/customer-message/preview?event=sample_ready`, {
+    token: nandhini,
+  });
+  assert.equal(preview.status, 200);
+  assert.ok(preview.json.data.body, 'there is a customer to draft a message to');
+});

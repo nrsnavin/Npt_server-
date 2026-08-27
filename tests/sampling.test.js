@@ -845,13 +845,21 @@ test('a request that came from an enquiry takes its customer from there', async 
     body: { enquiry: enquiry._id, quantity: 1 },
   });
 
+  // The request body named no customer; the enquiry did, and that is where it comes from.
+  assert.equal(
+    idOf(created.json.data.customer),
+    idOf(enquiry.customer),
+    'inherited rather than left empty — §6 and §42 have somebody to tell'
+  );
+
   const other = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
     body: { name: 'Unrelated Buyer Ltd', mobile: '9876591299' },
   });
 
-  // Otherwise the sample and its enquiry would name two different buyers.
+  // And it cannot be moved to somebody else, whichever way round it is refused: the sample
+  // and its enquiry must never name two different buyers.
   const { status, json } = await api(`/api/samples/${created.json.data._id}/link-customer`, {
     method: 'POST',
     token: meera,
@@ -859,5 +867,5 @@ test('a request that came from an enquiry takes its customer from there', async 
   });
 
   assert.equal(status, 400);
-  assert.match(json.message, /takes its customer from there/);
+  assert.match(json.message, /already names a customer|takes its customer from there/);
 });

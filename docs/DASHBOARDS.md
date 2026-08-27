@@ -3,8 +3,12 @@
 What each department sees, and which module supplies it. Derived from the blueprint
 (§21–24, §25, §36–38) and from how a hanger plant actually runs.
 
-Nothing here is built. `Depends on` names the module that must exist first, so the
-dashboard fills in as the build progresses rather than arriving all at once.
+`Depends on` names the module that must exist first, so each dashboard fills in as the build
+progresses rather than arriving all at once.
+
+Built so far: **My day** (§2), the rows of **Marketing** (§3) that enquiries, samples and
+customers can answer, and the whole of **Sampling** (§4) plus its analytics. Everything else
+waits on the module in its `Depends on` column.
 
 ---
 

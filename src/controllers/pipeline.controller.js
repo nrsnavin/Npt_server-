@@ -244,6 +244,13 @@ export const getLead = asyncHandler(async (req, res) => {
 });
 
 export const createLead = asyncHandler(async (req, res) => {
+  // The same rule `updateLead` holds. Enforced on one and not the other, it is not a rule:
+  // handing a lead to a colleague was refused by a PATCH and allowed by the POST, so anyone
+  // could do in one step what they were forbidden from doing in two.
+  if (req.body.assignedTo && req.user.role !== 'admin') {
+    throw ApiError.forbidden('Only an administrator can assign a lead to someone else');
+  }
+
   // Round-robin across marketing for a lead that arrives with nobody attached [§41.3]. A
   // marketing person entering their own call keeps it; see the service for why.
   const owner = await ownerForNewLead({ requested: req.body.assignedTo, creator: req.user });

@@ -60,6 +60,23 @@ async function fromProduct(productId, alreadyKnown = {}) {
 }
 
 /**
+ * The fields the caller actually stated, with the ones they left out dropped.
+ *
+ * Spreading the request straight over the inherited values looks equivalent and is not:
+ * `{ ...{ customer: id }, ...{ customer: undefined } }` is `{ customer: undefined }`, so a
+ * key merely *present* and empty destroys what the enquiry supplied. That is how a sample
+ * raised by hand against an enquiry lost its customer — and losing it is not cosmetic, since
+ * §6 and §42 tell the customer when the sample is ready and when it goes out, and there was
+ * then nobody to tell. It failed on the path a person uses, never on the automated one, and
+ * it failed quietly.
+ *
+ * Handled here rather than at the one call site that did it, because every controller
+ * building a payload out of a request body has the same shape and would find the same edge.
+ */
+const stated = (input) =>
+  Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+
+/**
  * A sample raised without one already open against the same enquiry.
  *
  * Moving an enquiry to `sample_required` twice — which happens whenever marketing corrects a
@@ -102,7 +119,7 @@ export async function createSampleRequest(
 
   const sample = await Sample.create({
     ...inherited,
-    ...input,
+    ...stated(input),
     purpose,
     number: await nextNumber('SMP'),
     requiredDate: input.requiredDate || defaultRequiredDate(enquiry),

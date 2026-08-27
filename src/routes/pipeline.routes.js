@@ -6,6 +6,7 @@ import {
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, promoteToProduct, enquiryPipeline,
 } from '../controllers/pipeline.controller.js';
+import { marketingDashboard } from '../controllers/marketingDashboard.controller.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -56,6 +57,9 @@ router.post(
 
 // Enquiries
 router.get('/enquiries/pipeline', requireModule('enquiries'), enquiryPipeline);
+// Marketing's own dashboard [§21]. On the enquiries grant, since that is the module it is
+// mostly built from; ownership then decides whose figures it shows.
+router.get('/dashboard/marketing', requireModule('enquiries'), marketingDashboard);
 router.get('/enquiries', requireModule('enquiries'), listEnquiries);
 router.post('/enquiries', requireModule('enquiries', 'write'), validate(enquirySchema), createEnquiry);
 router.post('/enquiries/group', requireModule('enquiries', 'write'), validate(enquiryGroupSchema), createEnquiryGroup);
