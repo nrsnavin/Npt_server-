@@ -84,7 +84,12 @@ export const todoUpdateSchema = z.object({
   title: z.string().min(1).max(200).optional(),
   notes: z.string().max(2000).optional(),
   /** Null clears the date; a value sets it. */
-  dueDate: z.union([z.coerce.date(), z.null()]).optional(),
+  /*
+   * Null first. `z.union` takes the first branch that parses and `z.coerce.date()` parses
+   * null into one January 1970 — so with the date first this accepted a clear and stored the
+   * epoch, leaving a to-do permanently overdue by fifty-six years.
+   */
+  dueDate: z.union([z.null(), z.coerce.date()]).optional(),
   priority: z.enum(PRIORITIES).optional(),
   completed: z.boolean().optional(),
 });

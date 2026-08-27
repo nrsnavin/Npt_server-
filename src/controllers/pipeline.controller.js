@@ -13,6 +13,10 @@ import { normalisePhone } from '../utils/phone.js';
 import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
+import { syncFollowUpReminder } from '../subscribers/leadFollowUp.subscriber.js';
+import { suggestNextStep, coachConfigured } from '../services/leadCoach.service.js';
+import { analyse, followUpQueue } from '../services/leadLog.service.js';
+import { scoreFor, teamScoreboard } from '../services/scoreboard.service.js';
 import { sendCsv } from '../utils/csv.js';
 
 /**
@@ -533,6 +537,8 @@ export const createLead = asyncHandler(async (req, res) => {
     assignedTo: owner.user,
   });
 
+  await syncFollowUpReminder(lead);
+
   // Said out loud on the record, so nobody has to guess why it landed with them.
   if (owner.rotated) {
     lead.activities.push({
@@ -569,6 +575,8 @@ export const updateLead = asyncHandler(async (req, res) => {
   Object.assign(lead, withoutVersion(req.body));
   await lead.save();
   await recordChange({ model: 'Lead', doc: lead, before, by: req.user });
+  // A moved date replaces its reminder rather than leaving the old one to be chased.
+  await syncFollowUpReminder(lead);
 
   res.json({ success: true, data: lead });
 });
@@ -581,9 +589,66 @@ export const addLeadActivity = asyncHandler(async (req, res) => {
   lead.activities.push({ ...req.body, createdBy: req.user._id });
   // Logging contact is itself progress, so a new lead stops being new.
   if (lead.status === 'new') lead.status = 'contacted';
-  await lead.save();
 
-  res.status(201).json({ success: true, data: lead });
+  /*
+   * The moment somebody records a call is the moment they know what happens next, so the form
+   * offers it here and this saves it — rather than making them open the edit dialog to set a
+   * date they have already decided on, which is where the next step gets skipped.
+   */
+  if (req.body.nextAction !== undefined) lead.nextAction = req.body.nextAction;
+  if (req.body.nextActionType !== undefined) lead.nextActionType = req.body.nextActionType;
+  if (req.body.nextFollowUpDate !== undefined) lead.nextFollowUpDate = req.body.nextFollowUpDate;
+
+  await lead.save();
+  await syncFollowUpReminder(lead);
+
+  res.status(201).json({ success: true, data: lead, meta: { log: analyse(lead) } });
+});
+
+/**
+ * What the log says, and what to do about it.
+ *
+ * Proposes; never writes. The reply is a draft the marketing person accepts, edits or
+ * dismisses — so a misread is a suggestion somebody declines rather than a wrong follow-up
+ * date on a real buyer that nobody can tell a model set.
+ */
+export const suggestLeadNextStep = asyncHandler(async (req, res) => {
+  const lead = await Lead.findById(req.params.id);
+  if (!lead) throw ApiError.notFound('Lead not found');
+  if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
+
+  const suggestion = await suggestNextStep(lead);
+  res.json({ success: true, data: suggestion, meta: { model: coachConfigured() } });
+});
+
+/** The arithmetic over the log, without asking a model anything. */
+export const leadLogAnalytics = asyncHandler(async (req, res) => {
+  const lead = await Lead.findById(req.params.id);
+  if (!lead) throw ApiError.notFound('Lead not found');
+  if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
+
+  res.json({ success: true, data: analyse(lead) });
+});
+
+/** Whose leads need somebody today — overdue, due, undecided, and quietly cooling. */
+export const leadFollowUps = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await followUpQueue(ownershipFilter(req.user)) });
+});
+
+/**
+ * The scoreboard: one card for the person asking, and the team for management.
+ *
+ * Nothing here counts activity — see `scoreboard.service.js` for why that would be the one
+ * change guaranteed to make the data worse.
+ */
+export const leadScoreboard = asyncHandler(async (req, res) => {
+  const mine = await scoreFor(req.user);
+  const canSeeTeam = req.user.role === 'admin' || req.user.department === 'management';
+
+  res.json({
+    success: true,
+    data: { mine, team: canSeeTeam ? await teamScoreboard() : null },
+  });
 });
 
 /**

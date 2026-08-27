@@ -3,6 +3,7 @@ import {
   listProducts, getProduct, createProduct, updateProduct,
   listCustomers, getCustomer, createCustomer, updateCustomer, checkDuplicateCustomer,
   listLeads, getLead, createLead, updateLead, addLeadActivity, convertLead,
+  suggestLeadNextStep, leadLogAnalytics, leadFollowUps, leadScoreboard,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, promoteToProduct, enquiryPipeline,
   exportCustomers,
@@ -52,11 +53,24 @@ router.patch('/customers/:id', requireModule('customers', 'write'), validate(cus
 
 // Leads
 router.get('/leads/export', requireModule('enquiries'), exportLeads);
+/*
+ * Whose leads need somebody today. Above `/:id` so the literal segment wins, and on the read
+ * grant — knowing what is waiting is not changing anything.
+ */
+router.get('/leads/follow-ups', requireModule('enquiries'), leadFollowUps);
+router.get('/leads/scoreboard', requireModule('enquiries'), leadScoreboard);
 router.get('/leads', requireModule('enquiries'), listLeads);
 router.post('/leads', requireModule('enquiries', 'write'), validate(leadSchema), createLead);
 router.get('/leads/:id', requireModule('enquiries'), getLead);
 router.patch('/leads/:id', requireModule('enquiries', 'write'), validate(leadUpdateSchema), updateLead);
 router.post('/leads/:id/activities', requireModule('enquiries', 'write'), validate(leadActivitySchema), addLeadActivity);
+router.get('/leads/:id/log-analytics', requireModule('enquiries'), leadLogAnalytics);
+/*
+ * Reads the log and proposes a next step. On the write grant despite writing nothing: it is
+ * offered to the person who will act on it, and it costs a model call — neither belongs to a
+ * reader who cannot do anything with the answer.
+ */
+router.post('/leads/:id/suggest', requireModule('enquiries', 'write'), suggestLeadNextStep);
 // Conversion writes a customer as well, so it needs write on both.
 router.post(
   '/leads/:id/convert',

@@ -1,11 +1,26 @@
 import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from '../models/Product.js';
 import { CUSTOMER_TYPES, RATINGS, CUSTOMER_SOURCES } from '../models/Customer.js';
-import { LEAD_STATUSES, DISQUALIFY_REASONS } from '../models/Lead.js';
+import { LEAD_STATUSES, DISQUALIFY_REASONS, NEXT_ACTION_TYPES } from '../models/Lead.js';
 import { ENQUIRY_STATUSES, LOST_REASONS } from '../models/Enquiry.js';
 
 // The one definition, which also accepts a populated reference — see schemas.js.
 import { objectId } from './schemas.js';
+
+/**
+ * A date that can also be cleared.
+ *
+ * `z.coerce.date()` turns `null` into `new Date(null)` — one January 1970, which is a valid
+ * Date and passes. So sending null to clear a follow-up did not clear it: it set the date to
+ * fifty-six years ago, where it sat permanently overdue, raising a reminder nobody could
+ * remove because the field they would clear looked set. Null has to be a value the schema
+ * knows about, not one it silently coerces.
+ *
+ * The order of the union is the fix, not the union itself. `z.union` takes the first branch
+ * that parses, and `z.coerce.date()` *parses* null — so with the date first, null still became
+ * the epoch and the `z.null()` branch was never reached. Null has to be tried first.
+ */
+const clearableDate = z.union([z.null(), z.coerce.date()]).optional();
 
 /* -------------------------------- Products -------------------------------- */
 
@@ -100,7 +115,8 @@ export const leadSchema = z.object({
   estimatedValue: z.number().nonnegative().optional(),
   assignedTo: objectId.optional(),
   nextAction: z.string().optional(),
-  nextFollowUpDate: z.coerce.date().optional(),
+  nextActionType: z.enum(NEXT_ACTION_TYPES).optional(),
+  nextFollowUpDate: clearableDate,
   notes: z.string().optional(),
   visitingCardUrl: z.string().optional(),
 });
@@ -112,7 +128,17 @@ export const leadUpdateSchema = leadSchema.partial().extend({
   ...versioned,
 });
 
+/**
+ * Logging contact, and the next step it implies.
+ *
+ * The next step is optional here and part of the same submission on purpose: the moment
+ * somebody records a call is the moment they know what happens next, and making them open a
+ * second dialog to say so is where the next step quietly stops being set.
+ */
 export const leadActivitySchema = z.object({
+  nextAction: z.string().optional(),
+  nextActionType: z.enum(NEXT_ACTION_TYPES).optional(),
+  nextFollowUpDate: clearableDate,
   type: z.enum(['call', 'email', 'whatsapp', 'meeting', 'visit', 'note']).optional(),
   summary: z.string().min(1).max(1000),
   occurredAt: z.coerce.date().optional(),
@@ -140,7 +166,7 @@ const enquiryCore = {
   referenceImageUrl: z.string().optional(),
   remarks: z.string().optional(),
   nextAction: z.string().optional(),
-  nextFollowUpDate: z.coerce.date().optional(),
+  nextFollowUpDate: clearableDate,
   estimatedValue: z.number().nonnegative().optional(),
   probability: z.number().min(0).max(100).optional(),
   source: z.enum(CUSTOMER_SOURCES).optional(),
@@ -172,7 +198,7 @@ export const enquiryGroupSchema = z.object({
     .object({
       requiredDeliveryDate: z.coerce.date().optional(),
       nextAction: z.string().optional(),
-      nextFollowUpDate: z.coerce.date().optional(),
+      nextFollowUpDate: clearableDate,
       source: z.enum(CUSTOMER_SOURCES).optional(),
       remarks: z.string().optional(),
     })
@@ -187,7 +213,7 @@ export const enquiryStatusSchema = z.object({
   lostNote: z.string().optional(),
   holdReason: z.string().optional(),
   nextAction: z.string().optional(),
-  nextFollowUpDate: z.coerce.date().optional(),
+  nextFollowUpDate: clearableDate,
 });
 
 export const promoteProductSchema = productSchema.partial().required({ modelCode: true, name: true });

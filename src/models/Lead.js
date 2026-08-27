@@ -5,6 +5,25 @@ import { withConversationRef } from './conversationRef.js';
 
 export const LEAD_STATUSES = ['new', 'contacted', 'qualified', 'converted', 'disqualified'];
 
+/**
+ * What the next step actually is, not only when it is due.
+ *
+ * §3 asks for a defined next step and the field has been free text, which is enough for the
+ * person who wrote it and not for anybody else: "follow up" says nothing about whether to
+ * pick up the phone or get a quotation out, and the two are a week apart in effort. Typed, it
+ * also lets the dashboard say *what* is waiting rather than only how much.
+ */
+export const NEXT_ACTION_TYPES = [
+  'call',
+  'whatsapp',
+  'email',
+  'meeting',
+  'visit',
+  'send_quote',
+  'send_sample',
+  'other',
+];
+
 export const DISQUALIFY_REASONS = [
   'not_our_product',
   'price_shopper',
@@ -58,6 +77,7 @@ const leadSchema = new mongoose.Schema(
 
     /** The blueprint's discipline: an open record always has a defined next step [§3]. */
     nextAction: { type: String, trim: true },
+    nextActionType: { type: String, enum: NEXT_ACTION_TYPES, default: 'call' },
     nextFollowUpDate: Date,
 
     activities: [activitySchema],
