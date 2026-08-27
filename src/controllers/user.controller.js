@@ -8,6 +8,7 @@ import {
 } from '../services/access.service.js';
 import { defaultAccessFor, findDepartment } from '../config/modules.js';
 import { resolveIdentifier } from '../services/otp.service.js';
+import { transferBook, workloadOf } from '../services/offboarding.service.js';
 
 const publicUser = (user) => ({
   id: user._id,
@@ -180,12 +181,31 @@ export const resetAccessToDepartment = asyncHandler(async (req, res) => {
   res.json({ success: true, data: publicUser(user) });
 });
 
+/** What this person is holding, so an offboarding warning is a sentence with numbers in it. */
+export const workload = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.params.id);
+  if (!user) throw ApiError.notFound('User not found');
+
+  res.json({ success: true, data: await workloadOf(user._id) });
+});
+
+/**
+ * Offboards somebody: hands their book to a colleague and deactivates the account.
+ *
+ * Deliberately not a deletion. Ownership is what decides whose screen a live record appears
+ * on, so an owner nobody can resolve makes that record vanish from every marketing view
+ * without erroring — and eighteen fields across the models name a user as the person who did
+ * something, which stays true after they leave. See `offboarding.service.js`.
+ *
+ * Somebody holding open work cannot be removed without saying where it goes. Anyone with
+ * nothing open can be deactivated on the spot.
+ */
 export const remove = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id);
   if (!user) throw ApiError.notFound('User not found');
 
   if (String(user._id) === String(req.user._id)) {
-    throw ApiError.badRequest('You cannot delete your own account');
+    throw ApiError.badRequest('You cannot remove your own account');
   }
   if (user.role === 'admin') {
     const otherAdmins = await User.countDocuments({
@@ -196,6 +216,33 @@ export const remove = asyncHandler(async (req, res) => {
     if (otherAdmins === 0) throw ApiError.badRequest('This is the last active admin');
   }
 
-  await User.deleteOne({ _id: user._id });
-  res.json({ success: true, data: { id: user._id } });
+  const transferTo = req.query.transferTo || req.body?.transferTo;
+  const held = await workloadOf(user._id);
+
+  if (held.open > 0 && !transferTo) {
+    throw ApiError.badRequest(
+      `${user.name} still owns ${held.open} open ${held.open === 1 ? 'record' : 'records'}. ` +
+        'Name a colleague to transfer them to, or the work stops appearing on anybody’s screen.'
+    );
+  }
+
+  let moved = null;
+  if (transferTo) {
+    if (String(transferTo) === String(user._id)) {
+      throw ApiError.badRequest('Transfer the work to somebody else');
+    }
+
+    const successor = await User.findById(transferTo);
+    if (!successor) throw ApiError.badRequest('That colleague does not exist');
+    if (successor.isActive === false) {
+      throw ApiError.badRequest(`${successor.name} is not active, so the work would go nowhere`);
+    }
+
+    moved = await transferBook(user._id, successor._id);
+  }
+
+  user.isActive = false;
+  await user.save();
+
+  res.json({ success: true, data: { ...publicUser(user), transferred: moved } });
 });

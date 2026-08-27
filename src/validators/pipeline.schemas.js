@@ -4,7 +4,8 @@ import { CUSTOMER_TYPES, RATINGS, CUSTOMER_SOURCES } from '../models/Customer.js
 import { LEAD_STATUSES, DISQUALIFY_REASONS } from '../models/Lead.js';
 import { ENQUIRY_STATUSES, LOST_REASONS } from '../models/Enquiry.js';
 
-const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Must be a valid id');
+// The one definition, which also accepts a populated reference — see schemas.js.
+import { objectId } from './schemas.js';
 
 /* -------------------------------- Products -------------------------------- */
 
@@ -27,7 +28,14 @@ export const productSchema = z.object({
   notes: z.string().optional(),
 });
 
-export const productUpdateSchema = productSchema.partial().omit({ modelCode: true });
+/**
+ * The `updatedAt` the caller last read, echoed back so a stale write can be refused. A
+ * protocol field rather than a field of the record — the schemas strip anything they do not
+ * declare, so without this the check would silently never fire.
+ */
+export const versioned = { expectedUpdatedAt: z.coerce.date().optional() };
+
+export const productUpdateSchema = productSchema.partial().omit({ modelCode: true }).extend(versioned);
 
 /* -------------------------------- Customers -------------------------------- */
 
@@ -72,7 +80,7 @@ export const customerSchema = z.object({
   notes: z.string().optional(),
 });
 
-export const customerUpdateSchema = customerSchema.partial();
+export const customerUpdateSchema = customerSchema.partial().extend(versioned);
 
 /* ---------------------------------- Leads ---------------------------------- */
 
@@ -101,6 +109,7 @@ export const leadUpdateSchema = leadSchema.partial().extend({
   status: z.enum(LEAD_STATUSES).optional(),
   disqualifyReason: z.enum(DISQUALIFY_REASONS).optional(),
   disqualifyNote: z.string().optional(),
+  ...versioned,
 });
 
 export const leadActivitySchema = z.object({
@@ -146,7 +155,8 @@ export const enquirySchema = z.object({
 
 export const enquiryUpdateSchema = z
   .object({ ...enquiryCore, requirement: requirementSchema.optional() })
-  .partial();
+  .partial()
+  .extend(versioned);
 
 /** One conversation, several models — each becomes its own enquiry under a group. */
 export const enquiryGroupSchema = z.object({

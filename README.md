@@ -183,6 +183,38 @@ applied inside the controllers because it varies by department.
 Responses are `{ success, data }`; list routes add `{ pagination }`. Errors are
 `{ success: false, message, details? }`.
 
+### Two people, one record
+
+Every update accepts an optional `expectedUpdatedAt` — the `updatedAt` the caller last read.
+If the record has moved on, the write is refused with a 409 rather than applied. Without it,
+two people editing the same enquiry is last-write-wins: she changes the follow-up date, he
+changes the remarks, and whoever saves second silently reverts the other. Neither finds out
+until the customer was not called.
+
+The token is `updatedAt` rather than Mongoose's `__v`, which looks like the obvious choice
+and is not: `__v` increments only when an *array* field changes, so editing remarks or credit
+terms leaves it untouched and a guard built on it compares two identical zeroes and waves
+every stale write through — worse than no guard, because the screen would promise a
+protection it does not have.
+
+The comparison is exact. A one-second tolerance looks prudent and would skip the commonest
+collision; the failure modes are not symmetric either, since a false conflict costs a reload
+and a false accept costs somebody's work.
+
+Sending the token is optional per request, so an integration written before this existed
+keeps working rather than failing on every write.
+
+### Offboarding
+
+`GET /users/:id/workload` says what somebody is holding; `DELETE /users/:id?transferTo=` hands
+it over and deactivates them. Deleting the row is the obvious implementation and wrong twice
+over. Marketing is ownership-scoped, so a customer whose owner no longer resolves matches
+nobody's filter — it does not error, it simply drops off every screen but an administrator's,
+along with the open enquiries hanging off it. And eighteen fields across twelve models name a
+user as the person who did something; that stays true after they leave. Ownership transfers,
+authorship does not, and somebody still holding open work cannot be removed without saying
+where it goes.
+
 ### Every list is paged, and none of them truncate silently
 
 `listParams` and `paginated` in `utils/query.js` are the only way a list leaves the server:

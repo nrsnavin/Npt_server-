@@ -1,7 +1,27 @@
 import { z } from 'zod';
 import { MODULE_KEYS, DEPARTMENT_KEYS, ACCESS_LEVELS } from '../config/modules.js';
 
-export const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Must be a valid id');
+const idPattern = /^[0-9a-fA-F]{24}$/;
+
+/**
+ * A reference to another record, accepted either as an id or as the populated record itself.
+ *
+ * The API populates references on the way out so a screen can show a name rather than an id:
+ * `assignedTo` leaves as `{ _id, name, email }`. An edit form is seeded from that same
+ * record and sends it back untouched, so it arrives as an object — and refusing it means
+ * every save from a detail screen fails with a validation error about a field the user never
+ * touched. That is exactly what was happening to customers.
+ *
+ * The alternative is asking every client to un-populate by hand before every write, which
+ * they will forget, one form at a time. An API should accept what it emits.
+ */
+export const objectId = z.preprocess(
+  (value) =>
+    value && typeof value === 'object' && !Array.isArray(value) && value._id !== undefined
+      ? String(value._id)
+      : value,
+  z.string().regex(idPattern, 'Must be a valid id')
+);
 
 export const ROLE_VALUES = ['admin', 'member'];
 

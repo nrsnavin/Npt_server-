@@ -618,3 +618,73 @@ test('a sample raised by hand against an enquiry keeps that enquiry’s customer
   assert.equal(preview.status, 200);
   assert.ok(preview.json.data.body, 'there is a customer to draft a message to');
 });
+
+/* ------------------------ Two people, one record ------------------------ */
+
+test('a second person saving over your edit is refused, not silently accepted', async () => {
+  // Both open the same enquiry. She changes the follow-up date, he changes the remarks.
+  // Last write wins means his save quietly reverts hers, and neither of them ever finds out
+  // — they discover it a week later when the customer was not called.
+  const customer = await makeCustomer(nandhini);
+  const enquiry = await makeEnquiry(nandhini, customer._id, { remarks: 'Original' });
+
+  // Two readers, both holding the version they loaded.
+  const hers = (await api(`/api/enquiries/${enquiry._id}`, { token: nandhini })).json.data;
+  const his = (await api(`/api/enquiries/${enquiry._id}`, { token: nandhini })).json.data;
+  assert.equal(hers.updatedAt, his.updatedAt, 'they read the same version');
+
+  const herSave = await api(`/api/enquiries/${enquiry._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { remarks: 'She got there first', expectedUpdatedAt: hers.updatedAt },
+  });
+  assert.equal(herSave.status, 200);
+
+  const hisSave = await api(`/api/enquiries/${enquiry._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { remarks: 'He overwrote her', expectedUpdatedAt: his.updatedAt },
+  });
+
+  assert.equal(hisSave.status, 409, 'the stale write is refused');
+  assert.match(hisSave.json.message, /changed|reload|someone/i, `got: ${hisSave.json.message}`);
+
+  const after = (await api(`/api/enquiries/${enquiry._id}`, { token: nandhini })).json.data;
+  assert.equal(after.remarks, 'She got there first', 'and her edit survived');
+});
+
+test('a caller that sends no version is not blocked', async () => {
+  // The check is opt-in per request. An integration or a script that has not been taught
+  // about versions must keep working rather than start failing on every write.
+  const customer = await makeCustomer(nandhini);
+  const enquiry = await makeEnquiry(nandhini, customer._id);
+
+  const { status } = await api(`/api/enquiries/${enquiry._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { remarks: 'No version supplied' },
+  });
+  assert.equal(status, 200);
+});
+
+test('a customer opened from its own screen can actually be saved', async () => {
+  // The detail route populates `assignedTo` into an object so the screen can show the
+  // owner's name. The edit form is seeded from that same record and sends it back, so the
+  // owner arrives as `{_id, name, email}` where the schema wants an id — and every save
+  // from that screen is refused with a validation error about a field nobody touched.
+  const customer = await makeCustomer(nandhini);
+  const loaded = (await api(`/api/customers/${customer._id}`, { token: nandhini })).json.data.customer;
+
+  const { status, json } = await api(`/api/customers/${customer._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { ...loaded, name: 'Renamed From Their Own Screen' },
+  });
+
+  assert.equal(
+    status,
+    200,
+    `saving what the screen handed back was refused: ${json.message} ${JSON.stringify(json.details || [])}`
+  );
+  assert.equal(json.data.name, 'Renamed From Their Own Screen');
+});

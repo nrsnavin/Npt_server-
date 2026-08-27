@@ -4,7 +4,8 @@ import { SAMPLE_PURPOSES, SAMPLE_STATUSES, FEEDBACK_STATUSES } from '../models/S
 import { MESSAGE_CHANNELS } from '../models/CustomerMessage.js';
 import { EVENT_KEYS } from '../services/customerMessage.templates.js';
 
-const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, 'Must be a valid id');
+// The one definition, which also accepts a populated reference — see schemas.js.
+import { objectId } from './schemas.js';
 
 /** What a request carries beyond whatever it inherits from its enquiry. */
 const sampleCore = {
@@ -43,7 +44,11 @@ export const linkEnquirySchema = z.object({ enquiry: objectId });
 /** Naming the buyer on a request raised without one. */
 export const linkCustomerSchema = z.object({ customer: objectId });
 
-export const sampleUpdateSchema = z.object(sampleCore).partial();
+/** `expectedUpdatedAt` is echoed back so a stale write is refused rather than accepted. */
+export const sampleUpdateSchema = z
+  .object(sampleCore)
+  .partial()
+  .extend({ expectedUpdatedAt: z.coerce.date().optional() });
 
 /** A re-sample inherits the previous attempt; everything here is an override. */
 export const resampleSchema = z.object(sampleCore).partial();

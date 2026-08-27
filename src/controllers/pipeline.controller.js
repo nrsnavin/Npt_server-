@@ -11,6 +11,19 @@ import { ownerForNewLead } from '../services/assignment.service.js';
 import { EVENTS, publish, statusEvent } from '../services/events.service.js';
 import { normalisePhone } from '../utils/phone.js';
 import { listParams, paginated } from '../utils/query.js';
+import { expectVersion, withoutVersion } from '../utils/concurrency.js';
+
+/**
+ * True when a write actually moves a record to a different owner.
+ *
+ * The id arrives either bare or as the populated record the screen was handed, and comparing
+ * the raw values would read those two as different owners when they are the same one.
+ */
+const isReassignment = (current, incoming) => {
+  if (incoming === undefined || incoming === null) return false;
+  const next = String(incoming?._id ?? incoming);
+  return next !== String(current?._id ?? current);
+};
 
 /** How much of a customer's enquiry history the detail screen carries inline. */
 const TIMELINE_PAGE = 10;
@@ -55,11 +68,15 @@ export const createProduct = asyncHandler(async (req, res) => {
 });
 
 export const updateProduct = asyncHandler(async (req, res) => {
-  const product = await Product.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
-    runValidators: true,
-  });
+  const product = await Product.findById(req.params.id);
   if (!product) throw ApiError.notFound('Product not found');
+
+  // Read first so the version can be checked; the catalogue is shared, so two people
+  // correcting the same model at once is the ordinary case rather than the unlucky one.
+  expectVersion(product, req.body);
+  Object.assign(product, withoutVersion(req.body));
+  await product.save();
+
   res.json({ success: true, data: product });
 });
 
@@ -149,12 +166,19 @@ export const updateCustomer = asyncHandler(async (req, res) => {
   if (!customer) throw ApiError.notFound('Customer not found');
   if (!ownsRecord(req.user, customer)) throw ApiError.notFound('Customer not found');
 
-  // Reassigning an owner is a management decision, not the owner's own.
-  if (req.body.assignedTo && req.user.role !== 'admin') {
+  /*
+   * Reassigning an owner is a management decision, not the owner's own — but the rule is
+   * about *changing* the owner, not about the field being present. A detail screen loads the
+   * record with `assignedTo` populated and sends it straight back, so firing on presence
+   * refused every save the owner made from their own screen, naming a field they never
+   * touched.
+   */
+  if (isReassignment(customer.assignedTo, req.body.assignedTo) && req.user.role !== 'admin') {
     throw ApiError.forbidden('Only an administrator can reassign a customer');
   }
 
-  Object.assign(customer, req.body);
+  expectVersion(customer, req.body);
+  Object.assign(customer, withoutVersion(req.body));
   await customer.save();
   res.json({ success: true, data: customer });
 });
@@ -283,8 +307,8 @@ export const updateLead = asyncHandler(async (req, res) => {
   }
 
   // Giving a relationship away is management's call, not the holder's — the same rule
-  // customers already carry.
-  if (req.body.assignedTo && req.user.role !== 'admin') {
+  // customers already carry, and on an actual change rather than on the field's presence.
+  if (isReassignment(lead.assignedTo, req.body.assignedTo) && req.user.role !== 'admin') {
     throw ApiError.forbidden('Only an administrator can reassign a lead');
   }
 
@@ -296,7 +320,8 @@ export const updateLead = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('Use the convert action rather than setting the status directly');
   }
 
-  Object.assign(lead, req.body);
+  expectVersion(lead, req.body);
+  Object.assign(lead, withoutVersion(req.body));
   await lead.save();
   res.json({ success: true, data: lead });
 });
@@ -574,7 +599,8 @@ export const updateEnquiry = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('Use the status action to move an enquiry through its stages');
   }
 
-  Object.assign(enquiry, req.body);
+  expectVersion(enquiry, req.body);
+  Object.assign(enquiry, withoutVersion(req.body));
   assertNextAction(enquiry);
   await enquiry.save();
 
