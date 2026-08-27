@@ -4,12 +4,14 @@ import Sample, {
 } from '../models/Sample.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
+import Product from '../models/Product.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { canWrite } from '../services/access.service.js';
 import { EVENTS, publish, sampleStatusEvent } from '../services/events.service.js';
 import { createSampleRequest, defaultRequiredDate } from '../services/sampling.service.js';
+import { assertAssignable } from '../services/assignment.service.js';
 import { notifyCustomer, previewFor } from '../services/customerMessage.service.js';
 import CustomerMessage from '../models/CustomerMessage.js';
 import { listParams, paginated } from '../utils/query.js';
@@ -99,6 +101,19 @@ export const getSample = asyncHandler(async (req, res) => {
 export const createSample = asyncHandler(async (req, res) => {
   const { enquiry: enquiryId, customer: customerId, ...input } = req.body;
 
+  /*
+   * A sample is owned through `requestedBy`, so naming somebody else there puts the request
+   * in their list — the same hand-off of a relationship that customers and leads reserve to
+   * management, reachable through a create field nobody was checking. It also has to be a
+   * real, active person, for the same reason every other owner does.
+   */
+  if (input.requestedBy) {
+    if (String(input.requestedBy) !== String(req.user._id) && req.user.role !== 'admin') {
+      throw ApiError.forbidden('Only an administrator can raise a sample in someone else’s name');
+    }
+    await assertAssignable(input.requestedBy);
+  }
+
   let enquiry = null;
   if (enquiryId) {
     enquiry = await Enquiry.findById(enquiryId);
@@ -123,6 +138,17 @@ export const createSample = asyncHandler(async (req, res) => {
     throw ApiError.badRequest(
       'Pick a model, or describe what to make, when there is no enquiry to take it from'
     );
+  }
+
+  /*
+   * And the model has to be one that exists — the same rule enquiries have always had. The
+   * specification is inherited from it, and the inheritance step returns nothing for a model
+   * it cannot find, so an unknown id produced a request with no category, material, size or
+   * hook and nothing saying why. That is the guard above being satisfied on paper and
+   * defeated in fact: the bench still gets a job it cannot start.
+   */
+  if (input.product && !(await Product.exists({ _id: input.product }))) {
+    throw ApiError.badRequest('That model is not in the catalogue');
   }
 
   const { sample, created } = await createSampleRequest(
@@ -221,6 +247,10 @@ export const updateSample = asyncHandler(async (req, res) => {
     throw ApiError.badRequest(`A ${sample.status} sample can no longer be edited`);
   }
 
+  // `assignedTo` is reachable here as well as through the assign action, and reached the
+  // field with no check at all. A rule enforced on one door and not the other is not a rule.
+  if (req.body.assignedTo) await assertAssignable(req.body.assignedTo);
+
   expectVersion(sample, req.body);
   const before = snapshot(sample);
   Object.assign(sample, withoutVersion(req.body));
@@ -236,8 +266,16 @@ export const assignSample = asyncHandler(async (req, res) => {
   if (!sample) throw ApiError.notFound('Sample not found');
   if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
 
-  // An explicit null hands it back to the shared queue; omitting it takes it yourself.
-  sample.assignedTo = req.body.assignedTo === null ? null : req.body.assignedTo || req.user._id;
+  /*
+   * An explicit null hands it back to the shared queue; omitting it takes it yourself. Any
+   * other name has to be somebody who is actually here — a sample assigned to a bench member
+   * who has left is in nobody's queue and is not unassigned either, so it is not on the
+   * shared list waiting to be picked up. It is on no screen at all.
+   */
+  const named = req.body.assignedTo;
+  if (named) await assertAssignable(named);
+
+  sample.assignedTo = named === null ? null : named || req.user._id;
   await sample.save();
   res.json({ success: true, data: await withRefs(sample) });
 });

@@ -869,3 +869,130 @@ test('a request that came from an enquiry takes its customer from there', async 
   assert.equal(status, 400);
   assert.match(json.message, /already names a customer|takes its customer from there/);
 });
+
+/* ------------------------ Who a sample belongs to ------------------------ */
+
+test('a sample cannot be handed to a bench member who is not there', async () => {
+  // The same hole customers and enquiries had. A sample assigned to somebody who has left is
+  // in nobody's queue and is not unassigned either, so it is not on the shared list waiting
+  // to be picked up — it is simply not on any screen, which is how a sample goes quiet.
+  const enquiry = await raiseEnquiry();
+  await api(`/api/enquiries/${enquiry._id}/status`, {
+    method: 'POST',
+    token: nandhini,
+    body: { status: 'sample_required', ...followUp },
+  });
+  const sample = (await api('/api/samples?limit=1', { token: meera })).json.data[0];
+
+  const ghost = await api(`/api/samples/${sample._id}/assign`, {
+    method: 'POST',
+    token: meera,
+    body: { assignedTo: '6a8f0000000000000000dead' },
+  });
+  assert.equal(ghost.status, 400, ghost.json.message);
+
+  const leaver = await api('/api/users', {
+    method: 'POST',
+    token: admin,
+    body: {
+      name: 'Left The Bench',
+      email: `bench${Date.now()}@np.com`,
+      password: 'Passw0rd@123',
+      department: 'sampling',
+    },
+  });
+  const leaverId = leaver.json.data.id || leaver.json.data._id;
+  await api(`/api/users/${leaverId}`, { method: 'PATCH', token: admin, body: { isActive: false } });
+
+  const departed = await api(`/api/samples/${sample._id}/assign`, {
+    method: 'POST',
+    token: meera,
+    body: { assignedTo: leaverId },
+  });
+  assert.equal(departed.status, 400, 'work sent after somebody has left goes nowhere');
+  assert.match(departed.json.message, /not active/i);
+
+  // Handing it back to the shared queue must still work — that is not a missing person.
+  const released = await api(`/api/samples/${sample._id}/assign`, {
+    method: 'POST',
+    token: meera,
+    body: { assignedTo: null },
+  });
+  assert.equal(released.status, 200, 'an explicit null returns it to the queue');
+});
+
+test('a PATCH cannot assign a sample to somebody who is not there either', async () => {
+  // The assign route is the front door; the update route reached the same field with no
+  // check at all. A rule enforced on one and not the other is not a rule.
+  const enquiry = await raiseEnquiry();
+  await api(`/api/enquiries/${enquiry._id}/status`, {
+    method: 'POST',
+    token: nandhini,
+    body: { status: 'sample_required', ...followUp },
+  });
+  const sample = (await api('/api/samples?limit=1', { token: meera })).json.data[0];
+
+  const { status, json } = await api(`/api/samples/${sample._id}`, {
+    method: 'PATCH',
+    token: meera,
+    body: { assignedTo: '6a8f0000000000000000dead' },
+  });
+  assert.equal(status, 400, json.message);
+});
+
+test('a sample cannot be raised in a colleague’s name', async () => {
+  // Samples are owned through `requestedBy`, so naming somebody else there puts the request
+  // in their list — the same relationship hand-off that customers and leads reserve to
+  // management, reachable through a field on create that nobody was checking.
+  const priyaId = (await api('/api/users?search=Priya', { token: admin })).json.data[0].id;
+
+  const inHerName = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      modelNumber: 'NPT-400S',
+      quantity: 5,
+      requestedBy: priyaId,
+      standaloneReason: 'Counter enquiry',
+    },
+  });
+  assert.equal(inHerName.status, 403, inHerName.json.message);
+
+  const byAdmin = await api('/api/samples', {
+    method: 'POST',
+    token: admin,
+    body: {
+      customer: customerId,
+      modelNumber: 'NPT-400S',
+      quantity: 5,
+      requestedBy: priyaId,
+      standaloneReason: 'Counter enquiry',
+    },
+  });
+  assert.equal(byAdmin.status, 201, 'management may still raise one on somebody’s behalf');
+  assert.equal(String(idOf(byAdmin.json.data.requestedBy)), String(priyaId));
+});
+
+test('a sample cannot be raised against a model that is not in the catalogue', async () => {
+  /*
+   * The specification is inherited from the model, and the inheritance step returned an empty
+   * object for a model it could not find — so the request was created pointing at nothing,
+   * with no category, material, size or hook, and nothing anywhere saying why. The bench then
+   * discovers at the bench that there is no specification, which is the thing this endpoint's
+   * own guard exists to prevent. Enquiries have refused an unknown model from the start.
+   */
+  const { status, json } = await api('/api/samples', {
+    method: 'POST',
+    token: meera,
+    body: {
+      customer: customerId,
+      product: '6a8f0000000000000000dead',
+      quantity: 5,
+      standaloneReason: 'Counter enquiry',
+    },
+  });
+
+  assert.equal(status, 400, json.message);
+  assert.match(json.message, /catalogue/i);
+});

@@ -1,5 +1,6 @@
 import Counter from '../models/Counter.js';
 import User from '../models/User.js';
+import ApiError from '../utils/ApiError.js';
 
 /**
  * Who a new lead belongs to [BLUEPRINT §41.3].
@@ -20,6 +21,27 @@ import User from '../models/User.js';
  * arriving together cannot both take the same person, and a restart does not put the
  * rotation back to whoever happens to sort first.
  */
+
+/**
+ * Refuses an owner who cannot hold the work.
+ *
+ * Every module that assigns anything needs this, and each one that grew its own version grew
+ * it late: customers, leads and enquiries went without it until an administrator could hand a
+ * record to somebody who had already left, and samples went without it in three more places.
+ * A record owned by a name that no longer answers is the worst kind of missing — it is not
+ * unassigned, so it is not on the queue waiting to be picked up, and it is not anybody's, so
+ * it is on no personal list either. It is simply not on a screen.
+ *
+ * Lives beside the rotation because both answer the same question: who may hold this.
+ */
+export async function assertAssignable(assignTo) {
+  const successor = await User.findById(assignTo?._id ?? assignTo);
+  if (!successor) throw ApiError.badRequest('That colleague does not exist');
+  if (successor.isActive === false) {
+    throw ApiError.badRequest(`${successor.name} is not active, so the work would go nowhere`);
+  }
+  return successor;
+}
 
 /**
  * The people in the rotation.

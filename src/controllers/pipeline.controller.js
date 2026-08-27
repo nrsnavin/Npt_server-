@@ -3,12 +3,11 @@ import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
-import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
-import { ownerForNewLead } from '../services/assignment.service.js';
+import { assertAssignable, ownerForNewLead } from '../services/assignment.service.js';
 import { EVENTS, publish, statusEvent } from '../services/events.service.js';
 import { normalisePhone } from '../utils/phone.js';
 import { listParams, paginated } from '../utils/query.js';
@@ -37,23 +36,6 @@ const isReassignment = (current, incoming) => {
   const next = String(incoming?._id ?? incoming);
   return next !== String(current?._id ?? current);
 };
-
-/**
- * Refuses an owner who cannot hold the work.
- *
- * `bulkReassign` checked this from the start and the single-record paths did not, so an
- * administrator working from a stale screen could hand a customer to somebody who had
- * already left. The record then belongs to nobody: ownership scoping hides it from every
- * marketing user, and only an administrator can even see that it has gone missing — which is
- * the worst kind of bug, because the record looks fine to the person who caused it.
- */
-async function assertAssignable(assignTo) {
-  const successor = await User.findById(assignTo?._id ?? assignTo);
-  if (!successor) throw ApiError.badRequest('That colleague does not exist');
-  if (successor.isActive === false) {
-    throw ApiError.badRequest(`${successor.name} is not active, so the work would go nowhere`);
-  }
-}
 
 /**
  * The whole rule for handing a record to somebody else, in one place.
@@ -160,11 +142,7 @@ export const bulkReassign = asyncHandler(async (req, res) => {
   }
 
   const { ids, assignTo } = req.body;
-  const successor = await User.findById(assignTo);
-  if (!successor) throw ApiError.badRequest('That colleague does not exist');
-  if (successor.isActive === false) {
-    throw ApiError.badRequest(`${successor.name} is not active, so the work would go nowhere`);
-  }
+  const successor = await assertAssignable(assignTo);
 
   /*
    * Read them first. The update itself is one statement, but the trail is per record — an
