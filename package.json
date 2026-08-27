@@ -2,7 +2,7 @@
   "name": "npt-server",
   "version": "1.0.0",
   "private": true,
-  "description": "NPT CRM + ERP API \u2014 CRM, manufacturing, inventory and accounts for a hanger manufacturing business",
+  "description": "NPT CRM + ERP API — CRM, manufacturing, inventory and accounts for a hanger manufacturing business",
   "type": "module",
   "main": "src/server.js",
   "engines": {
@@ -17,6 +17,7 @@
     "doctor:indexes": "node scripts/doctor-indexes.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.121.0",
     "bcryptjs": "^2.4.3",
     "compression": "^1.7.4",
     "cors": "^2.8.5",

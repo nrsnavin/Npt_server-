@@ -195,7 +195,7 @@ test('two customers matching one name are reported, not resolved to the first', 
     body: { name: 'Trendline Exports', mobile: '9840011999' },
   });
 
-  const { answer, rows } = await ask('what is happening with Trendline', nandhini);
+  const { answer, rows } = await ask('what is happening with Trendline', admin);
   assert.match(answer, /2 customers match/i, answer);
   assert.equal(rows.length, 2, 'and both are offered');
 });
@@ -217,7 +217,7 @@ test('a sample is answered with its stage, its buyer and who is holding it', asy
   assert.equal(raised.status, 201, raised.json.message);
   const sample = raised.json.data;
 
-  const { answer, rows } = await ask(`where is ${sample.number}`, nandhini);
+  const { answer, rows } = await ask(`where is ${sample.number}`, admin);
   assert.match(answer, new RegExp(sample.number));
   assert.match(answer, /Trendline Apparels/);
   assert.match(answer, /nobody has picked it up/i, 'an unassigned sample says so plainly');
@@ -243,25 +243,25 @@ test('overdue names the oldest, because that is the one somebody acts on', async
     .collection('samples')
     .updateOne({ modelNumber: 'Late shape' }, { $set: { requiredDate: late } });
 
-  const { answer, rows } = await ask('what is overdue on the bench', nandhini);
+  const { answer, rows } = await ask('what is overdue on the bench', admin);
   assert.match(answer, /overdue/i, answer);
   assert.match(answer, /11 days/, `the age is the actionable part: ${answer}`);
   assert.ok(rows.length, 'with the records behind it');
 });
 
 test('new enquiries answer within a window, and name the window used', async () => {
-  const { answer, total } = await ask('any new enquiries this week', nandhini);
+  const { answer, total } = await ask('any new enquiries this week', admin);
   assert.ok(total >= 2, `expected the two just raised, got: ${answer}`);
   assert.match(answer, /new enquiries/i, answer);
   assert.match(answer, /last 7 days/i, 'so nobody assumes a different span than they were given');
 
   // And a window with nothing in it says so, rather than reporting the default span's count.
-  const today = await ask('any new customers today', priya);
-  assert.match(today.answer, /no new customers today/i, today.answer);
+  const none = await ask('any new leads today', admin);
+  assert.match(none.answer, /no new leads today/i, none.answer);
 });
 
 test('a count says the shape of the pile, not only its size', async () => {
-  const { answer, total } = await ask('how many enquiries are open', nandhini);
+  const { answer, total } = await ask('how many enquiries are open', admin);
   assert.match(answer, /enquiries open/i, answer);
   assert.ok(total >= 1);
   // "12 open" is a number; "5 new, 4 sample required" is where the work actually is.
@@ -269,7 +269,7 @@ test('a count says the shape of the pile, not only its size', async () => {
 });
 
 test('a customer question gathers every module that has something open', async () => {
-  const { answer, rows } = await ask('what is happening with Trendline Apparels', nandhini);
+  const { answer, rows } = await ask('what is happening with Trendline Apparels', admin);
   assert.match(answer, /Trendline Apparels/);
   assert.match(answer, /open enquir/i, answer);
   assert.ok(rows.some((row) => row.link.startsWith('/samples/')), 'samples as well as enquiries');
@@ -277,60 +277,85 @@ test('a customer question gathers every module that has something open', async (
 
 /* ------------------------------- Permissions ------------------------------- */
 
-test('an assistant is not a way around the permission system', async () => {
-  /*
-   * A text box in front of the database is still the database. A marketing person asking
-   * about a colleague's customer must get the same nothing the list screen gives them.
-   */
-  const { answer, rows } = await ask('what is happening with Trendline Apparels', priya);
-  assert.match(answer, /cannot find/i, answer);
-  assert.equal(rows.length, 0);
+test('only an administrator may ask', async () => {
+  // It answers across every module at once, which is a management view of the plant rather
+  // than anybody's own screen.
+  for (const [who, token] of [['marketing', nandhini], ['the bench', meera]]) {
+    const { status, json } = await api('/api/jarvis/ask', {
+      method: 'POST',
+      token,
+      body: { message: 'what is overdue on the bench' },
+    });
+    assert.equal(status, 403, `${who} was answered: ${JSON.stringify(json)}`);
+  }
+
+  const allowed = await api('/api/jarvis/ask', {
+    method: 'POST',
+    token: admin,
+    body: { message: 'what is overdue on the bench' },
+  });
+  assert.equal(allowed.status, 200);
 });
 
-test('a colleague’s sample is not found by number either', async () => {
-  const sample = (await api('/api/samples?limit=1', { token: admin })).json.data[0];
-  const { answer } = await ask(`where is ${sample.number}`, priya);
-  assert.match(answer, /cannot find/i, answer);
+test('the scoping under the gate is still real', async () => {
+  /*
+   * An administrator bypasses ownership, so the filters inside the answers change nothing
+   * today. They are tested anyway: the day this opens to marketing, a permission model
+   * retro-fitted to a feature that has been running without one is how a colleague's book
+   * ends up in somebody else's answer. Called directly, since the route is gated.
+   */
+  const { answer } = await import('../src/services/jarvis.service.js');
+  const { default: User } = await import('../src/models/User.js');
+  const priyaUser = await User.findOne({ email: 'priya@np.com' });
+
+  const parsed = {
+    subject: 'customers',
+    aspect: 'status',
+    entities: { reference: null, party: 'Trendline Apparels', window: { days: 7, label: '', stated: false } },
+    text: 'what is happening with Trendline Apparels',
+  };
+
+  const asColleague = await answer(priyaUser, parsed);
+  assert.match(asColleague.answer, /cannot find/i, asColleague.answer);
+  assert.equal(asColleague.rows.length, 0);
 });
 
 test('a grant nobody holds is explained rather than silently empty', async () => {
   /*
    * "Nothing open" and "you cannot see this" are different statements, and only one of them
-   * is true here. Answering the first would tell somebody the pipeline is empty when in fact
-   * it is none of their business — and they would repeat it in a meeting.
-   *
-   * A deliberately narrowed account, because the seeded departments all hold enquiries read:
-   * the rule has to be tested against a grant that is genuinely absent.
+   * is true. Answering the first would tell somebody the pipeline is empty when in fact it is
+   * none of their business — and they would repeat it in a meeting.
    */
-  const created = await api('/api/users', {
-    method: 'POST',
-    token: admin,
-    body: { name: 'Bench Only', email: 'benchonly@np.com', password: 'Passw0rd@123', department: 'sampling' },
-  });
-  const id = created.json.data.id || created.json.data._id;
-  await api(`/api/users/${id}/access`, {
-    method: 'PUT',
-    token: admin,
-    body: { moduleAccess: [{ module: 'samples', level: 'write' }] },
-  });
-  const benchOnly = await signIn('benchonly@np.com', 'Passw0rd@123');
+  const { answer } = await import('../src/services/jarvis.service.js');
+  const { default: User } = await import('../src/models/User.js');
 
-  const { answer } = await ask('how many enquiries are open', benchOnly);
-  assert.match(answer, /do not have access/i, answer);
-  assert.doesNotMatch(answer, /nothing|\b0\b/i, 'silence would read as an empty pipeline');
-});
+  const narrow = await User.create({
+    name: 'Bench Only',
+    email: `benchonly${Date.now()}@np.com`,
+    password: 'Passw0rd@123',
+    department: 'sampling',
+    moduleAccess: [{ module: 'samples', level: 'write' }],
+  });
 
-test('management sees the plant, because their grants say so', async () => {
-  const { total } = await ask('how many enquiries are open', admin);
-  const mine = await ask('how many enquiries are open', nandhini);
-  assert.ok(total >= mine.total, 'ownership scoping is what differs, not a role check');
+  const reply = await answer(narrow, {
+    subject: 'enquiries',
+    aspect: 'open',
+    entities: { reference: null, party: null, window: { days: 7, label: '', stated: false } },
+    text: 'how many enquiries are open',
+  });
+
+  assert.match(reply.answer, /do not have access/i, reply.answer);
+  assert.doesNotMatch(reply.answer, /nothing|\b0\b/i, 'silence would read as an empty pipeline');
 });
 
 /* --------------------------------- Shape --------------------------------- */
 
 test('it says what it understood, so a wrong answer can be debugged', async () => {
   const { understood } = await ask('what is overdue on the bench', admin);
-  assert.deepEqual(understood, { subject: 'samples', aspect: 'overdue' });
+  assert.equal(understood.subject, 'samples');
+  assert.equal(understood.aspect, 'overdue');
+  // Which parser read it, so a wrong answer can be pinned on the model or the fallback.
+  assert.equal(understood.readBy, 'rules', 'no key is configured in the suite, so it never calls out');
 });
 
 test('an empty or oversized question is refused rather than guessed at', async () => {

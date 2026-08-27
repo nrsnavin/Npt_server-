@@ -124,9 +124,12 @@ Runs against an in-memory MongoDB — no local `mongod` needed.
   that an alarm rings once, and the dashboard's ageing and rework arithmetic.
 - `tests/index-health.test.js` — a stale unique index, the all-creation-fails symptom it
   causes, the message that explains it, and that dropping it restores saves.
-- `tests/jarvis.test.js` — Ask Jarvis: the parser against the ways people type a document
-  number, and the two ways an assistant becomes worthless — answering a module that does not
-  exist as zero, and reaching past the permission system.
+- `tests/jarvis.test.js` — Ask Jarvis: the rules parser against the ways people type a document
+  number, the admin gate, and the two ways an assistant becomes worthless — answering a module
+  that does not exist as zero, and reaching past the permission system.
+- `tests/jarvis-llm.test.js` — reading the question with the model, against a stubbed SDK: the
+  fallback on every failure mode, that no record ever reaches the model, and that an injected
+  instruction cannot escape the enum. No test costs a call or touches the network.
 - `tests/workspace.test.js` and `tests/health.test.js` — the dock and the probes.
 
 ## API
@@ -182,7 +185,8 @@ applied inside the controllers because it varies by department.
 | GET | `/samples/:id/customer-message/preview` | The draft a person would send, and what has already gone |
 | POST | `/samples/:id/customer-message` | Send it, optionally edited, on chosen channels |
 | GET | `/samples/:id/customer-messages` | Everything ever sent to this customer about this sample |
-| POST | `/jarvis/ask` | Ask Jarvis — one typed question, one answer from the asker's own records |
+| POST | `/jarvis/ask` | Ask Jarvis — one typed question, one answer. Administrators only |
+| GET | `/jarvis/status` | Whether the language model is configured, or the rules are reading |
 | GET | `/history/:model/:id` | Who changed what on one record, newest first |
 | GET | `/customers/export` | The customers on screen, as CSV — same filters as the list route |
 | GET | `/leads/export`, `/enquiries/export`, `/products/export` | The same, for each list |
@@ -200,20 +204,48 @@ enquiries this week*, *where is SMP-2026-0004*, *what is happening with Trendlin
 of those is already on a screen — finding the screen is the friction, three clicks and a
 filter to learn something that fits in a line.
 
-**No language model is involved.** The parse is rules, in `services/jarvis.intents.js`, for
-three reasons that matter more here than fluency does. The questions are a closed set — five
-subjects and five aspects between them — and a model earns its keep when the space of
-questions is open, not when it fits on a page. A wrong answer is worse than no answer, because
-somebody asks how many samples are late and acts on the number: everything here is a query
-they can re-run by hand. And it costs nothing, works with the network down, and hands no
-customer names to a third party.
+**Administrators only.** It answers across every module at once, which is a management view
+of the plant rather than anybody's own screen. The per-subject grant checks and ownership
+filters inside the answers are kept all the same: an administrator bypasses both, so today
+they change nothing, but the day this opens wider they are already right. Retro-fitting a
+permission model to a feature that has been running without one is how a colleague's book
+ends up in somebody else's answer.
+
+**A language model reads the question — and only the question.** `services/jarvis.llm.js`
+turns the sentence into `{ subject, aspect, entities }` and stops there. It is handed no
+record and produces no figure; every number in every answer still comes from a Mongo query in
+`jarvis.service.js`, run under the asker's grants. Four things follow from that split:
+
+- **A model that reads the question cannot get the answer wrong.** Somebody asks how many
+  samples are late and acts on the number. If the model produced that number it could be
+  plausible and false, and unfalsifiable from the sentence. Here the worst a misparse does is
+  answer a different question — visibly, since the reply says what it understood and which
+  parser understood it.
+- **It cannot invent a subject.** `subject` and `aspect` are JSON Schema `enum`s of exactly the
+  values the answer layer implements, enforced by structured output rather than asked for in
+  the prompt, and checked again on the way back. No string it returns reaches an unhandled
+  branch. (The schema is written by hand: the Zod generator available here demotes an enum
+  into a *description*, which is a request rather than a constraint.)
+- **Prompt injection cannot widen access.** The question is untrusted text — assume it can say
+  anything. It can at most cause a wrong subject or a wrong customer name, and both go through
+  the same `canRead` and `ownershipFilter` every screen uses. The model holds no credentials
+  and issues no queries.
+- **The rules parser stays, as the fallback.** No key, the API down, a timeout, a refusal, a
+  response that fails its own schema — each falls back to `services/jarvis.intents.js` rather
+  than failing the question. A plant office should not lose its assistant because a network
+  somewhere is having a bad afternoon, and the rules are right about the common questions.
+
+Set `ANTHROPIC_API_KEY` to switch the model on; leave it empty and everything still works.
+`JARVIS_MODEL` overrides the model (default `claude-opus-5`). The request is a classification
+against a fixed list with somebody waiting on a panel, so it runs at `effort: "low"` with a
+small token ceiling.
 
 The parse is two axes rather than a list of intents, because that is how the questions
 decompose: a **subject** (samples, enquiries, leads, customers, orders) and an **aspect**
 (this one, what is late, what is new, how many). A flat list needs an entry per combination
 and turns brittle; a grid degrades, and an unrecognised corner can say precisely which half it
-did not follow. Swapping a model in later means replacing that one file — everything
-downstream takes `{ subject, aspect, entities }` and never sees the sentence.
+did not follow. Both parsers return that same shape, which is why either can read a question
+and nothing downstream can tell the difference.
 
 Four rules decide whether it is trustworthy enough to act on, which is the only bar that
 matters. An assistant nobody trusts gets asked once.
@@ -226,12 +258,6 @@ what they are and that they are not built yet.
 **It never answers a different question than the one asked.** A subject it recognised with an
 aspect it did not says so and offers the aspects that subject has. Quietly falling back to a
 summary produces a confident, correct-looking answer to something nobody asked.
-
-**Grants and record ownership apply exactly as on screen.** The route is open to everyone
-rather than gated to administrators: an administrator sees the whole plant because their
-grants say so, not because the route checks a role — so the same feature serves the bench and
-marketing without a second implementation and without a hole where one sees the other's book.
-A colleague's customer is as unreachable through the box as it is through the list.
 
 **Every figure carries its records.** The reply is a sentence *and* the rows behind it, each a
 link. A number nobody can verify is a rumour, and the first one that turns out to be wrong
