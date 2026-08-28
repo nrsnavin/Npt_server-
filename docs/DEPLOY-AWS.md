@@ -13,6 +13,12 @@ time.
 > during development. Rotate it in Hostinger before it goes on a public server, and put the new
 > one only in `.env` on the box — never in the repo.
 
+**Which directory am I in?** If a block starts with `cd`, the directory matters and the block
+says so. If it does not, the command is system-wide and works from anywhere — all of the apt
+installs, the firewall, MongoDB, every Nginx command and certbot are in that second group.
+Nginx is not "inside" the web repo: it reads the built files off disk by the path in its own
+config, so nothing about it is run from the checkout.
+
 ---
 
 ## 1. Launch the instance
@@ -240,6 +246,8 @@ npm run build      # produces dist/
 
 ## 6. Nginx
 
+Run these from anywhere — they edit `/etc/nginx/`, not either repo.
+
 ```bash
 sudo nano /etc/nginx/sites-available/npt
 ```
@@ -316,6 +324,9 @@ sudo certbot renew --dry-run
 ---
 
 ## 7. Keep the API running
+
+`pm2 start` takes a *relative* path, so this one does need the `cd`. `pm2 status` and
+`pm2 logs` afterwards do not.
 
 ```bash
 sudo npm install -g pm2
