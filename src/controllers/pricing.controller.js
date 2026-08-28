@@ -1,6 +1,9 @@
 import Pricing, { CLOSED_PRICING_STATUSES } from '../models/Pricing.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
+import Product from '../models/Product.js';
+import Quotation from '../models/Quotation.js';
+import { newQuotation } from './quotation.controller.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
@@ -70,10 +73,15 @@ export const getPricing = asyncHandler(async (req, res) => {
 /**
  * Raising a costing request by hand.
  *
- * The ordinary route is the automation — an enquiry reaching `pricing_required` raises one —
- * so this exists for the case the automation cannot cover: a price wanted before the enquiry
- * has moved, or a re-costing after the buyer changed the quantity. It is the same record
- * either way.
+ * **An enquiry is optional, and that is the point of this route.** The automation covers the
+ * ordinary case — an enquiry reaching `pricing_required` raises one — but plenty of real
+ * costings have no enquiry behind them at all: a rate wanted for a tender, a standing price
+ * refreshed because the resin rate moved, a walk-in asking what a model would cost. Requiring
+ * an enquiry would mean inventing a fake one to get a number, which is how a pipeline fills
+ * with enquiries nobody is working.
+ *
+ * The customer is required either way. A cost is of a *job*, and the same hanger costs
+ * different money for a buyer who takes 40,000 and one who takes 2,000.
  */
 export const createPricing = asyncHandler(async (req, res) => {
   const enquiry = req.body.enquiry ? await Enquiry.findById(req.body.enquiry) : null;
@@ -83,9 +91,21 @@ export const createPricing = asyncHandler(async (req, res) => {
   if (!customerId) throw ApiError.badRequest('A costing needs the customer it is for');
   if (!(await Customer.findById(customerId))) throw ApiError.badRequest('That customer does not exist');
 
+  /*
+   * The product master fills in what it already knows [§28]. Copied rather than referenced:
+   * a costing is a record of what was priced, and a master that is edited next month must not
+   * retrospectively change the MOQ a quote went out against.
+   */
+  const productId = req.body.product || enquiry?.product;
+  const product = productId ? await Product.findById(productId) : null;
+
   const pricing = await Pricing.create({
     ...req.body,
+    product: productId || undefined,
     customer: customerId,
+    modelNumber: req.body.modelNumber || product?.modelCode,
+    material: req.body.material || product?.material,
+    moq: req.body.moq ?? product?.moq ?? 0,
     number: await nextNumber('PRC'),
     requestedBy: req.user._id,
     statusHistory: [{ to: 'requested', by: req.user._id }],
@@ -114,12 +134,13 @@ export const costPricing = asyncHandler(async (req, res) => {
   expectVersion(pricing, req.body);
   const before = snapshot(pricing);
 
-  const { cost, targetMargin, approvedSellingPrice, minimumSellingPrice, remarks } =
+  const { cost, targetMargin, approvedSellingPrice, minimumSellingPrice, moq, remarks } =
     withoutVersion(req.body);
 
   if (cost) pricing.cost = { ...pricing.cost?.toObject?.(), ...cost };
   if (targetMargin !== undefined) pricing.targetMargin = targetMargin;
   if (minimumSellingPrice !== undefined) pricing.minimumSellingPrice = minimumSellingPrice;
+  if (moq !== undefined) pricing.moq = moq;
   if (remarks !== undefined) pricing.remarks = remarks;
 
   // Derived, never typed — see the note above.
@@ -191,4 +212,89 @@ export const decidePricing = asyncHandler(async (req, res) => {
   publish(approve ? EVENTS.PRICING_APPROVED : EVENTS.PRICING_REJECTED, { pricing, by: req.user });
 
   res.json({ success: true, data: visibleTo(pricing, req.user) });
+});
+
+/**
+ * Turning a costing into a quotation [§7 → §10].
+ *
+ * This is the join between the two modules, and it exists so the chain is *made* rather than
+ * retyped. A quote built by hand off a costing means somebody reading the number on one screen
+ * and typing it into another: the model, the customer and the enquiry are re-entered, the link
+ * back to the sheet is never set, and the price is one transcription slip away from wrong.
+ * Here the sheet is the source — customer, enquiry, product and model come across with it, and
+ * `pricing` is set, which is what §9's floor check reads before anything can be sent.
+ *
+ * **The quantity defaults to the MOQ, not to the quantity the sheet was costed at.** That is
+ * the whole reason MOQ is on the costing: the approved price holds down to the MOQ and no
+ * further, so the first quantity offered is the smallest one the price is good for. Marketing
+ * can raise it — a buyer asking for more only makes the price safer — and passing a quantity
+ * explicitly overrides it.
+ *
+ * Only an approved costing may be quoted. A sheet still in costing has no price yet, and one
+ * waiting on §9 is precisely the case the approval route exists to stop.
+ */
+export const quoteFromPricing = asyncHandler(async (req, res) => {
+  const pricing = await Pricing.findById(req.params.id);
+  if (!pricing) throw ApiError.notFound('Costing not found');
+
+  if (pricing.status !== 'approved') {
+    const why = {
+      requested: 'This costing has no price on it yet',
+      costed: 'This costing has no price on it yet',
+      approval_pending: 'This costing is waiting on approval — it cannot be quoted yet',
+      rejected: 'This costing was refused — it needs re-costing before it can be quoted',
+    }[pricing.status];
+    throw ApiError.badRequest(why || 'Only an approved costing can be quoted');
+  }
+
+  if (!pricing.approvedSellingPrice) {
+    throw ApiError.badRequest('This costing has no approved price to quote');
+  }
+
+  /*
+   * The MOQ, then what the sheet was costed at, then nothing. A costing with neither cannot
+   * name a quantity, and guessing one is how a quote goes out for a lot size nobody agreed.
+   */
+  const quantity = req.body.quantity ?? (pricing.moq || pricing.quantity);
+  if (!quantity) throw ApiError.badRequest('Say what quantity this quote is for');
+
+  if (pricing.moq && quantity < pricing.moq) {
+    throw ApiError.badRequest(
+      `This price holds down to ${pricing.moq} pieces — quote at least that, or have it re-costed`
+    );
+  }
+
+  const quotation = await newQuotation(
+    {
+      ...req.body,
+      quantity,
+      unitPrice: req.body.unitPrice ?? pricing.approvedSellingPrice,
+      customer: pricing.customer,
+      enquiry: pricing.enquiry || undefined,
+      pricing: pricing._id,
+      product: pricing.product || undefined,
+      modelNumber: pricing.modelNumber,
+    },
+    req.user
+  );
+
+  res.status(201).json({ success: true, data: quotation });
+});
+
+/**
+ * What a costing produced.
+ *
+ * The reverse of the link above. A sheet is not finished when it is approved — the question
+ * that follows it is always "did we quote this, and at what?", and without the reverse view
+ * that answer lives only in whoever remembers raising it.
+ */
+export const pricingQuotations = asyncHandler(async (req, res) => {
+  const pricing = await Pricing.findById(req.params.id);
+  if (!pricing) throw ApiError.notFound('Costing not found');
+
+  const rows = await Quotation.find({ pricing: pricing._id })
+    .select('number status quantity unitPrice revision createdAt sentAt')
+    .sort('-createdAt');
+
+  res.json({ success: true, data: rows });
 });

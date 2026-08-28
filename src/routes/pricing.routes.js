@@ -1,15 +1,16 @@
 import { Router } from 'express';
 import {
   listPricings, getPricing, createPricing, costPricing, decidePricing,
+  quoteFromPricing, pricingQuotations,
 } from '../controllers/pricing.controller.js';
 import {
   listQuotations, getQuotation, createQuotation, updateQuotation,
-  reviseQuotation, sendQuotation, respondToQuotation,
+  reviseQuotation, sendQuotation, respondToQuotation, quotationPdf,
 } from '../controllers/quotation.controller.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
-  pricingSchema, pricingCostSchema, pricingDecisionSchema,
+  pricingSchema, pricingCostSchema, pricingDecisionSchema, pricingQuoteSchema,
   quotationSchema, quotationUpdateSchema, quotationRevisionSchema,
   quotationSendSchema, quotationResponseSchema,
 } from '../validators/pricing.schemas.js';
@@ -40,10 +41,25 @@ router.get('/pricings/:id', requireModule('pricing'), getPricing);
 router.patch('/pricings/:id/cost', requireModule('pricing'), validate(pricingCostSchema), costPricing);
 router.post('/pricings/:id/decision', requireModule('pricing'), validate(pricingDecisionSchema), decidePricing);
 
+/*
+ * The join between the two modules [§7 → §10].
+ *
+ * Guarded on `quotations: write` rather than on pricing: the thing being created is a
+ * quotation, and whether you may raise one is a question about quoting, not about costing.
+ * Marketing holds pricing at read and quotations at write, which is exactly the person this
+ * route is for — they may turn an approved price into a quote without ever seeing the cost
+ * behind it.
+ */
+router.post('/pricings/:id/quotation', requireModule('quotations', 'write'), validate(pricingQuoteSchema), quoteFromPricing);
+/** The reverse view: what this sheet was quoted at, and how often. */
+router.get('/pricings/:id/quotations', requireModule('pricing'), pricingQuotations);
+
 // Quotations [§10]
 router.get('/quotations', requireModule('quotations'), listQuotations);
 router.post('/quotations', requireModule('quotations', 'write'), validate(quotationSchema), createQuotation);
 router.get('/quotations/:id', requireModule('quotations'), getQuotation);
+/** The document the customer receives, rendered from the record on demand. */
+router.get('/quotations/:id/pdf', requireModule('quotations'), quotationPdf);
 router.patch('/quotations/:id', requireModule('quotations', 'write'), validate(quotationUpdateSchema), updateQuotation);
 /** A new price keeps the old one [§10]. */
 router.post('/quotations/:id/revisions', requireModule('quotations', 'write'), validate(quotationRevisionSchema), reviseQuotation);

@@ -18,6 +18,8 @@ export const pricingSchema = z.object({
   quantity: z.number().positive('A costing needs the quantity it is for'),
   material: z.enum(MATERIALS).optional(),
   targetPrice: money.optional(),
+  /** Left out, and the product master's MOQ is copied in [§8]. */
+  moq: money.optional(),
   remarks: z.string().optional(),
 });
 
@@ -48,6 +50,8 @@ export const pricingCostSchema = z
     targetMargin: z.number().min(0).max(100).optional(),
     approvedSellingPrice: money.optional(),
     minimumSellingPrice: money.optional(),
+    /** Agreed with the price, so it is settled on the same sheet rather than a step later. */
+    moq: money.optional(),
     remarks: z.string().optional(),
   })
   .extend(versioned);
@@ -55,6 +59,30 @@ export const pricingCostSchema = z
 export const pricingDecisionSchema = z.object({
   approve: z.boolean(),
   note: z.string().optional(),
+});
+
+/**
+ * Raising a quotation off a costing.
+ *
+ * Everything is optional because the costing already knows it: the customer, the enquiry, the
+ * model and the price it approved. What is left is the quantity — defaulted to the MOQ, since
+ * that is the quantity the price is good for — and the commercial terms, which belong to the
+ * conversation rather than to the sheet.
+ *
+ * `unitPrice` is accepted but is not free: §9's floor is checked against the costing before
+ * anything is sent, so quoting under it raises the approval rather than slipping past it.
+ */
+export const pricingQuoteSchema = z.object({
+  quantity: z.number().positive().optional(),
+  unitPrice: money.optional(),
+  gstPercent: z.number().min(0).max(100).optional(),
+  isExport: z.boolean().optional(),
+  paymentTerms: z.string().optional(),
+  deliveryTerms: z.string().optional(),
+  freightTerms: z.enum(FREIGHT_TERMS).optional(),
+  packing: z.string().optional(),
+  validUntil: z.coerce.date().optional(),
+  remarks: z.string().optional(),
 });
 
 /* --------------------------------- Quotations --------------------------------- */

@@ -71,6 +71,21 @@ const pricingSchema = new mongoose.Schema(
     quantity: { type: Number, min: 0, required: true },
     material: { type: String, enum: MATERIALS },
 
+    /**
+     * The smallest order this price survives at [§8].
+     *
+     * Not the same thing as `quantity`, and the difference is the whole reason it is stored.
+     * `quantity` is what this costing was built for; `moq` is the floor the price holds down
+     * to. A rate costed at 40,000 pieces does not hold at 500 — the mould setup and the
+     * printing plate are the same money either way — so a quote raised off this sheet starts
+     * at the MOQ rather than at whatever the enquiry happened to ask for.
+     *
+     * Defaulted from the product master at request time and then left alone: the master's MOQ
+     * is the standard, and a costing may well agree a different one for a particular buyer.
+     * §8 names it as a figure marketing sees, so it is public on the sheet.
+     */
+    moq: { type: Number, min: 0, default: 0 },
+
     cost: { type: costSchema, default: () => ({}) },
 
     /** Percent. The margin the plant wants on this job, before any negotiation. */

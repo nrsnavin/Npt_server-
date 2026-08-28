@@ -10,6 +10,7 @@ import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { EVENTS, publish } from '../services/events.service.js';
 import { narrowToOwner, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
+import { renderQuotationPdf } from '../services/quotationPdf.js';
 
 /**
  * Quotations [BLUEPRINT §10], and the price gate in front of them [§9].
@@ -128,25 +129,33 @@ export const getQuotation = asyncHandler(async (req, res) => {
   res.json({ success: true, data: quotation });
 });
 
-export const createQuotation = asyncHandler(async (req, res) => {
-  const enquiry = req.body.enquiry ? await Enquiry.findById(req.body.enquiry) : null;
-  if (req.body.enquiry && !enquiry) throw ApiError.badRequest('That enquiry does not exist');
+/**
+ * Builds and saves a quotation, whoever asked for it.
+ *
+ * Shared by the two doors into this module — marketing writing one from scratch, and a costing
+ * being turned into a quote — because the interesting parts are the same either way: the
+ * customer has to resolve, the owner has to be settled, and Rev 0 has to exist. A second copy
+ * of that for the pricing route is a second place for the revision history to start wrong.
+ */
+export async function newQuotation(fields, user) {
+  const enquiry = fields.enquiry ? await Enquiry.findById(fields.enquiry) : null;
+  if (fields.enquiry && !enquiry) throw ApiError.badRequest('That enquiry does not exist');
 
-  const customerId = req.body.customer || enquiry?.customer;
+  const customerId = fields.customer || enquiry?.customer;
   if (!customerId) throw ApiError.badRequest('A quotation needs the customer it is for');
 
   const customer = await Customer.findById(customerId);
   if (!customer) throw ApiError.badRequest('That customer does not exist');
-  if (!ownsRecord(req.user, customer)) {
+  if (!ownsRecord(user, customer)) {
     throw ApiError.forbidden('That customer belongs to another marketing person');
   }
 
   const quotation = new Quotation({
-    ...req.body,
+    ...fields,
     customer: customerId,
-    assignedTo: req.body.assignedTo || customer.assignedTo || req.user._id,
+    assignedTo: fields.assignedTo || customer.assignedTo || user._id,
     number: await nextNumber('QTN'),
-    statusHistory: [{ to: 'draft', by: req.user._id }],
+    statusHistory: [{ to: 'draft', by: user._id }],
   });
 
   /*
@@ -165,13 +174,18 @@ export const createQuotation = asyncHandler(async (req, res) => {
       freightTerms: quotation.freightTerms,
       packing: quotation.packing,
       remarks: quotation.remarks,
-      by: req.user._id,
+      by: user._id,
     },
   ];
 
   await quotation.save();
-  publish(EVENTS.QUOTATION_CREATED, { quotation, by: req.user });
+  publish(EVENTS.QUOTATION_CREATED, { quotation, by: user });
 
+  return quotation;
+}
+
+export const createQuotation = asyncHandler(async (req, res) => {
+  const quotation = await newQuotation(req.body, req.user);
   res.status(201).json({ success: true, data: quotation });
 });
 
@@ -326,4 +340,34 @@ export const respondToQuotation = asyncHandler(async (req, res) => {
   });
 
   res.json({ success: true, data: quotation });
+});
+
+/**
+ * The quotation as a document [§10].
+ *
+ * Rendered on demand from the record rather than stored: a quotation's price changes with
+ * every revision, and a stored file is a copy that stops agreeing with the thing it came from.
+ * The customer and product are populated here beyond the list's needs because a document is
+ * not a row — it carries the buyer's address and the model's description.
+ *
+ * `inline` so a browser shows it rather than dropping it in the downloads folder; the filename
+ * is still set, so "save as" produces something recognisable rather than `123abc.pdf`.
+ */
+export const quotationPdf = asyncHandler(async (req, res) => {
+  const quotation = await Quotation.findById(req.params.id)
+    .populate('customer', 'code name address city state gstin mobile email')
+    .populate('enquiry', 'number')
+    .populate('assignedTo', 'name')
+    .populate('product', 'modelCode name sizeMm material')
+    .populate('pricing', 'moq');
+
+  if (!quotation) throw ApiError.notFound('Quotation not found');
+  if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
+
+  const pdf = await renderQuotationPdf(quotation);
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Length', pdf.length);
+  res.setHeader('Content-Disposition', `inline; filename="${quotation.number}.pdf"`);
+  res.send(pdf);
 });
