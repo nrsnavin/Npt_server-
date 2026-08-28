@@ -443,7 +443,8 @@ test('the stage machine records history and refuses to move a closed enquiry', a
     token: nandhini,
     body: { status: 'negotiation', ...followUp },
   });
-  assert.equal(reopen.status, 400, 'a lost enquiry cannot be moved again');
+  assert.equal(reopen.status, 400, 'a closed enquiry does not drift back open');
+  assert.match(reopen.json.message, /reopen/i, 'and the refusal says what would allow it');
 });
 
 test('sample and pricing stages publish the hooks phases 2 and 3 will subscribe to', async () => {

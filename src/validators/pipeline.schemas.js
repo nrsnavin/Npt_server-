@@ -194,6 +194,9 @@ export const enquiryUpdateSchema = z
 /** One conversation, several models — each becomes its own enquiry under a group. */
 export const enquiryGroupSchema = z.object({
   customer: objectId,
+  // Named here as it is on the single create, or an administrator raising three models for a
+  // colleague silently got three enquiries assigned to somebody else.
+  assignedTo: objectId.optional(),
   shared: z
     .object({
       requiredDeliveryDate: z.coerce.date().optional(),
@@ -208,6 +211,9 @@ export const enquiryGroupSchema = z.object({
 
 export const enquiryStatusSchema = z.object({
   status: z.enum(ENQUIRY_STATUSES),
+  /* Asked for at the moment it is known, because winning without it drops the enquiry out of
+     the one figure the weekly review exists for [§38]. */
+  estimatedValue: z.number().nonnegative().optional(),
   note: z.string().optional(),
   lostReason: z.enum(LOST_REASONS).optional(),
   lostNote: z.string().optional(),

@@ -4,6 +4,7 @@ import {
   listCustomers, getCustomer, createCustomer, updateCustomer, checkDuplicateCustomer,
   listLeads, getLead, createLead, updateLead, addLeadActivity, convertLead,
   suggestLeadNextStep, leadLogAnalytics, leadFollowUps, leadScoreboard, leadsOverview, leadOwners,
+  enquiryOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, promoteToProduct, enquiryPipeline,
   exportCustomers,
@@ -106,6 +107,8 @@ router.post('/:collection/:id/documents', authenticate, singleDocument('file'), 
 router.delete('/:collection/:id/documents/:documentId', authenticate, removeDocument);
 
 router.get('/enquiries/pipeline', requireModule('enquiries'), enquiryPipeline);
+// Who holds enquiries, for the owner filter. Scoped, like its lead counterpart.
+router.get('/enquiries/owners', requireModule('enquiries'), enquiryOwners);
 // Marketing's own dashboard [§21]. On the enquiries grant, since that is the module it is
 // mostly built from; ownership then decides whose figures it shows.
 router.get('/dashboard/marketing', requireModule('enquiries'), marketingDashboard);

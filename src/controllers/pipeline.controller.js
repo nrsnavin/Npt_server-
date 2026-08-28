@@ -8,7 +8,7 @@ import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
-import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
+import { narrowToOwner, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { assertAssignable, ownerForNewLead } from '../services/assignment.service.js';
 import { EVENTS, publish, statusEvent } from '../services/events.service.js';
 import { normalisePhone } from '../utils/phone.js';
@@ -44,31 +44,9 @@ function leadFilters(req, { withStatus = true } = {}) {
   const scope = ownershipFilter(req.user);
   const filter = { ...scope };
 
-  /*
-   * Narrowing to one marketing person's leads.
-   *
-   * It may only ever narrow. Ownership has already pinned `assignedTo` for a marketing
-   * person, and assigning over it would have handed anyone their colleague's book by typing
-   * a different id into the address bar — the exact rule §29 exists to enforce, undone by a
-   * filter meant for their manager. So where the two disagree, the answer is nothing.
-   */
-  if (req.query.assignedTo) {
-    const asked = String(req.query.assignedTo);
-    if (!mongoose.isValidObjectId(asked)) throw ApiError.badRequest('That is not a colleague');
-
-    filter.assignedTo =
-      scope.assignedTo && String(scope.assignedTo) !== asked
-        ? { $in: [] }
-        : /*
-           * Cast here rather than left as the string off the query.
-           *
-           * `find` casts a string to an ObjectId for you and `aggregate` does not — so the
-           * same filter object narrowed the rows correctly and matched nothing at all in the
-           * stage tally beside them. Every stage read empty while the list underneath showed
-           * leads, which is the kind of disagreement a reader blames on the figures.
-           */
-          mongoose.Types.ObjectId.createFromHexString(asked);
-  }
+  // Narrowing to one marketing person's leads, which may only ever narrow — see the service.
+  const owner = narrowToOwner(scope, req.query.assignedTo);
+  if (owner !== undefined) filter.assignedTo = owner;
 
   /*
    * The stage tally is the one caller that wants every other filter and not this one — it has
@@ -317,16 +295,13 @@ export const exportLeads = asyncHandler(async (req, res) => {
 });
 
 export const exportEnquiries = asyncHandler(async (req, res) => {
-  const { sort, filter } = listParams(req.query, {
-    searchFields: ['number', 'requirement.modelNumber', 'remarks'],
+  const { sort } = listParams(req.query, {
+    searchFields: ENQUIRY_SEARCH_FIELDS,
     defaultSort: '-enquiryDate',
   });
 
-  Object.assign(filter, ownershipFilter(req.user));
-  if (req.query.customer) filter.customer = req.query.customer;
-  if (req.query.status) filter.status = { $in: String(req.query.status).split(',') };
-  if (req.query.open === 'true') filter.status = { $nin: CLOSED_STATUSES };
-  if (req.query.dueBy) filter.nextFollowUpDate = { $lte: new Date(req.query.dueBy) };
+  // The same filter the screen used, so the file is what was on it.
+  const filter = await enquiryFilters(req);
 
   const rows = await Enquiry.find(filter)
     .populate('customer', 'code name')
@@ -726,8 +701,8 @@ export const leadFollowUps = asyncHandler(async (req, res) => {
  * and the screen simply does not draw it. No role check in the client, and no way to learn a
  * colleague's id from a screen that is not allowed to show their records.
  */
-export const leadOwners = asyncHandler(async (req, res) => {
-  const rows = await Lead.aggregate([
+async function ownersOf(Model, req, res) {
+  const rows = await Model.aggregate([
     { $match: ownershipFilter(req.user) },
     { $group: { _id: '$assignedTo', leads: { $sum: 1 } } },
   ]);
@@ -749,7 +724,12 @@ export const leadOwners = asyncHandler(async (req, res) => {
     // Said rather than left to be inferred from a total that does not add up.
     unassigned: counts.get('null') || counts.get('undefined') || 0,
   });
-});
+}
+
+export const leadOwners = asyncHandler((req, res) => ownersOf(Lead, req, res));
+
+/** The same question about enquiries, answered by the same rule — see `ownersOf`. */
+export const enquiryOwners = asyncHandler((req, res) => ownersOf(Enquiry, req, res));
 
 export const leadsOverview = asyncHandler(async (req, res) => {
   const scope = ownershipFilter(req.user);
@@ -893,6 +873,27 @@ function assertNextAction(enquiry) {
 }
 
 /**
+ * A follow-up date somebody is setting now may not already be in the past.
+ *
+ * Checked against what the request supplies rather than what the record holds, and that
+ * distinction is the whole of it: an enquiry whose follow-up fell due last Tuesday is
+ * *correctly* overdue, and refusing to save an edit to its remarks because of that would make
+ * the overdue list unusable. What is refused is *setting* a date that is already gone — a
+ * reminder born overdue, which lands in the morning list looking like neglect on the day it
+ * was created.
+ */
+function assertFutureFollowUp(value) {
+  if (value === undefined || value === null || value === '') return;
+
+  const due = new Date(value);
+  if (Number.isNaN(due.getTime())) return; // The schema has its own opinion about shape.
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (due < today) throw ApiError.badRequest('A follow-up date cannot be in the past');
+}
+
+/**
  * Everything about a proposed enquiry that can be judged before anything is written.
  *
  * Separated from creation so a caller that writes other records first — lead conversion
@@ -917,6 +918,7 @@ async function assertEnquiryValid(input) {
   ) {
     throw ApiError.badRequest('An open enquiry needs a next action and a follow-up date');
   }
+  assertFutureFollowUp(input.nextFollowUpDate);
   if (product) {
     const exists = await Product.findById(product);
     if (!exists) throw ApiError.badRequest('That model is not in the catalogue');
@@ -941,25 +943,94 @@ async function createEnquiryRecord(input, user) {
   return enquiry;
 }
 
-export const listEnquiries = asyncHandler(async (req, res) => {
-  const { page, limit, sort, filter } = listParams(req.query, {
-    searchFields: ['number', 'requirement.modelNumber', 'remarks'],
+/** The fields an enquiry search looks at on the enquiry itself. */
+const ENQUIRY_SEARCH_FIELDS = ['number', 'requirement.modelNumber', 'remarks'];
+
+/**
+ * The filters an enquiry list understands, in one place — the list, the tally and the export.
+ *
+ * `withStatus` is off for the stage tally, which has to say how many each stage *would* show:
+ * narrowed to the stage already chosen it would read "Negotiation 7" beside a row of zeroes,
+ * and there would be no way back to the others.
+ */
+async function enquiryFilters(req, { withStatus = true } = {}) {
+  const { filter } = listParams(req.query, {
+    searchFields: ENQUIRY_SEARCH_FIELDS,
     defaultSort: '-enquiryDate',
   });
 
-  Object.assign(filter, ownershipFilter(req.user));
+  const scope = ownershipFilter(req.user);
+  Object.assign(filter, scope);
+
+  const owner = narrowToOwner(scope, req.query.assignedTo);
+  if (owner !== undefined) filter.assignedTo = owner;
+
+  /*
+   * Searching by the customer's name, which is how people actually look for an enquiry.
+   *
+   * Nobody remembers ENQ-2026-0042. They remember Sri Kumaran Knits, and the box searched the
+   * number, the model and the remarks — every field except the one thing the reader knows —
+   * so the honest answer to a real search was "no enquiries here" for a customer with nine.
+   *
+   * Two queries rather than a join: the name lives on the customer, and denormalising it onto
+   * every enquiry would be a second copy to keep true.
+   */
+  if (req.query.search && filter.$or) {
+    const escaped = String(req.query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const named = new RegExp(escaped, 'i');
+    const customers = await Customer.find({
+      ...ownershipFilter(req.user),
+      $or: [{ name: named }, { code: named }],
+    }).select('_id');
+
+    if (customers.length) filter.$or.push({ customer: { $in: customers.map((row) => row._id) } });
+  }
+
   if (req.query.customer) filter.customer = req.query.customer;
-  if (req.query.status) filter.status = { $in: String(req.query.status).split(',') };
-  if (req.query.open === 'true') filter.status = { $nin: CLOSED_STATUSES };
   if (req.query.groupRef) filter.groupRef = req.query.groupRef;
+
+  if (withStatus) {
+    /*
+     * A chosen stage wins over the open-only view rather than being overwritten by it.
+     *
+     * The two were applied in order, so `?status=new&open=true` became "everything open" — and
+     * the Open view is the default. Picking a stage off the strip therefore did nothing at all
+     * unless you had first switched to All: the tile said New 1, the table showed the seven
+     * open ones, and the only signal that the click had missed was a count that did not match.
+     */
+    if (req.query.status) filter.status = { $in: String(req.query.status).split(',') };
+    else if (req.query.open === 'true') filter.status = { $nin: CLOSED_STATUSES };
+  }
 
   // The follow-up list marketing works from each morning [§37].
   if (req.query.dueBy) {
     filter.nextFollowUpDate = { $lte: new Date(req.query.dueBy) };
-    filter.status = filter.status || { $nin: CLOSED_STATUSES };
+    // Chasing a won enquiry is not a follow-up; without this the due list carries the closed.
+    if (!filter.status) filter.status = { $nin: CLOSED_STATUSES };
   }
 
-  const [data, total] = await Promise.all([
+  return filter;
+}
+
+export const listEnquiries = asyncHandler(async (req, res) => {
+  const { page, limit, sort } = listParams(req.query, {
+    searchFields: ENQUIRY_SEARCH_FIELDS,
+    defaultSort: '-enquiryDate',
+  });
+
+  const filter = await enquiryFilters(req);
+
+  /*
+   * The stage tally travels with the rows.
+   *
+   * The funnel above this table used to come from its own endpoint, fetched once when the
+   * screen mounted: it counted the whole book while the table showed one customer, never
+   * moved when a filter did, and still showed yesterday's figures after an enquiry was
+   * raised. A count that disagrees with the list beneath it is read as the list being wrong.
+   */
+  const tallyFilter = await enquiryFilters(req, { withStatus: false });
+
+  const [data, total, stages] = await Promise.all([
     Enquiry.find(filter)
       .populate('customer', 'code name')
       .populate('assignedTo', 'name')
@@ -968,9 +1039,23 @@ export const listEnquiries = asyncHandler(async (req, res) => {
       .skip((page - 1) * limit)
       .limit(limit),
     Enquiry.countDocuments(filter),
+    Enquiry.aggregate([
+      { $match: tallyFilter },
+      {
+        $group: {
+          _id: '$status',
+          leads: { $sum: 1 },
+          value: { $sum: { $ifNull: ['$estimatedValue', 0] } },
+        },
+      },
+    ]),
   ]);
 
-  paginated(res, data, { page, limit, total });
+  const stageCounts = Object.fromEntries(
+    stages.map((row) => [row._id, { leads: row.leads, value: row.value || 0 }])
+  );
+
+  paginated(res, data, { page, limit, total }, { stageCounts });
 });
 
 export const getEnquiry = asyncHandler(async (req, res) => {
@@ -1011,12 +1096,22 @@ export const createEnquiryGroup = asyncHandler(async (req, res) => {
     throw ApiError.forbidden('That customer belongs to another marketing person');
   }
 
-  // Every model is judged first: a group that stops half way is worse than one refused.
+  /*
+   * Every model is judged first: a group that stops half way is worse than one refused.
+   *
+   * The owner follows the same rule the single create does. It used to be pinned to the
+   * customer's owner regardless, so an administrator raising three models for a colleague got
+   * three enquiries assigned to somebody else — the same request answered two different ways
+   * depending on how many models were on it.
+   */
+  const assignedTo = req.body.assignedTo || customer.assignedTo;
+  if (req.body.assignedTo) await assertReassignment(customer.assignedTo, req.body.assignedTo, req.user);
+
   const items = req.body.enquiries.map((item) => ({
     ...req.body.shared,
     ...item,
     customer: customer._id,
-    assignedTo: customer.assignedTo,
+    assignedTo,
   }));
   for (const item of items) await assertEnquiryValid(item);
 
@@ -1039,6 +1134,7 @@ export const updateEnquiry = asyncHandler(async (req, res) => {
   }
 
   await assertReassignment(enquiry.assignedTo, req.body.assignedTo, req.user);
+  assertFutureFollowUp(req.body.nextFollowUpDate);
 
   expectVersion(enquiry, req.body);
   const before = snapshot(enquiry);
@@ -1062,15 +1158,56 @@ export const setEnquiryStatus = asyncHandler(async (req, res) => {
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
 
-  const { status, note, lostReason, lostNote, holdReason, nextAction, nextFollowUpDate } = req.body;
+  const {
+    status, note, lostReason, lostNote, holdReason, nextAction, nextFollowUpDate, estimatedValue,
+  } = req.body;
 
   if (status === enquiry.status) throw ApiError.badRequest(`Already at ${status}`);
-  if (CLOSED_STATUSES.includes(enquiry.status)) {
-    throw ApiError.badRequest(`A ${enquiry.status} enquiry cannot be moved again`);
+
+  /*
+   * Reopening a closed enquiry, which used to be impossible.
+   *
+   * A lost enquiry the buyer revives, or one marked won by mistake, could only be re-keyed as
+   * a new record — which contradicts §41.4 and throws away the history that explains why it
+   * was lost in the first place. The reason it was refused was sound: a closed enquiry must
+   * not drift back open by accident, and the figures behind a weekly review must not move
+   * quietly under whoever read them.
+   *
+   * So it reopens deliberately or not at all: only to an open stage, and only with a note
+   * saying why. The note is the part that matters — it lands in the history beside the close
+   * it undoes, so the record explains itself to whoever reads it next.
+   */
+  const reopening = CLOSED_STATUSES.includes(enquiry.status);
+  if (reopening) {
+    if (CLOSED_STATUSES.includes(status)) {
+      throw ApiError.badRequest(`A ${enquiry.status} enquiry cannot be closed again`);
+    }
+    if (!note?.trim()) {
+      throw ApiError.badRequest('Say why this is being reopened — it goes into the history');
+    }
   }
+
   if (status === 'lost' && !lostReason) {
     throw ApiError.badRequest('Give a reason when marking an enquiry lost');
   }
+  /*
+   * Parking an enquiry needs a reason for the same argument losing one does, and it is the
+   * more dangerous of the two: a lost enquiry is finished, and one on hold with no reason is
+   * simply invisible — nobody knows what would have to change for it to move again.
+   */
+  if (status === 'hold' && !holdReason?.trim()) {
+    throw ApiError.badRequest('Say what this enquiry is waiting on');
+  }
+  /*
+   * Winning without a value silently drops the enquiry out of the one figure the weekly
+   * review is for [§38] — and it is the moment the number is actually known, which is why it
+   * is asked for here rather than left to be filled in later by nobody.
+   */
+  if (status === 'won' && !(estimatedValue ?? enquiry.estimatedValue)) {
+    throw ApiError.badRequest('Put the confirmed value on it before marking it won');
+  }
+
+  assertFutureFollowUp(nextFollowUpDate);
 
   const from = enquiry.status;
   enquiry.status = status;
@@ -1081,6 +1218,17 @@ export const setEnquiryStatus = asyncHandler(async (req, res) => {
     enquiry.lostNote = lostNote;
   }
   if (status === 'hold') enquiry.holdReason = holdReason;
+  if (estimatedValue !== undefined) enquiry.estimatedValue = estimatedValue;
+
+  /*
+   * Reopening clears what closed it. Left in place, a revived enquiry still reads "lost —
+   * price" on every screen that shows the reason, which is a record contradicting itself.
+   */
+  if (reopening) {
+    enquiry.lostReason = undefined;
+    enquiry.lostNote = undefined;
+  }
+  if (status !== 'hold') enquiry.holdReason = undefined;
 
   if (nextAction !== undefined) enquiry.nextAction = nextAction;
   if (nextFollowUpDate !== undefined) enquiry.nextFollowUpDate = nextFollowUpDate;

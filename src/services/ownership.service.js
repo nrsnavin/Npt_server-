@@ -1,3 +1,5 @@
+import mongoose from 'mongoose';
+import ApiError from '../utils/ApiError.js';
 import { findDepartment } from '../config/modules.js';
 
 /**
@@ -34,6 +36,32 @@ const ownerId = (value) => (value && value._id ? String(value._id) : String(valu
 export const ownsRecord = (user, record, field = 'assignedTo') => {
   if (!isOwnershipScoped(user)) return true;
   return ownerId(record?.[field]) === ownerId(user._id);
+};
+
+/**
+ * Narrowing a list to one colleague's records, which may only ever narrow.
+ *
+ * Ownership has already pinned the owner for a marketing person. A filter that assigned over
+ * that would hand anyone their colleague's book by typing a different id into the address bar
+ * — the exact rule this file exists to enforce, undone by a control meant for their manager.
+ * So where the two disagree, the answer is nothing rather than somebody else's records.
+ *
+ * Cast rather than left as the string off the query: `find` casts for you and `aggregate` does
+ * not, so the same filter object narrowed a list correctly and matched nothing at all in the
+ * tally beside it.
+ *
+ * Lives here rather than in whichever controller wanted it first, because leads and enquiries
+ * must not answer this differently — a rule enforced on one list and not the other is a gap
+ * with a witness.
+ */
+export const narrowToOwner = (scope, requested) => {
+  if (!requested) return undefined;
+  const asked = String(requested);
+  if (!mongoose.isValidObjectId(asked)) throw ApiError.badRequest('That is not a colleague');
+
+  return scope.assignedTo && String(scope.assignedTo) !== asked
+    ? { $in: [] }
+    : mongoose.Types.ObjectId.createFromHexString(asked);
 };
 
 /** Explains the rule for a department, for the profile screen and the docs. */
