@@ -362,3 +362,91 @@ test('reading the actions needs only read, doing one needs write', async () => {
   const write = await act(enquiry._id, { action: 'raise_sample' }, bench);
   assert.equal(write.status, 403, 'but may not do it');
 });
+
+/* --------------------------- The funnel runs one way --------------------------- */
+
+const setStage = (id, body, token = nandhini) =>
+  api(`/api/enquiries/${id}/status`, { method: 'POST', token, body });
+
+test('an enquiry cannot be dragged back down the funnel', async () => {
+  const enquiry = await raise();
+  const moved = await setStage(enquiry._id, { status: 'negotiation', ...followUp });
+  assert.equal(moved.status, 200, moved.json.message);
+
+  const back = await setStage(enquiry._id, { status: 'sample_required', ...followUp });
+  assert.equal(back.status, 400);
+  assert.match(back.json.message, /already reached Negotiation/i);
+  assert.match(back.json.message, /cannot go back to Sample required/i);
+  // And it says what to do instead, or the rule is just a wall.
+  assert.match(back.json.message, /hold|lost/i);
+});
+
+test('it may still skip forward — not every job needs a sample', async () => {
+  const enquiry = await raise();
+  const jumped = await setStage(enquiry._id, { status: 'quote_submitted', ...followUp });
+  assert.equal(jumped.status, 200, jumped.json.message);
+});
+
+test('lost and hold stay reachable from anywhere', async () => {
+  const parked = await raise();
+  await setStage(parked._id, { status: 'po_expected', ...followUp });
+  const held = await setStage(parked._id, { status: 'hold', holdReason: 'Buyer travelling' });
+  assert.equal(held.status, 200, held.json.message);
+
+  const dying = await raise();
+  await setStage(dying._id, { status: 'negotiation', ...followUp });
+  const lost = await setStage(dying._id, { status: 'lost', lostReason: 'price' });
+  assert.equal(lost.status, 200, lost.json.message);
+});
+
+test('coming off hold resumes where it was parked, and no earlier', async () => {
+  const enquiry = await raise();
+  await setStage(enquiry._id, { status: 'negotiation', ...followUp });
+  await setStage(enquiry._id, { status: 'hold', holdReason: 'Buyer travelling' });
+
+  // `hold` is not a rung, so the floor has to come from the history rather than the status.
+  const back = await setStage(enquiry._id, { status: 'pricing_required', ...followUp });
+  assert.equal(back.status, 400);
+  assert.match(back.json.message, /already reached Negotiation/i);
+
+  const resumed = await setStage(enquiry._id, { status: 'negotiation', ...followUp });
+  assert.equal(resumed.status, 200, resumed.json.message);
+});
+
+test('reopening is exempt — it is the one move meant to rewind', async () => {
+  const enquiry = await raise();
+  await setStage(enquiry._id, { status: 'negotiation', ...followUp });
+  await setStage(enquiry._id, { status: 'lost', lostReason: 'price' });
+
+  const reopened = await setStage(enquiry._id, {
+    status: 'requirement_clarification',
+    note: 'Buyer came back with a smaller quantity',
+    ...followUp,
+  });
+  assert.equal(reopened.status, 200, reopened.json.message);
+
+  /*
+   * And the floor resets with it. Without the reopen window the enquiry would still be
+   * measured against `lost`, and a revived enquiry could never be worked again.
+   */
+  const onwards = await setStage(enquiry._id, { status: 'sample_required', ...followUp });
+  assert.equal(onwards.status, 200, onwards.json.message);
+});
+
+test('a backwards action is not offered in the first place', async () => {
+  const enquiry = await raise();
+  await setStage(enquiry._id, { status: 'negotiation', ...followUp });
+
+  const { json } = await api(`/api/enquiries/${enquiry._id}/actions`, { token: nandhini });
+  const keys = json.data.map((row) => row.action);
+
+  assert.ok(!keys.includes('raise_sample'), 'the sample has been and gone');
+  assert.ok(!keys.includes('request_pricing'), 'so has the price');
+  // What is still ahead stays on offer, and so do the two ways out.
+  assert.ok(keys.includes('expect_po'));
+  assert.ok(keys.includes('confirm_order'));
+  assert.ok(keys.includes('mark_lost'));
+  assert.ok(keys.includes('hold'));
+  // A plain follow-up moves no stage at all, so it is never a fall back.
+  assert.ok(keys.includes('follow_up'));
+});

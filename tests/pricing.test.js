@@ -670,3 +670,60 @@ test('the detail keeps §8 for a marketing reader', async () => {
   // The price it may quote is still there, or the screen has nothing to show.
   assert.equal(seen.json.data.approvedSellingPrice, 9);
 });
+
+/* ------------------ Automation advances, it never retreats ------------------ */
+
+test('re-sending a quote during a negotiation does not pull the enquiry back', async () => {
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer, product, source: 'manual',
+      requirement: { modelNumber: 'NH-400', quantity: 20000 },
+      ...followUp,
+    },
+  });
+  const enquiryId = enquiry.json.data._id;
+
+  const made = await api('/api/pricings', {
+    method: 'POST',
+    token: admin,
+    body: { enquiry: enquiryId, customer, quantity: 20000 },
+  });
+  await api(`/api/pricings/${made.json.data._id}/cost`, {
+    method: 'PATCH',
+    token: admin,
+    body: { cost: { gramWeight: 22, rawMaterialRate: 95 }, targetMargin: 20, minimumSellingPrice: 1 },
+  });
+
+  const quote = await api(`/api/pricings/${made.json.data._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quantity: 20000 },
+  });
+
+  // Sending it moves the enquiry to `quote_submitted` — the automation doing its job.
+  await api(`/api/quotations/${quote.json.data._id}/send`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+  let seen = await api(`/api/enquiries/${enquiryId}`, { token: nandhini });
+  assert.equal(seen.json.data.status, 'quote_submitted');
+
+  // The buyer pushes back; marketing moves it on.
+  await api(`/api/enquiries/${enquiryId}/status`, {
+    method: 'POST', token: nandhini, body: { status: 'negotiation', ...followUp },
+  });
+
+  /*
+   * Now the ordinary shape of a negotiation: revise the price and send it again. The event is
+   * the same one that first moved the enquiry forward, and without the guard it would march
+   * the funnel backwards while marketing did exactly the right thing.
+   */
+  await api(`/api/quotations/${quote.json.data._id}/revisions`, {
+    method: 'POST', token: nandhini, body: { unitPrice: 6.9 },
+  });
+  await api(`/api/quotations/${quote.json.data._id}/send`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+
+  seen = await api(`/api/enquiries/${enquiryId}`, { token: nandhini });
+  assert.equal(seen.json.data.status, 'negotiation', 'the enquiry stays where marketing put it');
+});

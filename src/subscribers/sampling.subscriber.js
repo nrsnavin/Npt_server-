@@ -1,4 +1,4 @@
-import Enquiry from '../models/Enquiry.js';
+import Enquiry, { fallsBack } from '../models/Enquiry.js';
 import Sample, { CLOSED_SAMPLE_STATUSES } from '../models/Sample.js';
 import User from '../models/User.js';
 import {
@@ -52,6 +52,17 @@ async function advanceEnquiry(enquiryId, to, note) {
   if (!enquiry || enquiry.status === to) return null;
   // A closed enquiry is finished; a late sample update must not reopen it.
   if (['won', 'lost'].includes(enquiry.status)) return null;
+
+  /*
+   * Automation advances an enquiry; it never retreats one.
+   *
+   * A second sample raised late in a negotiation would otherwise pull the enquiry back to
+   * `sample_required`, losing the fact that the quote had already gone out.
+   *
+   * Silently, because there is nothing wrong here for anybody to fix — the enquiry is simply
+   * further on than this event knows about, and the event is late rather than incorrect.
+   */
+  if (fallsBack(enquiry, to)) return null;
 
   const from = enquiry.status;
   enquiry.status = to;

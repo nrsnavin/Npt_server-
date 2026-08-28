@@ -29,6 +29,98 @@ export const ENQUIRY_STATUSES = [
 /** Statuses that end the enquiry. Everything else needs a next action. */
 export const CLOSED_STATUSES = ['won', 'lost'];
 
+/**
+ * The stages an enquiry works *through*, in order — the ladder it climbs.
+ *
+ * `lost` and `hold` are deliberately absent. Neither is a rung: an enquiry can be lost from
+ * anywhere and parked from anywhere, and coming off a park resumes wherever it was. Ranking
+ * them alongside the working stages would invent an order the business does not have.
+ */
+export const ENQUIRY_STAGE_ORDER = [
+  'new',
+  'requirement_clarification',
+  'sample_required',
+  'sample_feedback_pending',
+  'pricing_required',
+  'quote_submitted',
+  'negotiation',
+  'customer_decision_pending',
+  'po_expected',
+  'won',
+];
+
+/** Where a status sits on the ladder, or -1 for the ones that are not on it. */
+export const stageRank = (status) => ENQUIRY_STAGE_ORDER.indexOf(status);
+
+/**
+ * What to call a stage in a sentence a person reads.
+ *
+ * Spelled out rather than derived, because deriving them produces "Po expected" and a refusal
+ * that reads like a machine wrote it is one people forward to somebody else instead of acting
+ * on. Only the stages that appear in messages need an entry; anything missing falls back to
+ * its own code, which is ugly but never wrong.
+ */
+const STAGE_LABELS = {
+  new: 'New',
+  requirement_clarification: 'Clarifying requirement',
+  sample_required: 'Sample required',
+  sample_feedback_pending: 'Sample feedback',
+  pricing_required: 'Pricing required',
+  quote_submitted: 'Quote submitted',
+  negotiation: 'Negotiation',
+  customer_decision_pending: 'Awaiting decision',
+  po_expected: 'PO expected',
+  won: 'Won',
+  lost: 'Lost',
+  hold: 'On hold',
+};
+
+export const stageLabel = (status) => STAGE_LABELS[status] || status;
+
+/**
+ * The furthest this enquiry has climbed, which is the floor it may not drop below.
+ *
+ * Measured over the history rather than off the current status, because `hold` is not on the
+ * ladder. An enquiry parked during negotiation has to come back to negotiation or later, and
+ * its current status alone — `hold`, rank -1 — cannot say that.
+ *
+ * Only what has happened since it was last reopened counts. Reopening a closed enquiry is a
+ * deliberate rewind, which is the entire point of it, so the stages before that reopen stop
+ * being a floor. Without the window a revived enquiry would be pinned at `won` forever and
+ * could never be worked again.
+ */
+export function furthestStage(enquiry) {
+  const history = enquiry.statusHistory || [];
+
+  let since = 0;
+  history.forEach((entry, index) => {
+    if (CLOSED_STATUSES.includes(entry.from)) since = index;
+  });
+
+  return history
+    .slice(since)
+    .reduce((furthest, entry) => Math.max(furthest, stageRank(entry.to)), stageRank(enquiry.status));
+}
+
+/**
+ * True when moving to `to` would drag the enquiry back down the funnel.
+ *
+ * A stage that has been passed is a fact about the job — the sample went out, the price was
+ * asked for, the quote was sent — and none of that un-happens because somebody picked the
+ * wrong row or an automation fired late. An enquiry that slides backwards also lies to every
+ * figure built on the funnel: the same job is counted twice at the same stage, and the ageing
+ * report resets its clock.
+ *
+ * Off-ladder destinations are never a fall back. An enquiry deep in negotiation must still be
+ * parkable and losable, and refusing that would be a worse rule than the one it enforces —
+ * people would simply stop recording the truth.
+ */
+export function fallsBack(enquiry, to) {
+  const target = stageRank(to);
+  if (target === -1) return false;
+  return target < furthestStage(enquiry);
+}
+
 export const LOST_REASONS = [
   'price',
   'lead_time',

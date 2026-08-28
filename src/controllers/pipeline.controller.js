@@ -2,7 +2,9 @@ import mongoose from 'mongoose';
 import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
-import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
+import Enquiry, {
+  CLOSED_STATUSES, ENQUIRY_STAGE_ORDER, fallsBack, furthestStage, stageLabel,
+} from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
@@ -1192,6 +1194,30 @@ async function moveEnquiry(enquiry, body, user) {
     }
   }
 
+  /*
+   * An enquiry does not go backwards [§3].
+   *
+   * The stages it has passed are facts about the job — the sample went out, the price was
+   * asked for, the quote was sent — and none of them un-happen because somebody picked the
+   * wrong row from a dropdown. Left open, a funnel that slides backwards lies to every figure
+   * built on it: the same job is counted twice at the same stage, and its ageing clock resets
+   * each time it slips.
+   *
+   * Reopening is exempt, and deliberately so: it is the one move whose whole purpose is to
+   * rewind, and it already costs a note explaining why.
+   *
+   * The way out of a stalled enquiry is `hold` or `lost`, both of which stay available from
+   * anywhere — a rule with no legitimate escape is one people work around by not recording
+   * the truth at all.
+   */
+  if (!reopening && fallsBack(enquiry, status)) {
+    const reached = ENQUIRY_STAGE_ORDER[furthestStage(enquiry)];
+    throw ApiError.badRequest(
+      `This enquiry has already reached ${stageLabel(reached)}, so it cannot go back to ` +
+        `${stageLabel(status)}. Put it on hold if it has stalled, or mark it lost.`
+    );
+  }
+
   if (status === 'lost' && !lostReason) {
     throw ApiError.badRequest('Give a reason when marking an enquiry lost');
   }
@@ -1351,12 +1377,25 @@ export const listEnquiryActions = asyncHandler(async (req, res) => {
 
   res.json({
     success: true,
-    data: actionsFrom(enquiry.status).map((key) => ({
+    /*
+     * Actions that would drag the enquiry back down the funnel are not offered at all.
+     *
+     * Filtered here rather than inside the catalogue because the rule needs the enquiry's
+     * history, and the catalogue is imported *by* the enquiry model — reaching the other way
+     * would close a circular import for the sake of one predicate.
+     *
+     * The move is refused either way, so offering the button would only be a promise the next
+     * screen breaks, and a button that always fails teaches people to distrust the ones beside
+     * it.
+     */
+    data: actionsFrom(enquiry.status)
+      .filter((key) => !fallsBack(enquiry, ENQUIRY_ACTIONS[key].to))
+      .map((key) => ({
       action: key,
       ...ENQUIRY_ACTIONS[key],
       // Resolved here so the form shows the same date the server would have used.
       defaultFollowUpDate: ENQUIRY_ACTIONS[key].inDays === null ? null : due(ENQUIRY_ACTIONS[key].inDays),
-    })),
+      })),
   });
 });
 

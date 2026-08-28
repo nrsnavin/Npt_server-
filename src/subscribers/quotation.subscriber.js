@@ -1,4 +1,4 @@
-import Enquiry from '../models/Enquiry.js';
+import Enquiry, { fallsBack } from '../models/Enquiry.js';
 import { EVENTS, publish, statusEvent, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
 import { raiseTask, resolveTasks } from '../services/task.service.js';
 
@@ -39,6 +39,18 @@ async function advanceEnquiry(enquiryId, to, note) {
   if (!enquiry || enquiry.status === to) return null;
   // A closed enquiry is finished; a late quotation update must not reopen it.
   if (['won', 'lost'].includes(enquiry.status)) return null;
+
+  /*
+   * Automation advances an enquiry; it never retreats one.
+   *
+   * Revising and re-sending a quote is the ordinary shape of a negotiation, and each send
+   * would otherwise drag the enquiry from `negotiation` back to `quote_submitted` — the funnel
+   * marching backwards on its own while marketing did exactly the right thing.
+   *
+   * Silently, because there is nothing wrong here for anybody to fix — the enquiry is simply
+   * further on than this event knows about, and the event is late rather than incorrect.
+   */
+  if (fallsBack(enquiry, to)) return null;
 
   const from = enquiry.status;
   enquiry.status = to;
