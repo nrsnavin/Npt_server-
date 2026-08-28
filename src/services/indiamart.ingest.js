@@ -117,8 +117,17 @@ export async function ingestOne(row, { now = () => new Date() } = {}) {
   const parsed = normalise(row);
   if (!parsed) return { outcome: 'skipped', why: 'no unique query id on the row' };
 
-  // Seen before — the overlap window re-reads deliberately, so this is the ordinary case.
-  const already = await Lead.findOne({ 'conversation.reference': parsed.reference });
+  /*
+   * Seen before — the overlap window re-reads deliberately, so this is the ordinary case.
+   *
+   * Checked against `sourceRefs` rather than the conversation reference, because an enquiry
+   * that landed on an *existing* lead never becomes that lead's originating reference. Reading
+   * only the latter made every poll re-attach the same enquiry, which at a quarter-hourly
+   * cadence is ninety-odd copies of one activity a day.
+   */
+  const already = await Lead.findOne({
+    $or: [{ sourceRefs: parsed.reference }, { 'conversation.reference': parsed.reference }],
+  });
   if (already) return { outcome: 'duplicate', lead: already };
 
   const activity = {
@@ -142,6 +151,8 @@ export async function ingestOne(row, { now = () => new Date() } = {}) {
   const existing = await openLeadFor(parsed.lead);
   if (existing) {
     existing.activities.push(activity);
+    // Recorded, or the next overlapping window adds this same enquiry all over again.
+    existing.sourceRefs = [...(existing.sourceRefs || []), parsed.reference];
     /* A fresh enquiry is a reason to chase, whatever the follow-up date said before. */
     existing.nextFollowUpDate = now();
     await existing.save();
@@ -182,6 +193,7 @@ export async function ingestOne(row, { now = () => new Date() } = {}) {
         ? [{ type: 'note', summary: `Assigned to ${owner.name} by rotation`, occurredAt: parsed.receivedAt }]
         : []),
     ],
+    sourceRefs: [parsed.reference],
     conversation: { provider: PROVIDER, reference: parsed.reference },
   });
 

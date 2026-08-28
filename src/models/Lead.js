@@ -80,6 +80,17 @@ const leadSchema = new mongoose.Schema(
     nextActionType: { type: String, enum: NEXT_ACTION_TYPES, default: 'call' },
     nextFollowUpDate: Date,
 
+    /**
+     * Every outside enquiry that has landed on this lead.
+     *
+     * `conversation.reference` holds the *originating* one — the enquiry that created the lead,
+     * which is what §41.6 asks for. This is the full set, and it exists because the two are not
+     * the same once a second enquiry arrives from a buyer we are already working: that one is
+     * added as an activity, and without recording its id nothing downstream can tell it has
+     * been seen. A poller that overlaps its windows then re-adds the same activity every run.
+     */
+    sourceRefs: { type: [String], default: undefined, index: true },
+
     activities: [activitySchema],
     notes: String,
     visitingCardUrl: String,

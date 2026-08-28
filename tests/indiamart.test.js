@@ -330,3 +330,28 @@ test('two enquiries from one buyer in the same window are one lead', async () =>
   const lead = await Lead.findOne();
   assert.match(lead.activities.at(-1).summary, /Wooden Suit Hanger/);
 });
+
+test('an enquiry attached to an existing lead is not attached again', async () => {
+  await reset();
+
+  /*
+   * Found by pulling twice through the UI, which is the only way it shows: the first run looked
+   * perfect. An enquiry that lands on a lead we already have never becomes that lead's
+   * originating reference, so checking only `conversation.reference` reported it unseen on
+   * every subsequent poll — and the poller overlaps its windows on purpose. A quarter-hourly
+   * cadence would have put ninety-odd copies of one activity on the lead by the next morning.
+   */
+  const window = { CODE: 200, RESPONSE: [row(), row({ UNIQUE_QUERY_ID: 'second-from-same-buyer' })] };
+
+  const first = await syncIndiamartLeads({ fetchImpl: stubFetch(window) });
+  assert.equal(first.created, 1);
+  assert.equal(first.attachedToExisting, 1);
+
+  const again = await syncIndiamartLeads({ fetchImpl: stubFetch(window) });
+  assert.equal(again.attachedToExisting, 0, 'the second run must recognise it');
+  assert.equal(again.duplicates, 2);
+
+  const lead = await Lead.findOne();
+  // The enquiry, the rotation note, and the second enquiry. Not a fourth entry, ever.
+  assert.equal(lead.activities.length, 3);
+});
