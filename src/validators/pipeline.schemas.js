@@ -3,6 +3,7 @@ import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from '../models/Product.js';
 import { CUSTOMER_TYPES, RATINGS, CUSTOMER_SOURCES } from '../models/Customer.js';
 import { LEAD_STATUSES, DISQUALIFY_REASONS, NEXT_ACTION_TYPES } from '../models/Lead.js';
 import { ENQUIRY_STATUSES, LOST_REASONS } from '../models/Enquiry.js';
+import { ENQUIRY_ACTION_KEYS } from '../services/enquiryActions.js';
 
 // The one definition, which also accepts a populated reference — see schemas.js.
 import { objectId } from './schemas.js';
@@ -220,6 +221,24 @@ export const enquiryStatusSchema = z.object({
   holdReason: z.string().optional(),
   nextAction: z.string().optional(),
   nextFollowUpDate: clearableDate,
+});
+
+/**
+ * A named action, and only what that action needs.
+ *
+ * The action key is validated against the catalogue rather than an enum written twice: a new
+ * action should be addable in one file, and a list of keys kept in two places is a list that
+ * will disagree with itself.
+ */
+export const enquiryActionSchema = z.object({
+  action: z.enum(ENQUIRY_ACTION_KEYS),
+  note: z.string().optional(),
+  nextAction: z.string().optional(),
+  nextFollowUpDate: clearableDate,
+  estimatedValue: z.number().nonnegative().optional(),
+  lostReason: z.enum(LOST_REASONS).optional(),
+  lostNote: z.string().optional(),
+  holdReason: z.string().optional(),
 });
 
 export const promoteProductSchema = productSchema.partial().required({ modelCode: true, name: true });

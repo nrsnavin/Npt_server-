@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { CUSTOMER_SOURCES } from './Customer.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Product.js';
 import { withConversationRef } from './conversationRef.js';
+import { ENQUIRY_NEXT_ACTION_TYPES } from '../services/enquiryActions.js';
 
 /**
  * The enquiry statuses [BLUEPRINT §3], in the order work moves through them.
@@ -104,6 +105,15 @@ const enquirySchema = new mongoose.Schema(
 
     /** Mandatory while open [§3]: an enquiry may not sit without a defined next step. */
     nextAction: { type: String, trim: true },
+    /**
+     * What kind of next step it is.
+     *
+     * Written by whichever action set it rather than chosen from a list, which is the point:
+     * free text meant "chase sample", "follow up sampling" and "ask bench" were three
+     * different things to every report that tried to group them, and one thing to everybody
+     * in the plant.
+     */
+    nextActionType: { type: String, enum: ENQUIRY_NEXT_ACTION_TYPES },
     nextFollowUpDate: Date,
 
     estimatedValue: { type: Number, min: 0 },

@@ -6,7 +6,7 @@ import {
   suggestLeadNextStep, leadLogAnalytics, leadFollowUps, leadScoreboard, leadsOverview, leadOwners,
   enquiryOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
-  setEnquiryStatus, promoteToProduct, enquiryPipeline,
+  setEnquiryStatus, applyEnquiryAction, listEnquiryActions, promoteToProduct, enquiryPipeline,
   exportCustomers,
   exportLeads,
   exportEnquiries,
@@ -22,7 +22,7 @@ import {
   productSchema, productUpdateSchema,
   customerSchema, customerUpdateSchema,
   leadSchema, leadUpdateSchema, leadActivitySchema, convertLeadSchema,
-  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema,
+  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema,
   promoteProductSchema, bulkReassignSchema,
 } from '../validators/pipeline.schemas.js';
 
@@ -118,6 +118,13 @@ router.post('/enquiries/group', requireModule('enquiries', 'write'), validate(en
 router.get('/enquiries/:id', requireModule('enquiries'), getEnquiry);
 router.patch('/enquiries/:id', requireModule('enquiries', 'write'), validate(enquiryUpdateSchema), updateEnquiry);
 router.post('/enquiries/:id/status', requireModule('enquiries', 'write'), validate(enquiryStatusSchema), setEnquiryStatus);
+/*
+ * The named actions [§C.1]. What a marketing person actually does — raise a sample, ask for a
+ * price, confirm the order — rather than a stage picked out of a dropdown of twelve. Reading
+ * the list is a read; doing one is a write.
+ */
+router.get('/enquiries/:id/actions', requireModule('enquiries'), listEnquiryActions);
+router.post('/enquiries/:id/actions', requireModule('enquiries', 'write'), validate(enquiryActionSchema), applyEnquiryAction);
 router.post(
   '/enquiries/:id/promote-product',
   requireModule('enquiries', 'write'),

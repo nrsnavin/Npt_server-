@@ -11,6 +11,7 @@ import healthRoutes from './routes/health.routes.js';
 import { notFoundHandler, errorHandler } from './middleware/error.js';
 import { registerSamplingSubscribers } from './subscribers/sampling.subscriber.js';
 import { registerPricingSubscribers } from './subscribers/pricing.subscriber.js';
+import { registerOrderSubscribers } from './subscribers/orders.subscriber.js';
 
 const app = express();
 
@@ -67,6 +68,7 @@ app.use('/api', routes);
 // Registered once here rather than inside a module, so the modules stay unaware of each other.
 registerSamplingSubscribers();
 registerPricingSubscribers();
+registerOrderSubscribers();
 
 app.use(notFoundHandler);
 app.use(errorHandler);

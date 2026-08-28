@@ -21,6 +21,7 @@ import { analyse, followUpQueue, leadAnalytics, untouchedLeads } from '../servic
 import { scoreFor, teamScoreboard } from '../services/scoreboard.service.js';
 import { sendCsv } from '../utils/csv.js';
 import { spelledLike } from '../data/places.js';
+import { ENQUIRY_ACTIONS, actionsFrom } from '../services/enquiryActions.js';
 
 /**
  * How many rows an export may take.
@@ -1153,14 +1154,18 @@ export const updateEnquiry = asyncHandler(async (req, res) => {
  * publish an event: sampling raises the request on `sample_required`, and `pricing_required`
  * queues whoever prices a job [§5, §41.8] until the pricing module itself lands in Phase 3.
  */
-export const setEnquiryStatus = asyncHandler(async (req, res) => {
-  const enquiry = await Enquiry.findById(req.params.id);
-  if (!enquiry) throw ApiError.notFound('Enquiry not found');
-  if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
-
+/**
+ * Moving an enquiry, with every guard in one place.
+ *
+ * Two doors reach this: the stage picker, and the named actions. They must not drift — an
+ * action that skipped the won-needs-a-value rule would be a hole with a friendly button on it
+ * — so the rules live here and both doors call in.
+ */
+async function moveEnquiry(enquiry, body, user) {
   const {
-    status, note, lostReason, lostNote, holdReason, nextAction, nextFollowUpDate, estimatedValue,
-  } = req.body;
+    status, note, lostReason, lostNote, holdReason,
+    nextAction, nextActionType, nextFollowUpDate, estimatedValue,
+  } = body;
 
   if (status === enquiry.status) throw ApiError.badRequest(`Already at ${status}`);
 
@@ -1211,7 +1216,7 @@ export const setEnquiryStatus = asyncHandler(async (req, res) => {
 
   const from = enquiry.status;
   enquiry.status = status;
-  enquiry.statusHistory.push({ from, to: status, by: req.user._id, note });
+  enquiry.statusHistory.push({ from, to: status, by: user._id, note });
 
   if (status === 'lost') {
     enquiry.lostReason = lostReason;
@@ -1231,22 +1236,128 @@ export const setEnquiryStatus = asyncHandler(async (req, res) => {
   if (status !== 'hold') enquiry.holdReason = undefined;
 
   if (nextAction !== undefined) enquiry.nextAction = nextAction;
+  if (nextActionType !== undefined) enquiry.nextActionType = nextActionType;
   if (nextFollowUpDate !== undefined) enquiry.nextFollowUpDate = nextFollowUpDate;
 
   // Closing clears the follow-up: there is nothing left to chase.
   if (CLOSED_STATUSES.includes(status)) {
     enquiry.nextAction = undefined;
+    enquiry.nextActionType = undefined;
     enquiry.nextFollowUpDate = undefined;
   }
 
   assertNextAction(enquiry);
   await enquiry.save();
 
-  publish(EVENTS.ENQUIRY_STATUS_CHANGED, { enquiry, from, to: status, by: req.user });
+  publish(EVENTS.ENQUIRY_STATUS_CHANGED, { enquiry, from, to: status, by: user });
   const specific = statusEvent(status);
-  if (specific) publish(specific, { enquiry, from, by: req.user });
+  if (specific) publish(specific, { enquiry, from, by: user });
 
+  return enquiry;
+}
+
+export const setEnquiryStatus = asyncHandler(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id);
+  if (!enquiry) throw ApiError.notFound('Enquiry not found');
+  if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+
+  await moveEnquiry(enquiry, req.body, req.user);
   res.json({ success: true, data: enquiry });
+});
+
+/**
+ * Doing a named thing to an enquiry, rather than picking a database word out of a dropdown.
+ *
+ * The action says what the work *is* — raise a sample, ask for a price, confirm the order —
+ * and this turns it into the stage move that work implies plus the follow-up that comes with
+ * it. The automation on the far side is unchanged and was always there; it simply had no door
+ * a marketing person would find.
+ *
+ * The next action is written from the action rather than typed, which is the point of the
+ * whole exercise: "chase sample", "follow up sampling" and "ask bench" were one intention in
+ * three spellings, and no list could group them. Whoever is doing it can still edit the text
+ * when their case is unusual — it is a default, not a cage.
+ */
+export const applyEnquiryAction = asyncHandler(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id);
+  if (!enquiry) throw ApiError.notFound('Enquiry not found');
+  if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+
+  const { action, note, nextAction, nextFollowUpDate, ...rest } = req.body;
+  const recipe = ENQUIRY_ACTIONS[action];
+  if (!recipe) throw ApiError.badRequest('That is not something you can do to an enquiry');
+
+  if (CLOSED_STATUSES.includes(enquiry.status)) {
+    throw ApiError.badRequest(
+      `A ${enquiry.status} enquiry has to be reopened before anything else can happen to it`
+    );
+  }
+  if (recipe.to && recipe.to === enquiry.status) {
+    throw ApiError.badRequest(`This enquiry is already at ${enquiry.status}`);
+  }
+
+  const closing = CLOSED_STATUSES.includes(recipe.to);
+
+  /*
+   * The follow-up the action implies, unless the person supplied their own. A date is only
+   * defaulted when none was given — never overriding a person who picked one.
+   */
+  const due = new Date();
+  due.setDate(due.getDate() + (recipe.inDays ?? 0));
+
+  const payload = {
+    ...rest,
+    note,
+    // `follow_up` moves no stage, so it is not a status change at all — see below.
+    status: recipe.to,
+    nextAction: closing ? undefined : nextAction || recipe.nextAction,
+    nextActionType: closing ? undefined : recipe.type || undefined,
+    nextFollowUpDate: closing
+      ? undefined
+      : nextFollowUpDate || due.toISOString().slice(0, 10),
+  };
+
+  if (recipe.to) {
+    await moveEnquiry(enquiry, payload, req.user);
+  } else {
+    /*
+     * Setting a follow-up without moving anything. It goes through the same date rule and the
+     * same §3 check, but writes no status history — a chase that changed nothing is not a
+     * stage change, and recording it as one is how a funnel fills with movement that never
+     * happened.
+     */
+    assertFutureFollowUp(payload.nextFollowUpDate);
+    enquiry.nextAction = payload.nextAction;
+    enquiry.nextActionType = payload.nextActionType;
+    enquiry.nextFollowUpDate = payload.nextFollowUpDate;
+    assertNextAction(enquiry);
+    await enquiry.save();
+  }
+
+  res.json({ success: true, data: enquiry, did: recipe.label });
+});
+
+/** The actions this enquiry can take from where it is, so the screen need not guess. */
+export const listEnquiryActions = asyncHandler(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id);
+  if (!enquiry) throw ApiError.notFound('Enquiry not found');
+  if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+
+  const due = (days) => {
+    const date = new Date();
+    date.setDate(date.getDate() + (days ?? 0));
+    return date.toISOString().slice(0, 10);
+  };
+
+  res.json({
+    success: true,
+    data: actionsFrom(enquiry.status).map((key) => ({
+      action: key,
+      ...ENQUIRY_ACTIONS[key],
+      // Resolved here so the form shows the same date the server would have used.
+      defaultFollowUpDate: ENQUIRY_ACTIONS[key].inDays === null ? null : due(ENQUIRY_ACTIONS[key].inDays),
+    })),
+  });
 });
 
 /**
