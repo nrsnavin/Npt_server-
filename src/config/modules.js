@@ -67,7 +67,7 @@ export const MODULES = [
     stage: 3,
     ownerDepartment: 'management',
     blueprint: '7-9',
-    available: false,
+    available: true,
   },
   {
     key: 'quotations',
@@ -77,7 +77,7 @@ export const MODULES = [
     stage: 4,
     ownerDepartment: 'marketing',
     blueprint: '10-11',
-    available: false,
+    available: true,
   },
   {
     key: 'orders',

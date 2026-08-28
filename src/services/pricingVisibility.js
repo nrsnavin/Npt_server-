@@ -72,8 +72,14 @@ export function visibleTo(pricing, user) {
 
   for (const field of CONFIDENTIAL) delete plain[field];
 
-  // Kept: it is a fact about what may happen next, not a figure.
+  /*
+   * Kept: facts about what may happen next, not figures. `needsApproval` is the one the screen
+   * should show — a sheet MD has signed off is still under the floor and is cleared to quote,
+   * and saying "needs approval" beside a badge reading Approved is the screen contradicting
+   * itself.
+   */
   plain.belowMinimum = Boolean(pricing.belowMinimum);
+  plain.needsApproval = Boolean(pricing.needsApproval);
   plain.costingHidden = true;
   return plain;
 }

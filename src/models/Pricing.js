@@ -153,6 +153,18 @@ pricingSchema.virtual('belowMinimum').get(function belowMinimum() {
   return this.approvedSellingPrice < this.minimumSellingPrice;
 });
 
+/**
+ * Whether anything is actually blocked — which is the question marketing has, and it is not
+ * the same as being under the floor.
+ *
+ * A sheet MD has signed off is under the floor and cleared to quote; showing "needs approval"
+ * beside a badge reading Approved is the screen contradicting itself, and the reader believes
+ * whichever half is worse news.
+ */
+pricingSchema.virtual('needsApproval').get(function needsApproval() {
+  return this.status === 'approval_pending';
+});
+
 pricingSchema.set('toJSON', { virtuals: true });
 pricingSchema.set('toObject', { virtuals: true });
 

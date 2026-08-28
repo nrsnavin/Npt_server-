@@ -221,7 +221,7 @@ test('every money field on the sheet has been ruled on', async () => {
 
   // Virtuals have no declared type, so they are named — but they are six, and all derived.
   const derived = Object.keys(Pricing.schema.virtuals).filter(
-    (name) => !['id', 'belowMinimum'].includes(name)
+    (name) => !['id', 'belowMinimum', 'needsApproval'].includes(name)
   );
 
   const undecided = [...numbers, ...derived].filter((name) => {
@@ -288,6 +288,27 @@ test('refusing a price needs a reason, and sends it back', async () => {
   });
   assert.equal(refused.status, 200, refused.json.message);
   assert.equal(refused.json.data.status, 'rejected');
+});
+
+test('a signed-off sheet stops asking for a signature', async () => {
+  /*
+   * `belowMinimum` and "is anything blocked" are not the same question, and the screen has the
+   * second one. A sheet MD approved is still under the floor — showing "needs approval" beside
+   * a badge reading Approved is the screen contradicting itself, and the reader believes
+   * whichever half is worse news.
+   */
+  const sheet = await costed({ approvedSellingPrice: 6, minimumSellingPrice: 8 });
+  assert.equal(sheet.needsApproval, true);
+
+  await api(`/api/pricings/${sheet._id}/decision`, {
+    method: 'POST',
+    token: admin,
+    body: { approve: true, note: 'Strategic account' },
+  });
+
+  const { json } = await api(`/api/pricings/${sheet._id}`, { token: nandhini });
+  assert.equal(json.data.needsApproval, false, 'nothing is waiting any more');
+  assert.equal(json.data.belowMinimum, true, 'though it is still under the floor');
 });
 
 test('approving one lets it through', async () => {
