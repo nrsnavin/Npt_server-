@@ -55,13 +55,13 @@ const signIn = async (email, password) => {
 };
 
 /** A costing that has been built, with a floor under the approved price unless asked otherwise. */
-const costed = async ({ approvedSellingPrice, minimumSellingPrice = 8, moq } = {}) => {
+const costed = async ({ approvedSellingPrice, minimumSellingPrice = 8, product: on } = {}) => {
   const made = await api('/api/pricings', {
     method: 'POST',
     token: admin,
     body: {
       customer, quantity: 40000, modelNumber: 'NH-400', targetPrice: 7.5,
-      ...(moq !== undefined ? { moq } : {}),
+      ...(on !== undefined ? { product: on } : {}),
     },
   });
   const id = made.json.data._id;
@@ -383,66 +383,100 @@ test('a costing still needs the customer it is for', async () => {
 
 /* ----------------------------------- MOQ ----------------------------------- */
 
-test('the MOQ comes across from the product master', async () => {
-  const withMoq = await api('/api/products', {
+/** A catalogue model that carries a standard minimum. */
+const modelWithMoq = async (code, moq) => {
+  const made = await api('/api/products', {
     method: 'POST',
     token: admin,
     body: {
-      modelCode: 'NH-MOQ', name: 'Trouser hanger', category: 'trouser',
-      material: 'plastic', sizeMm: 360, moq: 2500,
+      modelCode: code, name: `Hanger ${code}`, category: 'shirt',
+      material: 'plastic', sizeMm: 360, moq,
     },
   });
+  return made.json.data._id;
+};
+
+test('a costing carries no MOQ — it is a term of the offer, not of the cost', async () => {
+  const product = await modelWithMoq('NH-MOQ', 2500);
 
   const made = await api('/api/pricings', {
     method: 'POST',
     token: admin,
-    body: { customer, product: withMoq.json.data._id, quantity: 40000 },
+    body: { customer, product, quantity: 40000 },
   });
 
   assert.equal(made.status, 201, made.json.message);
-  assert.equal(made.json.data.moq, 2500);
-  // And the rest of what the master knows, so the sheet is not retyped.
+  assert.equal(made.json.data.moq, undefined);
+  // The rest of what the master knows still comes across, so the sheet is not retyped.
   assert.equal(made.json.data.modelNumber, 'NH-MOQ');
 });
 
-test('an MOQ given by hand beats the master', async () => {
-  const withMoq = await api('/api/products', {
-    method: 'POST',
+test('building the sheet refuses an MOQ outright', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+
+  const built = await api(`/api/pricings/${sheet._id}/cost`, {
+    method: 'PATCH',
     token: admin,
-    body: {
-      modelCode: 'NH-MOQ2', name: 'Kids hanger', category: 'kids',
-      material: 'plastic', sizeMm: 280, moq: 2500,
-    },
+    body: { moq: 5000 },
   });
 
-  const made = await api('/api/pricings', {
-    method: 'POST',
-    token: admin,
-    body: { customer, product: withMoq.json.data._id, quantity: 40000, moq: 10000 },
-  });
-
-  assert.equal(made.json.data.moq, 10000);
+  // Strict, so it is refused rather than quietly dropped — a screen that sent it would
+  // otherwise look like it worked and change nothing.
+  assert.equal(built.status, 400);
 });
 
-test('marketing sees the MOQ — §8 names it beside the price', async () => {
-  const sheet = await costed({ approvedSellingPrice: 9, moq: 5000 });
-
-  const seen = await api(`/api/pricings/${sheet._id}`, { token: nandhini });
-  assert.equal(seen.json.data.moq, 5000);
-  assert.equal(seen.json.data.costingHidden, true);
-});
-
-/* --------------------- Turning a costing into a quote --------------------- */
-
-test('a quote raised from a costing starts at the MOQ, not the costed quantity', async () => {
-  const sheet = await costed({ approvedSellingPrice: 9, moq: 5000 });
+test('a quotation states the minimum it is offered at, from the master', async () => {
+  const product = await modelWithMoq('NH-MOQ2', 2500);
+  const sheet = await costed({ approvedSellingPrice: 9, product });
 
   const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
     method: 'POST', token: nandhini, body: {},
   });
 
   assert.equal(quote.status, 201, quote.json.message);
-  // The sheet was costed at 40,000; the price holds down to 5,000, so that is what is offered.
+  assert.equal(quote.json.data.moq, 2500);
+});
+
+test('a minimum set on the quote beats the master', async () => {
+  const product = await modelWithMoq('NH-MOQ3', 2500);
+  const sheet = await costed({ approvedSellingPrice: 9, product });
+
+  const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { moq: 10000, quantity: 12000 },
+  });
+
+  assert.equal(quote.json.data.moq, 10000);
+});
+
+test('the minimum is part of what a revision said [§10]', async () => {
+  const product = await modelWithMoq('NH-MOQ4', 2000);
+  const sheet = await costed({ approvedSellingPrice: 9, product });
+  const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+
+  await api(`/api/quotations/${quote.json.data._id}/revisions`, {
+    method: 'POST', token: nandhini, body: { unitPrice: 8.5, moq: 5000 },
+  });
+
+  const back = await api(`/api/quotations/${quote.json.data._id}`, { token: nandhini });
+  assert.equal(back.json.data.moq, 5000);
+  assert.equal(back.json.data.revisions[0].moq, 2000, 'Rev 0 keeps the minimum it stated');
+  assert.equal(back.json.data.revisions[1].moq, 5000);
+});
+
+/* --------------------- Turning a costing into a quote --------------------- */
+
+test('a quote raised from a costing starts at the MOQ, not the costed quantity', async () => {
+  const product = await modelWithMoq('NH-MOQ5', 5000);
+  const sheet = await costed({ approvedSellingPrice: 9, product });
+
+  const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+
+  assert.equal(quote.status, 201, quote.json.message);
+  // The sheet was costed at 40,000; the offer stands down to 5,000, so that is what is offered.
   assert.equal(quote.json.data.quantity, 5000);
   assert.equal(quote.json.data.unitPrice, 9);
 });
@@ -462,15 +496,16 @@ test('the quote carries the costing, the customer and the model across', async (
   assert.equal(quote.json.data.revisions[0].revision, 0);
 });
 
-test('a quantity under the MOQ is refused', async () => {
-  const sheet = await costed({ approvedSellingPrice: 9, moq: 5000 });
+test('a quantity under the stated minimum is refused', async () => {
+  const product = await modelWithMoq('NH-MOQ6', 5000);
+  const sheet = await costed({ approvedSellingPrice: 9, product });
 
   const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
     method: 'POST', token: nandhini, body: { quantity: 400 },
   });
 
   assert.equal(quote.status, 400);
-  assert.match(quote.json.message, /5000|re-costed/i);
+  assert.match(quote.json.message, /5000|minimum/i);
 });
 
 test('a costing waiting on approval cannot be quoted [§9]', async () => {
@@ -600,4 +635,38 @@ test('the PDF names no cost, margin or floor [§8]', async () => {
   for (const forbidden of ['Gross margin', 'Minimum', 'Cost base', 'Material cost']) {
     assert.ok(!text.includes(forbidden), `the PDF must not mention ${forbidden}`);
   }
+});
+
+/* ---------------------------- The costing detail ---------------------------- */
+
+test('a costing comes back with the model master and what it was quoted at', async () => {
+  const product = await modelWithMoq('NH-DETAIL', 3000);
+  const sheet = await costed({ approvedSellingPrice: 9, product });
+  await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quantity: 15000 },
+  });
+
+  const seen = await api(`/api/pricings/${sheet._id}`, { token: admin });
+  assert.equal(seen.status, 200);
+
+  // The master, so the sheet can be read against the model's own standard.
+  assert.equal(seen.json.data.product.modelCode, 'NH-DETAIL');
+  assert.equal(seen.json.data.product.moq, 3000);
+
+  // And what has actually been offered off this price.
+  assert.equal(seen.json.quotations.length, 1);
+  assert.equal(seen.json.quotations[0].quantity, 15000);
+});
+
+test('the detail keeps §8 for a marketing reader', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+
+  const seen = await api(`/api/pricings/${sheet._id}`, { token: nandhini });
+  assert.equal(seen.status, 200);
+  assert.equal(seen.json.data.cost, undefined);
+  assert.equal(seen.json.data.minimumSellingPrice, undefined);
+  assert.equal(seen.json.data.grossMarginPercent, undefined);
+  assert.equal(seen.json.data.costingHidden, true);
+  // The price it may quote is still there, or the screen has nothing to show.
+  assert.equal(seen.json.data.approvedSellingPrice, 9);
 });

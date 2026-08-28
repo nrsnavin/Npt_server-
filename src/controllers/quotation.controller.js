@@ -2,6 +2,7 @@ import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
 import Pricing from '../models/Pricing.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
+import Product from '../models/Product.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
@@ -150,8 +151,16 @@ export async function newQuotation(fields, user) {
     throw ApiError.forbidden('That customer belongs to another marketing person');
   }
 
+  /*
+   * The product master's minimum, when the quote does not name one [§28]. Copied rather than
+   * looked up on read: a catalogue edited next month must not change what an issued quotation
+   * says it was offered at.
+   */
+  const product = fields.product ? await Product.findById(fields.product) : null;
+
   const quotation = new Quotation({
     ...fields,
+    moq: fields.moq ?? product?.moq ?? 0,
     customer: customerId,
     assignedTo: fields.assignedTo || customer.assignedTo || user._id,
     number: await nextNumber('QTN'),
@@ -168,6 +177,7 @@ export async function newQuotation(fields, user) {
       revision: 0,
       unitPrice: quotation.unitPrice,
       quantity: quotation.quantity,
+      moq: quotation.moq,
       validUntil: quotation.validUntil,
       paymentTerms: quotation.paymentTerms,
       deliveryTerms: quotation.deliveryTerms,
@@ -236,6 +246,7 @@ export const reviseQuotation = asyncHandler(async (req, res) => {
     revision: quotation.revision,
     unitPrice: quotation.unitPrice,
     quantity: quotation.quantity,
+    moq: quotation.moq,
     validUntil: quotation.validUntil,
     paymentTerms: quotation.paymentTerms,
     deliveryTerms: quotation.deliveryTerms,
@@ -358,8 +369,7 @@ export const quotationPdf = asyncHandler(async (req, res) => {
     .populate('customer', 'code name address city state gstin mobile email')
     .populate('enquiry', 'number')
     .populate('assignedTo', 'name')
-    .populate('product', 'modelCode name sizeMm material')
-    .populate('pricing', 'moq');
+    .populate('product', 'modelCode name sizeMm material');
 
   if (!quotation) throw ApiError.notFound('Quotation not found');
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');

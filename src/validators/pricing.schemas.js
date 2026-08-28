@@ -18,8 +18,6 @@ export const pricingSchema = z.object({
   quantity: z.number().positive('A costing needs the quantity it is for'),
   material: z.enum(MATERIALS).optional(),
   targetPrice: money.optional(),
-  /** Left out, and the product master's MOQ is copied in [§8]. */
-  moq: money.optional(),
   remarks: z.string().optional(),
 });
 
@@ -50,8 +48,6 @@ export const pricingCostSchema = z
     targetMargin: z.number().min(0).max(100).optional(),
     approvedSellingPrice: money.optional(),
     minimumSellingPrice: money.optional(),
-    /** Agreed with the price, so it is settled on the same sheet rather than a step later. */
-    moq: money.optional(),
     remarks: z.string().optional(),
   })
   .extend(versioned);
@@ -74,6 +70,7 @@ export const pricingDecisionSchema = z.object({
  */
 export const pricingQuoteSchema = z.object({
   quantity: z.number().positive().optional(),
+  moq: money.optional(),
   unitPrice: money.optional(),
   gstPercent: z.number().min(0).max(100).optional(),
   isExport: z.boolean().optional(),
@@ -94,6 +91,8 @@ const quotationCore = {
   assignedTo: objectId.optional(),
   modelNumber: z.string().optional(),
   quantity: z.number().positive('A quotation needs a quantity'),
+  /** Left out, and the product master's minimum is copied in [§28]. */
+  moq: money.optional(),
   unitPrice: money,
   gstPercent: z.number().min(0).max(100).optional(),
   isExport: z.boolean().optional(),
@@ -122,6 +121,7 @@ export const quotationUpdateSchema = z
 export const quotationRevisionSchema = z.object({
   unitPrice: money.optional(),
   quantity: z.number().positive().optional(),
+  moq: money.optional(),
   gstPercent: z.number().min(0).max(100).optional(),
   paymentTerms: z.string().optional(),
   deliveryTerms: z.string().optional(),

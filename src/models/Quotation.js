@@ -53,6 +53,7 @@ const revisionSchema = new mongoose.Schema(
     revision: { type: Number, required: true },
     unitPrice: { type: Number, required: true, min: 0 },
     quantity: { type: Number, min: 0 },
+    moq: { type: Number, min: 0 },
     validUntil: Date,
     paymentTerms: String,
     deliveryTerms: String,
@@ -81,6 +82,21 @@ const quotationSchema = new mongoose.Schema(
 
     modelNumber: { type: String, trim: true },
     quantity: { type: Number, min: 0, required: true },
+
+    /**
+     * The smallest order this price is offered at [§10].
+     *
+     * A term of the offer rather than a fact about the cost, which is why it lives here and
+     * not on the costing: the buyer reads it off the quotation beside the price and the
+     * validity, and it is one of the things they negotiate. A rate quoted for 40,000 pieces
+     * does not hold at 500 — the mould setup and the printing plate cost the same either way
+     * — so saying so on the document is what stops the plant honouring the rate at any lot
+     * size somebody cares to order.
+     *
+     * Defaulted from the product master [§28] and then owned by the quotation, because this
+     * buyer may well be offered a different minimum from the catalogue standard.
+     */
+    moq: { type: Number, min: 0, default: 0 },
 
     /** The live figures — always the newest revision. The list below is what they were. */
     unitPrice: { type: Number, min: 0, required: true },

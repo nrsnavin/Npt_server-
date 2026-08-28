@@ -251,14 +251,14 @@ function items(doc, quotation, y) {
     rule(doc, y);
   }
 
-  /* MOQ, where it belongs on the document: a condition of the price, next to the price. */
-  if (quotation.pricing?.moq) {
+  /* MOQ, where it belongs on the document: a term of the offer, next to the price. */
+  if (quotation.moq) {
     doc
       .font('Helvetica-Oblique')
       .fontSize(7.5)
       .fillColor(MUTED)
       .text(
-        `Minimum order quantity for this price: ${qty(quotation.pricing.moq)} pieces.`,
+        `Minimum order quantity for this price: ${qty(quotation.moq)} pieces.`,
         LEFT + 32,
         y + 5,
         { width: WIDTH - 32 }

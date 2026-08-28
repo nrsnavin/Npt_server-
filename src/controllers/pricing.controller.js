@@ -35,6 +35,7 @@ import { priceFrom } from '../services/pricing.service.js';
 const POPULATE = [
   { path: 'enquiry', select: 'number status requirement targetPrice' },
   { path: 'customer', select: 'code name' },
+  { path: 'product', select: 'modelCode name category sizeMm material moq packingQty standardPrice' },
   { path: 'requestedBy', select: 'name' },
   { path: 'costedBy', select: 'name' },
   { path: 'approvedBy', select: 'name' },
@@ -64,10 +65,28 @@ export const listPricings = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * One costing, with everything the detail screen answers *from* rather than about.
+ *
+ * A sheet on its own says what a piece costs. The questions that follow are always the same
+ * three, and each needs something the record does not hold: how this price compares to what
+ * the buyer asked for (the enquiry), what has actually been quoted off it (the quotations),
+ * and where the model's own standard sits (the master). Fetched together because they are one
+ * question — "is this price right?" — and three round trips to answer it is three chances for
+ * the screen to show a half-loaded story.
+ *
+ * The costing itself still goes through §8's redaction, so a marketing reader gets the price
+ * and the terms and none of the cost behind them.
+ */
 export const getPricing = asyncHandler(async (req, res) => {
   const pricing = await Pricing.findById(req.params.id).populate(POPULATE);
   if (!pricing) throw ApiError.notFound('Costing not found');
-  res.json({ success: true, data: visibleTo(pricing, req.user) });
+
+  const quotations = await Quotation.find({ pricing: pricing._id })
+    .select('number status quantity unitPrice moq revision validUntil sentAt createdAt')
+    .sort('-createdAt');
+
+  res.json({ success: true, data: visibleTo(pricing, req.user), quotations });
 });
 
 /**
@@ -105,7 +124,6 @@ export const createPricing = asyncHandler(async (req, res) => {
     customer: customerId,
     modelNumber: req.body.modelNumber || product?.modelCode,
     material: req.body.material || product?.material,
-    moq: req.body.moq ?? product?.moq ?? 0,
     number: await nextNumber('PRC'),
     requestedBy: req.user._id,
     statusHistory: [{ to: 'requested', by: req.user._id }],
@@ -134,13 +152,12 @@ export const costPricing = asyncHandler(async (req, res) => {
   expectVersion(pricing, req.body);
   const before = snapshot(pricing);
 
-  const { cost, targetMargin, approvedSellingPrice, minimumSellingPrice, moq, remarks } =
+  const { cost, targetMargin, approvedSellingPrice, minimumSellingPrice, remarks } =
     withoutVersion(req.body);
 
   if (cost) pricing.cost = { ...pricing.cost?.toObject?.(), ...cost };
   if (targetMargin !== undefined) pricing.targetMargin = targetMargin;
   if (minimumSellingPrice !== undefined) pricing.minimumSellingPrice = minimumSellingPrice;
-  if (moq !== undefined) pricing.moq = moq;
   if (remarks !== undefined) pricing.remarks = remarks;
 
   // Derived, never typed — see the note above.
@@ -252,15 +269,25 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
   }
 
   /*
+   * The minimum this price will be offered at.
+   *
+   * Read from the product master rather than from the sheet: the MOQ is a term of the offer,
+   * not a fact about the cost, so the costing does not carry one. Whoever is quoting may set a
+   * different minimum for this buyer — the master is only the starting point.
+   */
+  const product = pricing.product ? await Product.findById(pricing.product) : null;
+  const moq = req.body.moq ?? product?.moq ?? 0;
+
+  /*
    * The MOQ, then what the sheet was costed at, then nothing. A costing with neither cannot
    * name a quantity, and guessing one is how a quote goes out for a lot size nobody agreed.
    */
-  const quantity = req.body.quantity ?? (pricing.moq || pricing.quantity);
+  const quantity = req.body.quantity ?? (moq || pricing.quantity);
   if (!quantity) throw ApiError.badRequest('Say what quantity this quote is for');
 
-  if (pricing.moq && quantity < pricing.moq) {
+  if (moq && quantity < moq) {
     throw ApiError.badRequest(
-      `This price holds down to ${pricing.moq} pieces — quote at least that, or have it re-costed`
+      `This quote states a minimum of ${moq} pieces — quote at least that, or lower the minimum`
     );
   }
 
@@ -268,6 +295,7 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
     {
       ...req.body,
       quantity,
+      moq,
       unitPrice: req.body.unitPrice ?? pricing.approvedSellingPrice,
       customer: pricing.customer,
       enquiry: pricing.enquiry || undefined,

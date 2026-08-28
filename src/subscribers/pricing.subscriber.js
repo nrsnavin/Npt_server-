@@ -1,6 +1,5 @@
 import User from '../models/User.js';
 import Pricing from '../models/Pricing.js';
-import Product from '../models/Product.js';
 import { EVENTS, publish, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { raiseTask, resolveTasks } from '../services/task.service.js';
@@ -80,13 +79,6 @@ export function registerPricingSubscribers() {
       });
 
       if (!existing) {
-        /*
-         * The master's MOQ comes across with the rest [§8]. Copied rather than looked up when
-         * the sheet is read: the MOQ a price was agreed against must not change because
-         * somebody edited the catalogue two months later.
-         */
-        const product = enquiry.product ? await Product.findById(enquiry.product) : null;
-
         const pricing = await Pricing.create({
           number: await nextNumber('PRC'),
           enquiry: enquiry._id,
@@ -95,7 +87,6 @@ export function registerPricingSubscribers() {
           modelNumber: requirement.modelNumber,
           quantity: requirement.quantity,
           material: requirement.material,
-          moq: product?.moq ?? 0,
           targetPrice: enquiry.targetPrice,
           requestedBy: enquiry.assignedTo,
           statusHistory: [{ to: 'requested', by: enquiry.assignedTo }],

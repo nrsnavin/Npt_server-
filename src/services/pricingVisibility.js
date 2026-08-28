@@ -45,9 +45,6 @@ export const PUBLIC_FIGURES = [
   'calculatedSellingPrice',
   'targetPrice',
   'quantity',
-  // §8 names MOQ in the same breath as the quoted price: marketing cannot quote a price
-  // without knowing the quantity it holds at.
-  'moq',
 ];
 
 /**
