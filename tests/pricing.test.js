@@ -727,3 +727,169 @@ test('re-sending a quote during a negotiation does not pull the enquiry back', a
   seen = await api(`/api/enquiries/${enquiryId}`, { token: nandhini });
   assert.equal(seen.json.data.status, 'negotiation', 'the enquiry stays where marketing put it');
 });
+
+/* --------------------------- Editing a costing --------------------------- */
+
+test('a settled costing can be re-costed rather than abandoned', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+  assert.equal(sheet.status, 'approved');
+
+  // The resin rate moved.
+  const again = await api(`/api/pricings/${sheet._id}/cost`, {
+    method: 'PATCH',
+    token: admin,
+    body: {
+      cost: { gramWeight: 22, rawMaterialRate: 120, productionCost: 1.1, packingCost: 0.4 },
+      targetMargin: 20,
+      minimumSellingPrice: 8,
+      approvedSellingPrice: 10,
+    },
+  });
+
+  assert.equal(again.status, 200, again.json.message);
+  assert.equal(again.json.data.approvedSellingPrice, 10);
+  // And the re-costing is on the record, not only in the audit log.
+  assert.ok(
+    again.json.data.statusHistory.some((entry) => /Re-costed/i.test(entry.note || '')),
+    'the sheet should say it was re-costed after being settled'
+  );
+});
+
+test('re-costing below the floor sends an approved sheet back for signature [§9]', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+  assert.equal(sheet.status, 'approved');
+
+  const again = await api(`/api/pricings/${sheet._id}/cost`, {
+    method: 'PATCH',
+    token: admin,
+    body: {
+      cost: { gramWeight: 22, rawMaterialRate: 95, productionCost: 1.1, packingCost: 0.4 },
+      targetMargin: 20,
+      minimumSellingPrice: 8,
+      approvedSellingPrice: 6,
+    },
+  });
+
+  assert.equal(again.status, 200, again.json.message);
+  assert.equal(again.json.data.status, 'approval_pending');
+  /*
+   * And it stops claiming a signature it no longer has. A sheet waiting on approval that still
+   * names its old approver puts "signed off" beside "needs approval" on the same row.
+   */
+  assert.equal(again.json.data.approvedBy, undefined);
+  assert.equal(again.json.data.approvedAt, undefined);
+});
+
+test('re-costing a refused sheet records the move it actually made', async () => {
+  const sheet = await costed({ approvedSellingPrice: 6, minimumSellingPrice: 8 });
+  await api(`/api/pricings/${sheet._id}/decision`, {
+    method: 'POST', token: admin, body: { approve: false, note: 'Too thin' },
+  });
+
+  const again = await api(`/api/pricings/${sheet._id}/cost`, {
+    method: 'PATCH',
+    token: admin,
+    body: {
+      cost: { gramWeight: 22, rawMaterialRate: 95, productionCost: 1.1 },
+      targetMargin: 20, minimumSellingPrice: 4, approvedSellingPrice: 9,
+    },
+  });
+
+  assert.equal(again.status, 200, again.json.message);
+  assert.equal(again.json.data.status, 'approved');
+
+  // rejected → costed → approved, with no entry claiming to start from a stage already left.
+  const history = again.json.data.statusHistory;
+  const reopen = history.find((entry) => /Re-costed/i.test(entry.note || ''));
+  assert.equal(reopen.from, 'rejected');
+  assert.equal(reopen.to, 'costed');
+  assert.equal(history[history.length - 1].from, 'costed');
+  assert.equal(history[history.length - 1].to, 'approved');
+});
+
+test('a quote already raised keeps its price when the costing is re-costed', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+  const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quantity: 12000 },
+  });
+  assert.equal(quote.json.data.unitPrice, 9);
+
+  await api(`/api/pricings/${sheet._id}/cost`, {
+    method: 'PATCH',
+    token: admin,
+    body: {
+      cost: { gramWeight: 30, rawMaterialRate: 120 },
+      targetMargin: 20, minimumSellingPrice: 1, approvedSellingPrice: 14,
+    },
+  });
+
+  /*
+   * A quotation records what was offered, not a pointer to a number that can move under it.
+   * If this ever fails, a sheet edited months later would silently rewrite what a customer
+   * was told.
+   */
+  const back = await api(`/api/quotations/${quote.json.data._id}`, { token: nandhini });
+  assert.equal(back.json.data.unitPrice, 9);
+  assert.equal(back.json.data.revisions[0].unitPrice, 9);
+});
+
+test('the details of a costing can be corrected', async () => {
+  const made = await api('/api/pricings', {
+    method: 'POST',
+    token: admin,
+    body: { customer, quantity: 40000, modelNumber: 'NH-400', targetPrice: 7.5 },
+  });
+
+  const fixed = await api(`/api/pricings/${made.json.data._id}`, {
+    method: 'PATCH',
+    token: admin,
+    body: { quantity: 25000, targetPrice: 8, remarks: 'Buyer halved the order' },
+  });
+
+  assert.equal(fixed.status, 200, fixed.json.message);
+  assert.equal(fixed.json.data.quantity, 25000);
+  assert.equal(fixed.json.data.targetPrice, 8);
+  assert.equal(fixed.json.data.remarks, 'Buyer halved the order');
+});
+
+test('the details door refuses a price outright', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+
+  const sneaky = await api(`/api/pricings/${sheet._id}`, {
+    method: 'PATCH',
+    token: admin,
+    body: { approvedSellingPrice: 2 },
+  });
+
+  /*
+   * Refused rather than dropped. Prices move through the costing sheet where §9's floor is
+   * checked; a details edit that silently ignored a price would look like it had worked and
+   * leave the old number in place.
+   */
+  assert.equal(sneaky.status, 400);
+  const unchanged = await api(`/api/pricings/${sheet._id}`, { token: admin });
+  assert.equal(unchanged.json.data.approvedSellingPrice, 9);
+});
+
+test('changing the quantity on a settled sheet says so on the record', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+
+  const moved = await api(`/api/pricings/${sheet._id}`, {
+    method: 'PATCH', token: admin, body: { quantity: 5000 },
+  });
+
+  assert.equal(moved.status, 200, moved.json.message);
+  assert.ok(
+    moved.json.data.statusHistory.some((entry) => /Quantity changed to 5000/.test(entry.note || '')),
+    'the price was agreed for a lot size, so moving the lot size belongs in the history'
+  );
+});
+
+test('only costing may edit a sheet', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+
+  const refused = await api(`/api/pricings/${sheet._id}`, {
+    method: 'PATCH', token: nandhini, body: { quantity: 100 },
+  });
+  assert.equal(refused.status, 403);
+});

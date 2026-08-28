@@ -52,6 +52,28 @@ export const pricingCostSchema = z
   })
   .extend(versioned);
 
+/**
+ * Correcting what the costing is *of* — not what it costs.
+ *
+ * Deliberately a different door from `/cost`. These fields describe the job: the quantity, the
+ * model, what the buyer said they wanted to pay. Changing them does not re-run §9, because
+ * nothing about the price has moved; changing a price does, and goes through the costing sheet
+ * where the floor is checked. Folding both into one endpoint would mean a quantity correction
+ * silently re-opening an approved price.
+ *
+ * Strict, so a screen posting a price here is refused rather than quietly ignored.
+ */
+export const pricingUpdateSchema = z
+  .strictObject({
+    product: objectId.optional(),
+    modelNumber: z.string().optional(),
+    quantity: z.number().positive('A costing needs the quantity it is for').optional(),
+    material: z.enum(MATERIALS).optional(),
+    targetPrice: money.optional(),
+    remarks: z.string().optional(),
+  })
+  .extend(versioned);
+
 export const pricingDecisionSchema = z.object({
   approve: z.boolean(),
   note: z.string().optional(),

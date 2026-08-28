@@ -139,14 +139,43 @@ export const createPricing = asyncHandler(async (req, res) => {
  * The calculated price is never accepted from the request — it is arithmetic over the costs and
  * the margin, and a figure that can be typed is a figure that can disagree with the lines above
  * it. Whoever is costing decides the *approved* price, which is the one marketing may quote.
+ *
+ * **A settled sheet can be re-costed, and that used to be refused.** It sent people to raise a
+ * second costing for the same job, which is how one job ends up with three sheets and nobody
+ * can say which price is live. Costings go stale for ordinary reasons — the resin rate moves, a
+ * gram weight was typed wrong, the buyer changes the quantity — and the honest answer is to
+ * correct the sheet rather than to abandon it.
+ *
+ * What protects the decision is not the refusal; it is that **the approval belongs to the sheet
+ * as it stood.** Editing re-runs §9 from scratch, so a price that no longer clears the floor
+ * goes back for signature even though it was approved a minute ago. Quotations already sent
+ * keep their own prices and are untouched — a quotation records what was offered, not a pointer
+ * to a number that can move under it.
  */
 export const costPricing = asyncHandler(async (req, res) => {
   assertMayCost(req.user);
 
   const pricing = await Pricing.findById(req.params.id);
   if (!pricing) throw ApiError.notFound('Costing not found');
-  if (CLOSED_PRICING_STATUSES.includes(pricing.status)) {
-    throw ApiError.badRequest(`A ${pricing.status} costing cannot be rebuilt — raise a new one`);
+
+  /*
+   * Re-opening a settled sheet is worth a line in its own history, because the §9 route below
+   * may well land it back where it already was — approved to approved — and push nothing.
+   * Without this the audit trail would show a sheet approved once and never touched again,
+   * while its numbers had changed underneath.
+   */
+  const wasSettled = CLOSED_PRICING_STATUSES.includes(pricing.status);
+  if (wasSettled) {
+    pricing.statusHistory.push({
+      from: pricing.status,
+      to: 'costed',
+      by: req.user._id,
+      note: 'Re-costed after being settled',
+    });
+    // Actually moved, not just noted: the §9 route below reads `status` to write its own
+    // history entry, and leaving it settled would record that move as coming from a stage the
+    // sheet had already left.
+    pricing.status = 'costed';
   }
 
   expectVersion(pricing, req.body);
@@ -180,6 +209,15 @@ export const costPricing = asyncHandler(async (req, res) => {
   if (to === 'approved') {
     pricing.approvedBy = req.user._id;
     pricing.approvedAt = new Date();
+  } else {
+    /*
+     * A sheet waiting on a signature must not still claim to carry one. Re-costing an approved
+     * price below the floor lands here, and leaving the old approver on it would put "signed
+     * off by MD" beside "needs approval" — the screen contradicting itself, and the reader
+     * believing whichever half suits them.
+     */
+    pricing.approvedBy = undefined;
+    pricing.approvedAt = undefined;
   }
 
   await pricing.save();
@@ -325,4 +363,64 @@ export const pricingQuotations = asyncHandler(async (req, res) => {
     .sort('-createdAt');
 
   res.json({ success: true, data: rows });
+});
+
+/**
+ * Correcting what the costing is *of*.
+ *
+ * The quantity, the model, the material, what the buyer said they wanted to pay. None of it was
+ * editable before, which meant a costing raised for the wrong quantity — the commonest mistake
+ * there is, since the automation copies it off the enquiry — could only be abandoned and
+ * re-raised, leaving two sheets for one job and no way to tell which price was live.
+ *
+ * The prices are not here. They move through the costing sheet, where §9's floor is checked, so
+ * that correcting a quantity cannot quietly re-open an approved price and a price change cannot
+ * quietly skip the approval route. Two doors because they are two different decisions.
+ *
+ * A settled sheet is still editable — the same argument as re-costing one — but the quantity is
+ * the one field that changes what the price *means*, so moving it on an approved sheet says so
+ * rather than letting the sheet drift away from the number that was signed off.
+ */
+export const updatePricing = asyncHandler(async (req, res) => {
+  assertMayCost(req.user);
+
+  const pricing = await Pricing.findById(req.params.id);
+  if (!pricing) throw ApiError.notFound('Costing not found');
+
+  expectVersion(pricing, req.body);
+  const before = snapshot(pricing);
+  const patch = withoutVersion(req.body);
+
+  if (patch.product) {
+    const product = await Product.findById(patch.product);
+    if (!product) throw ApiError.badRequest('That model does not exist');
+    // The master fills in what it knows, unless this request says otherwise.
+    patch.modelNumber = patch.modelNumber || product.modelCode;
+    patch.material = patch.material || product.material;
+  }
+
+  const quantityMoved =
+    patch.quantity !== undefined && patch.quantity !== pricing.quantity;
+
+  Object.assign(pricing, patch);
+
+  /*
+   * A quantity change on a settled sheet is recorded as an event rather than left to the audit
+   * log alone. The approved price was arrived at for a lot size, and somebody reading the sheet
+   * later needs to see that the lot size moved after it was signed off — that is the whole
+   * reason the two figures are worth comparing.
+   */
+  if (quantityMoved && CLOSED_PRICING_STATUSES.includes(pricing.status)) {
+    pricing.statusHistory.push({
+      from: pricing.status,
+      to: pricing.status,
+      by: req.user._id,
+      note: `Quantity changed to ${patch.quantity} after the price was settled`,
+    });
+  }
+
+  await pricing.save();
+  await recordChange({ model: 'Pricing', doc: pricing, before, by: req.user });
+
+  res.json({ success: true, data: visibleTo(pricing, req.user) });
 });

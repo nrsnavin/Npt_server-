@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  listPricings, getPricing, createPricing, costPricing, decidePricing,
+  listPricings, getPricing, createPricing, updatePricing, costPricing, decidePricing,
   quoteFromPricing, pricingQuotations,
 } from '../controllers/pricing.controller.js';
 import {
@@ -10,7 +10,7 @@ import {
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
-  pricingSchema, pricingCostSchema, pricingDecisionSchema, pricingQuoteSchema,
+  pricingSchema, pricingUpdateSchema, pricingCostSchema, pricingDecisionSchema, pricingQuoteSchema,
   quotationSchema, quotationUpdateSchema, quotationRevisionSchema,
   quotationSendSchema, quotationResponseSchema,
 } from '../validators/pricing.schemas.js';
@@ -38,6 +38,8 @@ router.get('/pricings/:id', requireModule('pricing'), getPricing);
  * check `pricing: write` inside the controller as well — the second check is what keeps the
  * rule true if this route is ever loosened.
  */
+/** What the costing is *of* — the job. The prices have their own door below. */
+router.patch('/pricings/:id', requireModule('pricing'), validate(pricingUpdateSchema), updatePricing);
 router.patch('/pricings/:id/cost', requireModule('pricing'), validate(pricingCostSchema), costPricing);
 router.post('/pricings/:id/decision', requireModule('pricing'), validate(pricingDecisionSchema), decidePricing);
 
