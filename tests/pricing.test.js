@@ -1013,3 +1013,46 @@ test('an answered quotation cannot be edited at all', async () => {
   assert.equal(edited.status, 400);
   assert.match(edited.json.message, /accepted/i);
 });
+
+/* ------------------------- The quotation detail ------------------------- */
+
+test('a quotation comes back with the names and the costing behind it', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+  const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quantity: 12000 },
+  });
+  await api(`/api/quotations/${quote.json.data._id}/revisions`, {
+    method: 'POST', token: nandhini, body: { unitPrice: 8.5, note: 'Buyer pushed' },
+  });
+
+  const seen = await api(`/api/quotations/${quote.json.data._id}`, { token: nandhini });
+  assert.equal(seen.status, 200);
+
+  // Who made each revision, so the history reads as people rather than timestamps.
+  assert.equal(seen.json.data.revisions[0].by.name, 'Nandhini S');
+  assert.equal(seen.json.data.revisions[1].unitPrice, 8.5);
+
+  // And the costing it was priced off, so the trail goes both ways.
+  assert.equal(seen.json.data.pricing.number, sheet.number);
+  assert.equal(seen.json.data.pricing.approvedSellingPrice, 9);
+});
+
+test('the costing on a quotation carries nothing §8 protects', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9, minimumSellingPrice: 8 });
+  const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quantity: 12000 },
+  });
+
+  const seen = await api(`/api/quotations/${quote.json.data._id}`, { token: nandhini });
+  const pricing = seen.json.data.pricing;
+
+  /*
+   * A populate that took the whole costing would hand marketing the cost base through a door
+   * nobody thought to guard — the quotation is not a costing screen and nothing here runs the
+   * §8 redaction.
+   */
+  assert.equal(pricing.cost, undefined);
+  assert.equal(pricing.minimumSellingPrice, undefined);
+  assert.equal(pricing.totalCost, undefined);
+  assert.equal(pricing.grossMarginPercent, undefined);
+});

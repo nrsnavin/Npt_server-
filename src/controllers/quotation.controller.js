@@ -123,11 +123,44 @@ export const listQuotations = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * One quotation, with everything a person needs to read it.
+ *
+ * More than the list carries, because a row and a document answer different questions. A row
+ * says which quotations exist; this has to answer "what did we offer, and how did we get here"
+ * — which needs the names against each revision, the model behind the line, and the costing the
+ * price came from.
+ *
+ * The costing behind it is projected down to three fields by an explicit allow-list, not by a
+ * `select`. `approvedSellingPrice` is public under §8 — it is the price marketing may quote —
+ * while the cost base, the margin and the floor are not.
+ *
+ * A `select` is not enough here and that is worth knowing: the costing's totals are *virtuals*,
+ * so they are recomputed on the way out whatever the projection said, and `totalCost` arrived
+ * as `0` — a figure that reveals nothing today but reads as "this costs nothing" on a screen,
+ * and would start reporting real money the moment somebody widened the select. An allow-list
+ * cannot drift that way.
+ */
 export const getQuotation = asyncHandler(async (req, res) => {
-  const quotation = await Quotation.findById(req.params.id).populate(POPULATE);
+  const quotation = await Quotation.findById(req.params.id)
+    .populate('customer', 'code name city state gstin mobile email')
+    .populate('enquiry', 'number status')
+    .populate('assignedTo', 'name')
+    .populate('product', 'modelCode name sizeMm material moq')
+    .populate('pricing', 'number status approvedSellingPrice')
+    .populate('revisions.by', 'name')
+    .populate('statusHistory.by', 'name');
+
   if (!quotation) throw ApiError.notFound('Quotation not found');
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
-  res.json({ success: true, data: quotation });
+
+  const data = quotation.toJSON();
+  if (data.pricing) {
+    const { _id, number, status, approvedSellingPrice } = data.pricing;
+    data.pricing = { _id, number, status, approvedSellingPrice };
+  }
+
+  res.json({ success: true, data });
 });
 
 /**

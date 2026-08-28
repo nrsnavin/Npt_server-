@@ -2,7 +2,7 @@
   "name": "npt-server",
   "version": "1.0.0",
   "private": true,
-  "description": "NPT CRM + ERP API — CRM, manufacturing, inventory and accounts for a hanger manufacturing business",
+  "description": "NPT CRM + ERP API \u2014 CRM, manufacturing, inventory and accounts for a hanger manufacturing business",
   "type": "module",
   "main": "src/server.js",
   "engines": {
@@ -14,7 +14,8 @@
     "seed": "node src/seed/index.js",
     "test": "node --test tests/*.test.js",
     "create-user": "node scripts/create-user.js",
-    "doctor:indexes": "node scripts/doctor-indexes.js"
+    "doctor:indexes": "node scripts/doctor-indexes.js",
+    "reset-data": "node scripts/reset-data.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",
