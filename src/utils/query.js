@@ -32,9 +32,16 @@ export function listParams(
   return { page, limit, sort, filter };
 }
 
-export const paginated = (res, data, { page, limit, total }) =>
+/**
+ * `extra` carries anything the screen needs *about the whole result*, not this page of it —
+ * a tally per status, say. It belongs in the same reply because it has to be computed from
+ * the same filter: a count fetched separately is a count that can disagree with the rows
+ * underneath it the moment anything else on the screen changes.
+ */
+export const paginated = (res, data, { page, limit, total }, extra = undefined) =>
   res.json({
     success: true,
     data,
     pagination: { page, limit, total, pages: Math.ceil(total / limit) || 1 },
+    ...(extra || {}),
   });

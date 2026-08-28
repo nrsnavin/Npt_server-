@@ -169,3 +169,37 @@ test('the list says who each lead belongs to', async () => {
 
   assert.equal(row.assignedTo?.name, 'Kavitha R');
 });
+
+/* ------------------------------ The stage tally ------------------------------ */
+
+test('the list says how many sit at each stage', async () => {
+  // The stage buttons are only worth pressing if they carry a figure; five cards reading
+  // "Show" are chrome where the shape of somebody's week should be.
+  const { json } = await api('/api/leads', { token: admin });
+
+  assert.equal(json.stageCounts.new.leads, 3, JSON.stringify(json.stageCounts));
+  assert.equal(typeof json.stageCounts.new.value, 'number');
+});
+
+test('the tally follows every filter except the stage itself', async () => {
+  /*
+   * The one that makes the buttons usable. Narrowed to a colleague, each stage must say how
+   * many of *their* leads it would show — and it must keep saying that after a stage is
+   * chosen, or picking one collapses the other four to zero and there is no way back.
+   */
+  const mine = await api(`/api/leads?assignedTo=${nandhiniId}`, { token: admin });
+  assert.equal(mine.json.stageCounts.new.leads, 2, 'narrowed to the owner');
+
+  const andStage = await api(`/api/leads?assignedTo=${nandhiniId}&status=new`, { token: admin });
+  assert.equal(andStage.json.data.length, 2, 'the rows are narrowed to the stage');
+  assert.equal(
+    andStage.json.stageCounts.new.leads,
+    2,
+    'but the tally still counts what each stage would show'
+  );
+});
+
+test('a stage with nothing in it is simply absent, not a zero that lies', async () => {
+  const { json } = await api('/api/leads', { token: admin });
+  assert.equal(json.stageCounts.converted, undefined);
+});

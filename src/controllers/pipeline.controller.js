@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
@@ -39,7 +40,7 @@ const EXPORT_LIMIT = 5000;
  * started to drift — the screen would have narrowed to a town and the download would have
  * quietly handed over the lot, which is the kind of wrong figure that reaches a meeting.
  */
-function leadFilters(req) {
+function leadFilters(req, { withStatus = true } = {}) {
   const scope = ownershipFilter(req.user);
   const filter = { ...scope };
 
@@ -53,11 +54,28 @@ function leadFilters(req) {
    */
   if (req.query.assignedTo) {
     const asked = String(req.query.assignedTo);
+    if (!mongoose.isValidObjectId(asked)) throw ApiError.badRequest('That is not a colleague');
+
     filter.assignedTo =
-      scope.assignedTo && String(scope.assignedTo) !== asked ? { $in: [] } : req.query.assignedTo;
+      scope.assignedTo && String(scope.assignedTo) !== asked
+        ? { $in: [] }
+        : /*
+           * Cast here rather than left as the string off the query.
+           *
+           * `find` casts a string to an ObjectId for you and `aggregate` does not — so the
+           * same filter object narrowed the rows correctly and matched nothing at all in the
+           * stage tally beside them. Every stage read empty while the list underneath showed
+           * leads, which is the kind of disagreement a reader blames on the figures.
+           */
+          mongoose.Types.ObjectId.createFromHexString(asked);
   }
 
-  if (req.query.status) filter.status = req.query.status;
+  /*
+   * The stage tally is the one caller that wants every other filter and not this one — it has
+   * to say how many each stage *would* show, and a tally narrowed to the stage already chosen
+   * would read "Qualified 7" beside four zeroes.
+   */
+  if (withStatus && req.query.status) filter.status = req.query.status;
   if (req.query.source) filter.source = req.query.source;
   /*
    * Narrowing to a place, so a dot on the map is something you can click through to. Matched
@@ -67,7 +85,9 @@ function leadFilters(req) {
    */
   if (req.query.city) filter.city = spelledLike(req.query.city);
   if (req.query.state) filter.state = spelledLike(req.query.state);
-  if (req.query.open === 'true') filter.status = { $nin: ['converted', 'disqualified'] };
+  if (withStatus && req.query.open === 'true') {
+    filter.status = { $nin: ['converted', 'disqualified'] };
+  }
 
   return filter;
 }
@@ -537,12 +557,32 @@ export const listLeads = asyncHandler(async (req, res) => {
 
   Object.assign(filter, leadFilters(req));
 
-  const [data, total] = await Promise.all([
+  /*
+   * How many sit at each stage, and what they are worth.
+   *
+   * The stage buttons above the list used to say "Show" — five identical cards carrying no
+   * information, which is a row of chrome where the shape of somebody's week should be. The
+   * tally comes back with the rows rather than from its own endpoint because it has to be
+   * computed from the same filter: fetched separately, it would disagree with the list
+   * underneath it the moment a town or a colleague was chosen.
+   */
+  const tallyFilter = { ...filter, ...leadFilters(req, { withStatus: false }) };
+  delete tallyFilter.status;
+
+  const [data, total, stages] = await Promise.all([
     Lead.find(filter).populate('assignedTo', 'name').sort(sort).skip((page - 1) * limit).limit(limit),
     Lead.countDocuments(filter),
+    Lead.aggregate([
+      { $match: tallyFilter },
+      { $group: { _id: '$status', leads: { $sum: 1 }, value: { $sum: '$estimatedValue' } } },
+    ]),
   ]);
 
-  paginated(res, data, { page, limit, total });
+  const stageCounts = Object.fromEntries(
+    stages.map((row) => [row._id, { leads: row.leads, value: row.value || 0 }])
+  );
+
+  paginated(res, data, { page, limit, total }, { stageCounts });
 });
 
 export const getLead = asyncHandler(async (req, res) => {
