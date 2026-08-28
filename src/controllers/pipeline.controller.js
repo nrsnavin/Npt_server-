@@ -3,6 +3,7 @@ import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
+import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
@@ -39,7 +40,22 @@ const EXPORT_LIMIT = 5000;
  * quietly handed over the lot, which is the kind of wrong figure that reaches a meeting.
  */
 function leadFilters(req) {
-  const filter = { ...ownershipFilter(req.user) };
+  const scope = ownershipFilter(req.user);
+  const filter = { ...scope };
+
+  /*
+   * Narrowing to one marketing person's leads.
+   *
+   * It may only ever narrow. Ownership has already pinned `assignedTo` for a marketing
+   * person, and assigning over it would have handed anyone their colleague's book by typing
+   * a different id into the address bar — the exact rule §29 exists to enforce, undone by a
+   * filter meant for their manager. So where the two disagree, the answer is nothing.
+   */
+  if (req.query.assignedTo) {
+    const asked = String(req.query.assignedTo);
+    filter.assignedTo =
+      scope.assignedTo && String(scope.assignedTo) !== asked ? { $in: [] } : req.query.assignedTo;
+  }
 
   if (req.query.status) filter.status = req.query.status;
   if (req.query.source) filter.source = req.query.source;
@@ -662,6 +678,39 @@ export const leadFollowUps = asyncHandler(async (req, res) => {
  * One endpoint rather than two because they are read together: the funnel says how many are
  * at each stage, and the anomaly list says how many of those are only nominally there.
  */
+/**
+ * Who is holding leads, so the list can be narrowed to one of them.
+ *
+ * Scoped like everything else, which is what makes the filter safe to show to everybody: a
+ * marketing person gets exactly one name — their own — so the picker has nothing to offer them
+ * and the screen simply does not draw it. No role check in the client, and no way to learn a
+ * colleague's id from a screen that is not allowed to show their records.
+ */
+export const leadOwners = asyncHandler(async (req, res) => {
+  const rows = await Lead.aggregate([
+    { $match: ownershipFilter(req.user) },
+    { $group: { _id: '$assignedTo', leads: { $sum: 1 } } },
+  ]);
+
+  const owners = await User.find({ _id: { $in: rows.map((row) => row._id).filter(Boolean) } })
+    .select('name department')
+    .sort('name');
+
+  const counts = new Map(rows.map((row) => [String(row._id), row.leads]));
+
+  res.json({
+    success: true,
+    data: owners.map((owner) => ({
+      _id: owner._id,
+      name: owner.name,
+      department: owner.department,
+      leads: counts.get(String(owner._id)) || 0,
+    })),
+    // Said rather than left to be inferred from a total that does not add up.
+    unassigned: counts.get('null') || counts.get('undefined') || 0,
+  });
+});
+
 export const leadsOverview = asyncHandler(async (req, res) => {
   const scope = ownershipFilter(req.user);
   const [analytics, untouched] = await Promise.all([

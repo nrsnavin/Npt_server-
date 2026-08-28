@@ -3,7 +3,7 @@ import {
   listProducts, getProduct, createProduct, updateProduct,
   listCustomers, getCustomer, createCustomer, updateCustomer, checkDuplicateCustomer,
   listLeads, getLead, createLead, updateLead, addLeadActivity, convertLead,
-  suggestLeadNextStep, leadLogAnalytics, leadFollowUps, leadScoreboard, leadsOverview,
+  suggestLeadNextStep, leadLogAnalytics, leadFollowUps, leadScoreboard, leadsOverview, leadOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, promoteToProduct, enquiryPipeline,
   exportCustomers,
@@ -60,6 +60,9 @@ router.get('/leads/export', requireModule('enquiries'), exportLeads);
 router.get('/leads/follow-ups', requireModule('enquiries'), leadFollowUps);
 router.get('/leads/scoreboard', requireModule('enquiries'), leadScoreboard);
 router.get('/leads/overview', requireModule('enquiries'), leadsOverview);
+// Who holds leads, for the owner filter. Scoped, so it offers a marketing person only
+// themselves — which is what keeps the filter safe to put on everybody's screen.
+router.get('/leads/owners', requireModule('enquiries'), leadOwners);
 router.get('/leads', requireModule('enquiries'), listLeads);
 router.post('/leads', requireModule('enquiries', 'write'), validate(leadSchema), createLead);
 router.get('/leads/:id', requireModule('enquiries'), getLead);
