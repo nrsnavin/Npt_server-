@@ -11,6 +11,7 @@ import { globalSearch } from '../controllers/search.controller.js';
 import { recordHistory } from '../controllers/audit.controller.js';
 import { ask, status as jarvisStatus } from '../controllers/jarvis.controller.js';
 import { listStates, listCities } from '../controllers/place.controller.js';
+import { indiamartStatus, runIndiamartSync } from '../controllers/indiamart.controller.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 
 const router = Router();
@@ -41,6 +42,13 @@ router.get('/jarvis/status', authenticate, authorize('admin'), jarvisStatus);
  */
 router.get('/places/states', authenticate, listStates);
 router.get('/places/cities', authenticate, listCities);
+/*
+ * The IndiaMART feed [§41 by analogy]. Administrators only, and not on the `enquiries` grant:
+ * this is plumbing rather than pipeline — reading it tells you about the *integration*, and
+ * running it by hand spends one of a small number of API calls the whole plant shares.
+ */
+router.get('/integrations/indiamart', authenticate, authorize('admin'), indiamartStatus);
+router.post('/integrations/indiamart/sync', authenticate, authorize('admin'), runIndiamartSync);
 // Who changed what, on one record. Gated on the record, not on the log — see the controller.
 router.get('/history/:model/:id', authenticate, recordHistory);
 // Files are addressed by key rather than through the record they hang off, but the record is

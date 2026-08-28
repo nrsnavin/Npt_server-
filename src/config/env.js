@@ -63,6 +63,39 @@ export const env = {
     /** Total attempts, including the first, for transient network and 5xx failures. */
     maxAttempts: Number(process.env.TWILIO_MAX_ATTEMPTS || 2),
   },
+
+  /**
+   * IndiaMART's Lead Manager pull API [§41 by analogy].
+   *
+   * Pulled rather than pushed. A push needs a public endpoint and signature verification, and
+   * a push missed while the API is down is gone — a missed poll is picked up by the next
+   * window. Nothing here is required: with no key the integration is simply off, which is the
+   * normal state for a deployment that does not sell through IndiaMART.
+   */
+  indiamart: {
+    /** From Lead Manager → Import/Export Leads → API. The whole integration hangs off this. */
+    key: process.env.INDIAMART_CRM_KEY,
+    baseUrl: process.env.INDIAMART_API_URL || 'https://mapi.indiamart.com/wservce/crm/crmListing/v2/',
+    /*
+     * IndiaMART rate-limits this endpoint hard — roughly one call every five minutes — and
+     * answers a burst with an error rather than data. So the poll interval is a floor, not a
+     * preference, and the default sits above it.
+     */
+    pollMinutes: Number(process.env.INDIAMART_POLL_MINUTES ?? 15),
+    /*
+     * How far back the first run reaches when there is no watermark yet. Their window is
+     * capped at seven days; asking for more returns nothing rather than more.
+     */
+    backfillDays: Number(process.env.INDIAMART_BACKFILL_DAYS ?? 7),
+    /*
+     * Re-asked overlap on every poll. Their `QUERY_TIME` is the buyer's clock, not ours, and a
+     * lead landing a minute before the watermark would fall between two windows and never be
+     * seen. Duplicates are free — the unique query id makes ingestion idempotent — so the
+     * overlap costs nothing and closes the gap.
+     */
+    overlapMinutes: Number(process.env.INDIAMART_OVERLAP_MINUTES ?? 10),
+    timeoutMs: Number(process.env.INDIAMART_TIMEOUT_MS || 20000),
+  },
 };
 
 /**

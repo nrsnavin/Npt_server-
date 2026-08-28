@@ -12,7 +12,9 @@ export const CUSTOMER_TYPES = [
 ];
 
 export const RATINGS = ['A', 'B', 'C'];
-export const CUSTOMER_SOURCES = ['manual', 'phone', 'email', 'walk_in', 'referral', 'trade_show', 'whatsapp'];
+export const CUSTOMER_SOURCES = [
+  'manual', 'phone', 'email', 'walk_in', 'referral', 'trade_show', 'whatsapp', 'indiamart',
+];
 
 const contactSchema = new mongoose.Schema(
   {

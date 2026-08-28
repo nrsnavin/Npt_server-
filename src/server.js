@@ -5,6 +5,8 @@ import { configurationProblem, isConfigured } from './providers/twilio.js';
 import { configurationProblem as smtpConfigurationProblem } from './services/notification.service.js';
 import { runSamplingEscalations } from './services/escalation.service.js';
 import { runStallSweep, runLeadStaleSweep } from './services/anomaly.service.js';
+import { isConfigured as isIndiamartConfigured } from './services/indiamart.client.js';
+import { syncIndiamartLeads } from './services/indiamart.ingest.js';
 
 /** Reports how one-time codes will actually reach people on this deployment. */
 function checkOtpDelivery() {
@@ -89,6 +91,59 @@ function startEscalationSweep() {
   return setInterval(sweep, escalationIntervalMinutes * 60 * 1000).unref();
 }
 
+/**
+ * Pulls IndiaMART leads on a timer [§41 by analogy].
+ *
+ * Off unless a key is configured, which is the normal state for a deployment that does not
+ * sell through IndiaMART — an integration that logs a warning every quarter of an hour is one
+ * people learn to ignore, and then miss the warning that mattered.
+ *
+ * The interval is bounded below by *their* rate limit rather than by our appetite: IndiaMART
+ * answers a burst with an error instead of data, so polling harder returns fewer leads, not
+ * more. The watermark is what makes a slow poll safe — nothing is missed by waiting, only
+ * delayed.
+ */
+function startIndiamartPoll() {
+  if (!isIndiamartConfigured()) {
+    console.log('IndiaMART: no key configured — the feed is off');
+    return null;
+  }
+
+  const minutes = env.indiamart.pollMinutes;
+  if (!minutes) {
+    console.log('IndiaMART: polling disabled');
+    return null;
+  }
+
+  const poll = async () => {
+    try {
+      const result = await syncIndiamartLeads();
+      if (result.failed) {
+        console.error(`IndiaMART: sync failed — ${result.error}`);
+      } else if (result.created || result.attachedToExisting) {
+        console.log(
+          `IndiaMART: ${result.created} new lead(s), ` +
+            `${result.attachedToExisting} added to leads we already had, ` +
+            `${result.duplicates} seen before`
+        );
+      }
+    } catch (error) {
+      /*
+       * Swallowed and logged, like every other subscriber. A feed that cannot reach a third
+       * party must not take the API process down with it — the plant's own work does not stop
+       * because IndiaMART is having an afternoon.
+       */
+      console.error('IndiaMART: poll threw —', error.message);
+    }
+  };
+
+  // Once at startup: a process down overnight has a window to catch up on.
+  poll();
+
+  console.log(`IndiaMART: pulling leads every ${minutes} minute(s)`);
+  return setInterval(poll, minutes * 60 * 1000).unref();
+}
+
 async function start() {
   try {
     checkOtpDelivery();
@@ -101,10 +156,12 @@ async function start() {
     });
 
     const escalations = startEscalationSweep();
+    const indiamart = startIndiamartPoll();
 
     const shutdown = (signal) => {
       console.log(`${signal} received, shutting down`);
       clearInterval(escalations);
+      if (indiamart) clearInterval(indiamart);
       server.close(() => process.exit(0));
     };
 
