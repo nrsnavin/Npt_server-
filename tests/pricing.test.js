@@ -893,3 +893,123 @@ test('only costing may edit a sheet', async () => {
   });
   assert.equal(refused.status, 403);
 });
+
+/* --------------------------- Editing a quotation --------------------------- */
+
+/** A draft quotation on a fresh approved costing. */
+const drafted = async (body = {}) => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+  const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST',
+    token: nandhini,
+    body: { quantity: 12000, paymentTerms: '30 days', ...body },
+  });
+  assert.equal(quote.status, 201, quote.json.message);
+  return quote.json.data;
+};
+
+test('a draft quotation can be edited freely', async () => {
+  const quote = await drafted();
+
+  const edited = await api(`/api/quotations/${quote._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: {
+      quantity: 15000,
+      moq: 8000,
+      paymentTerms: '45 days from invoice',
+      packing: '200 pcs per carton',
+    },
+  });
+
+  assert.equal(edited.status, 200, edited.json.message);
+  assert.equal(edited.json.data.quantity, 15000);
+  assert.equal(edited.json.data.moq, 8000);
+  assert.equal(edited.json.data.paymentTerms, '45 days from invoice');
+});
+
+test('once it has gone out, the offer only changes through a revision [§10]', async () => {
+  const quote = await drafted();
+  await api(`/api/quotations/${quote._id}/send`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+
+  const sneaky = await api(`/api/quotations/${quote._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { paymentTerms: '90 days from invoice', quantity: 500 },
+  });
+
+  assert.equal(sneaky.status, 400);
+  assert.match(sneaky.json.message, /already gone to the customer/i);
+  // And it names what it refused, so the message is actionable rather than a wall.
+  assert.match(sneaky.json.message, /quantity/);
+  assert.match(sneaky.json.message, /paymentTerms/);
+
+  // Nothing moved.
+  const unchanged = await api(`/api/quotations/${quote._id}`, { token: nandhini });
+  assert.equal(unchanged.json.data.paymentTerms, '30 days');
+  assert.equal(unchanged.json.data.quantity, 12000);
+});
+
+test('a revision is the way through, and it keeps what was said', async () => {
+  const quote = await drafted();
+  await api(`/api/quotations/${quote._id}/send`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+
+  const revised = await api(`/api/quotations/${quote._id}/revisions`, {
+    method: 'POST',
+    token: nandhini,
+    body: { unitPrice: 8.5, paymentTerms: '90 days from invoice', note: 'Buyer pushed on terms' },
+  });
+
+  assert.equal(revised.status, 200, revised.json.message);
+  assert.equal(revised.json.data.paymentTerms, '90 days from invoice');
+  assert.equal(revised.json.data.revisions[0].paymentTerms, '30 days', 'Rev 0 keeps what it said');
+  assert.equal(revised.json.data.revisions[1].paymentTerms, '90 days from invoice');
+});
+
+test('the bookkeeping behind a sent quote is still editable', async () => {
+  const quote = await drafted();
+  await api(`/api/quotations/${quote._id}/send`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+
+  /*
+   * Linking a sent quotation to the enquiry it belongs to changes nothing the buyer was told,
+   * so it must not need a revision — a rule that blocks corrections as well as rewrites is one
+   * people route around.
+   */
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer, product, source: 'manual',
+      requirement: { modelNumber: 'NH-400', quantity: 12000 },
+      ...followUp,
+    },
+  });
+
+  const linked = await api(`/api/quotations/${quote._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { enquiry: enquiry.json.data._id },
+  });
+
+  assert.equal(linked.status, 200, linked.json.message);
+});
+
+test('an answered quotation cannot be edited at all', async () => {
+  const quote = await drafted();
+  await api(`/api/quotations/${quote._id}/send`, { method: 'POST', token: nandhini, body: {} });
+  await api(`/api/quotations/${quote._id}/response`, {
+    method: 'POST', token: nandhini, body: { accepted: true },
+  });
+
+  const edited = await api(`/api/quotations/${quote._id}`, {
+    method: 'PATCH', token: nandhini, body: { packing: 'anything' },
+  });
+  assert.equal(edited.status, 400);
+  assert.match(edited.json.message, /accepted/i);
+});

@@ -199,7 +199,43 @@ export const createQuotation = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: quotation });
 });
 
-/** Editing the terms of a draft. The price has its own door — see `reviseQuotation`. */
+/**
+ * Everything on a quotation that the customer actually reads.
+ *
+ * Named as a list because the rule below turns on it: once a quote has gone out, none of these
+ * may move except through a revision. The links behind it — which enquiry, which costing, whose
+ * name is on it — are bookkeeping and stay editable, because correcting them changes nothing
+ * the buyer was told.
+ */
+const DOCUMENT_FIELDS = [
+  'quantity', 'moq', 'unitPrice', 'gstPercent', 'isExport', 'modelNumber',
+  'paymentTerms', 'deliveryTerms', 'freightTerms', 'packing', 'validUntil', 'remarks',
+];
+
+/** True when this patch would change something the customer has already been shown. */
+const changesTheOffer = (quotation, patch) =>
+  DOCUMENT_FIELDS.filter((field) => {
+    if (patch[field] === undefined) return false;
+    const current = quotation[field];
+    // Dates arrive as strings or Dates depending on the door; compare what they mean.
+    if (current instanceof Date) return new Date(patch[field]).getTime() !== current.getTime();
+    return patch[field] !== current;
+  });
+
+/**
+ * Editing a quotation.
+ *
+ * **Free while it is still a draft, revisions only once it has been sent.** The doc comment
+ * here used to say "editing the terms of a draft" and the code never checked — so the payment
+ * terms, the validity, even the quantity of a quote already sitting in a buyer's inbox could
+ * be rewritten in place, with nothing in the history to say the offer had changed. That is the
+ * same failure §10 exists to prevent for price, and it is arguably worse: a price at least had
+ * its own door.
+ *
+ * A revision can express any of it — the revision record carries the quantity, the terms and
+ * the validity as well as the price — so nothing is lost by routing changes through it. What is
+ * gained is that six weeks later "what did we last tell them?" still has an answer.
+ */
 export const updateQuotation = asyncHandler(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id);
   if (!quotation) throw ApiError.notFound('Quotation not found');
@@ -209,6 +245,20 @@ export const updateQuotation = asyncHandler(async (req, res) => {
   }
   if (req.body.unitPrice !== undefined && req.body.unitPrice !== quotation.unitPrice) {
     throw ApiError.badRequest('Use a revision to change the price, so the old one is kept');
+  }
+
+  /*
+   * `sentAt` rather than the status, because the status moves on afterwards — `revised`,
+   * `approval_pending` — and what matters is only whether the customer has ever seen it.
+   */
+  if (quotation.sentAt) {
+    const changed = changesTheOffer(quotation, withoutVersion(req.body));
+    if (changed.length) {
+      throw ApiError.badRequest(
+        `This quotation has already gone to the customer, so ${changed.join(', ')} ` +
+          'can only change through a revision — that way what they were told is still on record.'
+      );
+    }
   }
 
   expectVersion(quotation, req.body);
