@@ -4,6 +4,7 @@ import authRoutes from './auth.routes.js';
 import userRoutes from './user.routes.js';
 import workspaceRoutes from './workspace.routes.js';
 import pipelineRoutes from './pipeline.routes.js';
+import pricingRoutes from './pricing.routes.js';
 import sampleRoutes from './sample.routes.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
 import { globalSearch } from '../controllers/search.controller.js';
@@ -45,6 +46,9 @@ router.get('/history/:model/:id', authenticate, recordHistory);
 // Files are addressed by key rather than through the record they hang off, but the record is
 // still what decides who may read one — see downloadAttachment.
 router.get('/files/:key', authenticate, downloadAttachment);
+// Phase 3 [§39]: costings and quotations. Mounted before the catch-all pipeline routes so
+// their literal segments win.
+router.use('/', pricingRoutes);
 router.use('/', pipelineRoutes);
 
 export default router;

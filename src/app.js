@@ -12,6 +12,7 @@ import { notFoundHandler, errorHandler } from './middleware/error.js';
 import { registerSamplingSubscribers } from './subscribers/sampling.subscriber.js';
 import { registerPricingSubscribers } from './subscribers/pricing.subscriber.js';
 import { registerOrderSubscribers } from './subscribers/orders.subscriber.js';
+import { registerQuotationSubscribers } from './subscribers/quotation.subscriber.js';
 
 const app = express();
 
@@ -69,6 +70,7 @@ app.use('/api', routes);
 registerSamplingSubscribers();
 registerPricingSubscribers();
 registerOrderSubscribers();
+registerQuotationSubscribers();
 
 app.use(notFoundHandler);
 app.use(errorHandler);

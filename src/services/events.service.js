@@ -28,6 +28,20 @@ export const EVENTS = {
   ENQUIRY_WON: 'enquiry.won',
   ENQUIRY_LOST: 'enquiry.lost',
 
+  /** Phase 3 — pricing and quoting [§7, §9, §10]. */
+  PRICING_REQUESTED: 'pricing.requested',
+  /** The sheet is built and the price is at or above the floor: marketing may quote it. */
+  PRICING_APPROVED: 'pricing.approved',
+  /** Below the floor [§9]: nothing may be quoted until somebody signs it off. */
+  PRICING_APPROVAL_REQUIRED: 'pricing.approval_required',
+  PRICING_REJECTED: 'pricing.rejected',
+
+  QUOTATION_CREATED: 'quotation.created',
+  QUOTATION_SENT: 'quotation.sent',
+  QUOTATION_APPROVAL_REQUIRED: 'quotation.approval_required',
+  QUOTATION_ACCEPTED: 'quotation.accepted',
+  QUOTATION_REJECTED: 'quotation.rejected',
+
   SAMPLE_CREATED: 'sample.created',
   SAMPLE_STATUS_CHANGED: 'sample.status_changed',
   /** Marketing is told the moment the sample is ready to go out [§6]. */
