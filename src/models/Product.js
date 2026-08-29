@@ -1,7 +1,17 @@
 import mongoose from 'mongoose';
 
 export const HANGER_CATEGORIES = ['shirt', 'trouser', 'suit', 'skirt', 'kids', 'lingerie', 'coat', 'multi', 'accessory'];
-export const MATERIALS = ['plastic', 'wood', 'metal', 'velvet', 'acrylic', 'recycled_pp'];
+/**
+ * What the piece is made of.
+ *
+ * `pp` and `hips` are the two the costing sheet actually names — polypropylene and high-impact
+ * polystyrene — and they matter to a price in a way "plastic" does not: they are bought at
+ * different rates per kilo (₹160 against ₹90 on the current sheet), so a costing that records
+ * only "plastic" cannot be checked against the resin bill it came from.
+ */
+export const MATERIALS = [
+  'pp', 'hips', 'plastic', 'wood', 'metal', 'velvet', 'acrylic', 'recycled_pp',
+];
 export const HOOK_TYPES = ['fixed', 'swivel', 'metal_swivel', 'plastic', 'clip'];
 
 /**

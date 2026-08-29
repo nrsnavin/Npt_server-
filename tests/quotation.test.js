@@ -296,16 +296,22 @@ const withCosting = async ({ minimum, approved }) => {
     token: admin,
     body: { customer, quantity: 40000, modelNumber: 'NH-400' },
   });
-  await api(`/api/pricings/${made.json.data._id}/cost`, {
+  const built = await api(`/api/pricings/${made.json.data._id}/cost`, {
     method: 'PATCH',
     token: admin,
     body: {
-      cost: { gramWeight: 22, rawMaterialRate: 95, productionCost: 1 },
-      targetMargin: 20,
-      minimumSellingPrice: minimum,
+      cost: { gramWeight: 22, rawMaterialRate: 95, jobWorkCost: 1 },
+      markupPercent: 20,
+      minimumOverride: minimum,
       approvedSellingPrice: approved,
     },
   });
+  /*
+   * Asserted, because it was not: when the field names changed under it this helper went on
+   * returning an id for a costing that had silently failed to build, and three §9 tests passed
+   * a quote through a gate that was no longer there.
+   */
+  assert.equal(built.status, 200, built.json.message);
   return made.json.data._id;
 };
 

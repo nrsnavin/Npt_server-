@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { MATERIALS } from './Product.js';
+import { MINIMUM_TIER, minimumFor, priceAt, tiersFor } from '../services/pricing.service.js';
 
 /**
  * A costing, from the request to the price marketing is allowed to quote [BLUEPRINT §7, §9].
@@ -48,9 +49,22 @@ const costSchema = new mongoose.Schema(
     /** ₹ per kilo, as the market quotes it. */
     rawMaterialRate: { type: Number, min: 0 },
 
-    productionCost: { type: Number, min: 0, default: 0 },
-    printingCost: { type: Number, min: 0, default: 0 },
+    /*
+     * The conversion lines, in the plant's own words rather than in generic ones.
+     *
+     * `jobWorkCost` is what the sheet calls it — the moulding and finishing bought or done on
+     * this piece. It was `productionCost` here, which is close enough to be understood and far
+     * enough that a costing clerk reading the screen has to translate. A costing sheet people
+     * translate is one they keep in a spreadsheet instead.
+     *
+     * Metal clips earn their own line for the same reason: they are on the sheet, they are not
+     * a hook, and folding them into `other` loses the one thing anybody wants to know about a
+     * clipped hanger, which is what the clips cost.
+     */
+    jobWorkCost: { type: Number, min: 0, default: 0 },
     hookCost: { type: Number, min: 0, default: 0 },
+    metalClipsCost: { type: Number, min: 0, default: 0 },
+    printingCost: { type: Number, min: 0, default: 0 },
     packingCost: { type: Number, min: 0, default: 0 },
     otherCost: { type: Number, min: 0, default: 0 },
   },
@@ -71,6 +85,19 @@ const pricingSchema = new mongoose.Schema(
     quantity: { type: Number, min: 0, required: true },
     material: { type: String, enum: MATERIALS },
 
+    /**
+     * Made here, or bought and resold [the sheet's TRADE / MANUFACTURE column].
+     *
+     * SAP keeps the same distinction as a procurement type on the material master, and it is
+     * not decoration: a traded item carries no moulding of ours and its cost moves with a
+     * supplier's price list rather than with our resin rate, so the two answer to different
+     * questions when a price has to be defended.
+     */
+    procurement: { type: String, enum: ['manufacture', 'trade'], default: 'manufacture', index: true },
+
+    /** What is being printed, in the sheet's words — "1 COLOUR", "2 COLOUR". */
+    printing: { type: String, trim: true },
+
     /*
      * There is deliberately no MOQ here.
      *
@@ -83,20 +110,28 @@ const pricingSchema = new mongoose.Schema(
 
     cost: { type: costSchema, default: () => ({}) },
 
-    /** Percent. The margin the plant wants on this job, before any negotiation. */
-    targetMargin: { type: Number, min: 0, max: 100, default: 0 },
+    /**
+     * Percent *added to cost* — the sheet's 10 / 15 / 20 columns.
+     *
+     * Not a margin on the selling price. See `pricing.service.js` for the evidence; the two
+     * conventions are both real and only one of them is this plant's.
+     */
+    markupPercent: { type: Number, min: 0, max: 500, default: MINIMUM_TIER },
 
     /**
-     * The three prices, and they are three different things.
+     * The prices, and they are different things.
      *
-     * `calculated` is arithmetic — cost plus the target margin — and is never typed.
+     * `calculated` is arithmetic — cost at this sheet's markup — and is never typed.
      * `approved` is what marketing may quote, which is often lower after a conversation.
-     * `minimum` is the floor: below it the sheet needs MD approval before anything is quoted
-     * [§9], and it is the figure §8 keeps away from marketing entirely.
+     *
+     * The floor is *derived* from the cost at the lowest standing tier, so it is not stored:
+     * on the sheet the minimum selling price simply is the 10% column, and a typed copy of a
+     * computed number is a second version of the truth waiting to disagree. `minimumOverride`
+     * exists for the job that genuinely has a floor of its own.
      */
     calculatedSellingPrice: { type: Number, min: 0 },
     approvedSellingPrice: { type: Number, min: 0 },
-    minimumSellingPrice: { type: Number, min: 0 },
+    minimumOverride: { type: Number, min: 0 },
 
     status: { type: String, enum: PRICING_STATUSES, default: 'requested', index: true },
     statusHistory: [statusChangeSchema],
@@ -132,17 +167,47 @@ pricingSchema.virtual('materialCost').get(function materialCost() {
   return (gramWeight * rawMaterialRate) / 1000;
 });
 
-/** Everything it costs to put one piece in a carton. */
+/**
+ * Everything it costs to put one piece in a carton — the sheet's Net Total.
+ *
+ * Built on the *unrounded* material cost. The sheet displays that line to one decimal and
+ * computes on the full value; summing what is displayed reproduces only 14 of its 25 rows,
+ * summing the full value reproduces 24. A costing that disagrees with the spreadsheet in the
+ * second decimal is a costing somebody re-checks by hand every time.
+ */
 pricingSchema.virtual('totalCost').get(function totalCost() {
   const cost = this.cost || {};
   return (
     this.materialCost +
-    (cost.productionCost || 0) +
-    (cost.printingCost || 0) +
+    (cost.jobWorkCost || 0) +
     (cost.hookCost || 0) +
+    (cost.metalClipsCost || 0) +
+    (cost.printingCost || 0) +
     (cost.packingCost || 0) +
     (cost.otherCost || 0)
   );
+});
+
+/**
+ * The three standing prices, side by side, as the sheet shows them.
+ *
+ * Returned whole rather than one at a time because choosing between them is the actual pricing
+ * decision — a single "calculated price" hides the judgement and makes the sheet look like it
+ * has one answer.
+ */
+pricingSchema.virtual('tiers').get(function tiers() {
+  return tiersFor(this.totalCost);
+});
+
+/**
+ * The floor [§9]: cost at the lowest standing tier, or the override if this job has one.
+ *
+ * Kept as a virtual named exactly what the old stored field was called, so every reader — the
+ * §8 redaction list, the quotation gate, the screens — goes on asking the same question and
+ * gets an answer that cannot drift from the cost above it.
+ */
+pricingSchema.virtual('minimumSellingPrice').get(function minimumSellingPrice() {
+  return minimumFor(this);
 });
 
 /**
@@ -150,11 +215,29 @@ pricingSchema.virtual('totalCost').get(function totalCost() {
  *
  * Off the *approved* price rather than the calculated one, because that is the price the
  * customer will be given — the margin on a number nobody quoted is not a fact about this job.
+ *
+ * This one genuinely is a margin on the selling price, and that is not a contradiction of the
+ * markup above: a markup is how the price is *built*, a margin is what the price *earns*. A
+ * 10% markup is a 9.1% margin, and an accountant asked "what do we make on this" means the
+ * second. Both are on the sheet because both get asked.
  */
 pricingSchema.virtual('grossMarginPercent').get(function grossMarginPercent() {
   const price = this.approvedSellingPrice ?? this.calculatedSellingPrice;
   if (!price || !this.totalCost) return null;
   return Math.round(((price - this.totalCost) / price) * 1000) / 10;
+});
+
+/**
+ * The markup the approved price actually represents, which is the number the sheet speaks in.
+ *
+ * A price agreed in conversation rarely lands on a tier. Saying "that is cost + 6.4%" is how
+ * somebody judges it against the standing 10 / 15 / 20 without doing the arithmetic in their
+ * head, and it is the figure that makes a discount visible as a decision rather than a number.
+ */
+pricingSchema.virtual('effectiveMarkupPercent').get(function effectiveMarkupPercent() {
+  const price = this.approvedSellingPrice ?? this.calculatedSellingPrice;
+  if (!price || !this.totalCost) return null;
+  return Math.round(((price - this.totalCost) / this.totalCost) * 1000) / 10;
 });
 
 /** True when the price marketing may quote sits under the floor [§9]. */

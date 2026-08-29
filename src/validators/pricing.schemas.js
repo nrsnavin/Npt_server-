@@ -17,6 +17,9 @@ export const pricingSchema = z.object({
   modelNumber: z.string().optional(),
   quantity: z.number().positive('A costing needs the quantity it is for'),
   material: z.enum(MATERIALS).optional(),
+  /** Made here or bought in — the sheet's TRADE / MANUFACTURE column. */
+  procurement: z.enum(['manufacture', 'trade']).optional(),
+  printing: z.string().optional(),
   targetPrice: money.optional(),
   remarks: z.string().optional(),
 });
@@ -38,16 +41,24 @@ export const pricingCostSchema = z
       .object({
         gramWeight: money.optional(),
         rawMaterialRate: money.optional(),
-        productionCost: money.optional(),
-        printingCost: money.optional(),
+        jobWorkCost: money.optional(),
         hookCost: money.optional(),
+        metalClipsCost: money.optional(),
+        printingCost: money.optional(),
         packingCost: money.optional(),
         otherCost: money.optional(),
       })
       .optional(),
-    targetMargin: z.number().min(0).max(100).optional(),
+    /** Percent added to cost. The sheet's tiers are 10, 15 and 20. */
+    markupPercent: z.number().min(0).max(500).optional(),
     approvedSellingPrice: money.optional(),
-    minimumSellingPrice: money.optional(),
+    /**
+     * Only for a job whose floor is genuinely its own. Left out, the minimum is the cost at
+     * the lowest standing tier — which is what the sheet means by it.
+     */
+    minimumOverride: money.optional(),
+    printing: z.string().optional(),
+    procurement: z.enum(['manufacture', 'trade']).optional(),
     remarks: z.string().optional(),
   })
   .extend(versioned);
@@ -69,6 +80,8 @@ export const pricingUpdateSchema = z
     modelNumber: z.string().optional(),
     quantity: z.number().positive('A costing needs the quantity it is for').optional(),
     material: z.enum(MATERIALS).optional(),
+    procurement: z.enum(['manufacture', 'trade']).optional(),
+    printing: z.string().optional(),
     targetPrice: money.optional(),
     remarks: z.string().optional(),
   })

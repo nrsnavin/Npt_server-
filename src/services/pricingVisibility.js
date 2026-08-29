@@ -32,8 +32,17 @@ export const CONFIDENTIAL = [
   'materialCost',
   'totalCost',
   'grossMarginPercent',
-  'targetMargin',
+  'effectiveMarkupPercent',
+  'markupPercent',
   'minimumSellingPrice',
+  'minimumOverride',
+  /*
+   * The tier table is the cost base in disguise. Three prices in a fixed 10 / 15 / 20 ratio
+   * let anyone divide back to the cost in one step, so publishing them would undo the rest of
+   * this list — the most expensive kind of leak, because every individual field on it looks
+   * innocent.
+   */
+  'tiers',
 ];
 
 /**

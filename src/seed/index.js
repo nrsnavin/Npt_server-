@@ -13,6 +13,7 @@ import StickyNote from '../models/StickyNote.js';
 import Announcement from '../models/Announcement.js';
 import { defaultAccessFor, DEPARTMENTS } from '../config/modules.js';
 import { seedPipeline } from './pipeline.js';
+import { seedPricing } from './pricing.js';
 
 /** Dates relative to today, so the reminder feed always has something to show. */
 const days = (offset, hour = 17) => {
@@ -143,6 +144,12 @@ async function seed() {
     meera: byEmail['sampling@npthangers.com'],
   });
 
+  console.log("Adding the costings and quotations from the plant's own 26-27 sheet...");
+  const pricing = await seedPricing({
+    admin: byEmail['admin@npthangers.com'],
+    nandhini: byEmail['marketing@npthangers.com'],
+  });
+
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));
 
   console.log('\nSeed complete. Sign in with a password:\n');
@@ -156,6 +163,11 @@ async function seed() {
   console.log(
     `  Phase 1: ${counts.products} products, ${counts.customers} customers, ` +
       `${counts.leads} leads, ${counts.enquiries} enquiries, ${counts.samples} samples.`
+  );
+  console.log(
+    `  Phase 3: ${pricing.pricings} costings and ${pricing.quotations} quotations from the ` +
+      `26-27 sheet, across ${pricing.productsAdded} more models — ` +
+      `${pricing.belowFloor} of them priced under their own floor, waiting on §9 approval.`
   );
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');

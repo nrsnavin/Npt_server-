@@ -124,6 +124,15 @@ export const createPricing = asyncHandler(async (req, res) => {
     customer: customerId,
     modelNumber: req.body.modelNumber || product?.modelCode,
     material: req.body.material || product?.material,
+    /*
+     * The gram weight is the one cost line the catalogue already knows, and re-typing it is
+     * how a costing ends up priced for a piece that weighs something else. The rate is not
+     * copied: it is today's resin price, which the master has no business remembering.
+     */
+    cost: {
+      ...(product?.standardWeightGrams ? { gramWeight: product.standardWeightGrams } : {}),
+      ...(req.body.cost || {}),
+    },
     number: await nextNumber('PRC'),
     requestedBy: req.user._id,
     statusHistory: [{ to: 'requested', by: req.user._id }],
@@ -181,12 +190,15 @@ export const costPricing = asyncHandler(async (req, res) => {
   expectVersion(pricing, req.body);
   const before = snapshot(pricing);
 
-  const { cost, targetMargin, approvedSellingPrice, minimumSellingPrice, remarks } =
-    withoutVersion(req.body);
+  const {
+    cost, markupPercent, approvedSellingPrice, minimumOverride, printing, procurement, remarks,
+  } = withoutVersion(req.body);
 
   if (cost) pricing.cost = { ...pricing.cost?.toObject?.(), ...cost };
-  if (targetMargin !== undefined) pricing.targetMargin = targetMargin;
-  if (minimumSellingPrice !== undefined) pricing.minimumSellingPrice = minimumSellingPrice;
+  if (markupPercent !== undefined) pricing.markupPercent = markupPercent;
+  if (minimumOverride !== undefined) pricing.minimumOverride = minimumOverride;
+  if (printing !== undefined) pricing.printing = printing;
+  if (procurement !== undefined) pricing.procurement = procurement;
   if (remarks !== undefined) pricing.remarks = remarks;
 
   // Derived, never typed — see the note above.

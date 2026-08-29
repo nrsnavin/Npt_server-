@@ -21,7 +21,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
 import { CONFIDENTIAL, PUBLIC_FIGURES } from '../src/services/pricingVisibility.js';
-import { priceFrom } from '../src/services/pricing.service.js';
+import { minimumFor, priceFrom, tiersFor } from '../src/services/pricing.service.js';
 
 process.env.JWT_SECRET = 'pricing-test-secret-value';
 
@@ -55,7 +55,7 @@ const signIn = async (email, password) => {
 };
 
 /** A costing that has been built, with a floor under the approved price unless asked otherwise. */
-const costed = async ({ approvedSellingPrice, minimumSellingPrice = 8, product: on } = {}) => {
+const costed = async ({ approvedSellingPrice, minimumOverride = 8, product: on } = {}) => {
   const made = await api('/api/pricings', {
     method: 'POST',
     token: admin,
@@ -70,9 +70,9 @@ const costed = async ({ approvedSellingPrice, minimumSellingPrice = 8, product: 
     method: 'PATCH',
     token: admin,
     body: {
-      cost: { gramWeight: 22, rawMaterialRate: 95, productionCost: 1.1, packingCost: 0.4 },
-      targetMargin: 20,
-      minimumSellingPrice,
+      cost: { gramWeight: 22, rawMaterialRate: 95, jobWorkCost: 1.1, packingCost: 0.4 },
+      markupPercent: 20,
+      minimumOverride,
       ...(approvedSellingPrice !== undefined ? { approvedSellingPrice } : {}),
     },
   });
@@ -126,24 +126,35 @@ test.after(async () => {
 
 /* --------------------------------- The sheet --------------------------------- */
 
-test('the selling price is margin on the price, not margin on the cost', async () => {
+test('the selling price is cost plus a markup, the way the sheet works it', async () => {
   /*
-   * The difference is bigger than people expect, and quoting one while believing the other is
-   * how a job that looked profitable is not. ₹10 at 20% is ₹12.50, never ₹12.
+   * Verified against the plant's own 26-27 quotation sheet: all 25 rows are `cost x (1 + pct)`.
+   * This test used to assert the opposite convention — margin *on the selling price* — which is
+   * a real convention and not this business's. At 10% the two agree to the paisa, which is why
+   * it went unnoticed; at 20% they differ by 4%, and every quoted price was wrong by that much.
    */
-  assert.equal(priceFrom({ totalCost: 10, targetMargin: 20 }), 12.5);
-  assert.equal(priceFrom({ totalCost: 10, targetMargin: 0 }), 10);
-  assert.equal(priceFrom({ totalCost: 0, targetMargin: 20 }), undefined, 'no cost, no price');
-  assert.equal(priceFrom({ totalCost: 10, targetMargin: 100 }), 10, 'and 100% does not divide by zero');
-});
+  assert.equal(priceFrom({ totalCost: 10, markupPercent: 20 }), 12);
+  assert.equal(priceFrom({ totalCost: 10, markupPercent: 0 }), 10);
+  assert.equal(priceFrom({ totalCost: 6.95, markupPercent: 10 }), 7.65, "the sheet's first row");
+  assert.equal(priceFrom({ totalCost: 0, markupPercent: 20 }), undefined, 'no cost, no price');
 
+  // All three standing tiers at once, because the sheet shows them side by side.
+  assert.deepEqual(tiersFor(6.95), { 10: 7.65, 15: 7.99, 20: 8.34 });
+
+  // And the floor is the lowest of them rather than a number somebody typed.
+  assert.equal(minimumFor({ totalCost: 6.95 }), 7.65);
+  assert.equal(minimumFor({ totalCost: 6.95, minimumOverride: 5 }), 5, 'unless this job has its own');
+});
 test('the sheet adds up, and the calculated price cannot be typed', async () => {
   const sheet = await costed();
 
-  // 22g at ₹95/kg = ₹2.09, plus 1.1 production and 0.4 packing = ₹3.59.
+  // 22g at ₹95/kg = ₹2.09, plus 1.1 job work and 0.4 packing = ₹3.59.
   assert.equal(sheet.materialCost, 2.09);
   assert.equal(Math.round(sheet.totalCost * 100) / 100, 3.59);
-  assert.equal(sheet.calculatedSellingPrice, 4.49, '3.59 at a 20% margin');
+  assert.equal(sheet.calculatedSellingPrice, 4.31, '3.59 plus a 20% markup');
+
+  // And all three standing tiers come back, because the sheet chooses between them.
+  assert.deepEqual(sheet.tiers, { 10: 3.95, 15: 4.13, 20: 4.31 });
 
   const typed = await api(`/api/pricings/${sheet._id}/cost`, {
     method: 'PATCH',
@@ -155,7 +166,7 @@ test('the sheet adds up, and the calculated price cannot be typed', async () => 
 
 test('the margin is measured on the price actually approved', async () => {
   // The margin on a number nobody quoted is not a fact about this job.
-  const sheet = await costed({ approvedSellingPrice: 5, minimumSellingPrice: 4 });
+  const sheet = await costed({ approvedSellingPrice: 5, minimumOverride: 4 });
   assert.equal(sheet.approvedSellingPrice, 5);
   assert.equal(sheet.grossMarginPercent, 28.2, '(5 − 3.59) / 5');
 });
@@ -240,7 +251,7 @@ test('only costing may build a sheet', async () => {
   const attempt = await api(`/api/pricings/${sheet._id}/cost`, {
     method: 'PATCH',
     token: nandhini,
-    body: { targetMargin: 5 },
+    body: { markupPercent: 5 },
   });
 
   assert.equal(attempt.status, 403);
@@ -250,14 +261,14 @@ test('only costing may build a sheet', async () => {
 /* ------------------------------ §9: the floor ------------------------------ */
 
 test('a price under the floor goes to approval rather than through', async () => {
-  const sheet = await costed({ approvedSellingPrice: 6, minimumSellingPrice: 8 });
+  const sheet = await costed({ approvedSellingPrice: 6, minimumOverride: 8 });
 
   assert.equal(sheet.status, 'approval_pending');
   assert.equal(sheet.belowMinimum, true);
 });
 
 test('a price at or above the floor is approved on the spot', async () => {
-  const sheet = await costed({ approvedSellingPrice: 9, minimumSellingPrice: 8 });
+  const sheet = await costed({ approvedSellingPrice: 9, minimumOverride: 8 });
   assert.equal(sheet.status, 'approved');
 });
 
@@ -266,7 +277,7 @@ test('marketing learns that a quote is blocked, not where the floor is', async (
    * The block has to be explainable or it reads as the system being broken — but explaining it
    * with the figure would hand over the very number §8 protects.
    */
-  const sheet = await costed({ approvedSellingPrice: 6, minimumSellingPrice: 8 });
+  const sheet = await costed({ approvedSellingPrice: 6, minimumOverride: 8 });
   const { json } = await api(`/api/pricings/${sheet._id}`, { token: nandhini });
 
   assert.equal(json.data.belowMinimum, true, 'they can see it is blocked');
@@ -274,7 +285,7 @@ test('marketing learns that a quote is blocked, not where the floor is', async (
 });
 
 test('refusing a price needs a reason, and sends it back', async () => {
-  const sheet = await costed({ approvedSellingPrice: 6, minimumSellingPrice: 8 });
+  const sheet = await costed({ approvedSellingPrice: 6, minimumOverride: 8 });
 
   const bare = await api(`/api/pricings/${sheet._id}/decision`, {
     method: 'POST',
@@ -300,7 +311,7 @@ test('a signed-off sheet stops asking for a signature', async () => {
    * a badge reading Approved is the screen contradicting itself, and the reader believes
    * whichever half is worse news.
    */
-  const sheet = await costed({ approvedSellingPrice: 6, minimumSellingPrice: 8 });
+  const sheet = await costed({ approvedSellingPrice: 6, minimumOverride: 8 });
   assert.equal(sheet.needsApproval, true);
 
   await api(`/api/pricings/${sheet._id}/decision`, {
@@ -315,7 +326,7 @@ test('a signed-off sheet stops asking for a signature', async () => {
 });
 
 test('approving one lets it through', async () => {
-  const sheet = await costed({ approvedSellingPrice: 6, minimumSellingPrice: 8 });
+  const sheet = await costed({ approvedSellingPrice: 6, minimumOverride: 8 });
   const signed = await api(`/api/pricings/${sheet._id}/decision`, {
     method: 'POST',
     token: admin,
@@ -509,7 +520,7 @@ test('a quantity under the stated minimum is refused', async () => {
 });
 
 test('a costing waiting on approval cannot be quoted [§9]', async () => {
-  const sheet = await costed({ approvedSellingPrice: 6, minimumSellingPrice: 8 });
+  const sheet = await costed({ approvedSellingPrice: 6, minimumOverride: 8 });
   assert.equal(sheet.status, 'approval_pending');
 
   const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
@@ -523,7 +534,7 @@ test('a costing waiting on approval cannot be quoted [§9]', async () => {
 });
 
 test('once signed off, the same costing quotes at the sanctioned price', async () => {
-  const sheet = await costed({ approvedSellingPrice: 6, minimumSellingPrice: 8 });
+  const sheet = await costed({ approvedSellingPrice: 6, minimumOverride: 8 });
   await api(`/api/pricings/${sheet._id}/decision`, {
     method: 'POST', token: admin, body: { approve: true },
   });
@@ -570,7 +581,7 @@ test('an enquiry’s costings and quotations are reachable from it', async () =>
   await api(`/api/pricings/${made.json.data._id}/cost`, {
     method: 'PATCH',
     token: admin,
-    body: { cost: { gramWeight: 22, rawMaterialRate: 95 }, targetMargin: 20, minimumSellingPrice: 1 },
+    body: { cost: { gramWeight: 22, rawMaterialRate: 95 }, markupPercent: 20, minimumOverride: 1 },
   });
   await api(`/api/pricings/${made.json.data._id}/quotation`, {
     method: 'POST', token: nandhini, body: { quantity: 20000 },
@@ -617,7 +628,7 @@ test('the quotation renders as a PDF', async () => {
 });
 
 test('the PDF names no cost, margin or floor [§8]', async () => {
-  const sheet = await costed({ approvedSellingPrice: 9, minimumSellingPrice: 8 });
+  const sheet = await costed({ approvedSellingPrice: 9, minimumOverride: 8 });
   const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
     method: 'POST', token: nandhini, body: { quantity: 12000 },
   });
@@ -693,7 +704,7 @@ test('re-sending a quote during a negotiation does not pull the enquiry back', a
   await api(`/api/pricings/${made.json.data._id}/cost`, {
     method: 'PATCH',
     token: admin,
-    body: { cost: { gramWeight: 22, rawMaterialRate: 95 }, targetMargin: 20, minimumSellingPrice: 1 },
+    body: { cost: { gramWeight: 22, rawMaterialRate: 95 }, markupPercent: 20, minimumOverride: 1 },
   });
 
   const quote = await api(`/api/pricings/${made.json.data._id}/quotation`, {
@@ -739,9 +750,9 @@ test('a settled costing can be re-costed rather than abandoned', async () => {
     method: 'PATCH',
     token: admin,
     body: {
-      cost: { gramWeight: 22, rawMaterialRate: 120, productionCost: 1.1, packingCost: 0.4 },
-      targetMargin: 20,
-      minimumSellingPrice: 8,
+      cost: { gramWeight: 22, rawMaterialRate: 120, jobWorkCost: 1.1, packingCost: 0.4 },
+      markupPercent: 20,
+      minimumOverride: 8,
       approvedSellingPrice: 10,
     },
   });
@@ -763,9 +774,9 @@ test('re-costing below the floor sends an approved sheet back for signature [§9
     method: 'PATCH',
     token: admin,
     body: {
-      cost: { gramWeight: 22, rawMaterialRate: 95, productionCost: 1.1, packingCost: 0.4 },
-      targetMargin: 20,
-      minimumSellingPrice: 8,
+      cost: { gramWeight: 22, rawMaterialRate: 95, jobWorkCost: 1.1, packingCost: 0.4 },
+      markupPercent: 20,
+      minimumOverride: 8,
       approvedSellingPrice: 6,
     },
   });
@@ -781,7 +792,7 @@ test('re-costing below the floor sends an approved sheet back for signature [§9
 });
 
 test('re-costing a refused sheet records the move it actually made', async () => {
-  const sheet = await costed({ approvedSellingPrice: 6, minimumSellingPrice: 8 });
+  const sheet = await costed({ approvedSellingPrice: 6, minimumOverride: 8 });
   await api(`/api/pricings/${sheet._id}/decision`, {
     method: 'POST', token: admin, body: { approve: false, note: 'Too thin' },
   });
@@ -790,8 +801,8 @@ test('re-costing a refused sheet records the move it actually made', async () =>
     method: 'PATCH',
     token: admin,
     body: {
-      cost: { gramWeight: 22, rawMaterialRate: 95, productionCost: 1.1 },
-      targetMargin: 20, minimumSellingPrice: 4, approvedSellingPrice: 9,
+      cost: { gramWeight: 22, rawMaterialRate: 95, jobWorkCost: 1.1 },
+      markupPercent: 20, minimumOverride: 4, approvedSellingPrice: 9,
     },
   });
 
@@ -819,7 +830,7 @@ test('a quote already raised keeps its price when the costing is re-costed', asy
     token: admin,
     body: {
       cost: { gramWeight: 30, rawMaterialRate: 120 },
-      targetMargin: 20, minimumSellingPrice: 1, approvedSellingPrice: 14,
+      markupPercent: 20, minimumOverride: 1, approvedSellingPrice: 14,
     },
   });
 
@@ -1038,7 +1049,7 @@ test('a quotation comes back with the names and the costing behind it', async ()
 });
 
 test('the costing on a quotation carries nothing §8 protects', async () => {
-  const sheet = await costed({ approvedSellingPrice: 9, minimumSellingPrice: 8 });
+  const sheet = await costed({ approvedSellingPrice: 9, minimumOverride: 8 });
   const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
     method: 'POST', token: nandhini, body: { quantity: 12000 },
   });
