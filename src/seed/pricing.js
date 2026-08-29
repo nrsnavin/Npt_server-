@@ -71,7 +71,11 @@ export async function seedPricing({ admin, nandhini }) {
   const added = await Product.create(
     SHEET_PRODUCTS.filter((row) => !known.has(row.modelCode)).map((row) => ({
       modelCode: row.modelCode,
-      name: `${row.modelCode} — ${row.sizeMm ? `${row.sizeMm}mm ` : ''}${row.material.toUpperCase()}`,
+      /*
+       * The description only. Screens render "<code> — <name>", so repeating the code here
+       * produces "MAU-35 WB — MAU-35 WB — 350mm PP" wherever a product is named in full.
+       */
+      name: `${row.sizeMm ? `${row.sizeMm}mm ` : ''}${row.material.toUpperCase()} ${row.category} hanger`,
       category: row.category,
       sizeMm: row.sizeMm || 1,
       material: row.material,
