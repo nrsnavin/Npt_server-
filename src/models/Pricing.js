@@ -79,6 +79,17 @@ const pricingSchema = new mongoose.Schema(
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true, index: true },
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
 
+    /**
+     * The tool the gram weight came off, where one is on the register.
+     *
+     * Recorded rather than implied, because the difference between a part weight and a
+     * consumption figure is invisible once it is a single number in a box. A costing that says
+     * "33.0 g, from M-101" can be checked against the mould six months later; one that says
+     * "33.0 g" cannot be checked against anything, and the first person to compare it with the
+     * catalogue's 30 g will assume it is wrong.
+     */
+    mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould', index: true },
+
     /** Copied from the enquiry at request time: a costing is of a quantity, and the enquiry
         may be edited afterwards. A sheet that silently re-prices itself is not a record. */
     modelNumber: { type: String, trim: true },

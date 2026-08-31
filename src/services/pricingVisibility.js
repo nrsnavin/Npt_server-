@@ -1,4 +1,6 @@
 import ApiError from '../utils/ApiError.js';
+import { accessLevel } from './access.service.js';
+import { levelSatisfies } from '../config/modules.js';
 
 /**
  * Who may see what on a costing sheet [BLUEPRINT §8].
@@ -82,6 +84,18 @@ export function visibleTo(pricing, user) {
   for (const field of CONFIDENTIAL) delete plain[field];
 
   /*
+   * The mould travels with the sheet, and it carries its own money. Redacting the cost lines
+   * here while the tool populated beside them reports a machine rate and a cost per piece would
+   * be the leak arriving through the door this function is standing in front of.
+   *
+   * Only when it is actually populated — an unpopulated reference serialises to an id, and
+   * spreading a string produces an object of numbered characters.
+   */
+  if (plain.mould && typeof plain.mould === 'object') {
+    plain.mould = mouldVisibleTo(plain.mould, user);
+  }
+
+  /*
    * Kept: facts about what may happen next, not figures. `needsApproval` is the one the screen
    * should show — a sheet MD has signed off is still under the floor and is cleared to quote,
    * and saying "needs approval" beside a badge reading Approved is the screen contradicting
@@ -94,6 +108,55 @@ export function visibleTo(pricing, user) {
 }
 
 export const allVisibleTo = (rows, user) => rows.map((row) => visibleTo(row, user));
+
+/**
+ * The mould register's own confidential half.
+ *
+ * §8 is written about the costing sheet, but the rule it states is about *figures*, not about a
+ * collection — and a machine hour rate is a cost by any reading. Left in the open it also
+ * defeats the redaction above rather than merely sitting beside it: the register publishes the
+ * gram weight and the pieces per hour, so an hourly rate hands a reader the conversion cost
+ * directly and the resin cost as soon as they know a rate per kilo, which is a phone call. The
+ * fields §8 protects on the sheet would then be reconstructible from a screen it never mentions.
+ *
+ * Everything else stays visible to anyone holding the register's own grant. Cavities, weights,
+ * cycle time and output are how the plant plans and how marketing answers "can we make it and
+ * how fast" — the point of the register is that those stop being one person's knowledge.
+ */
+export const MOULD_CONFIDENTIAL = ['machineCostPerPiece'];
+
+/**
+ * Who may see the rate: whoever prices, and whoever keeps the register.
+ *
+ * The second half is not a concession, it is a correction. Gating this on the costing grant
+ * alone hid the rate from the production department — the people who own the register, who
+ * measured the machine and who are the only ones who will ever update it. That is not a
+ * redaction but a trap: their edit form loads the field blank, and the next unrelated change
+ * they save writes that blank back over a figure they were never shown. A field somebody may
+ * write and may not read will be destroyed, and nobody will be able to say when.
+ *
+ * §8 is about keeping the cost base away from the people who leave with it. Production is not
+ * that risk; marketing, who hold read on the register and nothing else, still cannot see it.
+ */
+export const seesMachineRate = (user) =>
+  seesCosting(user) || levelSatisfies(accessLevel(user, 'moulds'), 'write');
+
+export function mouldVisibleTo(mould, user) {
+  const plain = typeof mould?.toJSON === 'function' ? mould.toJSON() : { ...mould };
+  if (seesMachineRate(user)) return plain;
+
+  for (const field of MOULD_CONFIDENTIAL) delete plain[field];
+  /* The rate itself, without flattening the rest of the machine — the press and its tonnage
+     are shop-floor facts, and hiding which machine a tool runs on protects nothing. */
+  if (plain.machine) {
+    const { hourRate, ...machine } = plain.machine;
+    plain.machine = machine;
+  }
+  plain.rateHidden = true;
+  return plain;
+}
+
+export const allMouldsVisibleTo = (rows, user) => rows.map((row) => mouldVisibleTo(row, user));
 
 /**
  * Refuses a write that only costing may make.

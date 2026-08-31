@@ -13,6 +13,9 @@ import {
   exportProducts,
   bulkReassign,
 } from '../controllers/pipeline.controller.js';
+import {
+  listMoulds, getMould, createMould, updateMould, exportMoulds,
+} from '../controllers/mould.controller.js';
 import { marketingDashboard } from '../controllers/marketingDashboard.controller.js';
 import { addDocument, listDocuments, removeDocument } from '../controllers/document.controller.js';
 import { singleDocument } from '../middleware/upload.js';
@@ -25,6 +28,7 @@ import {
   enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema,
   promoteProductSchema, bulkReassignSchema,
 } from '../validators/pipeline.schemas.js';
+import { mouldSchema, mouldUpdateSchema } from '../validators/mould.schemas.js';
 
 const router = Router();
 
@@ -43,6 +47,17 @@ router.get('/products', requireModule('products'), listProducts);
 router.post('/products', requireModule('products', 'write'), validate(productSchema), createProduct);
 router.get('/products/:id', requireModule('products'), getProduct);
 router.patch('/products/:id', requireModule('products', 'write'), validate(productUpdateSchema), updateProduct);
+
+/*
+ * Moulds. Its own grant rather than riding on the product master's: the register is the plant's
+ * to keep and everyone else's to read, and a marketing user who may add a model has no business
+ * changing what a cavity weighs.
+ */
+router.get('/moulds/export', requireModule('moulds'), exportMoulds);
+router.get('/moulds', requireModule('moulds'), listMoulds);
+router.post('/moulds', requireModule('moulds', 'write'), validate(mouldSchema), createMould);
+router.get('/moulds/:id', requireModule('moulds'), getMould);
+router.patch('/moulds/:id', requireModule('moulds', 'write'), validate(mouldUpdateSchema), updateMould);
 
 // Customers
 router.get('/customers/export', requireModule('customers'), exportCustomers);

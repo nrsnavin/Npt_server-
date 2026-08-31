@@ -2,6 +2,7 @@ import Pricing, { CLOSED_PRICING_STATUSES } from '../models/Pricing.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
 import Product from '../models/Product.js';
+import Mould from '../models/Mould.js';
 import Quotation from '../models/Quotation.js';
 import { newQuotation } from './quotation.controller.js';
 import ApiError from '../utils/ApiError.js';
@@ -36,10 +37,38 @@ const POPULATE = [
   { path: 'enquiry', select: 'number status requirement targetPrice' },
   { path: 'customer', select: 'code name' },
   { path: 'product', select: 'modelCode name category sizeMm material moq packingQty standardPrice' },
+  /*
+   * Named fields rather than a bare populate. The mould's virtuals recompute on serialisation
+   * whatever is projected — that is what a virtual is — so the derived figures come through
+   * regardless, and listing the measured ones explicitly keeps a future field on the register
+   * from arriving on a costing response nobody meant to widen.
+   */
+  {
+    path: 'mould',
+    select:
+      'mouldCode name cavities activeCavities partWeightGrams runnerWeightGrams ' +
+      'regrindRecoveryPercent cycleTimeSeconds efficiencyPercent status material machine',
+  },
   { path: 'requestedBy', select: 'name' },
   { path: 'costedBy', select: 'name' },
   { path: 'approvedBy', select: 'name' },
 ];
+
+/**
+ * The one mould a product is made on, or nothing.
+ *
+ * Deliberately refuses to choose. A model with two tools on the register is the case where
+ * picking the "obvious" one is a policy decision dressed as a default — the second mould is
+ * usually a newer, faster or differently-cavitied version, and quietly costing against either
+ * of them produces a defensible-looking sheet built on a tool the job will not run on. Where
+ * there is doubt, the person costing picks; where there is exactly one answer, nobody should
+ * have to.
+ */
+async function soleMouldFor(productId) {
+  if (!productId) return null;
+  const candidates = await Mould.find({ products: productId, isActive: true, status: 'active' }).limit(2);
+  return candidates.length === 1 ? candidates[0] : null;
+}
 
 export const listPricings = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = listParams(req.query, {
@@ -118,19 +147,33 @@ export const createPricing = asyncHandler(async (req, res) => {
   const productId = req.body.product || enquiry?.product;
   const product = productId ? await Product.findById(productId) : null;
 
+  const mould = req.body.mould
+    ? await Mould.findById(req.body.mould)
+    : await soleMouldFor(productId);
+  if (req.body.mould && !mould) throw ApiError.badRequest('That mould is not on the register');
+
   const pricing = await Pricing.create({
     ...req.body,
     product: productId || undefined,
+    mould: mould?._id,
     customer: customerId,
     modelNumber: req.body.modelNumber || product?.modelCode,
     material: req.body.material || product?.material,
     /*
-     * The gram weight is the one cost line the catalogue already knows, and re-typing it is
-     * how a costing ends up priced for a piece that weighs something else. The rate is not
-     * copied: it is today's resin price, which the master has no business remembering.
+     * The gram weight is the one cost line the plant already knows, and re-typing it is how a
+     * costing ends up priced for a piece that weighs something else. The rate is not copied: it
+     * is today's resin price, which no master has any business remembering.
+     *
+     * The mould wins over the catalogue where there is one, and the two are not the same
+     * number. The catalogue's standard weight is what the *piece* weighs; the mould knows what
+     * a piece *consumes*, which is that plus its share of the runner moulded alongside it. On a
+     * four-cavity tool with a 12 g runner that gap is 3 g on a 30 g part — a tenth of the resin
+     * on every quotation off that mould, always understated, and never visible on the sheet
+     * because the arithmetic below it is perfectly correct.
      */
     cost: {
       ...(product?.standardWeightGrams ? { gramWeight: product.standardWeightGrams } : {}),
+      ...(mould ? { gramWeight: mould.consumptionPerPieceGrams } : {}),
       ...(req.body.cost || {}),
     },
     number: await nextNumber('PRC'),
@@ -191,8 +234,26 @@ export const costPricing = asyncHandler(async (req, res) => {
   const before = snapshot(pricing);
 
   const {
-    cost, markupPercent, approvedSellingPrice, minimumOverride, printing, procurement, remarks,
+    cost, markupPercent, approvedSellingPrice, minimumOverride, printing, procurement, mould,
+    remarks,
   } = withoutVersion(req.body);
+
+  /*
+   * The mould first, because it writes a cost line. Attaching one sets the gram weight to what
+   * the tool says a piece consumes — part plus its share of the runner — and an explicit
+   * `cost.gramWeight` in the same request still wins, so somebody who has weighed a bag of
+   * finished pieces is not overruled by the register.
+   */
+  if (mould === null) {
+    pricing.mould = undefined;
+  } else if (mould !== undefined) {
+    const tool = await Mould.findById(mould);
+    if (!tool) throw ApiError.badRequest('That mould is not on the register');
+    pricing.mould = tool._id;
+    if (cost?.gramWeight === undefined) {
+      pricing.cost = { ...pricing.cost?.toObject?.(), gramWeight: tool.consumptionPerPieceGrams };
+    }
+  }
 
   if (cost) pricing.cost = { ...pricing.cost?.toObject?.(), ...cost };
   if (markupPercent !== undefined) pricing.markupPercent = markupPercent;

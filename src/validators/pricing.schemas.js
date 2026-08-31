@@ -14,6 +14,8 @@ export const pricingSchema = z.object({
   enquiry: objectId.optional(),
   customer: objectId.optional(),
   product: objectId.optional(),
+  /** Left out, the register is asked — and answers only where the model has exactly one tool. */
+  mould: objectId.optional(),
   modelNumber: z.string().optional(),
   quantity: z.number().positive('A costing needs the quantity it is for'),
   material: z.enum(MATERIALS).optional(),
@@ -59,6 +61,15 @@ export const pricingCostSchema = z
     minimumOverride: money.optional(),
     printing: z.string().optional(),
     procurement: z.enum(['manufacture', 'trade']).optional(),
+    /**
+     * The tool this sheet is costed against.
+     *
+     * Attaching one *replaces* the gram weight with what the mould says a piece consumes, so
+     * this is not a label — it is an input, and it belongs on the costing door rather than the
+     * details one. Null detaches and leaves the weight where it stands, because a mould
+     * recorded in error should not silently re-open a price by taking its own weight back.
+     */
+    mould: objectId.nullable().optional(),
     remarks: z.string().optional(),
   })
   .extend(versioned);

@@ -150,6 +150,23 @@ export const MODULES = [
     blueprint: '28',
     available: true,
   },
+  {
+    key: 'moulds',
+    label: 'Mould register',
+    description:
+      'Every tool on the floor: cavities, part and runner weight, cycle time and machine, with resin consumption and output per hour derived from them.',
+    group: 'Masters',
+    /*
+     * Production's, not sampling's. A mould is a machine asset — the people who know what a
+     * cavity is doing today are the people standing next to the press, and the weights and
+     * cycle times on it are measured on the shop floor rather than agreed with a customer.
+     * Everyone downstream reads it; only the plant writes it.
+     */
+    ownerDepartment: 'production',
+    stage: null,
+    blueprint: '28',
+    available: true,
+  },
 
   {
     key: 'whatsapp',
@@ -257,6 +274,8 @@ export const DEPARTMENTS = [
       dispatch: 'read',
       payments: 'read',
       products: 'read',
+      /* Enough to see whether a tool exists and who paid for it, before a model is quoted. */
+      moulds: 'read',
       reports: 'read',
       announcements: 'read',
     },
@@ -267,6 +286,8 @@ export const DEPARTMENTS = [
     defaultAccess: {
       samples: 'write',
       products: 'write',
+      /* New models are developed here, and a new model is a new tool before it is anything. */
+      moulds: 'write',
       tasks: 'write',
       enquiries: 'read',
       customers: 'read',
@@ -287,6 +308,7 @@ export const DEPARTMENTS = [
       production: 'read',
       dispatch: 'read',
       products: 'read',
+      moulds: 'read',
       announcements: 'read',
     },
   },
@@ -295,6 +317,8 @@ export const DEPARTMENTS = [
     label: 'Production department',
     defaultAccess: {
       production: 'write',
+      /* The register's home: cavities, cycles and weights are measured at the press. */
+      moulds: 'write',
       tasks: 'write',
       orders: 'read',
       quality: 'read',
@@ -313,6 +337,7 @@ export const DEPARTMENTS = [
       orders: 'read',
       samples: 'read',
       products: 'read',
+      moulds: 'read',
       announcements: 'read',
     },
   },
