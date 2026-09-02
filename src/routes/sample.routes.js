@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import {
   listSamples, listStalledSamples, getSample, createSample, updateSample, assignSample,
-  setSampleStatus, setDispatchDetails, recordFeedback, resample, samplePipeline, linkEnquiry, linkCustomer,
+  setSampleStatus, setDispatchDetails, recordFeedback, resample, samplePipeline, sampleBoard,
+  linkEnquiry, linkCustomer,
   previewCustomerMessage, sendCustomerMessage, listCustomerMessages,
 } from '../controllers/sample.controller.js';
 import {
@@ -32,6 +33,8 @@ router.use(authenticate);
 // Above `/:id` so the literal segment wins.
 router.get('/anomalies', requireModule('samples'), listStalledSamples);
 router.get('/pipeline', requireModule('samples'), samplePipeline);
+// The bench as columns. A read — every move off it goes through `/:id/status` as before.
+router.get('/board', requireModule('samples'), sampleBoard);
 router.get('/dashboard', requireModule('samples'), sampleDashboard);
 router.get('/analytics', requireModule('samples'), sampleAnalyticsReport);
 router.get('/', requireModule('samples'), listSamples);

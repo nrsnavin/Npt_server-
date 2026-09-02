@@ -16,6 +16,7 @@ import { stalledSamples, stallAfterDays } from '../services/anomaly.service.js';
 import { notifyCustomer, previewFor } from '../services/customerMessage.service.js';
 import CustomerMessage from '../models/CustomerMessage.js';
 import { listParams, paginated } from '../utils/query.js';
+import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 
@@ -50,15 +51,25 @@ const LINKED = [
  */
 const withRefs = (sample) => sample.populate([...POPULATE, ...LINKED]);
 
-export const listSamples = asyncHandler(async (req, res) => {
-  const { page, limit, sort, filter } = listParams(req.query, {
+/**
+ * What the sample queue understands, shared by the list and the board.
+ *
+ * Pulled out of the list rather than copied into the board: the two show the same requests
+ * arranged differently, and a filter that means one thing on a table and another on a board is
+ * a difference nobody can see and everybody eventually trips over.
+ *
+ * `withStatus: false` is the board's escape hatch — its columns are the status, so a status in
+ * the filter underneath them would empty every other one.
+ */
+function sampleFilters(req, { withStatus = true } = {}) {
+  const { filter } = listParams(req.query, {
     searchFields: ['number', 'modelNumber', 'colour', 'remarks'],
     defaultSort: 'requiredDate',
   });
 
   Object.assign(filter, scope(req.user));
-  if (req.query.status) filter.status = { $in: String(req.query.status).split(',') };
-  if (req.query.open === 'true') filter.status = { $nin: CLOSED_SAMPLE_STATUSES };
+  if (withStatus && req.query.status) filter.status = { $in: String(req.query.status).split(',') };
+  if (withStatus && req.query.open === 'true') filter.status = { $nin: CLOSED_SAMPLE_STATUSES };
   if (req.query.purpose) filter.purpose = req.query.purpose;
   if (req.query.customer) filter.customer = req.query.customer;
   if (req.query.enquiry) filter.enquiry = req.query.enquiry;
@@ -70,11 +81,26 @@ export const listSamples = asyncHandler(async (req, res) => {
   /**
    * The escalation query [§25]. Overdue is a virtual on the model, so it cannot be sorted or
    * paged on; this expresses the same rule as a filter, from the same list of exclusions.
+   *
+   * The date half applies on a board too — an overdue board is a real thing to want. The status
+   * half is what `withStatus` governs: dropping it would let a cancelled request count as
+   * overdue, so on a board the exclusion is expressed as columns instead, by the screen.
    */
   if (req.query.overdue === 'true') {
     filter.requiredDate = { $lt: new Date() };
-    filter.status = { $nin: NOT_ESCALATED_STATUSES };
+    if (withStatus) filter.status = { $nin: NOT_ESCALATED_STATUSES };
   }
+
+  return filter;
+}
+
+export const listSamples = asyncHandler(async (req, res) => {
+  const { page, limit, sort } = listParams(req.query, {
+    searchFields: ['number', 'modelNumber', 'colour', 'remarks'],
+    defaultSort: 'requiredDate',
+  });
+
+  const filter = sampleFilters(req);
 
   const [data, total] = await Promise.all([
     Sample.find(filter).populate(POPULATE).sort(sort).skip((page - 1) * limit).limit(limit),
@@ -82,6 +108,51 @@ export const listSamples = asyncHandler(async (req, res) => {
   ]);
 
   paginated(res, data, { page, limit, total });
+});
+
+/**
+ * The sample bench as a board.
+ *
+ * The one that differs from its two siblings, because four of the thirteen columns cannot be
+ * dropped into at all. The three feedback outcomes are the customer's verdict and only the
+ * person who spoke to them may record one — `setSampleStatus` refuses them outright — and
+ * `cancelled` ends a request rather than advancing it. The board still draws those columns,
+ * because what has been approved and what has been rejected is most of what a bench manager
+ * wants to see; it simply does not accept a card dropped on them, and says why.
+ *
+ * That distinction is the screen's to draw, not this endpoint's. Here they are four statuses
+ * like any other.
+ */
+export const sampleBoard = asyncHandler(async (req, res) => {
+  /*
+   * By required date, soonest first. Undated requests surface at the top of their column for
+   * the same reason an unpromised lead does — a sample with no date is one nothing can chase.
+   */
+  const sort = 'requiredDate';
+
+  const columns = await buildBoard({
+    Model: Sample,
+    filter: sampleFilters(req, { withStatus: false }),
+    statuses: SAMPLE_STATUSES,
+    sort,
+    perColumn: perColumnFrom(req.query),
+    /* Pieces, not rupees: a sample has a quantity and no price, and inventing one would be a
+     * number on a screen that means nothing. The column line says so in its unit. */
+    valueField: 'quantity',
+    select:
+      'number customer enquiry product modelNumber colour printing quantity purpose status ' +
+      'requiredDate requestedAt assignedTo requestedBy courier awbNumber dispatchedQuantity ' +
+      'statusHistory.from statusHistory.to statusHistory.at createdAt',
+    populate: [
+      { path: 'customer', select: 'code name' },
+      { path: 'enquiry', select: 'number status' },
+      { path: 'product', select: 'modelCode name' },
+      { path: 'assignedTo', select: 'name' },
+      { path: 'requestedBy', select: 'name' },
+    ],
+  });
+
+  res.json({ success: true, data: { columns }, meta: { sort } });
 });
 
 /**

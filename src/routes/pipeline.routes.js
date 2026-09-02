@@ -2,11 +2,12 @@ import { Router } from 'express';
 import {
   listProducts, getProduct, createProduct, updateProduct,
   listCustomers, getCustomer, createCustomer, updateCustomer, checkDuplicateCustomer,
-  listLeads, getLead, createLead, updateLead, addLeadActivity, convertLead,
+  listLeads, leadBoard, getLead, createLead, updateLead, addLeadActivity, convertLead,
   suggestLeadNextStep, leadLogAnalytics, leadFollowUps, leadScoreboard, leadsOverview, leadOwners,
   enquiryOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, applyEnquiryAction, listEnquiryActions, promoteToProduct, enquiryPipeline,
+  enquiryBoard,
   exportCustomers,
   exportLeads,
   exportEnquiries,
@@ -110,6 +111,12 @@ router.get('/leads/export', requireModule('enquiries'), exportLeads);
  * grant — knowing what is waiting is not changing anything.
  */
 router.get('/leads/follow-ups', requireModule('enquiries'), leadFollowUps);
+/*
+ * The same book as `/leads`, arranged as columns. A read, on the read grant: a board changes
+ * nothing by itself, and every move made from one goes back through the ordinary write routes
+ * with all their rules — there is no faster path to a status change here.
+ */
+router.get('/leads/board', requireModule('enquiries'), leadBoard);
 router.get('/leads/scoreboard', requireModule('enquiries'), leadScoreboard);
 router.get('/leads/overview', requireModule('enquiries'), leadsOverview);
 // Who holds leads, for the owner filter. Scoped, so it offers a marketing person only
@@ -158,6 +165,8 @@ router.post('/:collection/:id/documents', authenticate, singleDocument('file'), 
 router.delete('/:collection/:id/documents/:documentId', authenticate, removeDocument);
 
 router.get('/enquiries/pipeline', requireModule('enquiries'), enquiryPipeline);
+// The funnel as columns you can work in, rather than a strip of counts you can only read.
+router.get('/enquiries/board', requireModule('enquiries'), enquiryBoard);
 // Who holds enquiries, for the owner filter. Scoped, like its lead counterpart.
 router.get('/enquiries/owners', requireModule('enquiries'), enquiryOwners);
 // Marketing's own dashboard [§21]. On the enquiries grant, since that is the module it is

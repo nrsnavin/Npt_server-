@@ -1,9 +1,9 @@
 import mongoose from 'mongoose';
 import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
-import Lead from '../models/Lead.js';
+import Lead, { LEAD_STATUSES } from '../models/Lead.js';
 import Enquiry, {
-  CLOSED_STATUSES, ENQUIRY_STAGE_ORDER, fallsBack, furthestStage, stageLabel,
+  CLOSED_STATUSES, ENQUIRY_STAGE_ORDER, ENQUIRY_STATUSES, fallsBack, furthestStage, stageLabel,
 } from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
 import User from '../models/User.js';
@@ -24,6 +24,7 @@ import { scoreFor, teamScoreboard } from '../services/scoreboard.service.js';
 import { sendCsv } from '../utils/csv.js';
 import { spelledLike } from '../data/places.js';
 import { ENQUIRY_ACTIONS, actionsFrom } from '../services/enquiryActions.js';
+import { buildBoard, perColumnFrom } from '../services/board.service.js';
 
 /**
  * How many rows an export may take.
@@ -43,9 +44,22 @@ const EXPORT_LIMIT = 5000;
  * started to drift — the screen would have narrowed to a town and the download would have
  * quietly handed over the lot, which is the kind of wrong figure that reaches a meeting.
  */
+const LEAD_SEARCH_FIELDS = ['company', 'contactName', 'mobile', 'email', 'number'];
+
 function leadFilters(req, { withStatus = true } = {}) {
+  /*
+   * The search belongs in here rather than in each caller.
+   *
+   * It used to be assembled by the list endpoint and merged over the top of this, which meant
+   * every *other* reader of the lead book — the board, most recently — silently searched
+   * nothing at all: typing a company name narrowed the table beside it and left the columns
+   * showing the whole book. Nothing errors, the screen simply ignores you. Held here, a caller
+   * cannot forget it, which is the only version of this that stays true.
+   */
+  const { filter } = listParams(req.query, { searchFields: LEAD_SEARCH_FIELDS });
+
   const scope = ownershipFilter(req.user);
-  const filter = { ...scope };
+  Object.assign(filter, scope);
 
   // Narrowing to one marketing person's leads, which may only ever narrow — see the service.
   const owner = narrowToOwner(scope, req.query.assignedTo);
@@ -529,11 +543,9 @@ export const checkDuplicateCustomer = asyncHandler(async (req, res) => {
 /* --------------------------------- Leads --------------------------------- */
 
 export const listLeads = asyncHandler(async (req, res) => {
-  const { page, limit, sort, filter } = listParams(req.query, {
-    searchFields: ['company', 'contactName', 'mobile', 'email', 'number'],
-  });
+  const { page, limit, sort } = listParams(req.query, { searchFields: LEAD_SEARCH_FIELDS });
 
-  Object.assign(filter, leadFilters(req));
+  const filter = leadFilters(req);
 
   /*
    * How many sit at each stage, and what they are worth.
@@ -544,8 +556,7 @@ export const listLeads = asyncHandler(async (req, res) => {
    * computed from the same filter: fetched separately, it would disagree with the list
    * underneath it the moment a town or a colleague was chosen.
    */
-  const tallyFilter = { ...filter, ...leadFilters(req, { withStatus: false }) };
-  delete tallyFilter.status;
+  const tallyFilter = leadFilters(req, { withStatus: false });
 
   const [data, total, stages] = await Promise.all([
     Lead.find(filter).populate('assignedTo', 'name').sort(sort).skip((page - 1) * limit).limit(limit),
@@ -561,6 +572,49 @@ export const listLeads = asyncHandler(async (req, res) => {
   );
 
   paginated(res, data, { page, limit, total }, { stageCounts });
+});
+
+/**
+ * The lead book as a board: every stage a column, the head of each in follow-up order.
+ *
+ * Deliberately not the list endpoint with a bigger page. A list narrowed to one stage and read
+ * five times is five different moments in time, and bucketing one page of fifty in the browser
+ * gives columns made of whatever sorted first. The tally and the cards here come off the same
+ * filter in the same breath.
+ *
+ * The stage filter is dropped — `withStatus: false`, the same escape hatch the tally beside the
+ * list already uses. On a board the columns *are* the stage filter, and a board showing one
+ * column is a list that scrolls sideways. Every other filter still applies, so switching a
+ * search or an owner from the list to the board keeps the same set of leads.
+ */
+export const leadBoard = asyncHandler(async (req, res) => {
+  /*
+   * Soonest promise first — and, because Mongo sorts a missing date before every real one, the
+   * leads nobody promised anything about rise to the top of their column. That is not a
+   * side effect worth fixing: §3 asks that an open record always carry a defined next step, so
+   * a lead with no date is the one genuine failure on the board and belongs where it is seen.
+   */
+  const sort = 'nextFollowUpDate';
+
+  const columns = await buildBoard({
+    Model: Lead,
+    filter: leadFilters(req, { withStatus: false }),
+    statuses: LEAD_STATUSES,
+    sort,
+    perColumn: perColumnFrom(req.query),
+    valueField: 'estimatedValue',
+    select:
+      'number company contactName city state source status estimatedValue estimatedQuantity ' +
+      'productInterest nextAction nextActionType nextFollowUpDate assignedTo activities ' +
+      /* `updatedAt` so a move from the board can carry the same optimistic-concurrency check a
+         move from the lead screen does — a card is a stale copy the moment somebody else edits. */
+      'createdAt updatedAt',
+    populate: [{ path: 'assignedTo', select: 'name' }],
+    lastActivityOnly: true,
+  });
+
+  /* The sort travels with the answer so "show more" pages the list in the board's own order. */
+  res.json({ success: true, data: { columns }, meta: { sort } });
 });
 
 export const getLead = asyncHandler(async (req, res) => {
@@ -1059,6 +1113,40 @@ export const listEnquiries = asyncHandler(async (req, res) => {
   );
 
   paginated(res, data, { page, limit, total }, { stageCounts });
+});
+
+/**
+ * The enquiry book as a board. Same construction as the lead board, and the same argument.
+ *
+ * `statusHistory` is on the card and everything else is trimmed away, which looks backwards
+ * until you remember what the board has to decide before a card is dropped: §3 refuses a move
+ * back down the ladder, and how far an enquiry has *been* is not readable from where it is —
+ * an enquiry parked at `hold` sits off the ladder entirely. Without the history the board would
+ * have to offer every column and let the server refuse half of them, which teaches people that
+ * the screen guesses. Only the three fields the rule reads are sent.
+ */
+export const enquiryBoard = asyncHandler(async (req, res) => {
+  const sort = 'nextFollowUpDate';
+
+  const columns = await buildBoard({
+    Model: Enquiry,
+    filter: await enquiryFilters(req, { withStatus: false }),
+    statuses: ENQUIRY_STATUSES,
+    sort,
+    perColumn: perColumnFrom(req.query),
+    valueField: 'estimatedValue',
+    select:
+      'number customer product assignedTo status estimatedValue enquiryDate nextAction ' +
+      'nextActionType nextFollowUpDate requirement holdReason lostReason ' +
+      'statusHistory.from statusHistory.to statusHistory.at createdAt',
+    populate: [
+      { path: 'customer', select: 'code name' },
+      { path: 'product', select: 'modelCode name' },
+      { path: 'assignedTo', select: 'name' },
+    ],
+  });
+
+  res.json({ success: true, data: { columns }, meta: { sort } });
 });
 
 export const getEnquiry = asyncHandler(async (req, res) => {
