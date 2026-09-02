@@ -38,24 +38,24 @@ const POPULATE = [
 ];
 
 /**
- * Whether this price may be sent [§9].
+ * Whether one line's price may be sent [§9].
  *
  * Read off the costing rather than trusted from the request: the whole point is that the person
  * building the quote cannot see the minimum, so they cannot be the one to decide they are above
- * it. A quote with no costing behind it is not blocked — plenty of repeat jobs are quoted from
+ * it. A line with no costing behind it is not blocked — plenty of repeat jobs are quoted from
  * a known price — but one that *has* a costing must respect it.
  */
-async function priceIsCleared(quotation) {
-  if (!quotation.pricing) return { cleared: true };
+async function lineIsCleared(line) {
+  if (!line.pricing) return { cleared: true };
 
-  const pricing = await Pricing.findById(quotation.pricing);
+  const pricing = await Pricing.findById(line.pricing);
   if (!pricing) return { cleared: true };
 
   if (pricing.status === 'approval_pending') {
-    return { cleared: false, why: 'The costing behind this quote is still waiting on approval' };
+    return { cleared: false, why: 'its costing is still waiting on approval' };
   }
   if (pricing.status === 'rejected') {
-    return { cleared: false, why: 'The costing behind this quote was refused — it needs re-costing' };
+    return { cleared: false, why: 'its costing was refused and needs re-costing' };
   }
   /*
    * The floor, after any signature on it.
@@ -73,20 +73,64 @@ async function priceIsCleared(quotation) {
     pricing.approvedSellingPrice ?? Infinity
   );
 
-  if (Number.isFinite(floor) && quotation.unitPrice < floor) {
+  if (Number.isFinite(floor) && line.unitPrice < floor) {
     return {
       cleared: false,
       // Deliberately does not name the figure: §8 keeps the floor away from marketing, and a
       // refusal that quotes it hands over the very number the rule protects.
-      why: 'This price is below the approved minimum and needs management approval first',
+      why: 'it is below the approved minimum',
     };
   }
   return { cleared: true };
 }
 
+/**
+ * Whether the whole document may go out — which means every line on it.
+ *
+ * **Every line, not the document.** This is the difference a multi-line quotation makes to §9,
+ * and it is not a detail: a quote with seven prices comfortably above their floors and one
+ * beneath is precisely what a single document-level check waves through, because there is no
+ * one price for it to look at. The block is all-or-nothing because the document is — you cannot
+ * send seven eighths of a quotation — and the message names the offending models so the person
+ * holding it knows which price to argue about.
+ *
+ * Still never names a figure. §8 keeps the floor away from marketing whether it is refusing one
+ * line or eight.
+ */
+async function priceIsCleared(quotation) {
+  const blocked = [];
+
+  for (const line of quotation.lines) {
+    const { cleared, why } = await lineIsCleared(line);
+    if (!cleared) blocked.push({ model: line.modelNumber || 'an unnamed line', why });
+  }
+
+  if (!blocked.length) return { cleared: true };
+
+  /*
+   * One reason repeated across every line reads better said once — "3 lines are below the
+   * approved minimum" rather than the same sentence three times with different model codes in
+   * front of it — but the models still have to be named, because that is what the reader acts
+   * on.
+   */
+  const reasons = [...new Set(blocked.map((entry) => entry.why))];
+  const models = blocked.map((entry) => entry.model).join(', ');
+
+  return {
+    cleared: false,
+    blocked,
+    why:
+      blocked.length === 1
+        ? `${models} cannot be sent because ${reasons[0]} — this needs management approval first`
+        : `${blocked.length} lines cannot be sent (${models}) because ${reasons.join(' and ')}` +
+          ' — this needs management approval first',
+  };
+}
+
 export const listQuotations = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = listParams(req.query, {
-    searchFields: ['number', 'modelNumber'],
+    /* Model codes moved onto the lines, so searching for one has to look inside them. */
+    searchFields: ['number', 'lines.modelNumber'],
     defaultSort: '-createdAt',
   });
 
@@ -104,13 +148,38 @@ export const listQuotations = asyncHandler(async (req, res) => {
   const [data, total, stages] = await Promise.all([
     Quotation.find(filter).populate(POPULATE).sort(sort).skip((page - 1) * limit).limit(limit),
     Quotation.countDocuments(filter),
+    /*
+     * The value of a quotation is the sum of its lines, so the total has to be reduced over
+     * them inside the pipeline. Multiplying a document-level price by a document-level quantity
+     * was the old shape and would now multiply two missing fields into nothing — a stage board
+     * reading zero against a full pipeline, which looks like a reporting fault rather than a
+     * schema one and gets chased for a day.
+     */
     Quotation.aggregate([
       { $match: scope },
       {
         $group: {
           _id: '$status',
           leads: { $sum: 1 },
-          value: { $sum: { $multiply: ['$unitPrice', '$quantity'] } },
+          value: {
+            $sum: {
+              $reduce: {
+                input: { $ifNull: ['$lines', []] },
+                initialValue: 0,
+                in: {
+                  $add: [
+                    '$$value',
+                    {
+                      $multiply: [
+                        { $ifNull: ['$$this.unitPrice', 0] },
+                        { $ifNull: ['$$this.quantity', 0] },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          },
         },
       },
     ]),
@@ -146,8 +215,8 @@ export const getQuotation = asyncHandler(async (req, res) => {
     .populate('customer', 'code name city state gstin mobile email')
     .populate('enquiry', 'number status')
     .populate('assignedTo', 'name')
-    .populate('product', 'modelCode name sizeMm material moq')
-    .populate('pricing', 'number status approvedSellingPrice')
+    .populate('lines.product', 'modelCode name sizeMm material moq')
+    .populate('lines.pricing', 'number status approvedSellingPrice')
     .populate('revisions.by', 'name')
     .populate('statusHistory.by', 'name');
 
@@ -155,9 +224,11 @@ export const getQuotation = asyncHandler(async (req, res) => {
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
 
   const data = quotation.toJSON();
-  if (data.pricing) {
-    const { _id, number, status, approvedSellingPrice } = data.pricing;
-    data.pricing = { _id, number, status, approvedSellingPrice };
+  /* Now once per line — see the note above on why a `select` is not enough. */
+  for (const line of data.lines || []) {
+    if (!line.pricing) continue;
+    const { _id, number, status, approvedSellingPrice } = line.pricing;
+    line.pricing = { _id, number, status, approvedSellingPrice };
   }
 
   res.json({ success: true, data });
@@ -171,6 +242,98 @@ export const getQuotation = asyncHandler(async (req, res) => {
  * customer has to resolve, the owner has to be settled, and Rev 0 has to exist. A second copy
  * of that for the pricing route is a second place for the revision history to start wrong.
  */
+/**
+ * Fills each line's MOQ from the product master where the line does not name one [§28].
+ *
+ * Copied rather than looked up on read: a catalogue edited next month must not change what an
+ * issued quotation says it was offered at. One query for the whole set rather than one per
+ * line, because an eight-model quotation should not be eight round trips.
+ */
+async function withProductDefaults(lines = [], existing = []) {
+  /*
+   * A line that does not name its costing keeps the one it already had.
+   *
+   * This is the quiet failure the shape invites. A revision restates the offer — that is what
+   * makes it a revision — and a screen or a script that sends back `{ modelNumber, quantity,
+   * unitPrice }` without repeating `pricing` would detach the costing from the line. Nothing
+   * errors: the quote saves, and §9's floor check silently stops applying to it, at the exact
+   * moment somebody is cutting the price. Matched on the line's own id where the caller kept
+   * it, and on the model code otherwise, which is what a person restating a line actually
+   * holds on to.
+   */
+  const byId = new Map();
+  const byModel = new Map();
+  for (const line of existing) {
+    if (line._id) byId.set(String(line._id), line);
+    if (line.modelNumber) byModel.set(line.modelNumber, line);
+  }
+
+  /*
+   * Position is identity only when there is exactly one line on each side. Then "the line" is
+   * unambiguous and a revision that just restates a new price keeps its costing. Beyond that,
+   * matching by position would happily hand model B's floor to model A the first time somebody
+   * reorders a quote — so a multi-line revision has to name its models, which every screen does
+   * and which the API fills in from the product anyway.
+   */
+  const positional = lines.length === 1 && existing.length === 1 ? existing[0] : null;
+
+  const inherited = lines.map((line) => {
+    if (line.pricing) return line;
+    const previous =
+      (line._id && byId.get(String(line._id))) ||
+      (line.modelNumber && byModel.get(line.modelNumber)) ||
+      positional;
+    if (!previous?.pricing) return line;
+    return { ...line, pricing: previous.pricing, product: line.product ?? previous.product };
+  });
+
+  const ids = inherited.map((line) => line.product).filter(Boolean);
+  if (!ids.length) return inherited.map((line) => ({ ...line, moq: line.moq ?? 0 }));
+
+  const products = Object.fromEntries(
+    (await Product.find({ _id: { $in: ids } }).select('moq modelCode')).map((product) => [
+      String(product._id),
+      product,
+    ])
+  );
+
+  return inherited.map((line) => {
+    const product = line.product ? products[String(line.product)] : null;
+    return {
+      ...line,
+      modelNumber: line.modelNumber || product?.modelCode,
+      moq: line.moq ?? product?.moq ?? 0,
+    };
+  });
+}
+
+/**
+ * The offer as it stands, frozen for the history [§10].
+ *
+ * The lines are deep-copied through `toObject` rather than handed over as subdocuments: pushing
+ * the live array into `revisions` would store references that move with the next edit, and the
+ * history would then agree with the present no matter what it used to say — a revision list
+ * that cannot disagree with the current price is not a history at all.
+ */
+function snapshotOf(quotation, revision, user, at = new Date()) {
+  return {
+    revision,
+    lines: quotation.lines.map((line) => {
+      const plain = typeof line.toObject === 'function' ? line.toObject() : { ...line };
+      delete plain._id;
+      return plain;
+    }),
+    validUntil: quotation.validUntil,
+    paymentTerms: quotation.paymentTerms,
+    deliveryTerms: quotation.deliveryTerms,
+    freightTerms: quotation.freightTerms,
+    packing: quotation.packing,
+    remarks: quotation.remarks,
+    at,
+    by: user._id,
+  };
+}
+
 export async function newQuotation(fields, user) {
   const enquiry = fields.enquiry ? await Enquiry.findById(fields.enquiry) : null;
   if (fields.enquiry && !enquiry) throw ApiError.badRequest('That enquiry does not exist');
@@ -184,16 +347,9 @@ export async function newQuotation(fields, user) {
     throw ApiError.forbidden('That customer belongs to another marketing person');
   }
 
-  /*
-   * The product master's minimum, when the quote does not name one [§28]. Copied rather than
-   * looked up on read: a catalogue edited next month must not change what an issued quotation
-   * says it was offered at.
-   */
-  const product = fields.product ? await Product.findById(fields.product) : null;
-
   const quotation = new Quotation({
     ...fields,
-    moq: fields.moq ?? product?.moq ?? 0,
+    lines: await withProductDefaults(fields.lines),
     customer: customerId,
     assignedTo: fields.assignedTo || customer.assignedTo || user._id,
     number: await nextNumber('QTN'),
@@ -205,21 +361,7 @@ export async function newQuotation(fields, user) {
    * with a price, so the first thing offered has to be in the list like every later one — a
    * history that begins at Rev 1 has silently lost the original quote.
    */
-  quotation.revisions = [
-    {
-      revision: 0,
-      unitPrice: quotation.unitPrice,
-      quantity: quotation.quantity,
-      moq: quotation.moq,
-      validUntil: quotation.validUntil,
-      paymentTerms: quotation.paymentTerms,
-      deliveryTerms: quotation.deliveryTerms,
-      freightTerms: quotation.freightTerms,
-      packing: quotation.packing,
-      remarks: quotation.remarks,
-      by: user._id,
-    },
-  ];
+  quotation.revisions = [snapshotOf(quotation, 0, user)];
 
   await quotation.save();
   publish(EVENTS.QUOTATION_CREATED, { quotation, by: user });
@@ -241,19 +383,40 @@ export const createQuotation = asyncHandler(async (req, res) => {
  * the buyer was told.
  */
 const DOCUMENT_FIELDS = [
-  'quantity', 'moq', 'unitPrice', 'gstPercent', 'isExport', 'modelNumber',
+  'gstPercent', 'isExport',
   'paymentTerms', 'deliveryTerms', 'freightTerms', 'packing', 'validUntil', 'remarks',
 ];
 
+/** What the buyer reads on a line: change any of it after sending and it is a new offer. */
+const LINE_FIELDS = ['modelNumber', 'quantity', 'moq', 'unitPrice'];
+
+/** The lines reduced to what the customer was told, so two sets can be compared. */
+const offerOf = (lines = []) =>
+  JSON.stringify(
+    lines.map((line) => LINE_FIELDS.map((field) => String(line[field] ?? '')))
+  );
+
 /** True when this patch would change something the customer has already been shown. */
-const changesTheOffer = (quotation, patch) =>
-  DOCUMENT_FIELDS.filter((field) => {
+function changesTheOffer(quotation, patch) {
+  const changed = DOCUMENT_FIELDS.filter((field) => {
     if (patch[field] === undefined) return false;
     const current = quotation[field];
     // Dates arrive as strings or Dates depending on the door; compare what they mean.
     if (current instanceof Date) return new Date(patch[field]).getTime() !== current.getTime();
     return patch[field] !== current;
   });
+
+  /*
+   * The lines as a whole, because on a multi-line quote the offer can change without any single
+   * field doing so — a model dropped, or two lines swapped for one. Comparing field by field
+   * across a list would miss both.
+   */
+  if (patch.lines && offerOf(patch.lines) !== offerOf(quotation.lines)) {
+    changed.push('the lines');
+  }
+
+  return changed;
+}
 
 /**
  * Editing a quotation.
@@ -276,8 +439,16 @@ export const updateQuotation = asyncHandler(async (req, res) => {
   if (CLOSED_QUOTATION_STATUSES.includes(quotation.status)) {
     throw ApiError.badRequest(`A ${quotation.status} quotation cannot be edited`);
   }
-  if (req.body.unitPrice !== undefined && req.body.unitPrice !== quotation.unitPrice) {
-    throw ApiError.badRequest('Use a revision to change the price, so the old one is kept');
+  /*
+   * A price change on any line goes through a revision, whatever else the patch carries. The
+   * check is over the whole set rather than one field, because with lines there are as many
+   * prices as models and any of them moving is the thing §10 wants recorded.
+   */
+  if (req.body.lines) {
+    const priced = req.body.lines.map((line) => line.unitPrice).join();
+    if (priced !== quotation.lines.map((line) => line.unitPrice).join()) {
+      throw ApiError.badRequest('Use a revision to change a price, so the old one is kept');
+    }
   }
 
   /*
@@ -296,7 +467,11 @@ export const updateQuotation = asyncHandler(async (req, res) => {
 
   expectVersion(quotation, req.body);
   const before = snapshot(quotation);
-  Object.assign(quotation, withoutVersion(req.body));
+
+  const patch = withoutVersion(req.body);
+  if (patch.lines) patch.lines = await withProductDefaults(patch.lines, quotation.lines);
+  Object.assign(quotation, patch);
+
   await quotation.save();
   await recordChange({ model: 'Quotation', doc: quotation, before, by: req.user });
 
@@ -317,27 +492,26 @@ export const reviseQuotation = asyncHandler(async (req, res) => {
     throw ApiError.badRequest(`A ${quotation.status} quotation cannot be revised — raise a new one`);
   }
 
-  const { unitPrice, note, ...terms } = req.body;
-  if (unitPrice === quotation.unitPrice && !Object.keys(terms).length) {
+  const { lines, note, ...terms } = req.body;
+
+  /*
+   * Defaults first, then compare. A line that leaves `moq` out is asking for the product
+   * master's figure, which is usually the one already stored — so comparing the raw request
+   * against the saved lines reads a blank as a change and lets a revision through that revises
+   * nothing. Resolving both to the same shape is what makes "has anything moved?" answerable.
+   */
+  const resolved = lines ? await withProductDefaults(lines, quotation.lines) : null;
+
+  const linesMoved = resolved && offerOf(resolved) !== offerOf(quotation.lines);
+  if (!linesMoved && !Object.keys(terms).length) {
     throw ApiError.badRequest('Nothing has changed — a revision has to revise something');
   }
 
   Object.assign(quotation, terms);
-  quotation.unitPrice = unitPrice ?? quotation.unitPrice;
+  if (resolved) quotation.lines = resolved;
+
   quotation.revision += 1;
-  quotation.revisions.push({
-    revision: quotation.revision,
-    unitPrice: quotation.unitPrice,
-    quantity: quotation.quantity,
-    moq: quotation.moq,
-    validUntil: quotation.validUntil,
-    paymentTerms: quotation.paymentTerms,
-    deliveryTerms: quotation.deliveryTerms,
-    freightTerms: quotation.freightTerms,
-    packing: quotation.packing,
-    remarks: quotation.remarks,
-    by: req.user._id,
-  });
+  quotation.revisions.push(snapshotOf(quotation, quotation.revision, req.user));
 
   /*
    * A revised quote is not a sent one. Whatever it was before, the customer has not seen this
@@ -441,8 +615,8 @@ export const respondToQuotation = asyncHandler(async (req, res) => {
  *
  * Rendered on demand from the record rather than stored: a quotation's price changes with
  * every revision, and a stored file is a copy that stops agreeing with the thing it came from.
- * The customer and product are populated here beyond the list's needs because a document is
- * not a row — it carries the buyer's address and the model's description.
+ * The customer and every line's product are populated here beyond the list's needs because a
+ * document is not a row — it carries the buyer's address and a description per model.
  *
  * `inline` so a browser shows it rather than dropping it in the downloads folder; the filename
  * is still set, so "save as" produces something recognisable rather than `123abc.pdf`.
@@ -452,7 +626,8 @@ export const quotationPdf = asyncHandler(async (req, res) => {
     .populate('customer', 'code name address city state gstin mobile email')
     .populate('enquiry', 'number')
     .populate('assignedTo', 'name')
-    .populate('product', 'modelCode name sizeMm material');
+    /* Per line now: the document's item table describes each model it carries. */
+    .populate('lines.product', 'modelCode name sizeMm material');
 
   if (!quotation) throw ApiError.notFound('Quotation not found');
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');

@@ -49,23 +49,47 @@ const signIn = async (email, password) => {
   return json.data?.token;
 };
 
+/**
+ * A quotation, described the way the tests want to talk about one.
+ *
+ * The API takes `lines`; most of these tests care about a single price, so the line fields may
+ * be passed flat and are folded into one line here. `lines` may be passed instead, whole, for
+ * the multi-model cases — which is what the plant's own quotations actually look like.
+ */
 const quote = async (extra = {}, token = nandhini) => {
+  const { quantity, unitPrice, modelNumber, moq, pricing, product, lines, ...terms } = extra;
+
   const { status, json } = await api('/api/quotations', {
     method: 'POST',
     token,
     body: {
       customer,
-      quantity: 40000,
-      unitPrice: 7.5,
-      modelNumber: 'NH-400',
       paymentTerms: '30 days',
       validUntil: inDays(30),
-      ...extra,
+      ...terms,
+      lines: lines ?? [
+        {
+          quantity: quantity ?? 40000,
+          unitPrice: unitPrice ?? 7.5,
+          modelNumber: modelNumber ?? 'NH-400',
+          ...(moq !== undefined ? { moq } : {}),
+          ...(pricing !== undefined ? { pricing } : {}),
+          ...(product !== undefined ? { product } : {}),
+        },
+      ],
     },
   });
   assert.equal(status, 201, json.message);
   return json.data;
 };
+
+/** A revision expressed as one new price, for the single-line cases. */
+const reviseTo = (id, unitPrice, body = {}, token = nandhini) =>
+  api(`/api/quotations/${id}/revisions`, {
+    method: 'POST',
+    token,
+    body: { lines: [{ quantity: 40000, modelNumber: 'NH-400', unitPrice }], ...body },
+  });
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -125,26 +149,22 @@ test('the first price is Rev 0, in the history from the start', async () => {
 
   assert.equal(made.revision, 0);
   assert.equal(made.revisions.length, 1);
-  assert.equal(made.revisions[0].unitPrice, 7.5);
+  assert.equal(made.revisions[0].lines[0].unitPrice, 7.5);
 });
 
 test('every revision stays — Rev 0 ₹7.50, Rev 1 ₹7.30, Rev 2 ₹7.20', async () => {
   const made = await quote();
 
   for (const price of [7.3, 7.2]) {
-    const revised = await api(`/api/quotations/${made._id}/revisions`, {
-      method: 'POST',
-      token: nandhini,
-      body: { unitPrice: price, note: 'Buyer pushed back' },
-    });
+    const revised = await reviseTo(made._id, price, { note: 'Buyer pushed back' });
     assert.equal(revised.status, 200, revised.json.message);
   }
 
   const { json } = await api(`/api/quotations/${made._id}`, { token: nandhini });
   assert.equal(json.data.revision, 2);
-  assert.equal(json.data.unitPrice, 7.2, 'the live price is the newest');
+  assert.equal(json.data.lines[0].unitPrice, 7.2, 'the live price is the newest');
   assert.deepEqual(
-    json.data.revisions.map((row) => [row.revision, row.unitPrice]),
+    json.data.revisions.map((row) => [row.revision, row.lines[0].unitPrice]),
     [[0, 7.5], [1, 7.3], [2, 7.2]],
     'and every price it ever carried is answerable'
   );
@@ -155,7 +175,7 @@ test('the price cannot be changed by editing — that would overwrite the histor
   const edited = await api(`/api/quotations/${made._id}`, {
     method: 'PATCH',
     token: nandhini,
-    body: { unitPrice: 6.9 },
+    body: { lines: [{ quantity: 40000, modelNumber: 'NH-400', unitPrice: 6.9 }] },
   });
 
   assert.equal(edited.status, 400);
@@ -164,11 +184,7 @@ test('the price cannot be changed by editing — that would overwrite the histor
 
 test('a revision has to revise something', async () => {
   const made = await quote();
-  const empty = await api(`/api/quotations/${made._id}/revisions`, {
-    method: 'POST',
-    token: nandhini,
-    body: { unitPrice: 7.5 },
-  });
+  const empty = await reviseTo(made._id, 7.5);
 
   assert.equal(empty.status, 400);
 });
@@ -181,11 +197,7 @@ test('revising a sent quote takes it back out of the customer’s hands', async 
   const made = await quote();
   await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
 
-  const revised = await api(`/api/quotations/${made._id}/revisions`, {
-    method: 'POST',
-    token: nandhini,
-    body: { unitPrice: 7.1 },
-  });
+  const revised = await reviseTo(made._id, 7.1);
 
   assert.equal(revised.json.data.status, 'revised');
   assert.equal(revised.json.data.revisions.at(-1).sentAt, undefined, 'the new price has not gone out');
@@ -294,6 +306,7 @@ const withCosting = async ({ minimum, approved }) => {
   const made = await api('/api/pricings', {
     method: 'POST',
     token: admin,
+    /* A costing prices one model, so it keeps its flat shape — lines are the quotation's. */
     body: { customer, quantity: 40000, modelNumber: 'NH-400' },
   });
   const built = await api(`/api/pricings/${made.json.data._id}/cost`, {
@@ -416,7 +429,7 @@ test('a quote cannot be raised against another marketing person’s customer', a
   const attempt = await api('/api/quotations', {
     method: 'POST',
     token: kavitha,
-    body: { customer, quantity: 100, unitPrice: 5 },
+    body: { customer, lines: [{ quantity: 100, unitPrice: 5 }] },
   });
 
   assert.equal(attempt.status, 403);
@@ -427,7 +440,7 @@ test('a quote cannot be raised against another marketing person’s customer', a
 test('the totals are the line and the tax on it', async () => {
   const made = await quote({ unitPrice: 7.5, quantity: 40000, gstPercent: 18 });
 
-  assert.equal(made.lineValue, 300000);
+  assert.equal(made.netValue, 300000);
   assert.equal(made.totalValue, 354000);
 });
 
@@ -435,4 +448,220 @@ test('an export quote is not GST at zero', async () => {
   // Showing ₹0 tax invites somebody to wonder whether the rate was forgotten.
   const made = await quote({ unitPrice: 7.5, quantity: 40000, isExport: true, gstPercent: 18 });
   assert.equal(made.totalValue, 300000);
+});
+
+/* ------------------------- Several models, one document ------------------------- */
+
+test('a quotation carries every model quoted to that buyer, under one number', async () => {
+  /*
+   * The plant's own `NP/26-27/1` covers eight models for Yorker knit on one document, with one
+   * validity and one set of payment terms. Modelling that as eight quotations gives the buyer
+   * eight reference numbers for one conversation and makes "what did we quote them?" a question
+   * with eight answers and no total.
+   */
+  const made = await quote({
+    gstPercent: 18,
+    lines: [
+      { modelNumber: 'MAU-35 WB', quantity: 20000, unitPrice: 3.6 },
+      { modelNumber: 'CRF-30', quantity: 20000, unitPrice: 4.2 },
+      { modelNumber: 'RW-236', quantity: 10000, unitPrice: 7.4 },
+    ],
+  });
+
+  assert.equal(made.lines.length, 3);
+  assert.equal(made.lineCount, 3);
+  assert.equal(made.netValue, 230000, '20000×3.6 + 20000×4.2 + 10000×7.4');
+  assert.equal(made.totalValue, 271400, 'and GST on the document, not per line');
+  assert.equal(made.soleLine, null, 'there is no single price to speak for it');
+});
+
+test('a quotation needs at least one line', async () => {
+  const { status } = await api('/api/quotations', {
+    method: 'POST',
+    token: nandhini,
+    body: { customer, lines: [] },
+  });
+  assert.equal(status, 400, 'an empty quotation is a mistake, not a draft');
+});
+
+test('one line under its floor holds the whole document [§9]', async () => {
+  /*
+   * The case a single-line model could not express, and the reason the gate had to move onto
+   * the lines: seven prices that are perfectly fine and an eighth that is not. A document-level
+   * check has no single price to look at, so it waves the whole thing through.
+   */
+  const fine = await withCosting({ minimum: 7, approved: 7.5 });
+  const under = await withCosting({ minimum: 7, approved: 7.5 });
+
+  const made = await quote({
+    lines: [
+      { modelNumber: 'NH-400', quantity: 40000, unitPrice: 7.5, pricing: fine },
+      { modelNumber: 'NH-450', quantity: 10000, unitPrice: 6.5, pricing: under },
+    ],
+  });
+
+  const sent = await api(`/api/quotations/${made._id}/send`, {
+    method: 'POST',
+    token: nandhini,
+    body: {},
+  });
+
+  assert.equal(sent.status, 400);
+  assert.match(sent.json.message, /NH-450/, 'and it names the line to argue about');
+  assert.ok(!/NH-400\b/.test(sent.json.message), 'not the one that was fine');
+  assert.ok(!/\b7\b/.test(sent.json.message), '§8 still keeps the figure away from marketing');
+});
+
+test('every line clearing its own floor sends the document', async () => {
+  const first = await withCosting({ minimum: 7, approved: 7.5 });
+  const second = await withCosting({ minimum: 7, approved: 7.5 });
+
+  const made = await quote({
+    lines: [
+      { modelNumber: 'NH-400', quantity: 40000, unitPrice: 7.5, pricing: first },
+      { modelNumber: 'NH-450', quantity: 10000, unitPrice: 8.2, pricing: second },
+    ],
+  });
+
+  const sent = await api(`/api/quotations/${made._id}/send`, {
+    method: 'POST',
+    token: nandhini,
+    body: {},
+  });
+  assert.equal(sent.status, 200, sent.json.message);
+});
+
+test('a revision records every line, not just the price that moved', async () => {
+  /*
+   * A revision on a multi-line quote is routinely a discount on one model out of several. A
+   * history that stored a single figure could not say which — so the next round would be
+   * argued from memory.
+   */
+  const made = await quote({
+    lines: [
+      { modelNumber: 'NH-400', quantity: 40000, unitPrice: 7.5 },
+      { modelNumber: 'NH-450', quantity: 10000, unitPrice: 8.2 },
+    ],
+  });
+
+  const revised = await api(`/api/quotations/${made._id}/revisions`, {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      note: 'Buyer pushed on the 400 only',
+      lines: [
+        { modelNumber: 'NH-400', quantity: 40000, unitPrice: 7.1 },
+        { modelNumber: 'NH-450', quantity: 10000, unitPrice: 8.2 },
+      ],
+    },
+  });
+  assert.equal(revised.status, 200, revised.json.message);
+
+  const { json } = await api(`/api/quotations/${made._id}`, { token: nandhini });
+  assert.deepEqual(
+    json.data.revisions.map((row) => row.lines.map((line) => line.unitPrice)),
+    [[7.5, 8.2], [7.1, 8.2]],
+    'both revisions hold the whole offer'
+  );
+  assert.equal(json.data.revisions[0].netValue, 382000, 'and what each was worth');
+  assert.equal(json.data.revisions[1].netValue, 366000);
+});
+
+test('dropping a model from a sent quote is a revision, not an edit', async () => {
+  /*
+   * The change a field-by-field comparison misses entirely: no single value moved, a whole line
+   * simply disappeared. On a document the customer has already seen that is a new offer.
+   */
+  const made = await quote({
+    lines: [
+      { modelNumber: 'NH-400', quantity: 40000, unitPrice: 7.5 },
+      { modelNumber: 'NH-450', quantity: 10000, unitPrice: 8.2 },
+    ],
+  });
+  await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
+
+  const edited = await api(`/api/quotations/${made._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { lines: [{ modelNumber: 'NH-400', quantity: 40000, unitPrice: 7.5 }] },
+  });
+
+  assert.equal(edited.status, 400);
+  assert.match(edited.json.message, /revision/i);
+});
+
+test('the history is frozen — a later edit does not rewrite what Rev 0 said', async () => {
+  /*
+   * Pushing the live subdocuments into `revisions` would store references that move with the
+   * next change, and the history would then agree with the present no matter what it used to
+   * say. A revision list that cannot disagree with the current price is not a history.
+   */
+  const made = await quote({ unitPrice: 7.5 });
+  await reviseTo(made._id, 6.9, { note: 'Discount' });
+
+  const { json } = await api(`/api/quotations/${made._id}`, { token: nandhini });
+  assert.equal(json.data.revisions[0].lines[0].unitPrice, 7.5, 'Rev 0 still says what it said');
+  assert.equal(json.data.lines[0].unitPrice, 6.9);
+});
+
+test('a revision keeps the costing behind a line it does not re-name', async () => {
+  /*
+   * The quiet failure the line shape invites. A revision restates the offer, and a caller that
+   * sends back `{ modelNumber, quantity, unitPrice }` without repeating `pricing` would detach
+   * the costing. Nothing errors — the quote saves, and §9's floor check silently stops applying
+   * at the exact moment somebody is cutting the price.
+   */
+  const costing = await withCosting({ minimum: 7, approved: 7.5 });
+  const made = await quote({ pricing: costing, unitPrice: 7.5 });
+
+  const revised = await api(`/api/quotations/${made._id}/revisions`, {
+    method: 'POST',
+    token: nandhini,
+    body: { lines: [{ modelNumber: 'NH-400', quantity: 40000, unitPrice: 6.5 }], note: 'Cut' },
+  });
+  assert.equal(revised.status, 200, revised.json.message);
+  assert.ok(revised.json.data.lines[0].pricing, 'the costing came across');
+
+  /* And because it did, the floor still bites on the way out. */
+  const sent = await api(`/api/quotations/${made._id}/send`, {
+    method: 'POST',
+    token: nandhini,
+    body: {},
+  });
+  assert.equal(sent.status, 400);
+  assert.match(sent.json.message, /below the approved minimum/i);
+});
+
+test('an eight-model quotation does not spill blank pages', async () => {
+  /*
+   * The renderer was written when a quotation carried one model and assumed one page. With
+   * eight lines the content ran past the margin and pdfkit silently added a page for every
+   * overflowing draw — the document came out as a correct first page, a lone signature on the
+   * second, and four blank sheets after it. Nothing errored; it was a perfectly valid PDF.
+   *
+   * Asserted on the page count because that is the symptom a person would notice, and because
+   * a check on "does it render" passed throughout.
+   */
+  const made = await quote({
+    gstPercent: 18,
+    lines: Array.from({ length: 8 }, (unused, index) => ({
+      modelNumber: `NH-${400 + index}`,
+      quantity: 20000,
+      unitPrice: 6 + index * 0.4,
+    })),
+  });
+
+  const response = await fetch(`${baseUrl}/api/quotations/${made._id}/pdf`, {
+    headers: { Authorization: `Bearer ${nandhini}` },
+  });
+  assert.equal(response.status, 200);
+
+  const pdf = Buffer.from(await response.arrayBuffer()).toString('latin1');
+  /*
+   * Bounded rather than exact: whether the closing block lands on page one or page two depends
+   * on how much address and how many remarks this particular quote carries, and both are right.
+   * What is never right is a third page — the broken renderer produced six.
+   */
+  const pages = Number(pdf.match(/\/Count\s+(\d+)/)?.[1]);
+  assert.ok(pages >= 1 && pages <= 2, `eight lines should not need ${pages} pages`);
 });

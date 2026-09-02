@@ -111,8 +111,9 @@ export const getPricing = asyncHandler(async (req, res) => {
   const pricing = await Pricing.findById(req.params.id).populate(POPULATE);
   if (!pricing) throw ApiError.notFound('Costing not found');
 
-  const quotations = await Quotation.find({ pricing: pricing._id })
-    .select('number status quantity unitPrice moq revision validUntil sentAt createdAt')
+  /* The costing reference lives on the lines now, so that is where the match has to look. */
+  const quotations = await Quotation.find({ 'lines.pricing': pricing._id })
+    .select('number status lines revision validUntil sentAt createdAt')
     .sort('-createdAt');
 
   res.json({ success: true, data: visibleTo(pricing, req.user), quotations });
@@ -402,17 +403,28 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
     );
   }
 
+  /*
+   * One line, because one costing prices one model. The quotation can carry more — that is the
+   * whole point of it having lines — but they arrive by editing the quote afterwards or by
+   * quoting a second costing onto it, not by this door inventing models the sheet never priced.
+   */
+  const { quantity: _q, moq: _m, unitPrice: _u, ...terms } = req.body;
+
   const quotation = await newQuotation(
     {
-      ...req.body,
-      quantity,
-      moq,
-      unitPrice: req.body.unitPrice ?? pricing.approvedSellingPrice,
+      ...terms,
+      lines: [
+        {
+          quantity,
+          moq,
+          unitPrice: req.body.unitPrice ?? pricing.approvedSellingPrice,
+          pricing: pricing._id,
+          product: pricing.product || undefined,
+          modelNumber: pricing.modelNumber,
+        },
+      ],
       customer: pricing.customer,
       enquiry: pricing.enquiry || undefined,
-      pricing: pricing._id,
-      product: pricing.product || undefined,
-      modelNumber: pricing.modelNumber,
     },
     req.user
   );
@@ -431,8 +443,8 @@ export const pricingQuotations = asyncHandler(async (req, res) => {
   const pricing = await Pricing.findById(req.params.id);
   if (!pricing) throw ApiError.notFound('Costing not found');
 
-  const rows = await Quotation.find({ pricing: pricing._id })
-    .select('number status quantity unitPrice revision createdAt sentAt')
+  const rows = await Quotation.find({ 'lines.pricing': pricing._id })
+    .select('number status lines revision createdAt sentAt')
     .sort('-createdAt');
 
   res.json({ success: true, data: rows });

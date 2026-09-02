@@ -36,6 +36,25 @@ const LABEL = 6.5;
 const BODY = 9;
 const RULE = 0.6;
 
+/**
+ * The lowest a block may start and still belong to this page.
+ *
+ * The footer rule and "Page x of y" are drawn afterwards at the very bottom, so content has to
+ * stop above them. Without this the renderer assumed one page — true while a quotation carried
+ * one model, and false the moment it carried eight: pdfkit adds a page for anything drawn past
+ * the margin, which produced a document whose signature block sat alone on page 2 followed by
+ * four blank pages nobody could account for.
+ */
+const PAGE_HEIGHT = 841.89;
+const BOTTOM = PAGE_HEIGHT - PAGE.margin - 22;
+
+/** Starts a new page when `needed` points of block will not fit below `y`. Returns the new y. */
+function room(doc, y, needed) {
+  if (y + needed <= BOTTOM) return y;
+  doc.addPage();
+  return PAGE.margin;
+}
+
 const INK = '#111111';
 const MUTED = '#6b6b6b';
 const HAIRLINE = '#b8b8b8';
@@ -184,9 +203,10 @@ function parties(doc, quotation, y) {
 /**
  * The item table.
  *
- * One line today, because a quotation covers one model [§10]. The table is built as a table
- * regardless — the columns, the ruled band, the item number — so a multi-line quote is a loop
- * over rows rather than a rewrite of the layout.
+ * One row per line, numbered 10, 20, 30 the way an SAP document numbers its items — so a buyer
+ * can say "item 30" on the phone and both sides are looking at the same hanger. The plant's own
+ * quotations routinely run to eight models under one number, and this table is what makes that
+ * one document instead of eight.
  */
 function items(doc, quotation, y) {
   const columns = [
@@ -201,37 +221,44 @@ function items(doc, quotation, y) {
   // The last column runs to the right margin whatever the page width is.
   columns[columns.length - 1].width = RIGHT - columns[columns.length - 1].x;
 
-  doc.save().fillColor(BAND).rect(LEFT, y, WIDTH, 16).fill().restore();
-  doc.font('Helvetica-Bold').fontSize(LABEL).fillColor(INK);
-  for (const column of columns) {
-    doc.text(column.label.toUpperCase(), column.x + (column.align === 'right' ? 0 : 3), y + 5, {
-      width: column.width - 3,
-      align: column.align,
-      characterSpacing: 0.6,
-    });
-  }
-  y += 16;
+  /* Repeated at the top of every page the table runs onto — a continuation sheet of unlabelled
+     numbers is a page the reader has to scroll back from to know what they are looking at. */
+  const band = (at) => {
+    doc.save().fillColor(BAND).rect(LEFT, at, WIDTH, 16).fill().restore();
+    doc.font('Helvetica-Bold').fontSize(LABEL).fillColor(INK);
+    for (const column of columns) {
+      doc.text(column.label.toUpperCase(), column.x + (column.align === 'right' ? 0 : 3), at + 5, {
+        width: column.width - 3,
+        align: column.align,
+        characterSpacing: 0.6,
+      });
+    }
+    return at + 16;
+  };
 
-  const description = [
-    quotation.product?.name,
-    quotation.product?.sizeMm ? `${quotation.product.sizeMm} mm` : null,
-    // Material codes are codes: `pp` in the master is PP on a document a buyer files.
-    quotation.product?.material?.toUpperCase(),
-  ]
-    .filter(Boolean)
-    .join(' · ');
+  y = band(y);
 
-  const rows = [
-    {
-      item: '10',
-      material: quotation.modelNumber || quotation.product?.modelCode || '—',
+  const rows = (quotation.lines || []).map((line, index) => {
+    const description = [
+      line.product?.name,
+      line.product?.sizeMm ? `${line.product.sizeMm} mm` : null,
+      // Material codes are codes: `pp` in the master is PP on a document a buyer files.
+      line.product?.material?.toUpperCase(),
+    ]
+      .filter(Boolean)
+      .join(' · ');
+
+    return {
+      item: String((index + 1) * 10),
+      material: line.modelNumber || line.product?.modelCode || '—',
       description: description || 'As per enquiry',
-      quantity: qty(quotation.quantity),
+      quantity: qty(line.quantity),
       unit: 'PC',
-      rate: money(quotation.unitPrice),
-      value: money(quotation.lineValue),
-    },
-  ];
+      rate: money(line.unitPrice),
+      value: money(line.lineValue),
+      moq: line.moq,
+    };
+  });
 
   doc.font('Helvetica').fontSize(BODY).fillColor(INK);
   for (const row of rows) {
@@ -241,6 +268,15 @@ function items(doc, quotation, y) {
       ),
       12
     );
+
+    /* Break before the row rather than through it: a line split across two pages is unreadable
+       and, on a priced document, genuinely ambiguous about which page the figure belongs to. */
+    const moved = room(doc, y, height + 12);
+    if (moved !== y) {
+      y = band(moved);
+      doc.font('Helvetica').fontSize(BODY).fillColor(INK);
+    }
+
     for (const column of columns) {
       doc.text(String(row[column.key] ?? ''), column.x + (column.align === 'right' ? 0 : 3), y + 6, {
         width: column.width - 3,
@@ -251,18 +287,25 @@ function items(doc, quotation, y) {
     rule(doc, y);
   }
 
-  /* MOQ, where it belongs on the document: a term of the offer, next to the price. */
-  if (quotation.moq) {
-    doc
-      .font('Helvetica-Oblique')
-      .fontSize(7.5)
-      .fillColor(MUTED)
-      .text(
-        `Minimum order quantity for this price: ${qty(quotation.moq)} pieces.`,
-        LEFT + 32,
-        y + 5,
-        { width: WIDTH - 32 }
-      );
+  /*
+   * MOQ, where it belongs on the document: a term of the offer, next to the price.
+   *
+   * Per line, because it is per line — but said once when every line shares a figure, since
+   * repeating "minimum 5,000 pieces" under eight rows is noise the reader learns to skip, and
+   * the one line with a different minimum is then the one they skip too.
+   */
+  const minimums = rows.filter((row) => row.moq);
+  if (minimums.length) {
+    const same = new Set(minimums.map((row) => row.moq));
+    const text =
+      same.size === 1 && minimums.length === rows.length
+        ? `Minimum order quantity for these prices: ${qty(minimums[0].moq)} pieces.`
+        : `Minimum order quantity — ${minimums
+            .map((row) => `item ${row.item}: ${qty(row.moq)} pcs`)
+            .join('; ')}.`;
+
+    doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(MUTED)
+      .text(text, LEFT + 32, y + 5, { width: WIDTH - 32 });
     y += 16;
   }
 
@@ -288,7 +331,7 @@ function totals(doc, quotation, y) {
     y += gap;
   };
 
-  line('Net value', amount(quotation.lineValue));
+  line('Net value', amount(quotation.netValue));
 
   /*
    * Export is not GST at zero — it is a different basis [§10]. Printing "GST 0.00" on an
@@ -298,7 +341,7 @@ function totals(doc, quotation, y) {
   if (quotation.isExport) {
     line('GST', 'Export — not applicable');
   } else if (quotation.gstPercent) {
-    const tax = quotation.totalValue - quotation.lineValue;
+    const tax = quotation.totalValue - quotation.netValue;
     line(`GST @ ${quotation.gstPercent}%`, amount(tax));
   } else {
     line('GST', 'Extra as applicable');
@@ -313,6 +356,43 @@ function totals(doc, quotation, y) {
 }
 
 /** The commercial terms — the half of a quotation that is not the number. */
+/**
+ * How tall the closing block will be, measured rather than guessed.
+ *
+ * `room` needs the height *before* anything is drawn, and the terms block is not a fixed size:
+ * it grows with the commercial terms this quote actually carries, with the length of the
+ * remarks, and with however many standing conditions the company config holds. A hard-coded
+ * reserve was wrong the first time it was tried — 190 points against a real 186 of terms plus
+ * 64 of signature — which let the terms fit and pushed the signature onto a page of its own.
+ */
+function closingHeight(doc, quotation) {
+  const pairs = [
+    quotation.paymentTerms,
+    quotation.deliveryTerms,
+    quotation.freightTerms,
+    quotation.packing,
+  ].filter(Boolean);
+
+  let height = pairs.length ? Math.ceil(pairs.length / 2) * 30 + 8 : 0;
+
+  if (quotation.remarks) {
+    doc.font('Helvetica-Bold').fontSize(BODY);
+    height += 14 + doc.heightOfString(quotation.remarks, { width: WIDTH });
+  }
+
+  height += 20; /* the rule above TERMS AND CONDITIONS, and its caption */
+
+  doc.font('Helvetica').fontSize(7.5);
+  for (const term of company.standardTerms) {
+    height += doc.heightOfString(term, { width: WIDTH - 14, lineGap: 1 }) + 3;
+  }
+
+  return height + 10 + SIGNATURE_HEIGHT;
+}
+
+/** The signature block is a fixed 64 points; named so `closingHeight` cannot drift from it. */
+const SIGNATURE_HEIGHT = 64;
+
 function terms(doc, quotation, y) {
   const pairs = [
     ['Payment terms', quotation.paymentTerms],
@@ -396,12 +476,22 @@ function signature(doc, y) {
   return y + 64;
 }
 
-/** Page x of y, added after the fact because y is not known until the last page exists. */
+/**
+ * Page x of y, added after the fact because y is not known until the last page exists.
+ *
+ * The footer deliberately sits *below* the text margin — that is what makes it a footer. pdfkit
+ * reads any text drawn past `height - margins.bottom` as an overflow and helpfully starts a new
+ * page, so writing two footer strings onto a two-page document silently produced four more
+ * blank pages. Dropping the bottom margin for the duration is how you tell it this text is
+ * furniture rather than content; it is restored immediately, so nothing else is affected.
+ */
 function paginate(doc) {
   const range = doc.bufferedPageRange();
   for (let i = 0; i < range.count; i += 1) {
     doc.switchToPage(range.start + i);
-    const y = 841.89 - PAGE.margin + 6;
+    const bottom = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
+    const y = PAGE_HEIGHT - PAGE.margin + 6;
     doc.save().lineWidth(RULE).strokeColor(HAIRLINE).moveTo(LEFT, y - 8).lineTo(RIGHT, y - 8).stroke().restore();
     doc.font('Helvetica').fontSize(7).fillColor(MUTED);
     doc.text(`${company.name}  ·  ${company.website}`, LEFT, y, { width: WIDTH / 2, lineBreak: false });
@@ -410,6 +500,7 @@ function paginate(doc) {
       align: 'right',
       lineBreak: false,
     });
+    doc.page.margins.bottom = bottom;
   }
 }
 
@@ -437,8 +528,23 @@ export function renderQuotationPdf(quotation) {
       let y = header(doc, quotation);
       y = parties(doc, quotation, y);
       y = items(doc, quotation, y);
-      y = totals(doc, quotation, y);
+
+      /*
+       * Each closing block asks for its own room before it draws. Totals and terms may sit on
+       * different pages if they have to — but a block that starts near the bottom and runs off
+       * it is what produced the stray pages, and splitting the money away from its own label is
+       * the one break a reader cannot recover from.
+       */
+      y = totals(doc, quotation, room(doc, y, 96));
       y = revisionNote(doc, quotation, y + 4);
+
+      /*
+       * Terms and the signature move as one block. Asking for room separately let the terms fit
+       * and pushed the signature over on its own, which is how a document ends with a page
+       * carrying nothing but a line to sign — and a buyer reasonably wonders what they are
+       * agreeing to. They belong together on paper, so they are measured together here.
+       */
+      y = room(doc, y, closingHeight(doc, quotation));
       y = terms(doc, quotation, y);
       signature(doc, y);
       paginate(doc);

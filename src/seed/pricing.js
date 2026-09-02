@@ -16,11 +16,14 @@ import { QUOTE_SHEET, SHEET_PRODUCTS } from './quoteSheet.js';
  * What this produces:
  *
  *   25 costings   every model on the sheet, with its own cost lines, approved and quotable
- *   14 quotations the rows that carry a quoted price, at the price actually quoted
+ *    2 quotations the sheet's own two documents, NP/26-27/1 and /2, each carrying every model
+ *                 quoted to that party — 8 lines and 6 — at the prices actually quoted
  *   11 costed-only the rows with no quote yet — a real and untested state before this
  *
- * Three of the fourteen sit below their own minimum, so §9's approval route has something to
- * refuse on a freshly seeded database instead of only in a test.
+ * Three costings sit below their own minimum, and because one of them is a line on `NP/26-27/1`
+ * that whole document is held: §9's approval route then has a real quotation to refuse on a
+ * freshly seeded database rather than only in a test, and it is the case a single-line model
+ * could never produce — seven prices that are perfectly fine, held by an eighth that is not.
  */
 
 /** The sheet's date column, as a Date. `01-Apr-2026`. */
@@ -119,6 +122,8 @@ export async function seedPricing({ admin, nandhini }) {
 
   const pricings = [];
   const quotations = [];
+  /** Every costed row with what it needs to become a quotation line further down. */
+  const costed = [];
 
   for (const row of QUOTE_SHEET) {
     const customer = parties[row.party];
@@ -179,20 +184,47 @@ export async function seedPricing({ admin, nandhini }) {
     await pricing.save();
     pricings.push(pricing);
 
-    /* ------------------------------ The quotations ------------------------------ */
+    /* Kept for the grouping below: a quotation is a document, and the sheet says which. */
+    costed.push({ row, pricing, product, customer, at });
+  }
 
-    if (row.quoted == null) continue;
+  /* ------------------------------ The quotations ------------------------------ */
+
+  /*
+   * **Grouped by the sheet's own quote reference, because that is what a quotation is.**
+   *
+   * The sheet has two of them. `NP/26-27/1` covers sixteen models for Yorker knit — eight of
+   * them priced — under one number, one validity and one set of payment terms; `NP/26-27/2`
+   * covers nine for Samara Exports, six priced. This seed used to produce fourteen quotations,
+   * one per priced row, which gave the buyer fourteen reference numbers for one conversation
+   * and made "what did we quote Yorker knit?" a question with fourteen answers and no total.
+   *
+   * The rows with no price are costed and left off the document, which is exactly what the
+   * sheet does with them: a rate has been worked out and nothing has been offered yet.
+   */
+  const documents = new Map();
+  for (const entry of costed) {
+    if (entry.row.quoted == null) continue;
+    const key = entry.row.quote;
+    if (!documents.has(key)) documents.set(key, []);
+    documents.get(key).push(entry);
+  }
+
+  for (const [reference, entries] of documents) {
+    const { customer, at, row } = entries[0];
 
     const quotation = new Quotation({
       number: await nextNumber('QTN'),
       customer: customer._id,
-      pricing: pricing._id,
-      product: product?._id,
       assignedTo: nandhini._id,
-      modelNumber: row.model,
-      quantity: 20000,
-      moq: 5000,
-      unitPrice: row.quoted,
+      lines: entries.map((entry) => ({
+        pricing: entry.pricing._id,
+        product: entry.product?._id,
+        modelNumber: entry.row.model,
+        quantity: 20000,
+        moq: 5000,
+        unitPrice: entry.row.quoted,
+      })),
       gstPercent: 18,
       paymentTerms: PARTY_DETAIL[row.party].paymentTerms,
       deliveryTerms: '4 weeks from receipt of confirmed PO',
@@ -200,21 +232,32 @@ export async function seedPricing({ admin, nandhini }) {
       packing: '200 pcs per carton',
       validUntil: new Date(at.getTime() + 30 * 24 * 60 * 60 * 1000),
       /*
-       * The sheet's own quote reference kept as a remark, so a row here can be traced back to
-       * the spreadsheet it came from while both are still in use.
+       * The sheet's own quote reference kept as a remark, so a document here can be traced back
+       * to the spreadsheet it came from while both are still in use.
        */
-      remarks: `Against ${row.quote}`,
-      status: pricing.belowMinimum ? 'approval_pending' : 'sent',
-      sentAt: pricing.belowMinimum ? undefined : at,
+      remarks: `Against ${reference}`,
       statusHistory: [{ to: 'draft', at, by: nandhini._id }],
     });
+
+    /*
+     * One line under its floor holds the whole document, which is the rule a multi-line
+     * quotation makes real — and `NP/26-27/1` is the case: seven of its eight prices are fine
+     * and MAU-35 WB at ₹3.60 against a ₹7.65 floor is not, so nothing on it goes out until
+     * somebody signs. On a freshly seeded database that gives §9 a document to refuse rather
+     * than only a test.
+     */
+    const blocked = entries.some((entry) => entry.pricing.belowMinimum);
+    quotation.status = blocked ? 'approval_pending' : 'sent';
+    quotation.sentAt = blocked ? undefined : at;
 
     quotation.revisions = [
       {
         revision: 0,
-        unitPrice: row.quoted,
-        quantity: quotation.quantity,
-        moq: quotation.moq,
+        lines: quotation.lines.map((line) => {
+          const plain = line.toObject();
+          delete plain._id;
+          return plain;
+        }),
         validUntil: quotation.validUntil,
         paymentTerms: quotation.paymentTerms,
         deliveryTerms: quotation.deliveryTerms,
@@ -235,6 +278,8 @@ export async function seedPricing({ admin, nandhini }) {
     parties: Object.keys(parties).length,
     pricings: pricings.length,
     quotations: quotations.length,
+    quotedLines: quotations.reduce((sum, quotation) => sum + quotation.lines.length, 0),
+    heldForApproval: quotations.filter((q) => q.status === 'approval_pending').length,
     belowFloor: pricings.filter((p) => p.belowMinimum).length,
   };
 }

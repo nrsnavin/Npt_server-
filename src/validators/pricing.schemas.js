@@ -130,16 +130,33 @@ export const pricingQuoteSchema = z.object({
 
 /* --------------------------------- Quotations --------------------------------- */
 
-const quotationCore = {
-  enquiry: objectId.optional(),
-  pricing: objectId.optional(),
+/**
+ * One line of the offer: a model, a quantity, a price.
+ *
+ * `pricing` is per line because the floor is per line [§9] — eight models on one document are
+ * eight separate costings, and a document-level costing reference could only ever check one of
+ * them.
+ */
+const quotationLine = z.object({
+  /** Present when editing an existing line; absent on a new one. */
+  _id: objectId.optional(),
   product: objectId.optional(),
-  assignedTo: objectId.optional(),
+  pricing: objectId.optional(),
   modelNumber: z.string().optional(),
-  quantity: z.number().positive('A quotation needs a quantity'),
+  quantity: z.number().positive('Every line needs a quantity'),
   /** Left out, and the product master's minimum is copied in [§28]. */
   moq: money.optional(),
   unitPrice: money,
+  remarks: z.string().optional(),
+});
+
+/** A quotation with nothing on it is not a draft, it is a mistake — so at least one line. */
+const lines = z.array(quotationLine).min(1, 'A quotation needs at least one line');
+
+/** The terms, which belong to the document rather than to any one model on it. */
+const quotationTerms = {
+  enquiry: objectId.optional(),
+  assignedTo: objectId.optional(),
   gstPercent: z.number().min(0).max(100).optional(),
   isExport: z.boolean().optional(),
   paymentTerms: z.string().optional(),
@@ -150,24 +167,32 @@ const quotationCore = {
   remarks: z.string().optional(),
 };
 
-export const quotationSchema = z.object({ customer: objectId.optional(), ...quotationCore });
+export const quotationSchema = z.object({
+  customer: objectId.optional(),
+  lines,
+  ...quotationTerms,
+});
 
 /**
- * Editing the terms of a live quote.
+ * Editing a live quote.
  *
- * `unitPrice` is accepted so the controller can refuse it by name — dropping it here would make
- * a price change silently do nothing, which is the worse failure of the two.
+ * `lines` is accepted so the controller can refuse a price change by name — dropping it here
+ * would make one silently do nothing, which is the worse failure of the two.
  */
 export const quotationUpdateSchema = z
-  .object(quotationCore)
+  .object({ ...quotationTerms, lines: lines.optional() })
   .partial()
   .extend(versioned);
 
-/** A new price, or new terms, on the same quotation — the old ones stay in history [§10]. */
+/**
+ * A new price, or new terms, on the same quotation — the old ones stay in history [§10].
+ *
+ * `lines` replaces the whole set rather than patching one of them. A revision is a restatement
+ * of the offer, and a partial one leaves the question of what happened to the models it did not
+ * mention: dropped, or unchanged? Sending the lot makes the answer visible in the record.
+ */
 export const quotationRevisionSchema = z.object({
-  unitPrice: money.optional(),
-  quantity: z.number().positive().optional(),
-  moq: money.optional(),
+  lines: lines.optional(),
   gstPercent: z.number().min(0).max(100).optional(),
   paymentTerms: z.string().optional(),
   deliveryTerms: z.string().optional(),

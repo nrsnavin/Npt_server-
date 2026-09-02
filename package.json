@@ -15,7 +15,8 @@
     "test": "node --test tests/*.test.js",
     "create-user": "node scripts/create-user.js",
     "doctor:indexes": "node scripts/doctor-indexes.js",
-    "reset-data": "node scripts/reset-data.js"
+    "reset-data": "node scripts/reset-data.js",
+    "migrate:quotation-lines": "node scripts/migrate-quotation-lines.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",

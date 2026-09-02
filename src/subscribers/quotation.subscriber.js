@@ -87,7 +87,15 @@ export function registerQuotationSubscribers() {
       await raiseTask({
         user: quotation.assignedTo,
         title: `Follow up on ${quotation.number}`,
-        notes: `Rev ${quotation.revision} at ₹${quotation.unitPrice} went out. Ask what they think.`,
+        /*
+         * A price where there is one price to give, and a count where there are several.
+         * `soleLine` returns null on a multi-line quote precisely so this cannot describe an
+         * eight-model quotation by whichever model happens to be first.
+         */
+        notes: quotation.soleLine
+          ? `Rev ${quotation.revision} at ₹${quotation.soleLine.unitPrice} went out. Ask what they think.`
+          : `Rev ${quotation.revision} went out — ${quotation.lineCount} models, ` +
+            `₹${quotation.netValue.toLocaleString('en-IN')} net. Ask what they think.`,
         dueDate: quotation.validUntil,
         priority: 'normal',
         link: `/quotations/${quotation._id}`,

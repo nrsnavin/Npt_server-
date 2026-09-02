@@ -174,9 +174,10 @@ async function seed() {
       `by the customer.`
   );
   console.log(
-    `  Phase 3: ${pricing.pricings} costings and ${pricing.quotations} quotations from the ` +
-      `26-27 sheet, across ${pricing.productsAdded} more models — ` +
-      `${pricing.belowFloor} of them priced under their own floor, waiting on §9 approval.`
+    `  Phase 3: ${pricing.pricings} costings across ${pricing.productsAdded} more models, and ` +
+      `the sheet's own ${pricing.quotations} quotations carrying ${pricing.quotedLines} lines ` +
+      `between them — ${pricing.belowFloor} priced under their own floor, holding ` +
+      `${pricing.heldForApproval} whole document(s) on §9 approval.`
   );
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');
