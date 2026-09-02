@@ -152,9 +152,9 @@ export const MODULES = [
   },
   {
     key: 'materials',
-    label: 'Material register',
+    label: 'Material & parts registers',
     description:
-      'Every resin the plant buys: grade, colour, rate per kilo and the grammage uplift a denser material carries.',
+      'What a piece is made of and what goes on it: resins by the kilo with their grammage uplift, and hooks, clips and printing by the piece.',
     group: 'Masters',
     /*
      * Production's, alongside the mould register. The rate is a purchase fact and the grammage

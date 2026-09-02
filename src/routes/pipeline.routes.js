@@ -19,6 +19,10 @@ import {
 import {
   listMaterials, getMaterial, createMaterial, updateMaterial, exportMaterials, materialPricings,
 } from '../controllers/material.controller.js';
+import {
+  listComponents, getComponent, createComponent, updateComponent, exportComponents,
+  componentPricings,
+} from '../controllers/component.controller.js';
 import { marketingDashboard } from '../controllers/marketingDashboard.controller.js';
 import { addDocument, listDocuments, removeDocument } from '../controllers/document.controller.js';
 import { singleDocument, singleImage } from '../middleware/upload.js';
@@ -33,6 +37,7 @@ import {
 } from '../validators/pipeline.schemas.js';
 import { mouldSchema, mouldUpdateSchema } from '../validators/mould.schemas.js';
 import { materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
+import { componentSchema, componentUpdateSchema } from '../validators/component.schemas.js';
 
 const router = Router();
 
@@ -75,6 +80,20 @@ router.post('/materials', requireModule('materials', 'write'), validate(material
 router.get('/materials/:id', requireModule('materials'), getMaterial);
 router.get('/materials/:id/pricings', requireModule('materials'), materialPricings);
 router.patch('/materials/:id', requireModule('materials', 'write'), validate(materialUpdateSchema), updateMaterial);
+
+/*
+ * Hooks, clips and printing — three registers over one collection, told apart by `kind`.
+ *
+ * One set of routes rather than three near-identical ones: the rule is the same, the shape is
+ * the same, and only the label differs. `kind` is required on every read, so a list can never
+ * quietly hand the clip picker a page of hooks.
+ */
+router.get('/components/export', requireModule('materials'), exportComponents);
+router.get('/components', requireModule('materials'), listComponents);
+router.post('/components', requireModule('materials', 'write'), validate(componentSchema), createComponent);
+router.get('/components/:id', requireModule('materials'), getComponent);
+router.get('/components/:id/pricings', requireModule('materials'), componentPricings);
+router.patch('/components/:id', requireModule('materials', 'write'), validate(componentUpdateSchema), updateComponent);
 
 // Customers
 router.get('/customers/export', requireModule('customers'), exportCustomers);

@@ -15,6 +15,7 @@ import { defaultAccessFor, DEPARTMENTS } from '../config/modules.js';
 import { seedPipeline } from './pipeline.js';
 import { seedMoulds } from './moulds.js';
 import { seedMaterials } from './materials.js';
+import { seedComponents } from './components.js';
 import { seedPricing } from './pricing.js';
 
 /** Dates relative to today, so the reminder feed always has something to show. */
@@ -148,6 +149,7 @@ async function seed() {
 
   console.log('Adding the material and mould registers...');
   const materials = await seedMaterials();
+  const parts = await seedComponents();
   const moulds = await seedMoulds();
 
   console.log("Adding the costings and quotations from the plant's own 26-27 sheet...");
@@ -173,6 +175,10 @@ async function seed() {
   console.log(
     `  Materials: ${materials.materials} resins on the register — ${materials.uplifted} of them ` +
       `carrying a grammage uplift over PP.`
+  );
+  console.log(
+    `  Parts: ${parts.hooks} hooks, ${parts.clips} clips and ${parts.prints} print jobs, ` +
+      `all priced per piece.`
   );
   console.log(
     `  Moulds: ${moulds.moulds} tools on the register — runner is ${moulds.runnerShare}% of a ` +

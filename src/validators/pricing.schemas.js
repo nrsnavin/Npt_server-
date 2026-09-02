@@ -18,6 +18,10 @@ export const pricingSchema = z.object({
   mould: objectId.optional(),
   /** The resin from the material register: it carries the rate and the grammage basis. */
   materialRef: objectId.optional(),
+  /** The bought-in parts and the print, each from its own register. */
+  hookRef: objectId.optional(),
+  clipRef: objectId.optional(),
+  printRef: objectId.optional(),
   modelNumber: z.string().optional(),
   quantity: z.number().positive('A costing needs the quantity it is for'),
   material: z.enum(MATERIALS).optional(),
@@ -77,6 +81,14 @@ export const pricingCostSchema = z
      * heavier piece out of the same cavity — see the register's grammage factor.
      */
     materialRef: objectId.nullable().optional(),
+    /**
+     * The parts registers. Each brings its own per-piece rate onto the matching cost line,
+     * overruling whatever the mould said — the mould knows the piece takes a hook, the register
+     * knows what a hook costs this week.
+     */
+    hookRef: objectId.nullable().optional(),
+    clipRef: objectId.nullable().optional(),
+    printRef: objectId.nullable().optional(),
     remarks: z.string().optional(),
   })
   .extend(versioned);

@@ -102,6 +102,19 @@ const pricingSchema = new mongoose.Schema(
      */
     materialRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Material', index: true },
 
+    /**
+     * The bought-in parts and the print, from their own registers.
+     *
+     * Same bargain as the material above: the reference says *which* hook, and the rate is
+     * copied onto the cost line so a supplier's price rise next month cannot reach back into a
+     * quotation already given. Optional throughout — plenty of costings are built from figures
+     * somebody knows, and a register that has to be complete before anything can be priced is a
+     * register nobody starts filling.
+     */
+    hookRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component', index: true },
+    clipRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component', index: true },
+    printRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component', index: true },
+
     /** Copied from the enquiry at request time: a costing is of a quantity, and the enquiry
         may be edited afterwards. A sheet that silently re-prices itself is not a record. */
     modelNumber: { type: String, trim: true },

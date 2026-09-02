@@ -4,6 +4,7 @@ import Customer from '../models/Customer.js';
 import Product from '../models/Product.js';
 import Mould from '../models/Mould.js';
 import Material, { grammageFrom } from '../models/Material.js';
+import Component from '../models/Component.js';
 import Quotation from '../models/Quotation.js';
 import { newQuotation } from './quotation.controller.js';
 import ApiError from '../utils/ApiError.js';
@@ -51,6 +52,9 @@ const POPULATE = [
       'regrindRecoveryPercent cycleTimeSeconds efficiencyPercent status material machine',
   },
   { path: 'materialRef', select: 'name code type colour ratePerKg grammageFactorPercent' },
+  { path: 'hookRef', select: 'name code colour ratePerPiece kind' },
+  { path: 'clipRef', select: 'name code colour ratePerPiece kind' },
+  { path: 'printRef', select: 'name code colour ratePerPiece kind' },
   { path: 'requestedBy', select: 'name' },
   { path: 'costedBy', select: 'name' },
   { path: 'approvedBy', select: 'name' },
@@ -70,7 +74,7 @@ const POPULATE = [
  * this particular job: this hanger takes a clip, that one is packed 200 to a carton. Every one
  * of them stays editable on the sheet, since a particular job sometimes genuinely differs.
  */
-export function costingFrom(mould, material) {
+export function costingFrom(mould, material, parts = {}) {
   const filled = {};
 
   if (mould) {
@@ -95,7 +99,48 @@ export function costingFrom(mould, material) {
    */
   if (material) filled.rawMaterialRate = material.ratePerKg;
 
+  /*
+   * The parts registers win over the mould's own figures, and that ordering is the point.
+   *
+   * The mould says *this part takes a hook* — a fact about the piece, and a reasonable default.
+   * The hook register says *a swivel hook costs ₹0.70 this week* — a purchase fact that moves.
+   * When both have an opinion the priced one is newer and has a name attached, so it should be
+   * the one on the sheet. A typed figure still beats both.
+   */
+  if (parts.hook) filled.hookCost = parts.hook.ratePerPiece;
+  if (parts.clip) filled.metalClipsCost = parts.clip.ratePerPiece;
+  if (parts.print) filled.printingCost = parts.print.ratePerPiece;
+
   return filled;
+}
+
+/**
+ * Resolves the three parts references on a request, refusing any that is not on its register.
+ *
+ * The kind is checked as well as the id: `hookRef` pointing at a clip would price a hanger's
+ * hook at the clip's rate and look entirely ordinary on the sheet.
+ */
+async function partsFrom(body) {
+  const wanted = [
+    ['hook', body.hookRef],
+    ['clip', body.clipRef],
+    ['print', body.printRef],
+  ].filter(([, id]) => id);
+  if (!wanted.length) return {};
+
+  const found = await Component.find({ _id: { $in: wanted.map(([, id]) => id) } });
+  const byId = new Map(found.map((row) => [String(row._id), row]));
+
+  const parts = {};
+  for (const [kind, id] of wanted) {
+    const row = byId.get(String(id));
+    if (!row) throw ApiError.badRequest(`That ${kind} is not on the register`);
+    if (row.kind !== kind) {
+      throw ApiError.badRequest(`${row.name} is a ${row.kind}, not a ${kind}`);
+    }
+    parts[kind] = row;
+  }
+  return parts;
 }
 
 /**
@@ -202,14 +247,19 @@ export const createPricing = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('That material is not on the register');
   }
 
-  /* Everything the tool and the resin already know — grammage, rate, and the cost lines. */
-  const filled = costingFrom(mould, material);
+  const parts = await partsFrom(req.body);
+
+  /* Everything the tool, the resin and the parts already know. */
+  const filled = costingFrom(mould, material, parts);
 
   const pricing = await Pricing.create({
     ...req.body,
     product: productId || undefined,
     mould: mould?._id,
     materialRef: material?._id,
+    hookRef: parts.hook?._id,
+    clipRef: parts.clip?._id,
+    printRef: parts.print?._id,
     customer: customerId,
     modelNumber: req.body.modelNumber || product?.modelCode,
     material: req.body.material || material?.type || product?.material,
@@ -299,7 +349,7 @@ export const costPricing = asyncHandler(async (req, res) => {
 
   const {
     cost, markupPercent, approvedSellingPrice, minimumOverride, printing, procurement, mould,
-    materialRef, remarks,
+    materialRef, hookRef, clipRef, printRef, remarks,
   } = withoutVersion(req.body);
 
   /*
@@ -311,6 +361,14 @@ export const costPricing = asyncHandler(async (req, res) => {
    */
   if (mould === null) pricing.mould = undefined;
   if (materialRef === null) pricing.materialRef = undefined;
+  for (const [field, value] of [['hookRef', hookRef], ['clipRef', clipRef], ['printRef', printRef]]) {
+    if (value === null) pricing[field] = undefined;
+  }
+
+  const parts = await partsFrom({ hookRef, clipRef, printRef });
+  if (parts.hook) pricing.hookRef = parts.hook._id;
+  if (parts.clip) pricing.clipRef = parts.clip._id;
+  if (parts.print) pricing.printRef = parts.print._id;
 
   if (mould) {
     const tool = await Mould.findById(mould);
@@ -330,14 +388,14 @@ export const costPricing = asyncHandler(async (req, res) => {
    * a person who picked the new resin and saw the old weight would reasonably assume it had
    * been handled. Any line explicitly sent in the same request still wins.
    */
-  if (mould || materialRef) {
+  if (mould || materialRef || hookRef || clipRef || printRef) {
     const [tool, resin] = await Promise.all([
       pricing.mould ? Mould.findById(pricing.mould) : null,
       pricing.materialRef ? Material.findById(pricing.materialRef) : null,
     ]);
     pricing.cost = {
       ...pricing.cost?.toObject?.(),
-      ...costingFrom(tool, resin),
+      ...costingFrom(tool, resin, parts),
     };
   }
 

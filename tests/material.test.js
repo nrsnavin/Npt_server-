@@ -356,3 +356,154 @@ test("the mould's cost lines are cost, so marketing does not see them [§8]", as
   assert.equal(asMarketing.json.data.jobWorkCost, undefined);
   assert.equal(asMarketing.json.data.partWeightGrams, 30, 'but the weights are not a secret');
 });
+
+/* --------------------- Hooks, clips and printing, per piece --------------------- */
+
+test('the three registers are separate, and a list must say which', async () => {
+  /*
+   * They share a table because they are the same shape; they are three registers because that
+   * is how the plant thinks about them. A list with no `kind` would hand a costing clerk hooks
+   * in the clip picker, so it is refused rather than defaulted.
+   */
+  const vague = await api('/api/components', { token: admin });
+  assert.equal(vague.status, 400);
+  assert.match(vague.json.message, /hook, clip, print/);
+
+  for (const [kind, name, rate] of [
+    ['hook', 'Swivel metal hook', 0.7],
+    ['clip', 'Metal clip pair', 1.2],
+    ['print', '1 colour screen', 0.5],
+  ]) {
+    const made = await api('/api/components', {
+      method: 'POST',
+      token: admin,
+      body: { kind, name, code: `${kind.toUpperCase()}-1`, ratePerPiece: rate },
+    });
+    assert.equal(made.status, 201, made.json.message);
+  }
+
+  const hooks = await api('/api/components?kind=hook', { token: admin });
+  assert.equal(hooks.json.data.length, 1);
+  assert.equal(hooks.json.data[0].name, 'Swivel metal hook');
+  assert.equal(hooks.json.data[0].ratePerPiece, 0.7, 'priced per piece, not per kilo');
+});
+
+test('a code may repeat across registers but not within one', async () => {
+  /* A hook and a clip may both be `STD-01` in their own stores; two hooks may not. */
+  const first = await api('/api/components', {
+    method: 'POST', token: admin,
+    body: { kind: 'hook', name: 'Standard hook', code: 'STD-01', ratePerPiece: 0.5 },
+  });
+  assert.equal(first.status, 201, first.json.message);
+
+  const otherRegister = await api('/api/components', {
+    method: 'POST', token: admin,
+    body: { kind: 'clip', name: 'Standard clip', code: 'STD-01', ratePerPiece: 0.9 },
+  });
+  assert.equal(otherRegister.status, 201, 'the clip store has its own numbering');
+
+  const clash = await api('/api/components', {
+    method: 'POST', token: admin,
+    body: { kind: 'hook', name: 'Another hook', code: 'STD-01', ratePerPiece: 0.6 },
+  });
+  assert.equal(clash.status, 409);
+});
+
+test('a costing takes each part rate from its own register', async () => {
+  const pick = async (kind, name, rate) => {
+    const { json } = await api('/api/components', {
+      method: 'POST', token: admin,
+      body: { kind, name, ratePerPiece: rate },
+    });
+    return json.data._id;
+  };
+  const hook = await pick('hook', 'Heavy swivel', 1.1);
+  const clip = await pick('clip', 'Soft grip', 1.65);
+  const print = await pick('print', '2 colour', 1);
+
+  const { status, json } = await api('/api/pricings', {
+    method: 'POST',
+    token: admin,
+    body: { customer, quantity: 40000, mould, materialRef: pp, hookRef: hook, clipRef: clip, printRef: print },
+  });
+  assert.equal(status, 201, json.message);
+
+  /*
+   * The mould said 0.70, 1.20 and 0.50 for these lines. The registers are newer, priced, and
+   * have a name attached — so they win, and a typed figure would still beat them both.
+   */
+  assert.equal(json.data.cost.hookCost, 1.1);
+  assert.equal(json.data.cost.metalClipsCost, 1.65);
+  assert.equal(json.data.cost.printingCost, 1);
+
+  /* And the sheet records which part it was, so the rate can be checked six months later. */
+  const seen = await api(`/api/pricings/${json.data._id}`, { token: admin });
+  assert.equal(seen.json.data.hookRef.name, 'Heavy swivel');
+  assert.equal(seen.json.data.printRef.ratePerPiece, 1);
+});
+
+test('a reference pointing at the wrong register is refused by name', async () => {
+  /*
+   * `hookRef` pointing at a clip would price a hanger's hook at the clip's rate and look
+   * entirely ordinary on the sheet — so the kind is checked, not just the id.
+   */
+  const { json: clip } = await api('/api/components', {
+    method: 'POST', token: admin,
+    body: { kind: 'clip', name: 'Wooden clip', ratePerPiece: 0.8 },
+  });
+
+  const { status, json } = await api('/api/pricings', {
+    method: 'POST',
+    token: admin,
+    body: { customer, quantity: 40000, hookRef: clip.data._id },
+  });
+
+  assert.equal(status, 400);
+  assert.match(json.message, /Wooden clip is a clip, not a hook/);
+});
+
+test('switching the hook on a sheet re-prices that line and nothing else', async () => {
+  const cheap = await api('/api/components', {
+    method: 'POST', token: admin, body: { kind: 'hook', name: 'Fixed PP', ratePerPiece: 0.45 },
+  });
+  const dear = await api('/api/components', {
+    method: 'POST', token: admin, body: { kind: 'hook', name: 'Heavy metal', ratePerPiece: 1.1 },
+  });
+
+  const made = await api('/api/pricings', {
+    method: 'POST',
+    token: admin,
+    body: { customer, quantity: 40000, mould, materialRef: pp, hookRef: cheap.json.data._id },
+  });
+  assert.equal(made.json.data.cost.hookCost, 0.45);
+  const packingBefore = made.json.data.cost.packingCost;
+
+  const switched = await api(`/api/pricings/${made.json.data._id}/cost`, {
+    method: 'PATCH', token: admin, body: { hookRef: dear.json.data._id },
+  });
+
+  assert.equal(switched.status, 200, switched.json.message);
+  assert.equal(switched.json.data.cost.hookCost, 1.1);
+  assert.equal(switched.json.data.cost.packingCost, packingBefore, 'the rest of the sheet held still');
+});
+
+test('a part rate that moves later does not re-price a costing already built', async () => {
+  const made = await api('/api/components', {
+    method: 'POST', token: admin, body: { kind: 'print', name: 'Foil', ratePerPiece: 1.4 },
+  });
+  const id = made.json.data._id;
+
+  const sheet = await api('/api/pricings', {
+    method: 'POST', token: admin,
+    body: { customer, quantity: 40000, mould, materialRef: pp, printRef: id },
+  });
+  assert.equal(sheet.json.data.cost.printingCost, 1.4);
+
+  await api(`/api/components/${id}`, { method: 'PATCH', token: admin, body: { ratePerPiece: 1.75 } });
+
+  const after = await api(`/api/pricings/${sheet.json.data._id}`, { token: admin });
+  assert.equal(after.json.data.cost.printingCost, 1.4, 'the sheet keeps what it was built on');
+
+  const affected = await api(`/api/components/${id}/pricings`, { token: admin });
+  assert.equal(affected.json.stale, 1, 'but the register can say which sheets are now behind');
+});
