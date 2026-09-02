@@ -17,6 +17,7 @@ import { seedMoulds } from './moulds.js';
 import { seedMaterials } from './materials.js';
 import { seedComponents } from './components.js';
 import { seedPricing } from './pricing.js';
+import { seedRegisterCostings } from './registerCostings.js';
 
 /** Dates relative to today, so the reminder feed always has something to show. */
 const days = (offset, hour = 17) => {
@@ -158,6 +159,17 @@ async function seed() {
     nandhini: byEmail['marketing@npthangers.com'],
   });
 
+  /*
+   * After `seedPricing`, which clears the collection — and after the registers, which these read.
+   * The sheet's costings are transcribed figures against models with no tool; these are built the
+   * way the app builds one, so a freshly seeded database actually shows the registers working.
+   */
+  console.log('Costing the moulded models off the registers...');
+  const derived = await seedRegisterCostings({
+    admin: byEmail['admin@npthangers.com'],
+    nandhini: byEmail['marketing@npthangers.com'],
+  });
+
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));
 
   console.log('\nSeed complete. Sign in with a password:\n');
@@ -190,6 +202,11 @@ async function seed() {
       `the sheet's own ${pricing.quotations} quotations carrying ${pricing.quotedLines} lines ` +
       `between them — ${pricing.belowFloor} priced under their own floor, holding ` +
       `${pricing.heldForApproval} whole document(s) on §9 approval.`
+  );
+  console.log(
+    `  Registers: ${derived.costings} more costings built off a mould and a resin — ` +
+      `${derived.uplifted} of them in a resin heavier than PP. Heaviest is ` +
+      `${derived.heaviest?.modelNumber} at ${derived.heaviest?.cost.gramWeight}g a piece.`
   );
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');
