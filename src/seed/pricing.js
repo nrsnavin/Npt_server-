@@ -4,6 +4,7 @@ import Pricing from '../models/Pricing.js';
 import Quotation from '../models/Quotation.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { QUOTE_SHEET, SHEET_PRODUCTS } from './quoteSheet.js';
+import { FULL } from './size.js';
 
 /**
  * Seeds the pricing and quotation modules from the plant's real 26-27 sheet.
@@ -63,8 +64,34 @@ const PARTY_DETAIL = {
   },
 };
 
+/**
+ * The sheet's rows, trimmed per quotation rather than across the lot.
+ *
+ * A flat first-four would take four lines off `NP/26-27/1` and leave `NP/26-27/2` with none,
+ * so the second document — and with it the whole idea that a quotation carries several models —
+ * would simply not exist on a small seed.
+ *
+ * The row that has to survive is the first of the first quote: MAU-35 WB, quoted at ₹3.60
+ * against a floor of ₹7.65. That single row is what puts a real quotation in front of §9's
+ * approval route on a freshly seeded database, and it is the case an invented costing never
+ * produces, because invented costings all clear their floor.
+ */
+function sheetRows() {
+  if (FULL) return QUOTE_SHEET;
+
+  const perQuote = {};
+  return QUOTE_SHEET.filter((row) => {
+    perQuote[row.quote] = (perQuote[row.quote] || 0) + 1;
+    return perQuote[row.quote] <= 2;
+  });
+}
+
 export async function seedPricing({ admin, nandhini }) {
   await Promise.all([Pricing.deleteMany({}), Quotation.deleteMany({})]);
+
+  const rows = sheetRows();
+  /* Only the models these rows actually name — the sheet's catalogue is 25 entries long. */
+  const wantedModels = new Set(rows.map((row) => row.model));
 
   /* ------------------------------- The catalogue ------------------------------- */
 
@@ -72,7 +99,7 @@ export async function seedPricing({ admin, nandhini }) {
   const known = new Set(existing.map((product) => product.modelCode));
 
   const added = await Product.create(
-    SHEET_PRODUCTS.filter((row) => !known.has(row.modelCode)).map((row) => ({
+    SHEET_PRODUCTS.filter((row) => wantedModels.has(row.modelCode) && !known.has(row.modelCode)).map((row) => ({
       modelCode: row.modelCode,
       /*
        * The description only. Screens render "<code> — <name>", so repeating the code here
@@ -125,7 +152,7 @@ export async function seedPricing({ admin, nandhini }) {
   /** Every costed row with what it needs to become a quotation line further down. */
   const costed = [];
 
-  for (const row of QUOTE_SHEET) {
+  for (const row of rows) {
     const customer = parties[row.party];
     if (!customer) continue;
 

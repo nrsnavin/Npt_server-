@@ -18,6 +18,7 @@ import { seedMaterials } from './materials.js';
 import { seedComponents } from './components.js';
 import { seedPricing } from './pricing.js';
 import { seedRegisterCostings } from './registerCostings.js';
+import { FULL, few } from './size.js';
 
 /** Dates relative to today, so the reminder feed always has something to show. */
 const days = (offset, hour = 17) => {
@@ -29,7 +30,7 @@ const days = (offset, hour = 17) => {
 
 /** One account per department, so every default grant set can be exercised. */
 const PEOPLE = [
-  { name: 'Navin R', email: 'admin@npthangers.com', password: 'Admin@12345', role: 'admin', department: 'management', phone: '9876500001' },
+  { name: 'Navin R', email: 'rsnavin1@gmail.com', password: 'Admin@12345', role: 'admin', department: 'management', phone: '9876500001' },
   { name: 'Nandhini S', email: 'marketing@npthangers.com', password: 'Mktg@123456', department: 'marketing', phone: '9876500002' },
   // A second marketing account, so the ownership rule [§29] is visible: neither of them
   // can open the other's customers or enquiries.
@@ -64,12 +65,19 @@ async function seed() {
   );
 
   const byEmail = Object.fromEntries(created.map((user) => [user.email, user]));
-  const admin = byEmail['admin@npthangers.com'];
+  const admin = byEmail['rsnavin1@gmail.com'];
   const despatch = byEmail['despatch@npthangers.com'];
 
   console.log('Adding sample tasks, notes and announcements...');
 
-  await Todo.create([
+  /*
+   * Trimmed per person, not per table.
+   *
+   * A flat cap over the whole list would have taken the admin's first few and left the despatch
+   * account with nothing at all — an empty dashboard for one of the two people the fixture
+   * exists to give a dashboard to.
+   */
+  const adminTodos = [
     // Deliberately spread across overdue, today and tomorrow so the reminder is populated.
     { user: admin._id, title: 'Approve velvet hanger sample for Trendline', dueDate: days(-2), priority: 'high' },
     { user: admin._id, title: 'Sign off October production plan', dueDate: days(-1), priority: 'high' },
@@ -81,21 +89,28 @@ async function seed() {
     { user: admin._id, title: 'Update hanger price list for Q4', priority: 'low', notes: 'No fixed date — pick up when the resin price settles.' },
     { user: admin._id, title: 'Send Diwali greetings to key buyers', dueDate: days(-4), priority: 'normal', completed: true, completedAt: days(-4) },
     { user: admin._id, title: 'Reconcile September despatch register', dueDate: days(-3), priority: 'normal', completed: true, completedAt: days(-3) },
+  ];
 
+  const despatchTodos = [
     { user: despatch._id, title: 'Pack 12,000 shirt hangers for Metro Wholesale', dueDate: days(0, 14), priority: 'high' },
     { user: despatch._id, title: 'Book transport for Tiruppur delivery', dueDate: days(0, 15), priority: 'high' },
     { user: despatch._id, title: 'Print e-way bills for tomorrow', dueDate: days(1, 9), priority: 'normal' },
-  ]);
+  ];
 
-  await StickyNote.create([
-    { user: admin._id, content: 'Mould M-101 cycle time crept to 31s — ask Ramesh to check the cooling line.', colour: 'amber', pinned: true },
-    { user: admin._id, content: 'Trendline wants matte finish on the 400mm white. Costing +₹0.40/pc.', colour: 'sky' },
-    { user: admin._id, content: 'Bank: cheque book reorder before the 15th.', colour: 'lime' },
-    { user: admin._id, content: 'Recycled PP supplier trial — 500kg sample arriving next week.', colour: 'violet' },
+  const todos = await Todo.create([...few(adminTodos), ...few(despatchTodos, 3)]);
+
+  const notes = await StickyNote.create([
+    ...few([
+      { user: admin._id, content: 'Mould M-101 cycle time crept to 31s — ask Ramesh to check the cooling line.', colour: 'amber', pinned: true },
+      { user: admin._id, content: 'Trendline wants matte finish on the 400mm white. Costing +₹0.40/pc.', colour: 'sky' },
+      { user: admin._id, content: 'Bank: cheque book reorder before the 15th.', colour: 'lime' },
+      { user: admin._id, content: 'Recycled PP supplier trial — 500kg sample arriving next week.', colour: 'violet' },
+    ], 3),
+    /* Kept whichever size the set is: it is the despatch account's only note. */
     { user: despatch._id, content: 'Carton stock low — 1,800 left, reorder at 500.', colour: 'rose', pinned: true },
   ]);
 
-  await Announcement.create([
+  const announcements = await Announcement.create(few([
     {
       title: 'Plant shutdown for annual maintenance',
       body: 'Both moulding lines will be down from the 12th to the 14th for annual maintenance. Please plan despatch commitments around this and inform buyers with pending orders.',
@@ -139,7 +154,7 @@ async function seed() {
       author: admin._id,
       readBy: [admin._id],
     },
-  ]);
+  ]));
 
   console.log('Adding the product master, customers, leads and enquiries...');
   const counts = await seedPipeline({
@@ -155,7 +170,7 @@ async function seed() {
 
   console.log("Adding the costings and quotations from the plant's own 26-27 sheet...");
   const pricing = await seedPricing({
-    admin: byEmail['admin@npthangers.com'],
+    admin: byEmail['rsnavin1@gmail.com'],
     nandhini: byEmail['marketing@npthangers.com'],
   });
 
@@ -166,20 +181,31 @@ async function seed() {
    */
   console.log('Costing the moulded models off the registers...');
   const derived = await seedRegisterCostings({
-    admin: byEmail['admin@npthangers.com'],
+    admin: byEmail['rsnavin1@gmail.com'],
     nandhini: byEmail['marketing@npthangers.com'],
   });
 
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));
 
-  console.log('\nSeed complete. Sign in with a password:\n');
+  console.log(
+    FULL
+      ? '\nSeed complete — the full set. Sign in with a password:\n'
+      : '\nSeed complete — a working set of three or four per model.' +
+        '\nRun SEED_FULL=true npm run seed for the whole catalogue and all nine enquiries.' +
+        '\n\nSign in with a password:\n'
+  );
   for (const person of PEOPLE) {
     const grants = person.role === 'admin' ? 'all modules' : `${defaultAccessFor(person.department).length} modules`;
     console.log(
       `  ${person.email.padEnd(28)} ${person.password.padEnd(13)} ${(labels[person.department] || '').padEnd(26)} ${grants}`
     );
   }
-  console.log('\n  Sample data: 13 tasks, 5 sticky notes, 5 announcements.');
+  /* Counted rather than stated: the numbers move with the size flag, and a hard-coded
+     summary that disagrees with the database is worse than no summary. */
+  console.log(
+    `\n  Workspace: ${todos.length} tasks, ${notes.length} sticky notes, ` +
+      `${announcements.length} announcements.`
+  );
   console.log(
     `  Phase 1: ${counts.products} products, ${counts.customers} customers, ` +
       `${counts.leads} leads, ${counts.enquiries} enquiries, ${counts.samples} samples.`
@@ -198,7 +224,8 @@ async function seed() {
       `by the customer.`
   );
   console.log(
-    `  Phase 3: ${pricing.pricings} costings across ${pricing.productsAdded} more models, and ` +
+    `  Phase 3: ${pricing.pricings} costings across ${pricing.productsAdded} more models ` +
+      `(so ${counts.products + pricing.productsAdded} in the catalogue altogether), and ` +
       `the sheet's own ${pricing.quotations} quotations carrying ${pricing.quotedLines} lines ` +
       `between them — ${pricing.belowFloor} priced under their own floor, holding ` +
       `${pricing.heldForApproval} whole document(s) on §9 approval.`

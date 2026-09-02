@@ -1,4 +1,5 @@
 import Material from '../models/Material.js';
+import { few, leading } from './size.js';
 
 /**
  * The resin register.
@@ -91,7 +92,10 @@ export async function seedMaterials() {
   await Material.deleteMany({});
 
   const created = await Material.create(
-    MATERIALS.map((row) => ({ ...row, rateUpdatedAt: new Date(), isActive: true }))
+    /* PP twice and HIPS once is the pair that matters: the uplift factor is the whole reason
+       this register exists, and a set of resins that all convert one-for-one would never show it. */
+    few(leading(MATERIALS, 'code', ['PP-NAT', 'PP-WHT', 'HIPS-NAT', 'HIPS-WHT']))
+      .map((row) => ({ ...row, rateUpdatedAt: new Date(), isActive: true }))
   );
 
   return {

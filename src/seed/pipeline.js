@@ -9,6 +9,7 @@ import Lead from '../models/Lead.js';
 import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
 import Counter from '../models/Counter.js';
+import { few, leading, resolved } from './size.js';
 import { nextNumber } from '../services/numbering.service.js';
 
 const days = (offset, hour = 11) => {
@@ -199,7 +200,15 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     Counter.deleteMany({}),
   ]);
 
-  const products = await Product.create(PRODUCTS);
+  /*
+   * The four the rest of the seed cannot do without: the two ordinary shirt hangers, the trouser
+   * hanger whose tool is running a cavity short, and the velvet suit hanger on the mould the
+   * customer paid for. Between them they carry the blocked-cavity arithmetic, the resin uplift
+   * and the ownership rule; a plain first-four would keep none of the last two.
+   */
+  const products = await Product.create(
+    few(leading(PRODUCTS, 'modelCode', ['NPT-380S', 'NPT-400S', 'NPT-420T', 'NPT-410V']))
+  );
   const byCode = Object.fromEntries(products.map((product) => [product.modelCode, product]));
   const byId = Object.fromEntries(products.map((product) => [String(product._id), product]));
 
@@ -313,7 +322,13 @@ export async function seedPipeline({ nandhini, arun, meera }) {
   ];
 
   const customers = [];
-  for (const row of customerRows) {
+  /* Vogue is fourth by name here because it owns a mould, and the register has to be able to
+     say whose tool it is. */
+  for (const row of few(
+    leading(customerRows, 'name', [
+      'SCM Garments Pvt Ltd', 'Sunrise Exports', 'Trendline Apparels', 'Vogue Retail India',
+    ])
+  )) {
     customers.push(await Customer.create({ ...row, code: await nextNumber('CUST') }));
   }
   const byName = Object.fromEntries(customers.map((customer) => [customer.name, customer]));
@@ -397,14 +412,25 @@ export async function seedPipeline({ nandhini, arun, meera }) {
   ];
 
   const leads = [];
-  for (const row of leadRows) {
+  for (const row of few(leadRows)) {
     leads.push(await Lead.create({ ...row, number: await nextNumber('LEAD') }));
   }
+
+  /*
+   * Enquiries by a key of their own, not by the number they happen to be issued.
+   *
+   * The samples below used to find their enquiry as `ENQ-2026-0003` — the third one created.
+   * That is a reference to a position in an array dressed up as a reference to a record: reorder
+   * the enquiries or seed fewer of them and every sample silently attaches to a different one,
+   * or to nothing, with no error anywhere. A key written on the row survives both.
+   */
+  const byKey = {};
 
   const groupRef = await nextNumber('GRP');
 
   const enquiryRows = [
     {
+      key: 'scm-400s',
       customer: byName['SCM Garments Pvt Ltd'],
       assignedTo: nandhini._id,
       product: byCode['NPT-400S'],
@@ -421,6 +447,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       groupRef,
     },
     {
+      key: 'scm-420t',
       customer: byName['SCM Garments Pvt Ltd'],
       assignedTo: nandhini._id,
       product: byCode['NPT-420T'],
@@ -437,6 +464,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       groupRef,
     },
     {
+      key: 'sunrise-400r',
       customer: byName['Sunrise Exports'],
       assignedTo: nandhini._id,
       product: byCode['NPT-400R'],
@@ -452,6 +480,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       source: 'email',
     },
     {
+      key: 'trendline-matte',
       customer: byName['Trendline Apparels'],
       assignedTo: nandhini._id,
       isNewDevelopment: true,
@@ -467,6 +496,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       remarks: 'Buyer supplied a competitor sample for the finish reference.',
     },
     {
+      key: 'vogue-410v',
       customer: byName['Vogue Retail India'],
       assignedTo: arun._id,
       product: byCode['NPT-410V'],
@@ -482,6 +512,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       source: 'phone',
     },
     {
+      key: 'orient-450c',
       customer: byName['Orient Sourcing FZE'],
       assignedTo: arun._id,
       product: byCode['NPT-450C'],
@@ -497,6 +528,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       source: 'email',
     },
     {
+      key: 'sunrise-300k',
       customer: byName['Sunrise Exports'],
       assignedTo: nandhini._id,
       product: byCode['NPT-300K'],
@@ -508,6 +540,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       source: 'phone',
     },
     {
+      key: 'metro-380s',
       customer: byName['Metro Wholesale Traders'],
       assignedTo: nandhini._id,
       product: byCode['NPT-380S'],
@@ -520,6 +553,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       source: 'walk_in',
     },
     {
+      key: 'trendline-360w',
       customer: byName['Trendline Apparels'],
       assignedTo: nandhini._id,
       product: byCode['NPT-360W'],
@@ -535,9 +569,22 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     },
   ];
 
+  /*
+   * Only the enquiries whose customer and model both survived the trim.
+   *
+   * `'product' in row` tells a row that asked for a model from one that never had one — the
+   * matte-finish trial is a new development and correctly has no product, which is not the same
+   * thing as a row whose model was trimmed away and would be created pointing at nothing.
+   */
   const enquiries = [];
-  for (const row of enquiryRows) {
-    const { customer, product, ...rest } = row;
+  for (const row of few(
+    resolved(
+      enquiryRows,
+      (row) => row.customer && (!('product' in row) || row.product),
+      'enquiries'
+    )
+  )) {
+    const { key, customer, product, ...rest } = row;
     enquiries.push(
       await Enquiry.create({
         ...rest,
@@ -547,9 +594,8 @@ export async function seedPipeline({ nandhini, arun, meera }) {
         statusHistory: [{ to: rest.status, at: rest.enquiryDate, by: rest.assignedTo }],
       })
     );
+    byKey[key] = enquiries[enquiries.length - 1];
   }
-
-  const byNumber = Object.fromEntries(enquiries.map((enquiry) => [enquiry.number, enquiry]));
 
   /**
    * Samples at four points of their life, so the queue, the overdue escalation and the
@@ -558,7 +604,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
   const sampleRows = [
     {
       // Overdue and still unassigned — the case §25 escalates.
-      enquiry: byNumber['ENQ-2026-0004'],
+      enquiry: byKey['trendline-matte'],
       status: 'production_required',
       purpose: 'new_development',
       colour: 'Matte White',
@@ -571,7 +617,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     },
     {
       // With the customer, waiting on their answer.
-      enquiry: byNumber['ENQ-2026-0003'],
+      enquiry: byKey['vogue-410v'],
       status: 'dispatched',
       purpose: 'colour_approval',
       colour: 'Charcoal',
@@ -593,7 +639,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     },
     {
       // Ready on the bench, waiting for marketing to arrange the courier.
-      enquiry: byNumber['ENQ-2026-0002'],
+      enquiry: byKey['scm-420t'],
       status: 'sample_ready',
       purpose: 'existing_model',
       colour: 'Black',
@@ -605,10 +651,10 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     },
     {
       // Settled: this is what an approved sample looks like in the register.
-      enquiry: byNumber['ENQ-2026-0007'],
+      enquiry: byKey['scm-400s'],
       status: 'approved',
       purpose: 'buyer_approval',
-      colour: 'Assorted',
+      colour: 'White',
       quantity: 12,
       requiredDate: days(-30, 17),
       requestedAt: days(-36),
@@ -620,7 +666,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       deliveredAt: days(-29),
       feedbackAt: days(-27),
       feedbackBy: nandhini._id,
-      feedbackNote: 'Buyer approved all four colours. Proceed to pricing.',
+      feedbackNote: 'Buyer approved the shade and the print. Proceed to pricing.',
       history: [
         ['checking_stock', -36, 15],
         ['production_required', -35, 10],
@@ -659,9 +705,8 @@ export async function seedPipeline({ nandhini, arun, meera }) {
   ];
 
   const samples = [];
-  for (const row of sampleRows) {
+  for (const row of resolved(sampleRows, (row) => row.enquiry, 'sample requests')) {
     const { enquiry, history = [], ...rest } = row;
-    if (!enquiry) continue;
 
     const product = enquiry.product ? byId[String(enquiry.product)] : null;
 
@@ -685,8 +730,15 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     );
   }
 
-  /* The settled back-catalogue the analytics page reads. */
-  for (const row of historicalRows) {
+  /*
+   * The settled back-catalogue the analytics page reads.
+   *
+   * Trimmed like everything else, and filtered to models that are actually in this set — a
+   * historical sample against a hanger the catalogue no longer carries is a row the analytics
+   * page cannot attribute to anything. On the small set the report is correspondingly thin,
+   * which is the honest consequence of a small set rather than something to paper over.
+   */
+  for (const row of few(historicalRows.filter((row) => byCode[row.model]))) {
     const product = byCode[row.model];
     const customer = customers[samples.length % customers.length];
     const outcome = row.outcome || 'approved';

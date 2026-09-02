@@ -13,6 +13,12 @@
  * Sizes and categories are *inferred* from the model code — "MAU-35" reads as 350mm, "AR-8\"" as
  * 8 inches — because the sheet does not carry them. They are a starting catalogue for testing,
  * not the plant's own classification, and are the first thing to correct against the real one.
+ *
+ * Inches are a double quote in both lists below, and that is worth saying out loud: the
+ * catalogue used to spell `AR-8'` and `ARP-14'` with an apostrophe while the rows spelled them
+ * `AR-8"` and `ARP-14"`. Nothing errored. The two rows were simply costed against no model at
+ * all, and the catalogue carried two entries no costing ever pointed at — the pair of failures
+ * that look like each other's explanation and are invisible unless the two lists are compared.
  */
 export const QUOTE_SHEET = [
   { quote: 'NP/26-27/1', date: '01-Apr-2026', party: 'Yorker knit', model: 'MAU-35 WB', colour: 'PP : WHITE', quoted: 3.6, procurement: 'trade', gram: 30.0, rate: 160.0, jobWork: 0.75, hook: 0.7, clips: undefined, printing: '1 COLOUR', printPrice: 0.5, packing: 0.2 },
@@ -99,7 +105,7 @@ export const SHEET_PRODUCTS = [
     'procurement': 'trade'
   },
   {
-    'modelCode': 'AR-8\'',
+    'modelCode': 'AR-8"',
     'category': 'trouser',
     'sizeMm': 203,
     'material': 'pp',
@@ -117,7 +123,7 @@ export const SHEET_PRODUCTS = [
     'procurement': 'manufacture'
   },
   {
-    'modelCode': 'ARP-14\'',
+    'modelCode': 'ARP-14"',
     'category': 'trouser',
     'sizeMm': 356,
     'material': 'pp',

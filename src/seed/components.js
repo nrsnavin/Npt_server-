@@ -1,4 +1,5 @@
 import Component from '../models/Component.js';
+import { few, leading } from './size.js';
 
 /**
  * The hook, clip and print registers.
@@ -33,8 +34,22 @@ const COMPONENTS = [
 export async function seedComponents() {
   await Component.deleteMany({});
 
+  /*
+   * Trimmed per register rather than across the three of them. These share one collection, so
+   * a plain first-four would have seeded four hooks and left the clip and print registers
+   * empty — three screens where two say "nothing here" and no reason on any of them.
+   */
+  const wanted = ['hook', 'clip', 'print'].flatMap((kind) =>
+    few(
+      /* The heavy swivel comes forward: it is what the coat and suit hangers actually carry, and
+         a register whose only hooks are the cheap ones cannot price either of them. */
+      leading(COMPONENTS.filter((row) => row.kind === kind), 'code', ['HK-FIX', 'HK-SWV', 'HK-HVY']),
+      3
+    )
+  );
+
   const created = await Component.create(
-    COMPONENTS.map((row) => ({ ...row, rateUpdatedAt: new Date(), isActive: true }))
+    wanted.map((row) => ({ ...row, rateUpdatedAt: new Date(), isActive: true }))
   );
 
   const count = (kind) => created.filter((row) => row.kind === kind).length;

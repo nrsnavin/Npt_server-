@@ -7,6 +7,7 @@ import Component from '../models/Component.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { priceFrom } from '../services/pricing.service.js';
 import { costingFrom } from '../controllers/pricing.controller.js';
+import { few, leading } from './size.js';
 
 /**
  * Costings built the way the app builds them: pick a tool, a resin and the parts, and let the
@@ -136,7 +137,12 @@ export async function seedRegisterCostings({ admin, nandhini }) {
 
   const made = [];
 
-  for (const job of JOBS) {
+  /*
+   * The four whose mould, resin and parts all survive a trimmed set — and between them they
+   * still carry every case this seed exists to show: the blocked cavity, the resin uplift, the
+   * customer's own tool and a sheet priced above the floor rather than at it.
+   */
+  for (const job of few(leading(JOBS, 'model', ['NPT-380S', 'NPT-400S', 'NPT-420T', 'NPT-410V']))) {
     const product = model[job.model];
     const customer = party[job.customer];
     const mould = tool[job.mould];

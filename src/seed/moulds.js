@@ -1,6 +1,7 @@
 import Mould from '../models/Mould.js';
 import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
+import { few, leading } from './size.js';
 
 /**
  * The mould register, for the tools the seeded catalogue already refers to.
@@ -185,7 +186,12 @@ export async function seedMoulds() {
 
   const created = [];
 
-  for (const row of MOULDS) {
+  /*
+   * M-141 is pulled into the small set because it is the customer's own tool, and M-118 because
+   * it is running three cavities of four. Those two rows are the only reason the register is
+   * more than a list of weights.
+   */
+  for (const row of few(leading(MOULDS, 'mouldCode', ['M-101', 'M-102', 'M-118', 'M-141']))) {
     const models = row.models.map((code) => products[code]).filter(Boolean);
     /* A tool for a model nobody catalogued would be a register entry pointing at nothing. */
     if (!models.length) continue;
