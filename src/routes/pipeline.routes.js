@@ -14,11 +14,14 @@ import {
   bulkReassign,
 } from '../controllers/pipeline.controller.js';
 import {
-  listMoulds, getMould, createMould, updateMould, exportMoulds,
+  listMoulds, getMould, createMould, updateMould, exportMoulds, setMouldPhoto,
 } from '../controllers/mould.controller.js';
+import {
+  listMaterials, getMaterial, createMaterial, updateMaterial, exportMaterials, materialPricings,
+} from '../controllers/material.controller.js';
 import { marketingDashboard } from '../controllers/marketingDashboard.controller.js';
 import { addDocument, listDocuments, removeDocument } from '../controllers/document.controller.js';
-import { singleDocument } from '../middleware/upload.js';
+import { singleDocument, singleImage } from '../middleware/upload.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -29,6 +32,7 @@ import {
   promoteProductSchema, bulkReassignSchema,
 } from '../validators/pipeline.schemas.js';
 import { mouldSchema, mouldUpdateSchema } from '../validators/mould.schemas.js';
+import { materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
 
 const router = Router();
 
@@ -58,6 +62,19 @@ router.get('/moulds', requireModule('moulds'), listMoulds);
 router.post('/moulds', requireModule('moulds', 'write'), validate(mouldSchema), createMould);
 router.get('/moulds/:id', requireModule('moulds'), getMould);
 router.patch('/moulds/:id', requireModule('moulds', 'write'), validate(mouldUpdateSchema), updateMould);
+/* The part the tool makes. A register of numbers is hard to recognise a mould in. */
+router.put('/moulds/:id/photo', requireModule('moulds', 'write'), singleImage('photo'), setMouldPhoto);
+
+/*
+ * Materials. The resin register the costing reads its rate and grammage basis from — the
+ * plant's to keep, like the moulds, and everyone else's to read.
+ */
+router.get('/materials/export', requireModule('materials'), exportMaterials);
+router.get('/materials', requireModule('materials'), listMaterials);
+router.post('/materials', requireModule('materials', 'write'), validate(materialSchema), createMaterial);
+router.get('/materials/:id', requireModule('materials'), getMaterial);
+router.get('/materials/:id/pricings', requireModule('materials'), materialPricings);
+router.patch('/materials/:id', requireModule('materials', 'write'), validate(materialUpdateSchema), updateMaterial);
 
 // Customers
 router.get('/customers/export', requireModule('customers'), exportCustomers);

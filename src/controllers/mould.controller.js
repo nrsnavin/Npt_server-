@@ -6,6 +6,8 @@ import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { sendCsv } from '../utils/csv.js';
+import Attachment from '../models/Attachment.js';
+import { put, remove } from '../services/storage.service.js';
 import { allMouldsVisibleTo, mouldVisibleTo, seesMachineRate } from '../services/pricingVisibility.js';
 
 /** The same ceiling every other export uses — see pipeline.controller.js. */
@@ -58,6 +60,7 @@ export const listMoulds = asyncHandler(async (req, res) => {
 export const getMould = asyncHandler(async (req, res) => {
   const mould = await Mould.findById(req.params.id)
     .populate('products', PRODUCT_FIELDS)
+    .populate('photo', 'key filename mimeType')
     .populate('ownedByCustomer', 'name code');
   if (!mould) throw ApiError.notFound('Mould not found');
   res.json({ success: true, data: mouldVisibleTo(mould, req.user) });
@@ -201,10 +204,67 @@ export const exportMoulds = asyncHandler(async (req, res) => {
       ? [
           ['Machine rate (/hr)', (row) => row.machine?.hourRate],
           ['Machine cost (/pc)', (row) => row.machineCostPerPiece],
+          ['Job work (/pc)', (row) => row.jobWorkCost],
+          ['Hook (/pc)', (row) => row.hookCost],
+          ['Clips (/pc)', (row) => row.clipsCost],
+          ['Print (/pc)', (row) => row.printingCost],
+          ['Packing (/pc)', (row) => row.packingCost],
         ]
       : []),
     ['Owned by', (row) => row.ownedBy],
     ['Location', (row) => row.location],
     ['Active', (row) => (row.isActive === false ? 'No' : 'Yes')],
   ]);
+});
+
+/**
+ * The photograph of the part this tool makes.
+ *
+ * A register of cavity counts and cycle times is precise and hard to recognise anything in. The
+ * tool room knows a mould by its part long before it knows the code stamped on the steel, so a
+ * picture is what makes the row findable by the people who use it most.
+ *
+ * Replacing one removes the old file rather than orphaning it — but only after the new one is
+ * safely referenced, because the failure that matters here is losing the photo you have while
+ * failing to store the one you meant to replace it with.
+ */
+export const setMouldPhoto = asyncHandler(async (req, res) => {
+  const mould = await Mould.findById(req.params.id);
+  if (!mould) throw ApiError.notFound('Mould not found');
+  if (!req.file) throw ApiError.badRequest('Attach a photo');
+
+  const previous = mould.photo;
+
+  const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+  let attachment;
+  try {
+    attachment = await Attachment.create({
+      key,
+      filename: req.file.originalname,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      uploadedBy: req.user._id,
+      mould: mould._id,
+      title: `${mould.mouldCode} — part photo`,
+    });
+  } catch (error) {
+    /* The row failed, so the bytes are unreferenced: take them back out rather than leak them. */
+    await remove(key);
+    throw error;
+  }
+
+  mould.photo = attachment._id;
+  await mould.save();
+
+  /* Only now, with the new photo saved on the record, is the old one safe to delete. */
+  if (previous) {
+    const old = await Attachment.findById(previous);
+    if (old) {
+      await remove(old.key).catch(() => {});
+      await old.deleteOne();
+    }
+  }
+
+  await mould.populate('products', PRODUCT_FIELDS);
+  res.json({ success: true, data: mouldVisibleTo(mould, req.user) });
 });

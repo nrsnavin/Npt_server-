@@ -14,6 +14,7 @@ import Announcement from '../models/Announcement.js';
 import { defaultAccessFor, DEPARTMENTS } from '../config/modules.js';
 import { seedPipeline } from './pipeline.js';
 import { seedMoulds } from './moulds.js';
+import { seedMaterials } from './materials.js';
 import { seedPricing } from './pricing.js';
 
 /** Dates relative to today, so the reminder feed always has something to show. */
@@ -145,7 +146,8 @@ async function seed() {
     meera: byEmail['sampling@npthangers.com'],
   });
 
-  console.log('Adding the mould register...');
+  console.log('Adding the material and mould registers...');
+  const materials = await seedMaterials();
   const moulds = await seedMoulds();
 
   console.log("Adding the costings and quotations from the plant's own 26-27 sheet...");
@@ -167,6 +169,10 @@ async function seed() {
   console.log(
     `  Phase 1: ${counts.products} products, ${counts.customers} customers, ` +
       `${counts.leads} leads, ${counts.enquiries} enquiries, ${counts.samples} samples.`
+  );
+  console.log(
+    `  Materials: ${materials.materials} resins on the register — ${materials.uplifted} of them ` +
+      `carrying a grammage uplift over PP.`
   );
   console.log(
     `  Moulds: ${moulds.moulds} tools on the register — runner is ${moulds.runnerShare}% of a ` +

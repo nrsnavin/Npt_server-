@@ -16,6 +16,8 @@ export const pricingSchema = z.object({
   product: objectId.optional(),
   /** Left out, the register is asked — and answers only where the model has exactly one tool. */
   mould: objectId.optional(),
+  /** The resin from the material register: it carries the rate and the grammage basis. */
+  materialRef: objectId.optional(),
   modelNumber: z.string().optional(),
   quantity: z.number().positive('A costing needs the quantity it is for'),
   material: z.enum(MATERIALS).optional(),
@@ -70,6 +72,11 @@ export const pricingCostSchema = z
      * recorded in error should not silently re-open a price by taking its own weight back.
      */
     mould: objectId.nullable().optional(),
+    /**
+     * The resin. Switching it re-derives the gram weight, because a denser material means a
+     * heavier piece out of the same cavity — see the register's grammage factor.
+     */
+    materialRef: objectId.nullable().optional(),
     remarks: z.string().optional(),
   })
   .extend(versioned);

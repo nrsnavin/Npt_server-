@@ -123,7 +123,20 @@ export const allVisibleTo = (rows, user) => rows.map((row) => visibleTo(row, use
  * cycle time and output are how the plant plans and how marketing answers "can we make it and
  * how fast" — the point of the register is that those stop being one person's knowledge.
  */
-export const MOULD_CONFIDENTIAL = ['machineCostPerPiece'];
+export const MOULD_CONFIDENTIAL = [
+  'machineCostPerPiece',
+  /*
+   * The per-piece conversion costs the register now carries. These are the cost base — they are
+   * copied straight onto a costing sheet, where §8 hides them — so leaving them readable here
+   * would mean the same figures are secret on one screen and published on another, which is not
+   * a rule, it is a detour.
+   */
+  'jobWorkCost',
+  'hookCost',
+  'clipsCost',
+  'printingCost',
+  'packingCost',
+];
 
 /**
  * Who may see the rate: whoever prices, and whoever keeps the register.

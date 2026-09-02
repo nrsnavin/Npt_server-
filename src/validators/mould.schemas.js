@@ -22,7 +22,8 @@ export const mouldSchema = z
     products: z.array(objectId).optional(),
     material: z.enum(MATERIALS).optional(),
 
-    cavities: z.number().int().positive('A mould has at least one cavity'),
+    /** Defaults to a single cavity, which is the commonest tool and the safest guess. */
+    cavities: z.number().int().positive('A mould has at least one cavity').optional(),
     /** Blocked cavities are real; left out, every cut cavity is assumed to be running. */
     activeCavities: z.number().int().nonnegative().optional(),
 
@@ -32,6 +33,19 @@ export const mouldSchema = z
 
     cycleTimeSeconds: z.number().positive('A cycle takes time'),
     efficiencyPercent: z.number().min(1).max(100).optional(),
+
+    /**
+     * What the part costs beyond the resin, per piece.
+     *
+     * Facts about the tool and the piece rather than about a job, so they live here and are
+     * copied onto a costing that names this mould — where each stays editable, because a
+     * particular job sometimes genuinely differs.
+     */
+    jobWorkCost: grams.optional(),
+    hookCost: grams.optional(),
+    clipsCost: grams.optional(),
+    printingCost: grams.optional(),
+    packingCost: grams.optional(),
 
     machine: z
       .object({
@@ -89,6 +103,19 @@ export const mouldUpdateSchema = z
 
     cycleTimeSeconds: z.number().positive().optional(),
     efficiencyPercent: z.number().min(1).max(100).optional(),
+
+    /**
+     * What the part costs beyond the resin, per piece.
+     *
+     * Facts about the tool and the piece rather than about a job, so they live here and are
+     * copied onto a costing that names this mould — where each stays editable, because a
+     * particular job sometimes genuinely differs.
+     */
+    jobWorkCost: grams.optional(),
+    hookCost: grams.optional(),
+    clipsCost: grams.optional(),
+    printingCost: grams.optional(),
+    packingCost: grams.optional(),
 
     machine: z
       .object({

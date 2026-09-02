@@ -77,13 +77,45 @@ const mouldSchema = new mongoose.Schema(
      * paid for — output falls and consumption per piece rises at the same moment. A register
      * that only knew the cut count would report both wrong, in the direction that flatters.
      */
-    cavities: { type: Number, min: 1, required: true },
+    cavities: { type: Number, min: 1, required: true, default: 1 },
     activeCavities: { type: Number, min: 0 },
 
-    /** Grams of one moulded piece, in the resin named above. */
+    /**
+     * Grams of one moulded piece, **on a PP basis**.
+     *
+     * A cavity is a fixed volume, so the same tool throws a heavier part in a denser resin —
+     * HIPS runs about 18% above PP. Recording one basis and converting at the point of costing
+     * keeps a single measured figure per tool; recording a weight per resin would mean two
+     * numbers that have to be re-measured together and, in practice, never are. The material
+     * register carries the uplift, so a grade that behaves differently says so there.
+     */
     partWeightGrams: { type: Number, min: 0, required: true },
-    /** Grams of sprue and runner per shot — the whole system, not per cavity. */
+    /** Grams of sprue and runner per shot, PP basis — the whole system, not per cavity. */
     runnerWeightGrams: { type: Number, min: 0, default: 0 },
+
+    /**
+     * What the tool costs to run, per piece, beyond the resin.
+     *
+     * These belong to the mould rather than to each costing because they are facts about the
+     * tool and the part it makes: this hanger takes a metal clip and that one does not, this
+     * one is packed 200 to a carton. Re-typing them on every costing is how the same model
+     * comes to be costed at two different hook prices in the same week — and the costing can
+     * still overrule any of them, because a particular job sometimes genuinely differs.
+     */
+    jobWorkCost: { type: Number, min: 0, default: 0 },
+    hookCost: { type: Number, min: 0, default: 0 },
+    clipsCost: { type: Number, min: 0, default: 0 },
+    printingCost: { type: Number, min: 0, default: 0 },
+    packingCost: { type: Number, min: 0, default: 0 },
+
+    /**
+     * A photograph of the piece this tool makes.
+     *
+     * The register is otherwise all numbers, and a tool room recognises a mould by the part
+     * long before it recognises the code stamped on it. Stored as an attachment rather than a
+     * URL so it goes through the same access check and storage service as every other file.
+     */
+    photo: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
 
     /**
      * How much of the runner comes back as regrind, as a percentage.

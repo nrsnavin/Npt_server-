@@ -3,6 +3,7 @@ import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
 import Product from '../models/Product.js';
 import Mould from '../models/Mould.js';
+import Material, { grammageFrom } from '../models/Material.js';
 import Quotation from '../models/Quotation.js';
 import { newQuotation } from './quotation.controller.js';
 import ApiError from '../utils/ApiError.js';
@@ -49,10 +50,53 @@ const POPULATE = [
       'mouldCode name cavities activeCavities partWeightGrams runnerWeightGrams ' +
       'regrindRecoveryPercent cycleTimeSeconds efficiencyPercent status material machine',
   },
+  { path: 'materialRef', select: 'name code type colour ratePerKg grammageFactorPercent' },
   { path: 'requestedBy', select: 'name' },
   { path: 'costedBy', select: 'name' },
   { path: 'approvedBy', select: 'name' },
 ];
+
+/**
+ * Everything a costing takes from the tool and the resin, worked out once.
+ *
+ * **The grammage is the whole reason this exists.** A costing needs grams per piece, and three
+ * separate facts go into that figure: the part weight, its share of the runner moulded
+ * alongside it, and the density of the resin it is actually run in. The mould records the
+ * first two on a PP basis; the material register carries the third as an uplift, which is 0 for
+ * PP and LD and 18 for HIPS. Doing that arithmetic on a screen — or worse, in somebody's head
+ * — is how a HIPS job gets costed at its PP weight and quoted 18% light on the resin.
+ *
+ * The conversion lines come across too, because they are facts about the part rather than about
+ * this particular job: this hanger takes a clip, that one is packed 200 to a carton. Every one
+ * of them stays editable on the sheet, since a particular job sometimes genuinely differs.
+ */
+export function costingFrom(mould, material) {
+  const filled = {};
+
+  if (mould) {
+    /*
+     * Part plus this piece's share of the runner, less any regrind recovery — the mould's own
+     * consumption figure — and then converted into the resin actually being used.
+     */
+    filled.gramWeight = grammageFrom(
+      mould.consumptionPerPieceGrams,
+      material?.grammageFactorPercent
+    );
+    filled.jobWorkCost = mould.jobWorkCost || 0;
+    filled.hookCost = mould.hookCost || 0;
+    filled.metalClipsCost = mould.clipsCost || 0;
+    filled.printingCost = mould.printingCost || 0;
+    filled.packingCost = mould.packingCost || 0;
+  }
+
+  /*
+   * The rate is *copied*, not referenced. A costing is a record of what was priced, so a resin
+   * rate that moves next month must not retrospectively change a price a customer already has.
+   */
+  if (material) filled.rawMaterialRate = material.ratePerKg;
+
+  return filled;
+}
 
 /**
  * The one mould a product is made on, or nothing.
@@ -153,13 +197,22 @@ export const createPricing = asyncHandler(async (req, res) => {
     : await soleMouldFor(productId);
   if (req.body.mould && !mould) throw ApiError.badRequest('That mould is not on the register');
 
+  const material = req.body.materialRef ? await Material.findById(req.body.materialRef) : null;
+  if (req.body.materialRef && !material) {
+    throw ApiError.badRequest('That material is not on the register');
+  }
+
+  /* Everything the tool and the resin already know — grammage, rate, and the cost lines. */
+  const filled = costingFrom(mould, material);
+
   const pricing = await Pricing.create({
     ...req.body,
     product: productId || undefined,
     mould: mould?._id,
+    materialRef: material?._id,
     customer: customerId,
     modelNumber: req.body.modelNumber || product?.modelCode,
-    material: req.body.material || product?.material,
+    material: req.body.material || material?.type || product?.material,
     /*
      * The gram weight is the one cost line the plant already knows, and re-typing it is how a
      * costing ends up priced for a piece that weighs something else. The rate is not copied: it
@@ -171,11 +224,21 @@ export const createPricing = asyncHandler(async (req, res) => {
      * four-cavity tool with a 12 g runner that gap is 3 g on a 30 g part — a tenth of the resin
      * on every quotation off that mould, always understated, and never visible on the sheet
      * because the arithmetic below it is perfectly correct.
+     *
+     * The material then converts that PP figure into the resin actually being run, and brings
+     * its own rate and the tool's conversion lines with it. An explicit `cost` in the request
+     * still wins over all of it: somebody who has weighed a bag of finished pieces is not
+     * overruled by two registers.
+     */
+    /*
+     * No `req.body.cost` here, and that is not an omission: `pricingSchema` does not declare
+     * one, so a cost sent to this door is stripped before the controller sees it. This route
+     * *raises* a costing; building the sheet is `/cost`, which is where a typed figure can
+     * overrule the registers. The spread that used to sit here read as though it worked.
      */
     cost: {
       ...(product?.standardWeightGrams ? { gramWeight: product.standardWeightGrams } : {}),
-      ...(mould ? { gramWeight: mould.consumptionPerPieceGrams } : {}),
-      ...(req.body.cost || {}),
+      ...filled,
     },
     number: await nextNumber('PRC'),
     requestedBy: req.user._id,
@@ -236,24 +299,46 @@ export const costPricing = asyncHandler(async (req, res) => {
 
   const {
     cost, markupPercent, approvedSellingPrice, minimumOverride, printing, procurement, mould,
-    remarks,
+    materialRef, remarks,
   } = withoutVersion(req.body);
 
   /*
-   * The mould first, because it writes a cost line. Attaching one sets the gram weight to what
-   * the tool says a piece consumes — part plus its share of the runner — and an explicit
-   * `cost.gramWeight` in the same request still wins, so somebody who has weighed a bag of
-   * finished pieces is not overruled by the register.
+   * The two registers first, because they write cost lines. Attaching a mould sets the gram
+   * weight to what the tool says a piece consumes — part plus its share of the runner — and the
+   * material converts that onto its own grammage basis and brings its rate. An explicit `cost`
+   * in the same request still wins, so somebody who has weighed a bag of finished pieces is not
+   * overruled by the registers.
    */
-  if (mould === null) {
-    pricing.mould = undefined;
-  } else if (mould !== undefined) {
+  if (mould === null) pricing.mould = undefined;
+  if (materialRef === null) pricing.materialRef = undefined;
+
+  if (mould) {
     const tool = await Mould.findById(mould);
     if (!tool) throw ApiError.badRequest('That mould is not on the register');
     pricing.mould = tool._id;
-    if (cost?.gramWeight === undefined) {
-      pricing.cost = { ...pricing.cost?.toObject?.(), gramWeight: tool.consumptionPerPieceGrams };
-    }
+  }
+  if (materialRef) {
+    const resin = await Material.findById(materialRef);
+    if (!resin) throw ApiError.badRequest('That material is not on the register');
+    pricing.materialRef = resin._id;
+    pricing.material = resin.type;
+  }
+
+  /*
+   * Refilled whenever either reference moves, because the grammage depends on both: switching
+   * a PP job to HIPS changes the weight by 18% without anything else on the sheet moving, and
+   * a person who picked the new resin and saw the old weight would reasonably assume it had
+   * been handled. Any line explicitly sent in the same request still wins.
+   */
+  if (mould || materialRef) {
+    const [tool, resin] = await Promise.all([
+      pricing.mould ? Mould.findById(pricing.mould) : null,
+      pricing.materialRef ? Material.findById(pricing.materialRef) : null,
+    ]);
+    pricing.cost = {
+      ...pricing.cost?.toObject?.(),
+      ...costingFrom(tool, resin),
+    };
   }
 
   if (cost) pricing.cost = { ...pricing.cost?.toObject?.(), ...cost };

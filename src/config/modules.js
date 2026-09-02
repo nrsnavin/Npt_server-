@@ -151,6 +151,22 @@ export const MODULES = [
     available: true,
   },
   {
+    key: 'materials',
+    label: 'Material register',
+    description:
+      'Every resin the plant buys: grade, colour, rate per kilo and the grammage uplift a denser material carries.',
+    group: 'Masters',
+    /*
+     * Production's, alongside the mould register. The rate is a purchase fact and the grammage
+     * factor is a shop-floor one, and the people who know both are the people who buy and run
+     * the material. Costing reads it; nobody else needs to.
+     */
+    ownerDepartment: 'production',
+    stage: null,
+    blueprint: '7',
+    available: true,
+  },
+  {
     key: 'moulds',
     label: 'Mould register',
     description:
@@ -276,6 +292,7 @@ export const DEPARTMENTS = [
       products: 'read',
       /* Enough to see whether a tool exists and who paid for it, before a model is quoted. */
       moulds: 'read',
+      materials: 'read',
       reports: 'read',
       announcements: 'read',
     },
@@ -288,6 +305,7 @@ export const DEPARTMENTS = [
       products: 'write',
       /* New models are developed here, and a new model is a new tool before it is anything. */
       moulds: 'write',
+      materials: 'read',
       tasks: 'write',
       enquiries: 'read',
       customers: 'read',
@@ -309,6 +327,7 @@ export const DEPARTMENTS = [
       dispatch: 'read',
       products: 'read',
       moulds: 'read',
+      materials: 'read',
       announcements: 'read',
     },
   },
@@ -319,6 +338,7 @@ export const DEPARTMENTS = [
       production: 'write',
       /* The register's home: cavities, cycles and weights are measured at the press. */
       moulds: 'write',
+      materials: 'write',
       tasks: 'write',
       orders: 'read',
       quality: 'read',
@@ -338,6 +358,7 @@ export const DEPARTMENTS = [
       samples: 'read',
       products: 'read',
       moulds: 'read',
+      materials: 'read',
       announcements: 'read',
     },
   },

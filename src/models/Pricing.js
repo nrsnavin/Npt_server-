@@ -90,6 +90,18 @@ const pricingSchema = new mongoose.Schema(
      */
     mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould', index: true },
 
+    /**
+     * The material this piece is priced in, from the register.
+     *
+     * The *rate* is still copied onto `cost.rawMaterialRate` rather than read through this
+     * reference, and that is the whole point of having both: a costing is a record of what was
+     * priced, so a resin rate that moves next month must not retrospectively change a price a
+     * customer was already given. The reference says which material it was — the grade, the
+     * colour, the grammage basis — so a sheet can be checked against the register it came from
+     * and re-costed deliberately when the rate moves.
+     */
+    materialRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Material', index: true },
+
     /** Copied from the enquiry at request time: a costing is of a quantity, and the enquiry
         may be edited afterwards. A sheet that silently re-prices itself is not a record. */
     modelNumber: { type: String, trim: true },

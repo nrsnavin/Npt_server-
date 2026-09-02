@@ -26,6 +26,7 @@ const attachmentSchema = new mongoose.Schema(
     sample: { type: mongoose.Schema.Types.ObjectId, ref: 'Sample', index: true },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', index: true },
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
+    mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould', index: true },
 
     /** What the file is, in the reader's words: "Buyer drawing", "Signed approval". */
     title: { type: String, trim: true },
