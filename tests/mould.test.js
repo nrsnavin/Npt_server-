@@ -248,6 +248,20 @@ test('ownership has to agree with itself', async () => {
   assert.equal(good.status, 201, good.json.message);
 });
 
+test('a company tool may say outright that no customer owns it', async () => {
+  /*
+   * The screen sends `ownedByCustomer: null` for a company tool, and it is right to: on an edit
+   * an omitted field leaves the old customer attached, so a tool bought out from a buyer could
+   * never be corrected. The edit route accepted that null and the add route did not, which made
+   * every ordinary company-owned mould — much the commonest case — fail on save with
+   * "ownedByCustomer: Expected string, received null", a sentence naming a field the person
+   * filling the form never saw and left blank on purpose.
+   */
+  const { status, json } = await addMould({ ownedBy: 'company', ownedByCustomer: null });
+  assert.equal(status, 201, json.message);
+  assert.ok(!json.data.ownedByCustomer, 'and nobody outside owns it');
+});
+
 test('production keeps the register and marketing only reads it', async () => {
   const theirs = await addMould({}, ramesh);
   assert.equal(theirs.status, 201, theirs.json.message);

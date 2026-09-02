@@ -57,7 +57,20 @@ export const mouldSchema = z
 
     status: z.enum(MOULD_STATUSES).optional(),
     ownedBy: z.enum(MOULD_OWNERSHIP).optional(),
-    ownedByCustomer: objectId.optional(),
+    /**
+     * Nullable as well as optional, and it has to be both.
+     *
+     * The screen sends an explicit `null` for a company tool rather than leaving the field out,
+     * because on an *edit* those two are not the same thing: an omitted field leaves whatever
+     * customer was there before, so a tool bought out from a buyer could never be corrected.
+     * One payload builder serves both routes — as it should, it is one form — so the null
+     * arrives here too, where there is nothing to clear and it simply means what it says.
+     *
+     * Accepting it on the edit and refusing it here made every ordinary company-owned mould
+     * fail on save, which is much the commonest kind there is, with a message naming a field
+     * the person had deliberately left blank.
+     */
+    ownedByCustomer: objectId.nullable().optional(),
 
     mouldMaker: z.string().optional(),
     commissionedOn: z.coerce.date().optional(),
