@@ -52,10 +52,10 @@ async function lineIsCleared(line) {
   if (!pricing) return { cleared: true };
 
   if (pricing.status === 'approval_pending') {
-    return { cleared: false, why: 'its costing is still waiting on approval' };
+    return { cleared: false, why: 'waiting', one: 'its costing is still waiting on approval', many: 'their costings are still waiting on approval' };
   }
   if (pricing.status === 'rejected') {
-    return { cleared: false, why: 'its costing was refused and needs re-costing' };
+    return { cleared: false, why: 'refused', one: 'its costing was refused and needs re-costing', many: 'their costings were refused and need re-costing' };
   }
   /*
    * The floor, after any signature on it.
@@ -78,7 +78,9 @@ async function lineIsCleared(line) {
       cleared: false,
       // Deliberately does not name the figure: §8 keeps the floor away from marketing, and a
       // refusal that quotes it hands over the very number the rule protects.
-      why: 'it is below the approved minimum',
+      why: 'floor',
+      one: 'it is below the approved minimum',
+      many: 'they are below their approved minimums',
     };
   }
   return { cleared: true };
@@ -101,29 +103,32 @@ async function priceIsCleared(quotation) {
   const blocked = [];
 
   for (const line of quotation.lines) {
-    const { cleared, why } = await lineIsCleared(line);
-    if (!cleared) blocked.push({ model: line.modelNumber || 'an unnamed line', why });
+    const result = await lineIsCleared(line);
+    if (!result.cleared) blocked.push({ model: line.modelNumber || 'an unnamed line', ...result });
   }
 
   if (!blocked.length) return { cleared: true };
 
   /*
-   * One reason repeated across every line reads better said once — "3 lines are below the
-   * approved minimum" rather than the same sentence three times with different model codes in
+   * One reason repeated across every line reads better said once — "3 lines are below their
+   * approved minimums" rather than the same sentence three times with different model codes in
    * front of it — but the models still have to be named, because that is what the reader acts
-   * on.
+   * on. Each reason carries a singular and a plural phrasing because it is written into a
+   * sentence whose subject is a count: "3 lines ... because its costing is waiting" is the sort
+   * of thing that makes a person read a message twice and trust it less.
    */
-  const reasons = [...new Set(blocked.map((entry) => entry.why))];
+  const single = blocked.length === 1;
+  const kinds = [...new Map(blocked.map((entry) => [entry.why, entry])).values()];
+  const reasons = kinds.map((entry) => (single ? entry.one : entry.many)).join(', and ');
   const models = blocked.map((entry) => entry.model).join(', ');
 
   return {
     cleared: false,
     blocked,
-    why:
-      blocked.length === 1
-        ? `${models} cannot be sent because ${reasons[0]} — this needs management approval first`
-        : `${blocked.length} lines cannot be sent (${models}) because ${reasons.join(' and ')}` +
-          ' — this needs management approval first',
+    why: single
+      ? `${models} cannot be sent because ${reasons} — this needs management approval first`
+      : `${blocked.length} lines cannot be sent (${models}) because ${reasons}` +
+        ' — this needs management approval first',
   };
 }
 
