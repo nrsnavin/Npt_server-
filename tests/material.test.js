@@ -507,3 +507,30 @@ test('a part rate that moves later does not re-price a costing already built', a
   const affected = await api(`/api/components/${id}/pricings`, { token: admin });
   assert.equal(affected.json.stale, 1, 'but the register can say which sheets are now behind');
 });
+
+test('changing the resin does not quietly revert the parts lines', async () => {
+  /*
+   * The refill used to read the *request* rather than the sheet. Switching only the material
+   * sent no parts references, so the three parts lines fell back to the mould's own figures and
+   * silently discarded the registers' rates — a hook priced at ₹1.10 reverting to the tool's
+   * ₹0.70 because somebody changed PP to HIPS. Nothing errored, and no line the person touched
+   * looked wrong.
+   */
+  const heavy = await api('/api/components', {
+    method: 'POST', token: admin, body: { kind: 'hook', name: 'Heavy swivel B', ratePerPiece: 1.1 },
+  });
+
+  const made = await api('/api/pricings', {
+    method: 'POST',
+    token: admin,
+    body: { customer, quantity: 40000, mould, materialRef: pp, hookRef: heavy.json.data._id },
+  });
+  assert.equal(made.json.data.cost.hookCost, 1.1, 'the register beat the mould’s 0.70');
+
+  const switched = await api(`/api/pricings/${made.json.data._id}/cost`, {
+    method: 'PATCH', token: admin, body: { materialRef: hips },
+  });
+
+  assert.equal(switched.json.data.cost.gramWeight, 38.94, 'the resin change did its own job');
+  assert.equal(switched.json.data.cost.hookCost, 1.1, 'and left the hook where the register put it');
+});

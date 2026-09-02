@@ -389,13 +389,27 @@ export const costPricing = asyncHandler(async (req, res) => {
    * been handled. Any line explicitly sent in the same request still wins.
    */
   if (mould || materialRef || hookRef || clipRef || printRef) {
-    const [tool, resin] = await Promise.all([
+    /*
+     * Refilled from what the sheet *holds*, not from what this request happened to mention.
+     *
+     * Switching only the resin sent `parts` in empty, so the three parts lines fell back to the
+     * mould's own figures and silently discarded rates that had come from the registers — a
+     * hook priced at ₹1.10 quietly reverting to the tool's ₹0.70 because somebody changed PP to
+     * HIPS. Nothing errored and no line the person touched looked wrong.
+     */
+    const [tool, resin, held] = await Promise.all([
       pricing.mould ? Mould.findById(pricing.mould) : null,
       pricing.materialRef ? Material.findById(pricing.materialRef) : null,
+      partsFrom({
+        hookRef: pricing.hookRef,
+        clipRef: pricing.clipRef,
+        printRef: pricing.printRef,
+      }),
     ]);
+
     pricing.cost = {
       ...pricing.cost?.toObject?.(),
-      ...costingFrom(tool, resin, parts),
+      ...costingFrom(tool, resin, held),
     };
   }
 
