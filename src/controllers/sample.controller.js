@@ -3,6 +3,7 @@ import Sample, {
   SAMPLE_STATUSES, WITH_CUSTOMER_STATUSES,
 } from '../models/Sample.js';
 import Enquiry from '../models/Enquiry.js';
+import Lead from '../models/Lead.js';
 import Customer from '../models/Customer.js';
 import Product from '../models/Product.js';
 import ApiError from '../utils/ApiError.js';
@@ -31,6 +32,7 @@ const owns = (user, sample) => ownsRecord(user, sample, 'requestedBy');
 const POPULATE = [
   { path: 'customer', select: 'code name' },
   { path: 'enquiry', select: 'number status requirement.quantity' },
+  { path: 'lead', select: 'number company status' },
   { path: 'requestedBy', select: 'name' },
   { path: 'assignedTo', select: 'name' },
   { path: 'product', select: 'modelCode name' },
@@ -73,6 +75,8 @@ function sampleFilters(req, { withStatus = true } = {}) {
   if (req.query.purpose) filter.purpose = req.query.purpose;
   if (req.query.customer) filter.customer = req.query.customer;
   if (req.query.enquiry) filter.enquiry = req.query.enquiry;
+  /* What was made for one lead — the list its own screen reads. */
+  if (req.query.lead) filter.lead = req.query.lead;
   // Matches a field that was never set and one that was cleared, which are the same thing
   // to the queue but not to Mongo.
   if (req.query.unassigned === 'true') filter.assignedTo = null;
@@ -140,12 +144,15 @@ export const sampleBoard = asyncHandler(async (req, res) => {
      * number on a screen that means nothing. The column line says so in its unit. */
     valueField: 'quantity',
     select:
-      'number customer enquiry product modelNumber colour printing quantity purpose status ' +
+      'number customer enquiry lead product modelNumber colour printing quantity purpose status ' +
       'requiredDate requestedAt assignedTo requestedBy courier awbNumber dispatchedQuantity ' +
       'statusHistory.from statusHistory.to statusHistory.at createdAt',
     populate: [
       { path: 'customer', select: 'code name' },
       { path: 'enquiry', select: 'number status' },
+      /* So a request made for a lead names the company rather than reading as a trial for
+         nobody — the card has no other way to tell those two apart. */
+      { path: 'lead', select: 'number company' },
       { path: 'product', select: 'modelCode name' },
       { path: 'assignedTo', select: 'name' },
       { path: 'requestedBy', select: 'name' },
@@ -183,7 +190,7 @@ export const getSample = asyncHandler(async (req, res) => {
  * a request the sample team takes directly.
  */
 export const createSample = asyncHandler(async (req, res) => {
-  const { enquiry: enquiryId, customer: customerId, ...input } = req.body;
+  const { enquiry: enquiryId, customer: customerId, lead: leadId, ...input } = req.body;
 
   /*
    * A sample is owned through `requestedBy`, so naming somebody else there puts the request
@@ -214,6 +221,38 @@ export const createSample = asyncHandler(async (req, res) => {
   }
 
   /*
+   * A sample for a party that is not a customer yet.
+   *
+   * The checks are the ones the other two links carry, plus two about the lead's own state.
+   * A converted lead is refused because it has *become* a customer and that customer is where
+   * the work now lives — adding to the lead would file the request against a record nobody
+   * opens again. A disqualified one is refused because making a sample for a party already
+   * written off is a decision somebody should have to reverse deliberately.
+   */
+  let lead = null;
+  if (leadId) {
+    if (customerId) {
+      throw ApiError.badRequest(
+        'A request names the lead or the customer, not both — a lead is a party who is not a customer yet'
+      );
+    }
+
+    lead = await Lead.findById(leadId);
+    if (!lead) throw ApiError.badRequest('That lead does not exist');
+    /* Raising against a lead you cannot see would put the request in its owner's list. */
+    if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
+
+    if (lead.status === 'converted') {
+      throw ApiError.badRequest(
+        'This lead has been converted — raise the sample against the customer it became'
+      );
+    }
+    if (lead.status === 'disqualified') {
+      throw ApiError.badRequest('This lead was disqualified, so nothing more is being made for it');
+    }
+  }
+
+  /*
    * With no enquiry to inherit from, the request has to say what to make on its own. A
    * sample nobody can identify is a job the bench cannot start, so this is refused here
    * rather than discovered at the bench.
@@ -236,7 +275,7 @@ export const createSample = asyncHandler(async (req, res) => {
   }
 
   const { sample, created } = await createSampleRequest(
-    { enquiry, customer: customer?._id ?? undefined, ...input },
+    { enquiry, customer: customer?._id ?? undefined, lead: lead?._id ?? undefined, ...input },
     req.user
   );
 

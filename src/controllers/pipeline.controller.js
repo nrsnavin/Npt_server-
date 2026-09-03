@@ -904,13 +904,32 @@ export const convertLead = asyncHandler(async (req, res) => {
     );
   }
 
+  /*
+   * The samples made for this lead gain the customer it became.
+   *
+   * Without this, asking for a sample before anybody is a customer means the request is
+   * orphaned at the exact moment the relationship becomes real: the lead stops being a screen
+   * anybody opens, and the sample it carried has no buyer on it — so §6 and §42 have nobody to
+   * tell when it is ready or when it goes out.
+   *
+   * The customer is set and the enquiry deliberately is not. That the lead became this customer
+   * is a fact; which of two samples belongs to the one enquiry conversion happened to create is
+   * a judgement, and `linkEnquiry` already exists for somebody to make it deliberately. Only
+   * requests that do not already name a customer are touched, so nothing that was set by hand
+   * is overwritten.
+   */
+  const carried = await Sample.updateMany(
+    { lead: lead._id, customer: { $in: [null, undefined] } },
+    { $set: { customer: customer._id } }
+  );
+
   lead.status = 'converted';
   lead.convertedCustomer = customer._id;
   lead.convertedEnquiry = enquiry?._id;
   lead.convertedAt = new Date();
   await lead.save();
 
-  publish(EVENTS.LEAD_CONVERTED, { lead, customer, enquiry });
+  publish(EVENTS.LEAD_CONVERTED, { lead, customer, enquiry, samples: carried.modifiedCount });
 
   res.status(201).json({ success: true, data: { lead, customer, enquiry } });
 });

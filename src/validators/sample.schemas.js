@@ -33,6 +33,8 @@ const sampleCore = {
 export const sampleSchema = z.object({
   enquiry: objectId.optional(),
   customer: objectId.optional(),
+  /** The lead that asked, when the party is not a customer yet. */
+  lead: objectId.optional(),
   requestedBy: objectId.optional(),
   standaloneReason: z.string().max(300).optional(),
   ...sampleCore,

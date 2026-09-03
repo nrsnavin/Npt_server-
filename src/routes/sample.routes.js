@@ -72,9 +72,31 @@ router.post(
   recordFeedback
 );
 router.post('/:id/resample', requireModule('samples', 'write'), validate(resampleSchema), resample);
-// A request raised before its enquiry existed joins it when it does.
-router.post('/:id/link-enquiry', requireModule('samples', 'write'), validate(linkEnquirySchema), linkEnquiry);
-router.post('/:id/link-customer', requireModule('samples', 'write'), validate(linkCustomerSchema), linkCustomer);
+/*
+ * A request raised before its enquiry or its buyer existed joins them when they turn up.
+ *
+ * On either grant, for the reason `recordFeedback` above is: *which* enquiry a sample belongs
+ * to, and *who* it was made for, is marketing's knowledge and not the bench's. The bench never
+ * spoke to the buyer and has no way to know which of two enquiries a request was for.
+ *
+ * This matters more now that a sample can be raised against a lead. Marketing raises one for a
+ * party who is not a customer yet, converts the lead, and creates the first enquiry — and on
+ * `samples` write alone could not then attach the sample to the enquiry they had just made.
+ * Both records are still ownership-checked inside the controllers, so this widens who may ask,
+ * never what they can reach.
+ */
+router.post(
+  '/:id/link-enquiry',
+  requireAnyModule(['enquiries', 'write'], ['samples', 'write']),
+  validate(linkEnquirySchema),
+  linkEnquiry
+);
+router.post(
+  '/:id/link-customer',
+  requireAnyModule(['enquiries', 'write'], ['samples', 'write']),
+  validate(linkCustomerSchema),
+  linkCustomer
+);
 
 /*
  * Talking to the customer is its own grant [§42]. Sampling updates internal status; what
