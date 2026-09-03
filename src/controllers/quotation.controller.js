@@ -12,6 +12,7 @@ import { recordChange, snapshot } from '../services/audit.service.js';
 import { EVENTS, publish } from '../services/events.service.js';
 import { narrowToOwner, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { renderQuotationPdf } from '../services/quotationPdf.js';
+import { lineCosting } from '../services/pricingVisibility.js';
 
 /**
  * Quotations [BLUEPRINT §10], and the price gate in front of them [§9].
@@ -205,15 +206,19 @@ export const listQuotations = asyncHandler(async (req, res) => {
  * — which needs the names against each revision, the model behind the line, and the costing the
  * price came from.
  *
- * The costing behind it is projected down to three fields by an explicit allow-list, not by a
- * `select`. `approvedSellingPrice` is public under §8 — it is the price marketing may quote —
- * while the cost base, the margin and the floor are not.
+ * The costing behind each line comes through `lineCosting`, which is an explicit allow-list and
+ * not a `select`. That matters and is worth knowing: the costing's totals are *virtuals*, so
+ * they are recomputed on the way out whatever the projection said, and `totalCost` arrived as
+ * `0` — a figure that reveals nothing today but reads as "this costs nothing" on a screen, and
+ * would start reporting real money the moment somebody widened the select. An allow-list cannot
+ * drift that way.
  *
- * A `select` is not enough here and that is worth knowing: the costing's totals are *virtuals*,
- * so they are recomputed on the way out whatever the projection said, and `totalCost` arrived
- * as `0` — a figure that reveals nothing today but reads as "this costs nothing" on a screen,
- * and would start reporting real money the moment somebody widened the select. An allow-list
- * cannot drift that way.
+ * What it adds is the figure neither record holds alone: the margin on **this line's** price.
+ * A costing knows what it would earn at the price it was approved at; a line knows what was
+ * actually offered, and the two diverge the moment anybody negotiates. Someone who may open the
+ * costing now sees that answer on the quotation instead of opening two screens and doing the
+ * subtraction; someone who may not sees exactly what they saw before, plus whether the line
+ * sits under its floor — the same "whether, not where" §8 already draws for `belowMinimum`.
  */
 export const getQuotation = asyncHandler(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id)
@@ -221,7 +226,8 @@ export const getQuotation = asyncHandler(async (req, res) => {
     .populate('enquiry', 'number status')
     .populate('assignedTo', 'name')
     .populate('lines.product', 'modelCode name sizeMm material moq')
-    .populate('lines.pricing', 'number status approvedSellingPrice')
+    /* Whole, and narrowed per line below: what may be shown depends on who is asking. */
+    .populate('lines.pricing')
     .populate('revisions.by', 'name')
     .populate('statusHistory.by', 'name');
 
@@ -229,11 +235,13 @@ export const getQuotation = asyncHandler(async (req, res) => {
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
 
   const data = quotation.toJSON();
-  /* Now once per line — see the note above on why a `select` is not enough. */
+  /*
+   * Narrowed once per line, against the price that line actually quotes. Done on the document
+   * rather than in the populate, because the answer is different for two people reading the
+   * same quotation — which a projection cannot express.
+   */
   for (const line of data.lines || []) {
-    if (!line.pricing) continue;
-    const { _id, number, status, approvedSellingPrice } = line.pricing;
-    line.pricing = { _id, number, status, approvedSellingPrice };
+    line.pricing = lineCosting(line.pricing, line.unitPrice, req.user);
   }
 
   res.json({ success: true, data });

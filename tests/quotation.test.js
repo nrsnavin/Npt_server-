@@ -299,6 +299,71 @@ test('refusing one needs a reason', async () => {
   assert.match(bare.json.message, /why/i);
 });
 
+/* ------------------- The costing, read from the quotation ------------------- */
+
+test('a quotation line shows the margin on the price actually offered', async () => {
+  /*
+   * The figure neither record holds alone. The costing knows what it would earn at the price it
+   * was approved at; the line knows what was really quoted, and the two diverge the moment
+   * anybody negotiates — which is most of the time. Reading the sheet's own
+   * `grossMarginPercent` here would answer a question nobody asked.
+   */
+  const costing = await withCosting({ minimum: 6, approved: 9 });
+  const quoted = await quote({ pricing: costing, unitPrice: 8 });
+
+  const { json } = await api(`/api/quotations/${quoted._id}`, { token: admin });
+  const line = json.data.lines[0];
+
+  assert.ok(line.pricing.totalCost > 0, 'the cost base is there for somebody who may see it');
+  assert.equal(
+    line.pricing.marginPerPiece,
+    Math.round((8 - line.pricing.totalCost) * 100) / 100,
+    'margin is against the 8.00 quoted, not the 9.00 approved'
+  );
+  assert.ok(line.pricing.marginPercent > 0);
+  assert.equal(line.pricing.belowFloor, false, 'and 8.00 clears a floor of 6.00');
+});
+
+test('marketing sees the quotation exactly as before, and nothing of the cost', async () => {
+  /*
+   * The wall §8 draws, checked on the new door rather than assumed. A quotation is the document
+   * that goes to the buyer; the cost base, the margin and the floor are the things that must
+   * never travel with it.
+   */
+  const costing = await withCosting({ minimum: 6, approved: 9 });
+  const quoted = await quote({ pricing: costing, unitPrice: 8 });
+
+  const { json } = await api(`/api/quotations/${quoted._id}`, { token: nandhini });
+  const line = json.data.lines[0];
+
+  assert.equal(line.pricing.number !== undefined, true, 'the costing is still named');
+  assert.equal(line.pricing.approvedSellingPrice, 9, 'and the price they may quote is public');
+
+  for (const field of ['totalCost', 'minimumSellingPrice', 'marginPerPiece', 'marginPercent', 'markupPercent']) {
+    assert.equal(line.pricing[field], undefined, `${field} must not reach a marketing reader`);
+  }
+});
+
+test('marketing learns whether a line is under its floor, never where the floor is', async () => {
+  // The same distinction §8 already draws for `belowMinimum` on the costing itself: the block
+  // has to be explainable, or it reads as the system being broken.
+  const costing = await withCosting({ minimum: 9, approved: 9 });
+  const quoted = await quote({ pricing: costing, unitPrice: 7 });
+
+  const { json } = await api(`/api/quotations/${quoted._id}`, { token: nandhini });
+  const line = json.data.lines[0];
+
+  assert.equal(line.pricing.belowFloor, true, 'they can see there is a problem');
+  assert.equal(line.pricing.minimumSellingPrice, undefined, 'without learning the number');
+});
+
+test('a line with no costing behind it says so rather than inventing figures', async () => {
+  const quoted = await quote({ unitPrice: 8 });
+
+  const { json } = await api(`/api/quotations/${quoted._id}`, { token: admin });
+  assert.equal(json.data.lines[0].pricing, null);
+});
+
 /* --------------------------- §9: the price gate --------------------------- */
 
 /** A costing with a floor, linked to a quotation. */

@@ -110,6 +110,67 @@ export function visibleTo(pricing, user) {
 export const allVisibleTo = (rows, user) => rows.map((row) => visibleTo(row, user));
 
 /**
+ * One costing as it appears *on a quotation line*, which is a different question from §8's usual
+ * one and worth its own function.
+ *
+ * A costing knows what it is worth at the price it was approved at. A quotation line knows what
+ * was actually offered — and those diverge the moment anybody negotiates, which is most of the
+ * time. So the margin here is computed against the **line's** price, not the sheet's:
+ * `grossMarginPercent` on the costing answers "what would we make at the approved price", and
+ * nobody is being charged the approved price. Neither record answers "what are we making on this
+ * line" on its own, and that is the number a quotation screen exists to show.
+ *
+ * The wall stands exactly where §8 puts it. The cost base, the floor and the margin go only to
+ * someone who may already open the costing; everyone else gets `belowFloor` — whether the price
+ * offered sits under the minimum, without learning where the minimum is. That is the same
+ * distinction `visibleTo` above draws for `belowMinimum`, and it is drawn again here rather than
+ * inherited because the comparison is against a different price.
+ *
+ * @param {object} pricing   the populated costing, or null
+ * @param {number} unitPrice what this line actually quotes
+ * @param {object} user
+ */
+export function lineCosting(pricing, unitPrice, user) {
+  if (!pricing) return null;
+
+  /*
+   * An allow-list, never a `select`. The costing's totals are virtuals and are recomputed on the
+   * way out whatever a projection said — see the note on `getQuotation`. Building the answer up
+   * from named fields is the only version that cannot drift into leaking one.
+   */
+  const seen = {
+    _id: pricing._id,
+    number: pricing.number,
+    status: pricing.status,
+    approvedSellingPrice: pricing.approvedSellingPrice,
+  };
+
+  const floor = pricing.minimumSellingPrice;
+  /* Only a real comparison counts: an uncosted sheet has no floor, and `undefined < n` is false
+     for the wrong reason. */
+  seen.belowFloor =
+    floor != null && unitPrice != null ? unitPrice < floor : false;
+
+  if (!seesCosting(user)) return seen;
+
+  const cost = pricing.totalCost;
+  seen.totalCost = cost;
+  seen.minimumSellingPrice = floor;
+
+  if (cost != null && unitPrice) {
+    seen.marginPerPiece = Math.round((unitPrice - cost) * 100) / 100;
+    /* Margin on the price, markup on the cost — the sheet speaks in both, and confusing them is
+       how a 20% markup gets read as a 20% margin. */
+    seen.marginPercent = Math.round(((unitPrice - cost) / unitPrice) * 1000) / 10;
+    seen.markupPercent = cost
+      ? Math.round(((unitPrice - cost) / cost) * 1000) / 10
+      : null;
+  }
+
+  return seen;
+}
+
+/**
  * The mould register's own confidential half.
  *
  * §8 is written about the costing sheet, but the rule it states is about *figures*, not about a
