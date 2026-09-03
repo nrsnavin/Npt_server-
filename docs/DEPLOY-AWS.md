@@ -357,9 +357,13 @@ npm run create-user -- rsnavin1@gmail.com 'a-real-password' --role=admin --name=
 
 Open **https://npt.baluelastics.com** and sign in.
 
-> `npm run seed` loads demo data — customers, leads, sample enquiries. Useful for a testing phase,
-> and `npm run reset-data -- --keep=rsnavin1@gmail.com --confirm` clears it again when you want to
-> start clean. Do not seed a database that has real work in it.
+> `npm run seed` loads demo data — three or four rows per model, which is enough to open every
+> screen and work every board. `SEED_FULL=true npm run seed` loads the whole catalogue and the
+> entire 26-27 quote sheet instead, which is the set to use when showing the system to somebody.
+> Either way it **deletes the users first** and creates its own, including the admin above with
+> the password printed in its own output — so seeding after you have created real accounts takes
+> them with it. `npm run reset-data -- --keep=rsnavin1@gmail.com --confirm` clears the demo data
+> again. Do not seed a database that has real work in it.
 
 ---
 
