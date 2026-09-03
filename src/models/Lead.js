@@ -96,6 +96,17 @@ const leadSchema = new mongoose.Schema(
     visitingCardUrl: String,
 
     convertedCustomer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
+    /**
+     * The stage this lead stood at when it was converted.
+     *
+     * Recorded rather than enforced. The funnel runs new → contacted → qualified → converted,
+     * and nothing checked the third rung, so "qualified" was a label people set when they
+     * remembered rather than a statement about the lead. Refusing outright would be worked
+     * around at the counter — most likely by ticking qualified without qualifying anything,
+     * which is worse than no rule. Keeping the stage makes the skipping *countable*, which is
+     * what a rule should be argued from.
+     */
+    convertedFromStatus: { type: String, enum: LEAD_STATUSES },
     convertedEnquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry' },
     convertedAt: Date,
   },

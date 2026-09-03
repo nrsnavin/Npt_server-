@@ -246,6 +246,15 @@ export const promoteProductSchema = productSchema.partial().required({ modelCode
 /* -------------------------------- Conversion -------------------------------- */
 
 export const convertLeadSchema = z.object({
+  /**
+   * The lead is a party we already supply, and this is that customer.
+   *
+   * Present instead of `customer`, never alongside it: one says "make a customer from this
+   * lead" and the other says "this lead already is one", and a request carrying both has not
+   * decided which. Without this the duplicate check was a dead end — it refused the conversion
+   * and advised linking the enquiry to the existing record, which no action could do.
+   */
+  existingCustomer: objectId.optional(),
   customer: customerSchema.partial().optional(),
   enquiry: z.object(enquiryCore).optional(),
 });

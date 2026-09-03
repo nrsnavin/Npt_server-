@@ -288,7 +288,14 @@ test('a converted lead cannot be converted or edited again', async () => {
   assert.equal(edit.status, 400);
 });
 
-test('conversion is refused when the customer already exists', async () => {
+test('conversion is refused when the customer already exists, and offers that customer', async () => {
+  /*
+   * Still refused — a second master record for one buyer is the thing this check exists to
+   * prevent. What changed is the advice: it used to say "link the enquiry to that customer
+   * instead", which no action could do, so the lead was stuck and the only way out was
+   * disqualifying a real buyer as a duplicate. The match now travels with the refusal so the
+   * screen can offer it. See tests/lead-conversion.test.js for the attach path itself.
+   */
   const lead = await api('/api/leads', {
     method: 'POST',
     token: nandhini,
@@ -302,7 +309,9 @@ test('conversion is refused when the customer already exists', async () => {
   });
 
   assert.equal(converted.status, 409);
-  assert.match(converted.json.message, /Link the enquiry to that customer/);
+  assert.match(converted.json.message, /already exists/i);
+  assert.match(converted.json.message, /Attach this lead to that customer/);
+  assert.ok(converted.json.details?.customer?.id, 'and hands back the record to attach to');
 });
 
 /* -------------------------------- Enquiries -------------------------------- */

@@ -23,7 +23,13 @@ export default class ApiError extends Error {
     return new ApiError(404, message);
   }
 
-  static conflict(message = 'Conflict') {
-    return new ApiError(409, message);
+  /*
+   * `details` carries what the caller needs to act on the conflict rather than only read about
+   * it — the record that already exists, so a screen can offer it instead of asking the person
+   * to go and find it. Advice a message gives that nothing on the screen can follow is worse
+   * than no advice.
+   */
+  static conflict(message = 'Conflict', details) {
+    return new ApiError(409, message, details);
   }
 }

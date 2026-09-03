@@ -828,7 +828,42 @@ export const convertLead = asyncHandler(async (req, res) => {
   if (lead.status === 'converted') throw ApiError.conflict('This lead has already been converted');
   if (lead.status === 'disqualified') throw ApiError.badRequest('A disqualified lead cannot be converted');
 
-  const { customer: customerOverrides = {}, enquiry: enquiryInput } = req.body;
+  const {
+    customer: customerOverrides = {},
+    existingCustomer: existingCustomerId,
+    enquiry: enquiryInput,
+  } = req.body;
+
+  /*
+   * The lead is a party we already supply.
+   *
+   * The commonest awkward case in the book: a new contact at a customer fills in the website
+   * form, or an IndiaMART enquiry arrives from a company we shipped to last month. The
+   * duplicate check below correctly refused to make a second master record and advised linking
+   * the enquiry to the existing one — advice nothing could follow, so the only way to clear the
+   * lead was to disqualify a real buyer as a duplicate and re-key their requirement by hand.
+   *
+   * Attaching does everything conversion does except create the customer: the enquiry is raised
+   * against the record that already exists, the lead is closed against it, and the lead's log
+   * stays reachable from the customer it belonged to all along.
+   */
+  let existing = null;
+  if (existingCustomerId) {
+    if (Object.keys(customerOverrides).length) {
+      throw ApiError.badRequest(
+        'Either make a customer from this lead or attach it to one that exists — not both'
+      );
+    }
+
+    existing = await Customer.findById(existingCustomerId);
+    if (!existing) throw ApiError.badRequest('That customer does not exist');
+    /*
+     * Ownership is checked on the customer, not on the lead alone. Attaching writes an enquiry
+     * into somebody else's book otherwise — the duplicate check deliberately finds customers
+     * the caller cannot see, so this is the door that has to be shut.
+     */
+    if (!ownsRecord(req.user, existing)) throw ApiError.notFound('Customer not found');
+  }
 
   const merged = {
     name: customerOverrides.name || lead.company,
@@ -837,11 +872,24 @@ export const convertLead = asyncHandler(async (req, res) => {
     whatsapp: customerOverrides.whatsapp || lead.whatsapp,
   };
 
-  const duplicate = await findDuplicateCustomer(merged);
+  const duplicate = existing ? null : await findDuplicateCustomer(merged);
   if (duplicate) {
+    /*
+     * The match travels with the refusal so the screen can offer it, and only when the caller
+     * may actually see it — a customer somebody else holds is reported as existing, with who to
+     * talk to, and never handed over. Same rule as `checkDuplicateCustomer`.
+     */
+    const visible = ownsRecord(req.user, duplicate);
     throw ApiError.conflict(
       `${duplicate.name} (${duplicate.code}) already exists with the same ${duplicate.matchedOn}. ` +
-        'Link the enquiry to that customer instead of converting.'
+        (visible
+          ? 'Attach this lead to that customer instead of converting.'
+          : `It belongs to ${duplicate.assignedTo?.name || 'somebody else'} — ask them to raise the enquiry.`),
+      {
+        matchedOn: duplicate.matchedOn,
+        owner: duplicate.assignedTo?.name,
+        ...(visible ? { customer: { id: duplicate._id, code: duplicate.code, name: duplicate.name } } : {}),
+      }
     );
   }
 
@@ -854,7 +902,8 @@ export const convertLead = asyncHandler(async (req, res) => {
     await assertEnquiryValid({ ...enquiryInput, assignedTo: lead.assignedTo });
   }
 
-  const customer = await Customer.create({
+  /* Attaching writes no customer: the record already exists and stays exactly as it is. */
+  const customer = existing || await Customer.create({
     code: await nextNumber('CUST'),
     name: merged.name,
     customerType: customerOverrides.customerType || 'garment_factory',
@@ -895,7 +944,13 @@ export const convertLead = asyncHandler(async (req, res) => {
       {
         ...enquiryInput,
         customer: customer._id,
-        assignedTo: lead.assignedTo,
+        /*
+         * A new customer inherits the lead's owner, so the enquiry does too. An existing one
+         * already has an owner and the enquiry follows *them* — putting it on the lead's holder
+         * would hand a relationship over through a side door, which is precisely what §29
+         * reserves to management.
+         */
+        assignedTo: existing ? existing.assignedTo : lead.assignedTo,
         source: lead.source,
         conversation: lead.conversation,
         lead: lead._id,
@@ -923,13 +978,17 @@ export const convertLead = asyncHandler(async (req, res) => {
     { $set: { customer: customer._id } }
   );
 
+  /* What the lead was before it closed, so skipping the qualified rung is countable [R2]. */
+  lead.convertedFromStatus = lead.status;
   lead.status = 'converted';
   lead.convertedCustomer = customer._id;
   lead.convertedEnquiry = enquiry?._id;
   lead.convertedAt = new Date();
   await lead.save();
 
-  publish(EVENTS.LEAD_CONVERTED, { lead, customer, enquiry, samples: carried.modifiedCount });
+  publish(EVENTS.LEAD_CONVERTED, {
+    lead, customer, enquiry, samples: carried.modifiedCount, attached: Boolean(existing),
+  });
 
   res.status(201).json({ success: true, data: { lead, customer, enquiry } });
 });
