@@ -31,7 +31,7 @@ export const company = {
       'Quantity tolerance of ±5% on moulded items is to be accepted as full delivery.|' +
       'Colour and shade matching is subject to approval of the pre-production sample.|' +
       'Prices are subject to revision if the polymer rate moves beyond 5%.|' +
-      'This quotation is valid only for the quantity and validity stated above.'
+      'Rates hold until the validity date above and are subject to the minimum stated per model.'
   )
     .split('|')
     .map((line) => line.trim())

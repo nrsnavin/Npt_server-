@@ -63,7 +63,20 @@ const lineSchema = new mongoose.Schema(
     pricing: { type: mongoose.Schema.Types.ObjectId, ref: 'Pricing' },
 
     modelNumber: { type: String, trim: true },
-    quantity: { type: Number, min: 0, required: true },
+    /**
+     * Legacy, and no longer asked for.
+     *
+     * A quotation from this plant is a **rate** against a minimum, not an order: the buyer is
+     * told ₹4.90 a piece with a 5,000 minimum, and the purchase order decides how many months
+     * later. Carrying a quantity made the document look like a proforma invoice and put a
+     * number on it that nobody had agreed to — and the plant's own 26-27 sheet, which is what
+     * this replaces, is a list of models and rates with no quantities on it at all.
+     *
+     * Kept on the schema rather than dropped so the quotations already raised do not lose what
+     * they recorded, and so this is one line to reverse if a quantity ever earns its place back.
+     * Nothing writes it now, and nothing shows it.
+     */
+    quantity: { type: Number, min: 0 },
 
     /**
      * The smallest order this line's price is offered at [§10].

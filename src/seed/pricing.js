@@ -248,7 +248,8 @@ export async function seedPricing({ admin, nandhini }) {
         pricing: entry.pricing._id,
         product: entry.product?._id,
         modelNumber: entry.row.model,
-        quantity: 20000,
+        /* No quantity: a quotation quotes a rate against a minimum, and the sheet this is
+           transcribed from carries exactly that — a model and what it was quoted at. */
         moq: 5000,
         unitPrice: entry.row.quoted,
       })),

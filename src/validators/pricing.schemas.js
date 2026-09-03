@@ -150,7 +150,7 @@ export const pricingQuoteSchema = z.object({
 /* --------------------------------- Quotations --------------------------------- */
 
 /**
- * One line of the offer: a model, a quantity, a price.
+ * One line of the offer: a model, a minimum, a rate.
  *
  * `pricing` is per line because the floor is per line [§9] — eight models on one document are
  * eight separate costings, and a document-level costing reference could only ever check one of
@@ -162,8 +162,15 @@ const quotationLine = z.object({
   product: objectId.optional(),
   pricing: objectId.optional(),
   modelNumber: z.string().optional(),
-  quantity: z.number().positive('Every line needs a quantity'),
-  /** Left out, and the product master's minimum is copied in [§28]. */
+  /**
+   * Legacy and optional — see the note on the model.
+   *
+   * A quotation quotes a rate against a minimum; the quantity is settled by the purchase order.
+   * Still accepted so a caller that sends one is not refused for a field that used to be
+   * required, and so the quotations already raised keep what they recorded.
+   */
+  quantity: z.number().positive().optional(),
+  /** What the rate is good for. Left out, and the product master's minimum is copied in [§28]. */
   moq: money.optional(),
   unitPrice: money,
   remarks: z.string().optional(),

@@ -81,8 +81,6 @@ const CURRENCY = 'INR';
 const money = (value) =>
   (Number(value) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-/** An amount with its code, for the totals block where the number stands alone. */
-const amount = (value) => `${CURRENCY} ${money(value)}`;
 
 const qty = (value) => (Number(value) || 0).toLocaleString('en-IN');
 
@@ -213,10 +211,21 @@ function items(doc, quotation, y) {
     { key: 'item', label: 'Item', x: LEFT, width: 30, align: 'left' },
     { key: 'material', label: 'Material', x: LEFT + 32, width: 96, align: 'left' },
     { key: 'description', label: 'Description', x: LEFT + 132, width: 150, align: 'left' },
-    { key: 'quantity', label: 'Quantity', x: LEFT + 286, width: 62, align: 'right' },
-    { key: 'unit', label: 'Un', x: LEFT + 352, width: 22, align: 'left' },
-    { key: 'rate', label: 'Unit price', x: LEFT + 376, width: 62, align: 'right' },
-    { key: 'value', label: 'Net value', x: LEFT + 442, width: WIDTH - 442 + LEFT - LEFT, align: 'right' },
+    /*
+     * A rate against a minimum, not a quantity and an amount.
+     *
+     * This document quotes what a piece costs; the purchase order decides how many. Carrying a
+     * quantity column made it read as a proforma invoice and committed the buyer to a number
+     * nobody had agreed — and the plant's own 26-27 sheet, which this replaces, is a list of
+     * models and rates with no quantities on it.
+     *
+     * The description takes the width the two dropped columns freed, which is where it was
+     * always short: "400mm PP shirt hanger · White · 1 COLOUR" is what a buyer files the
+     * document under.
+     */
+    { key: 'moq', label: 'Minimum', x: LEFT + 286, width: 76, align: 'right' },
+    { key: 'unit', label: 'Un', x: LEFT + 366, width: 22, align: 'left' },
+    { key: 'rate', label: 'Rate per piece', x: LEFT + 392, width: WIDTH - 392, align: 'right' },
   ];
   // The last column runs to the right margin whatever the page width is.
   columns[columns.length - 1].width = RIGHT - columns[columns.length - 1].x;
@@ -252,11 +261,11 @@ function items(doc, quotation, y) {
       item: String((index + 1) * 10),
       material: line.modelNumber || line.product?.modelCode || '—',
       description: description || 'As per enquiry',
-      quantity: qty(line.quantity),
+      /* The minimum the rate is good for. Blank rather than a zero when there is none: a
+         document that says the minimum is 0 pieces is answering a question it was not asked. */
+      moq: line.moq ? qty(line.moq) : '—',
       unit: 'PC',
       rate: money(line.unitPrice),
-      value: money(line.lineValue),
-      moq: line.moq,
     };
   });
 
@@ -288,27 +297,11 @@ function items(doc, quotation, y) {
   }
 
   /*
-   * MOQ, where it belongs on the document: a term of the offer, next to the price.
-   *
-   * Per line, because it is per line — but said once when every line shares a figure, since
-   * repeating "minimum 5,000 pieces" under eight rows is noise the reader learns to skip, and
-   * the one line with a different minimum is then the one they skip too.
+   * No footnote about the minimum any more: it is a column now, stated against the model it
+   * belongs to. Saying it twice made sense while the table had no room for it — the note was
+   * where the minimum lived — and repeating it under a column of the same figures is the kind
+   * of duplication a reader stops trusting, because the two can disagree.
    */
-  const minimums = rows.filter((row) => row.moq);
-  if (minimums.length) {
-    const same = new Set(minimums.map((row) => row.moq));
-    const text =
-      same.size === 1 && minimums.length === rows.length
-        ? `Minimum order quantity for these prices: ${qty(minimums[0].moq)} pieces.`
-        : `Minimum order quantity — ${minimums
-            .map((row) => `item ${row.item}: ${qty(row.moq)} pcs`)
-            .join('; ')}.`;
-
-    doc.font('Helvetica-Oblique').fontSize(7.5).fillColor(MUTED)
-      .text(text, LEFT + 32, y + 5, { width: WIDTH - 32 });
-    y += 16;
-  }
-
   return y + 6;
 }
 
@@ -331,7 +324,15 @@ function totals(doc, quotation, y) {
     y += gap;
   };
 
-  line('Net value', amount(quotation.netValue));
+  /*
+   * No total, because there is nothing to total.
+   *
+   * A rate quotation has no value until a purchase order names a quantity, and a "Total" on
+   * this document would be a figure invented by whoever laid it out. What still has to be said
+   * is the tax basis: a buyer comparing two quotes needs to know whether the rate includes GST,
+   * and that is a statement about the rate rather than a sum over the lines.
+   */
+  line('Rates', 'Per piece, ex-works');
 
   /*
    * Export is not GST at zero — it is a different basis [§10]. Printing "GST 0.00" on an
@@ -341,16 +342,10 @@ function totals(doc, quotation, y) {
   if (quotation.isExport) {
     line('GST', 'Export — not applicable');
   } else if (quotation.gstPercent) {
-    const tax = quotation.totalValue - quotation.netValue;
-    line(`GST @ ${quotation.gstPercent}%`, amount(tax));
+    line('GST', `${quotation.gstPercent}% extra`);
   } else {
     line('GST', 'Extra as applicable');
   }
-
-  y += 2;
-  doc.save().lineWidth(RULE).strokeColor(INK).moveTo(x, y).lineTo(RIGHT, y).stroke().restore();
-  y += 6;
-  line('Total', amount(quotation.totalValue), { bold: true, gap: 18 });
 
   return y;
 }
