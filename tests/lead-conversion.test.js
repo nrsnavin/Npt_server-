@@ -243,6 +243,58 @@ test("an attached enquiry follows the customer's owner, not the lead's", async (
   );
 });
 
+test('samples raised for the lead carry over when it is attached', async () => {
+  /*
+   * The same promise a normal conversion makes, on the path that writes no customer. A sample
+   * asked for before anybody was a customer must not be orphaned because the buyer turned out
+   * to be one we already supply — that is the case this whole route exists for.
+   */
+  const customer = await addCustomer();
+  const lead = await raiseLead();
+
+  const sample = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: { lead: lead._id, product: productId, quantity: 5, requiredDate: inDays(7) },
+  });
+  assert.equal(sample.status, 201, sample.json.message);
+
+  await convert(lead, { existingCustomer: customer._id, enquiry: requirement });
+
+  const after = await api(`/api/samples/${sample.json.data._id}`, { token: nandhini });
+  assert.equal(
+    String(after.json.data.customer._id),
+    String(customer._id),
+    'the buyer it was always for is on it now'
+  );
+  assert.equal(String(after.json.data.lead._id), String(lead._id), 'and the lead that asked stays');
+});
+
+test('the customer names the leads folded into it, however they got there', async () => {
+  /*
+   * Read from `lead.convertedCustomer`, so one query answers for both routes: the lead a
+   * customer was created from, and every later lead that turned out to be the same buyer. A
+   * field on the customer could hold the first and would lose the rest.
+   */
+  const customer = await addCustomer();
+  const first = await raiseLead();
+  const second = await raiseLead();
+
+  await convert(first, { existingCustomer: customer._id, enquiry: requirement });
+  await convert(second, { existingCustomer: customer._id });
+
+  const { json } = await api(`/api/customers/${customer._id}`, { token: nandhini });
+  const numbers = json.data.timeline.leads.map((row) => row.number);
+
+  assert.equal(numbers.length, 2, 'both leads, not just the last one');
+  assert.ok(numbers.includes(first.number));
+  assert.ok(numbers.includes(second.number));
+  assert.ok(
+    json.data.timeline.leads.every((row) => row.convertedFromStatus),
+    'each says the rung it stood on'
+  );
+});
+
 /* ----------------------------- All or nothing ----------------------------- */
 
 test('a rejected enquiry leaves no customer behind', async () => {

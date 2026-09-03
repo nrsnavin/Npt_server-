@@ -415,7 +415,7 @@ export const getCustomer = asyncHandler(async (req, res) => {
    * which is the same list this is a preview of.
    */
   const filter = { customer: customer._id };
-  const [enquiries, total, samples, sampleTotal] = await Promise.all([
+  const [enquiries, total, samples, sampleTotal, leads] = await Promise.all([
     Enquiry.find(filter)
       .select('number enquiryDate status requirement.modelNumber requirement.quantity estimatedValue')
       .sort('-enquiryDate')
@@ -432,13 +432,30 @@ export const getCustomer = asyncHandler(async (req, res) => {
       .sort('-requestedAt')
       .limit(TIMELINE_PAGE),
     Sample.countDocuments(filter),
+    /*
+     * Where this customer came from, and what else was folded into it.
+     *
+     * Read off `lead.convertedCustomer` rather than a field on the customer, and that is the
+     * whole point: a customer is *created from* at most one lead, but any number of later leads
+     * can turn out to be the same buyer and be attached to it — a new contact filling in the
+     * website form, an IndiaMART enquiry from a company already supplied. One field could hold
+     * the first and would silently lose every one after it, and it would be a second copy of
+     * something the lead already records. Asking the leads is the only version that stays true.
+     *
+     * `convertedFromStatus` comes along because it is the honest label: a lead that reached
+     * `qualified` before it closed reads differently from one converted straight off the rank.
+     */
+    Lead.find({ convertedCustomer: customer._id })
+      .select('number company convertedAt convertedFromStatus convertedEnquiry')
+      .sort('-convertedAt')
+      .limit(TIMELINE_PAGE),
   ]);
 
   res.json({
     success: true,
     data: {
       customer,
-      timeline: { enquiries, total, samples, sampleTotal },
+      timeline: { enquiries, total, samples, sampleTotal, leads },
     },
   });
 });
