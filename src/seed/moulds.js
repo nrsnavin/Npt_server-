@@ -1,43 +1,57 @@
 import Mould from '../models/Mould.js';
-import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import { few, leading } from './size.js';
 
 /**
- * The mould register, for the tools the seeded catalogue already refers to.
+ * The mould register — which is now also the model master [BLUEPRINT §28].
  *
- * The product master carries `mouldNumber` as free text — `M-101`, `M-102` — and until now
- * that string was the whole of what the system knew about a tool. These records give those
- * numbers something to be, with figures that are plausible for the size and weight of each
- * model rather than uniform: a 15 g kids' hanger runs twelve cavities on a nineteen-second
- * cycle, a 48 g coat hanger runs two on forty-one, and the runner is a far larger share of the
- * small tool's shot than of the large one's — 12.6% against 14.3%, which is not the direction
- * most people would guess. A register where every tool carries the same figures teaches nobody
- * anything.
+ * There used to be two seeds here: a product catalogue of model codes with a `mouldNumber`
+ * written on each as free text, and a register of tools that pointed back at it. The pair
+ * agreed only because they were written together, and the catalogue carried a hand-ticked
+ * `mouldAvailable` beside the register that already knew the answer. One list now, because
+ * there is one steel tool and it is the thing that exists.
+ *
+ * The figures are plausible for the size and weight of each model rather than uniform: a 15 g
+ * kids' hanger runs twelve cavities on a nineteen-second cycle, a 48 g coat hanger runs two on
+ * forty-one, and the runner is a far larger share of the small tool's shot than of the large
+ * one's — 12.6% against 14.3%, which is not the direction most people would guess. A register
+ * where every tool carries the same figures teaches nobody anything.
  *
  * Three details here exist to be met rather than to look tidy:
  *
  *   M-118  has a blocked cavity — three of four running. Output falls and consumption per
  *          piece rises together, which is the pair that a cut-cavity count alone gets wrong.
  *   M-141  is the customer's tool, so the model on it cannot be offered to anybody else.
- *   M-102  makes two catalogue models, virgin and recycled PP off one geometry.
+ *   M-102  is one tool and two offers: the same geometry runs virgin PP and recycled PP, which
+ *          used to be two catalogue rows and is now one tool costed against two materials.
  *
- * Nothing here is invented where the catalogue already knows it: every part weight is the
- * product master's own `standardWeightGrams`, so the register and the catalogue agree on what
- * a piece weighs and disagree only about what it *consumes* — which is the whole point.
+ * What is deliberately **not** here: the wooden skirt hanger and the chrome multi-tier, which
+ * the plant buys in and resells. A traded piece has no steel of ours to record, so it has no
+ * entry — it reaches the system as the model number the buyer asked for, on the enquiry. Five
+ * of the twenty-five models on the plant's own 26-27 sheet are traded, so this is the ordinary
+ * case rather than the awkward one, and a master that invented rows for them would be claiming
+ * tools that do not exist.
  */
 
 /**
- * Cycle times and runner weights, by tool.
+ * `material` is the resin in the barrel, which is not always what the finished hanger is called.
  *
- * `models` names product codes; the tool is skipped if none of them are in the catalogue, so
- * the register never carries a mould for a model that does not exist.
+ * The velvet suit hanger is a moulded PP body that is then flocked; "velvet" describes what the
+ * buyer receives and no resin is bought by that name. A gram weight recorded against a word
+ * nobody purchases cannot be checked against a rate per kilo, and that check is the register's
+ * whole use — so the tool records PP and the finish is a fact about the job.
  */
 const MOULDS = [
   {
     mouldCode: 'M-101',
     name: '380mm slim shirt hanger',
-    models: ['NPT-380S'],
+    category: 'shirt',
+    sizeMm: 380,
+    hookType: 'fixed',
+    material: 'pp',
+    partWeightGrams: 22,
+    moq: 5000,
+    packingQty: 200,
     cavities: 8,
     runnerWeightGrams: 22,
     cycleTimeSeconds: 26,
@@ -53,8 +67,13 @@ const MOULDS = [
   {
     mouldCode: 'M-102',
     name: '400mm standard shirt hanger',
-    /* One geometry, two catalogue entries: the same steel runs virgin and recycled PP. */
-    models: ['NPT-400S', 'NPT-400R'],
+    category: 'shirt',
+    sizeMm: 400,
+    hookType: 'swivel',
+    material: 'pp',
+    partWeightGrams: 26,
+    moq: 5000,
+    packingQty: 200,
     cavities: 8,
     runnerWeightGrams: 26,
     cycleTimeSeconds: 28,
@@ -69,11 +88,18 @@ const MOULDS = [
     location: 'Moulding bay 1',
     mouldMaker: 'Sri Venkateswara Tools, Coimbatore',
     commissionedOn: '2021-09-02',
+    notes: 'Also runs recycled PP for GRS-scope orders — same tool, different resin and rate.',
   },
   {
     mouldCode: 'M-118',
     name: '420mm trouser hanger with clips',
-    models: ['NPT-420T'],
+    category: 'trouser',
+    sizeMm: 420,
+    hookType: 'clip',
+    material: 'pp',
+    partWeightGrams: 34,
+    moq: 3000,
+    packingQty: 100,
     cavities: 4,
     /*
      * One cavity blocked after a core pin sheared. The tool keeps earning on three, and both
@@ -95,8 +121,14 @@ const MOULDS = [
   },
   {
     mouldCode: 'M-124',
-    name: '450mm coat hanger',
-    models: ['NPT-450C'],
+    name: '450mm coat hanger — broad shoulder',
+    category: 'coat',
+    sizeMm: 450,
+    hookType: 'metal_swivel',
+    material: 'pp',
+    partWeightGrams: 48,
+    moq: 2000,
+    packingQty: 50,
     cavities: 2,
     runnerWeightGrams: 16,
     cycleTimeSeconds: 41,
@@ -112,7 +144,13 @@ const MOULDS = [
   {
     mouldCode: 'M-107',
     name: '300mm kids hanger',
-    models: ['NPT-300K'],
+    category: 'kids',
+    sizeMm: 300,
+    hookType: 'fixed',
+    material: 'pp',
+    partWeightGrams: 15,
+    moq: 10000,
+    packingQty: 250,
     cavities: 12,
     runnerWeightGrams: 26,
     cycleTimeSeconds: 19,
@@ -128,7 +166,13 @@ const MOULDS = [
   {
     mouldCode: 'M-133',
     name: '330mm lingerie hanger',
-    models: ['NPT-330L'],
+    category: 'lingerie',
+    sizeMm: 330,
+    hookType: 'fixed',
+    material: 'pp',
+    partWeightGrams: 14,
+    moq: 10000,
+    packingQty: 250,
     cavities: 12,
     runnerWeightGrams: 24,
     cycleTimeSeconds: 18,
@@ -143,7 +187,13 @@ const MOULDS = [
   {
     mouldCode: 'M-141',
     name: '410mm suit hanger — velvet flocked body',
-    models: ['NPT-410V'],
+    category: 'suit',
+    sizeMm: 410,
+    hookType: 'metal_swivel',
+    material: 'pp',
+    partWeightGrams: 52,
+    moq: 1000,
+    packingQty: 50,
     cavities: 2,
     runnerWeightGrams: 14,
     cycleTimeSeconds: 38,
@@ -163,26 +213,8 @@ const MOULDS = [
   },
 ];
 
-/**
- * What a tool actually moulds, which is not always what the catalogue calls the product.
- *
- * The master's material describes the finished hanger: `velvet` is a moulded body that is then
- * flocked, and `plastic` is what most of the seeded models say — a word nobody buys resin by.
- * A tool records the resin in the barrel, because a gram weight recorded against no resin
- * cannot be checked against a rate per kilo, and that check is the register's whole use.
- */
-const MOULDING_RESINS = ['pp', 'hips', 'recycled_pp'];
-const mouldingResin = (material) => (MOULDING_RESINS.includes(material) ? material : 'pp');
-
 export async function seedMoulds() {
   await Mould.deleteMany({});
-
-  const products = Object.fromEntries(
-    (await Product.find().select('modelCode material standardWeightGrams')).map((product) => [
-      product.modelCode,
-      product,
-    ])
-  );
 
   const created = [];
 
@@ -192,40 +224,13 @@ export async function seedMoulds() {
    * more than a list of weights.
    */
   for (const row of few(leading(MOULDS, 'mouldCode', ['M-101', 'M-102', 'M-118', 'M-141']))) {
-    const models = row.models.map((code) => products[code]).filter(Boolean);
-    /* A tool for a model nobody catalogued would be a register entry pointing at nothing. */
-    if (!models.length) continue;
-
-    const owner = row.ownedByCustomerName
-      ? await Customer.findOne({ name: row.ownedByCustomerName })
-      : null;
+    const { ownedByCustomerName, commissionedOn, ...fields } = row;
 
     created.push(
       await Mould.create({
-        mouldCode: row.mouldCode,
-        name: row.name,
-        products: models.map((product) => product._id),
-        material: mouldingResin(models[0].material),
-        partWeightGrams: models[0].standardWeightGrams,
-        cavities: row.cavities,
-        activeCavities: row.activeCavities,
-        runnerWeightGrams: row.runnerWeightGrams,
-        regrindRecoveryPercent: row.regrindRecoveryPercent,
-        cycleTimeSeconds: row.cycleTimeSeconds,
-        efficiencyPercent: row.efficiencyPercent,
-        jobWorkCost: row.jobWorkCost,
-        hookCost: row.hookCost,
-        clipsCost: row.clipsCost,
-        printingCost: row.printingCost,
-        packingCost: row.packingCost,
-        machine: row.machine,
+        ...fields,
         status: row.status || 'active',
-        ownedBy: owner ? 'customer' : 'company',
-        ownedByCustomer: owner?._id,
-        mouldMaker: row.mouldMaker,
-        commissionedOn: row.commissionedOn ? new Date(row.commissionedOn) : undefined,
-        location: row.location,
-        notes: row.notes,
+        commissionedOn: commissionedOn ? new Date(commissionedOn) : undefined,
       })
     );
   }
@@ -238,7 +243,31 @@ export async function seedMoulds() {
           (created.reduce((sum, mould) => sum + mould.runnerPercent, 0) / created.length) * 10
         ) / 10
       : 0,
-    customerOwned: created.filter((mould) => mould.ownedBy === 'customer').length,
     blocked: created.filter((mould) => mould.runningCavities < mould.cavities).length,
   };
+}
+
+/**
+ * Marks the buyer-funded tools, once the parties who paid for them exist.
+ *
+ * A second pass rather than a field set at creation, because the register is now the model
+ * master and therefore has to be seeded *before* the enquiries that name a model — while the
+ * customer who funded M-141 is created with the rest of the parties, after it. The pairing
+ * still lives in this file, next to the tool it is about, so there is one place to correct it.
+ */
+export async function linkMouldOwners() {
+  let linked = 0;
+
+  for (const row of MOULDS.filter((mould) => mould.ownedByCustomerName)) {
+    const owner = await Customer.findOne({ name: row.ownedByCustomerName });
+    if (!owner) continue;
+
+    const result = await Mould.updateOne(
+      { mouldCode: row.mouldCode },
+      { $set: { ownedBy: 'customer', ownedByCustomer: owner._id } }
+    );
+    linked += result.matchedCount || 0;
+  }
+
+  return linked;
 }

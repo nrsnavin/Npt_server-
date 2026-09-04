@@ -291,7 +291,7 @@ without its metrics is half delivered.
 
 | Phase | Module lands | Dashboard that lights up |
 | --- | --- | --- |
-| 1 | `customers`, `enquiries`, `products` | Marketing: today, funnel top, sources, dormant customers |
+| 1 | `customers`, `enquiries`, `moulds` | Marketing: today, funnel top, sources, dormant customers |
 | 2 | `samples` | Sampling in full; marketing gains sample ageing |
 | 3 | `pricing`, `quotations` | Pricing in full; MD gains approvals pending |
 | 4 | `orders`, `production`, `quality` | Order confirmation, production, quality; MD gains delays and pipeline value |

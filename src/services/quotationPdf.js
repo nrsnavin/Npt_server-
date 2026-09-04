@@ -249,17 +249,17 @@ function items(doc, quotation, y) {
 
   const rows = (quotation.lines || []).map((line, index) => {
     const description = [
-      line.product?.name,
-      line.product?.sizeMm ? `${line.product.sizeMm} mm` : null,
+      line.mould?.name,
+      line.mould?.sizeMm ? `${line.mould.sizeMm} mm` : null,
       // Material codes are codes: `pp` in the master is PP on a document a buyer files.
-      line.product?.material?.toUpperCase(),
+      line.mould?.material?.toUpperCase(),
     ]
       .filter(Boolean)
       .join(' · ');
 
     return {
       item: String((index + 1) * 10),
-      material: line.modelNumber || line.product?.modelCode || '—',
+      material: line.modelNumber || line.mould?.mouldCode || '—',
       description: description || 'As per enquiry',
       /* The minimum the rate is good for. Blank rather than a zero when there is none: a
          document that says the minimum is 0 pieces is answering a question it was not asked. */

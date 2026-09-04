@@ -1,7 +1,6 @@
 import Pricing, { CLOSED_PRICING_STATUSES } from '../models/Pricing.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
-import Product from '../models/Product.js';
 import Mould from '../models/Mould.js';
 import Material, { grammageFrom } from '../models/Material.js';
 import Component from '../models/Component.js';
@@ -38,17 +37,20 @@ import { priceFrom } from '../services/pricing.service.js';
 const POPULATE = [
   { path: 'enquiry', select: 'number status requirement targetPrice' },
   { path: 'customer', select: 'code name' },
-  { path: 'product', select: 'modelCode name category sizeMm material moq packingQty standardPrice' },
   /*
    * Named fields rather than a bare populate. The mould's virtuals recompute on serialisation
    * whatever is projected — that is what a virtual is — so the derived figures come through
    * regardless, and listing the measured ones explicitly keeps a future field on the register
    * from arriving on a costing response nobody meant to widen.
+   *
+   * The first line is what the product master used to supply — the model's own code, size,
+   * category, hook and minimum — which the costing screen reads to say what is being priced.
    */
   {
     path: 'mould',
     select:
-      'mouldCode name cavities activeCavities partWeightGrams runnerWeightGrams ' +
+      'mouldCode name category sizeMm hookType moq packingQty ' +
+      'cavities activeCavities partWeightGrams runnerWeightGrams ' +
       'regrindRecoveryPercent cycleTimeSeconds efficiencyPercent status material machine',
   },
   { path: 'materialRef', select: 'name code type colour ratePerKg grammageFactorPercent' },
@@ -143,22 +145,6 @@ async function partsFrom(body) {
   return parts;
 }
 
-/**
- * The one mould a product is made on, or nothing.
- *
- * Deliberately refuses to choose. A model with two tools on the register is the case where
- * picking the "obvious" one is a policy decision dressed as a default — the second mould is
- * usually a newer, faster or differently-cavitied version, and quietly costing against either
- * of them produces a defensible-looking sheet built on a tool the job will not run on. Where
- * there is doubt, the person costing picks; where there is exactly one answer, nobody should
- * have to.
- */
-async function soleMouldFor(productId) {
-  if (!productId) return null;
-  const candidates = await Mould.find({ products: productId, isActive: true, status: 'active' }).limit(2);
-  return candidates.length === 1 ? candidates[0] : null;
-}
-
 export const listPricings = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = listParams(req.query, {
     searchFields: ['number', 'modelNumber'],
@@ -230,17 +216,17 @@ export const createPricing = asyncHandler(async (req, res) => {
   if (!(await Customer.findById(customerId))) throw ApiError.badRequest('That customer does not exist');
 
   /*
-   * The product master fills in what it already knows [§28]. Copied rather than referenced:
-   * a costing is a record of what was priced, and a master that is edited next month must not
-   * retrospectively change the MOQ a quote went out against.
+   * The tool, from the request or from the enquiry that asked for the price.
+   *
+   * There is no lookup to do beyond this any more. The enquiry names the mould directly, so the
+   * costing takes the same one rather than guessing from a model code — which is what the old
+   * catalogue hop cost: a model with two tools on the register had no single right answer, and
+   * a model with none silently produced a sheet built on nothing. Empty is a real answer here,
+   * and means a traded piece: `procurement` says so on the record.
    */
-  const productId = req.body.product || enquiry?.product;
-  const product = productId ? await Product.findById(productId) : null;
-
-  const mould = req.body.mould
-    ? await Mould.findById(req.body.mould)
-    : await soleMouldFor(productId);
-  if (req.body.mould && !mould) throw ApiError.badRequest('That mould is not on the register');
+  const mouldId = req.body.mould || enquiry?.mould;
+  const mould = mouldId ? await Mould.findById(mouldId) : null;
+  if (mouldId && !mould) throw ApiError.badRequest('That mould is not on the register');
 
   const material = req.body.materialRef ? await Material.findById(req.body.materialRef) : null;
   if (req.body.materialRef && !material) {
@@ -254,26 +240,24 @@ export const createPricing = asyncHandler(async (req, res) => {
 
   const pricing = await Pricing.create({
     ...req.body,
-    product: productId || undefined,
     mould: mould?._id,
     materialRef: material?._id,
     hookRef: parts.hook?._id,
     clipRef: parts.clip?._id,
     printRef: parts.print?._id,
     customer: customerId,
-    modelNumber: req.body.modelNumber || product?.modelCode,
-    material: req.body.material || material?.type || product?.material,
+    modelNumber: req.body.modelNumber || enquiry?.requirement?.modelNumber || mould?.mouldCode,
+    material: req.body.material || material?.type || mould?.material,
     /*
      * The gram weight is the one cost line the plant already knows, and re-typing it is how a
      * costing ends up priced for a piece that weighs something else. The rate is not copied: it
      * is today's resin price, which no master has any business remembering.
      *
-     * The mould wins over the catalogue where there is one, and the two are not the same
-     * number. The catalogue's standard weight is what the *piece* weighs; the mould knows what
-     * a piece *consumes*, which is that plus its share of the runner moulded alongside it. On a
-     * four-cavity tool with a 12 g runner that gap is 3 g on a 30 g part — a tenth of the resin
-     * on every quotation off that mould, always understated, and never visible on the sheet
-     * because the arithmetic below it is perfectly correct.
+     * What the mould gives is what a piece *consumes* — the part weight plus its share of the
+     * runner moulded alongside it — and not what the piece weighs. On a four-cavity tool with a
+     * 12 g runner that gap is 3 g on a 30 g part: a tenth of the resin on every quotation off
+     * that mould, always understated, and never visible on the sheet because the arithmetic
+     * below it is perfectly correct. A costing that starts from a part weight starts wrong.
      *
      * The material then converts that PP figure into the resin actually being run, and brings
      * its own rate and the tool's conversion lines with it. An explicit `cost` in the request
@@ -286,10 +270,7 @@ export const createPricing = asyncHandler(async (req, res) => {
      * *raises* a costing; building the sheet is `/cost`, which is where a typed figure can
      * overrule the registers. The spread that used to sit here read as though it worked.
      */
-    cost: {
-      ...(product?.standardWeightGrams ? { gramWeight: product.standardWeightGrams } : {}),
-      ...filled,
-    },
+    cost: filled,
     number: await nextNumber('PRC'),
     requestedBy: req.user._id,
     statusHistory: [{ to: 'requested', by: req.user._id }],
@@ -507,7 +488,7 @@ export const decidePricing = asyncHandler(async (req, res) => {
  * retyped. A quote built by hand off a costing means somebody reading the number on one screen
  * and typing it into another: the model, the customer and the enquiry are re-entered, the link
  * back to the sheet is never set, and the price is one transcription slip away from wrong.
- * Here the sheet is the source — customer, enquiry, product and model come across with it, and
+ * Here the sheet is the source — customer, enquiry, mould and model come across with it, and
  * `pricing` is set, which is what §9's floor check reads before anything can be sent.
  *
  * **The quantity defaults to the MOQ, not to the quantity the sheet was costed at.** That is
@@ -540,12 +521,13 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
   /*
    * The minimum this price will be offered at.
    *
-   * Read from the product master rather than from the sheet: the MOQ is a term of the offer,
+   * Read from the mould register rather than from the sheet: the MOQ is a term of the offer,
    * not a fact about the cost, so the costing does not carry one. Whoever is quoting may set a
-   * different minimum for this buyer — the master is only the starting point.
+   * different minimum for this buyer — the register is only the starting point, and a traded
+   * piece has no tool to ask, so it starts at nothing and the quoter says.
    */
-  const product = pricing.product ? await Product.findById(pricing.product) : null;
-  const moq = req.body.moq ?? product?.moq ?? 0;
+  const mould = pricing.mould ? await Mould.findById(pricing.mould).select('moq') : null;
+  const moq = req.body.moq ?? mould?.moq ?? 0;
 
   /*
    * The MOQ, then what the sheet was costed at, then nothing. A costing with neither cannot
@@ -576,7 +558,7 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
           moq,
           unitPrice: req.body.unitPrice ?? pricing.approvedSellingPrice,
           pricing: pricing._id,
-          product: pricing.product || undefined,
+          mould: pricing.mould || undefined,
           modelNumber: pricing.modelNumber,
         },
       ],
@@ -633,12 +615,12 @@ export const updatePricing = asyncHandler(async (req, res) => {
   const before = snapshot(pricing);
   const patch = withoutVersion(req.body);
 
-  if (patch.product) {
-    const product = await Product.findById(patch.product);
-    if (!product) throw ApiError.badRequest('That model does not exist');
-    // The master fills in what it knows, unless this request says otherwise.
-    patch.modelNumber = patch.modelNumber || product.modelCode;
-    patch.material = patch.material || product.material;
+  if (patch.mould) {
+    const tool = await Mould.findById(patch.mould);
+    if (!tool) throw ApiError.badRequest('That mould is not on the register');
+    // The register fills in what it knows, unless this request says otherwise.
+    patch.modelNumber = patch.modelNumber || tool.mouldCode;
+    patch.material = patch.material || tool.material;
   }
 
   const quantityMoved =

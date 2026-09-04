@@ -1,9 +1,14 @@
 /**
- * Phase 1 sample data: the product master, customers, open leads and enquiries spread
- * across the funnel. Called by the main seed so a fresh database has something to work
- * with on the customers, leads and enquiries screens.
+ * Phase 1 sample data: customers, open leads and enquiries spread across the funnel. Called
+ * by the main seed so a fresh database has something to work with on the customers, leads and
+ * enquiries screens.
+ *
+ * The models these enquiries ask for come off the mould register, which is seeded first — there
+ * is no product catalogue any more. Two of the rows below name a model with no tool behind it,
+ * which is not an oversight: the wooden skirt hanger and the chrome multi-tier are bought in and
+ * resold, so the buyer's model number is the whole of what identifies them.
  */
-import Product from '../models/Product.js';
+import Mould from '../models/Mould.js';
 import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import Enquiry from '../models/Enquiry.js';
@@ -34,165 +39,8 @@ const walk = (requestedAt, steps) => {
   return history;
 };
 
-/** The catalogue. Model codes follow the plant's own convention: NPT-<size><letter>. */
-const PRODUCTS = [
-  {
-    modelCode: 'NPT-380S',
-    name: '380mm Shirt Hanger — Slim',
-    category: 'shirt',
-    sizeMm: 380,
-    material: 'plastic',
-    standardWeightGrams: 22,
-    availableColours: ['White', 'Black', 'Smoke Grey'],
-    hookType: 'fixed',
-    mouldAvailable: true,
-    mouldNumber: 'M-101',
-    standardPrice: 4.6,
-    moq: 5000,
-    packingQty: 200,
-  },
-  {
-    modelCode: 'NPT-400S',
-    name: '400mm Shirt Hanger — Standard',
-    category: 'shirt',
-    sizeMm: 400,
-    material: 'plastic',
-    standardWeightGrams: 26,
-    availableColours: ['White', 'Black', 'Navy', 'Transparent'],
-    hookType: 'swivel',
-    mouldAvailable: true,
-    mouldNumber: 'M-102',
-    standardPrice: 5.2,
-    moq: 5000,
-    packingQty: 200,
-  },
-  {
-    modelCode: 'NPT-420T',
-    name: '420mm Trouser Hanger with Clips',
-    category: 'trouser',
-    sizeMm: 420,
-    material: 'plastic',
-    standardWeightGrams: 34,
-    availableColours: ['Black', 'White'],
-    hookType: 'clip',
-    mouldAvailable: true,
-    mouldNumber: 'M-118',
-    standardPrice: 8.9,
-    moq: 3000,
-    packingQty: 100,
-  },
-  {
-    modelCode: 'NPT-450C',
-    name: '450mm Coat Hanger — Broad Shoulder',
-    category: 'coat',
-    sizeMm: 450,
-    material: 'plastic',
-    standardWeightGrams: 48,
-    availableColours: ['Black', 'White', 'Walnut'],
-    hookType: 'metal_swivel',
-    mouldAvailable: true,
-    mouldNumber: 'M-124',
-    standardPrice: 12.4,
-    moq: 2000,
-    packingQty: 50,
-  },
-  {
-    modelCode: 'NPT-300K',
-    name: '300mm Kids Hanger',
-    category: 'kids',
-    sizeMm: 300,
-    material: 'plastic',
-    standardWeightGrams: 15,
-    availableColours: ['White', 'Pink', 'Sky Blue', 'Lemon'],
-    hookType: 'fixed',
-    mouldAvailable: true,
-    mouldNumber: 'M-107',
-    standardPrice: 3.4,
-    moq: 10000,
-    packingQty: 250,
-  },
-  {
-    modelCode: 'NPT-330L',
-    name: '330mm Lingerie Hanger',
-    category: 'lingerie',
-    sizeMm: 330,
-    material: 'plastic',
-    standardWeightGrams: 14,
-    availableColours: ['White', 'Blush', 'Transparent'],
-    hookType: 'fixed',
-    mouldAvailable: true,
-    mouldNumber: 'M-133',
-    standardPrice: 3.1,
-    moq: 10000,
-    packingQty: 250,
-  },
-  {
-    modelCode: 'NPT-410V',
-    name: '410mm Velvet Flocked Suit Hanger',
-    category: 'suit',
-    sizeMm: 410,
-    material: 'velvet',
-    standardWeightGrams: 52,
-    availableColours: ['Charcoal', 'Ivory', 'Burgundy'],
-    hookType: 'metal_swivel',
-    mouldAvailable: true,
-    mouldNumber: 'M-141',
-    standardPrice: 21.5,
-    moq: 1000,
-    packingQty: 50,
-  },
-  {
-    modelCode: 'NPT-400R',
-    name: '400mm Shirt Hanger — Recycled PP',
-    category: 'shirt',
-    sizeMm: 400,
-    material: 'recycled_pp',
-    standardWeightGrams: 27,
-    availableColours: ['Charcoal', 'Stone'],
-    hookType: 'swivel',
-    mouldAvailable: true,
-    mouldNumber: 'M-102',
-    standardPrice: 5.9,
-    moq: 5000,
-    packingQty: 200,
-    notes: 'GRS certified. Quote only against a GRS-scope order.',
-  },
-  {
-    modelCode: 'NPT-360W',
-    name: '360mm Wooden Skirt Hanger',
-    category: 'skirt',
-    sizeMm: 360,
-    material: 'wood',
-    standardWeightGrams: 96,
-    availableColours: ['Natural', 'Walnut'],
-    hookType: 'metal_swivel',
-    mouldAvailable: false,
-    standardPrice: 34,
-    moq: 500,
-    packingQty: 25,
-    notes: 'Bought out and re-branded — no mould of our own.',
-  },
-  {
-    modelCode: 'NPT-440M',
-    name: '440mm Multi-Tier Hanger',
-    category: 'multi',
-    sizeMm: 440,
-    material: 'metal',
-    standardWeightGrams: 128,
-    availableColours: ['Chrome', 'Black'],
-    hookType: 'fixed',
-    mouldAvailable: false,
-    standardPrice: 46,
-    moq: 500,
-    packingQty: 20,
-    isActive: false,
-    notes: 'Withdrawn — chrome supplier discontinued the finish.',
-  },
-];
-
 export async function seedPipeline({ nandhini, arun, meera }) {
   await Promise.all([
-    Product.deleteMany({}),
     Customer.deleteMany({}),
     Lead.deleteMany({}),
     Enquiry.deleteMany({}),
@@ -201,16 +49,13 @@ export async function seedPipeline({ nandhini, arun, meera }) {
   ]);
 
   /*
-   * The four the rest of the seed cannot do without: the two ordinary shirt hangers, the trouser
-   * hanger whose tool is running a cavity short, and the velvet suit hanger on the mould the
-   * customer paid for. Between them they carry the blocked-cavity arithmetic, the resin uplift
-   * and the ownership rule; a plain first-four would keep none of the last two.
+   * The register, as it stands after its own trim. Read rather than created here: the moulds are
+   * seeded before this phase now, because a model is a tool and an enquiry has to be able to
+   * name one.
    */
-  const products = await Product.create(
-    few(leading(PRODUCTS, 'modelCode', ['NPT-380S', 'NPT-400S', 'NPT-420T', 'NPT-410V']))
-  );
-  const byCode = Object.fromEntries(products.map((product) => [product.modelCode, product]));
-  const byId = Object.fromEntries(products.map((product) => [String(product._id), product]));
+  const moulds = await Mould.find();
+  const byCode = Object.fromEntries(moulds.map((mould) => [mould.mouldCode, mould]));
+  const byId = Object.fromEntries(moulds.map((mould) => [String(mould._id), mould]));
 
   const customerRows = [
     {
@@ -433,7 +278,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       key: 'scm-400s',
       customer: byName['SCM Garments Pvt Ltd'],
       assignedTo: nandhini._id,
-      product: byCode['NPT-400S'],
+      mould: byCode['M-102'],
       requirement: { modelNumber: 'NPT-400S', category: 'shirt', sizeMm: 400, material: 'plastic', colour: 'White', quantity: 80000, printing: 'SCM logo, single colour', packing: '200 pcs per carton' },
       targetPrice: 4.9,
       requiredDeliveryDate: days(24),
@@ -450,7 +295,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       key: 'scm-420t',
       customer: byName['SCM Garments Pvt Ltd'],
       assignedTo: nandhini._id,
-      product: byCode['NPT-420T'],
+      mould: byCode['M-118'],
       requirement: { modelNumber: 'NPT-420T', category: 'trouser', sizeMm: 420, material: 'plastic', colour: 'Black', quantity: 30000, packing: '100 pcs per carton' },
       targetPrice: 8.4,
       requiredDeliveryDate: days(24),
@@ -467,7 +312,13 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       key: 'sunrise-400r',
       customer: byName['Sunrise Exports'],
       assignedTo: nandhini._id,
-      product: byCode['NPT-400R'],
+      /*
+       * The same tool as the enquiry above, in a different resin. This used to be a second
+       * catalogue entry — NPT-400R beside NPT-400S — for one geometry, because the catalogue
+       * split by material and the register did not. One tool, and the recycled resin is picked
+       * on the costing, where it carries its own rate.
+       */
+      mould: byCode['M-102'],
       requirement: { modelNumber: 'NPT-400R', category: 'shirt', sizeMm: 400, material: 'recycled_pp', colour: 'Charcoal', quantity: 150000, printing: 'GRS mark on the shoulder', packing: '200 pcs per carton' },
       targetPrice: 5.6,
       requiredDeliveryDate: days(40),
@@ -499,7 +350,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       key: 'vogue-410v',
       customer: byName['Vogue Retail India'],
       assignedTo: arun._id,
-      product: byCode['NPT-410V'],
+      mould: byCode['M-141'],
       requirement: { modelNumber: 'NPT-410V', category: 'suit', sizeMm: 410, material: 'velvet', colour: 'Charcoal', quantity: 6000, packing: '50 pcs per carton' },
       targetPrice: 20,
       requiredDeliveryDate: days(30),
@@ -515,7 +366,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       key: 'orient-450c',
       customer: byName['Orient Sourcing FZE'],
       assignedTo: arun._id,
-      product: byCode['NPT-450C'],
+      mould: byCode['M-124'],
       requirement: { modelNumber: 'NPT-450C', category: 'coat', sizeMm: 450, material: 'plastic', colour: 'Black', quantity: 45000, packing: '50 pcs per carton, export cartons' },
       targetPrice: 11.8,
       requiredDeliveryDate: days(60),
@@ -531,7 +382,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       key: 'sunrise-300k',
       customer: byName['Sunrise Exports'],
       assignedTo: nandhini._id,
-      product: byCode['NPT-300K'],
+      mould: byCode['M-107'],
       requirement: { modelNumber: 'NPT-300K', category: 'kids', sizeMm: 300, material: 'plastic', colour: 'Assorted', quantity: 90000, packing: '250 pcs per carton' },
       status: 'won',
       estimatedValue: 306000,
@@ -543,7 +394,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       key: 'metro-380s',
       customer: byName['Metro Wholesale Traders'],
       assignedTo: nandhini._id,
-      product: byCode['NPT-380S'],
+      mould: byCode['M-101'],
       requirement: { modelNumber: 'NPT-380S', category: 'shirt', sizeMm: 380, material: 'plastic', colour: 'White', quantity: 20000, packing: '200 pcs per carton' },
       status: 'lost',
       lostReason: 'price',
@@ -556,7 +407,11 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       key: 'trendline-360w',
       customer: byName['Trendline Apparels'],
       assignedTo: nandhini._id,
-      product: byCode['NPT-360W'],
+      /*
+       * No mould, and not a new development either: the wooden skirt hanger is bought in and
+       * re-branded, so there is no steel of ours to point at. The buyer's model number is the
+       * whole of what identifies it — which is the ordinary case for a traded line.
+       */
       requirement: { modelNumber: 'NPT-360W', category: 'skirt', sizeMm: 360, material: 'wood', colour: 'Natural', quantity: 3000, packing: '25 pcs per carton' },
       status: 'hold',
       holdReason: 'Buyer paused the wooden range until their store refit finishes.',
@@ -572,24 +427,25 @@ export async function seedPipeline({ nandhini, arun, meera }) {
   /*
    * Only the enquiries whose customer and model both survived the trim.
    *
-   * `'product' in row` tells a row that asked for a model from one that never had one — the
-   * matte-finish trial is a new development and correctly has no product, which is not the same
-   * thing as a row whose model was trimmed away and would be created pointing at nothing.
+   * `'mould' in row` tells a row that asked for a tool from one that never had one — the
+   * matte-finish trial is a new development and the wooden skirt hanger is traded, and both
+   * correctly have no mould, which is not the same thing as a row whose tool was trimmed away
+   * and would be created pointing at nothing.
    */
   const enquiries = [];
   for (const row of few(
     resolved(
       enquiryRows,
-      (row) => row.customer && (!('product' in row) || row.product),
+      (row) => row.customer && (!('mould' in row) || row.mould),
       'enquiries'
     )
   )) {
-    const { key, customer, product, ...rest } = row;
+    const { key, customer, mould, ...rest } = row;
     enquiries.push(
       await Enquiry.create({
         ...rest,
         customer: customer._id,
-        product: product?._id,
+        mould: mould?._id,
         number: await nextNumber('ENQ'),
         statusHistory: [{ to: rest.status, at: rest.enquiryDate, by: rest.assignedTo }],
       })
@@ -688,27 +544,27 @@ export async function seedPipeline({ nandhini, arun, meera }) {
    * reads: printed against plain, hook types, and a turnaround that varies by more than noise.
    */
   const historicalRows = [
-    { model: 'NPT-380S', purpose: 'existing_model', quantity: 4, took: 3, agoDays: 12, printing: '' },
-    { model: 'NPT-400S', purpose: 'colour_approval', quantity: 6, took: 4, agoDays: 20, printing: '' },
-    { model: 'NPT-400S', purpose: 'existing_model', quantity: 3, took: 3, agoDays: 26, printing: '' },
-    { model: 'NPT-360W', purpose: 'buyer_approval', quantity: 8, took: 6, agoDays: 34, printing: '' },
-    { model: 'NPT-380S', purpose: 'print_approval', quantity: 5, took: 9, agoDays: 41, printing: 'Two-colour logo, front face' },
-    { model: 'NPT-400S', purpose: 'print_approval', quantity: 6, took: 11, agoDays: 48, printing: 'Buyer brand mark, both faces' },
-    { model: 'NPT-360W', purpose: 'new_development', quantity: 10, took: 21, agoDays: 55, printing: '' },
-    { model: 'NPT-380S', purpose: 'existing_model', quantity: 2, took: 2, agoDays: 62, printing: '' },
-    { model: 'NPT-400S', purpose: 'fit_test', quantity: 5, took: 5, agoDays: 70, printing: '' },
-    { model: 'NPT-380S', purpose: 'print_approval', quantity: 4, took: 10, agoDays: 78, printing: 'Single-colour size mark' },
+    { model: 'NPT-380S', mould: 'M-101', colour: 'White', purpose: 'existing_model', quantity: 4, took: 3, agoDays: 12, printing: '' },
+    { model: 'NPT-400S', mould: 'M-102', colour: 'White', purpose: 'colour_approval', quantity: 6, took: 4, agoDays: 20, printing: '' },
+    { model: 'NPT-400S', mould: 'M-102', colour: 'White', purpose: 'existing_model', quantity: 3, took: 3, agoDays: 26, printing: '' },
+    { model: 'NPT-360W', colour: 'Natural', purpose: 'buyer_approval', quantity: 8, took: 6, agoDays: 34, printing: '' },
+    { model: 'NPT-380S', mould: 'M-101', colour: 'White', purpose: 'print_approval', quantity: 5, took: 9, agoDays: 41, printing: 'Two-colour logo, front face' },
+    { model: 'NPT-400S', mould: 'M-102', colour: 'White', purpose: 'print_approval', quantity: 6, took: 11, agoDays: 48, printing: 'Buyer brand mark, both faces' },
+    { model: 'NPT-360W', colour: 'Natural', purpose: 'new_development', quantity: 10, took: 21, agoDays: 55, printing: '' },
+    { model: 'NPT-380S', mould: 'M-101', colour: 'White', purpose: 'existing_model', quantity: 2, took: 2, agoDays: 62, printing: '' },
+    { model: 'NPT-400S', mould: 'M-102', colour: 'White', purpose: 'fit_test', quantity: 5, took: 5, agoDays: 70, printing: '' },
+    { model: 'NPT-380S', mould: 'M-101', colour: 'White', purpose: 'print_approval', quantity: 4, took: 10, agoDays: 78, printing: 'Single-colour size mark' },
     // The one that went wrong. It is why the report shows the worst case beside the average:
     // at this volume p90 sits below it, and this is the one worth the conversation.
-    { model: 'NPT-360W', purpose: 'new_development', quantity: 12, took: 38, agoDays: 90, printing: '', outcome: 'modification_required' },
-    { model: 'NPT-400S', purpose: 'colour_approval', quantity: 6, took: 4, agoDays: 96, printing: '' },
+    { model: 'NPT-360W', colour: 'Natural', purpose: 'new_development', quantity: 12, took: 38, agoDays: 90, printing: '', outcome: 'modification_required' },
+    { model: 'NPT-400S', mould: 'M-102', colour: 'White', purpose: 'colour_approval', quantity: 6, took: 4, agoDays: 96, printing: '' },
   ];
 
   const samples = [];
   for (const row of resolved(sampleRows, (row) => row.enquiry, 'sample requests')) {
     const { enquiry, history = [], ...rest } = row;
 
-    const product = enquiry.product ? byId[String(enquiry.product)] : null;
+    const tool = enquiry.mould ? byId[String(enquiry.mould)] : null;
 
     samples.push(
       await Sample.create({
@@ -717,14 +573,14 @@ export async function seedPipeline({ nandhini, arun, meera }) {
         customer: enquiry.customer,
         enquiry: enquiry._id,
         requestedBy: enquiry.assignedTo,
-        product: enquiry.product,
+        mould: enquiry.mould,
         modelNumber: enquiry.requirement.modelNumber,
         category: enquiry.requirement.category,
         sizeMm: enquiry.requirement.sizeMm,
         material: enquiry.requirement.material,
         printing: enquiry.requirement.printing,
-        // Inherited from the model, the way a request raised through the API inherits it.
-        hookType: product?.hookType,
+        // Inherited from the tool, the way a request raised through the API inherits it.
+        hookType: tool?.hookType,
         statusHistory: walk(rest.requestedAt, history),
       })
     );
@@ -733,13 +589,15 @@ export async function seedPipeline({ nandhini, arun, meera }) {
   /*
    * The settled back-catalogue the analytics page reads.
    *
-   * Trimmed like everything else, and filtered to models that are actually in this set — a
-   * historical sample against a hanger the catalogue no longer carries is a row the analytics
-   * page cannot attribute to anything. On the small set the report is correspondingly thin,
-   * which is the honest consequence of a small set rather than something to paper over.
+   * Trimmed like everything else, and filtered to tools that are actually on this register — a
+   * historical sample against a mould the trim left out is a row the analytics page cannot
+   * attribute to anything. The traded rows carry no `mould` and are kept regardless, because
+   * what they describe is a sample of something we bought in, which happened. On the small set
+   * the report is correspondingly thin, which is the honest consequence of a small set rather
+   * than something to paper over.
    */
-  for (const row of few(historicalRows.filter((row) => byCode[row.model]))) {
-    const product = byCode[row.model];
+  for (const row of few(historicalRows.filter((row) => !row.mould || byCode[row.mould]))) {
+    const tool = row.mould ? byCode[row.mould] : null;
     const customer = customers[samples.length % customers.length];
     const outcome = row.outcome || 'approved';
 
@@ -762,14 +620,15 @@ export async function seedPipeline({ nandhini, arun, meera }) {
         customer: customer._id,
         requestedBy: nandhini._id,
         assignedTo: meera?._id,
-        product: product?._id,
-        modelNumber: product?.modelCode,
-        category: product?.category,
-        sizeMm: product?.sizeMm,
-        material: product?.material,
-        hookType: product?.hookType,
+        mould: tool?._id,
+        /* The buyer's word for it, which outlives any register. */
+        modelNumber: row.model,
+        category: tool?.category,
+        sizeMm: tool?.sizeMm,
+        material: tool?.material,
+        hookType: tool?.hookType,
         printing: row.printing,
-        colour: product?.availableColours?.[0],
+        colour: row.colour,
         quantity: row.quantity,
         purpose: row.purpose,
         status: outcome,
@@ -789,7 +648,6 @@ export async function seedPipeline({ nandhini, arun, meera }) {
   }
 
   return {
-    products: products.length,
     customers: customers.length,
     leads: leads.length,
     enquiries: enquiries.length,

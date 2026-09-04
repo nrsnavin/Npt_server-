@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import Product from '../models/Product.js';
+import Mould from '../models/Mould.js';
 import Customer from '../models/Customer.js';
 import Lead, { LEAD_STATUSES } from '../models/Lead.js';
 import Enquiry, {
@@ -118,62 +118,6 @@ async function assertReassignment(current, incoming, user) {
 
 /** How much of a customer's enquiry history the detail screen carries inline. */
 const TIMELINE_PAGE = 10;
-
-/* ------------------------------- Products ------------------------------- */
-
-export const listProducts = asyncHandler(async (req, res) => {
-  const { page, limit, sort, filter } = listParams(req.query, {
-    searchFields: ['modelCode', 'name', 'mouldNumber'],
-    defaultSort: 'modelCode',
-  });
-
-  if (req.query.category) filter.category = req.query.category;
-  if (req.query.material) filter.material = req.query.material;
-  if (req.query.mouldAvailable !== undefined && req.query.mouldAvailable !== '') {
-    filter.mouldAvailable = req.query.mouldAvailable === 'true';
-  }
-  if (req.query.isActive !== undefined && req.query.isActive !== '') {
-    filter.isActive = req.query.isActive === 'true';
-  }
-
-  const [data, total] = await Promise.all([
-    Product.find(filter).sort(sort).skip((page - 1) * limit).limit(limit),
-    Product.countDocuments(filter),
-  ]);
-
-  paginated(res, data, { page, limit, total });
-});
-
-export const getProduct = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id);
-  if (!product) throw ApiError.notFound('Product not found');
-  res.json({ success: true, data: product });
-});
-
-export const createProduct = asyncHandler(async (req, res) => {
-  if (await Product.findOne({ modelCode: req.body.modelCode.toUpperCase() })) {
-    throw ApiError.conflict(`Model code ${req.body.modelCode} is already in use`);
-  }
-  const product = await Product.create(req.body);
-  res.status(201).json({ success: true, data: product });
-});
-
-export const updateProduct = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id);
-  if (!product) throw ApiError.notFound('Product not found');
-
-  // Read first so the version can be checked; the catalogue is shared, so two people
-  // correcting the same model at once is the ordinary case rather than the unlucky one.
-  expectVersion(product, req.body);
-  const before = snapshot(product);
-  Object.assign(product, withoutVersion(req.body));
-  await product.save();
-  await recordChange({ model: 'Product', doc: product, before, by: req.user });
-
-  res.json({ success: true, data: product });
-});
-
-
 
 /* ------------------------------ Bulk actions ------------------------------ */
 
@@ -350,37 +294,6 @@ export const exportEnquiries = asyncHandler(async (req, res) => {
     ['Source', (row) => row.source],
   ]);
 });
-
-export const exportProducts = asyncHandler(async (req, res) => {
-  const { sort, filter } = listParams(req.query, {
-    searchFields: ['modelCode', 'name', 'mouldNumber'],
-    defaultSort: 'modelCode',
-  });
-
-  if (req.query.category) filter.category = req.query.category;
-  if (req.query.material) filter.material = req.query.material;
-
-  const rows = await Product.find(filter).sort(sort).limit(EXPORT_LIMIT);
-
-  sendCsv(res, 'products', rows, [
-    ['Model code', (row) => row.modelCode],
-    ['Name', (row) => row.name],
-    ['Category', (row) => row.category],
-    ['Size (mm)', (row) => row.sizeMm],
-    ['Material', (row) => row.material],
-    ['Hook', (row) => row.hookType],
-    ['Weight (g)', (row) => row.standardWeightGrams],
-    ['Colours', (row) => (row.availableColours || []).join(' / ')],
-    ['Mould available', (row) => (row.mouldAvailable ? 'Yes' : 'No')],
-    ['Mould number', (row) => row.mouldNumber],
-    ['Standard price', (row) => row.standardPrice],
-    ['MOQ', (row) => row.moq],
-    ['Packing qty', (row) => row.packingQty],
-    ['Active', (row) => (row.isActive === false ? 'No' : 'Yes')],
-  ]);
-});
-
-/* ------------------------------- Customers ------------------------------- */
 
 export const listCustomers = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = listParams(req.query, {
@@ -1054,11 +967,23 @@ function assertFutureFollowUp(value) {
  * this database is not necessarily a replica set, so there is no transaction to lean on.
  */
 async function assertEnquiryValid(input) {
-  const { product, isNewDevelopment } = input;
+  const { mould, isNewDevelopment } = input;
 
-  if (!product && !isNewDevelopment) {
+  /*
+   * An enquiry has to say what was asked for, in one of the three ways there are.
+   *
+   * The tool, when we make the piece. The buyer's own model number, when we do not — five of
+   * the twenty-five models on the plant's 26-27 sheet are traded, bought in and resold, and
+   * there is no steel of ours to point at for any of them. Or a declared new development,
+   * which is the case where nobody knows yet and saying so is the honest answer.
+   *
+   * This used to demand a catalogue entry or a new-development tick, which meant a traded item
+   * could only be entered by lying about it — marking a hanger we buy from a supplier as
+   * something we were about to develop, and then leaving it that way.
+   */
+  if (!mould && !isNewDevelopment && !input.requirement?.modelNumber) {
     throw ApiError.badRequest(
-      'Pick a model from the catalogue, or mark this as a new development'
+      'Name the mould, or the model the buyer asked for, or mark this as a new development'
     );
   }
   if (isNewDevelopment && !input.requirement?.modelNumber && !input.remarks) {
@@ -1071,9 +996,9 @@ async function assertEnquiryValid(input) {
     throw ApiError.badRequest('An open enquiry needs a next action and a follow-up date');
   }
   assertFutureFollowUp(input.nextFollowUpDate);
-  if (product) {
-    const exists = await Product.findById(product);
-    if (!exists) throw ApiError.badRequest('That model is not in the catalogue');
+  if (mould) {
+    const exists = await Mould.findById(mould);
+    if (!exists) throw ApiError.badRequest('That mould is not on the register');
   }
   if (input.assignedTo) await assertAssignable(input.assignedTo);
 }
@@ -1186,7 +1111,7 @@ export const listEnquiries = asyncHandler(async (req, res) => {
     Enquiry.find(filter)
       .populate('customer', 'code name')
       .populate('assignedTo', 'name')
-      .populate('product', 'modelCode name')
+      .populate('mould', 'mouldCode name')
       .sort(sort)
       .skip((page - 1) * limit)
       .limit(limit),
@@ -1231,12 +1156,12 @@ export const enquiryBoard = asyncHandler(async (req, res) => {
     perColumn: perColumnFrom(req.query),
     valueField: 'estimatedValue',
     select:
-      'number customer product assignedTo status estimatedValue enquiryDate nextAction ' +
+      'number customer mould assignedTo status estimatedValue enquiryDate nextAction ' +
       'nextActionType nextFollowUpDate requirement holdReason lostReason ' +
       'statusHistory.from statusHistory.to statusHistory.at createdAt',
     populate: [
       { path: 'customer', select: 'code name' },
-      { path: 'product', select: 'modelCode name' },
+      { path: 'mould', select: 'mouldCode name' },
       { path: 'assignedTo', select: 'name' },
     ],
   });
@@ -1248,7 +1173,7 @@ export const getEnquiry = asyncHandler(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id)
     .populate('customer', 'code name mobile email assignedTo')
     .populate('assignedTo', 'name email')
-    .populate('product', 'modelCode name sizeMm material')
+    .populate('mould', 'mouldCode name category sizeMm material hookType')
     .populate('lead', 'number company');
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
@@ -1583,35 +1508,46 @@ export const listEnquiryActions = asyncHandler(async (req, res) => {
 });
 
 /**
- * Promotes a new development into the product master once it has been developed and
- * approved, and links the enquiry to it. Keeps speculative models out of the catalogue.
+ * Puts a developed model on the mould register once the tool has been cut, and links the
+ * enquiry to it [§28].
+ *
+ * This is what "promote a new development" now means, and it is a stricter and more useful
+ * gate than the one it replaces. Promoting used to write a catalogue row — a model code, a
+ * name, a tick saying a mould existed — which could be done the afternoon the buyer said yes
+ * and long before anything was cut. The register cannot be filled in on a promise: it wants
+ * the part weight and the cycle time, and those exist only once there is steel to measure.
+ * So a model reaches the master at the moment it becomes real, which is the whole point of
+ * having a gate here.
  */
-export const promoteToProduct = asyncHandler(async (req, res) => {
+export const promoteToMould = asyncHandler(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
-  if (enquiry.product) throw ApiError.badRequest('This enquiry already points at a model');
+  if (enquiry.mould) throw ApiError.badRequest('This enquiry already points at a mould');
   if (!enquiry.isNewDevelopment) {
-    throw ApiError.badRequest('Only a new development can be promoted into the catalogue');
+    throw ApiError.badRequest('Only a new development can be promoted onto the register');
   }
 
-  if (await Product.findOne({ modelCode: req.body.modelCode.toUpperCase() })) {
-    throw ApiError.conflict(`Model code ${req.body.modelCode} is already in use`);
+  const mouldCode = req.body.mouldCode.toUpperCase();
+  if (await Mould.findOne({ mouldCode })) {
+    throw ApiError.conflict(`Mould ${mouldCode} is already on the register`);
   }
 
-  const product = await Product.create({
+  const mould = await Mould.create({
     ...req.body,
+    mouldCode,
+    /* What the buyer asked for, where the tool room has not said otherwise. */
     category: req.body.category || enquiry.requirement.category,
     sizeMm: req.body.sizeMm ?? enquiry.requirement.sizeMm,
     material: req.body.material || enquiry.requirement.material,
     developedFromEnquiry: enquiry._id,
   });
 
-  enquiry.product = product._id;
+  enquiry.mould = mould._id;
   enquiry.isNewDevelopment = false;
   await enquiry.save();
 
-  res.status(201).json({ success: true, data: { product, enquiry } });
+  res.status(201).json({ success: true, data: { mould, enquiry } });
 });
 
 /** Counts per stage, for the marketing dashboard funnel [§21]. */

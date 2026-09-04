@@ -53,7 +53,8 @@ const statusChangeSchema = new mongoose.Schema(
  */
 const lineSchema = new mongoose.Schema(
   {
-    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    /** The tool behind this line, where the piece is ours to make. Empty for a traded item. */
+    mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould' },
     /**
      * The costing this line's price came from, and the floor it is checked against [§9].
      *

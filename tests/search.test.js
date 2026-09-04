@@ -51,7 +51,7 @@ const followUp = { nextAction: 'Call the buyer', nextFollowUpDate: soon() };
 const search = async (q, token) => (await api(`/api/search?q=${encodeURIComponent(q)}`, { token })).json.data;
 const group = (data, key) => data.groups.find((entry) => entry.key === key);
 
-let productId;
+let mouldId;
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -87,12 +87,16 @@ test.before(async () => {
   meera = await signIn('meera@np.com', 'Passw0rd@123');
   karthik = await signIn('karthik@np.com', 'Passw0rd@123');
 
-  const product = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NPT-450T', name: 'Trouser Hanger 450mm', category: 'trouser', sizeMm: 450, material: 'plastic' },
+    body: {
+      mouldCode: 'M-NPT-450T', name: 'Trouser Hanger 450mm', category: 'trouser', sizeMm: 450, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  productId = product.json.data._id;
+  mouldId = madeMould.json.data._id;
 
   // Nandhini's customer, with an enquiry and a sample behind it.
   const customer = await api('/api/customers', {
@@ -106,7 +110,7 @@ test.before(async () => {
     token: nandhini,
     body: {
       customer: customer.json.data._id,
-      product: productId,
+      mould: mouldId,
       requirement: { modelNumber: 'NPT-450T', quantity: 8000 },
       ...followUp,
     },
@@ -151,7 +155,7 @@ test('a sample is findable by its number, and an enquiry by its model', async ()
 
   const byModel = await search('NPT-450T', nandhini);
   assert.ok(group(byModel, 'enquiries')?.total, 'the enquiry quoting that model');
-  assert.ok(group(byModel, 'products')?.total, 'and the model itself');
+  assert.ok(group(byModel, 'moulds')?.total, 'and the model itself');
 });
 
 test('a phone number matches however it is written on the card', async () => {

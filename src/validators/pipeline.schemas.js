@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from '../models/Product.js';
+import { HANGER_CATEGORIES, MATERIALS } from '../models/Mould.js';
 import { CUSTOMER_TYPES, RATINGS, CUSTOMER_SOURCES } from '../models/Customer.js';
 import { LEAD_STATUSES, DISQUALIFY_REASONS, NEXT_ACTION_TYPES } from '../models/Lead.js';
 import { ENQUIRY_STATUSES, LOST_REASONS } from '../models/Enquiry.js';
@@ -23,35 +23,12 @@ import { objectId } from './schemas.js';
  */
 const clearableDate = z.union([z.null(), z.coerce.date()]).optional();
 
-/* -------------------------------- Products -------------------------------- */
-
-export const productSchema = z.object({
-  modelCode: z.string().min(2).max(40),
-  name: z.string().min(2).max(120),
-  category: z.enum(HANGER_CATEGORIES),
-  sizeMm: z.number().positive(),
-  material: z.enum(MATERIALS),
-  standardWeightGrams: z.number().nonnegative().optional(),
-  availableColours: z.array(z.string()).optional(),
-  hookType: z.enum(HOOK_TYPES).optional(),
-  photoUrl: z.string().optional(),
-  mouldAvailable: z.boolean().optional(),
-  mouldNumber: z.string().optional(),
-  standardPrice: z.number().nonnegative().optional(),
-  moq: z.number().nonnegative().optional(),
-  packingQty: z.number().nonnegative().optional(),
-  isActive: z.boolean().optional(),
-  notes: z.string().optional(),
-});
-
 /**
  * The `updatedAt` the caller last read, echoed back so a stale write can be refused. A
  * protocol field rather than a field of the record — the schemas strip anything they do not
  * declare, so without this the check would silently never fire.
  */
 export const versioned = { expectedUpdatedAt: z.coerce.date().optional() };
-
-export const productUpdateSchema = productSchema.partial().omit({ modelCode: true }).extend(versioned);
 
 /* -------------------------------- Customers -------------------------------- */
 
@@ -159,7 +136,8 @@ const requirementSchema = z.object({
 });
 
 const enquiryCore = {
-  product: objectId.optional(),
+  /** The tool that makes it. Absent for a new development, and for anything bought in. */
+  mould: objectId.optional(),
   isNewDevelopment: z.boolean().optional(),
   requirement: requirementSchema,
   targetPrice: z.number().nonnegative().optional(),
@@ -240,8 +218,6 @@ export const enquiryActionSchema = z.object({
   lostNote: z.string().optional(),
   holdReason: z.string().optional(),
 });
-
-export const promoteProductSchema = productSchema.partial().required({ modelCode: true, name: true });
 
 /* -------------------------------- Conversion -------------------------------- */
 

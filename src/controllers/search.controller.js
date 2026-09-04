@@ -2,7 +2,7 @@ import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
-import Product from '../models/Product.js';
+import Mould from '../models/Mould.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter } from '../services/ownership.service.js';
 import { canRead } from '../services/access.service.js';
@@ -165,17 +165,17 @@ export const globalSearch = asyncHandler(async (req, res) => {
       subtitle: (row) => [row.number, row.contactName, readable(row.status)].filter(Boolean).join(' · '),
     },
     {
-      key: 'products',
+      key: 'moulds',
       label: 'Models',
-      module: 'products',
-      model: Product,
-      fields: ['modelCode', 'name', 'mouldNumber'],
-      // The catalogue is shared: there is no such thing as somebody's own hanger model.
+      module: 'moulds',
+      model: Mould,
+      fields: ['mouldCode', 'name'],
+      // The register is shared: there is no such thing as somebody's own tool.
       scope: () => ({}),
-      select: 'modelCode name category sizeMm material',
-      sort: 'modelCode',
-      link: () => '/products',
-      title: (row) => `${row.modelCode} — ${row.name}`,
+      select: 'mouldCode name category sizeMm material status',
+      sort: 'mouldCode',
+      link: () => '/moulds',
+      title: (row) => `${row.mouldCode} — ${row.name}`,
       subtitle: (row) =>
         [readable(row.category), readable(row.material), row.sizeMm && `${row.sizeMm}mm`]
           .filter(Boolean)

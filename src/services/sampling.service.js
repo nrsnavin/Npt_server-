@@ -1,5 +1,5 @@
 import Sample from '../models/Sample.js';
-import Product from '../models/Product.js';
+import Mould from '../models/Mould.js';
 import { nextNumber } from './numbering.service.js';
 import { EVENTS, publish } from './events.service.js';
 
@@ -27,7 +27,7 @@ const fromEnquiry = (enquiry) => ({
   customer: enquiry.customer?._id || enquiry.customer,
   enquiry: enquiry._id,
   requestedBy: enquiry.assignedTo?._id || enquiry.assignedTo,
-  product: enquiry.product?._id || enquiry.product,
+  mould: enquiry.mould?._id || enquiry.mould,
   modelNumber: enquiry.requirement?.modelNumber,
   category: enquiry.requirement?.category,
   sizeMm: enquiry.requirement?.sizeMm,
@@ -38,23 +38,26 @@ const fromEnquiry = (enquiry) => ({
 });
 
 /**
- * What the catalogue knows that the enquiry does not.
+ * What the tool knows that the enquiry does not.
  *
- * An enquiry's requirement has no hook type — a buyer asks for a model, not for a swivel —
- * so a sample built only from the enquiry carries none, and anything analysing turnaround by
- * hook finds every sample blank. The model is where that lives, so the sample takes it from
- * there. Only fills what is still missing: an explicit value on the request always wins,
- * because a sample often exists precisely to try something the catalogue does not do.
+ * An enquiry's requirement has no hook type — a buyer asks for a model, not for a swivel — so
+ * a sample built only from the enquiry carries none, and anything analysing turnaround by hook
+ * finds every sample blank. The mould is where that lives now, and it is the better source
+ * besides: the hook, the category and the size are cut into the steel, so what the register
+ * says is what the bench will actually produce.
+ *
+ * Only fills what is still missing: an explicit value on the request always wins, because a
+ * sample often exists precisely to try something the standard piece does not do.
  */
-async function fromProduct(productId, alreadyKnown = {}) {
-  if (!productId) return {};
+async function fromMould(mouldId, alreadyKnown = {}) {
+  if (!mouldId) return {};
 
-  const product = await Product.findById(productId).select('hookType category material sizeMm');
-  if (!product) return {};
+  const mould = await Mould.findById(mouldId).select('hookType category material sizeMm');
+  if (!mould) return {};
 
   const filled = {};
   for (const field of ['hookType', 'category', 'material', 'sizeMm']) {
-    if (alreadyKnown[field] == null && product[field] != null) filled[field] = product[field];
+    if (alreadyKnown[field] == null && mould[field] != null) filled[field] = mould[field];
   }
   return filled;
 }
@@ -113,7 +116,7 @@ export async function createSampleRequest(
   }
 
   const inherited = enquiry ? fromEnquiry(enquiry) : {};
-  Object.assign(inherited, await fromProduct(input.product ?? inherited.product, inherited));
+  Object.assign(inherited, await fromMould(input.mould ?? inherited.mould, inherited));
   const purpose =
     input.purpose || (enquiry?.isNewDevelopment ? 'new_development' : 'existing_model');
 

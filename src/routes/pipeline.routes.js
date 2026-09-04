@@ -1,17 +1,15 @@
 import { Router } from 'express';
 import {
-  listProducts, getProduct, createProduct, updateProduct,
   listCustomers, getCustomer, createCustomer, updateCustomer, checkDuplicateCustomer,
   listLeads, leadBoard, getLead, createLead, updateLead, addLeadActivity, convertLead,
   suggestLeadNextStep, leadLogAnalytics, leadFollowUps, leadScoreboard, leadsOverview, leadOwners,
   enquiryOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
-  setEnquiryStatus, applyEnquiryAction, listEnquiryActions, promoteToProduct, enquiryPipeline,
+  setEnquiryStatus, applyEnquiryAction, listEnquiryActions, promoteToMould, enquiryPipeline,
   enquiryBoard,
   exportCustomers,
   exportLeads,
   exportEnquiries,
-  exportProducts,
   bulkReassign,
 } from '../controllers/pipeline.controller.js';
 import {
@@ -30,13 +28,12 @@ import { singleDocument, singleImage } from '../middleware/upload.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
-  productSchema, productUpdateSchema,
   customerSchema, customerUpdateSchema,
   leadSchema, leadUpdateSchema, leadActivitySchema, convertLeadSchema,
   enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema,
-  promoteProductSchema, bulkReassignSchema,
+  bulkReassignSchema,
 } from '../validators/pipeline.schemas.js';
-import { mouldSchema, mouldUpdateSchema } from '../validators/mould.schemas.js';
+import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validators/mould.schemas.js';
 import { materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
 import { componentSchema, componentUpdateSchema } from '../validators/component.schemas.js';
 
@@ -50,18 +47,18 @@ router.use(authenticate);
  * — see services/ownership.service.js.
  */
 
-// Products
-// Above `/:id` so the literal segment wins; on the read grant, because an export is a read.
-router.get('/products/export', requireModule('products'), exportProducts);
-router.get('/products', requireModule('products'), listProducts);
-router.post('/products', requireModule('products', 'write'), validate(productSchema), createProduct);
-router.get('/products/:id', requireModule('products'), getProduct);
-router.patch('/products/:id', requireModule('products', 'write'), validate(productUpdateSchema), updateProduct);
-
 /*
- * Moulds. Its own grant rather than riding on the product master's: the register is the plant's
- * to keep and everyone else's to read, and a marketing user who may add a model has no business
- * changing what a cavity weighs.
+ * Moulds — the model master [§28].
+ *
+ * There is no separate product catalogue behind this any more: the tool is the model, and the
+ * code, size, category, hook and minimum that used to sit in a second register sit on the
+ * record for the steel that determines them.
+ *
+ * The grant stays production's. Everyone downstream reads it; only the plant writes it, because
+ * the numbers on it are measured on the shop floor rather than agreed with a buyer.
+ *
+ * The export is above `/:id` so the literal segment wins, and on the read grant, because an
+ * export is a read.
  */
 router.get('/moulds/export', requireModule('moulds'), exportMoulds);
 router.get('/moulds', requireModule('moulds'), listMoulds);
@@ -185,12 +182,17 @@ router.post('/enquiries/:id/status', requireModule('enquiries', 'write'), valida
  */
 router.get('/enquiries/:id/actions', requireModule('enquiries'), listEnquiryActions);
 router.post('/enquiries/:id/actions', requireModule('enquiries', 'write'), validate(enquiryActionSchema), applyEnquiryAction);
+/*
+ * A developed enquiry becoming a tool on the register. Both grants, because it writes to both
+ * registers — and the mould half is production's, which is the point: cutting a tool is the
+ * plant's decision to record, not marketing's to declare.
+ */
 router.post(
-  '/enquiries/:id/promote-product',
+  '/enquiries/:id/promote-mould',
   requireModule('enquiries', 'write'),
-  requireModule('products', 'write'),
-  validate(promoteProductSchema),
-  promoteToProduct
+  requireModule('moulds', 'write'),
+  validate(promoteMouldSchema),
+  promoteToMould
 );
 
 export default router;

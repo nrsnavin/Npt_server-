@@ -1,8 +1,9 @@
 /**
  * The mould register [BLUEPRINT §28].
  *
- * The register exists to answer one question the product master could not: what a piece
- * *consumes*, as against what it weighs. Every shot throws a runner alongside the parts, and
+ * The register is the model master, and it exists to answer the question a catalogue of model
+ * codes could not: what a piece *consumes*, as against what it weighs. Every shot throws a
+ * runner alongside the parts, and
  * the pieces that came out with it have to carry its cost. Costing on the part weight
  * understates the resin on every quotation off that tool, always in the same direction, and
  * nothing about the sheet looks wrong — the arithmetic below the figure is perfectly correct.
@@ -26,8 +27,7 @@ let baseUrl;
 let admin;      // management — sees costing, so sees machine rates
 let ramesh;     // production — owns the register
 let nandhini;   // marketing — reads it, and must not see money
-let product;
-let second;
+let mould;
 let customer;
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
@@ -88,20 +88,6 @@ test.before(async () => {
   }
   ramesh = await signIn('ramesh@np.com', 'Prod@123456');
   nandhini = await signIn('nandhini@np.com', 'Passw0rd@123');
-
-  const madeProduct = await api('/api/products', {
-    method: 'POST',
-    token: admin,
-    body: { modelCode: 'NH-400', name: 'Shirt hanger 400mm', category: 'shirt', material: 'pp', sizeMm: 400, standardWeightGrams: 30 },
-  });
-  product = madeProduct.json.data._id;
-
-  const madeSecond = await api('/api/products', {
-    method: 'POST',
-    token: admin,
-    body: { modelCode: 'NH-400R', name: 'Shirt hanger 400mm recycled', category: 'shirt', material: 'recycled_pp', sizeMm: 400, standardWeightGrams: 30 },
-  });
-  second = madeSecond.json.data._id;
 
   const madeCustomer = await api('/api/customers', {
     method: 'POST',
@@ -221,20 +207,24 @@ test('a mould number cannot be reused', async () => {
   assert.equal(again.status, 409);
 });
 
-test('one tool can make several models', async () => {
-  const { json } = await addMould({ products: [product, second] });
-  assert.equal(json.data.products.length, 2);
+test('the register answers the catalogue’s own questions', async () => {
+  /*
+   * The tool *is* the model, so the fields a product catalogue used to hold have to be
+   * filterable here — otherwise removing the catalogue removed the ability to ask "what 400 mm
+   * shirt hangers do we make", which is the question marketing asks most.
+   */
+  await addMould({ mouldCode: 'M-CAT-1', category: 'shirt', sizeMm: 400, hookType: 'swivel', moq: 5000 });
+  await addMould({ mouldCode: 'M-CAT-2', category: 'coat', sizeMm: 450, hookType: 'fixed', moq: 2000 });
 
-  /* And it is found by either of them, because the question is "what makes this model". */
-  const found = await api(`/api/moulds?product=${second}`, { token: admin });
-  assert.ok(found.json.data.some((row) => row._id === json.data._id));
-});
+  const shirts = await api('/api/moulds?category=shirt', { token: nandhini });
+  assert.ok(shirts.json.data.some((row) => row.mouldCode === 'M-CAT-1'));
+  assert.ok(!shirts.json.data.some((row) => row.mouldCode === 'M-CAT-2'));
 
-test('a model the catalogue does not have is refused, and named', async () => {
-  const missing = new mongoose.Types.ObjectId().toString();
-  const { status, json } = await addMould({ products: [product, missing] });
-  assert.equal(status, 400);
-  assert.match(json.message, new RegExp(missing));
+  const bySize = await api('/api/moulds?sizeMm=450', { token: nandhini });
+  assert.deepEqual(bySize.json.data.map((row) => row.mouldCode), ['M-CAT-2']);
+
+  const byHook = await api('/api/moulds?hookType=swivel', { token: nandhini });
+  assert.ok(byHook.json.data.every((row) => row.hookType === 'swivel'));
 });
 
 test('ownership has to agree with itself', async () => {
@@ -313,56 +303,41 @@ test('the export does not hand over what the screen hides', async () => {
 
 /* ------------------------------- Into a costing ------------------------------- */
 
-test('a costing on a model with one tool starts from consumption, not from the catalogue weight', async () => {
-  /*
-   * Its own model. `product` has picked up a second tool from the multi-model test above, and
-   * two tools is deliberately the case where the register declines to choose — so reusing it
-   * here would test the fallback while claiming to test the fill.
-   */
-  const made = await api('/api/products', {
-    method: 'POST',
-    token: admin,
-    body: { modelCode: 'NH-380', name: 'Shirt hanger 380mm', category: 'shirt', material: 'pp', sizeMm: 380, standardWeightGrams: 30 },
+test('a costing on a mould starts from consumption, not from the part weight', async () => {
+  const made = await addMould({
+    mouldCode: 'M-CONSUME', partWeightGrams: 30, runnerWeightGrams: 12, cavities: 4,
   });
-  const oneTool = made.json.data._id;
-
-  await addMould({ products: [oneTool], partWeightGrams: 30, runnerWeightGrams: 12, cavities: 4 });
+  const tool = made.json.data._id;
 
   const { json } = await api('/api/pricings', {
     method: 'POST',
     token: admin,
-    body: { customer, product: oneTool, quantity: 40000 },
+    body: { customer, mould: tool, quantity: 40000 },
   });
 
-  assert.equal(json.data.cost.gramWeight, 33, 'the mould overrules the catalogue’s 30 g');
+  /*
+   * 30 g in the cavity, 3 g of runner per piece over four cavities. The part weight is the
+   * number a person would type, and it is a tenth light on every quotation off this tool.
+   */
+  assert.equal(json.data.cost.gramWeight, 33, 'the runner is carried by the pieces it came with');
   assert.ok(json.data.mould, 'and the sheet records which tool it came off');
 });
 
-test('a model with two tools is not guessed at', async () => {
-  const madeProduct = await api('/api/products', {
-    method: 'POST',
-    token: admin,
-    body: { modelCode: 'NH-450', name: 'Coat hanger 450mm', category: 'coat', material: 'pp', sizeMm: 450, standardWeightGrams: 48 },
-  });
-  const twoTools = madeProduct.json.data._id;
-
-  await addMould({ products: [twoTools], partWeightGrams: 48, cavities: 2, runnerWeightGrams: 16 });
-  await addMould({ products: [twoTools], partWeightGrams: 48, cavities: 4, runnerWeightGrams: 20 });
-
-  const { json } = await api('/api/pricings', {
-    method: 'POST',
-    token: admin,
-    body: { customer, product: twoTools, quantity: 40000 },
-  });
-
+test('a costing with no mould is a traded piece, not a broken one', async () => {
   /*
-   * Falls back to the catalogue rather than picking one. The two tools give 56 g and 53 g, and
-   * either would look entirely reasonable on the sheet — which is exactly why the register must
-   * not choose. 48 g is visibly the catalogue's own number and prompts somebody to say which
-   * tool the job runs on.
+   * Five of the twenty-five models on the plant's own 26-27 sheet are bought in and resold, so
+   * an absent tool is the ordinary case rather than a gap. The sheet has to be raisable without
+   * one, and must not invent a gram weight it has nothing to derive from.
    */
-  assert.equal(json.data.cost.gramWeight, 48);
+  const { status, json } = await api('/api/pricings', {
+    method: 'POST',
+    token: admin,
+    body: { customer, modelNumber: 'MAU-35 WB', procurement: 'trade', quantity: 40000 },
+  });
+
+  assert.equal(status, 201);
   assert.equal(json.data.mould, undefined);
+  assert.equal(json.data.cost.gramWeight, undefined, 'nothing to derive a weight from, so none');
 });
 
 test('attaching a mould to a sheet rewrites its gram weight, and re-runs the floor', async () => {

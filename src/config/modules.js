@@ -141,16 +141,6 @@ export const MODULES = [
     available: true,
   },
   {
-    key: 'products',
-    label: 'Product master',
-    description: 'Model code, size, material, weight, colours, mould availability, standard price, MOQ and packing.',
-    group: 'Masters',
-    stage: null,
-    ownerDepartment: 'sampling',
-    blueprint: '28',
-    available: true,
-  },
-  {
     key: 'materials',
     label: 'Material & parts registers',
     description:
@@ -168,15 +158,21 @@ export const MODULES = [
   },
   {
     key: 'moulds',
-    label: 'Mould register',
+    label: 'Mould & model register',
     description:
-      'Every tool on the floor: cavities, part and runner weight, cycle time and machine, with resin consumption and output per hour derived from them.',
+      'Every tool on the floor, and therefore every model: code, category, size, hook and minimum order, alongside cavities, part and runner weight, cycle time and machine, with resin consumption and output per hour derived from them.',
     group: 'Masters',
     /*
      * Production's, not sampling's. A mould is a machine asset — the people who know what a
      * cavity is doing today are the people standing next to the press, and the weights and
      * cycle times on it are measured on the shop floor rather than agreed with a customer.
      * Everyone downstream reads it; only the plant writes it.
+     *
+     * This register absorbed the product master, which used to be a second Masters entry on
+     * sampling's grant. Two registers describing one steel tool disagreed the first week —
+     * the catalogue carried a hand-ticked `mouldAvailable` beside the register that already
+     * knew the answer — and every screen had to decide which of them to believe. The tool is
+     * the thing that exists, so the tool is the record.
      */
     ownerDepartment: 'production',
     stage: null,
@@ -289,8 +285,11 @@ export const DEPARTMENTS = [
       quality: 'read',
       dispatch: 'read',
       payments: 'read',
-      products: 'read',
-      /* Enough to see whether a tool exists and who paid for it, before a model is quoted. */
+      /*
+       * The model master, read-only. Marketing picks a model off it on every enquiry, sample
+       * and quotation, and needs to see whether a tool exists and who paid for it before
+       * anything is offered — but what a cavity weighs is not marketing's to change.
+       */
       moulds: 'read',
       materials: 'read',
       reports: 'read',
@@ -302,7 +301,6 @@ export const DEPARTMENTS = [
     label: 'Sample team',
     defaultAccess: {
       samples: 'write',
-      products: 'write',
       /* New models are developed here, and a new model is a new tool before it is anything. */
       moulds: 'write',
       materials: 'read',
@@ -325,7 +323,6 @@ export const DEPARTMENTS = [
       pricing: 'read',
       production: 'read',
       dispatch: 'read',
-      products: 'read',
       moulds: 'read',
       materials: 'read',
       announcements: 'read',
@@ -343,7 +340,6 @@ export const DEPARTMENTS = [
       orders: 'read',
       quality: 'read',
       samples: 'read',
-      products: 'read',
       announcements: 'read',
     },
   },
@@ -356,7 +352,6 @@ export const DEPARTMENTS = [
       production: 'read',
       orders: 'read',
       samples: 'read',
-      products: 'read',
       moulds: 'read',
       materials: 'read',
       announcements: 'read',

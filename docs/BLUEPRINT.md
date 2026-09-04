@@ -54,7 +54,7 @@ received; **who has the next action**.
 | `dispatch` — Dispatch | 8 | Despatch | §18–19 |
 | `payments` — Payments | 9 | Accounts | §20 |
 | `customers` — Customer master | — | Marketing | §2 |
-| `products` — Product master | — | Sample team | §28 |
+| `moulds` — Mould & model register | — | Production | §28 |
 | `customer_comms` — Send to customer | — | Marketing | §42 |
 | `whatsapp` — WhatsApp inbox | **deferred** | Marketing | §41 |
 | `announcements` — Announcements | — | Management | §26 |
@@ -120,10 +120,28 @@ expected delivery date.
 Customer · invoice · invoice value · invoice date · payment terms · due date · amount received ·
 balance · status · last follow-up · next follow-up.
 
-### Product master [§28]
-Model code · product name · size · material · standard weight · available colours · hook/clip ·
-product photo · **mould available** · current standard price · MOQ · packing qty.
-Marketing selects from this master rather than typing model names.
+### Mould & model register [§28]
+Mould code · name · category · size · hook/clip · resin · part photo · MOQ · packing qty, and
+the measured facts the tool is costed from: cavities, cavities running, part weight, runner
+weight, regrind recovery, cycle time, efficiency, press and hourly rate.
+Marketing selects from this register rather than typing model names.
+
+**A model is a mould.** This was originally specified as a separate product master carrying a
+model code, a size, a `mould available` tick and a standard price, with the register beside it.
+Two masters describing one steel tool disagree the week they are built, and the tick in
+particular restates something the register already knows. So the tool is the record, and the
+catalogue's fields sit on it.
+
+Two consequences worth stating, because both are ordinary rather than exceptional:
+
+- **A traded item has no entry.** Five of the twenty-five models on the plant's own 26-27 sheet
+  are bought in and resold. There is no steel of ours behind them, so an enquiry, costing or
+  quotation for one carries the buyer's model number and no mould. An empty mould means
+  "bought in", not "missing".
+- **A model reaches the master when the tool exists.** A new development is promoted onto the
+  register once there is something to measure — the register will not take a record without a
+  part weight and a cycle time. Standard price is gone: what a model is worth is the costing
+  register's answer, per customer and per quantity, not a figure on a master.
 
 ---
 
@@ -252,8 +270,8 @@ fully supported after WhatsApp lands. Two consequences for design:
 - **Never require a conversation.** A conversation reference on an enquiry is optional
   forever. An enquiry with no WhatsApp thread behind it is the normal case, not a defect.
 - **Manual entry must be fast.** If typing an enquiry is tedious, the CRM loses to the
-  notebook. Product selection comes from the master [§28] rather than typed model names, and
-  the next-action rule [§3] is the only mandatory extra field.
+  notebook. Model selection comes from the mould register [§28] rather than typed model names,
+  and the next-action rule [§3] is the only mandatory extra field.
 
 ### What to build now so the integration lands without rework
 
@@ -372,7 +390,7 @@ Build and stabilise each phase — do not build everything at once.
 
 | Phase | Scope | Modules |
 | --- | --- | --- |
-| 1 | Sales | `customers`, `enquiries`, `products`, follow-ups |
+| 1 | Sales | `customers`, `enquiries`, `moulds`, follow-ups |
 | 2 | Sampling | `samples` and approval tracking |
 | 3 | Pricing & quoting | `pricing`, `quotations`, negotiation, approval route |
 | 4 | Order coordination | `orders`, `production`, `quality` |

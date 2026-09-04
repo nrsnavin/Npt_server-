@@ -30,7 +30,7 @@ let admin;
 let nandhini;
 let arun;
 let meera;
-let product;
+let mould;
 let customer;
 let arunCustomer;
 
@@ -77,7 +77,7 @@ const raiseEnquiry = async (extra = {}, token = nandhini) => {
     token,
     body: {
       customer,
-      product,
+      mould,
       requirement: { quantity: 10000, modelNumber: 'NH-400' },
       estimatedValue: 250000,
       nextAction: 'Call the buyer',
@@ -128,12 +128,16 @@ test.before(async () => {
   arun = await signIn('arun@np.com', 'Passw0rd@456');
   meera = await signIn('meera@np.com', 'Passw0rd@789');
 
-  const madeProduct = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NH-400', name: 'Shirt hanger 400mm', category: 'shirt', material: 'plastic', sizeMm: 400 },
+    body: {
+      mouldCode: 'M-NH-400', name: 'Shirt hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  product = madeProduct.json.data._id;
+  mould = madeMould.json.data._id;
 
   const madeCustomer = await api('/api/customers', {
     method: 'POST',

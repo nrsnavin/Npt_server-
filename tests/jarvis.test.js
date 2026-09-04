@@ -22,7 +22,7 @@ let priya;      // marketing — a colleague, must not appear in Nandhini's answ
 let meera;      // sampling
 let parse;
 let customerId;
-let productId;
+let mouldId;
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -86,10 +86,14 @@ test.before(async () => {
   priya = await signIn('priya@np.com', 'Passw0rd@123');
   meera = await signIn('meera@np.com', 'Passw0rd@123');
 
-  productId = (await api('/api/products', {
+  mouldId = (await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic' },
+    body: {
+      mouldCode: 'M-NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   })).json.data._id;
 
   customerId = (await api('/api/customers', {
@@ -106,7 +110,7 @@ test.before(async () => {
       token: nandhini,
       body: {
         customer: customerId,
-        product: productId,
+        mould: mouldId,
         requirement: { modelNumber: model, quantity },
         ...followUp,
       },
@@ -208,7 +212,7 @@ test('a sample is answered with its stage, its buyer and who is holding it', asy
     token: nandhini,
     body: {
       customer: customerId,
-      product: productId,
+      mould: mouldId,
       modelNumber: 'NPT-400S',
       quantity: 6,
       standaloneReason: 'Buyer asked at the counter',

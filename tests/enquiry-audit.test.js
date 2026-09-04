@@ -31,7 +31,7 @@ let nandhini;
 let nandhiniId;
 let kavitha;
 let kavithaId;
-let product;
+let mould;
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -60,7 +60,7 @@ const raise = async (customer, extra = {}, token = nandhini) => {
     token,
     body: {
       customer,
-      product,
+      mould,
       requirement: { quantity: 10000 },
       estimatedValue: 250000,
       ...followUp,
@@ -104,12 +104,16 @@ test.before(async () => {
   nandhini = await signIn('nandhini@np.com', 'Passw0rd@123');
   kavitha = await signIn('kavitha@np.com', 'Passw0rd@456');
 
-  const madeProduct = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NH-400', name: 'Shirt hanger 400mm', category: 'shirt', material: 'plastic', sizeMm: 400 },
+    body: {
+      mouldCode: 'M-NH-400', name: 'Shirt hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  product = madeProduct.json.data._id;
+  mould = madeMould.json.data._id;
 
   const customer = async (name, token) => {
     const { json } = await api('/api/customers', {
@@ -250,7 +254,7 @@ test('a follow-up date cannot be set in the past', async () => {
   const created = await api('/api/enquiries', {
     method: 'POST',
     token: nandhini,
-    body: { customer: sriKumaran, product, requirement: { quantity: 500 }, ...past },
+    body: { customer: sriKumaran, mould, requirement: { quantity: 500 }, ...past },
   });
   assert.equal(created.status, 400, 'on create');
   assert.match(created.json.message, /past/i);
@@ -384,8 +388,8 @@ test('raising a group for a colleague assigns it to them', async () => {
       assignedTo: kavithaId,
       shared: { ...followUp },
       enquiries: [
-        { product, requirement: { quantity: 5000 } },
-        { product, requirement: { quantity: 8000 } },
+        { mould, requirement: { quantity: 5000 } },
+        { mould, requirement: { quantity: 8000 } },
       ],
     },
   });

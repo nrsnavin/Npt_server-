@@ -21,7 +21,7 @@ let baseUrl;
 let admin;
 let nandhini;   // marketing — owns the customer, holds customer_comms
 let meera;      // sampling — makes samples, must not be able to message a buyer
-let productId;
+let mouldId;
 let CustomerMessage;
 
 /** Twilio calls are intercepted, so no test ever costs a message or needs the network. */
@@ -91,7 +91,7 @@ async function pipelineTo(status, { customer: customerOverrides = {}, sample: sa
     token: nandhini,
     body: {
       customer: customer.json.data._id,
-      product: productId,
+      mould: mouldId,
       requirement: { modelNumber: 'NPT-400S', colour: 'White', quantity: 5000 },
       remarks: 'INTERNAL: margin is thin, do not discount below 4.80',
       ...followUp,
@@ -162,12 +162,16 @@ test.before(async () => {
   nandhini = await signIn('nandhini@np.com', 'Mktg@123456');
   meera = await signIn('meera@np.com', 'Samp@123456');
 
-  const product = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic' },
+    body: {
+      mouldCode: 'M-NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  productId = product.json.data._id;
+  mouldId = madeMould.json.data._id;
 });
 
 test.afterEach(() => {

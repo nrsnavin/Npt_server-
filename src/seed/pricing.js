@@ -1,4 +1,3 @@
-import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Pricing from '../models/Pricing.js';
 import Quotation from '../models/Quotation.js';
@@ -90,42 +89,23 @@ export async function seedPricing({ admin, nandhini }) {
   await Promise.all([Pricing.deleteMany({}), Quotation.deleteMany({})]);
 
   const rows = sheetRows();
-  /* Only the models these rows actually name — the sheet's catalogue is 25 entries long. */
-  const wantedModels = new Set(rows.map((row) => row.model));
 
-  /* ------------------------------- The catalogue ------------------------------- */
+  /* -------------------------------- The models --------------------------------- */
 
-  const existing = await Product.find().select('modelCode');
-  const known = new Set(existing.map((product) => product.modelCode));
-
-  const added = await Product.create(
-    SHEET_PRODUCTS.filter((row) => wantedModels.has(row.modelCode) && !known.has(row.modelCode)).map((row) => ({
-      modelCode: row.modelCode,
-      /*
-       * The description only. Screens render "<code> — <name>", so repeating the code here
-       * produces "MAU-35 WB — MAU-35 WB — 350mm PP" wherever a product is named in full.
-       */
-      name: `${row.sizeMm ? `${row.sizeMm}mm ` : ''}${row.material.toUpperCase()} ${row.category} hanger`,
-      category: row.category,
-      sizeMm: row.sizeMm || 1,
-      material: row.material,
-      standardWeightGrams: row.standardWeightGrams,
-      availableColours: [row.colour],
-      /*
-       * A traded model has no mould of ours by definition — that is what makes it traded — so
-       * seeding one as moulded here would put a fiction in the master that the plant would have
-       * to notice and correct.
-       */
-      mouldAvailable: row.procurement === 'manufacture',
-      moq: 5000,
-      packingQty: 200,
-      isActive: true,
-    }))
-  );
-
-  const products = Object.fromEntries(
-    (await Product.find().select('modelCode')).map((product) => [product.modelCode, product])
-  );
+  /*
+   * Read, not written. These twenty-five models used to be created as catalogue rows here, on
+   * top of the seven the register carries — a second master, populated from a transcription,
+   * with a hand-set `mouldAvailable` tick on each. There is no catalogue now, and inventing
+   * mould records for them would be worse: nobody has measured a cavity count or a cycle time
+   * for any of these tools, and a register entry with those guessed is exactly the fiction the
+   * register exists to replace.
+   *
+   * So the costings below name their model the way the sheet does — by the code the buyer
+   * knows — and carry no mould. That is the ordinary shape of a transcribed costing, and it is
+   * what `seedRegisterCostings` is then able to contrast itself against: those four are built
+   * off a real tool and a real resin, and show the difference.
+   */
+  const sheetModels = Object.fromEntries(SHEET_PRODUCTS.map((row) => [row.modelCode, row]));
 
   /* -------------------------------- The parties -------------------------------- */
 
@@ -156,15 +136,14 @@ export async function seedPricing({ admin, nandhini }) {
     const customer = parties[row.party];
     if (!customer) continue;
 
-    const product = products[row.model];
+    const spec = sheetModels[row.model];
     const at = sheetDate(row.date);
 
     const pricing = new Pricing({
       number: await nextNumber('PRC'),
       customer: customer._id,
-      product: product?._id,
       modelNumber: row.model,
-      material: product?.material,
+      material: spec?.material,
       procurement: row.procurement || 'manufacture',
       printing: row.printing || undefined,
       /*
@@ -212,7 +191,7 @@ export async function seedPricing({ admin, nandhini }) {
     pricings.push(pricing);
 
     /* Kept for the grouping below: a quotation is a document, and the sheet says which. */
-    costed.push({ row, pricing, product, customer, at });
+    costed.push({ row, pricing, customer, at });
   }
 
   /* ------------------------------ The quotations ------------------------------ */
@@ -246,7 +225,6 @@ export async function seedPricing({ admin, nandhini }) {
       assignedTo: nandhini._id,
       lines: entries.map((entry) => ({
         pricing: entry.pricing._id,
-        product: entry.product?._id,
         modelNumber: entry.row.model,
         /* No quantity: a quotation quotes a rate against a minimum, and the sheet this is
            transcribed from carries exactly that — a model and what it was quoted at. */
@@ -302,7 +280,8 @@ export async function seedPricing({ admin, nandhini }) {
   }
 
   return {
-    productsAdded: added.length,
+    /* Distinct models on the sheet, which is not the same as models on the register. */
+    sheetModels: new Set(pricings.map((pricing) => pricing.modelNumber)).size,
     parties: Object.keys(parties).length,
     pricings: pricings.length,
     quotations: quotations.length,

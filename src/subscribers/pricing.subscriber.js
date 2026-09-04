@@ -83,7 +83,7 @@ export function registerPricingSubscribers() {
           number: await nextNumber('PRC'),
           enquiry: enquiry._id,
           customer: enquiry.customer,
-          product: enquiry.product,
+          mould: enquiry.mould,
           modelNumber: requirement.modelNumber,
           quantity: requirement.quantity,
           material: requirement.material,

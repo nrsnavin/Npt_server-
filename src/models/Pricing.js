@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { MATERIALS } from './Product.js';
+import { MATERIALS } from './Mould.js';
 import { MINIMUM_TIER, minimumFor, priceAt, tiersFor } from '../services/pricing.service.js';
 
 /**
@@ -77,16 +77,18 @@ const pricingSchema = new mongoose.Schema(
 
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true, index: true },
-    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
 
     /**
-     * The tool the gram weight came off, where one is on the register.
+     * The tool the piece is made on — and therefore which model this sheet is costing.
      *
      * Recorded rather than implied, because the difference between a part weight and a
      * consumption figure is invisible once it is a single number in a box. A costing that says
      * "33.0 g, from M-101" can be checked against the mould six months later; one that says
      * "33.0 g" cannot be checked against anything, and the first person to compare it with the
-     * catalogue's 30 g will assume it is wrong.
+     * tool's 30 g part weight will assume it is wrong.
+     *
+     * Empty for a traded item, which is not a gap: `procurement` says so below, and a bought-in
+     * hanger has no steel of ours behind it to point at.
      */
     mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould', index: true },
 

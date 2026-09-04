@@ -34,7 +34,7 @@ let server;
 let baseUrl;
 let admin;      // management — sees costing
 let nandhini;   // marketing — must not
-let product;
+let mould;
 let customer;
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
@@ -55,13 +55,13 @@ const signIn = async (email, password) => {
 };
 
 /** A costing that has been built, with a floor under the approved price unless asked otherwise. */
-const costed = async ({ approvedSellingPrice, minimumOverride = 8, product: on } = {}) => {
+const costed = async ({ approvedSellingPrice, minimumOverride = 8, mould: on } = {}) => {
   const made = await api('/api/pricings', {
     method: 'POST',
     token: admin,
     body: {
       customer, quantity: 40000, modelNumber: 'NH-400', targetPrice: 7.5,
-      ...(on !== undefined ? { product: on } : {}),
+      ...(on !== undefined ? { mould: on } : {}),
     },
   });
   const id = made.json.data._id;
@@ -103,12 +103,16 @@ test.before(async () => {
   });
   nandhini = await signIn('nandhini@np.com', 'Passw0rd@123');
 
-  const madeProduct = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NH-400', name: 'Shirt hanger 400mm', category: 'shirt', material: 'plastic', sizeMm: 400 },
+    body: {
+      mouldCode: 'M-NH-400', name: 'Shirt hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  product = madeProduct.json.data._id;
+  mould = madeMould.json.data._id;
 
   const madeCustomer = await api('/api/customers', {
     method: 'POST',
@@ -346,7 +350,7 @@ test('an enquiry reaching pricing raises the costing itself', async () => {
     token: nandhini,
     body: {
       customer,
-      product,
+      mould,
       requirement: { quantity: 25000, modelNumber: 'NH-400' },
       targetPrice: 7.2,
       ...followUp,
@@ -394,32 +398,33 @@ test('a costing still needs the customer it is for', async () => {
 
 /* ----------------------------------- MOQ ----------------------------------- */
 
-/** A catalogue model that carries a standard minimum. */
+/** A model on the register carrying a standard minimum — the master a quotation reads [§28]. */
 const modelWithMoq = async (code, moq) => {
-  const made = await api('/api/products', {
+  const made = await api('/api/moulds', {
     method: 'POST',
     token: admin,
     body: {
-      modelCode: code, name: `Hanger ${code}`, category: 'shirt',
-      material: 'plastic', sizeMm: 360, moq,
+      mouldCode: `M-${code}`, name: `Hanger ${code}`, category: 'shirt',
+      material: 'pp', sizeMm: 360, moq,
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28,
     },
   });
   return made.json.data._id;
 };
 
 test('a costing carries no MOQ — it is a term of the offer, not of the cost', async () => {
-  const product = await modelWithMoq('NH-MOQ', 2500);
+  const tool = await modelWithMoq('NH-MOQ', 2500);
 
   const made = await api('/api/pricings', {
     method: 'POST',
     token: admin,
-    body: { customer, product, quantity: 40000 },
+    body: { customer, mould: tool, quantity: 40000 },
   });
 
   assert.equal(made.status, 201, made.json.message);
   assert.equal(made.json.data.moq, undefined);
-  // The rest of what the master knows still comes across, so the sheet is not retyped.
-  assert.equal(made.json.data.modelNumber, 'NH-MOQ');
+  // The rest of what the register knows still comes across, so the sheet is not retyped.
+  assert.equal(made.json.data.modelNumber, 'M-NH-MOQ');
 });
 
 test('building the sheet refuses an MOQ outright', async () => {
@@ -437,8 +442,8 @@ test('building the sheet refuses an MOQ outright', async () => {
 });
 
 test('a quotation states the minimum it is offered at, from the master', async () => {
-  const product = await modelWithMoq('NH-MOQ2', 2500);
-  const sheet = await costed({ approvedSellingPrice: 9, product });
+  const tool = await modelWithMoq('NH-MOQ2', 2500);
+  const sheet = await costed({ approvedSellingPrice: 9, mould: tool });
 
   const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
     method: 'POST', token: nandhini, body: {},
@@ -449,8 +454,8 @@ test('a quotation states the minimum it is offered at, from the master', async (
 });
 
 test('a minimum set on the quote beats the master', async () => {
-  const product = await modelWithMoq('NH-MOQ3', 2500);
-  const sheet = await costed({ approvedSellingPrice: 9, product });
+  const tool = await modelWithMoq('NH-MOQ3', 2500);
+  const sheet = await costed({ approvedSellingPrice: 9, mould: tool });
 
   const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
     method: 'POST', token: nandhini, body: { moq: 10000, quantity: 12000 },
@@ -460,8 +465,8 @@ test('a minimum set on the quote beats the master', async () => {
 });
 
 test('the minimum is part of what a revision said [§10]', async () => {
-  const product = await modelWithMoq('NH-MOQ4', 2000);
-  const sheet = await costed({ approvedSellingPrice: 9, product });
+  const tool = await modelWithMoq('NH-MOQ4', 2000);
+  const sheet = await costed({ approvedSellingPrice: 9, mould: tool });
   const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
     method: 'POST', token: nandhini, body: {},
   });
@@ -480,8 +485,8 @@ test('the minimum is part of what a revision said [§10]', async () => {
 /* --------------------- Turning a costing into a quote --------------------- */
 
 test('a quote raised from a costing starts at the MOQ, not the costed quantity', async () => {
-  const product = await modelWithMoq('NH-MOQ5', 5000);
-  const sheet = await costed({ approvedSellingPrice: 9, product });
+  const tool = await modelWithMoq('NH-MOQ5', 5000);
+  const sheet = await costed({ approvedSellingPrice: 9, mould: tool });
 
   const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
     method: 'POST', token: nandhini, body: {},
@@ -509,8 +514,8 @@ test('the quote carries the costing, the customer and the model across', async (
 });
 
 test('a quantity under the stated minimum is refused', async () => {
-  const product = await modelWithMoq('NH-MOQ6', 5000);
-  const sheet = await costed({ approvedSellingPrice: 9, product });
+  const tool = await modelWithMoq('NH-MOQ6', 5000);
+  const sheet = await costed({ approvedSellingPrice: 9, mould: tool });
 
   const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
     method: 'POST', token: nandhini, body: { quantity: 400 },
@@ -567,7 +572,7 @@ test('an enquiry’s costings and quotations are reachable from it', async () =>
     method: 'POST',
     token: nandhini,
     body: {
-      customer, product, source: 'manual',
+      customer, mould, source: 'manual',
       requirement: { modelNumber: 'NH-400', quantity: 20000 },
       ...followUp,
     },
@@ -652,8 +657,8 @@ test('the PDF names no cost, margin or floor [§8]', async () => {
 /* ---------------------------- The costing detail ---------------------------- */
 
 test('a costing comes back with the model master and what it was quoted at', async () => {
-  const product = await modelWithMoq('NH-DETAIL', 3000);
-  const sheet = await costed({ approvedSellingPrice: 9, product });
+  const tool = await modelWithMoq('NH-DETAIL', 3000);
+  const sheet = await costed({ approvedSellingPrice: 9, mould: tool });
   await api(`/api/pricings/${sheet._id}/quotation`, {
     method: 'POST', token: nandhini, body: { quantity: 15000 },
   });
@@ -662,8 +667,8 @@ test('a costing comes back with the model master and what it was quoted at', asy
   assert.equal(seen.status, 200);
 
   // The master, so the sheet can be read against the model's own standard.
-  assert.equal(seen.json.data.product.modelCode, 'NH-DETAIL');
-  assert.equal(seen.json.data.product.moq, 3000);
+  assert.equal(seen.json.data.mould.mouldCode, 'M-NH-DETAIL');
+  assert.equal(seen.json.data.mould.moq, 3000);
 
   // And what has actually been offered off this price.
   assert.equal(seen.json.quotations.length, 1);
@@ -690,7 +695,7 @@ test('re-sending a quote during a negotiation does not pull the enquiry back', a
     method: 'POST',
     token: nandhini,
     body: {
-      customer, product, source: 'manual',
+      customer, mould, source: 'manual',
       requirement: { modelNumber: 'NH-400', quantity: 20000 },
       ...followUp,
     },
@@ -1004,7 +1009,7 @@ test('the bookkeeping behind a sent quote is still editable', async () => {
     method: 'POST',
     token: nandhini,
     body: {
-      customer, product, source: 'manual',
+      customer, mould, source: 'manual',
       requirement: { modelNumber: 'NH-400', quantity: 12000 },
       ...followUp,
     },

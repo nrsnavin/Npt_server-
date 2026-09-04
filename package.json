@@ -16,7 +16,8 @@
     "create-user": "node scripts/create-user.js",
     "doctor:indexes": "node scripts/doctor-indexes.js",
     "reset-data": "node scripts/reset-data.js",
-    "migrate:quotation-lines": "node scripts/migrate-quotation-lines.js"
+    "migrate:quotation-lines": "node scripts/migrate-quotation-lines.js",
+    "migrate:moulds": "node scripts/migrate-catalogue-to-moulds.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",

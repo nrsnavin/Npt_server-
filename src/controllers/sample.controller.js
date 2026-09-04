@@ -5,7 +5,7 @@ import Sample, {
 import Enquiry from '../models/Enquiry.js';
 import Lead from '../models/Lead.js';
 import Customer from '../models/Customer.js';
-import Product from '../models/Product.js';
+import Mould from '../models/Mould.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
@@ -35,7 +35,7 @@ const POPULATE = [
   { path: 'lead', select: 'number company status' },
   { path: 'requestedBy', select: 'name' },
   { path: 'assignedTo', select: 'name' },
-  { path: 'product', select: 'modelCode name' },
+  { path: 'mould', select: 'mouldCode name category sizeMm' },
   { path: 'referencePhoto', select: 'key filename mimeType size' },
 ];
 
@@ -144,7 +144,7 @@ export const sampleBoard = asyncHandler(async (req, res) => {
      * number on a screen that means nothing. The column line says so in its unit. */
     valueField: 'quantity',
     select:
-      'number customer enquiry lead product modelNumber colour printing quantity purpose status ' +
+      'number customer enquiry lead mould modelNumber colour printing quantity purpose status ' +
       'requiredDate requestedAt assignedTo requestedBy courier awbNumber dispatchedQuantity ' +
       'statusHistory.from statusHistory.to statusHistory.at createdAt',
     populate: [
@@ -153,7 +153,7 @@ export const sampleBoard = asyncHandler(async (req, res) => {
       /* So a request made for a lead names the company rather than reading as a trial for
          nobody — the card has no other way to tell those two apart. */
       { path: 'lead', select: 'number company' },
-      { path: 'product', select: 'modelCode name' },
+      { path: 'mould', select: 'mouldCode name category sizeMm' },
       { path: 'assignedTo', select: 'name' },
       { path: 'requestedBy', select: 'name' },
     ],
@@ -257,21 +257,21 @@ export const createSample = asyncHandler(async (req, res) => {
    * sample nobody can identify is a job the bench cannot start, so this is refused here
    * rather than discovered at the bench.
    */
-  if (!enquiry && !input.product && !input.modelNumber) {
+  if (!enquiry && !input.mould && !input.modelNumber) {
     throw ApiError.badRequest(
-      'Pick a model, or describe what to make, when there is no enquiry to take it from'
+      'Pick a mould, or describe what to make, when there is no enquiry to take it from'
     );
   }
 
   /*
-   * And the model has to be one that exists — the same rule enquiries have always had. The
-   * specification is inherited from it, and the inheritance step returns nothing for a model
+   * And the tool has to be one that exists — the same rule enquiries have always had. The
+   * specification is inherited from it, and the inheritance step returns nothing for a tool
    * it cannot find, so an unknown id produced a request with no category, material, size or
    * hook and nothing saying why. That is the guard above being satisfied on paper and
    * defeated in fact: the bench still gets a job it cannot start.
    */
-  if (input.product && !(await Product.exists({ _id: input.product }))) {
-    throw ApiError.badRequest('That model is not in the catalogue');
+  if (input.mould && !(await Mould.exists({ _id: input.mould }))) {
+    throw ApiError.badRequest('That mould is not on the register');
   }
 
   const { sample, created } = await createSampleRequest(
@@ -570,7 +570,7 @@ export const resample = asyncHandler(async (req, res) => {
 
   const carried = {
     customer: previous.customer,
-    product: previous.product,
+    mould: previous.mould,
     modelNumber: previous.modelNumber,
     category: previous.category,
     sizeMm: previous.sizeMm,

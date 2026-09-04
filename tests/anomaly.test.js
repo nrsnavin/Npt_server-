@@ -23,7 +23,7 @@ let baseUrl;
 let admin;
 let meera;
 let customerId;
-let productId;
+let mouldId;
 let anomaly;
 let Sample;
 let SampleLog;
@@ -107,10 +107,14 @@ test.before(async () => {
   });
   meera = await signIn('meera@np.com', 'Passw0rd@123');
 
-  productId = (await api('/api/products', {
+  mouldId = (await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic' },
+    body: {
+      mouldCode: 'M-NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   })).json.data._id;
 
   customerId = (await api('/api/customers', {

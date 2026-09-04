@@ -9,7 +9,7 @@
  * Options:
  *   --keep=<email>   the one account to survive (default: rsnavin02@gmail.com)
  *   --confirm        required to delete anything; without it this is a dry run
- *   --keep-catalogue leave the product master alone (models, MOQs, standard prices)
+ *   --keep-catalogue leave the mould register alone (the models, with their minimums)
  *
  * Reads MONGO_URI from .env, like the server does.
  *
@@ -33,7 +33,7 @@ import Sample from '../src/models/Sample.js';
 import SampleLog from '../src/models/SampleLog.js';
 import Pricing from '../src/models/Pricing.js';
 import Quotation from '../src/models/Quotation.js';
-import Product from '../src/models/Product.js';
+import Mould from '../src/models/Mould.js';
 import Attachment from '../src/models/Attachment.js';
 import AuditLog from '../src/models/AuditLog.js';
 import Announcement from '../src/models/Announcement.js';
@@ -99,7 +99,7 @@ async function run() {
     return;
   }
 
-  const targets = keepCatalogue ? COLLECTIONS : [...COLLECTIONS, ['Product master', Product]];
+  const targets = keepCatalogue ? COLLECTIONS : [...COLLECTIONS, ['Mould register', Mould]];
 
   const counts = await Promise.all(
     targets.map(async ([label, Model]) => [label, await Model.countDocuments()])
@@ -115,7 +115,7 @@ async function run() {
   if (otherUsers) console.log(`  ${String(otherUsers).padStart(6)}  Other user accounts`);
   console.log(`\n  ${String(total).padStart(6)}  documents in total`);
   console.log(`\nKeeping: ${survivor.name} <${survivor.email}> (${survivor.role})`);
-  if (keepCatalogue) console.log('Keeping: the product master, untouched.');
+  if (keepCatalogue) console.log('Keeping: the mould register, untouched.');
 
   if (!confirmed) {
     console.log('\nThis was a dry run — nothing has changed.');

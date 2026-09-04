@@ -1,5 +1,4 @@
 import Pricing from '../models/Pricing.js';
-import Product from '../models/Product.js';
 import Customer from '../models/Customer.js';
 import Mould from '../models/Mould.js';
 import Material from '../models/Material.js';
@@ -121,15 +120,13 @@ const JOBS = [
 const by = (rows, key) => Object.fromEntries(rows.map((row) => [row[key], row]));
 
 export async function seedRegisterCostings({ admin, nandhini }) {
-  const [products, customers, moulds, materials, components] = await Promise.all([
-    Product.find().select('modelCode material moq'),
+  const [customers, moulds, materials, components] = await Promise.all([
     Customer.find().select('name'),
     Mould.find(),
     Material.find(),
     Component.find(),
   ]);
 
-  const model = by(products, 'modelCode');
   const party = by(customers, 'name');
   const tool = by(moulds, 'mouldCode');
   const resin = by(materials, 'code');
@@ -143,7 +140,6 @@ export async function seedRegisterCostings({ admin, nandhini }) {
    * customer's own tool and a sheet priced above the floor rather than at it.
    */
   for (const job of few(leading(JOBS, 'model', ['NPT-380S', 'NPT-400S', 'NPT-420T', 'NPT-410V']))) {
-    const product = model[job.model];
     const customer = party[job.customer];
     const mould = tool[job.mould];
     const material = resin[job.material];
@@ -157,7 +153,6 @@ export async function seedRegisterCostings({ admin, nandhini }) {
      * mistaken for the feature not working.
      */
     const missing = [
-      !product && `model ${job.model}`,
       !customer && `customer ${job.customer}`,
       !mould && `mould ${job.mould}`,
       !material && `material ${job.material}`,
@@ -176,13 +171,13 @@ export async function seedRegisterCostings({ admin, nandhini }) {
     const pricing = new Pricing({
       number: await nextNumber('PRC'),
       customer: customer._id,
-      product: product._id,
       mould: mould._id,
       materialRef: material._id,
       hookRef: parts.hook?._id,
       clipRef: parts.clip?._id,
       printRef: parts.print?._id,
-      modelNumber: product.modelCode,
+      /* The buyer's word for the model. The tool is named above; this is what goes on paper. */
+      modelNumber: job.model,
       material: material.type,
       procurement: 'manufacture',
       printing: job.printing,

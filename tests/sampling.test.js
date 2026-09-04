@@ -20,7 +20,7 @@ let priya;      // marketing — a colleague, must not see Nandhini's samples
 let meera;      // sampling — makes the samples
 let events;
 let customerId;
-let productId;
+let mouldId;
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -57,7 +57,7 @@ async function raiseEnquiry(overrides = {}) {
     token: nandhini,
     body: {
       customer: customerId,
-      product: productId,
+      mould: mouldId,
       requirement: {
         modelNumber: 'NPT-400S',
         category: 'shirt',
@@ -135,12 +135,16 @@ test.before(async () => {
   priya = await signIn('priya@np.com', 'Mktg@123456');
   meera = await signIn('meera@np.com', 'Samp@123456');
 
-  const product = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic' },
+    body: {
+      mouldCode: 'M-NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  productId = product.json.data._id;
+  mouldId = madeMould.json.data._id;
 
   const customer = await api('/api/customers', {
     method: 'POST',
@@ -179,14 +183,14 @@ test('moving an enquiry to sample required raises the request and carries the re
 
 test('a new development is raised as a new development sample', async () => {
   const enquiry = await raiseEnquiry({
-    product: undefined,
+    mould: undefined,
     isNewDevelopment: true,
     requirement: { modelNumber: 'Matte white, new finish', quantity: 40000, colour: 'Matte White' },
   });
   const sample = await requestSample(enquiry._id);
 
   assert.equal(sample.purpose, 'new_development');
-  assert.equal(sample.product, undefined);
+  assert.equal(sample.mould, undefined);
 });
 
 test('re-applying sample required does not raise a second request', async () => {
@@ -456,7 +460,7 @@ test('a request with no enquiry must still say what to make', async () => {
   });
 
   assert.equal(status, 400);
-  assert.match(json.message, /Pick a model, or describe what to make/);
+  assert.match(json.message, /Pick a mould, or describe what to make/);
 });
 
 test('a standalone request walks the whole status cycle', async () => {
@@ -604,7 +608,7 @@ test('a request cannot be attached to another customer’s enquiry', async () =>
     token: nandhini,
     body: {
       customer: other.json.data._id,
-      product: productId,
+      mould: mouldId,
       requirement: { modelNumber: 'NPT-400S', quantity: 100 },
       ...followUp,
     },
@@ -757,7 +761,7 @@ test('an action answers with the same shape the screen was already showing', asy
   });
   assert.equal(assigned.json.data.customer.name, 'SCM Garments');
   assert.equal(assigned.json.data.assignedTo.name, 'Meera S');
-  assert.equal(assigned.json.data.product.modelCode, 'NPT-400S');
+  assert.equal(assigned.json.data.mould.mouldCode, 'M-NPT-400S');
 
   const moved = await api(`/api/samples/${sample._id}/status`, {
     method: 'POST',
@@ -774,7 +778,7 @@ test('an action answers with the same shape the screen was already showing', asy
     body: { outcome: 'approved' },
   });
   assert.equal(feedback.json.data.customer.name, 'SCM Garments');
-  assert.equal(feedback.json.data.product.modelCode, 'NPT-400S');
+  assert.equal(feedback.json.data.mould.mouldCode, 'M-NPT-400S');
 });
 
 test('the pipeline reports every stage, including the empty ones', async () => {
@@ -974,7 +978,7 @@ test('a sample cannot be raised in a colleague’s name', async () => {
   assert.equal(String(idOf(byAdmin.json.data.requestedBy)), String(priyaId));
 });
 
-test('a sample cannot be raised against a model that is not in the catalogue', async () => {
+test('a sample cannot be raised against a mould that is not on the register', async () => {
   /*
    * The specification is inherited from the model, and the inheritance step returned an empty
    * object for a model it could not find — so the request was created pointing at nothing,
@@ -987,12 +991,12 @@ test('a sample cannot be raised against a model that is not in the catalogue', a
     token: meera,
     body: {
       customer: customerId,
-      product: '6a8f0000000000000000dead',
+      mould: '6a8f0000000000000000dead',
       quantity: 5,
       standaloneReason: 'Counter enquiry',
     },
   });
 
   assert.equal(status, 400, json.message);
-  assert.match(json.message, /catalogue/i);
+  assert.match(json.message, /not on the register/i);
 });

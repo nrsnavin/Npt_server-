@@ -21,7 +21,7 @@ let baseUrl;
 let admin;
 let nandhini;
 let priya;
-let productId;
+let mouldId;
 let diff;
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
@@ -91,12 +91,16 @@ test.before(async () => {
   nandhini = await signIn('nandhini@np.com', 'Passw0rd@123');
   priya = await signIn('priya@np.com', 'Passw0rd@123');
 
-  const product = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic' },
+    body: {
+      mouldCode: 'M-NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  productId = product.json.data._id;
+  mouldId = madeMould.json.data._id;
 });
 
 test.after(async () => {
@@ -170,7 +174,7 @@ test('the trail follows the record, not the screen', async () => {
     token: nandhini,
     body: {
       customer: customer._id,
-      product: productId,
+      mould: mouldId,
       requirement: { modelNumber: 'NPT-400S', quantity: 5000 },
       ...followUp,
     },

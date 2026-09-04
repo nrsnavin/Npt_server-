@@ -2,7 +2,7 @@ import Sample, { CLOSED_SAMPLE_STATUSES, NOT_ESCALATED_STATUSES } from '../model
 import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
 import Lead from '../models/Lead.js';
 import Customer from '../models/Customer.js';
-import Product from '../models/Product.js';
+import Mould from '../models/Mould.js';
 import { findModule } from '../config/modules.js';
 import { canRead } from './access.service.js';
 import { ownershipFilter } from './ownership.service.js';
@@ -70,7 +70,7 @@ const KNOWN = {
   enquiries: 'enquiries',
   leads: 'enquiries',
   customers: 'customers',
-  products: 'products',
+  moulds: 'moulds',
 };
 
 /** The module key each unbuilt subject belongs to, so the reply can quote the catalogue. */
@@ -339,11 +339,11 @@ async function newRecords(user, subject, window) {
       row: customerRow,
       one: 'new customer',
     },
-    products: {
-      model: Product,
+    moulds: {
+      model: Mould,
       filter: { createdAt: { $gte: since } },
       sort: '-createdAt',
-      row: (r) => ({ _id: r._id, title: `${r.modelCode} — ${r.name}`, subtitle: readable(r.category), link: '/products' }),
+      row: (r) => ({ _id: r._id, title: `${r.mouldCode} — ${r.name}`, subtitle: readable(r.category), link: '/moulds' }),
       one: 'new model',
     },
   };
@@ -402,13 +402,13 @@ async function openRecords(user, subject) {
       one: 'customer',
       where: 'active',
     },
-    products: {
-      model: Product,
+    moulds: {
+      model: Mould,
       filter: { isActive: { $ne: false } },
-      sort: 'modelCode',
-      row: (r) => ({ _id: r._id, title: `${r.modelCode} — ${r.name}`, subtitle: readable(r.category), link: '/products' }),
+      sort: 'mouldCode',
+      row: (r) => ({ _id: r._id, title: `${r.mouldCode} — ${r.name}`, subtitle: readable(r.category), link: '/moulds' }),
       one: 'model',
-      where: 'in the catalogue',
+      where: 'on the register',
     },
   }[subject];
 
@@ -492,7 +492,7 @@ const ASPECTS_FOR = {
   enquiries: ['what is new this week', 'what follow-ups are due', 'what is open', 'or a number like ENQ-2026-0001'],
   leads: ['what is new', 'what is still open', 'or a number like LEAD-2026-0001'],
   customers: ['what is new', 'or name one — "what is happening with Trendline"'],
-  products: ['what is new', 'how many are in the catalogue'],
+  moulds: ['what is new', 'how many are on the register'],
 };
 
 /**

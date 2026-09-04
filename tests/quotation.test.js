@@ -30,7 +30,7 @@ let admin;
 let nandhini;
 let kavitha;
 let customer;
-let product;
+let mould;
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -57,7 +57,7 @@ const signIn = async (email, password) => {
  * the multi-model cases — which is what the plant's own quotations actually look like.
  */
 const quote = async (extra = {}, token = nandhini) => {
-  const { quantity, unitPrice, modelNumber, moq, pricing, product, lines, ...terms } = extra;
+  const { quantity, unitPrice, modelNumber, moq, pricing, mould, lines, ...terms } = extra;
 
   const { status, json } = await api('/api/quotations', {
     method: 'POST',
@@ -74,7 +74,7 @@ const quote = async (extra = {}, token = nandhini) => {
           modelNumber: modelNumber ?? 'NH-400',
           ...(moq !== undefined ? { moq } : {}),
           ...(pricing !== undefined ? { pricing } : {}),
-          ...(product !== undefined ? { product } : {}),
+          ...(mould !== undefined ? { mould } : {}),
         },
       ],
     },
@@ -120,12 +120,16 @@ test.before(async () => {
   nandhini = await signIn('nandhini@np.com', 'Passw0rd@123');
   kavitha = await signIn('kavitha@np.com', 'Passw0rd@456');
 
-  const madeProduct = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NH-400', name: 'Shirt hanger 400mm', category: 'shirt', material: 'plastic', sizeMm: 400 },
+    body: {
+      mouldCode: 'M-NH-400', name: 'Shirt hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  product = madeProduct.json.data._id;
+  mould = madeMould.json.data._id;
 
   const madeCustomer = await api('/api/customers', {
     method: 'POST',
@@ -210,7 +214,7 @@ test('sending it moves the enquiry to quote submitted', async () => {
   const enquiry = await api('/api/enquiries', {
     method: 'POST',
     token: nandhini,
-    body: { customer, product, requirement: { quantity: 40000 }, ...followUp },
+    body: { customer, mould, requirement: { quantity: 40000 }, ...followUp },
   });
   const made = await quote({ enquiry: enquiry.json.data._id });
 
@@ -232,7 +236,7 @@ test('accepting one moves the enquiry to PO expected', async () => {
   const enquiry = await api('/api/enquiries', {
     method: 'POST',
     token: nandhini,
-    body: { customer, product, requirement: { quantity: 40000 }, ...followUp },
+    body: { customer, mould, requirement: { quantity: 40000 }, ...followUp },
   });
   const made = await quote({ enquiry: enquiry.json.data._id });
   await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
@@ -257,7 +261,7 @@ test('a refused quote does not close the enquiry', async () => {
   const enquiry = await api('/api/enquiries', {
     method: 'POST',
     token: nandhini,
-    body: { customer, product, requirement: { quantity: 40000 }, ...followUp },
+    body: { customer, mould, requirement: { quantity: 40000 }, ...followUp },
   });
   const made = await quote({ enquiry: enquiry.json.data._id });
   await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });

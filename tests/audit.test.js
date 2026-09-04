@@ -20,7 +20,7 @@ let admin;
 let nandhini;   // marketing
 let priya;      // marketing — a colleague
 let meera;      // sampling
-let productId;
+let mouldId;
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -72,7 +72,7 @@ async function makeEnquiry(token, customerId, extra = {}) {
   const { json } = await api('/api/enquiries', {
     method: 'POST',
     token,
-    body: { customer: customerId, product: productId, requirement: requirement(), ...followUp, ...extra },
+    body: { customer: customerId, mould: mouldId, requirement: requirement(), ...followUp, ...extra },
   });
   return json.data;
 }
@@ -115,12 +115,16 @@ test.before(async () => {
   priya = await signIn('priya@np.com', 'Mktg@123456');
   meera = await signIn('meera@np.com', 'Samp@123456');
 
-  const product = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic' },
+    body: {
+      mouldCode: 'M-NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  productId = product.json.data._id;
+  mouldId = madeMould.json.data._id;
 });
 
 test.after(async () => {
@@ -139,7 +143,7 @@ test('a conversion that fails half way leaves the lead convertible', async () =>
   const failed = await api(`/api/leads/${lead._id}/convert`, {
     method: 'POST',
     token: nandhini,
-    body: { customer: { name: 'Everblue Knitwear' }, enquiry: { product: productId, requirement: requirement() } },
+    body: { customer: { name: 'Everblue Knitwear' }, enquiry: { mould: mouldId, requirement: requirement() } },
   });
   assert.equal(failed.status, 400);
 
@@ -151,7 +155,7 @@ test('a conversion that fails half way leaves the lead convertible', async () =>
     token: nandhini,
     body: {
       customer: { name: 'Everblue Knitwear' },
-      enquiry: { product: productId, requirement: requirement(), ...followUp },
+      enquiry: { mould: mouldId, requirement: requirement(), ...followUp },
     },
   });
   assert.equal(retry.status, 201, 'the lead must still be convertible after a failed attempt');
@@ -167,9 +171,10 @@ test('a group that fails half way creates none of its enquiries', async () => {
       customer: customer._id,
       shared: followUp,
       enquiries: [
-        { product: productId, requirement: requirement({ modelNumber: 'A' }) },
-        // No product and not a new development: this one is refused.
-        { requirement: requirement({ modelNumber: 'B' }) },
+        { mould: mouldId, requirement: requirement({ modelNumber: 'A' }) },
+        // Nothing that says what was asked for — no mould, no model number, no development
+        // flag — so this one is refused, and the first must not survive it.
+        { requirement: requirement({ modelNumber: undefined }) },
       ],
     },
   });
@@ -547,7 +552,7 @@ test('a conversation reference survives the lead becoming a customer and an enqu
     token: nandhini,
     body: {
       customer: { customerType: 'garment_factory' },
-      enquiry: { product: productId, requirement: requirement(), ...followUp },
+      enquiry: { mould: mouldId, requirement: requirement(), ...followUp },
     },
   });
 

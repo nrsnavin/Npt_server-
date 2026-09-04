@@ -2,7 +2,7 @@ import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
 import Pricing from '../models/Pricing.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
-import Product from '../models/Product.js';
+import Mould from '../models/Mould.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
@@ -225,7 +225,7 @@ export const getQuotation = asyncHandler(async (req, res) => {
     .populate('customer', 'code name city state gstin mobile email')
     .populate('enquiry', 'number status')
     .populate('assignedTo', 'name')
-    .populate('lines.product', 'modelCode name sizeMm material moq')
+    .populate('lines.mould', 'mouldCode name category sizeMm material hookType moq')
     /* Whole, and narrowed per line below: what may be shown depends on who is asking. */
     .populate('lines.pricing')
     .populate('revisions.by', 'name')
@@ -256,13 +256,17 @@ export const getQuotation = asyncHandler(async (req, res) => {
  * of that for the pricing route is a second place for the revision history to start wrong.
  */
 /**
- * Fills each line's MOQ from the product master where the line does not name one [§28].
+ * Fills each line's MOQ from the mould register where the line does not name one [§28].
  *
- * Copied rather than looked up on read: a catalogue edited next month must not change what an
+ * Copied rather than looked up on read: a register edited next month must not change what an
  * issued quotation says it was offered at. One query for the whole set rather than one per
  * line, because an eight-model quotation should not be eight round trips.
+ *
+ * A line with no mould — a traded piece, or a model nobody has attached a tool to — simply
+ * starts at nothing and takes whatever minimum the quoter states. That is the honest default:
+ * there is no register entry to read one off, and inventing a minimum is worse than asking.
  */
-async function withProductDefaults(lines = [], existing = []) {
+async function withMouldDefaults(lines = [], existing = []) {
   /*
    * A line that does not name its costing keeps the one it already had.
    *
@@ -286,7 +290,7 @@ async function withProductDefaults(lines = [], existing = []) {
    * unambiguous and a revision that just restates a new price keeps its costing. Beyond that,
    * matching by position would happily hand model B's floor to model A the first time somebody
    * reorders a quote — so a multi-line revision has to name its models, which every screen does
-   * and which the API fills in from the product anyway.
+   * and which the API fills in from the register anyway.
    */
   const positional = lines.length === 1 && existing.length === 1 ? existing[0] : null;
 
@@ -297,25 +301,25 @@ async function withProductDefaults(lines = [], existing = []) {
       (line.modelNumber && byModel.get(line.modelNumber)) ||
       positional;
     if (!previous?.pricing) return line;
-    return { ...line, pricing: previous.pricing, product: line.product ?? previous.product };
+    return { ...line, pricing: previous.pricing, mould: line.mould ?? previous.mould };
   });
 
-  const ids = inherited.map((line) => line.product).filter(Boolean);
+  const ids = inherited.map((line) => line.mould).filter(Boolean);
   if (!ids.length) return inherited.map((line) => ({ ...line, moq: line.moq ?? 0 }));
 
-  const products = Object.fromEntries(
-    (await Product.find({ _id: { $in: ids } }).select('moq modelCode')).map((product) => [
-      String(product._id),
-      product,
+  const moulds = Object.fromEntries(
+    (await Mould.find({ _id: { $in: ids } }).select('moq mouldCode')).map((mould) => [
+      String(mould._id),
+      mould,
     ])
   );
 
   return inherited.map((line) => {
-    const product = line.product ? products[String(line.product)] : null;
+    const mould = line.mould ? moulds[String(line.mould)] : null;
     return {
       ...line,
-      modelNumber: line.modelNumber || product?.modelCode,
-      moq: line.moq ?? product?.moq ?? 0,
+      modelNumber: line.modelNumber || mould?.mouldCode,
+      moq: line.moq ?? mould?.moq ?? 0,
     };
   });
 }
@@ -362,7 +366,7 @@ export async function newQuotation(fields, user) {
 
   const quotation = new Quotation({
     ...fields,
-    lines: await withProductDefaults(fields.lines),
+    lines: await withMouldDefaults(fields.lines),
     customer: customerId,
     assignedTo: fields.assignedTo || customer.assignedTo || user._id,
     number: await nextNumber('QTN'),
@@ -482,7 +486,7 @@ export const updateQuotation = asyncHandler(async (req, res) => {
   const before = snapshot(quotation);
 
   const patch = withoutVersion(req.body);
-  if (patch.lines) patch.lines = await withProductDefaults(patch.lines, quotation.lines);
+  if (patch.lines) patch.lines = await withMouldDefaults(patch.lines, quotation.lines);
   Object.assign(quotation, patch);
 
   await quotation.save();
@@ -508,12 +512,12 @@ export const reviseQuotation = asyncHandler(async (req, res) => {
   const { lines, note, ...terms } = req.body;
 
   /*
-   * Defaults first, then compare. A line that leaves `moq` out is asking for the product
-   * master's figure, which is usually the one already stored — so comparing the raw request
+   * Defaults first, then compare. A line that leaves `moq` out is asking for the register's
+   * figure, which is usually the one already stored — so comparing the raw request
    * against the saved lines reads a blank as a change and lets a revision through that revises
    * nothing. Resolving both to the same shape is what makes "has anything moved?" answerable.
    */
-  const resolved = lines ? await withProductDefaults(lines, quotation.lines) : null;
+  const resolved = lines ? await withMouldDefaults(lines, quotation.lines) : null;
 
   const linesMoved = resolved && offerOf(resolved) !== offerOf(quotation.lines);
   if (!linesMoved && !Object.keys(terms).length) {
@@ -628,7 +632,7 @@ export const respondToQuotation = asyncHandler(async (req, res) => {
  *
  * Rendered on demand from the record rather than stored: a quotation's price changes with
  * every revision, and a stored file is a copy that stops agreeing with the thing it came from.
- * The customer and every line's product are populated here beyond the list's needs because a
+ * The customer and every line's mould are populated here beyond the list's needs because a
  * document is not a row — it carries the buyer's address and a description per model.
  *
  * `inline` so a browser shows it rather than dropping it in the downloads folder; the filename
@@ -640,7 +644,7 @@ export const quotationPdf = asyncHandler(async (req, res) => {
     .populate('enquiry', 'number')
     .populate('assignedTo', 'name')
     /* Per line now: the document's item table describes each model it carries. */
-    .populate('lines.product', 'modelCode name sizeMm material');
+    .populate('lines.mould', 'mouldCode name category sizeMm material hookType');
 
   if (!quotation) throw ApiError.notFound('Quotation not found');
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');

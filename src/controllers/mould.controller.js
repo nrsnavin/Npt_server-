@@ -1,5 +1,4 @@
 import Mould from '../models/Mould.js';
-import Product from '../models/Product.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { listParams, paginated } from '../utils/query.js';
@@ -29,9 +28,11 @@ function mouldQuery(query) {
   if (query.status) params.filter.status = query.status;
   if (query.material) params.filter.material = query.material;
   if (query.ownedBy) params.filter.ownedBy = query.ownedBy;
-  /* `product` singular in the query: a caller asks "what makes this model", and the answer
-     is every tool whose list contains it. */
-  if (query.product) params.filter.products = query.product;
+  /* The catalogue's own filters, now that the register carries what it used to. Somebody
+     looking for "a 400 mm shirt hanger" is asking the master a question, not the tool room. */
+  if (query.category) params.filter.category = query.category;
+  if (query.hookType) params.filter.hookType = query.hookType;
+  if (query.sizeMm) params.filter.sizeMm = Number(query.sizeMm);
   if (query.isActive !== undefined && query.isActive !== '') {
     params.filter.isActive = query.isActive === 'true';
   }
@@ -39,15 +40,11 @@ function mouldQuery(query) {
   return params;
 }
 
-/** The product fields a mould row needs. Named, so adding a field to the master cannot widen this. */
-const PRODUCT_FIELDS = 'modelCode name category sizeMm material';
-
 export const listMoulds = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = mouldQuery(req.query);
 
   const [data, total] = await Promise.all([
     Mould.find(filter)
-      .populate('products', PRODUCT_FIELDS)
       .sort(sort)
       .skip((page - 1) * limit)
       .limit(limit),
@@ -59,7 +56,6 @@ export const listMoulds = asyncHandler(async (req, res) => {
 
 export const getMould = asyncHandler(async (req, res) => {
   const mould = await Mould.findById(req.params.id)
-    .populate('products', PRODUCT_FIELDS)
     .populate('photo', 'key filename mimeType')
     .populate('ownedByCustomer', 'name code');
   if (!mould) throw ApiError.notFound('Mould not found');
@@ -82,25 +78,6 @@ function assertOwnership(mould) {
   }
 }
 
-/**
- * Every model named on a tool has to be one the catalogue knows.
- *
- * Checked as a set rather than one at a time, so the refusal names all of them: telling
- * somebody about the first bad id in a list of five and making them resubmit to find the
- * second is how a bulk correction takes five round trips.
- */
-async function assertProducts(ids) {
-  if (!ids?.length) return;
-  const found = await Product.find({ _id: { $in: ids } }).select('_id');
-  if (found.length === ids.length) return;
-
-  const known = new Set(found.map((product) => String(product._id)));
-  const missing = ids.filter((id) => !known.has(String(id)));
-  throw ApiError.badRequest(
-    `Not in the product master: ${missing.join(', ')}`
-  );
-}
-
 /** More cavities running than were ever cut means one of the two numbers is about another tool. */
 function assertCavities(mould) {
   if (mould.activeCavities != null && mould.activeCavities > mould.cavities) {
@@ -116,13 +93,10 @@ export const createMould = asyncHandler(async (req, res) => {
     throw ApiError.conflict(`Mould ${mouldCode} is already on the register`);
   }
 
-  await assertProducts(req.body.products);
-
   const mould = new Mould({ ...req.body, mouldCode });
   assertOwnership(mould);
   await mould.save();
 
-  await mould.populate('products', PRODUCT_FIELDS);
   res.status(201).json({ success: true, data: mouldVisibleTo(mould, req.user) });
 });
 
@@ -134,7 +108,6 @@ export const updateMould = asyncHandler(async (req, res) => {
   const before = snapshot(mould);
 
   const patch = withoutVersion(req.body);
-  await assertProducts(patch.products);
 
   /*
    * Null clears; undefined leaves alone. A customer-owned tool bought out is an ordinary
@@ -157,7 +130,6 @@ export const updateMould = asyncHandler(async (req, res) => {
   await mould.save();
   await recordChange({ model: 'Mould', doc: mould, before, by: req.user });
 
-  await mould.populate('products', PRODUCT_FIELDS);
   res.json({ success: true, data: mouldVisibleTo(mould, req.user) });
 });
 
@@ -165,7 +137,6 @@ export const exportMoulds = asyncHandler(async (req, res) => {
   const { sort, filter } = mouldQuery(req.query);
 
   const rows = await Mould.find(filter)
-    .populate('products', PRODUCT_FIELDS)
     .sort(sort)
     .limit(EXPORT_LIMIT);
 
@@ -183,8 +154,12 @@ export const exportMoulds = asyncHandler(async (req, res) => {
   sendCsv(res, 'moulds', rows, [
     ['Mould', (row) => row.mouldCode],
     ['Name', (row) => row.name],
-    ['Models', (row) => (row.products || []).map((product) => product.modelCode).join(' / ')],
+    ['Category', (row) => row.category],
+    ['Size (mm)', (row) => row.sizeMm],
+    ['Hook', (row) => row.hookType],
     ['Material', (row) => row.material],
+    ['MOQ', (row) => row.moq],
+    ['Packing qty', (row) => row.packingQty],
     ['Status', (row) => row.status],
     ['Cavities', (row) => row.cavities],
     ['Running', (row) => row.runningCavities],
@@ -265,6 +240,5 @@ export const setMouldPhoto = asyncHandler(async (req, res) => {
     }
   }
 
-  await mould.populate('products', PRODUCT_FIELDS);
   res.json({ success: true, data: mouldVisibleTo(mould, req.user) });
 });

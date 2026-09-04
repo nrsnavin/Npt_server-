@@ -9,7 +9,7 @@
  *
  * What this does, per quotation that has no lines yet:
  *
- *   lines: [{ product, pricing, modelNumber, quantity, moq, unitPrice }]   from the old fields
+ *   lines: [{ mould, pricing, modelNumber, quantity, moq, unitPrice }]     from the old fields
  *   revisions[].lines: [ ... ]                                            from each old revision
  *
  * and then unsets the legacy fields, so there is one place the offer lives rather than two that
@@ -28,10 +28,17 @@ import { connectDatabase, disconnectDatabase } from '../src/config/db.js';
 
 const confirm = process.argv.includes('--confirm');
 
-/** One line built from whatever the old document carried. */
+/**
+ * One line built from whatever the old document carried.
+ *
+ * The legacy `product` is deliberately not carried across. It pointed at the product catalogue,
+ * which no longer exists — the mould register is the model master now — so copying the id would
+ * put a reference to a deleted collection on every migrated line. `modelNumber` is what
+ * identifies the model on a quotation anyway, and it is right here. Run
+ * `migrate-catalogue-to-moulds.js` to attach the tools.
+ */
 const lineFrom = (source) => ({
   _id: new mongoose.Types.ObjectId(),
-  product: source.product,
   pricing: source.pricing,
   modelNumber: source.modelNumber,
   quantity: source.quantity ?? 0,
@@ -86,7 +93,6 @@ async function migrate() {
             ...revision,
             lines: [
               lineFrom({
-                product: quotation.product,
                 pricing: quotation.pricing,
                 modelNumber: quotation.modelNumber,
                 quantity: revision.quantity,
@@ -109,7 +115,6 @@ async function migrate() {
           $set: { lines, revisions },
           /* The old fields go, so the offer lives in exactly one place from here on. */
           $unset: {
-            product: '',
             pricing: '',
             modelNumber: '',
             quantity: '',

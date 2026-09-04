@@ -1,8 +1,39 @@
 import mongoose from 'mongoose';
-import { MATERIALS } from './Product.js';
+
+/**
+ * What the piece is for. A fact about the geometry, so it belongs to the tool that cuts it.
+ */
+export const HANGER_CATEGORIES = ['shirt', 'trouser', 'suit', 'skirt', 'kids', 'lingerie', 'coat', 'multi', 'accessory'];
+
+/**
+ * What the piece is made of.
+ *
+ * `pp` and `hips` are the two the costing sheet actually names — polypropylene and high-impact
+ * polystyrene — and they matter to a price in a way "plastic" does not: they are bought at
+ * different rates per kilo (₹160 against ₹90 on the current sheet), so a costing that records
+ * only "plastic" cannot be checked against the resin bill it came from.
+ *
+ * A coarse family, deliberately. The *particular* resin — grade, colour, rate, grammage uplift
+ * — is the material register's job, and a record that names one carries all of that. This list
+ * is what you can say about a piece when nobody has picked a batch yet.
+ */
+export const MATERIALS = [
+  'pp', 'hips', 'plastic', 'wood', 'metal', 'velvet', 'acrylic', 'recycled_pp',
+];
+
+/** How the piece hangs. Cut into the tool, so recorded against it. */
+export const HOOK_TYPES = ['fixed', 'swivel', 'metal_swivel', 'plastic', 'clip'];
 
 /**
  * The mould register — the tool that makes the piece, and the numbers that follow from it.
+ *
+ * **This is also the model master** [BLUEPRINT §28]. There used to be a separate product
+ * catalogue beside it, holding a model code, a size, a category, a hook type, an MOQ — and
+ * `mouldAvailable`, a hand-ticked boolean sitting next to the register that already knew the
+ * answer. Two masters describing one steel tool is one master too many: they disagreed the
+ * first week, and every screen had to ask which of them to believe. The tool is the thing that
+ * exists on the floor, so the tool is the record, and what the catalogue knew that the register
+ * did not has moved here.
  *
  * A mould is not a document about a product; it is a production resource, and it is the only
  * place several facts about a costing actually come from. Until now the product master carried
@@ -41,17 +72,32 @@ const mouldSchema = new mongoose.Schema(
     mouldCode: { type: String, required: true, unique: true, uppercase: true, trim: true },
     name: { type: String, required: true, trim: true },
 
-    /**
-     * The models this tool makes. Empty is fine — a tool is often cut before its model is
-     * catalogued, and a register that refused to hold it until then would not be used.
+    /*
+     * What the tool cuts — the geometry facts the catalogue used to hold.
      *
-     * A list rather than one reference, because a mould is one geometry and the catalogue
-     * splits by resin: the same steel that makes the 400mm shirt hanger in virgin PP makes the
-     * recycled one, and they are two model codes with two prices. Forcing a single reference
-     * would mean either inventing a second mould number for steel that does not exist twice, or
-     * quietly leaving one of the two models with no tool on the register at all.
+     * These are properties of the steel, not of a job: a cavity that throws a 400 mm shirt
+     * hanger with a swivel hook throws that piece on every shot it ever runs, for every buyer.
+     * Optional rather than required, because a tool is often on the register before anyone has
+     * written down what to call it, and a master that refuses the record until then is a master
+     * the tool room works around.
      */
-    products: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product', index: true }],
+    category: { type: String, enum: HANGER_CATEGORIES, index: true },
+    sizeMm: { type: Number, min: 0 },
+    hookType: { type: String, enum: HOOK_TYPES },
+
+    /**
+     * The smallest order a piece off this tool is offered at, and how many go in a carton [§28].
+     *
+     * Commercial facts rather than tool-room ones, and the only two the catalogue held that are
+     * genuinely not about the steel — but they are per *model*, and the model is now this
+     * record, so this is where they can be looked up from. The quotation line still owns its own
+     * minimum: this is the default it starts from, never a figure it must accept.
+     */
+    moq: { type: Number, min: 0, default: 0 },
+    packingQty: { type: Number, min: 0, default: 0 },
+
+    /** Set when this tool was cut off the back of a new-development enquiry [§28]. */
+    developedFromEnquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry' },
 
     /**
      * The resin this mould is set up for, and therefore what the weights below belong to.

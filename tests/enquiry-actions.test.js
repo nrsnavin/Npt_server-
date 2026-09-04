@@ -28,7 +28,7 @@ let server;
 let baseUrl;
 let admin;
 let nandhini;
-let product;
+let mould;
 let customer;
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
@@ -54,7 +54,7 @@ const raise = async (extra = {}) => {
     token: nandhini,
     body: {
       customer,
-      product,
+      mould,
       requirement: { quantity: 10000, modelNumber: 'NH-400' },
       estimatedValue: 250000,
       ...followUp,
@@ -91,12 +91,16 @@ test.before(async () => {
   });
   nandhini = await signIn('nandhini@np.com', 'Passw0rd@123');
 
-  const madeProduct = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NH-400', name: 'Shirt hanger 400mm', category: 'shirt', material: 'plastic', sizeMm: 400 },
+    body: {
+      mouldCode: 'M-NH-400', name: 'Shirt hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  product = madeProduct.json.data._id;
+  mould = madeMould.json.data._id;
 
   const madeCustomer = await api('/api/customers', {
     method: 'POST',

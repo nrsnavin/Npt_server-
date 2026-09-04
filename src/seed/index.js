@@ -13,7 +13,7 @@ import StickyNote from '../models/StickyNote.js';
 import Announcement from '../models/Announcement.js';
 import { defaultAccessFor, DEPARTMENTS } from '../config/modules.js';
 import { seedPipeline } from './pipeline.js';
-import { seedMoulds } from './moulds.js';
+import { seedMoulds, linkMouldOwners } from './moulds.js';
 import { seedMaterials } from './materials.js';
 import { seedComponents } from './components.js';
 import { seedPricing } from './pricing.js';
@@ -156,17 +156,24 @@ async function seed() {
     },
   ]));
 
-  console.log('Adding the product master, customers, leads and enquiries...');
+  /*
+   * The registers first, because the mould register is the model master: an enquiry names the
+   * tool that makes what was asked for, so the tools have to exist before the enquiries do.
+   */
+  console.log('Adding the material, parts and mould registers...');
+  const materials = await seedMaterials();
+  const parts = await seedComponents();
+  const moulds = await seedMoulds();
+
+  console.log('Adding the customers, leads and enquiries...');
   const counts = await seedPipeline({
     nandhini: byEmail['marketing@npthangers.com'],
     arun: byEmail['marketing2@npthangers.com'],
     meera: byEmail['sampling@npthangers.com'],
   });
 
-  console.log('Adding the material and mould registers...');
-  const materials = await seedMaterials();
-  const parts = await seedComponents();
-  const moulds = await seedMoulds();
+  /* The buyer-funded tools, now that the parties who paid for them are on the customer master. */
+  const customerOwned = await linkMouldOwners();
 
   console.log("Adding the costings and quotations from the plant's own 26-27 sheet...");
   const pricing = await seedPricing({
@@ -191,7 +198,7 @@ async function seed() {
     FULL
       ? '\nSeed complete — the full set. Sign in with a password:\n'
       : '\nSeed complete — a working set of three or four per model.' +
-        '\nRun SEED_FULL=true npm run seed for the whole catalogue and all nine enquiries.' +
+        '\nRun SEED_FULL=true npm run seed for the whole register and all nine enquiries.' +
         '\n\nSign in with a password:\n'
   );
   for (const person of PEOPLE) {
@@ -207,8 +214,8 @@ async function seed() {
       `${announcements.length} announcements.`
   );
   console.log(
-    `  Phase 1: ${counts.products} products, ${counts.customers} customers, ` +
-      `${counts.leads} leads, ${counts.enquiries} enquiries, ${counts.samples} samples.`
+    `  Phase 1: ${counts.customers} customers, ${counts.leads} leads, ` +
+      `${counts.enquiries} enquiries, ${counts.samples} samples.`
   );
   console.log(
     `  Materials: ${materials.materials} resins on the register — ${materials.uplifted} of them ` +
@@ -219,15 +226,15 @@ async function seed() {
       `all priced per piece.`
   );
   console.log(
-    `  Moulds: ${moulds.moulds} tools on the register — runner is ${moulds.runnerShare}% of a ` +
-      `shot on average, ${moulds.blocked} running short a cavity, ${moulds.customerOwned} owned ` +
-      `by the customer.`
+    `  Moulds: ${moulds.moulds} tools on the register, which is also the model master — ` +
+      `runner is ${moulds.runnerShare}% of a shot on average, ${moulds.blocked} running short ` +
+      `a cavity, ${customerOwned} owned by the customer.`
   );
   console.log(
-    `  Phase 3: ${pricing.pricings} costings across ${pricing.productsAdded} more models ` +
-      `(so ${counts.products + pricing.productsAdded} in the catalogue altogether), and ` +
-      `the sheet's own ${pricing.quotations} quotations carrying ${pricing.quotedLines} lines ` +
-      `between them — ${pricing.belowFloor} priced under their own floor, holding ` +
+    `  Phase 3: ${pricing.pricings} costings across ${pricing.sheetModels} models from the ` +
+      `26-27 sheet — transcribed figures, so none of them names a tool — and the sheet's own ` +
+      `${pricing.quotations} quotations carrying ${pricing.quotedLines} lines between them: ` +
+      `${pricing.belowFloor} priced under their own floor, holding ` +
       `${pricing.heldForApproval} whole document(s) on §9 approval.`
   );
   console.log(

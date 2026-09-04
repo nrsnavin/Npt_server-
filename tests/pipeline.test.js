@@ -1,5 +1,5 @@
 /**
- * Phase 1: products, customers, leads and enquiries — including lead conversion,
+ * Phase 1: moulds, customers, leads and enquiries — including lead conversion,
  * the enquiry stage machine, record ownership and the automation hooks.
  *
  *   node --test tests/pipeline.test.js
@@ -88,32 +88,40 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-/* -------------------------------- Products -------------------------------- */
+/* --------------------------------- Moulds --------------------------------- */
 
-test('a product is created and model codes are unique', async () => {
-  const created = await api('/api/products', {
+test('a mould is created and mould codes are unique', async () => {
+  const created = await api('/api/moulds', {
     method: 'POST',
     token: admin,
     body: {
-      modelCode: 'CT-23',
+      mouldCode: 'M-CT-23',
       name: 'Shirt Hanger 380mm',
       category: 'shirt',
       sizeMm: 380,
-      material: 'plastic',
-      mouldAvailable: true,
-      mouldNumber: 'M-101',
-      standardPrice: 11.5,
+      material: 'pp',
+      hookType: 'fixed',
+      cavities: 4,
+      partWeightGrams: 22,
+      cycleTimeSeconds: 26,
       moq: 5000,
     },
   });
 
   assert.equal(created.status, 201);
-  assert.equal(created.json.data.modelCode, 'CT-23');
+  assert.equal(created.json.data.mouldCode, 'M-CT-23');
+  /* The register is the model master now, so the catalogue's own fields have to survive it. */
+  assert.equal(created.json.data.category, 'shirt');
+  assert.equal(created.json.data.sizeMm, 380);
+  assert.equal(created.json.data.moq, 5000);
 
-  const duplicate = await api('/api/products', {
+  const duplicate = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'ct-23', name: 'Clash', category: 'shirt', sizeMm: 380, material: 'plastic' },
+    body: {
+      mouldCode: 'm-ct-23', name: 'Clash', category: 'shirt', sizeMm: 380, material: 'pp',
+      partWeightGrams: 22, cycleTimeSeconds: 26,
+    },
   });
   assert.equal(duplicate.status, 409);
 });
@@ -243,8 +251,8 @@ test('converting a lead creates the customer, its contact and the first enquiry'
 
   await api(`/api/leads/${leadId}`, { method: 'PATCH', token: nandhini, body: { status: 'qualified' } });
 
-  const { json: products } = await api('/api/products', { token: nandhini });
-  const productId = products.data[0]._id;
+  const { json: moulds } = await api('/api/moulds', { token: nandhini });
+  const mouldId = moulds.data[0]._id;
 
   const converted = await api(`/api/leads/${leadId}/convert`, {
     method: 'POST',
@@ -252,7 +260,7 @@ test('converting a lead creates the customer, its contact and the first enquiry'
     body: {
       customer: { customerType: 'exporter', gstin: '32AABCC1111C1ZQ', rating: 'A' },
       enquiry: {
-        product: productId,
+        mould: mouldId,
         requirement: { quantity: 25000, colour: 'Black' },
         targetPrice: 10.8,
         ...followUp,
@@ -324,14 +332,14 @@ async function ownedCustomer() {
 
 test('an open enquiry cannot be saved without a next action', async () => {
   const customer = await ownedCustomer();
-  const { json: products } = await api('/api/products', { token: nandhini });
+  const { json: moulds } = await api('/api/moulds', { token: nandhini });
 
   const { status, json } = await api('/api/enquiries', {
     method: 'POST',
     token: nandhini,
     body: {
       customer,
-      product: products.data[0]._id,
+      mould: moulds.data[0]._id,
       requirement: { quantity: 10000 },
     },
   });
@@ -340,7 +348,7 @@ test('an open enquiry cannot be saved without a next action', async () => {
   assert.match(json.message, /next action and a follow-up date/);
 });
 
-test('an enquiry needs either a catalogue model or a new-development flag', async () => {
+test('an enquiry needs a mould, a model number, or a new-development flag', async () => {
   const customer = await ownedCustomer();
 
   const neither = await api('/api/enquiries', {
@@ -349,7 +357,7 @@ test('an enquiry needs either a catalogue model or a new-development flag', asyn
     body: { customer, requirement: { quantity: 10000 }, ...followUp },
   });
   assert.equal(neither.status, 400);
-  assert.match(neither.json.message, /catalogue, or mark this as a new development/);
+  assert.match(neither.json.message, /Name the mould, or the model the buyer asked for/);
 
   const development = await api('/api/enquiries', {
     method: 'POST',
@@ -362,13 +370,43 @@ test('an enquiry needs either a catalogue model or a new-development flag', asyn
     },
   });
   assert.equal(development.status, 201);
-  assert.equal(development.json.data.product, undefined, 'a development has no model yet');
+  assert.equal(development.json.data.mould, undefined, 'a development has no tool yet');
+});
+
+test('a traded model is entered by naming it, not by pretending to develop it', async () => {
+  const customer = await ownedCustomer();
+
+  /*
+   * Five of the twenty-five models on the plant's own 26-27 sheet are bought in and resold, so
+   * a piece with no tool of ours is ordinary rather than exceptional. The old rule demanded a
+   * catalogue entry or a new-development tick, which meant the only way to record one was to
+   * lie about it — mark a hanger we buy from a supplier as something we were about to develop,
+   * and then leave it that way for good.
+   */
+  const traded = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer,
+      requirement: { modelNumber: 'NPT-360W wooden skirt', material: 'wood', quantity: 3000 },
+      ...followUp,
+    },
+  });
+
+  assert.equal(traded.status, 201, traded.json.message);
+  assert.equal(traded.json.data.mould, undefined, 'bought in, so no tool of ours');
+  assert.equal(
+    traded.json.data.isNewDevelopment,
+    false,
+    'and not a development either — nobody is going to cut a tool for it'
+  );
+  assert.equal(traded.json.data.requirement.modelNumber, 'NPT-360W wooden skirt');
 });
 
 test('one conversation about three models becomes three linked enquiries', async () => {
   const customer = await ownedCustomer();
-  const { json: products } = await api('/api/products', { token: nandhini });
-  const product = products.data[0]._id;
+  const { json: moulds } = await api('/api/moulds', { token: nandhini });
+  const mould = moulds.data[0]._id;
 
   const { status, json } = await api('/api/enquiries/group', {
     method: 'POST',
@@ -377,8 +415,8 @@ test('one conversation about three models becomes three linked enquiries', async
       customer,
       shared: { ...followUp, requiredDeliveryDate: soon(30) },
       enquiries: [
-        { product, requirement: { quantity: 20000, colour: 'Black' } },
-        { product, requirement: { quantity: 15000, colour: 'White' } },
+        { mould, requirement: { quantity: 20000, colour: 'Black' } },
+        { mould, requirement: { quantity: 15000, colour: 'White' } },
         { isNewDevelopment: true, requirement: { quantity: 5000, modelNumber: 'Kids 280mm assorted' } },
       ],
     },
@@ -400,14 +438,14 @@ test('one conversation about three models becomes three linked enquiries', async
 
 test('the stage machine records history and refuses to move a closed enquiry', async () => {
   const customer = await ownedCustomer();
-  const { json: products } = await api('/api/products', { token: nandhini });
+  const { json: moulds } = await api('/api/moulds', { token: nandhini });
 
   const created = await api('/api/enquiries', {
     method: 'POST',
     token: nandhini,
     body: {
       customer,
-      product: products.data[0]._id,
+      mould: moulds.data[0]._id,
       requirement: { quantity: 30000 },
       estimatedValue: 345000,
       ...followUp,
@@ -465,12 +503,12 @@ test('sample and pricing stages publish the hooks phases 2 and 3 will subscribe 
   events.subscribe(events.EVENTS.ENQUIRY_PRICING_REQUIRED, onPricing);
 
   const customer = await ownedCustomer();
-  const { json: products } = await api('/api/products', { token: nandhini });
+  const { json: moulds } = await api('/api/moulds', { token: nandhini });
 
   const created = await api('/api/enquiries', {
     method: 'POST',
     token: nandhini,
-    body: { customer, product: products.data[0]._id, requirement: { quantity: 12000 }, ...followUp },
+    body: { customer, mould: moulds.data[0]._id, requirement: { quantity: 12000 }, ...followUp },
   });
   const id = created.json.data._id;
   const number = created.json.data.number;
@@ -492,45 +530,50 @@ test('sample and pricing stages publish the hooks phases 2 and 3 will subscribe 
   events.unsubscribe(events.EVENTS.ENQUIRY_PRICING_REQUIRED, onPricing);
 });
 
-test('a new development is promoted into the catalogue once approved', async () => {
+test('a new development is promoted onto the mould register once the tool is cut', async () => {
   const { json } = await api('/api/enquiries', { token: nandhini });
   const development = json.data.find((enquiry) => enquiry.isNewDevelopment);
 
-  const promoted = await api(`/api/enquiries/${development._id}/promote-product`, {
+  const promoted = await api(`/api/enquiries/${development._id}/promote-mould`, {
     method: 'POST',
     token: admin,
     body: {
-      modelCode: 'SUT-440-WD',
-      name: 'Suit Hanger 440mm Wooden',
+      mouldCode: 'M-SUT-440',
+      name: 'Suit Hanger 440mm',
       category: 'suit',
       sizeMm: 440,
-      material: 'wood',
-      mouldAvailable: true,
-      standardPrice: 96,
+      material: 'pp',
+      cavities: 2,
+      partWeightGrams: 46,
+      cycleTimeSeconds: 39,
+      moq: 1000,
     },
   });
 
   assert.equal(promoted.status, 201);
   assert.equal(promoted.json.data.enquiry.isNewDevelopment, false);
-  assert.equal(String(promoted.json.data.enquiry.product), String(promoted.json.data.product._id));
-  assert.ok(promoted.json.data.product.developedFromEnquiry, 'the catalogue records where it came from');
+  assert.equal(String(promoted.json.data.enquiry.mould), String(promoted.json.data.mould._id));
+  assert.ok(promoted.json.data.mould.developedFromEnquiry, 'the register records where it came from');
 
-  const again = await api(`/api/enquiries/${development._id}/promote-product`, {
+  const again = await api(`/api/enquiries/${development._id}/promote-mould`, {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'SUT-441-WD', name: 'Duplicate attempt' },
+    body: {
+      mouldCode: 'M-SUT-441', name: 'Duplicate attempt',
+      partWeightGrams: 46, cycleTimeSeconds: 39,
+    },
   });
-  assert.equal(again.status, 400, 'an enquiry already pointing at a model cannot be promoted');
+  assert.equal(again.status, 400, 'an enquiry already pointing at a mould cannot be promoted');
 });
 
 test('an enquiry cannot be raised against another marketing person’s customer', async () => {
   const customer = await ownedCustomer();
-  const { json: products } = await api('/api/products', { token: priya });
+  const { json: moulds } = await api('/api/moulds', { token: priya });
 
   const { status, json } = await api('/api/enquiries', {
     method: 'POST',
     token: priya,
-    body: { customer, product: products.data[0]._id, requirement: { quantity: 1000 }, ...followUp },
+    body: { customer, mould: moulds.data[0]._id, requirement: { quantity: 1000 }, ...followUp },
   });
 
   assert.equal(status, 403);

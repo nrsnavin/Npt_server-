@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from '../models/Product.js';
+import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from '../models/Mould.js';
 import { SAMPLE_PURPOSES, SAMPLE_STATUSES, FEEDBACK_STATUSES } from '../models/Sample.js';
 import { MESSAGE_CHANNELS } from '../models/CustomerMessage.js';
 import { EVENT_KEYS } from '../services/customerMessage.templates.js';
@@ -9,7 +9,7 @@ import { objectId } from './schemas.js';
 
 /** What a request carries beyond whatever it inherits from its enquiry. */
 const sampleCore = {
-  product: objectId.optional(),
+  mould: objectId.optional(),
   modelNumber: z.string().optional(),
   category: z.enum(HANGER_CATEGORIES).optional(),
   sizeMm: z.number().nonnegative().optional(),

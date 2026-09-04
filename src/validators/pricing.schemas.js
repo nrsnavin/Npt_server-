@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MATERIALS } from '../models/Product.js';
+import { MATERIALS } from '../models/Mould.js';
 import { FREIGHT_TERMS } from '../models/Quotation.js';
 import { objectId } from './schemas.js';
 
@@ -13,8 +13,7 @@ const money = z.number().nonnegative();
 export const pricingSchema = z.object({
   enquiry: objectId.optional(),
   customer: objectId.optional(),
-  product: objectId.optional(),
-  /** Left out, the register is asked — and answers only where the model has exactly one tool. */
+  /** The tool it is made on. Left out for a traded item, which has none. */
   mould: objectId.optional(),
   /** The resin from the material register: it carries the rate and the grammage basis. */
   materialRef: objectId.optional(),
@@ -106,7 +105,7 @@ export const pricingCostSchema = z
  */
 export const pricingUpdateSchema = z
   .strictObject({
-    product: objectId.optional(),
+    mould: objectId.optional(),
     modelNumber: z.string().optional(),
     quantity: z.number().positive('A costing needs the quantity it is for').optional(),
     material: z.enum(MATERIALS).optional(),
@@ -159,7 +158,7 @@ export const pricingQuoteSchema = z.object({
 const quotationLine = z.object({
   /** Present when editing an existing line; absent on a new one. */
   _id: objectId.optional(),
-  product: objectId.optional(),
+  mould: objectId.optional(),
   pricing: objectId.optional(),
   modelNumber: z.string().optional(),
   /**
@@ -170,7 +169,7 @@ const quotationLine = z.object({
    * required, and so the quotations already raised keep what they recorded.
    */
   quantity: z.number().positive().optional(),
-  /** What the rate is good for. Left out, and the product master's minimum is copied in [§28]. */
+  /** What the rate is good for. Left out, and the mould register's minimum is copied in [§28]. */
   moq: money.optional(),
   unitPrice: money,
   remarks: z.string().optional(),

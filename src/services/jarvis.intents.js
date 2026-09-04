@@ -96,7 +96,7 @@ const SUBJECTS = [
   { key: 'enquiries', terms: [/\benquir(y|ies)\b/i, /\binquir(y|ies)\b/i, /\benq\b/i, /\brfq\b/i] },
   { key: 'leads', terms: [/\bleads?\b/i, /\bprospects?\b/i] },
   { key: 'customers', terms: [/\bcustomers?\b/i, /\bbuyers?\b/i, /\baccounts?\b/i, /\bparty\b/i, /\bparties\b/i] },
-  { key: 'products', terms: [/\bproducts?\b/i, /\bmodels?\b/i, /\bcatalogue\b/i, /\bcatalog\b/i, /\bhangers?\b/i] },
+  { key: 'moulds', terms: [/\bmoulds?\b/i, /\bmolds?\b/i, /\btools?\b/i, /\bproducts?\b/i, /\bmodels?\b/i, /\bcatalogue\b/i, /\bcatalog\b/i, /\bhangers?\b/i] },
   { key: 'orders', terms: [/\borders?\b/i, /\bpo\b/i, /\bpurchase orders?\b/i] },
   { key: 'quotations', terms: [/\bquotations?\b/i, /\bquotes?\b/i, /\bquoting\b/i] },
   { key: 'dispatch', terms: [/\bdispatch(es|ed)?\b/i, /\bdespatch(es|ed)?\b/i, /\bshipments?\b/i, /\blr\b/i] },

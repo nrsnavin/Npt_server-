@@ -1,5 +1,5 @@
 import Sample, { SAMPLE_PURPOSES, SAMPLE_STATUSES } from '../models/Sample.js';
-import { HANGER_CATEGORIES, HOOK_TYPES, MATERIALS } from '../models/Product.js';
+import { HANGER_CATEGORIES, HOOK_TYPES, MATERIALS } from '../models/Mould.js';
 
 /**
  * Sample analytics: how long fulfilment takes, and what drives the difference.

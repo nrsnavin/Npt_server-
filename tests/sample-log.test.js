@@ -22,7 +22,7 @@ let admin;
 let nandhini;   // marketing — read on samples, and the one who has to comment on a photo
 let priya;      // marketing — a colleague, must reach none of it
 let meera;      // sampling — write on samples
-let productId;
+let mouldId;
 let sampleId;
 
 const api = async (path_, { method = 'GET', body, token, raw } = {}) => {
@@ -126,12 +126,16 @@ test.before(async () => {
   priya = await signIn('priya@np.com', 'Mktg@123456');
   meera = await signIn('meera@np.com', 'Samp@123456');
 
-  const product = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic' },
+    body: {
+      mouldCode: 'M-NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  productId = product.json.data._id;
+  mouldId = madeMould.json.data._id;
 
   const customer = await api('/api/customers', {
     method: 'POST',
@@ -144,7 +148,7 @@ test.before(async () => {
     token: nandhini,
     body: {
       customer: customer.json.data._id,
-      product: productId,
+      mould: mouldId,
       requirement: { modelNumber: 'NPT-400S', quantity: 5000 },
       ...followUp,
     },

@@ -30,7 +30,7 @@ let baseUrl;
 let admin;
 let nandhini;
 let priya;
-let productId;
+let mouldId;
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -80,7 +80,7 @@ const addCustomer = async (extra = {}, token = nandhini) => {
 };
 
 const requirement = {
-  product: undefined,
+  mould: undefined,
   requirement: { quantity: 12000, modelNumber: 'NPT-400S' },
   nextAction: 'Send the quote',
   nextFollowUpDate: inDays(3),
@@ -115,13 +115,17 @@ test.before(async () => {
   nandhini = await signIn('nandhini@np.com', 'Mktg@123456');
   priya = await signIn('priya@np.com', 'Mktg@123456');
 
-  const product = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic' },
+    body: {
+      mouldCode: 'M-NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  productId = product.json.data._id;
-  requirement.product = productId;
+  mouldId = madeMould.json.data._id;
+  requirement.mould = mouldId;
 });
 
 test.after(async () => {
@@ -255,7 +259,7 @@ test('samples raised for the lead carry over when it is attached', async () => {
   const sample = await api('/api/samples', {
     method: 'POST',
     token: nandhini,
-    body: { lead: lead._id, product: productId, quantity: 5, requiredDate: inDays(7) },
+    body: { lead: lead._id, mould: mouldId, quantity: 5, requiredDate: inDays(7) },
   });
   assert.equal(sample.status, 201, sample.json.message);
 
@@ -308,7 +312,7 @@ test('a rejected enquiry leaves no customer behind', async () => {
   const { status } = await convert(lead, {
     customer: { name: `Half Made Mills ${seq}` },
     // No next action, which §3 refuses on an open enquiry.
-    enquiry: { product: productId, requirement: { quantity: 5000, modelNumber: 'NPT-400S' } },
+    enquiry: { mould: mouldId, requirement: { quantity: 5000, modelNumber: 'NPT-400S' } },
   });
   assert.equal(status, 400);
 
@@ -325,7 +329,7 @@ test('a rejected enquiry on the attach path changes nothing either', async () =>
 
   const { status } = await convert(lead, {
     existingCustomer: customer._id,
-    enquiry: { product: productId, requirement: { quantity: 5000, modelNumber: 'NPT-400S' } },
+    enquiry: { mould: mouldId, requirement: { quantity: 5000, modelNumber: 'NPT-400S' } },
   });
   assert.equal(status, 400);
 

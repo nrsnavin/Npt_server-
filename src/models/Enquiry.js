@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { CUSTOMER_SOURCES } from './Customer.js';
-import { HANGER_CATEGORIES, MATERIALS } from './Product.js';
+import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
 import { withConversationRef } from './conversationRef.js';
 import { ENQUIRY_NEXT_ACTION_TYPES } from '../services/enquiryActions.js';
 
@@ -178,11 +178,16 @@ const enquirySchema = new mongoose.Schema(
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
     /**
-     * Set when the requirement matches a catalogue model. Left empty for a new development:
-     * the product record is created once sampling develops it and the buyer approves, and
-     * this is filled in then.
+     * The tool that makes what was asked for, where one exists [§28].
+     *
+     * Empty in the two cases that matter. A **new development** has no tool yet: the mould is
+     * cut once sampling develops the model and the buyer approves, and this is filled in then.
+     * A **traded** item never has one — five of the twenty-five models on the plant's own 26-27
+     * sheet are bought in and resold — and for those the buyer's `requirement.modelNumber` is
+     * the whole of what identifies the piece. So an empty mould here means "not made on our
+     * steel", which is a real and common answer rather than a gap in the data.
      */
-    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould' },
     isNewDevelopment: { type: Boolean, default: false },
 
     requirement: { type: requirementSchema, required: true },

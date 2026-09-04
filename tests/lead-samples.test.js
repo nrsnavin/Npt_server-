@@ -29,7 +29,7 @@ let baseUrl;
 let admin;
 let nandhini;
 let priya;
-let productId;
+let mouldId;
 let customerId;
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
@@ -74,7 +74,7 @@ const requestSample = (lead, token = nandhini, extra = {}) =>
     token,
     body: {
       lead: lead._id ?? lead,
-      product: productId,
+      mould: mouldId,
       quantity: 5,
       purpose: 'buyer_approval',
       requiredDate: inDays(7),
@@ -108,12 +108,16 @@ test.before(async () => {
   nandhini = await signIn('nandhini@np.com', 'Mktg@123456');
   priya = await signIn('priya@np.com', 'Mktg@123456');
 
-  const product = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
-    body: { modelCode: 'NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic' },
+    body: {
+      mouldCode: 'M-NPT-400S', name: 'Shirt Hanger 400mm', category: 'shirt', sizeMm: 400, material: 'plastic',
+      /* Measured facts, which the register will not take a model without. */
+      cavities: 4, partWeightGrams: 26, cycleTimeSeconds: 28, moq: 5000,
+    },
   });
-  productId = product.json.data._id;
+  mouldId = madeMould.json.data._id;
 
   const customer = await api('/api/customers', {
     method: 'POST',
@@ -255,7 +259,7 @@ test('conversion does not guess which sample belongs to the new enquiry', async 
     body: {
       customer: { name: `Twin Sample Mills ${leadSeq}`, mobile: `98400${String(41000 + leadSeq)}` },
       enquiry: {
-        product: productId,
+        mould: mouldId,
         requirement: { quantity: 10000, modelNumber: 'NPT-400S' },
         nextAction: 'Send the quote',
         nextFollowUpDate: inDays(3),
@@ -286,7 +290,7 @@ test('marketing may attach a lead sample to the enquiry it turns into', async ()
     body: {
       customer: { name: `Linkable Mills ${leadSeq}`, mobile: `98400${String(61000 + leadSeq)}` },
       enquiry: {
-        product: productId,
+        mould: mouldId,
         requirement: { quantity: 8000, modelNumber: 'NPT-400S' },
         nextAction: 'Send the quote',
         nextFollowUpDate: inDays(3),

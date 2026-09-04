@@ -2,7 +2,7 @@ import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
-import Product from '../models/Product.js';
+import Mould from '../models/Mould.js';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -23,8 +23,8 @@ const SOURCES = {
   Lead: { model: Lead, module: 'enquiries', ownership: 'assignedTo' },
   Enquiry: { model: Enquiry, module: 'enquiries', ownership: 'assignedTo' },
   Sample: { model: Sample, module: 'samples', ownership: 'requestedBy' },
-  // The catalogue is shared, so there is no owner to check — only the grant.
-  Product: { model: Product, module: 'products', ownership: null },
+  // The register is shared, so there is no owner to check — only the grant.
+  Mould: { model: Mould, module: 'moulds', ownership: null },
   // A person's own trail — who took their book when they left. Administration's business,
   // so it hangs off the users grant rather than off an owner.
   User: { model: User, module: 'users', ownership: null },

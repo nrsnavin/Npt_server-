@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from './Product.js';
+import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from './Mould.js';
 
 /**
  * The sample statuses [BLUEPRINT §4], in the order work moves through them.
@@ -109,8 +109,9 @@ const sampleSchema = new mongoose.Schema(
     /** The sample-team member working it. Empty until someone picks it up. */
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
 
-    /** Empty for a new development, exactly as on the enquiry that raised it. */
-    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    /** The tool it is made on. Empty for a new development or a traded piece, exactly as on
+        the enquiry that raised it. */
+    mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould' },
 
     modelNumber: { type: String, trim: true },
     category: { type: String, enum: HANGER_CATEGORIES },

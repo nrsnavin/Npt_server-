@@ -23,7 +23,7 @@ let meera;
 let Sample;
 let percentile;
 let summarise;
-let productId;
+let mouldId;
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -103,19 +103,22 @@ test.before(async () => {
   nandhini = await signIn('nandhini@np.com', 'Mktg@123456');
   meera = await signIn('meera@np.com', 'Samp@123456');
 
-  const product = await api('/api/products', {
+  const madeMould = await api('/api/moulds', {
     method: 'POST',
     token: admin,
     body: {
-      modelCode: 'NPT-400S',
+      mouldCode: 'M-NPT-400S',
       name: 'Shirt Hanger 400mm',
       category: 'shirt',
       sizeMm: 400,
-      material: 'plastic',
+      material: 'pp',
       hookType: 'metal_swivel',
+      cavities: 4,
+      partWeightGrams: 26,
+      cycleTimeSeconds: 28,
     },
   });
-  productId = product.json.data._id;
+  mouldId = madeMould.json.data._id;
 });
 
 test.after(async () => {
@@ -292,7 +295,7 @@ test('analytics respect who is asking', async () => {
 
 /* --------------------- The gap the analytics surfaced --------------------- */
 
-test('a sample takes its hook type from the model it is of', async () => {
+test('a sample takes its hook type from the tool it is made on', async () => {
   const customer = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
@@ -302,17 +305,18 @@ test('a sample takes its hook type from the model it is of', async () => {
   const { json } = await api('/api/samples', {
     method: 'POST',
     token: meera,
-    body: { customer: customer.json.data._id, product: productId, quantity: 2 },
+    body: { customer: customer.json.data._id, mould: mouldId, quantity: 2 },
   });
 
   // An enquiry's requirement has no hook type — a buyer asks for a model, not for a swivel —
-  // so without this every sample was blank and hook analytics had nothing to segment on.
+  // so without this every sample was blank and hook analytics had nothing to segment on. The
+  // tool is the better source besides: all three are cut into the steel.
   assert.equal(json.data.hookType, 'metal_swivel');
   assert.equal(json.data.category, 'shirt');
-  assert.equal(json.data.material, 'plastic');
+  assert.equal(json.data.material, 'pp');
 });
 
-test('what the request says beats what the catalogue says', async () => {
+test('what the request says beats what the register says', async () => {
   const customer = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
@@ -324,7 +328,7 @@ test('what the request says beats what the catalogue says', async () => {
     token: meera,
     body: {
       customer: customer.json.data._id,
-      product: productId,
+      mould: mouldId,
       quantity: 2,
       hookType: 'clip',
       material: 'recycled_pp',

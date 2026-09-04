@@ -3,7 +3,7 @@ import User from '../models/User.js';
 import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
 import Lead from '../models/Lead.js';
-import Product from '../models/Product.js';
+import Mould from '../models/Mould.js';
 
 /**
  * Diffing a record before and after a save, and writing down what moved.
@@ -153,9 +153,9 @@ export async function recordChange({ model, doc, before, by, action = 'updated',
 /**
  * Fields whose value is a reference, and how to say which record it points at.
  *
- * Keyed on the last segment of the dot path, so `requirement.product` resolves the same way
- * `product` does. A field that is not here keeps its raw value — an unrecognised id is at
- * least honest, where a guess would not be.
+ * Keyed on the last segment of the dot path, so `lines.mould` resolves the same way `mould`
+ * does. A field that is not here keeps its raw value — an unrecognised id is at least honest,
+ * where a guess would not be.
  */
 const REFERENCED = {
   assignedTo: { model: User, label: (row) => row.name },
@@ -165,7 +165,7 @@ const REFERENCED = {
   customer: { model: Customer, label: (row) => (row.code ? `${row.name} (${row.code})` : row.name) },
   enquiry: { model: Enquiry, label: (row) => row.number },
   lead: { model: Lead, label: (row) => row.company },
-  product: { model: Product, label: (row) => row.modelCode },
+  mould: { model: Mould, label: (row) => row.mouldCode },
 };
 
 const OBJECT_ID = /^[0-9a-f]{24}$/i;

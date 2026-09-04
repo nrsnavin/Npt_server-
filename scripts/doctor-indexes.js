@@ -19,7 +19,6 @@ import '../src/models/Todo.js';
 import '../src/models/StickyNote.js';
 import '../src/models/Announcement.js';
 import '../src/models/Counter.js';
-import '../src/models/Product.js';
 import '../src/models/Customer.js';
 import '../src/models/Lead.js';
 import '../src/models/Enquiry.js';
