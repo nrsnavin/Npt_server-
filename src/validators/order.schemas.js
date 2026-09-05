@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS } from '../models/Mould.js';
-import { VERIFICATION_KEYS } from '../models/SalesOrder.js';
+import { PRODUCTION_STATUSES, VERIFICATION_KEYS } from '../models/SalesOrder.js';
 import { URGENCY_KEYS } from '../models/OrderQuery.js';
 import { ORDER_ACTION_KEYS } from '../services/orderActions.js';
 import { objectId } from './schemas.js';
@@ -158,3 +158,33 @@ export const orderAnswerSchema = z.object({
 export const orderQueryCloseSchema = z.object({
   note: z.string().max(4000).optional(),
 });
+
+/* --------------------------------- Production --------------------------------- */
+
+/**
+ * What the plant records against one line [§14–17].
+ *
+ * Strict, so a screen posting a price or a quantity here is refused rather than quietly
+ * ignored: the ordered quantity belongs to the order and the rate belongs to the offer, and
+ * neither is production's to change. A patch that silently dropped one would look like it
+ * worked.
+ *
+ * `producedQty` is deliberately not capped against the ordered quantity — over-production is
+ * ordinary, and the quotation's own terms accept ±5% on moulded items as full delivery. The one
+ * invariant that does hold, packed never above made, needs both figures and so lives in the
+ * controller where the stored line is in hand.
+ */
+export const productionLineSchema = z
+  .strictObject({
+    status: z.enum(PRODUCTION_STATUSES).optional(),
+    plannedQty: z.number().int().nonnegative().optional(),
+    producedQty: z.number().int().nonnegative().optional(),
+    readyQty: z.number().int().nonnegative().optional(),
+    plannedStart: z.coerce.date().optional(),
+    expectedCompletion: z.coerce.date().optional(),
+    actualStart: z.coerce.date().optional(),
+    /** Required by the controller whenever the status is one that means nothing is moving. */
+    holdReason: z.string().max(500).optional(),
+    remarks: z.string().max(2000).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, { message: 'Nothing to record' });

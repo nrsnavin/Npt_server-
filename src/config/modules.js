@@ -93,12 +93,13 @@ export const MODULES = [
   {
     key: 'production',
     label: 'Production status',
-    description: 'Customer-facing production visibility: planned, produced, ready and balance quantity, with part release.',
+    description:
+      'Customer-facing visibility per order line: planned, made, packed and still to make, with the date the plant agreed.',
     group: 'Pipeline',
     stage: 6,
     ownerDepartment: 'production',
     blueprint: '14-17',
-    available: false,
+    available: true,
   },
   {
     key: 'quality',

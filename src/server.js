@@ -6,6 +6,7 @@ import { configurationProblem as smtpConfigurationProblem } from './services/not
 import { runSamplingEscalations } from './services/escalation.service.js';
 import { runStallSweep, runLeadStaleSweep } from './services/anomaly.service.js';
 import { runQueryEscalations } from './services/queryEscalation.service.js';
+import { runProductionEscalations } from './services/productionEscalation.service.js';
 import { isConfigured as isIndiamartConfigured } from './services/indiamart.client.js';
 import { syncIndiamartLeads } from './services/indiamart.ingest.js';
 
@@ -91,6 +92,15 @@ function startEscalationSweep() {
         console.log(
           `Order questions: raised ${questions.length} ` +
             `(${questions.map((entry) => `${entry.query} L${entry.level}`).join(', ')})`
+        );
+      }
+
+      /* And the jobs past the date the plant itself agreed [§25]. */
+      const late = await runProductionEscalations();
+      if (late.length) {
+        console.log(
+          `Late production: raised ${late.length} ` +
+            `(${late.map((entry) => `${entry.order} ${entry.daysLate}d`).join(', ')})`
         );
       }
     } catch (error) {

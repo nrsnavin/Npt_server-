@@ -130,6 +130,16 @@ const productionSchema = new mongoose.Schema(
     /** Why it is held, when it is. A hold with no reason is a hold nobody can clear. */
     holdReason: { type: String, trim: true },
     remarks: String,
+
+    /**
+     * When §25's alarm rang for this line, so it rings once rather than on every sweep.
+     *
+     * A timestamp rather than the tier counter the sampling escalation uses, because §25 gives
+     * production one threshold and three audiences at the same moment rather than a ladder —
+     * so there is nothing to count, and a line that slips again after being re-dated is caught
+     * by the date moving rather than by a level.
+     */
+    escalatedAt: Date,
   },
   { _id: false }
 );
@@ -186,6 +196,40 @@ lineSchema.virtual('lineValue').get(function lineValue() {
 /** True once the plant says every ordered piece is packed. */
 lineSchema.virtual('isMade').get(function isMade() {
   return (this.production?.readyQty || 0) >= this.quantity;
+});
+
+/**
+ * What production still owes on this line.
+ *
+ * Derived, never stored. A stored figure goes stale the first time somebody corrects a produced
+ * count and nothing announces that it has — the same argument the mould register makes about
+ * consumption per piece, and the reason that register can be trusted.
+ *
+ * Floored at zero because over-production is ordinary rather than an error: the quotation's own
+ * terms accept ±5% on moulded items as full delivery, so a 50,000 line finishing at 51,200 owes
+ * nothing rather than owing minus 1,200.
+ */
+lineSchema.virtual('toMakeQty').get(function toMakeQty() {
+  return Math.max(0, this.quantity - (this.production?.producedQty || 0));
+});
+
+/** How far through this line the plant is, as a percentage of what was ordered. */
+lineSchema.virtual('madePercent').get(function madePercent() {
+  if (!this.quantity) return 0;
+  return Math.min(100, Math.round(((this.production?.producedQty || 0) / this.quantity) * 100));
+});
+
+/**
+ * Past the date the plant agreed, with pieces still owed [§25].
+ *
+ * Both halves matter. A line past its date that is finished is not late — it was delivered —
+ * and a line still running inside its date is not late either. Only the pair is a problem, and
+ * an alarm on either half alone is an alarm that cries wolf.
+ */
+lineSchema.virtual('isOverdue').get(function isOverdue() {
+  const due = this.production?.expectedCompletion;
+  if (!due || this.production?.status === 'completed') return false;
+  return new Date(due) < new Date() && this.toMakeQty > 0;
 });
 
 lineSchema.set('toJSON', { virtuals: true });
@@ -287,6 +331,25 @@ salesOrderSchema.virtual('lineCount').get(function lineCount() {
 /** Pieces on the whole order, which is what a plant schedules against. */
 salesOrderSchema.virtual('orderedQty').get(function orderedQty() {
   return (this.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0);
+});
+
+/** Summed over the lines, because production happens per line and is read per order. */
+salesOrderSchema.virtual('producedQty').get(function producedQty() {
+  return (this.lines || []).reduce((sum, line) => sum + (line.production?.producedQty || 0), 0);
+});
+
+salesOrderSchema.virtual('readyQty').get(function readyQty() {
+  return (this.lines || []).reduce((sum, line) => sum + (line.production?.readyQty || 0), 0);
+});
+
+/** What the plant still owes across the whole order. */
+salesOrderSchema.virtual('toMakeQty').get(function toMakeQty() {
+  return (this.lines || []).reduce((sum, line) => sum + line.toMakeQty, 0);
+});
+
+/** Any line past the date the plant agreed with pieces still owed — the §25 trigger. */
+salesOrderSchema.virtual('hasOverdueLine').get(function hasOverdueLine() {
+  return (this.lines || []).some((line) => line.isOverdue);
 });
 
 salesOrderSchema.virtual('isOpen').get(function isOpen() {

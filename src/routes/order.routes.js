@@ -7,6 +7,9 @@ import {
 import {
   listOrderQueries, listQueryQueue, raiseOrderQuery, answerOrderQuery, closeOrderQuery,
 } from '../controllers/orderQuery.controller.js';
+import {
+  listProductionLines, exportProductionLines, updateProductionLine, listProductionStatuses,
+} from '../controllers/production.controller.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { singleDocument } from '../middleware/upload.js';
@@ -14,6 +17,7 @@ import {
   orderSchema, orderUpdateSchema, orderFromQuotationSchema,
   orderCheckSchema, orderActionSchema,
   orderQuerySchema, orderAnswerSchema, orderQueryCloseSchema,
+  productionLineSchema,
 } from '../validators/order.schemas.js';
 
 const router = Router();
@@ -82,6 +86,27 @@ router.get('/orders/:id/queries', requireModule('orders'), listOrderQueries);
 router.post('/orders/:id/queries', requireModule('orders'), validate(orderQuerySchema), raiseOrderQuery);
 router.post('/orders/:id/queries/:queryId/answers', requireModule('orders'), validate(orderAnswerSchema), answerOrderQuery);
 router.post('/orders/:id/queries/:queryId/close', requireModule('orders'), validate(orderQueryCloseSchema), closeOrderQuery);
+
+/*
+ * Production status [§14-17].
+ *
+ * On the `production` grant rather than the `orders` one, and the split is the point: the plant
+ * holds orders at read and production at write, because what they change is how far a job has
+ * got — not what was ordered or what it costs. Marketing holds the mirror of that, and reads
+ * the plant's answer without being able to type it.
+ *
+ * The line is the unit throughout. §17's part delivery is only meaningful where the count
+ * actually differs, and on a two-model order that is per line and never per document.
+ */
+router.get('/production/statuses', requireModule('production'), listProductionStatuses);
+router.get('/production/export', requireModule('production'), exportProductionLines);
+router.get('/production', requireModule('production'), listProductionLines);
+router.patch(
+  '/orders/:id/lines/:lineId/production',
+  requireModule('production', 'write'),
+  validate(productionLineSchema),
+  updateProductionLine
+);
 
 /*
  * An accepted quotation becoming an order.
