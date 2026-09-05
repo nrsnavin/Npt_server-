@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS } from '../models/Mould.js';
 import { VERIFICATION_KEYS } from '../models/SalesOrder.js';
+import { URGENCY_KEYS } from '../models/OrderQuery.js';
 import { ORDER_ACTION_KEYS } from '../services/orderActions.js';
 import { objectId } from './schemas.js';
 import { versioned } from './pipeline.schemas.js';
@@ -130,4 +131,30 @@ export const orderActionSchema = z.object({
   note: z.string().optional(),
   clarificationNote: z.string().optional(),
   cancellationReason: z.string().optional(),
+});
+
+/* ------------------------------- Order queries ------------------------------- */
+
+/**
+ * Asking a question about an order.
+ *
+ * `askedOf` is checked against the live department list in the controller rather than pinned to
+ * an enum here, so adding a department to the access catalogue does not need a second edit in
+ * a validator that would otherwise refuse it with "invalid enum value".
+ */
+export const orderQuerySchema = z.object({
+  /** The line it is about, when it is about one. Absent means the order as a whole. */
+  line: objectId.optional(),
+  askedOf: z.string().min(2),
+  question: z.string().min(3, 'Say what you want to know').max(2000),
+  urgency: z.enum(URGENCY_KEYS).optional(),
+});
+
+export const orderAnswerSchema = z.object({
+  body: z.string().min(1, 'An empty answer answers nothing').max(4000),
+});
+
+/** Closing. The note is required only when nothing was ever answered — see the controller. */
+export const orderQueryCloseSchema = z.object({
+  note: z.string().max(4000).optional(),
 });

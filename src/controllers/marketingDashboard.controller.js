@@ -1,4 +1,5 @@
 import Customer from '../models/Customer.js';
+import OrderQuery from '../models/OrderQuery.js';
 import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
 import Sample, { WITH_CUSTOMER_STATUSES, CLOSED_SAMPLE_STATUSES } from '../models/Sample.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -67,7 +68,7 @@ export const marketingDashboard = asyncHandler(async (req, res) => {
   const startOfMonth = new Date(startOfToday.getFullYear(), startOfToday.getMonth(), 1);
   const dormantBefore = new Date(now - DORMANT_DAYS * DAY);
 
-  const [enquiries, samples, customers] = await Promise.all([
+  const [enquiries, samples, customers, questions] = await Promise.all([
     Enquiry.find(scope)
       .select('number status enquiryDate requirement estimatedValue nextAction nextFollowUpDate customer lostReason source')
       .populate('customer', 'name'),
@@ -75,6 +76,17 @@ export const marketingDashboard = asyncHandler(async (req, res) => {
       .select('number status requestedAt requiredDate modelNumber customer dispatchedAt statusHistory')
       .populate('customer', 'name'),
     Customer.find(scope).select('code name'),
+    /*
+     * The questions this person has asked and not had answered.
+     *
+     * Scoped to the asker rather than to the order's owner, because that is who is waiting: a
+     * marketing person's dashboard should carry what *they* are owed. A clock nobody sees is a
+     * clock nobody hears, and this figure is the whole reason the query thread is not simply a
+     * nicer-looking inbox.
+     */
+    OrderQuery.find({ raisedBy: req.user._id, status: 'open' })
+      .select('number question askedOf dueBy createdAt order')
+      .populate('order', 'number'),
   ]);
 
   const openEnquiries = enquiries.filter((entry) => !CLOSED_STATUSES.includes(entry.status));
@@ -180,6 +192,9 @@ export const marketingDashboard = asyncHandler(async (req, res) => {
     .filter((row) => !row.lastEnquiryAt || row.lastEnquiryAt < dormantBefore)
     .sort((a, b) => (a.lastEnquiryAt || 0) - (b.lastEnquiryAt || 0));
 
+  /* Past the time it was promised, which is the half worth colouring red. */
+  const questionsOverdue = questions.filter((row) => row.dueBy && new Date(row.dueBy) < new Date(now));
+
   res.json({
     success: true,
     data: {
@@ -189,6 +204,20 @@ export const marketingDashboard = asyncHandler(async (req, res) => {
         noNextAction: { count: noNextAction.length, rows: noNextAction.slice(0, TOP).map((e) => enquiryCard(e, startOfToday)) },
         awaitingFeedback: { count: awaitingFeedback.length, rows: awaitingFeedback.slice(0, TOP) },
         samplesOverdue: { count: samplesOverdue.length, rows: samplesOverdue.slice(0, TOP) },
+        questionsUnanswered: {
+          count: questions.length,
+          overdue: questionsOverdue.length,
+          rows: questions.slice(0, TOP).map((row) => ({
+            _id: row._id,
+            number: row.number,
+            order: row.order?.number || null,
+            orderId: row.order?._id || null,
+            askedOf: row.askedOf,
+            question: row.question,
+            dueBy: row.dueBy,
+            overdue: Boolean(row.dueBy && new Date(row.dueBy) < new Date(now)),
+          })),
+        },
       },
       performance: {
         openEnquiries: { count: openEnquiries.length, value: value(openEnquiries) },

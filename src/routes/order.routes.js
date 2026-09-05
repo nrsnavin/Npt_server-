@@ -4,12 +4,16 @@ import {
   createOrder, orderFromQuotation, updateOrder,
   setOrderCheck, applyOrderAction, listOrderActions, setOrderPo,
 } from '../controllers/order.controller.js';
+import {
+  listOrderQueries, listQueryQueue, raiseOrderQuery, answerOrderQuery, closeOrderQuery,
+} from '../controllers/orderQuery.controller.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { singleDocument } from '../middleware/upload.js';
 import {
   orderSchema, orderUpdateSchema, orderFromQuotationSchema,
   orderCheckSchema, orderActionSchema,
+  orderQuerySchema, orderAnswerSchema, orderQueryCloseSchema,
 } from '../validators/order.schemas.js';
 
 const router = Router();
@@ -33,6 +37,12 @@ router.use(authenticate);
 router.get('/orders/export', requireModule('orders'), exportOrders);
 router.get('/orders/board', requireModule('orders'), orderBoard);
 
+/*
+ * The query queue: what is being asked of a department, across every order. Above `/orders`
+ * only for tidiness — it is its own path — but above `/orders/:id` for the usual reason.
+ */
+router.get('/order-queries', requireModule('orders'), listQueryQueue);
+
 router.get('/orders', requireModule('orders'), listOrders);
 router.post('/orders', requireModule('orders', 'write'), validate(orderSchema), createOrder);
 router.get('/orders/:id', requireModule('orders'), getOrder);
@@ -54,6 +64,24 @@ router.put('/orders/:id/po', requireModule('orders', 'write'), singleDocument('f
 router.post('/orders/:id/checks', requireModule('orders', 'write'), validate(orderCheckSchema), setOrderCheck);
 router.get('/orders/:id/actions', requireModule('orders'), listOrderActions);
 router.post('/orders/:id/actions', requireModule('orders', 'write'), validate(orderActionSchema), applyOrderAction);
+
+/*
+ * Questions about an order [§25 for the clock].
+ *
+ * All on the *read* grant, and that is deliberate rather than lax. Raising a query writes a
+ * query, not the order — and marketing, the department this feature exists for, holds orders at
+ * read. Gating it on write would leave the asking to order confirmation, who are not the people
+ * with questions. Nothing on these routes changes an order, and the order's own ownership check
+ * runs inside every one of them: a question about an order you may not open is refused the same
+ * way the order is.
+ *
+ * Closing is restricted in the controller instead, because the rule is about *who asked* rather
+ * than about which grant they hold — and a route cannot know that.
+ */
+router.get('/orders/:id/queries', requireModule('orders'), listOrderQueries);
+router.post('/orders/:id/queries', requireModule('orders'), validate(orderQuerySchema), raiseOrderQuery);
+router.post('/orders/:id/queries/:queryId/answers', requireModule('orders'), validate(orderAnswerSchema), answerOrderQuery);
+router.post('/orders/:id/queries/:queryId/close', requireModule('orders'), validate(orderQueryCloseSchema), closeOrderQuery);
 
 /*
  * An accepted quotation becoming an order.

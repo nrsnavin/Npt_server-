@@ -5,6 +5,7 @@ import { configurationProblem, isConfigured } from './providers/twilio.js';
 import { configurationProblem as smtpConfigurationProblem } from './services/notification.service.js';
 import { runSamplingEscalations } from './services/escalation.service.js';
 import { runStallSweep, runLeadStaleSweep } from './services/anomaly.service.js';
+import { runQueryEscalations } from './services/queryEscalation.service.js';
 import { isConfigured as isIndiamartConfigured } from './services/indiamart.client.js';
 import { syncIndiamartLeads } from './services/indiamart.ingest.js';
 
@@ -77,6 +78,19 @@ function startEscalationSweep() {
         console.log(
           `Stalled samples: told management about ${stalled.length} ` +
             `(${stalled.map((entry) => `${entry.sample} ${entry.idleDays}d`).join(', ')})`
+        );
+      }
+
+      /*
+       * And the questions nobody has answered. On the same timer for the same reason as the
+       * others: it is the clock that makes a query different from a WhatsApp message, and a
+       * clock nobody winds is a decoration.
+       */
+      const questions = await runQueryEscalations();
+      if (questions.length) {
+        console.log(
+          `Order questions: raised ${questions.length} ` +
+            `(${questions.map((entry) => `${entry.query} L${entry.level}`).join(', ')})`
         );
       }
     } catch (error) {
