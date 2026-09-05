@@ -82,12 +82,13 @@ export const MODULES = [
   {
     key: 'orders',
     label: 'Sales orders',
-    description: 'Customer PO capture, order verification, and release to production once every check is complete.',
+    description:
+      'Customer PO capture, the eight-check verification gate, and release to production once every one of them is ticked.',
     group: 'Pipeline',
     stage: 5,
     ownerDepartment: 'order_confirmation',
     blueprint: '12-13',
-    available: false,
+    available: true,
   },
   {
     key: 'production',

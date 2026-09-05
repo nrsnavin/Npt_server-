@@ -5,6 +5,7 @@ import userRoutes from './user.routes.js';
 import workspaceRoutes from './workspace.routes.js';
 import pipelineRoutes from './pipeline.routes.js';
 import pricingRoutes from './pricing.routes.js';
+import orderRoutes from './order.routes.js';
 import sampleRoutes from './sample.routes.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
 import { globalSearch } from '../controllers/search.controller.js';
@@ -57,6 +58,12 @@ router.get('/files/:key', authenticate, downloadAttachment);
 // Phase 3 [§39]: costings and quotations. Mounted before the catch-all pipeline routes so
 // their literal segments win.
 router.use('/', pricingRoutes);
+/*
+ * Phase 4 [§12-13]: sales orders. Above the pipeline routes for the same reason, and above
+ * nothing else — it owns `/orders` outright, and its one borrowed segment, `/quotations/:id/
+ * order`, is a literal that cannot collide with the quotation routes' own `/:id`.
+ */
+router.use('/', orderRoutes);
 router.use('/', pipelineRoutes);
 
 export default router;

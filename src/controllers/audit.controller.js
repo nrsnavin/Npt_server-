@@ -2,6 +2,7 @@ import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
+import SalesOrder from '../models/SalesOrder.js';
 import Mould from '../models/Mould.js';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
@@ -23,6 +24,11 @@ const SOURCES = {
   Lead: { model: Lead, module: 'enquiries', ownership: 'assignedTo' },
   Enquiry: { model: Enquiry, module: 'enquiries', ownership: 'assignedTo' },
   Sample: { model: Sample, module: 'samples', ownership: 'requestedBy' },
+  /*
+   * Whose order it is, is whose customer it is [§29] — the same rule the enquiry behind it
+   * runs on, so reading who ticked which check is gated the same way as reading the order.
+   */
+  SalesOrder: { model: SalesOrder, module: 'orders', ownership: 'assignedTo' },
   // The register is shared, so there is no owner to check — only the grant.
   Mould: { model: Mould, module: 'moulds', ownership: null },
   // A person's own trail — who took their book when they left. Administration's business,

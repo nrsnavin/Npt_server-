@@ -243,3 +243,60 @@ export function assertMayCost(user) {
     throw ApiError.forbidden('Only costing or management can build a costing sheet');
   }
 }
+
+/* ------------------------------- Sales orders ------------------------------- */
+
+/**
+ * Who may see what an order is worth.
+ *
+ * **Not `seesCosting`, and the difference matters.** §8 protects the *cost base* — the resin
+ * rate, the conversion, the floor — because that is what walks out of the door with somebody
+ * who leaves. What a customer agreed to pay is a different secret with a different shape: order
+ * confirmation books it, accounts invoices against it, and neither can do their job blind.
+ * Gating this on costing hid the order value from the very department that owns the module.
+ *
+ * So the rule is the one the grants already draw: whoever may read a quotation may see what
+ * was agreed on the order it became, and whoever chases the money may see what is owed. That
+ * is marketing, order confirmation, accounts and management — and not production, quality,
+ * despatch or sampling, none of whom hold either grant and none of whom need the figure.
+ */
+export const seesOrderValue = (user) =>
+  user?.role === 'admin' ||
+  Boolean(accessLevel(user, 'quotations')) ||
+  Boolean(accessLevel(user, 'payments'));
+
+/**
+ * One order, as this person is allowed to see it.
+ *
+ * An order line carries the rate it was sold at, and the plant does not need it: production
+ * needs the model, the quantity and the date, and despatch needs the quantity and the address.
+ * An order detail page is the easiest place in the whole system to read a price off in passing.
+ *
+ * An allow-list on the way out rather than a `.select()` on the way in, for the reason written
+ * at the top of this file: the line's `lineValue` and the order's `netValue` are virtuals, and
+ * a virtual recomputes on serialisation whatever was projected. Projecting `unitPrice` away
+ * would hide the column and leave the totals sitting underneath it, which is not a redaction
+ * but a subtraction problem with the answer printed next to it.
+ *
+ * What survives is the shape of the order without its money: how many pieces, of what, by when,
+ * and how far the plant has got. That is what the people downstream actually need.
+ */
+export function orderVisibleTo(order, user) {
+  const plain = typeof order?.toJSON === 'function' ? order.toJSON() : { ...order };
+  if (seesOrderValue(user)) return plain;
+
+  delete plain.netValue;
+  delete plain.totalValue;
+  delete plain.gstPercent;
+  delete plain.paymentTerms;
+
+  plain.lines = (plain.lines || []).map((line) => {
+    const { unitPrice, lineValue, pricing, ...rest } = line;
+    return rest;
+  });
+
+  plain.valueHidden = true;
+  return plain;
+}
+
+export const allOrdersVisibleTo = (rows, user) => rows.map((row) => orderVisibleTo(row, user));

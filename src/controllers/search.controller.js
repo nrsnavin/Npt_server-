@@ -2,6 +2,7 @@ import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
+import SalesOrder from '../models/SalesOrder.js';
 import Mould from '../models/Mould.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -129,6 +130,28 @@ export const globalSearch = asyncHandler(async (req, res) => {
       title: (row) => row.number,
       subtitle: (row) =>
         [row.customer?.name, row.requirement?.modelNumber, readable(row.status)]
+          .filter(Boolean)
+          .join(' · '),
+    },
+    {
+      /*
+       * A PO number is what a buyer quotes down the phone, far more often than our own order
+       * number — so it is searchable, and it is the field this source exists for.
+       */
+      key: 'orders',
+      label: 'Sales orders',
+      module: 'orders',
+      model: SalesOrder,
+      fields: ['number', 'customerPo.number', 'lines.modelNumber'],
+      related: true,
+      scope: () => ownershipFilter(user),
+      select: 'number status orderDate customerPo.number customer lines.modelNumber',
+      populate: { path: 'customer', select: 'name' },
+      sort: '-orderDate',
+      link: (row) => `/orders/${row._id}`,
+      title: (row) => row.number,
+      subtitle: (row) =>
+        [row.customer?.name, row.customerPo?.number, readable(row.status)]
           .filter(Boolean)
           .join(' · '),
     },
