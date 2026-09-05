@@ -300,3 +300,38 @@ export function orderVisibleTo(order, user) {
 }
 
 export const allOrdersVisibleTo = (rows, user) => rows.map((row) => orderVisibleTo(row, user));
+
+/* -------------------------------- Consignments -------------------------------- */
+
+/**
+ * One consignment, as this person is allowed to see it [§18–19].
+ *
+ * Almost everything on a dispatch is meant to be read widely, and that is the module's whole
+ * purpose: §19 exists so marketing stops ringing despatch to ask which lorry. The quantity, the
+ * destination, the transporter, the vehicle, the invoice *number*, the LR and the dates all go
+ * to anybody who may open it.
+ *
+ * The invoice **value** does not, and it is the one field here that behaves like a price. It is
+ * the order's own money arriving through a second door — a consignment for the whole of a
+ * 50,000-piece line states what that line is worth, and a despatch clerk who may not see the
+ * rate on the order can divide. Same rule as the order, read off the same grants: whoever may
+ * read a quotation or chase a payment sees it, and nobody else.
+ *
+ * Note that despatch and production hold neither grant by default, and that is right. They
+ * prepare the paperwork against a figure accounts gives them; what the goods are worth is not
+ * a fact they need in order to load a lorry.
+ */
+export function dispatchVisibleTo(dispatch, user) {
+  const plain = typeof dispatch?.toJSON === 'function' ? dispatch.toJSON() : { ...dispatch };
+  if (seesOrderValue(user)) return plain;
+
+  if (plain.invoice) {
+    const { value, ...invoice } = plain.invoice;
+    plain.invoice = invoice;
+  }
+
+  plain.valueHidden = true;
+  return plain;
+}
+
+export const allDispatchesVisibleTo = (rows, user) => rows.map((row) => dispatchVisibleTo(row, user));

@@ -7,6 +7,7 @@ import { runSamplingEscalations } from './services/escalation.service.js';
 import { runStallSweep, runLeadStaleSweep } from './services/anomaly.service.js';
 import { runQueryEscalations } from './services/queryEscalation.service.js';
 import { runProductionEscalations } from './services/productionEscalation.service.js';
+import { runDispatchEscalations } from './services/dispatchEscalation.service.js';
 import { isConfigured as isIndiamartConfigured } from './services/indiamart.client.js';
 import { syncIndiamartLeads } from './services/indiamart.ingest.js';
 
@@ -101,6 +102,20 @@ function startEscalationSweep() {
         console.log(
           `Late production: raised ${late.length} ` +
             `(${late.map((entry) => `${entry.order} ${entry.daysLate}d`).join(', ')})`
+        );
+      }
+
+      /*
+       * And the material nobody has collected [§25]. The mirror of the one above: that asks
+       * whether the plant is late, this asks whether the plant finished and the goods are still
+       * standing on the floor — which is the more embarrassing of the two, because everything
+       * the customer is waiting for has already been done.
+       */
+      const sitting = await runDispatchEscalations();
+      if (sitting.length) {
+        console.log(
+          `Undispatched stock: raised ${sitting.length} ` +
+            `(${sitting.map((entry) => `${entry.order} ${entry.daysWaiting}d`).join(', ')})`
         );
       }
     } catch (error) {

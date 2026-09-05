@@ -10,6 +10,11 @@ import {
 import {
   listProductionLines, exportProductionLines, updateProductionLine, listProductionStatuses,
 } from '../controllers/production.controller.js';
+import {
+  listDispatches, dispatchBoard, exportDispatches, getDispatch, listReadyStock,
+  listOrderDispatches, createDispatch, updateDispatch,
+  applyDispatchAction, listDispatchActions, setDispatchPod,
+} from '../controllers/dispatch.controller.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { singleDocument } from '../middleware/upload.js';
@@ -19,6 +24,9 @@ import {
   orderQuerySchema, orderAnswerSchema, orderQueryCloseSchema,
   productionLineSchema,
 } from '../validators/order.schemas.js';
+import {
+  dispatchSchema, dispatchUpdateSchema, dispatchActionSchema,
+} from '../validators/dispatch.schemas.js';
 
 const router = Router();
 
@@ -107,6 +115,47 @@ router.patch(
   validate(productionLineSchema),
   updateProductionLine
 );
+
+/*
+ * Dispatch [§18-19].
+ *
+ * On the `dispatch` grant, which despatch holds at write and marketing, order confirmation,
+ * production and accounts hold at read. That read list is the module's whole purpose: §19 exists
+ * so that the moment a lorry leaves, the person who sold the goods can see the invoice and the
+ * LR without ringing the gate.
+ *
+ * Two routes sit deliberately outside that grant, both on `orders` read instead:
+ *
+ *   `/orders/:id/dispatches` is the tracker panel. It is a question about *an order* — where are
+ *   my customer's goods — asked by the department the order belongs to, and gating it on
+ *   despatch's module would hide it from exactly the people §19 was written for. The order's own
+ *   ownership check runs inside it, so a consignment on an order you may not open is refused the
+ *   same way the order is.
+ *
+ *   Everything that *changes* a consignment stays on `dispatch` write, because loading a lorry
+ *   is despatch's judgement and nobody else's.
+ */
+
+/* Above `/:id` so the literal segments win. `ready` is despatch's own queue: what is packed,
+   what is spoken for, and what is free to put on a lorry today. */
+router.get('/dispatches/export', requireModule('dispatch'), exportDispatches);
+router.get('/dispatches/board', requireModule('dispatch'), dispatchBoard);
+router.get('/dispatches/ready', requireModule('dispatch'), listReadyStock);
+
+router.get('/dispatches', requireModule('dispatch'), listDispatches);
+router.post('/dispatches', requireModule('dispatch', 'write'), validate(dispatchSchema), createDispatch);
+router.get('/dispatches/:id', requireModule('dispatch'), getDispatch);
+router.patch('/dispatches/:id', requireModule('dispatch', 'write'), validate(dispatchUpdateSchema), updateDispatch);
+
+router.get('/dispatches/:id/actions', requireModule('dispatch'), listDispatchActions);
+router.post('/dispatches/:id/actions', requireModule('dispatch', 'write'), validate(dispatchActionSchema), applyDispatchAction);
+
+/* The signed delivery note coming back. A document rather than an image, though both go through
+   the same door — a POD arrives as a photograph from a driver as often as a scan. */
+router.put('/dispatches/:id/pod', requireModule('dispatch', 'write'), singleDocument('file'), setDispatchPod);
+
+/* The tracker panel, on the order's grant — see the note above. */
+router.get('/orders/:id/dispatches', requireModule('orders'), listOrderDispatches);
 
 /*
  * An accepted quotation becoming an order.

@@ -114,12 +114,13 @@ export const MODULES = [
   {
     key: 'dispatch',
     label: 'Dispatch',
-    description: 'Dispatch requests raised from ready quantity, through packing, loading, invoice, LR and delivery.',
+    description:
+      'Consignments raised against packed stock, through packing, loading, invoice, LR and delivery — with what is reserved and what is still free to send.',
     group: 'Pipeline',
     stage: 8,
     ownerDepartment: 'despatch',
     blueprint: '18-19',
-    available: false,
+    available: true,
   },
   {
     key: 'payments',

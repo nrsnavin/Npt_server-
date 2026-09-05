@@ -127,6 +127,17 @@ const productionSchema = new mongoose.Schema(
     actualStart: Date,
     completedAt: Date,
 
+    /**
+     * When material was last added to the packed count [§25's dispatch clock].
+     *
+     * The *last* time rather than the first, and that is what makes the escalation re-arm. A
+     * line packed on Monday, half sent on Tuesday and topped up on Wednesday has new pieces
+     * waiting, and a clock anchored to Monday would either have already fired and stayed quiet,
+     * or would report the new material as three days old. Stamped by the production controller
+     * whenever `readyQty` rises.
+     */
+    readyAt: Date,
+
     /** Why it is held, when it is. A hold with no reason is a hold nobody can clear. */
     holdReason: { type: String, trim: true },
     remarks: String,
@@ -140,6 +151,22 @@ const productionSchema = new mongoose.Schema(
      * by the date moving rather than by a level.
      */
     escalatedAt: Date,
+
+    /**
+     * When despatch was last told this material is sitting, and how much there was [§25].
+     *
+     * Separate from `escalatedAt` above because they are alarms about opposite problems — that
+     * one says the plant is late, this one says the plant finished and nobody collected — and a
+     * single stamp would let either silence the other.
+     *
+     * The *quantity* is what re-arms it, rather than the timestamp. A line escalated at 10,000
+     * packed and then topped up to 30,000 has twenty thousand new pieces standing on the floor,
+     * and that is a new problem however recently the last alarm rang. Comparing timestamps
+     * would answer the neighbouring question — has it been a while since we last shouted —
+     * which nobody is asking.
+     */
+    dispatchEscalatedAt: Date,
+    dispatchEscalatedQty: { type: Number, min: 0 },
   },
   { _id: false }
 );

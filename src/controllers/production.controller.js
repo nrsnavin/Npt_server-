@@ -8,6 +8,7 @@ import { orderVisibleTo } from '../services/pricingVisibility.js';
 import {
   HELD_PRODUCTION_STATUSES, assertProductionFigures, assertStatusFits, rollUpOrderStatus,
 } from '../services/production.service.js';
+import { notifyMaterialReady } from '../services/dispatchEscalation.service.js';
 import { sendCsv } from '../utils/csv.js';
 
 /**
@@ -205,6 +206,13 @@ export const updateProductionLine = asyncHandler(async (req, res) => {
   const wrong = assertProductionFigures(next);
   if (wrong) throw ApiError.badRequest(wrong);
 
+  /*
+   * Whether this save adds packed material, decided before the figures are written. It is what
+   * starts §25's dispatch clock and what tells despatch there is something to collect — and both
+   * need the *previous* count, which the assignment loop below is about to overwrite.
+   */
+  const packedMore = next.readyQty > (line.production.readyQty || 0);
+
   for (const field of [
     'plannedQty', 'producedQty', 'readyQty',
     'plannedStart', 'expectedCompletion', 'actualStart', 'remarks',
@@ -239,6 +247,12 @@ export const updateProductionLine = asyncHandler(async (req, res) => {
     line.production.status = patch.status;
   }
 
+  /*
+   * The clock §25 measures the dispatch escalation from, restarted by every new batch. See the
+   * note on `readyAt` in the model for why it is the last addition rather than the first.
+   */
+  if (packedMore) line.production.readyAt = new Date();
+
   /* The order's own status follows its lines — see production.service.js for the precedence. */
   const moved = rollUpOrderStatus(order, req.user);
 
@@ -252,6 +266,19 @@ export const updateProductionLine = asyncHandler(async (req, res) => {
   });
 
   await order.populate(LINE_POPULATE);
+
+  /*
+   * §5's handover: material appearing on the floor is despatch's cue, and the plant should not
+   * have to remember to tell them. A task rather than an auto-created consignment — see the
+   * note at the top of dispatchEscalation.service.js for why that is the right shape.
+   *
+   * After the save and outside its result, deliberately: a notification that failed must not
+   * take down the record of what was made, which is the fact that actually matters.
+   */
+  if (packedMore) {
+    await notifyMaterialReady(order, order.lines.id(req.params.lineId)).catch(() => {});
+  }
+
   res.json({
     success: true,
     data: orderVisibleTo(order, req.user),
