@@ -176,6 +176,27 @@ export const orderBoard = asyncHandler(async (req, res) => {
   res.json({ success: true, data: { columns }, meta: { sort } });
 });
 
+/**
+ * The checklist as the screen should draw it: every check, whether it is ticked, and what it
+ * means.
+ *
+ * Built here and returned from *every* door that can change one — the detail read, a tick, and
+ * an action — because the screen holds this list in state beside the order. A reply that
+ * carried the new order but not the new checklist left the boxes drawn from whatever was
+ * fetched first: eight ticks landed on the server, the release went through, and the panel
+ * still read "0 of 8". The order and its checklist have to travel together or they drift.
+ *
+ * Sent from the server rather than assembled in the web app so §13's list has one definition,
+ * and adding a ninth check needs no second edit.
+ */
+const checklistFor = (order) =>
+  VERIFICATION_CHECKS.map((check) => ({
+    ...check,
+    done: Boolean(order.verification?.[check.key]?.by),
+    at: order.verification?.[check.key]?.at,
+    note: order.verification?.[check.key]?.note,
+  }));
+
 export const getOrder = asyncHandler(async (req, res) => {
   const order = await SalesOrder.findById(req.params.id)
     .populate(POPULATE)
@@ -186,21 +207,7 @@ export const getOrder = asyncHandler(async (req, res) => {
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
 
-  res.json({
-    success: true,
-    data: orderVisibleTo(order, req.user),
-    /*
-     * The checklist as the screen should draw it: every check, whether it is ticked, and what
-     * it means. Sent from here rather than duplicated in the web app, so §13's list has one
-     * definition and adding a ninth check needs no second edit.
-     */
-    checks: VERIFICATION_CHECKS.map((check) => ({
-      ...check,
-      done: Boolean(order.verification?.[check.key]?.by),
-      at: order.verification?.[check.key]?.at,
-      note: order.verification?.[check.key]?.note,
-    })),
-  });
+  res.json({ success: true, data: orderVisibleTo(order, req.user), checks: checklistFor(order) });
 });
 
 export const exportOrders = asyncHandler(async (req, res) => {
@@ -466,6 +473,7 @@ export const setOrderCheck = asyncHandler(async (req, res) => {
   res.json({
     success: true,
     data: orderVisibleTo(order, req.user),
+    checks: checklistFor(order),
     outstanding: order.outstandingChecks,
     releasable: order.releasable,
   });
@@ -535,7 +543,12 @@ export const applyOrderAction = asyncHandler(async (req, res) => {
   await recordChange({ model: 'SalesOrder', doc: order, before, by: req.user, note: recipe.label });
 
   await order.populate(POPULATE);
-  res.json({ success: true, data: orderVisibleTo(order, req.user), did: recipe.label });
+  res.json({
+    success: true,
+    data: orderVisibleTo(order, req.user),
+    checks: checklistFor(order),
+    did: recipe.label,
+  });
 });
 
 /** The actions this order can take from where it is, so the screen need not guess. */

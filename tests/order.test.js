@@ -226,6 +226,28 @@ test('ticking the first check starts verification on its own', async () => {
   assert.equal(ticked.json.data.status, 'order_verification');
 });
 
+test('every door that changes a check hands the checklist back with it', async () => {
+  /*
+   * The screen holds the checklist in state beside the order, so a reply carrying the new order
+   * and not the new checklist leaves the boxes drawn from whatever was fetched first. That is
+   * exactly what happened: eight ticks landed, the release went through, and the panel still
+   * read "0 of 8". The order and its checklist have to travel together or they drift.
+   */
+  const made = await order();
+
+  const ticked = await tick(made._id, 'poReceived');
+  assert.equal(ticked.json.checks.find((check) => check.key === 'poReceived').done, true);
+  assert.ok(ticked.json.checks.find((check) => check.key === 'poReceived').at, 'and when');
+
+  await verifyAll(made._id);
+  const released = await act(made._id, 'release');
+  assert.equal(
+    released.json.checks.filter((check) => check.done).length,
+    8,
+    'an action carries it too, or the panel empties the moment the order moves'
+  );
+});
+
 test('a check can be un-ticked, and the gate closes again', async () => {
   const made = await order();
   await verifyAll(made._id);
