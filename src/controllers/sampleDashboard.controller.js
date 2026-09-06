@@ -1,5 +1,6 @@
 import Sample, {
-  CLOSED_SAMPLE_STATUSES, NOT_ESCALATED_STATUSES, WITH_CUSTOMER_STATUSES,
+  CLOSED_SAMPLE_STATUSES, IN_WORK_STATUSES, NOT_ESCALATED_STATUSES, SAMPLE_NEXT_STEP,
+  WITH_CUSTOMER_STATUSES,
 } from '../models/Sample.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -211,4 +212,122 @@ export const sampleAnalyticsReport = asyncHandler(async (req, res) => {
   });
 
   res.json({ success: true, data });
+});
+
+/* ------------------------------ The bench's day ------------------------------ */
+
+/**
+ * What the sample team should do now [BLUEPRINT §4-6, and §22's own principle].
+ *
+ * A different question from the dashboard above, and worth its own endpoint rather than a
+ * fourth section on that one. `/samples/dashboard` answers *how is the team doing* — ageing,
+ * rework rate, throughput — which somebody opens on a Monday. This answers *what do I pick up
+ * next*, which somebody opens every hour, and the two would fight for the same screen.
+ *
+ * Three buckets, and the order is the order the bench should work them:
+ *
+ *   **New** — nobody has started it. Split by whether anyone has claimed it, because an
+ *   unclaimed request is the one that quietly belongs to nobody; that is the failure a shared
+ *   queue has and a personal list does not.
+ *
+ *   **Overdue** — past the date it was wanted, and still ours. A sample sitting with the
+ *   customer is not the bench being late, so those are excluded on the same list §25's alarm
+ *   uses rather than a second definition of the same thing.
+ *
+ *   **In work** — started, on time, and each one carrying *what the next thing is*. "Pending
+ *   action: 7" is a number nobody can act on; seven rows each saying "get it printed" or "say
+ *   whether there is stock" is a morning's plan.
+ *
+ * Scoped like every other sampling read: marketing sees what it asked for, the bench sees the
+ * bench's whole queue.
+ */
+export const sampleDay = asyncHandler(async (req, res) => {
+  const now = Date.now();
+  const scope = ownershipFilter(req.user, 'requestedBy');
+
+  const samples = await Sample.find({
+    ...scope,
+    status: { $nin: CLOSED_SAMPLE_STATUSES },
+  })
+    .select(
+      'number modelNumber colour status purpose requiredDate requestedAt createdAt ' +
+        'requestedBy assignedTo customer lead escalationLevel'
+    )
+    .populate('requestedBy', 'name')
+    .populate('assignedTo', 'name')
+    .populate('customer', 'name')
+    .populate('lead', 'company')
+    .limit(500);
+
+  const mine = (sample) => String(sample.assignedTo?._id || sample.assignedTo) === String(req.user._id);
+
+  /** One row, as the day screen draws it. */
+  const card = (sample) => ({
+    _id: sample._id,
+    number: sample.number,
+    model: sample.modelNumber || '—',
+    colour: sample.colour,
+    status: sample.status,
+    purpose: sample.purpose,
+    /* A lead's request has no customer yet — the company name is on the lead [§4]. */
+    customer: sample.customer?.name || sample.lead?.company || null,
+    requestedBy: sample.requestedBy?.name,
+    assignedTo: sample.assignedTo?.name || null,
+    mine: mine(sample),
+    requiredDate: sample.requiredDate || null,
+    /* How long it has been sitting, which is the figure §22 says beats a count. */
+    waitingDays: ageInDays(sample.requestedAt || sample.createdAt, now),
+    daysLate: sample.requiredDate ? ageInDays(sample.requiredDate, now) : 0,
+    nextStep: SAMPLE_NEXT_STEP[sample.status] || null,
+    link: `/samples/${sample._id}`,
+  });
+
+  const isOverdue = (sample) =>
+    sample.requiredDate &&
+    new Date(sample.requiredDate) < new Date(now) &&
+    !NOT_ESCALATED_STATUSES.includes(sample.status);
+
+  /* Oldest first throughout: the queue is worked from the top, and the top is what has waited. */
+  const oldestFirst = (a, b) =>
+    new Date(a.requestedAt || a.createdAt) - new Date(b.requestedAt || b.createdAt);
+
+  const fresh = samples.filter((sample) => sample.status === 'request_received').sort(oldestFirst);
+
+  /*
+   * Overdue is taken first, so a late request appears once. A row in both lists would be read
+   * as two jobs, and the count at the top of the screen would be wrong by exactly the number
+   * of things going worst.
+   */
+  const late = samples.filter(isOverdue).sort(oldestFirst);
+  const lateIds = new Set(late.map((sample) => String(sample._id)));
+
+  const inWork = samples
+    .filter(
+      (sample) => IN_WORK_STATUSES.includes(sample.status) && !lateIds.has(String(sample._id))
+    )
+    .sort(oldestFirst);
+
+  res.json({
+    success: true,
+    data: {
+      fresh: fresh.map(card),
+      overdue: late.map(card),
+      inWork: inWork.map(card),
+    },
+    meta: {
+      fresh: fresh.length,
+      /*
+       * Unclaimed across everything open, not only the new ones.
+       *
+       * It was the new bucket alone at first, and that read wrongly on the screen: a late
+       * request nobody has picked up would sit there marked "Unclaimed" under a heading saying
+       * everything had been claimed. And it is the worse case of the two — a request that is
+       * both late and nobody's is exactly the one a shared queue loses.
+       */
+      unclaimed: samples.filter((sample) => !sample.assignedTo).length,
+      overdue: late.length,
+      inWork: inWork.length,
+      mine: samples.filter(mine).length,
+    },
+  });
 });

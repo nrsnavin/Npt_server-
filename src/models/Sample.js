@@ -44,6 +44,29 @@ export const WITH_CUSTOMER_STATUSES = ['dispatched', 'delivered', 'customer_feed
  */
 export const NOT_ESCALATED_STATUSES = [...CLOSED_SAMPLE_STATUSES, ...WITH_CUSTOMER_STATUSES];
 
+/**
+ * What the bench actually has to *do* from each status.
+ *
+ * A queue that says "pending action: 7" tells nobody anything — the whole difficulty of a
+ * sample bench is that seven requests sitting at five different statuses need five different
+ * things, and the status word alone ("Sample available") does not say which. So the sentence
+ * lives beside the status rather than in somebody's head.
+ *
+ * `request_received` is deliberately absent: it is not work in progress, it is work nobody has
+ * picked up, and the day screen counts it separately for exactly that reason. The statuses
+ * where the customer holds the sample are absent too — the next move there is theirs.
+ */
+export const SAMPLE_NEXT_STEP = {
+  checking_stock: 'Say whether there is stock',
+  sample_available: 'Pack it and hand it to despatch',
+  production_required: 'Get it moulded',
+  printing_required: 'Get it printed',
+  sample_ready: 'Send it to the customer',
+};
+
+/** The statuses with something for the bench to do. Derived, so the two cannot drift. */
+export const IN_WORK_STATUSES = Object.keys(SAMPLE_NEXT_STEP);
+
 /** Why the sample is being made [§4]. Drives what "approved" actually settles. */
 export const SAMPLE_PURPOSES = [
   'existing_model',

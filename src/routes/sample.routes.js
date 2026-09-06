@@ -9,7 +9,9 @@ import {
   listSampleLogs, addSampleLog, addLogComment, removeSampleLog, removeLogComment,
   downloadAttachment, setReferencePhoto, clearReferencePhoto,
 } from '../controllers/sampleLog.controller.js';
-import { sampleDashboard, sampleAnalyticsReport } from '../controllers/sampleDashboard.controller.js';
+import {
+  sampleDashboard, sampleDay, sampleAnalyticsReport,
+} from '../controllers/sampleDashboard.controller.js';
 import { authenticate, requireAnyModule, requireModule } from '../middleware/auth.js';
 import { singleImage } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
@@ -36,6 +38,9 @@ router.get('/pipeline', requireModule('samples'), samplePipeline);
 // The bench as columns. A read — every move off it goes through `/:id/status` as before.
 router.get('/board', requireModule('samples'), sampleBoard);
 router.get('/dashboard', requireModule('samples'), sampleDashboard);
+/* The bench's own day: what has just come in, what is late, and what each open one needs
+   next. A different question from the dashboard beside it — see the controller. */
+router.get('/day', requireModule('samples'), sampleDay);
 router.get('/analytics', requireModule('samples'), sampleAnalyticsReport);
 router.get('/', requireModule('samples'), listSamples);
 /*

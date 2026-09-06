@@ -1009,3 +1009,73 @@ test('a sample cannot be raised against a mould that is not on the register', as
   assert.equal(status, 400, json.message);
   assert.match(json.message, /not on the register/i);
 });
+
+/* ------------------------------- The bench's day ------------------------------- */
+
+test('the bench’s day separates what is new, what is late and what needs a next step', async () => {
+  /*
+   * Three groups because they are three different failures, and one row must never be in two:
+   * a late request counted again under "in work" would make the headline wrong by exactly the
+   * number of things going worst.
+   */
+  const fresh = await requestSample((await raiseEnquiry())._id);
+
+  const working = await requestSample((await raiseEnquiry())._id);
+  await api(`/api/samples/${working._id}/status`, {
+    method: 'POST', token: meera, body: { status: 'printing_required' },
+  });
+
+  const late = await requestSample((await raiseEnquiry())._id);
+  await api(`/api/samples/${late._id}/status`, {
+    method: 'POST', token: meera, body: { status: 'checking_stock' },
+  });
+  const Sample = (await import('../src/models/Sample.js')).default;
+  await Sample.updateOne(
+    { _id: late._id },
+    { requiredDate: new Date(Date.now() - 2 * 86400000) }
+  );
+
+  const { status, json } = await api('/api/samples/day', { token: meera });
+  assert.equal(status, 200, json.message);
+
+  const numbers = (rows) => rows.map((row) => row.number);
+  assert.ok(numbers(json.data.fresh).includes(fresh.number), 'the untouched one is new');
+  assert.ok(numbers(json.data.overdue).includes(late.number), 'the past-date one is late');
+  assert.ok(numbers(json.data.inWork).includes(working.number), 'the started one is in work');
+
+  /* Taken by the worse list first, and counted once. */
+  assert.ok(!numbers(json.data.inWork).includes(late.number));
+  assert.ok(!numbers(json.data.fresh).includes(working.number));
+
+  /* And every in-work row says what the next thing actually is — the whole point of the
+     group. "Pending action: 7" is a number nobody can act on. */
+  const row = json.data.inWork.find((entry) => entry.number === working.number);
+  assert.equal(row.nextStep, 'Get it printed');
+  assert.equal(row.daysLate, 0);
+
+  const overdueRow = json.data.overdue.find((entry) => entry.number === late.number);
+  assert.ok(overdueRow.daysLate >= 2);
+});
+
+test('a request nobody has picked up is counted as unclaimed', async () => {
+  /* The failure a shared queue has and a personal list does not: a request that belongs to
+     everybody and therefore to nobody. Counted across everything open rather than only the
+     new ones — a *late* request nobody has claimed is the worse case of the two. */
+  const before = (await api('/api/samples/day', { token: meera })).json.meta.unclaimed;
+
+  const raised = await requestSample((await raiseEnquiry())._id);
+  const after = (await api('/api/samples/day', { token: meera })).json.meta.unclaimed;
+  assert.equal(after, before + 1);
+
+  const meeraId = (await api('/api/auth/me', { token: meera })).json.data.id;
+  await api(`/api/samples/${raised._id}/assign`, {
+    method: 'POST', token: meera, body: { assignedTo: meeraId },
+  });
+
+  const claimed = await api('/api/samples/day', { token: meera });
+  assert.equal(claimed.json.meta.unclaimed, before, 'claiming it takes it off the count');
+  assert.ok(
+    claimed.json.data.fresh.find((entry) => entry.number === raised.number).mine,
+    'and it is marked as theirs'
+  );
+});
