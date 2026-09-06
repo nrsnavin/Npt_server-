@@ -21,7 +21,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
 import { CONFIDENTIAL, PUBLIC_FIGURES } from '../src/services/pricingVisibility.js';
-import { minimumFor, priceFrom, tiersFor } from '../src/services/pricing.service.js';
+import { minimumFor, priceAt, priceFrom, tiersFor } from '../src/services/pricing.service.js';
 
 process.env.JWT_SECRET = 'pricing-test-secret-value';
 
@@ -143,11 +143,38 @@ test('the selling price is cost plus a markup, the way the sheet works it', asyn
   assert.equal(priceFrom({ totalCost: 0, markupPercent: 20 }), undefined, 'no cost, no price');
 
   // All three standing tiers at once, because the sheet shows them side by side.
-  assert.deepEqual(tiersFor(6.95), { 10: 7.65, 15: 7.99, 20: 8.34 });
+  assert.deepEqual(tiersFor(6.95), { 10: 7.65, 15: 8, 20: 8.35 });
 
   // And the floor is the lowest of them rather than a number somebody typed.
   assert.equal(minimumFor({ totalCost: 6.95 }), 7.65);
   assert.equal(minimumFor({ totalCost: 6.95, minimumOverride: 5 }), 5, 'unless this job has its own');
+});
+
+test('a quoted price is rounded up to five paise, never down', async () => {
+  /*
+   * ₹6.95 + 15% is ₹7.9925 exactly. Nobody quotes that: somebody tidies it by hand on the way to
+   * the quotation, and from then on the sheet and the quotation disagree. Rounding it here is
+   * what stops that, and rounding *up* is what keeps it safe — `minimumFor` is the 10% tier run
+   * through this same function, so rounding down would shave the very floor that §9's
+   * below-minimum approval exists to defend.
+   */
+  assert.equal(priceAt(6.95, 15), 8, '7.9925 rounds up, not to 7.99');
+  assert.equal(priceAt(6.95, 20), 8.35, '8.34 goes up to the next five paise');
+
+  // A price already on the step does not move. Worked in whole paise for exactly this reason:
+  // `Math.ceil(7.65 / 0.05)` is 153 in binary floating point, which would push it to 7.70.
+  assert.equal(priceAt(6.95, 10), 7.65, 'already on a five-paise step');
+  assert.equal(priceAt(10, 20), 12, 'and a round number stays round');
+
+  // Never down: the rounded price is always at least the exact arithmetic.
+  for (const cost of [3.59, 6.95, 7.01, 11.113]) {
+    for (const percent of [10, 15, 20]) {
+      assert.ok(
+        priceAt(cost, percent) >= Math.round(cost * (1 + percent / 100) * 100) / 100,
+        `${cost} at ${percent}% must not round below cost plus the markup`
+      );
+    }
+  }
 });
 test('the sheet adds up, and the calculated price cannot be typed', async () => {
   const sheet = await costed();
@@ -155,10 +182,10 @@ test('the sheet adds up, and the calculated price cannot be typed', async () => 
   // 22g at ₹95/kg = ₹2.09, plus 1.1 job work and 0.4 packing = ₹3.59.
   assert.equal(sheet.materialCost, 2.09);
   assert.equal(Math.round(sheet.totalCost * 100) / 100, 3.59);
-  assert.equal(sheet.calculatedSellingPrice, 4.31, '3.59 plus a 20% markup');
+  assert.equal(sheet.calculatedSellingPrice, 4.35, '3.59 plus a 20% markup, rounded up to 5 paise');
 
   // And all three standing tiers come back, because the sheet chooses between them.
-  assert.deepEqual(sheet.tiers, { 10: 3.95, 15: 4.13, 20: 4.31 });
+  assert.deepEqual(sheet.tiers, { 10: 3.95, 15: 4.15, 20: 4.35 });
 
   const typed = await api(`/api/pricings/${sheet._id}/cost`, {
     method: 'PATCH',

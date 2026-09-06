@@ -144,6 +144,8 @@ const requirementSchema = z.object({
   printRef: objectId.optional(),
   material: z.enum(MATERIALS).optional(),
   colour: z.string().optional(),
+  /** Whether that colour binds the bench or merely guides it — see the sample model. */
+  colourMandatory: z.boolean().optional(),
   printing: z.string().optional(),
   packing: z.string().optional(),
 });

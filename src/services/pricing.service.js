@@ -14,7 +14,10 @@
  * ₹9.73 against ₹11.58. Quoting the second while the sheet says the first is how a price gets
  * argued about in a meeting nobody can settle.
  *
- * Rounded to paise, because a per-piece price is quoted to two decimals and carrying fifteen of
+ * (Those figures are the raw arithmetic of the two conventions. Every price this file hands out
+ * is then rounded up to the nearest five paise — see `priceAt`.)
+ *
+ * Rounded at all, because a per-piece price is quoted to two decimals and carrying fifteen of
  * them means the total on the quotation and the total anybody recomputes disagree in the last
  * digit.
  */
@@ -30,14 +33,43 @@ export const STANDARD_TIERS = [10, 15, 20];
  */
 export const MINIMUM_TIER = STANDARD_TIERS[0];
 
-/** Cost plus a markup, to paise. */
+/**
+ * The step a quoted price is rounded to: five paise.
+ *
+ * A per-piece price that lands on ₹7.6534 is arithmetic, not a quote — nobody writes that on a
+ * quotation, so somebody tidies it by hand and the sheet and the quotation stop agreeing. Doing
+ * it here settles it once, for the tiers, the approved price and the floor alike.
+ *
+ * Five paise rather than a rupee because of what this plant sells: a hanger goes out at ₹6-12
+ * in lots of a lakh, so rounding ₹7.05 up to ₹8 adds thirteen percent and loses the job — a
+ * bigger move than the whole gap between the 10% and 15% tiers. Five paise is the smallest step
+ * that reads as a decided number rather than a computed one.
+ */
+export const PRICE_STEP = 0.05;
+
+/**
+ * Cost plus a markup, rounded **up** to the nearest five paise.
+ *
+ * Up, never to nearest. The floor in `minimumFor` is the 10% tier run through this same
+ * function, so rounding down would produce a "minimum" a few paise under the true cost-plus-ten
+ * — quietly shaving the floor that §9's below-minimum approval exists to defend. Rounding up
+ * can only ever be safe, and it costs at most four paise.
+ *
+ * Worked in whole paise (`× 100`, ceil, `/ 100`) because `Math.ceil(x / 0.05) * 0.05` in binary
+ * floating point turns an exact ₹7.65 into ₹7.70: 7.65 / 0.05 is 152.99999999999997, and the
+ * ceiling of that is 153. Scaling to integers first keeps a price that is already on the step
+ * exactly where it is.
+ */
 export function priceAt(cost, percent) {
   if (!cost) return undefined;
-  return Math.round(cost * (1 + (percent || 0) / 100) * 100) / 100;
+
+  const stepInPaise = Math.round(PRICE_STEP * 100);
+  const paise = Math.round(cost * (1 + (percent || 0) / 100) * 100);
+  return (Math.ceil(paise / stepInPaise) * stepInPaise) / 100;
 }
 
 /**
- * The three standing prices for a costing, as `{ 10: 7.65, 15: 7.99, 20: 8.34 }`.
+ * The three standing prices for a costing, as `{ 10: 7.65, 15: 8, 20: 8.35 }`.
  *
  * All of them, always, because the sheet puts them side by side and the person quoting picks
  * one. Handing back a single number would make that judgement invisible — and it is the

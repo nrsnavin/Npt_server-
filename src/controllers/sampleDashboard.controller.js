@@ -250,8 +250,8 @@ export const sampleDay = asyncHandler(async (req, res) => {
     status: { $nin: CLOSED_SAMPLE_STATUSES },
   })
     .select(
-      'number modelNumber colour status purpose requiredDate requestedAt createdAt ' +
-        'requestedBy assignedTo customer lead escalationLevel'
+      'number modelNumber colour colourMandatory status purpose requiredDate requestedAt ' +
+        'createdAt requestedBy assignedTo customer lead escalationLevel'
     )
     .populate('requestedBy', 'name')
     .populate('assignedTo', 'name')
@@ -269,6 +269,9 @@ export const sampleDay = asyncHandler(async (req, res) => {
     number: sample.number,
     model: sample.modelNumber || '—',
     colour: sample.colour,
+    /* Whether the bench may reach for the nearest drum. The costliest wrong turn on this screen,
+       so the card carries it rather than making somebody open the request to find out. */
+    colourMandatory: Boolean(sample.colourMandatory),
     status: sample.status,
     purpose: sample.purpose,
     /* A lead's request has no customer yet — the company name is on the lead [§4]. */

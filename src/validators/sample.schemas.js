@@ -24,6 +24,8 @@ const sampleCore = {
   printRef: objectId.optional(),
   material: z.enum(MATERIALS).optional(),
   colour: z.string().optional(),
+  /** Whether that colour binds the bench or merely guides it — see the model. */
+  colourMandatory: z.boolean().optional(),
   hookType: z.enum(HOOK_TYPES).optional(),
   printing: z.string().optional(),
   /** Pieces to make. Unlike an enquiry's, this is a figure the requester actually knows. */

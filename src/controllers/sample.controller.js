@@ -622,9 +622,17 @@ export const resample = asyncHandler(async (req, res) => {
     modelNumber: previous.modelNumber,
     category: previous.category,
     sizeMm: previous.sizeMm,
+    // The register rows, not just the words. A re-sample is "the same thing, change one part",
+    // so dropping which resin and which hook was tried is dropping the half of the attempt the
+    // next one is meant to hold constant.
+    materialRef: previous.materialRef,
+    hookRef: previous.hookRef,
+    clipRef: previous.clipRef,
+    printRef: previous.printRef,
     material: previous.material,
     standaloneReason: previous.standaloneReason,
     colour: previous.colour,
+    colourMandatory: previous.colourMandatory,
     printing: previous.printing,
     hookType: previous.hookType,
     quantity: previous.quantity,

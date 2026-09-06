@@ -159,6 +159,15 @@ const requirementSchema = new mongoose.Schema(
 
     material: { type: String, enum: MATERIALS },
     colour: { type: String, trim: true },
+    /**
+     * Whether that colour is a condition or a preference — see `colourMandatory` on the sample.
+     *
+     * Asked here as well as on the sample because most samples are not raised by hand: moving an
+     * enquiry to `sample_required` raises one automatically [§6], and the only person who knows
+     * whether the buyer said "this white" or "white-ish" is whoever took the call. Asking the
+     * bench later means asking the one person in the building who was not on it.
+     */
+    colourMandatory: { type: Boolean, default: false },
     printing: { type: String, trim: true },
     packing: { type: String, trim: true },
 

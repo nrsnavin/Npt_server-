@@ -21,6 +21,8 @@ let meera;      // sampling — makes the samples
 let events;
 let customerId;
 let mouldId;
+/** The resin and the three parts a requirement can name [§28]. */
+const registers = {};
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -146,6 +148,25 @@ test.before(async () => {
   });
   mouldId = madeMould.json.data._id;
 
+  /* The register rows a requirement points at, so the carry-over has something real to carry. */
+  registers.material = (
+    await api('/api/materials', {
+      method: 'POST', token: admin,
+      body: { name: 'HIPS White', code: 'HIPS-W', type: 'hips', colour: 'White', ratePerKg: 92 },
+    })
+  ).json.data._id;
+  for (const [kind, name, code] of [
+    ['hook', 'Swivel metal hook', 'HK-01'],
+    ['clip', 'Wooden clip 25mm', 'CL-01'],
+    ['print', '2 colour screen', 'PR-02'],
+  ]) {
+    registers[kind] = (
+      await api('/api/components', {
+        method: 'POST', token: admin, body: { kind, name, code, ratePerPiece: 1 },
+      })
+    ).json.data._id;
+  }
+
   const customer = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
@@ -188,6 +209,69 @@ test('moving an enquiry to sample required raises the request and carries the re
     new Date(sample.requiredDate).toISOString().slice(0, 10),
     new Date().toISOString().slice(0, 10)
   );
+});
+
+test('the sample carries the exact hook, clip, print and resin the enquiry asked for', async () => {
+  const enquiry = await raiseEnquiry({
+    requirement: {
+      modelNumber: 'NPT-400S',
+      category: 'shirt',
+      sizeMm: 400,
+      materialRef: registers.material,
+      hookRef: registers.hook,
+      clipRef: registers.clip,
+      printRef: registers.print,
+    },
+  });
+  const sample = await requestSample(enquiry._id);
+
+  /*
+   * The register rows themselves, not just the words they imply. "HIPS" and "White" do not say
+   * which resin or which of the white hooks, so a bench working from the words picks whatever is
+   * nearest and the buyer approves something nobody can reproduce. It also makes §13 answerable:
+   * "matches the approved sample" is a comparison only when both sides name the same row.
+   */
+  assert.equal(String(idOf(sample.materialRef)), String(registers.material));
+  assert.equal(String(idOf(sample.hookRef)), String(registers.hook));
+  assert.equal(String(idOf(sample.clipRef)), String(registers.clip));
+  assert.equal(String(idOf(sample.printRef)), String(registers.print));
+
+  // And what the rows already know is not asked for a second time [§28].
+  assert.equal(sample.colour, 'White');
+  assert.equal(sample.printing, '2 colour screen');
+});
+
+test('whether the colour is a condition or a preference travels from the enquiry', async () => {
+  /*
+   * The two requests read identically on a sheet — "White, 400mm shirt hanger" — and the bench
+   * cannot tell them apart. One is a buyer matching a garment, who will reject anything else;
+   * the other wants a white-ish hanger to judge the hook by and would rather have ivory on
+   * Tuesday than the exact shade in three weeks. Guessed either way it costs a fortnight, so the
+   * person who took the call answers it and the answer travels with the request.
+   */
+  const strict = await raiseEnquiry({
+    requirement: { modelNumber: 'NPT-400S', colour: 'Ivory', colourMandatory: true },
+  });
+  const exact = await requestSample(strict._id);
+  assert.equal(exact.colourMandatory, true);
+  assert.equal(exact.colourRule, 'Must be Ivory — do not send another shade');
+
+  // And the ordinary case says so out loud rather than leaving a blank to be interpreted.
+  const relaxed = await raiseEnquiry({
+    requirement: { modelNumber: 'NPT-400S', colour: 'Ivory' },
+  });
+  const anyShade = await requestSample(relaxed._id);
+  assert.equal(anyShade.colourMandatory, false, 'a preference unless somebody says otherwise');
+  assert.equal(anyShade.colourRule, 'Ivory preferred — any available colour will do');
+});
+
+test('a sample with no colour asked for states no colour rule', async () => {
+  // "Any colour will do" against a blank would read as a licence somebody actually granted.
+  const enquiry = await raiseEnquiry({ requirement: { modelNumber: 'NPT-400S' } });
+  const sample = await requestSample(enquiry._id);
+
+  assert.equal(sample.colour, undefined);
+  assert.equal(sample.colourRule, null);
 });
 
 test('a new development is raised as a new development sample', async () => {

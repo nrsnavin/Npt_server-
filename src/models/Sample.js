@@ -162,6 +162,28 @@ const sampleSchema = new mongoose.Schema(
     material: { type: String, enum: MATERIALS },
     /** Filled from the chosen resin's own colour, and editable. There is no colour master. */
     colour: { type: String, trim: true },
+
+    /**
+     * Whether the colour and model are a condition of the sample or a preference.
+     *
+     * Two genuinely different requests wear the same words on a sheet, and the bench cannot tell
+     * them apart. "White, 400mm shirt hanger" sometimes means *this shade on this model, or do
+     * not send it* — a buyer matching a garment, a print approval, a repeat against something
+     * already approved. Just as often it means "white-ish, whatever you have; here is the shade
+     * we had in mind" — a buyer judging the hook, the finish or the strength, who would rather
+     * have an ivory one on Tuesday than the exact white in three weeks.
+     *
+     * Left to a guess, the bench guesses the expensive way round: it waits for the exact resin
+     * when a near one would have answered the question, and the buyer waits a fortnight for a
+     * sample that never needed the wait. Or it guesses the other way and sends a near-enough
+     * piece to somebody matching a garment, who rejects it, and the fortnight is spent anyway
+     * with an annoyed buyer at the end of it.
+     *
+     * So it is asked once, by the person who spoke to the buyer, and it travels with the
+     * request. False by default because "preferably this colour" is the ordinary case and the
+     * strict one is the exception somebody should have to assert.
+     */
+    colourMandatory: { type: Boolean, default: false },
     hookType: { type: String, enum: HOOK_TYPES },
     /** Filled from `printRef` when one is chosen. */
     printing: { type: String, trim: true },
@@ -255,6 +277,23 @@ sampleSchema.virtual('isOverdue').get(function isOverdue() {
  */
 sampleSchema.virtual('nextStep').get(function nextStep() {
   return SAMPLE_NEXT_STEP[this.status] || null;
+});
+
+/**
+ * How much latitude the bench has on colour, as a sentence rather than a flag.
+ *
+ * A boolean called `colourMandatory` is only readable by somebody who already knows the rule,
+ * and the person it is written for is standing at a bench choosing a drum of resin. Kept beside
+ * the flag rather than in the two screens that show it, so both say the same thing.
+ *
+ * Null when no colour was asked for at all — there is no rule to state, and printing "any
+ * colour will do" against a blank would read as permission somebody granted.
+ */
+sampleSchema.virtual('colourRule').get(function colourRule() {
+  if (!this.colour) return null;
+  return this.colourMandatory
+    ? `Must be ${this.colour} — do not send another shade`
+    : `${this.colour} preferred — any available colour will do`;
 });
 
 sampleSchema.set('toJSON', { virtuals: true });

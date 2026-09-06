@@ -29,17 +29,37 @@ export function defaultRequiredDate(enquiry, from = new Date()) {
   return delivery && delivery < target ? delivery : target;
 }
 
-/** What a sample takes from the enquiry that raised it, so nothing is re-keyed [§41.4]. */
+/** An id, whether the field was populated or left as a reference. */
+const idOf = (value) => value?._id || value || undefined;
+
+/**
+ * What a sample takes from the enquiry that raised it, so nothing is re-keyed [§41.4].
+ *
+ * The four register references travel with the rest of it, and they are the part that matters
+ * most. The coarse words alone — "HIPS", "White" — do not say which resin or which of the
+ * eleven white hooks the buyer asked for, so a bench working from them picks the one nearest to
+ * hand and the customer approves a sample nobody can reproduce. Worse, §13 then checks the
+ * order against "the approved sample": that check is only a check when both sides point at the
+ * same register row [§28], and an enquiry that recorded the row while the sample it raised
+ * dropped it left §13 comparing a row against a word.
+ */
 const fromEnquiry = (enquiry) => ({
-  customer: enquiry.customer?._id || enquiry.customer,
+  customer: idOf(enquiry.customer),
   enquiry: enquiry._id,
-  requestedBy: enquiry.assignedTo?._id || enquiry.assignedTo,
-  mould: enquiry.mould?._id || enquiry.mould,
+  requestedBy: idOf(enquiry.assignedTo),
+  mould: idOf(enquiry.mould),
   modelNumber: enquiry.requirement?.modelNumber,
   category: enquiry.requirement?.category,
   sizeMm: enquiry.requirement?.sizeMm,
+  materialRef: idOf(enquiry.requirement?.materialRef),
+  hookRef: idOf(enquiry.requirement?.hookRef),
+  clipRef: idOf(enquiry.requirement?.clipRef),
+  printRef: idOf(enquiry.requirement?.printRef),
   material: enquiry.requirement?.material,
   colour: enquiry.requirement?.colour,
+  // Whether that colour binds the bench. Carried, because the person who knows is the one who
+  // took the buyer's call, and by the time the bench sees the request they are long off it.
+  colourMandatory: enquiry.requirement?.colourMandatory,
   printing: enquiry.requirement?.printing,
   referenceImageUrl: enquiry.referenceImageUrl,
 });
