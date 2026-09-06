@@ -117,17 +117,19 @@ export const listSamples = asyncHandler(async (req, res) => {
   const { page, limit, sort } = listParams(req.query, {
     searchFields: ['number', 'modelNumber', 'colour', 'remarks'],
     /*
-     * Newest request first, by its number.
+     * First come, first served — oldest request number at the top.
      *
-     * The due date was the default, and it is the right sort for a *queue* — the bench's own
-     * day screen still uses it, worst first. This is the register: somebody opens it to find a
-     * request they were told about, and the thing they were told is its number. A due-date sort
-     * scatters this week's requests through a page of older ones that happen to be due sooner.
+     * The bench works the queue in the order it arrived, so the register reads in that order
+     * too. Anything else asks somebody to hold a second ordering in their head while they walk
+     * a list: newest-first puts today's request above one that has been waiting a fortnight,
+     * and a due-date sort scatters both through requests that merely happen to be due sooner.
+     * The day screen still leads with *late*, which is the deliberate exception — that is a
+     * queue being triaged rather than a register being read.
      *
      * `SMP-YYYY-NNNN` is zero-padded and fixed-width, so a plain string sort is chronological
      * within a year and across years both — no date field is needed to get the order right.
      */
-    defaultSort: '-number',
+    defaultSort: 'number',
   });
 
   const filter = sampleFilters(req);

@@ -1080,21 +1080,27 @@ test('a request nobody has picked up is counted as unclaimed', async () => {
   );
 });
 
-test('the register lists newest first by number, and names who owns the buyer', async () => {
+test('the register lists first come first served, and names who owns the buyer', async () => {
   /*
-   * The due date was the default and is the right sort for a *queue* — the bench's day screen
-   * still uses it, worst first. This is the register: somebody opens it to find a request they
-   * were told about, and what they were told is its number.
+   * The bench works the queue in the order it arrived, so the register reads in that order.
+   * Anything else asks somebody to hold a second ordering in their head while they walk a
+   * list. The day screen leads with *late* instead, which is the deliberate exception: that
+   * is a queue being triaged rather than a register being read.
    */
   const first = await requestSample((await raiseEnquiry())._id);
   const second = await requestSample((await raiseEnquiry())._id);
 
-  const { json } = await api('/api/samples', { token: meera });
+  /* A page wide enough to hold both: ascending order puts the newest at the *end*, which is
+     the whole reason the screen pages rather than showing a first page and stopping. */
+  const { json } = await api('/api/samples?limit=200', { token: meera });
   const positions = json.data.map((row) => row.number);
+  assert.ok(positions.includes(first.number) && positions.includes(second.number));
   assert.ok(
-    positions.indexOf(second.number) < positions.indexOf(first.number),
-    'the later number sits above the earlier one'
+    positions.indexOf(first.number) < positions.indexOf(second.number),
+    'the earlier number sits above the later one'
   );
+  /* And the whole page is in order, not merely those two. */
+  assert.deepEqual(positions, [...positions].sort());
 
   /*
    * And the customer's owner [§29], which is not the person who raised the request. A request
@@ -1103,4 +1109,6 @@ test('the register lists newest first by number, and names who owns the buyer', 
    */
   const row = json.data.find((entry) => entry.number === second.number);
   assert.equal(row.customer?.assignedTo?.name, 'Nandhini S');
+  /* And the envelope says how many there are in total, which is what the pager reads. */
+  assert.ok(json.pagination.total >= positions.length);
 });

@@ -242,6 +242,21 @@ sampleSchema.virtual('isOverdue').get(function isOverdue() {
   return this.requiredDate < new Date();
 });
 
+/**
+ * What has to happen to this request next, in a sentence.
+ *
+ * A virtual rather than a field on the endpoint that first needed it, so *every* door hands it
+ * over — the list, the detail, the board and the bench's day. The alternative was the day
+ * endpoint knowing the mapping and the other three showing a status word instead, which is the
+ * shape of a screen that quietly contradicts the one beside it.
+ *
+ * Null where nothing is owed: a closed request, and one sitting with the customer, where the
+ * next move is theirs and inventing an instruction for the bench would be inventing work.
+ */
+sampleSchema.virtual('nextStep').get(function nextStep() {
+  return SAMPLE_NEXT_STEP[this.status] || null;
+});
+
 sampleSchema.set('toJSON', { virtuals: true });
 sampleSchema.set('toObject', { virtuals: true });
 
