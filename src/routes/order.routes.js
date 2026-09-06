@@ -2,13 +2,14 @@ import { Router } from 'express';
 import {
   listOrders, orderBoard, getOrder, exportOrders,
   createOrder, orderFromQuotation, updateOrder,
-  setOrderCheck, applyOrderAction, listOrderActions, setOrderPo,
+  setOrderCheck, applyOrderAction, listOrderActions, setOrderPo, setOrderPriority,
 } from '../controllers/order.controller.js';
 import {
   listOrderQueries, listQueryQueue, raiseOrderQuery, answerOrderQuery, closeOrderQuery,
 } from '../controllers/orderQuery.controller.js';
 import {
   listProductionLines, exportProductionLines, updateProductionLine, listProductionStatuses,
+  productionDay,
 } from '../controllers/production.controller.js';
 import {
   listDispatches, dispatchBoard, exportDispatches, getDispatch, listReadyStock,
@@ -22,7 +23,7 @@ import {
   orderSchema, orderUpdateSchema, orderFromQuotationSchema,
   orderCheckSchema, orderActionSchema,
   orderQuerySchema, orderAnswerSchema, orderQueryCloseSchema,
-  productionLineSchema,
+  productionLineSchema, orderPrioritySchema,
 } from '../validators/order.schemas.js';
 import {
   dispatchSchema, dispatchUpdateSchema, dispatchActionSchema,
@@ -67,6 +68,23 @@ router.patch('/orders/:id', requireModule('orders', 'write'), validate(orderUpda
 router.put('/orders/:id/po', requireModule('orders', 'write'), singleDocument('file'), setOrderPo);
 
 /*
+ * Asking the plant to pull an order forward [§29].
+ *
+ * On the *read* grant, for exactly the reason the query routes are: marketing is the department
+ * this exists for and they hold orders at read. It writes a request about an order, not the
+ * order's terms — nothing here touches a quantity, a rate or a date — and the ownership check
+ * inside the controller refuses an order the caller may not open, the same way reading it would.
+ * Gating it on write would leave the asking to order confirmation, who are not the people the
+ * buyer rings.
+ */
+router.post(
+  '/orders/:id/priority',
+  requireModule('orders'),
+  validate(orderPrioritySchema),
+  setOrderPriority
+);
+
+/*
  * The §13 checklist, and the actions the order can take.
  *
  * Reading the list of either is a read; ticking a check or taking an action is a write. The
@@ -106,6 +124,13 @@ router.post('/orders/:id/queries/:queryId/close', requireModule('orders'), valid
  * The line is the unit throughout. §17's part delivery is only meaningful where the count
  * actually differs, and on a two-model order that is per line and never per document.
  */
+/*
+ * The plant's own front page: what to run next, and what marketing is waiting to be told.
+ *
+ * Above `/production` so the literal path is matched before anything that could shadow it, the
+ * same ordering the statuses and the export already rely on.
+ */
+router.get('/production/day', requireModule('production'), productionDay);
 router.get('/production/statuses', requireModule('production'), listProductionStatuses);
 router.get('/production/export', requireModule('production'), exportProductionLines);
 router.get('/production', requireModule('production'), listProductionLines);

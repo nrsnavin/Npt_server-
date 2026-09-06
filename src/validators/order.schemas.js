@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS } from '../models/Mould.js';
-import { PRODUCTION_STATUSES, VERIFICATION_KEYS } from '../models/SalesOrder.js';
+import { ORDER_PRIORITIES, PRODUCTION_STATUSES, VERIFICATION_KEYS } from '../models/SalesOrder.js';
 import { URGENCY_KEYS } from '../models/OrderQuery.js';
 import { ORDER_ACTION_KEYS } from '../services/orderActions.js';
 import { objectId } from './schemas.js';
@@ -210,3 +210,21 @@ export const productionLineSchema = z
     remarks: z.string().max(2000).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, { message: 'Nothing to record' });
+
+/**
+ * Asking the plant to move an order up its queue, or standing that request down.
+ *
+ * The reason is required by the schema rather than checked in the controller, because it is
+ * required in *both* directions and a controller check would have grown two branches saying the
+ * same thing. Ten characters is a low bar deliberately: it is not trying to judge the reason,
+ * only to refuse the empty box and the single full stop that a mandatory field otherwise
+ * collects. What makes the field work is that a name is attached to it, not its length.
+ */
+export const orderPrioritySchema = z.strictObject({
+  priority: z.enum(ORDER_PRIORITIES),
+  reason: z
+    .string()
+    .trim()
+    .min(10, 'Say why, in a sentence — the plant is being asked to move a job for this')
+    .max(500),
+});

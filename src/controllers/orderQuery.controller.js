@@ -5,6 +5,7 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { listParams, paginated } from '../utils/query.js';
 import { ownsRecord } from '../services/ownership.service.js';
+import { raiseTask } from '../services/task.service.js';
 import { findDepartment } from '../config/modules.js';
 
 /**
@@ -171,6 +172,48 @@ export const answerOrderQuery = asyncHandler(async (req, res) => {
   query.answers.push({ body: req.body.body, by: req.user._id });
   if (query.status === 'open') query.status = 'answered';
   await query.save();
+
+  /*
+   * Tell whoever asked, rather than waiting for them to look.
+   *
+   * Without this the feature is half-built and fails in the direction it was meant to fix. The
+   * whole argument for a typed query over a WhatsApp message is that nothing gets lost; an
+   * answer nobody is told about is lost in the other direction — the plant did the work, the
+   * marketing person is still telling the buyer they are waiting, and the queue shows it
+   * settled. §31's own list of what is worth interrupting somebody for names a pricing answer,
+   * and this is the same thing about a different question.
+   *
+   * The task carries the answer itself, not just a pointer. A notification that says only
+   * "there is an answer" makes the reader open a screen to learn one sentence, and the sentence
+   * is usually the whole content — "Friday, 20,000 of it".
+   *
+   * Keyed on the query, so a follow-up answer while the first is still untouched does not stack
+   * a second copy: the task says go and read the exchange, and one of those is enough.
+   *
+   * Best-effort. A notification that fails must not fail the answer — the answer is the record,
+   * and refusing to save it because a to-do could not be written would be losing the thing to
+   * protect the reminder about it.
+   */
+  const order = await SalesOrder.findById(query.order).select('number');
+  await raiseTask({
+    user: query.raisedBy,
+    title: `Answered: ${order?.number || 'your question'} — ${query.number}`,
+    notes: `${req.user.name} answered: ${req.body.body}`.slice(0, 500),
+    /*
+     * Dated today, unlike the other automated tasks, and for a reason particular to this one.
+     *
+     * A task with no date sits only in the to-do rail; My day's "Action required today" panel
+     * reads dates, and an undated task shows there as "your day is clear". That is right for a
+     * standing instruction and wrong here: on the other end of this answer is a buyer who was
+     * told somebody would come back to them, and a reply that waits until the asker happens to
+     * open a side panel has recreated the problem the whole query thread exists to solve.
+     * Verified on the live screen — undated, it did not appear on My day at all.
+     */
+    dueDate: new Date(),
+    priority: query.urgency === 'urgent' ? 'high' : 'normal',
+    link: `/orders/${query.order}`,
+    originKey: `query-answered:${query._id}`,
+  }).catch(() => null);
 
   await query.populate(POPULATE);
   res.json({ success: true, data: query });

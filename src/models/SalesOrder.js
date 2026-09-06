@@ -30,6 +30,40 @@ export const ORDER_STATUSES = [
 export const CLOSED_ORDER_STATUSES = ['closed', 'cancelled'];
 
 /**
+ * How far up the plant's queue marketing has asked for an order, and what each level means.
+ *
+ * Three, and no more. A five-point scale invites the middle, and the middle of a priority scale
+ * is where everything ends up — at which point the plant is sorting by a number that no longer
+ * separates anything. Each level here says what it *costs*, because the useful question is
+ * never "is this important" (everything is, to whoever sold it) but "does this go before the
+ * job already on the press".
+ *
+ * `lift` is what the ranking does with it — how many bands a line is pulled up. Kept beside the
+ * label rather than in the ranking service, so the meaning of a level and its effect cannot
+ * drift apart.
+ */
+export const ORDER_PRIORITY_LEVELS = [
+  { key: 'normal', label: 'Normal', hint: 'Runs in date order, like everything else', lift: 0 },
+  {
+    key: 'high',
+    label: 'High — pull it forward',
+    hint: 'Run it ahead of others due the same week',
+    lift: 1,
+  },
+  {
+    key: 'critical',
+    label: 'Critical — something else gives way',
+    hint: 'Goes in with the jobs that must run today. Something already planned gets pushed back.',
+    lift: 2,
+  },
+];
+
+export const ORDER_PRIORITIES = ORDER_PRIORITY_LEVELS.map((level) => level.key);
+
+/** The levels that are an actual request, as opposed to the absence of one. */
+export const RAISED_PRIORITIES = ORDER_PRIORITIES.filter((key) => key !== 'normal');
+
+/**
  * Everything before the release gate [§13].
  *
  * Named once because two places need it and they must not drift: the release action refuses
@@ -355,6 +389,36 @@ const salesOrderSchema = new mongoose.Schema(
     deliveryTerms: String,
     freightTerms: { type: String, trim: true },
     remarks: String,
+
+    /**
+     * What marketing has asked the plant to pull forward, and why.
+     *
+     * The plant already ranks its own queue by what is late and what is due — arithmetic it can
+     * do without being told. What it cannot know is the half that never reaches the shop floor:
+     * this buyer is threatening to cancel, that one is a first order and the relationship turns
+     * on it, this shipment misses a vessel if it slips a day. Without somewhere to say that,
+     * it gets said by phone to whoever answers, and the queue on the screen and the queue
+     * actually being run quietly stop being the same queue.
+     *
+     * Three things make it a record rather than a flag, and each is there to stop the failure
+     * that kills every priority field: everything becomes urgent and the field stops meaning
+     * anything.
+     *
+     *   **A reason is mandatory** — `setOrderPriority` refuses without one. A flag costs
+     *   nothing to set, so it gets set on everything; a sentence somebody has to write and put
+     *   their name to costs enough to be meant.
+     *
+     *   **Who raised it is kept.** The plant is being asked to reorder its day, and it is
+     *   entitled to know by whom. It also makes the pattern visible: if one person's orders are
+     *   all critical, that is a conversation somebody can now actually have.
+     *
+     *   **`critical` says what it costs.** Not a fourth adjective above "high" but a statement
+     *   that something else gives way — so it reads as a trade rather than as emphasis.
+     */
+    priority: { type: String, enum: ORDER_PRIORITIES, default: 'normal', index: true },
+    priorityReason: { type: String, trim: true, maxlength: 500 },
+    priorityBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    priorityAt: Date,
 
     verification: { type: verificationSchema, default: () => ({}) },
     /** Set when the eight checks passed and somebody released it. */

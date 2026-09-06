@@ -48,6 +48,9 @@ const POPULATE = [
   { path: 'quotation', select: 'number status revision' },
   { path: 'enquiry', select: 'number status' },
   { path: 'assignedTo', select: 'name' },
+  /* Who asked the plant to move this job. By name, because a request to reorder somebody's day
+     that arrives unsigned is one nobody can weigh — or push back on. */
+  { path: 'priorityBy', select: 'name' },
   { path: 'lines.mould', select: 'mouldCode name category sizeMm hookType material packingQty' },
   /*
    * The registers behind each line [§28]. Name and code only — the rate is what these records
@@ -670,6 +673,86 @@ export const setOrderPo = asyncHandler(async (req, res) => {
       await old.deleteOne();
     }
   }
+
+  await order.populate(POPULATE);
+  res.json({ success: true, data: orderVisibleTo(order, req.user) });
+});
+
+/**
+ * Raising — or standing down — the priority marketing is asking the plant for [§29].
+ *
+ * Its own endpoint rather than a field on `updateOrder`, and the split is the point. An order
+ * can only be edited before it is released [§13]; priority matters most *after* that, when the
+ * job is on a press and the buyer has just rung. Folding it into the general update would have
+ * made the one case it exists for the one case it could not serve.
+ *
+ * The reason is mandatory and this is where that is enforced. Every priority field in every
+ * system decays the same way — it costs nothing to set, so it gets set on everything, and then
+ * it sorts nothing. A sentence somebody has to write, with their name on it, is the cheapest
+ * thing that resists that, and it is also what the plant actually needs: "critical" tells a
+ * supervisor to move a job and not one thing about why.
+ *
+ * Standing down needs a reason too. "Why is this no longer urgent" is exactly as load-bearing
+ * as the other direction — a buyer who stopped chasing is a fact about the account — and it is
+ * the half people skip, leaving a record that says only that somebody changed their mind.
+ */
+export const setOrderPriority = asyncHandler(async (req, res) => {
+  const order = await SalesOrder.findById(req.params.id);
+  if (!order) throw ApiError.notFound('Order not found');
+  if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+
+  /*
+   * Whose flag this is.
+   *
+   * The plant can read every order, so the ownership check above lets a production user through
+   * — and letting them set this would hollow the field out completely. Its whole value is that
+   * it carries what the shop floor cannot know: that this buyer is threatening to cancel, that
+   * that one is a first order. A plant that can raise it is marking its own homework, and a
+   * supervisor reading "critical — asked for by marketing" would have no way to tell whether
+   * anybody in marketing had ever said so.
+   *
+   * The plant is not being silenced. It already decides its own running order, and holds and
+   * expected dates are its to set; what it cannot do is put words in the customer's mouth.
+   *
+   * Refused with a reason rather than as a 404. Production may genuinely read this order, so
+   * pretending it does not exist would be a lie told to somebody entitled to the truth — and
+   * the message has to explain, or the plant reasonably concludes the screen is broken.
+   */
+  const owner = String(order.assignedTo) === String(req.user._id);
+  const oversees = req.user.role === 'admin' || req.user.department === 'management';
+  if (!owner && !oversees) {
+    throw ApiError.forbidden(
+      'Only the marketing person who owns this order can change what the plant is asked to prioritise'
+    );
+  }
+
+  if (CLOSED_ORDER_STATUSES.includes(order.status)) {
+    throw ApiError.badRequest('This order is finished — there is nothing left to pull forward');
+  }
+
+  const { priority, reason } = req.body;
+  if (priority === order.priority) {
+    throw ApiError.badRequest(`This order is already ${priority}`);
+  }
+
+  const before = snapshot(order);
+
+  order.priority = priority;
+  order.priorityReason = reason;
+  order.priorityBy = req.user._id;
+  order.priorityAt = new Date();
+
+  await order.save();
+  await recordChange({
+    model: 'SalesOrder',
+    documentId: order._id,
+    before,
+    after: snapshot(order),
+    by: req.user,
+    /* The plant is being asked to reorder its day on somebody's say-so. That is a decision with
+       a cost, and a decision with a cost belongs in the trail beside the ones about money. */
+    note: `Priority ${priority}: ${reason}`,
+  });
 
   await order.populate(POPULATE);
   res.json({ success: true, data: orderVisibleTo(order, req.user) });

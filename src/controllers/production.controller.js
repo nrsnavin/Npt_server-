@@ -9,6 +9,8 @@ import {
   HELD_PRODUCTION_STATUSES, assertProductionFigures, assertStatusFits, rollUpOrderStatus,
 } from '../services/production.service.js';
 import { notifyMaterialReady } from '../services/dispatchEscalation.service.js';
+import { PRESSING_BANDS, byUrgency, urgencyOf } from '../services/productionUrgency.service.js';
+import OrderQuery from '../models/OrderQuery.js';
 import { sendCsv } from '../utils/csv.js';
 
 /**
@@ -285,6 +287,115 @@ export const updateProductionLine = asyncHandler(async (req, res) => {
     line: order.lines.id(req.params.lineId),
     /* Said out loud, because the plant did not ask for it and will see it on the order. */
     orderMovedTo: moved,
+  });
+});
+
+/* ------------------------------ The plant's day ------------------------------ */
+
+/**
+ * What to run next, and who is waiting on an answer.
+ *
+ * The plant's own front page, and it answers two questions rather than one because those are
+ * the two a supervisor actually opens the app with: *what goes on a press this morning*, and
+ * *what has somebody asked me that I have not answered*. They are unrelated as data and
+ * inseparable in practice — the second is nearly always about the first, and splitting them
+ * across two screens is how a question about a job sits unanswered beside the job.
+ *
+ * The queue half is deliberately not the production list with a different sort. That list is a
+ * register: every line, filterable, paged. This is a shortlist — what is late, and what will be
+ * late — with the sentence that explains each one. A supervisor who has to work out *why* a row
+ * is near the top is a supervisor who goes back to the whiteboard.
+ */
+export const productionDay = asyncHandler(async (req, res) => {
+  const now = new Date();
+
+  const orders = await SalesOrder.find({ ...RELEASED, ...ownershipFilter(req.user) })
+    .populate(LINE_POPULATE)
+    .populate({ path: 'priorityBy', select: 'name' })
+    .limit(EXPORT_LIMIT);
+
+  const rows = orders.flatMap((order) =>
+    (order.lines || [])
+      .map((line, index) => ({
+        order: {
+          _id: order._id,
+          number: order.number,
+          status: order.status,
+          customer: order.customer,
+          priority: order.priority,
+          priorityReason: order.priorityReason,
+          /* Who asked, by name. The plant is being told to reorder its day and is entitled to
+             know by whom — and it is what makes an over-used flag visible to anybody. */
+          priorityBy: order.priorityBy?.name || null,
+        },
+        lineId: line._id,
+        position: index + 1,
+        modelNumber: line.modelNumber,
+        mould: line.mould,
+        colour: line.colour,
+        quantity: line.quantity,
+        deliveryDate: line.deliveryDate,
+        production: line.production,
+        toMakeQty: line.toMakeQty,
+        madePercent: line.madePercent,
+        isOverdue: line.isOverdue,
+        link: `/orders/${order._id}`,
+      }))
+      .map((row) => ({
+        ...row,
+        urgency: urgencyOf(row, { now, priority: order.priority }),
+      }))
+  );
+
+  const running = rows.filter((row) => row.production?.status !== 'completed');
+  const pressing = running.filter((row) => PRESSING_BANDS.includes(row.urgency.band)).sort(byUrgency);
+  const next = running
+    .filter((row) => !PRESSING_BANDS.includes(row.urgency.band))
+    .sort(byUrgency)
+    .slice(0, 10);
+
+  /*
+   * The questions, from the same request. Fetched here rather than left to a second call from
+   * the browser so the screen cannot render half of itself: a supervisor seeing the queue but
+   * not the questions would answer neither.
+   *
+   * Addressed to *this* department rather than to production by name — the same endpoint then
+   * serves quality and despatch when their own screens are built, and there is no list of
+   * department-to-endpoint mappings to keep in step.
+   */
+  const queries = await OrderQuery.find({
+    askedOf: req.user.department,
+    status: { $in: ['open', 'answered'] },
+  })
+    .populate([
+      { path: 'raisedBy', select: 'name department' },
+      { path: 'answers.by', select: 'name' },
+      { path: 'order', select: 'number customer', populate: { path: 'customer', select: 'name' } },
+    ])
+    .sort({ status: 1, dueBy: 1 })
+    .limit(50);
+
+  res.json({
+    success: true,
+    data: {
+      pressing,
+      next,
+      /* Unanswered first: an answered question is waiting on the asker, not on the plant. */
+      queries: queries.filter((query) => query.status === 'open'),
+      answered: queries.filter((query) => query.status === 'answered'),
+    },
+    meta: {
+      late: running.filter((row) => row.urgency.band === 'late').length,
+      atRisk: running.filter((row) => row.urgency.band === 'at_risk').length,
+      running: running.length,
+      /* What the plant owes an answer on, and how much of it is already past its promise. */
+      questions: queries.filter((query) => query.status === 'open').length,
+      questionsOverdue: queries.filter((query) => query.isOverdue).length,
+      toMake: running.reduce((sum, row) => sum + (row.toMakeQty || 0), 0),
+      /* Said separately from the bands: a plant told "3 late" wants to know how many of those
+         are late because somebody asked for something else to go first. */
+      raised: running.filter((row) => row.order.priority !== 'normal').length,
+    },
   });
 });
 
