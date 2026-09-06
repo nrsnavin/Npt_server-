@@ -1079,3 +1079,28 @@ test('a request nobody has picked up is counted as unclaimed', async () => {
     'and it is marked as theirs'
   );
 });
+
+test('the register lists newest first by number, and names who owns the buyer', async () => {
+  /*
+   * The due date was the default and is the right sort for a *queue* — the bench's day screen
+   * still uses it, worst first. This is the register: somebody opens it to find a request they
+   * were told about, and what they were told is its number.
+   */
+  const first = await requestSample((await raiseEnquiry())._id);
+  const second = await requestSample((await raiseEnquiry())._id);
+
+  const { json } = await api('/api/samples', { token: meera });
+  const positions = json.data.map((row) => row.number);
+  assert.ok(
+    positions.indexOf(second.number) < positions.indexOf(first.number),
+    'the later number sits above the earlier one'
+  );
+
+  /*
+   * And the customer's owner [§29], which is not the person who raised the request. A request
+   * is often raised by whoever took the call; the buyer belongs to one marketing person, and
+   * they are who has to be told when a sample slips.
+   */
+  const row = json.data.find((entry) => entry.number === second.number);
+  assert.equal(row.customer?.assignedTo?.name, 'Nandhini S');
+});

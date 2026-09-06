@@ -31,7 +31,15 @@ const scope = (user) => ownershipFilter(user, 'requestedBy');
 const owns = (user, sample) => ownsRecord(user, sample, 'requestedBy');
 
 const POPULATE = [
-  { path: 'customer', select: 'code name' },
+  /*
+   * The customer, and *who owns them* [§29].
+   *
+   * The owner is not the same person as `requestedBy` and the difference matters on the bench.
+   * A request is often raised by whoever took the call; the customer belongs to one marketing
+   * person, and they are who has to be told when a sample slips and who the buyer will ring.
+   * Nested populate rather than a second query — it is one field on a record already loaded.
+   */
+  { path: 'customer', select: 'code name assignedTo', populate: { path: 'assignedTo', select: 'name' } },
   { path: 'enquiry', select: 'number status requirement.modelNumber requirement.colour' },
   { path: 'lead', select: 'number company status' },
   { path: 'requestedBy', select: 'name' },
@@ -108,7 +116,18 @@ function sampleFilters(req, { withStatus = true } = {}) {
 export const listSamples = asyncHandler(async (req, res) => {
   const { page, limit, sort } = listParams(req.query, {
     searchFields: ['number', 'modelNumber', 'colour', 'remarks'],
-    defaultSort: 'requiredDate',
+    /*
+     * Newest request first, by its number.
+     *
+     * The due date was the default, and it is the right sort for a *queue* — the bench's own
+     * day screen still uses it, worst first. This is the register: somebody opens it to find a
+     * request they were told about, and the thing they were told is its number. A due-date sort
+     * scatters this week's requests through a page of older ones that happen to be due sooner.
+     *
+     * `SMP-YYYY-NNNN` is zero-padded and fixed-width, so a plain string sort is chronological
+     * within a year and across years both — no date field is needed to get the order right.
+     */
+    defaultSort: '-number',
   });
 
   const filter = sampleFilters(req);
@@ -155,7 +174,12 @@ export const sampleBoard = asyncHandler(async (req, res) => {
       'requiredDate requestedAt assignedTo requestedBy courier awbNumber dispatchedQuantity ' +
       'statusHistory.from statusHistory.to statusHistory.at createdAt',
     populate: [
-      { path: 'customer', select: 'code name' },
+      /* The customer and its owner, for the same reason the list carries them — see POPULATE. */
+      {
+        path: 'customer',
+        select: 'code name assignedTo',
+        populate: { path: 'assignedTo', select: 'name' },
+      },
       { path: 'enquiry', select: 'number status' },
       /* So a request made for a lead names the company rather than reading as a trial for
          nobody — the card has no other way to tell those two apart. */

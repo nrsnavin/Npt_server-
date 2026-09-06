@@ -255,7 +255,9 @@ export const sampleDay = asyncHandler(async (req, res) => {
     )
     .populate('requestedBy', 'name')
     .populate('assignedTo', 'name')
-    .populate('customer', 'name')
+    /* The customer's owner as well as its name [§29] — not the same person as the requester,
+       and the one the buyer will actually ring when a sample slips. */
+    .populate({ path: 'customer', select: 'name assignedTo', populate: { path: 'assignedTo', select: 'name' } })
     .populate('lead', 'company')
     .limit(500);
 
@@ -271,6 +273,8 @@ export const sampleDay = asyncHandler(async (req, res) => {
     purpose: sample.purpose,
     /* A lead's request has no customer yet — the company name is on the lead [§4]. */
     customer: sample.customer?.name || sample.lead?.company || null,
+    /* Who the buyer belongs to, which is who hears about it when this slips. */
+    customerOwner: sample.customer?.assignedTo?.name || null,
     requestedBy: sample.requestedBy?.name,
     assignedTo: sample.assignedTo?.name || null,
     mine: mine(sample),
