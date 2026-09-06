@@ -179,6 +179,15 @@ test('moving an enquiry to sample required raises the request and carries the re
   assert.equal(sample.material, 'plastic');
   assert.equal(sample.purpose, 'existing_model');
   assert.ok(sample.requiredDate, 'a due date is set for the sample team');
+  /*
+   * And it is today. A week's grace sounded generous and was the wrong default: it let every
+   * request sit six days without being late, and §25's alarm could not fire until the week was
+   * up. A request that genuinely needs longer is re-dated deliberately, on the record.
+   */
+  assert.equal(
+    new Date(sample.requiredDate).toISOString().slice(0, 10),
+    new Date().toISOString().slice(0, 10)
+  );
 });
 
 test('a new development is raised as a new development sample', async () => {

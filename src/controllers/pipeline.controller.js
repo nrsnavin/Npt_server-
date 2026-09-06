@@ -928,9 +928,15 @@ export const convertLead = asyncHandler(async (req, res) => {
 /* -------------------------------- Enquiries -------------------------------- */
 
 /**
- * The blueprint's hard rule [§3]: an open enquiry always carries a next action and a date.
- * Enforced on write rather than reported afterwards, because an enquiry with no next step
- * is exactly the one that goes quiet.
+ * §3's rule: an open enquiry carries a next action and a date.
+ *
+ * Enforced at the two doors that *move* an enquiry, and deliberately not at the two that
+ * create or correct one. Moving it is the moment somebody is working it, and both movement
+ * doors pre-fill a next step from the action's own recipe — so the guard costs nothing there
+ * and catches only somebody who cleared the field on purpose.
+ *
+ * Capture is the opposite case. See the note in `assertEnquiryValid` for why blocking it there
+ * produced worse data rather than more diligence.
  */
 function assertNextAction(enquiry) {
   if (CLOSED_STATUSES.includes(enquiry.status)) return;
@@ -991,12 +997,21 @@ async function assertEnquiryValid(input) {
   if (isNewDevelopment && !input.requirement?.modelNumber && !input.remarks) {
     throw ApiError.badRequest('Describe the new development in the model number or remarks');
   }
-  if (
-    !CLOSED_STATUSES.includes(input.status || 'new') &&
-    (!input.nextAction || !input.nextFollowUpDate)
-  ) {
-    throw ApiError.badRequest('An open enquiry needs a next action and a follow-up date');
-  }
+  /*
+   * There is deliberately no next-action requirement here [§3, softened].
+   *
+   * §3's rule is that an *open enquiry* always carries a next action, and enforcing it at the
+   * moment of capture enforces it against the one moment when nobody may know yet: a walk-in
+   * at the counter, a WhatsApp message pasted in at seven in the evening, a name taken at a
+   * trade show. A rule that blocks capture does not produce next actions — it produces
+   * "follow up" and a date three days out, which is a next action in form and not in
+   * substance, and which then reads on every screen as though somebody had decided something.
+   *
+   * So the discipline moves to where it means something: it is still required to *move* an
+   * enquiry (see `assertNextAction` at the two stage doors, where every action pre-fills one
+   * anyway), and an enquiry sitting without one is counted as an exception on the marketing
+   * dashboard rather than refused at the door.
+   */
   assertFutureFollowUp(input.nextFollowUpDate);
   if (mould) {
     const exists = await Mould.findById(mould);
@@ -1296,7 +1311,12 @@ export const updateEnquiry = asyncHandler(async (req, res) => {
   }
 
   Object.assign(enquiry, patch);
-  assertNextAction(enquiry);
+  /*
+   * No next-action guard on a correction either, and that is not laxity — it is the other half
+   * of letting one be captured without it. An enquiry raised at the counter with no next step
+   * would otherwise be a record nobody could fix a typo on: every PATCH refused for a field the
+   * create door had just allowed to be empty.
+   */
   await enquiry.save();
   await recordChange({ model: 'Enquiry', doc: enquiry, before, by: req.user });
 

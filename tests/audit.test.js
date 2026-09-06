@@ -138,12 +138,25 @@ test.after(async () => {
 test('a conversion that fails half way leaves the lead convertible', async () => {
   const lead = await makeLead(nandhini, { mobile: '9876512345' });
 
-  // The enquiry is rejected: an open one needs a next action. The customer must not survive
-  // that, or the lead can never be converted again — the duplicate check would block it.
+  /*
+   * The enquiry is rejected — a follow-up date cannot be set in the past. The customer must not
+   * survive that, or the lead can never be converted again: the duplicate check would block it.
+   *
+   * The refusal used to be "an open enquiry needs a next action", which no longer applies at
+   * capture. Any refusal inside the same validation does, and this one is the least contrived.
+   */
   const failed = await api(`/api/leads/${lead._id}/convert`, {
     method: 'POST',
     token: nandhini,
-    body: { customer: { name: 'Everblue Knitwear' }, enquiry: { mould: mouldId, requirement: requirement() } },
+    body: {
+      customer: { name: 'Everblue Knitwear' },
+      enquiry: {
+        mould: mouldId,
+        requirement: requirement(),
+        nextAction: 'Call the buyer',
+        nextFollowUpDate: '2020-01-01',
+      },
+    },
   });
   assert.equal(failed.status, 400);
 

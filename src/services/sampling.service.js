@@ -4,18 +4,25 @@ import { nextNumber } from './numbering.service.js';
 import { EVENTS, publish } from './events.service.js';
 
 /**
- * How long the sample team gets by default when the automation raises a request [§6].
+ * When a sample is due by default [§6].
  *
- * The blueprint says "set due date" without naming a number, so this is the plant's own
- * working assumption rather than a rule from the spec — a week covers stock check, moulding
- * and printing for anything already in the catalogue. An explicit date always wins, and the
- * enquiry's own delivery date caps it: a sample due after the order is a sample due never.
+ * **The day it is asked for.** The blueprint says "set due date" without naming a number, and
+ * this used to allow a week — which sounded generous and was the wrong default in practice. A
+ * buyer asking for a sample is asking for it now; a week's grace turns every request into one
+ * that can sit for six days without being late, and the §25 escalation that exists to catch a
+ * slipping sample cannot fire until the week is up. Most requests are a stock check and a bag.
+ *
+ * The bench is not being told a week's work must happen today: the date is what the sample is
+ * *wanted* by, and a request that genuinely needs a mould change is re-dated to what the bench
+ * can actually do — deliberately, on the record, where marketing can see it and tell the buyer.
+ * That is the conversation a soft default hides.
+ *
+ * Five in the afternoon rather than midnight, so a sample raised this morning is not overdue
+ * by lunchtime. An explicit date always wins, and the enquiry's own delivery date still caps
+ * it: a sample due after the order is a sample due never.
  */
-const DEFAULT_SAMPLE_DAYS = 7;
-
 export function defaultRequiredDate(enquiry, from = new Date()) {
   const target = new Date(from);
-  target.setDate(target.getDate() + DEFAULT_SAMPLE_DAYS);
   target.setHours(17, 0, 0, 0);
 
   const delivery = enquiry?.requiredDeliveryDate ? new Date(enquiry.requiredDeliveryDate) : null;

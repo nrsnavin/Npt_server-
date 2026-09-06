@@ -333,22 +333,40 @@ async function ownedCustomer() {
   return json.data[0]._id;
 }
 
-test('an open enquiry cannot be saved without a next action', async () => {
+test('an enquiry can be captured before anybody knows what happens next', async () => {
+  /*
+   * §3 wants an open enquiry to carry a next action, and this used to refuse to save without
+   * one. That enforced the rule against the one moment nobody may know yet — a walk-in at the
+   * counter, a message pasted in at seven in the evening — and what it produced was not
+   * diligence but "follow up" and a date three days out, typed to get past the form. So the
+   * discipline moved to where it means something: moving the enquiry.
+   */
   const customer = await ownedCustomer();
   const { json: moulds } = await api('/api/moulds', { token: nandhini });
 
-  const { status, json } = await api('/api/enquiries', {
+  const made = await api('/api/enquiries', {
     method: 'POST',
     token: nandhini,
-    body: {
-      customer,
-      mould: moulds.data[0]._id,
-      requirement: { quantity: 10000 },
-    },
+    body: { customer, mould: moulds.data[0]._id, requirement: { colour: 'White' } },
   });
 
-  assert.equal(status, 400);
-  assert.match(json.message, /next action and a follow-up date/);
+  assert.equal(made.status, 201, made.json.message);
+  assert.equal(made.json.data.nextAction, undefined);
+
+  /* And it can still be corrected, which is the other half: otherwise it would be a record
+     nobody could fix a typo on, every PATCH refused for a field the create door allowed. */
+  const fixed = await api(`/api/enquiries/${made.json.data._id}`, {
+    method: 'PATCH', token: nandhini, body: { remarks: 'Buyer walked in at the counter' },
+  });
+  assert.equal(fixed.status, 200, fixed.json.message);
+
+  /* Moving it is where §3 lands. Every action writes a next step, so the guard there only
+     bites somebody who cleared the field on purpose. */
+  const moved = await api(`/api/enquiries/${made.json.data._id}/actions`, {
+    method: 'POST', token: nandhini, body: { action: 'request_pricing' },
+  });
+  assert.equal(moved.status, 200, moved.json.message);
+  assert.ok(moved.json.data.nextAction, 'the action writes the next step');
 });
 
 test('an enquiry needs a mould, a model number, or a new-development flag', async () => {

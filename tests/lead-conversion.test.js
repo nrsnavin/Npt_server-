@@ -311,8 +311,17 @@ test('a rejected enquiry leaves no customer behind', async () => {
 
   const { status } = await convert(lead, {
     customer: { name: `Half Made Mills ${seq}` },
-    // No next action, which §3 refuses on an open enquiry.
-    enquiry: { mould: mouldId, requirement: { quantity: 5000, modelNumber: 'NPT-400S' } },
+    /*
+     * A follow-up date already in the past, which the enquiry door refuses. It used to be a
+     * missing next action; §3's rule now lands when an enquiry is *moved* rather than when it
+     * is captured, so this reaches for the nearest guard that still stands in the same place.
+     */
+    enquiry: {
+      mould: mouldId,
+      requirement: { modelNumber: 'NPT-400S' },
+      nextAction: 'Call the buyer',
+      nextFollowUpDate: '2020-01-01',
+    },
   });
   assert.equal(status, 400);
 
@@ -329,7 +338,12 @@ test('a rejected enquiry on the attach path changes nothing either', async () =>
 
   const { status } = await convert(lead, {
     existingCustomer: customer._id,
-    enquiry: { mould: mouldId, requirement: { quantity: 5000, modelNumber: 'NPT-400S' } },
+    enquiry: {
+      mould: mouldId,
+      requirement: { modelNumber: 'NPT-400S' },
+      nextAction: 'Call the buyer',
+      nextFollowUpDate: '2020-01-01',
+    },
   });
   assert.equal(status, 400);
 
