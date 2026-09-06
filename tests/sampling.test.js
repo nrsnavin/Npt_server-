@@ -1164,35 +1164,81 @@ test('a request nobody has picked up is counted as unclaimed', async () => {
   );
 });
 
-test('the register lists first come first served, and names who owns the buyer', async () => {
+test('the register lists late first, then first come first served, like the day screen', async () => {
   /*
-   * The bench works the queue in the order it arrived, so the register reads in that order.
-   * Anything else asks somebody to hold a second ordering in their head while they walk a
-   * list. The day screen leads with *late* instead, which is the deliberate exception: that
-   * is a queue being triaged rather than a register being read.
+   * The register used to be flat FCFS, on the argument that a register is read rather than
+   * triaged. That was wrong in the one way that matters: it is read by the bench, who had just
+   * come from a day screen leading with *late* and then had to hold a second ordering in their
+   * head to reconcile the two. Same requests in two orders is a difference nobody can see and
+   * everybody eventually trips over.
    */
   const first = await requestSample((await raiseEnquiry())._id);
   const second = await requestSample((await raiseEnquiry())._id);
 
-  /* A page wide enough to hold both: ascending order puts the newest at the *end*, which is
-     the whole reason the screen pages rather than showing a first page and stopping. */
+  /* Make the *later* of the two late, so precedence is actually being tested: on the old
+     ordering it would sit below the earlier one, and on this one it has to sit above it. */
+  await api(`/api/samples/${second._id}`, {
+    method: 'PATCH',
+    token: meera,
+    body: { requiredDate: '2020-01-01T00:00:00.000Z' },
+  });
+
   const { json } = await api('/api/samples?limit=200', { token: meera });
-  const positions = json.data.map((row) => row.number);
-  assert.ok(positions.includes(first.number) && positions.includes(second.number));
-  assert.ok(
-    positions.indexOf(first.number) < positions.indexOf(second.number),
-    'the earlier number sits above the later one'
-  );
-  /* And the whole page is in order, not merely those two. */
-  assert.deepEqual(positions, [...positions].sort());
+  const rows = json.data;
+  const at = (number) => rows.findIndex((row) => row.number === number);
+
+  assert.ok(at(first.number) >= 0 && at(second.number) >= 0);
+  assert.ok(at(second.number) < at(first.number), 'the late one leads, whatever its number');
+
+  /*
+   * And the whole page holds the shape, not merely those two: every late row sits above every
+   * row that is not late, and within each of those two runs the numbers ascend.
+   */
+  const late = rows.map((row) => row.isOverdue);
+  assert.equal(late.lastIndexOf(true) < late.indexOf(false) || !late.includes(false), true,
+    'no on-time request sits above a late one');
+
+  const numbersOf = (isLate) => rows.filter((row) => row.isOverdue === isLate).map((r) => r.number);
+  for (const group of [numbersOf(true), numbersOf(false)]) {
+    assert.deepEqual(group, [...group].sort(), 'first come, first served inside the group');
+  }
 
   /*
    * And the customer's owner [§29], which is not the person who raised the request. A request
    * is often raised by whoever took the call; the buyer belongs to one marketing person, and
    * they are who has to be told when a sample slips.
    */
-  const row = json.data.find((entry) => entry.number === second.number);
+  const row = rows.find((entry) => entry.number === second.number);
   assert.equal(row.customer?.assignedTo?.name, 'Nandhini S');
   /* And the envelope says how many there are in total, which is what the pager reads. */
-  assert.ok(json.pagination.total >= positions.length);
+  assert.ok(json.pagination.total >= rows.length);
+});
+
+test('paging the register does not lose or repeat a row at the late boundary', async () => {
+  /*
+   * The failure this guards against is invisible on one page and obvious on two: the late group
+   * and the rest are two separate queries, so the page that straddles the boundary has to take
+   * the tail of one and the head of the other. Off by one either way and a request is shown
+   * twice or never — and "never" is the one nobody reports, because nobody knows to look.
+   */
+  const { json: all } = await api('/api/samples?limit=200', { token: meera });
+  const whole = all.data.map((row) => row.number);
+  assert.ok(whole.length >= 4, 'need a few requests for the walk to mean anything');
+
+  const walked = [];
+  const limit = 2;
+  for (let page = 1; page <= Math.ceil(whole.length / limit); page += 1) {
+    const { json } = await api(`/api/samples?limit=${limit}&page=${page}`, { token: meera });
+    walked.push(...json.data.map((row) => row.number));
+  }
+
+  assert.deepEqual(walked, whole, 'walking it two at a time reads exactly the same register');
+  assert.equal(new Set(walked).size, walked.length, 'and shows nothing twice');
+});
+
+test('an explicit sort is obeyed rather than regrouped', async () => {
+  // Somebody who asked for an order gets that order, late or not.
+  const { json } = await api('/api/samples?limit=200&sort=-number', { token: meera });
+  const numbers = json.data.map((row) => row.number);
+  assert.deepEqual(numbers, [...numbers].sort().reverse());
 });

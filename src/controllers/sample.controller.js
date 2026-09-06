@@ -113,31 +113,79 @@ function sampleFilters(req, { withStatus = true } = {}) {
   return filter;
 }
 
+/**
+ * Late, expressed as a filter rather than as the `isOverdue` virtual.
+ *
+ * Same rule the day screen triages by and the §25 sweep escalates on — past its date, and not
+ * one of the statuses where the delay is the customer's or the request is closed. Written out
+ * again here because a virtual is computed after the rows are chosen, so it can be *read* on a
+ * page but never sorted or paged on. Built fresh per call: a module-level constant would freeze
+ * `new Date()` at boot and stop finding anything that went late afterwards.
+ */
+const lateClause = () => ({
+  requiredDate: { $lt: new Date() },
+  status: { $nin: NOT_ESCALATED_STATUSES },
+});
+
 export const listSamples = asyncHandler(async (req, res) => {
   const { page, limit, sort } = listParams(req.query, {
     searchFields: ['number', 'modelNumber', 'colour', 'remarks'],
     /*
-     * First come, first served — oldest request number at the top.
-     *
-     * The bench works the queue in the order it arrived, so the register reads in that order
-     * too. Anything else asks somebody to hold a second ordering in their head while they walk
-     * a list: newest-first puts today's request above one that has been waiting a fortnight,
-     * and a due-date sort scatters both through requests that merely happen to be due sooner.
-     * The day screen still leads with *late*, which is the deliberate exception — that is a
-     * queue being triaged rather than a register being read.
+     * Within a group: first come, first served — oldest request number at the top.
      *
      * `SMP-YYYY-NNNN` is zero-padded and fixed-width, so a plain string sort is chronological
-     * within a year and across years both — no date field is needed to get the order right.
+     * within a year and across years both, and no date field is needed to get it right. It is
+     * also the same order the day screen uses inside each of its groups, which is the point:
+     * the two screens now differ in what they *show*, never in how they are read.
      */
     defaultSort: 'number',
   });
 
   const filter = sampleFilters(req);
 
-  const [data, total] = await Promise.all([
-    Sample.find(filter).populate(POPULATE).sort(sort).skip((page - 1) * limit).limit(limit),
+  /*
+   * Late first, then the rest — the day screen's order, applied to the register.
+   *
+   * The register used to be flat FCFS on the argument that a register is read rather than
+   * triaged. That was wrong in the one way that matters: it is read *by the bench*, who then
+   * has to hold a second ordering in their head to reconcile it with the day screen they just
+   * came from. Two screens listing the same requests in two orders is a difference nobody can
+   * see and everybody eventually trips over.
+   *
+   * Done as two queries rather than one aggregation, and deliberately. An `$addFields` stage
+   * could rank lateness in a single pass, but `aggregate` does not cast a filter the way `find`
+   * does — `customer`, `enquiry` and `lead` arrive off the query string as plain strings, and
+   * against an ObjectId column they would match nothing at all, silently. The same reason keeps
+   * the virtuals and the populate working: these are still ordinary documents.
+   *
+   * An explicit `?sort=` skips all of it. Somebody who asked for an order gets that order.
+   */
+  const grouped = !req.query.sort;
+  const late = { $and: [filter, lateClause()] };
+  const rest = { $and: [filter, { $nor: [lateClause()] }] };
+
+  const skip = (page - 1) * limit;
+  const [total, lateTotal] = await Promise.all([
     Sample.countDocuments(filter),
+    grouped ? Sample.countDocuments(late) : 0,
   ]);
+
+  const read = (where, from, take) =>
+    take <= 0 ? [] : Sample.find(where).populate(POPULATE).sort(sort).skip(from).limit(take);
+
+  /*
+   * How much of this page comes from the late group. Clamped at both ends so a page wholly
+   * inside either group asks the other for nothing, and the page that straddles the boundary
+   * takes the tail of one and the head of the other.
+   */
+  const fromLate = grouped ? Math.max(0, Math.min(limit, lateTotal - skip)) : 0;
+
+  const data = grouped
+    ? [
+        ...(await read(late, skip, fromLate)),
+        ...(await read(rest, Math.max(0, skip - lateTotal), limit - fromLate)),
+      ]
+    : await read(filter, skip, limit);
 
   paginated(res, data, { page, limit, total });
 });
