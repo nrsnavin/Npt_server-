@@ -195,7 +195,8 @@ test('marketing does see the price it may quote', async () => {
 
   assert.equal(json.data.approvedSellingPrice, sheet.approvedSellingPrice);
   assert.equal(json.data.number, sheet.number);
-  assert.equal(json.data.quantity, 40000);
+  /* A costing is a per-piece cost, so it is always of one piece — see the model's note. */
+  assert.equal(json.data.quantity, 1);
 });
 
 test('the confidential half is stripped from the list as well as the record', async () => {
@@ -351,7 +352,7 @@ test('an enquiry reaching pricing raises the costing itself', async () => {
     body: {
       customer,
       mould,
-      requirement: { quantity: 25000, modelNumber: 'NH-400' },
+      requirement: { modelNumber: 'NH-400' },
       targetPrice: 7.2,
       ...followUp,
     },
@@ -367,7 +368,9 @@ test('an enquiry reaching pricing raises the costing itself', async () => {
 
   const { json } = await api(`/api/pricings?enquiry=${id}`, { token: admin });
   assert.equal(json.data.length, 1, 'exactly one, not one per visit to the stage');
-  assert.equal(json.data[0].quantity, 25000, 'with the quantity that was asked about');
+  /* No quantity comes across, because the enquiry no longer carries one — nothing before the
+     purchase order knows how many, and a costing is a per-piece cost regardless. */
+  assert.equal(json.data[0].quantity, 1);
   assert.equal(json.data[0].targetPrice, 7.2, 'and what the buyer wants to pay');
 });
 
@@ -458,7 +461,7 @@ test('a minimum set on the quote beats the master', async () => {
   const sheet = await costed({ approvedSellingPrice: 9, mould: tool });
 
   const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
-    method: 'POST', token: nandhini, body: { moq: 10000, quantity: 12000 },
+    method: 'POST', token: nandhini, body: { moq: 10000 },
   });
 
   assert.equal(quote.json.data.lines[0].moq, 10000);
@@ -473,7 +476,7 @@ test('the minimum is part of what a revision said [§10]', async () => {
 
   await api(`/api/quotations/${quote.json.data._id}/revisions`, {
     method: 'POST', token: nandhini,
-    body: { lines: [{ quantity: 12000, unitPrice: 8.5, moq: 5000 }] },
+    body: { lines: [{ unitPrice: 8.5, moq: 5000 }] },
   });
 
   const back = await api(`/api/quotations/${quote.json.data._id}`, { token: nandhini });
@@ -484,7 +487,7 @@ test('the minimum is part of what a revision said [§10]', async () => {
 
 /* --------------------- Turning a costing into a quote --------------------- */
 
-test('a quote raised from a costing starts at the MOQ, not the costed quantity', async () => {
+test('a quote states the minimum the rate is good for, and no quantity [§10]', async () => {
   const tool = await modelWithMoq('NH-MOQ5', 5000);
   const sheet = await costed({ approvedSellingPrice: 9, mould: tool });
 
@@ -493,8 +496,13 @@ test('a quote raised from a costing starts at the MOQ, not the costed quantity',
   });
 
   assert.equal(quote.status, 201, quote.json.message);
-  // The sheet was costed at 40,000; the offer stands down to 5,000, so that is what is offered.
-  assert.equal(quote.json.data.lines[0].quantity, 5000);
+  /*
+   * A rate against a minimum, which is what this plant's quotations are. The register's
+   * minimum comes across; how many the buyer actually takes is the purchase order's answer,
+   * months later, and putting a number here would have made it look agreed.
+   */
+  assert.equal(quote.json.data.lines[0].moq, 5000);
+  assert.equal(quote.json.data.lines[0].quantity, undefined);
   assert.equal(quote.json.data.lines[0].unitPrice, 9);
 });
 
@@ -513,7 +521,7 @@ test('the quote carries the costing, the customer and the model across', async (
   assert.equal(quote.json.data.revisions[0].revision, 0);
 });
 
-test('a quantity under the stated minimum is refused', async () => {
+test('a quantity sent to the quote door is ignored rather than honoured', async () => {
   const tool = await modelWithMoq('NH-MOQ6', 5000);
   const sheet = await costed({ approvedSellingPrice: 9, mould: tool });
 
@@ -521,8 +529,14 @@ test('a quantity under the stated minimum is refused', async () => {
     method: 'POST', token: nandhini, body: { quantity: 400 },
   });
 
-  assert.equal(quote.status, 400);
-  assert.match(quote.json.message, /5000|minimum/i);
+  /*
+   * There is nothing for it to be under any more — the offer is a rate against a minimum, so
+   * a quantity is not a thing a quotation from this plant states. An old caller sending one is
+   * not refused for a field that used to be required; it simply does not land.
+   */
+  assert.equal(quote.status, 201, quote.json.message);
+  assert.equal(quote.json.data.lines[0].quantity, undefined);
+  assert.equal(quote.json.data.lines[0].moq, 5000);
 });
 
 test('a costing waiting on approval cannot be quoted [§9]', async () => {
@@ -556,13 +570,15 @@ test('once signed off, the same costing quotes at the sanctioned price', async (
 test('a costing shows what it was quoted at', async () => {
   const sheet = await costed({ approvedSellingPrice: 9 });
   await api(`/api/pricings/${sheet._id}/quotation`, {
-    method: 'POST', token: nandhini, body: { quantity: 12000 },
+    method: 'POST', token: nandhini, body: { moq: 12000 },
   });
 
   const back = await api(`/api/pricings/${sheet._id}/quotations`, { token: admin });
   assert.equal(back.status, 200);
   assert.equal(back.json.data.length, 1);
-  assert.equal(back.json.data[0].lines[0].quantity, 12000);
+  /* The rate and the minimum it holds down to — which is the whole of what was offered. */
+  assert.equal(back.json.data[0].lines[0].unitPrice, 9);
+  assert.equal(back.json.data[0].lines[0].moq, 12000);
 });
 
 /* --------------------- The enquiry, and what it produced --------------------- */
@@ -573,7 +589,7 @@ test('an enquiry’s costings and quotations are reachable from it', async () =>
     token: nandhini,
     body: {
       customer, mould, source: 'manual',
-      requirement: { modelNumber: 'NH-400', quantity: 20000 },
+      requirement: { modelNumber: 'NH-400' },
       ...followUp,
     },
   });
@@ -582,7 +598,7 @@ test('an enquiry’s costings and quotations are reachable from it', async () =>
   const made = await api('/api/pricings', {
     method: 'POST',
     token: admin,
-    body: { enquiry: enquiryId, customer, quantity: 20000, modelNumber: 'NH-400' },
+    body: { enquiry: enquiryId, customer, modelNumber: 'NH-400' },
   });
   await api(`/api/pricings/${made.json.data._id}/cost`, {
     method: 'PATCH',
@@ -660,7 +676,7 @@ test('a costing comes back with the model master and what it was quoted at', asy
   const tool = await modelWithMoq('NH-DETAIL', 3000);
   const sheet = await costed({ approvedSellingPrice: 9, mould: tool });
   await api(`/api/pricings/${sheet._id}/quotation`, {
-    method: 'POST', token: nandhini, body: { quantity: 15000 },
+    method: 'POST', token: nandhini, body: {},
   });
 
   const seen = await api(`/api/pricings/${sheet._id}`, { token: admin });
@@ -670,9 +686,10 @@ test('a costing comes back with the model master and what it was quoted at', asy
   assert.equal(seen.json.data.mould.mouldCode, 'M-NH-DETAIL');
   assert.equal(seen.json.data.mould.moq, 3000);
 
-  // And what has actually been offered off this price.
+  // And what has actually been offered off this price: a rate, against the register's minimum.
   assert.equal(seen.json.quotations.length, 1);
-  assert.equal(seen.json.quotations[0].lines[0].quantity, 15000);
+  assert.equal(seen.json.quotations[0].lines[0].unitPrice, 9);
+  assert.equal(seen.json.quotations[0].lines[0].moq, 3000);
 });
 
 test('the detail keeps §8 for a marketing reader', async () => {
@@ -854,19 +871,19 @@ test('the details of a costing can be corrected', async () => {
   const made = await api('/api/pricings', {
     method: 'POST',
     token: admin,
-    body: { customer, quantity: 40000, modelNumber: 'NH-400', targetPrice: 7.5 },
+    body: { customer, modelNumber: 'NH-400', targetPrice: 7.5 },
   });
 
   const fixed = await api(`/api/pricings/${made.json.data._id}`, {
     method: 'PATCH',
     token: admin,
-    body: { quantity: 25000, targetPrice: 8, remarks: 'Buyer halved the order' },
+    body: { modelNumber: 'NH-410', targetPrice: 8, remarks: 'Buyer moved to the wider hanger' },
   });
 
   assert.equal(fixed.status, 200, fixed.json.message);
-  assert.equal(fixed.json.data.quantity, 25000);
+  assert.equal(fixed.json.data.modelNumber, 'NH-410');
   assert.equal(fixed.json.data.targetPrice, 8);
-  assert.equal(fixed.json.data.remarks, 'Buyer halved the order');
+  assert.equal(fixed.json.data.remarks, 'Buyer moved to the wider hanger');
 });
 
 test('the details door refuses a price outright', async () => {
@@ -888,25 +905,40 @@ test('the details door refuses a price outright', async () => {
   assert.equal(unchanged.json.data.approvedSellingPrice, 9);
 });
 
-test('changing the quantity on a settled sheet says so on the record', async () => {
-  const sheet = await costed({ approvedSellingPrice: 9 });
+test('a costing is always of one piece, whatever a caller sends', async () => {
+  /*
+   * The sheet has only ever been a per-piece cost: grams at a rate per kilo, plus a hook, a
+   * clip and a print each priced per piece. Nothing in the build-up varies with the lot size,
+   * so the quantity that used to sit beside it was a note about which enquiry raised the sheet
+   * wearing the clothes of an input — and it travelled onto quotations as though somebody had
+   * agreed to it.
+   */
+  const made = await api('/api/pricings', {
+    method: 'POST', token: admin, body: { customer, modelNumber: 'NH-400', quantity: 40000 },
+  });
 
-  const moved = await api(`/api/pricings/${sheet._id}`, {
+  assert.equal(made.json.data.quantity, 1);
+
+  /*
+   * And the correction door refuses one outright rather than dropping it. That is the same
+   * bargain it makes about prices: a strict door means a screen still sending the field finds
+   * out, where a lenient one would look like it had worked and change nothing.
+   */
+  const patched = await api(`/api/pricings/${made.json.data._id}`, {
     method: 'PATCH', token: admin, body: { quantity: 5000 },
   });
 
-  assert.equal(moved.status, 200, moved.json.message);
-  assert.ok(
-    moved.json.data.statusHistory.some((entry) => /Quantity changed to 5000/.test(entry.note || '')),
-    'the price was agreed for a lot size, so moving the lot size belongs in the history'
-  );
+  assert.equal(patched.status, 400);
+
+  const after = await api(`/api/pricings/${made.json.data._id}`, { token: admin });
+  assert.equal(after.json.data.quantity, 1, 'and it stays one');
 });
 
 test('only costing may edit a sheet', async () => {
   const sheet = await costed({ approvedSellingPrice: 9 });
 
   const refused = await api(`/api/pricings/${sheet._id}`, {
-    method: 'PATCH', token: nandhini, body: { quantity: 100 },
+    method: 'PATCH', token: nandhini, body: { targetPrice: 100 },
   });
   assert.equal(refused.status, 403);
 });
@@ -919,7 +951,7 @@ const drafted = async (body = {}) => {
   const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
     method: 'POST',
     token: nandhini,
-    body: { quantity: 12000, paymentTerms: '30 days', ...body },
+    body: { moq: 12000, paymentTerms: '30 days', ...body },
   });
   assert.equal(quote.status, 201, quote.json.message);
   return quote.json.data;
@@ -932,15 +964,15 @@ test('a draft quotation can be edited freely', async () => {
     method: 'PATCH',
     token: nandhini,
     body: {
-      /* The quantity and the minimum are per line; the terms belong to the document. */
-      lines: [{ quantity: 15000, moq: 8000, unitPrice: quote.lines[0].unitPrice }],
+      /* The minimum is per line; the terms belong to the document. The *price* is not editable
+         even on a draft — it moves through a revision, so the old one is kept [§10]. */
+      lines: [{ moq: 8000, unitPrice: quote.lines[0].unitPrice }],
       paymentTerms: '45 days from invoice',
       packing: '200 pcs per carton',
     },
   });
 
   assert.equal(edited.status, 200, edited.json.message);
-  assert.equal(edited.json.data.lines[0].quantity, 15000);
   assert.equal(edited.json.data.lines[0].moq, 8000);
   assert.equal(edited.json.data.paymentTerms, '45 days from invoice');
 });
@@ -956,7 +988,7 @@ test('once it has gone out, the offer only changes through a revision [§10]', a
     token: nandhini,
     body: {
       paymentTerms: '90 days from invoice',
-      lines: [{ quantity: 500, unitPrice: quote.lines[0].unitPrice }],
+      lines: [{ moq: 500, unitPrice: quote.lines[0].unitPrice }],
     },
   });
 
@@ -969,7 +1001,7 @@ test('once it has gone out, the offer only changes through a revision [§10]', a
   // Nothing moved.
   const unchanged = await api(`/api/quotations/${quote._id}`, { token: nandhini });
   assert.equal(unchanged.json.data.paymentTerms, '30 days');
-  assert.equal(unchanged.json.data.lines[0].quantity, 12000);
+  assert.equal(unchanged.json.data.lines[0].moq, 12000);
 });
 
 test('a revision is the way through, and it keeps what was said', async () => {

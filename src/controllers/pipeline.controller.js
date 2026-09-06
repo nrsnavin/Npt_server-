@@ -25,6 +25,7 @@ import { sendCsv } from '../utils/csv.js';
 import { spelledLike } from '../data/places.js';
 import { ENQUIRY_ACTIONS, actionsFrom } from '../services/enquiryActions.js';
 import { buildBoard, perColumnFrom } from '../services/board.service.js';
+import { applySpec, buildSpec } from '../services/registers.service.js';
 
 /**
  * How many rows an export may take.
@@ -245,7 +246,6 @@ export const exportLeads = asyncHandler(async (req, res) => {
     ['City', (row) => row.city],
     ['Status', (row) => row.status],
     ['Interest', (row) => row.productInterest],
-    ['Est. quantity', (row) => row.estimatedQuantity],
     ['Est. value', (row) => row.estimatedValue],
     ['Owner', (row) => row.assignedTo?.name],
     ['Source', (row) => row.source],
@@ -280,8 +280,10 @@ export const exportEnquiries = asyncHandler(async (req, res) => {
     ['Size (mm)', (row) => row.requirement?.sizeMm],
     ['Material', (row) => row.requirement?.material],
     ['Colour', (row) => row.requirement?.colour],
-    ['Quantity', (row) => row.requirement?.quantity],
-    ['Printing', (row) => row.requirement?.printing],
+    ['Material', (row) => row.requirement?.materialRef?.name || row.requirement?.material],
+    ['Hook', (row) => row.requirement?.hookRef?.name],
+    ['Clip', (row) => row.requirement?.clipRef?.name],
+    ['Printing', (row) => row.requirement?.printRef?.name || row.requirement?.printing],
     ['Packing', (row) => row.requirement?.packing],
     ['Target price', (row) => row.targetPrice],
     ['Required delivery', (row) => row.requiredDeliveryDate],
@@ -330,7 +332,7 @@ export const getCustomer = asyncHandler(async (req, res) => {
   const filter = { customer: customer._id };
   const [enquiries, total, samples, sampleTotal, leads] = await Promise.all([
     Enquiry.find(filter)
-      .select('number enquiryDate status requirement.modelNumber requirement.quantity estimatedValue')
+      .select('number enquiryDate status requirement.modelNumber estimatedValue')
       .sort('-enquiryDate')
       .limit(TIMELINE_PAGE),
     Enquiry.countDocuments(filter),
@@ -534,7 +536,7 @@ export const leadBoard = asyncHandler(async (req, res) => {
     perColumn: perColumnFrom(req.query),
     valueField: 'estimatedValue',
     select:
-      'number company contactName city state source status estimatedValue estimatedQuantity ' +
+      'number company contactName city state source status estimatedValue ' +
       'productInterest nextAction nextActionType nextFollowUpDate assignedTo activities ' +
       /* `updatedAt` so a move from the board can carry the same optimistic-concurrency check a
          move from the lead screen does — a card is a stale copy the moment somebody else edits. */
@@ -1003,12 +1005,33 @@ async function assertEnquiryValid(input) {
   if (input.assignedTo) await assertAssignable(input.assignedTo);
 }
 
+/**
+ * An enquiry's requirement, as the registers say it should read [§28].
+ *
+ * The mould sits on the enquiry rather than inside its requirement, so it is folded in here and
+ * taken back out: `buildSpec` decides the family, the colour and the model number from the tool
+ * and the resin together, and doing that without the tool would give the resin the last word on
+ * a model number it knows nothing about.
+ */
+async function requirementSpec(input = {}) {
+  const spec = await buildSpec({ ...(input.requirement || {}), mould: input.mould || undefined });
+  const { mould, ...requirement } = spec;
+  return requirement;
+}
+
 /** Shared by the create endpoint and by lead conversion. */
 async function createEnquiryRecord(input, user) {
   await assertEnquiryValid(input);
 
   const enquiry = new Enquiry({
     ...input,
+    /*
+     * The requirement goes through the registers [§28], the same as a sample or an order line.
+     * A clip named as a hook is refused here rather than at the bench, and the resin's own
+     * colour and family fill themselves in — so the chain from this record to the order booked
+     * against it points at the same rows the whole way down.
+     */
+    requirement: await requirementSpec(input),
     number: await nextNumber('ENQ'),
     assignedTo: input.assignedTo || user._id,
     statusHistory: [{ to: input.status || 'new', by: user._id }],
@@ -1174,6 +1197,12 @@ export const getEnquiry = asyncHandler(async (req, res) => {
     .populate('customer', 'code name mobile email assignedTo')
     .populate('assignedTo', 'name email')
     .populate('mould', 'mouldCode name category sizeMm material hookType')
+    /* The registers the requirement names [§28], so a screen can say what was asked for
+       without four more requests. Name and code only — a rate is not an enquiry's business. */
+    .populate('requirement.materialRef', 'name code type colour')
+    .populate('requirement.hookRef', 'name code colour kind')
+    .populate('requirement.clipRef', 'name code colour kind')
+    .populate('requirement.printRef', 'name code kind')
     .populate('lead', 'number company');
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
@@ -1249,7 +1278,24 @@ export const updateEnquiry = asyncHandler(async (req, res) => {
 
   expectVersion(enquiry, req.body);
   const before = snapshot(enquiry);
-  Object.assign(enquiry, withoutVersion(req.body));
+  const patch = withoutVersion(req.body);
+
+  /*
+   * The requirement goes through the registers on a correction too, and `applySpec` rather than
+   * `buildSpec` because this is a *partial* change: whether somebody has already typed a colour
+   * is a question about the merged record, not about the two fields in the request. Resolving
+   * the patch alone would let a request that changed only the resin overwrite a shade the buyer
+   * had named.
+   */
+  if (patch.requirement || patch.mould !== undefined) {
+    patch.requirement = await applySpec(
+      { ...(enquiry.requirement?.toObject?.() ?? enquiry.requirement), mould: enquiry.mould },
+      { ...(patch.requirement || {}), ...(patch.mould !== undefined ? { mould: patch.mould } : {}) }
+    );
+    delete patch.requirement.mould;
+  }
+
+  Object.assign(enquiry, patch);
   assertNextAction(enquiry);
   await enquiry.save();
   await recordChange({ model: 'Enquiry', doc: enquiry, before, by: req.user });

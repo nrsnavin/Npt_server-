@@ -116,10 +116,41 @@ const sampleSchema = new mongoose.Schema(
     modelNumber: { type: String, trim: true },
     category: { type: String, enum: HANGER_CATEGORIES },
     sizeMm: { type: Number, min: 0 },
+
+    /**
+     * What the sample is to be made of, from the registers [§28].
+     *
+     * The same four references a sales order carries, and they matter here for a reason that is
+     * arguably sharper: a sample is the thing the buyer approves, and §13 then checks an order
+     * against that approval. "Approved sample" means nothing if the sample said "HIPS Wht" in a
+     * box and the order says "HIPS White" in a different box — there is no comparison to make.
+     * Pointing both at the same register rows is what turns that check into an actual check.
+     *
+     * All optional, throughout. A sample is often the first time a model exists at all, and a
+     * register that has to be complete before a request can be raised is a register that gets
+     * worked around with a note in the remarks.
+     */
+    materialRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Material', index: true },
+    hookRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
+    clipRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
+    printRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
+
+    /** The coarse family, filled from the resin or the tool — see `registers.service.js`. */
     material: { type: String, enum: MATERIALS },
+    /** Filled from the chosen resin's own colour, and editable. There is no colour master. */
     colour: { type: String, trim: true },
     hookType: { type: String, enum: HOOK_TYPES },
+    /** Filled from `printRef` when one is chosen. */
     printing: { type: String, trim: true },
+
+    /**
+     * How many pieces to make.
+     *
+     * Kept, unlike the quantity on an enquiry, a costing or a quotation — and it is a different
+     * thing entirely. Those three were asking how big the *order* might be, which nothing before
+     * the purchase order knows. This asks how many pieces to put in the courier bag, which the
+     * person raising the request knows exactly, and which the sample team has to act on.
+     */
     quantity: { type: Number, min: 1, default: 1 },
 
     purpose: { type: String, enum: SAMPLE_PURPOSES, default: 'existing_model' },

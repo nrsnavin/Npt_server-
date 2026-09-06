@@ -91,11 +91,15 @@ export function registerQuotationSubscribers() {
          * A price where there is one price to give, and a count where there are several.
          * `soleLine` returns null on a multi-line quote precisely so this cannot describe an
          * eight-model quotation by whichever model happens to be first.
+         *
+         * No net value on the multi-line case, and that is not a simplification. A quotation
+         * offers a *rate against a minimum* [§10] and carries no quantity, so there is no total
+         * to state — one computed from the lines would have been a figure invented by this
+         * sentence, and it would have read as something the buyer had agreed to.
          */
         notes: quotation.soleLine
           ? `Rev ${quotation.revision} at ₹${quotation.soleLine.unitPrice} went out. Ask what they think.`
-          : `Rev ${quotation.revision} went out — ${quotation.lineCount} models, ` +
-            `₹${quotation.netValue.toLocaleString('en-IN')} net. Ask what they think.`,
+          : `Rev ${quotation.revision} went out — ${quotation.lineCount} models. Ask what they think.`,
         dueDate: quotation.validUntil,
         priority: 'normal',
         link: `/quotations/${quotation._id}`,

@@ -186,10 +186,57 @@ const lineSchema = new mongoose.Schema(
     /** The buyer's word for the model, which is the whole of the identity on a traded line. */
     modelNumber: { type: String, trim: true },
 
+    /**
+     * What the line is actually made of, from the registers rather than from a box [§28].
+     *
+     * An order line is a specification the plant has to work to: which tool, which resin, which
+     * hook, which clip, which print. Typed as free text those are four strings that agree with
+     * nothing — "HIPS Wht" against a register that calls it "HIPS White", a hook nobody can
+     * price because the store knows it by a code the order does not carry. §13's "correct model"
+     * and "correct colour" checks are also unanswerable against free text: there is nothing to
+     * be correct *against*.
+     *
+     * Referenced rather than copied, which is the opposite of what a costing does — and the
+     * difference is deliberate. A costing is a record of what was *priced*, so a resin rate that
+     * moves next month must not reach back into it; the sheet copies the rate and keeps the
+     * reference only to say which material it was. An order is a record of what will be *made*,
+     * and what will be made is whatever the register says that part is on the day it runs. The
+     * rate never appears here at all, so there is nothing to freeze.
+     *
+     * All optional. A traded hanger has no resin of ours behind it, plenty of models carry no
+     * clip, and most carry no print — and a register that must be complete before an order can
+     * be booked is a register that gets worked around with a free-text note.
+     */
+    materialRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Material', index: true },
+    hookRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
+    clipRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
+    printRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
+
     category: { type: String, enum: HANGER_CATEGORIES },
+    /**
+     * The coarse family — PP, HIPS, wood, metal.
+     *
+     * Kept alongside `materialRef` rather than replaced by it, and it is not a duplicate: this
+     * is what you can say about a piece when nobody has picked a batch, which is every traded
+     * line and every order booked before the resin is decided. Filled from the register when
+     * one is chosen, so the two can never disagree — see `registers.service.js`.
+     */
     material: { type: String, enum: MATERIALS },
+    /**
+     * The colour, in the buyer's words.
+     *
+     * **There is deliberately no colour register.** A colour master would be a list of strings
+     * with no rate, no supplier and nothing to maintain — and the colour of a moulded hanger is
+     * not an independent fact anyway, it is the colour of the resin it is moulded in. So this
+     * is filled from the chosen material's own colour and stays editable for the cases where
+     * they differ: a natural resin coloured with masterbatch, or a buyer who names a shade we
+     * then have to match. The picker offers the colours already on the material register, which
+     * is what stops "White", "white" and "Wht" being three colours.
+     */
     colour: { type: String, trim: true },
+    /** What is printed, in words. Filled from `printRef` when one is chosen. */
     printing: { type: String, trim: true },
+    /** Pieces per carton and marking. Not a register — it is a term of this order. */
     packing: { type: String, trim: true },
 
     /** What was ordered. The figure every other quantity on this line is measured against. */

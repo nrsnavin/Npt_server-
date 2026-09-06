@@ -17,6 +17,7 @@ import {
 } from '../controllers/mould.controller.js';
 import {
   listMaterials, getMaterial, createMaterial, updateMaterial, exportMaterials, materialPricings,
+  listMaterialColours,
 } from '../controllers/material.controller.js';
 import {
   listComponents, getComponent, createComponent, updateComponent, exportComponents,
@@ -73,6 +74,9 @@ router.put('/moulds/:id/photo', requireModule('moulds', 'write'), singleImage('p
  * plant's to keep, like the moulds, and everyone else's to read.
  */
 router.get('/materials/export', requireModule('materials'), exportMaterials);
+/* Above `/:id` so the literal segment wins. The colours the register holds, for the pickers
+   that need a consistent list without a colour master behind it — see the controller. */
+router.get('/materials/colours', requireModule('materials'), listMaterialColours);
 router.get('/materials', requireModule('materials'), listMaterials);
 router.post('/materials', requireModule('materials', 'write'), validate(materialSchema), createMaterial);
 router.get('/materials/:id', requireModule('materials'), getMaterial);

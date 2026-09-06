@@ -13,10 +13,20 @@ const sampleCore = {
   modelNumber: z.string().optional(),
   category: z.enum(HANGER_CATEGORIES).optional(),
   sizeMm: z.number().nonnegative().optional(),
+  /*
+   * The registers [§28]. Which register each part must have come from is checked in the
+   * controller, where the record is in hand: hooks, clips and print jobs share a collection,
+   * so a clip's id is a structurally valid hook and no schema can tell them apart.
+   */
+  materialRef: objectId.optional(),
+  hookRef: objectId.optional(),
+  clipRef: objectId.optional(),
+  printRef: objectId.optional(),
   material: z.enum(MATERIALS).optional(),
   colour: z.string().optional(),
   hookType: z.enum(HOOK_TYPES).optional(),
   printing: z.string().optional(),
+  /** Pieces to make. Unlike an enquiry's, this is a figure the requester actually knows. */
   quantity: z.number().int().positive().optional(),
   purpose: z.enum(SAMPLE_PURPOSES).optional(),
   requiredDate: z.coerce.date().optional(),

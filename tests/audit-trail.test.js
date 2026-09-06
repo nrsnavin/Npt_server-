@@ -175,7 +175,7 @@ test('the trail follows the record, not the screen', async () => {
     body: {
       customer: customer._id,
       mould: mouldId,
-      requirement: { modelNumber: 'NPT-400S', quantity: 5000 },
+      requirement: { modelNumber: 'NPT-400S', colour: 'White' },
       ...followUp,
     },
   })).json.data;
@@ -183,13 +183,13 @@ test('the trail follows the record, not the screen', async () => {
   await api(`/api/enquiries/${enquiry._id}`, {
     method: 'PATCH',
     token: nandhini,
-    body: { requirement: { modelNumber: 'NPT-400S', quantity: 9000 }, remarks: 'Buyer raised it' },
+    body: { requirement: { modelNumber: 'NPT-400S', colour: 'Black' }, remarks: 'Buyer changed the colour' },
   });
 
   const rows = await history('Enquiry', enquiry._id, nandhini);
   const fields = rows[0].changes.map((entry) => entry.field);
 
-  assert.ok(fields.includes('requirement.quantity'), `got: ${fields.join(', ')}`);
+  assert.ok(fields.includes('requirement.colour'), `got: ${fields.join(', ')}`);
   assert.ok(fields.includes('remarks'));
 });
 

@@ -188,7 +188,6 @@ export async function suggestNextStep(lead, { now = Date.now() } = {}) {
     lead.city && `Where: ${[lead.city, lead.state].filter(Boolean).join(', ')}`,
     `Stage: ${lead.status}`,
     lead.productInterest && `Interested in: ${lead.productInterest}`,
-    lead.estimatedQuantity && `Estimated quantity: ${lead.estimatedQuantity}`,
     lead.nextAction && `Next action currently set: ${lead.nextAction}`,
     '',
     `Contacts logged: ${stats.total} over ${stats.spanDays} days`,

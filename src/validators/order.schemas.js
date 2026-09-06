@@ -26,6 +26,19 @@ const orderLine = z.object({
   modelNumber: z.string().optional(),
   category: z.enum(HANGER_CATEGORIES).optional(),
   material: z.enum(MATERIALS).optional(),
+
+  /**
+   * What the line is made of, from the registers [§28].
+   *
+   * Ids only. Which register each one has to have come from is checked in the controller, where
+   * the record is in hand: the three parts share a collection, so a clip's id is a structurally
+   * valid hook and no schema can tell them apart — see `registers.service.js`.
+   */
+  materialRef: objectId.optional(),
+  hookRef: objectId.optional(),
+  clipRef: objectId.optional(),
+  printRef: objectId.optional(),
+
   colour: z.string().optional(),
   printing: z.string().optional(),
   packing: z.string().optional(),
@@ -104,6 +117,15 @@ export const orderFromQuotationSchema = z.object({
         colour: z.string().optional(),
         printing: z.string().optional(),
         packing: z.string().optional(),
+        /*
+         * The registers, where the PO specifies something the costing did not. Left out, the
+         * line inherits whatever the costing behind the quote was built on — which is the
+         * ordinary case and the reason this door exists.
+         */
+        materialRef: objectId.optional(),
+        hookRef: objectId.optional(),
+        clipRef: objectId.optional(),
+        printRef: objectId.optional(),
         deliveryDate: z.coerce.date().optional(),
       })
     )

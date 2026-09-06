@@ -22,7 +22,6 @@ export const pricingSchema = z.object({
   clipRef: objectId.optional(),
   printRef: objectId.optional(),
   modelNumber: z.string().optional(),
-  quantity: z.number().positive('A costing needs the quantity it is for'),
   material: z.enum(MATERIALS).optional(),
   /** Made here or bought in — the sheet's TRADE / MANUFACTURE column. */
   procurement: z.enum(['manufacture', 'trade']).optional(),
@@ -95,11 +94,11 @@ export const pricingCostSchema = z
 /**
  * Correcting what the costing is *of* — not what it costs.
  *
- * Deliberately a different door from `/cost`. These fields describe the job: the quantity, the
- * model, what the buyer said they wanted to pay. Changing them does not re-run §9, because
- * nothing about the price has moved; changing a price does, and goes through the costing sheet
- * where the floor is checked. Folding both into one endpoint would mean a quantity correction
- * silently re-opening an approved price.
+ * Deliberately a different door from `/cost`. These fields describe the job: the model, what
+ * it is made of, what the buyer said they wanted to pay. Changing them does not re-run §9,
+ * because nothing about the price has moved; changing a price does, and goes through the
+ * costing sheet where the floor is checked. Folding both into one endpoint would mean a
+ * description correction silently re-opening an approved price.
  *
  * Strict, so a screen posting a price here is refused rather than quietly ignored.
  */
@@ -107,7 +106,6 @@ export const pricingUpdateSchema = z
   .strictObject({
     mould: objectId.optional(),
     modelNumber: z.string().optional(),
-    quantity: z.number().positive('A costing needs the quantity it is for').optional(),
     material: z.enum(MATERIALS).optional(),
     procurement: z.enum(['manufacture', 'trade']).optional(),
     printing: z.string().optional(),
@@ -125,15 +123,17 @@ export const pricingDecisionSchema = z.object({
  * Raising a quotation off a costing.
  *
  * Everything is optional because the costing already knows it: the customer, the enquiry, the
- * model and the price it approved. What is left is the quantity — defaulted to the MOQ, since
- * that is the quantity the price is good for — and the commercial terms, which belong to the
- * conversation rather than to the sheet.
+ * model and the price it approved. What is left is the **minimum** the rate is good for, and
+ * the commercial terms, which belong to the conversation rather than to the sheet.
+ *
+ * There is no quantity, and that is the whole shape of §10: a quotation from this plant offers
+ * a rate against a minimum, not a lot. How many is settled by the purchase order, which is the
+ * first document in the chain that anybody has actually committed to.
  *
  * `unitPrice` is accepted but is not free: §9's floor is checked against the costing before
  * anything is sent, so quoting under it raises the approval rather than slipping past it.
  */
 export const pricingQuoteSchema = z.object({
-  quantity: z.number().positive().optional(),
   moq: money.optional(),
   unitPrice: money.optional(),
   gstPercent: z.number().min(0).max(100).optional(),

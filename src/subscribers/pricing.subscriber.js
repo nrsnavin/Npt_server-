@@ -85,7 +85,12 @@ export function registerPricingSubscribers() {
           customer: enquiry.customer,
           mould: enquiry.mould,
           modelNumber: requirement.modelNumber,
-          quantity: requirement.quantity,
+          /* The registers the buyer's requirement already names, so the sheet is costed against
+             the same resin and parts the enquiry asked for [§28]. */
+          materialRef: requirement.materialRef,
+          hookRef: requirement.hookRef,
+          clipRef: requirement.clipRef,
+          printRef: requirement.printRef,
           material: requirement.material,
           targetPrice: enquiry.targetPrice,
           requestedBy: enquiry.assignedTo,
@@ -100,7 +105,10 @@ export function registerPricingSubscribers() {
             user: member._id,
             title: `Price ${enquiry.number}`,
             notes:
-              `${requirement.modelNumber || 'New development'} · ${requirement.quantity ?? '?'} pc` +
+              /* No quantity: a costing on this sheet is a per-piece cost, and the enquiry no
+                 longer pretends to know how many. The colour is what actually varies the job. */
+              `${requirement.modelNumber || 'New development'}` +
+              `${requirement.colour ? ` · ${requirement.colour}` : ''}` +
               `${enquiry.targetPrice ? ` · buyer's target ₹${enquiry.targetPrice}` : ''}`,
             dueDate: enquiry.requiredDeliveryDate,
             priority: 'high',

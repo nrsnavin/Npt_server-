@@ -261,7 +261,7 @@ test('converting a lead creates the customer, its contact and the first enquiry'
       customer: { customerType: 'exporter', gstin: '32AABCC1111C1ZQ', rating: 'A' },
       enquiry: {
         mould: mouldId,
-        requirement: { quantity: 25000, colour: 'Black' },
+        requirement: { colour: 'Black' },
         targetPrice: 10.8,
         ...followUp,
       },
@@ -278,7 +278,10 @@ test('converting a lead creates the customer, its contact and the first enquiry'
   assert.equal(customer.source, 'referral', 'the source survives conversion');
   assert.equal(String(customer.assignedTo), String(after.assignedTo), 'ownership follows the lead');
   assert.ok(enquiry.number.startsWith('ENQ-'));
-  assert.equal(enquiry.requirement.quantity, 25000);
+  assert.equal(enquiry.requirement.colour, 'Black', 'the requirement carries across');
+  /* And no quantity: nothing before the purchase order knows how many, so the enquiry stopped
+     asking — see the requirement schema's note. */
+  assert.equal(enquiry.requirement.quantity, undefined);
 });
 
 test('a converted lead cannot be converted or edited again', async () => {

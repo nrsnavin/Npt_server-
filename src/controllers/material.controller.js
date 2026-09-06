@@ -36,6 +36,30 @@ export const listMaterials = asyncHandler(async (req, res) => {
   paginated(res, data, { page, limit, total });
 });
 
+/**
+ * The colours the register actually holds.
+ *
+ * **This is deliberately not a colour master.** A colour register would be a list of strings
+ * with no rate, no supplier and nothing to maintain — a master in name only, and one more thing
+ * to keep in step. But an order line typed by hand gives you "White", "white" and "Wht" as three
+ * colours inside a month, and then nothing can be counted by colour ever again.
+ *
+ * So the list is *derived* from the register that already knows: the colour of a moulded hanger
+ * is the colour of the resin it is moulded in, and that is recorded against the material. A
+ * screen offers these and still accepts a typed answer, because a buyer naming a shade we have
+ * to match is ordinary — it is a suggestion list, not an enum.
+ *
+ * Active grades only. A colour the plant has stopped buying is not one to offer on a new order.
+ */
+export const listMaterialColours = asyncHandler(async (req, res) => {
+  const colours = await Material.distinct('colour', { isActive: { $ne: false } });
+
+  res.json({
+    success: true,
+    data: colours.filter(Boolean).sort((a, b) => a.localeCompare(b)),
+  });
+});
+
 export const getMaterial = asyncHandler(async (req, res) => {
   const material = await Material.findById(req.params.id);
   if (!material) throw ApiError.notFound('Material not found');

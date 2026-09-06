@@ -133,20 +133,50 @@ export const LOST_REASONS = [
 ];
 
 /**
- * What the customer actually asked for. Kept on the enquiry rather than read off the
- * product, because a requirement often differs from the catalogue entry — same model, new
- * colour, different packing — and because a new development has no product yet.
+ * What the customer actually asked for.
+ *
+ * Kept on the enquiry rather than read off the mould, because a requirement often differs from
+ * the register entry — same tool, new colour, different packing — and because a new development
+ * has no tool yet.
+ *
+ * The four references are the same ones a sample, an order line and a costing carry [§28], and
+ * carrying them from the very first record is what makes the chain checkable end to end: the
+ * enquiry, the sample the buyer approved and the order booked against it all point at the same
+ * register rows, so §13's "correct colour" is a comparison rather than two boxes of similar
+ * text. Every one of them is optional, because at enquiry stage most of it is genuinely not
+ * known yet — that is what an enquiry *is*.
  */
 const requirementSchema = new mongoose.Schema(
   {
     modelNumber: { type: String, trim: true },
     category: { type: String, enum: HANGER_CATEGORIES },
     sizeMm: { type: Number, min: 0 },
+
+    materialRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Material' },
+    hookRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
+    clipRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
+    printRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
+
     material: { type: String, enum: MATERIALS },
     colour: { type: String, trim: true },
-    quantity: { type: Number, min: 0, required: true },
     printing: { type: String, trim: true },
     packing: { type: String, trim: true },
+
+    /**
+     * Legacy, and no longer asked for.
+     *
+     * An enquiry used to require a quantity, and it was the wrong question at the wrong moment.
+     * Nothing before the purchase order knows how many — the buyer does not know, and the
+     * figure they give to be polite then travels the whole chain as if it were a commitment:
+     * onto a costing that prices a lot size nobody agreed, and into a funnel that reports
+     * pipeline in pieces that were invented in a phone call. What an enquiry can honestly carry
+     * about size is `estimatedValue`, which is already beside it and is marked as an estimate.
+     *
+     * Kept on the schema rather than dropped, exactly as the quotation line's was: the enquiries
+     * already raised do not lose what they recorded, and this is one line to reverse if it ever
+     * earns its place back. Nothing writes it now, and nothing shows it.
+     */
+    quantity: { type: Number, min: 0 },
   },
   { _id: false }
 );

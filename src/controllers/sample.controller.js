@@ -13,6 +13,7 @@ import { canWrite } from '../services/access.service.js';
 import { EVENTS, publish, sampleStatusEvent } from '../services/events.service.js';
 import { createSampleRequest, defaultRequiredDate } from '../services/sampling.service.js';
 import { assertAssignable } from '../services/assignment.service.js';
+import { applySpec, buildSpec } from '../services/registers.service.js';
 import { stalledSamples, stallAfterDays } from '../services/anomaly.service.js';
 import { notifyCustomer, previewFor } from '../services/customerMessage.service.js';
 import CustomerMessage from '../models/CustomerMessage.js';
@@ -31,11 +32,17 @@ const owns = (user, sample) => ownsRecord(user, sample, 'requestedBy');
 
 const POPULATE = [
   { path: 'customer', select: 'code name' },
-  { path: 'enquiry', select: 'number status requirement.quantity' },
+  { path: 'enquiry', select: 'number status requirement.modelNumber requirement.colour' },
   { path: 'lead', select: 'number company status' },
   { path: 'requestedBy', select: 'name' },
   { path: 'assignedTo', select: 'name' },
   { path: 'mould', select: 'mouldCode name category sizeMm' },
+  /* The registers behind the request [§28]. Name and code only — a sample screen has no
+     business with what a hook costs, which is what those records exist for. */
+  { path: 'materialRef', select: 'name code type colour' },
+  { path: 'hookRef', select: 'name code colour kind' },
+  { path: 'clipRef', select: 'name code colour kind' },
+  { path: 'printRef', select: 'name code kind' },
   { path: 'referencePhoto', select: 'key filename mimeType size' },
 ];
 
@@ -274,8 +281,16 @@ export const createSample = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('That mould is not on the register');
   }
 
+  /*
+   * The registers have their say before the request is raised [§28], the same way they do on an
+   * order line. A clip booked as a hook, or a resin the plant has stopped buying, is refused
+   * here by name — and the resin's own colour and family fill themselves in, so nobody is asked
+   * a question the register has already answered. See `registers.service.js`.
+   */
+  const spec = await buildSpec(input);
+
   const { sample, created } = await createSampleRequest(
-    { enquiry, customer: customer?._id ?? undefined, lead: lead?._id ?? undefined, ...input },
+    { enquiry, customer: customer?._id ?? undefined, lead: lead?._id ?? undefined, ...spec },
     req.user
   );
 
@@ -376,7 +391,14 @@ export const updateSample = asyncHandler(async (req, res) => {
 
   expectVersion(sample, req.body);
   const before = snapshot(sample);
-  Object.assign(sample, withoutVersion(req.body));
+  /*
+   * The same registers as the create door — a rule enforced on one and not the other is a gap
+   * with a witness, and a correction is exactly where a clip gets typed into a hook box.
+   * `applySpec` rather than `buildSpec` because this is a *partial* change: whether somebody
+   * has typed a colour is a question about the merged record, not about the two fields in
+   * front of us.
+   */
+  Object.assign(sample, await applySpec(sample, withoutVersion(req.body)));
   await sample.save();
   await recordChange({ model: 'Sample', doc: sample, before, by: req.user });
 

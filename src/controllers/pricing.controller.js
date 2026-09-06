@@ -491,11 +491,12 @@ export const decidePricing = asyncHandler(async (req, res) => {
  * Here the sheet is the source — customer, enquiry, mould and model come across with it, and
  * `pricing` is set, which is what §9's floor check reads before anything can be sent.
  *
- * **The quantity defaults to the MOQ, not to the quantity the sheet was costed at.** That is
- * the whole reason MOQ is on the costing: the approved price holds down to the MOQ and no
- * further, so the first quantity offered is the smallest one the price is good for. Marketing
- * can raise it — a buyer asking for more only makes the price safer — and passing a quantity
- * explicitly overrides it.
+ * **The minimum comes across, and there is no quantity at all** [§10]. The approved price holds
+ * down to the MOQ and no further, so the minimum is the one quantity the offer is genuinely
+ * conditional on — and it is what a buyer reads off the document. How many they actually take
+ * is settled by the purchase order, which is the first thing in the chain anybody has committed
+ * to. The register's minimum for the tool is the starting point; whoever quotes may set another
+ * for this buyer.
  *
  * Only an approved costing may be quoted. A sheet still in costing has no price yet, and one
  * waiting on §9 is precisely the case the approval route exists to stop.
@@ -530,31 +531,26 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
   const moq = req.body.moq ?? mould?.moq ?? 0;
 
   /*
-   * The MOQ, then what the sheet was costed at, then nothing. A costing with neither cannot
-   * name a quantity, and guessing one is how a quote goes out for a lot size nobody agreed.
+   * There is deliberately no quantity here [§10].
+   *
+   * A quotation from this plant offers a **rate against a minimum**, not a lot: the buyer is
+   * told ₹4.90 a piece with a 5,000 minimum, and the purchase order decides how many, months
+   * later. The quantity that used to be computed here came off the enquiry by way of the
+   * costing — a figure nobody had agreed to — and then sat on the quote looking like one that
+   * had. The minimum above is the only quantity the offer is actually conditional on.
    */
-  const quantity = req.body.quantity ?? (moq || pricing.quantity);
-  if (!quantity) throw ApiError.badRequest('Say what quantity this quote is for');
-
-  if (moq && quantity < moq) {
-    throw ApiError.badRequest(
-      `This quote states a minimum of ${moq} pieces — quote at least that, or lower the minimum`
-    );
-  }
+  const { moq: _m, unitPrice: _u, ...terms } = req.body;
 
   /*
    * One line, because one costing prices one model. The quotation can carry more — that is the
    * whole point of it having lines — but they arrive by editing the quote afterwards or by
    * quoting a second costing onto it, not by this door inventing models the sheet never priced.
    */
-  const { quantity: _q, moq: _m, unitPrice: _u, ...terms } = req.body;
-
   const quotation = await newQuotation(
     {
       ...terms,
       lines: [
         {
-          quantity,
           moq,
           unitPrice: req.body.unitPrice ?? pricing.approvedSellingPrice,
           pricing: pricing._id,
@@ -592,18 +588,15 @@ export const pricingQuotations = asyncHandler(async (req, res) => {
 /**
  * Correcting what the costing is *of*.
  *
- * The quantity, the model, the material, what the buyer said they wanted to pay. None of it was
- * editable before, which meant a costing raised for the wrong quantity — the commonest mistake
- * there is, since the automation copies it off the enquiry — could only be abandoned and
+ * The model, the material, what the buyer said they wanted to pay. None of it was editable
+ * before, which meant a costing raised against the wrong model could only be abandoned and
  * re-raised, leaving two sheets for one job and no way to tell which price was live.
  *
  * The prices are not here. They move through the costing sheet, where §9's floor is checked, so
- * that correcting a quantity cannot quietly re-open an approved price and a price change cannot
- * quietly skip the approval route. Two doors because they are two different decisions.
+ * that a description correction cannot quietly re-open an approved price and a price change
+ * cannot quietly skip the approval route. Two doors because they are two different decisions.
  *
- * A settled sheet is still editable — the same argument as re-costing one — but the quantity is
- * the one field that changes what the price *means*, so moving it on an approved sheet says so
- * rather than letting the sheet drift away from the number that was signed off.
+ * A settled sheet is still editable, on the same argument as re-costing one.
  */
 export const updatePricing = asyncHandler(async (req, res) => {
   assertMayCost(req.user);
@@ -623,25 +616,13 @@ export const updatePricing = asyncHandler(async (req, res) => {
     patch.material = patch.material || tool.material;
   }
 
-  const quantityMoved =
-    patch.quantity !== undefined && patch.quantity !== pricing.quantity;
-
-  Object.assign(pricing, patch);
-
   /*
-   * A quantity change on a settled sheet is recorded as an event rather than left to the audit
-   * log alone. The approved price was arrived at for a lot size, and somebody reading the sheet
-   * later needs to see that the lot size moved after it was signed off — that is the whole
-   * reason the two figures are worth comparing.
+   * There is no longer a quantity to move. A costing is a per-piece cost — grams at a rate per
+   * kilo, plus per-piece parts — so nothing in it varies with the lot size, and the event that
+   * used to be recorded here ("the quantity changed after the price was settled") was recording
+   * a change to a figure the price never depended on. See the model's note.
    */
-  if (quantityMoved && CLOSED_PRICING_STATUSES.includes(pricing.status)) {
-    pricing.statusHistory.push({
-      from: pricing.status,
-      to: pricing.status,
-      by: req.user._id,
-      note: `Quantity changed to ${patch.quantity} after the price was settled`,
-    });
-  }
+  Object.assign(pricing, patch);
 
   await pricing.save();
   await recordChange({ model: 'Pricing', doc: pricing, before, by: req.user });

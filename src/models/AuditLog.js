@@ -19,7 +19,7 @@ import mongoose from 'mongoose';
  */
 const changeSchema = new mongoose.Schema(
   {
-    /** Dot path, so `requirement.quantity` reads as the field a person sees on the form. */
+    /** Dot path, so `requirement.colour` reads as the field a person sees on the form. */
     field: { type: String, required: true },
     from: mongoose.Schema.Types.Mixed,
     to: mongoose.Schema.Types.Mixed,

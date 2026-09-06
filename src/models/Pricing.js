@@ -117,10 +117,29 @@ const pricingSchema = new mongoose.Schema(
     clipRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component', index: true },
     printRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component', index: true },
 
-    /** Copied from the enquiry at request time: a costing is of a quantity, and the enquiry
-        may be edited afterwards. A sheet that silently re-prices itself is not a record. */
+    /** Copied from the enquiry at request time, because the enquiry may be edited afterwards
+        and a sheet that silently re-describes itself is not a record. */
     modelNumber: { type: String, trim: true },
-    quantity: { type: Number, min: 0, required: true },
+
+    /**
+     * Always one piece.
+     *
+     * A costing on this sheet has only ever been a **per-piece** cost: grams of resin per piece
+     * at a rate per kilo, plus a hook, a clip and a print each priced per piece. Nothing in the
+     * build-up varies with the lot size, so the quantity beside it was never an input — it was
+     * a note about which enquiry the sheet was raised for, wearing the clothes of a figure that
+     * mattered.
+     *
+     * And it did damage in that costume. It came off an enquiry, where nobody knows how many —
+     * the buyer does not know at that stage — so a polite figure given on the phone travelled
+     * into a costing, out onto a quotation as a lot size, and into every count of "pipeline in
+     * pieces" as though somebody had agreed to it. What the offer is actually conditional on is
+     * the **minimum**, which lives on the quotation where a buyer reads it [§10].
+     *
+     * Pinned rather than deleted: the field is what makes the per-piece arithmetic legible on
+     * the record, and existing sheets keep the quantity they were raised with.
+     */
+    quantity: { type: Number, min: 0, default: 1 },
     material: { type: String, enum: MATERIALS },
 
     /**

@@ -68,8 +68,11 @@ export function registerOrderSubscribers() {
             user: member._id,
             title: `Raise the sales order for ${enquiry.number}`,
             notes:
-              `${requirement.modelNumber || 'New development'} · ${requirement.quantity ?? '?'} pc` +
-              `${enquiry.estimatedValue ? ` · ₹${enquiry.estimatedValue} confirmed` : ''}`,
+              /* The PO is the first document that says how many, so the task does not guess —
+                 it names the model and what the enquiry thought the job was worth. */
+              `${requirement.modelNumber || 'New development'}` +
+              `${requirement.colour ? ` · ${requirement.colour}` : ''}` +
+              `${enquiry.estimatedValue ? ` · ₹${enquiry.estimatedValue} expected` : ''}`,
             dueDate: enquiry.requiredDeliveryDate,
             priority: 'high',
             link: `/enquiries/${enquiry._id}`,

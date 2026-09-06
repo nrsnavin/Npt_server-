@@ -89,7 +89,6 @@ export const leadSchema = z.object({
   source: z.enum(CUSTOMER_SOURCES).optional(),
   conversation: conversationRef,
   productInterest: z.string().optional(),
-  estimatedQuantity: z.number().nonnegative().optional(),
   estimatedValue: z.number().nonnegative().optional(),
   assignedTo: objectId.optional(),
   nextAction: z.string().optional(),
@@ -124,13 +123,27 @@ export const leadActivitySchema = z.object({
 
 /* -------------------------------- Enquiries -------------------------------- */
 
+/**
+ * What the buyer asked for.
+ *
+ * Everything optional, including the model — an enquiry is the record of a conversation that
+ * has only just started, and requiring a field at this stage is requiring somebody to invent
+ * one. The quantity that used to be mandatory here is gone entirely: nothing before the
+ * purchase order knows how many, and the polite figure a buyer gives on the phone used to
+ * travel the whole chain as if it were a commitment. `estimatedValue` beside it carries what
+ * can honestly be said about size, and says on its face that it is an estimate.
+ */
 const requirementSchema = z.object({
   modelNumber: z.string().optional(),
   category: z.enum(HANGER_CATEGORIES).optional(),
   sizeMm: z.number().nonnegative().optional(),
+  /* The registers [§28], checked against the right one in the controller. */
+  materialRef: objectId.optional(),
+  hookRef: objectId.optional(),
+  clipRef: objectId.optional(),
+  printRef: objectId.optional(),
   material: z.enum(MATERIALS).optional(),
   colour: z.string().optional(),
-  quantity: z.number().positive('Quantity is required'),
   printing: z.string().optional(),
   packing: z.string().optional(),
 });

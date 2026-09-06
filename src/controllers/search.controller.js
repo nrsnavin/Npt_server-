@@ -123,7 +123,7 @@ export const globalSearch = asyncHandler(async (req, res) => {
       fields: ['number', 'requirement.modelNumber', 'remarks'],
       related: true,
       scope: () => ownershipFilter(user),
-      select: 'number status enquiryDate requirement.modelNumber requirement.quantity customer',
+      select: 'number status enquiryDate requirement.modelNumber requirement.colour customer',
       populate: { path: 'customer', select: 'name' },
       sort: '-enquiryDate',
       link: (row) => `/enquiries/${row._id}`,

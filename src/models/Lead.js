@@ -66,6 +66,14 @@ const leadSchema = new mongoose.Schema(
     source: { type: String, enum: CUSTOMER_SOURCES, default: 'manual' },
     /** Free text: at lead stage the buyer rarely names a model. */
     productInterest: { type: String, trim: true },
+    /**
+     * Legacy, and no longer asked for.
+     *
+     * A lead is a party who has not told us what they want yet, so a quantity here was always a
+     * guess about a guess — and it then read as a figure on every screen that showed it. What a
+     * lead can honestly carry about size is `estimatedValue` below, which says on its face that
+     * it is an estimate. Kept on the schema so the leads already recorded do not lose it.
+     */
     estimatedQuantity: { type: Number, min: 0 },
     estimatedValue: { type: Number, min: 0 },
 

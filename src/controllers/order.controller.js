@@ -19,6 +19,7 @@ import { allOrdersVisibleTo, orderVisibleTo } from '../services/pricingVisibilit
 import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { ORDER_ACTIONS, orderActionsFrom } from '../services/orderActions.js';
 import { assertAssignable } from '../services/assignment.service.js';
+import { buildSpec, registersFromPricing } from '../services/registers.service.js';
 import { put, remove } from '../services/storage.service.js';
 import { sendCsv } from '../utils/csv.js';
 
@@ -48,6 +49,15 @@ const POPULATE = [
   { path: 'enquiry', select: 'number status' },
   { path: 'assignedTo', select: 'name' },
   { path: 'lines.mould', select: 'mouldCode name category sizeMm hookType material packingQty' },
+  /*
+   * The registers behind each line [§28]. Name and code only — the rate is what these records
+   * exist for and it is nobody's business on an order screen, so it is not fetched rather than
+   * fetched and redacted.
+   */
+  { path: 'lines.materialRef', select: 'name code type colour' },
+  { path: 'lines.hookRef', select: 'name code colour kind' },
+  { path: 'lines.clipRef', select: 'name code colour kind' },
+  { path: 'lines.printRef', select: 'name code kind' },
   { path: 'customerPo.attachment', select: 'key filename mimeType size' },
 ];
 
@@ -238,6 +248,10 @@ export const exportOrders = asyncHandler(async (req, res) => {
     ['Model', (row) => row.line.modelNumber || row.line.mould?.mouldCode],
     ['Mould', (row) => row.line.mould?.mouldCode],
     ['Colour', (row) => row.line.colour],
+    ['Material', (row) => row.line.materialRef?.name || row.line.material],
+    ['Hook', (row) => row.line.hookRef?.name],
+    ['Clip', (row) => row.line.clipRef?.name],
+    ['Print', (row) => row.line.printRef?.name || row.line.printing],
     ['Ordered', (row) => row.line.quantity],
     ...(money ? [['Rate', (row) => row.line.unitPrice]] : []),
     ...(money ? [['Line value', (row) => row.line.lineValue]] : []),
@@ -250,21 +264,39 @@ export const exportOrders = asyncHandler(async (req, res) => {
 
 /* ------------------------------- Writing them ------------------------------- */
 
-/** What a line carries when it is written by hand rather than taken off a quotation. */
-const lineFrom = (line) => ({
-  mould: line.mould || undefined,
-  modelNumber: line.modelNumber,
-  category: line.category,
-  material: line.material,
-  colour: line.colour,
-  printing: line.printing,
-  packing: line.packing,
-  quantity: line.quantity,
-  unitPrice: line.unitPrice,
-  deliveryDate: line.deliveryDate,
-  pricing: line.pricing || undefined,
-  remarks: line.remarks,
-});
+/**
+ * What a line carries when it is written by hand rather than taken off a quotation.
+ *
+ * Async because it goes through the registers on the way [§28]: the tool, the resin, the hook,
+ * the clip and the print are all records elsewhere, and this is where a pick is checked against
+ * the register it claims to come from and where what those records already know stops being
+ * asked for a second time. See `registers.service.js`.
+ */
+const lineFrom = async (line) => {
+  const built = await buildSpec(line);
+
+  return {
+    mould: built.mould || undefined,
+    modelNumber: built.modelNumber,
+    category: built.category,
+    material: built.material,
+    materialRef: built.materialRef || undefined,
+    hookRef: built.hookRef || undefined,
+    clipRef: built.clipRef || undefined,
+    printRef: built.printRef || undefined,
+    colour: built.colour,
+    printing: built.printing,
+    packing: built.packing,
+    quantity: built.quantity,
+    unitPrice: built.unitPrice,
+    deliveryDate: built.deliveryDate,
+    pricing: built.pricing || undefined,
+    remarks: built.remarks,
+  };
+};
+
+/** Every line of a request, resolved together. */
+const linesFrom = (lines = []) => Promise.all(lines.map(lineFrom));
 
 /**
  * Raising an order.
@@ -281,7 +313,7 @@ export const createOrder = asyncHandler(async (req, res) => {
 
   const order = await SalesOrder.create({
     ...req.body,
-    lines: (req.body.lines || []).map(lineFrom),
+    lines: await linesFrom(req.body.lines),
     number: await nextNumber('SO'),
     assignedTo: req.body.assignedTo || req.user._id,
     statusHistory: [{ to: 'po_received', by: req.user._id }],
@@ -306,7 +338,11 @@ export const createOrder = asyncHandler(async (req, res) => {
  * naming six ids rather than by editing a copy of the quote.
  */
 export const orderFromQuotation = asyncHandler(async (req, res) => {
-  const quotation = await Quotation.findById(req.params.id).populate('lines.mould', '_id');
+  const quotation = await Quotation.findById(req.params.id)
+    .populate('lines.mould', '_id')
+    /* The costing behind each line, for its register picks — see the note where they are read.
+       Only the four references: this is not the place a price is looked at. */
+    .populate('lines.pricing', '_id materialRef hookRef clipRef printRef');
   if (!quotation) throw ApiError.notFound('Quotation not found');
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
 
@@ -342,23 +378,36 @@ export const orderFromQuotation = asyncHandler(async (req, res) => {
     throw ApiError.badRequest(`Those lines are not on this quotation: ${unknown.join(', ')}`);
   }
 
-  const lines = (quotation.lines || [])
-    .filter((line) => wanted.has(String(line._id)))
-    .map((line) => {
-      const asked = wanted.get(String(line._id));
-      return {
-        mould: line.mould?._id || line.mould || undefined,
-        modelNumber: line.modelNumber,
-        colour: asked.colour,
-        printing: asked.printing,
-        packing: asked.packing || quotation.packing,
-        quantity: asked.quantity,
-        /* The rate that was offered, unless the buyer negotiated one on the PO itself. */
-        unitPrice: asked.unitPrice ?? line.unitPrice,
-        deliveryDate: asked.deliveryDate,
-        pricing: line.pricing || undefined,
-      };
-    });
+  const lines = await Promise.all(
+    (quotation.lines || [])
+      .filter((line) => wanted.has(String(line._id)))
+      .map(async (line) => {
+        const asked = wanted.get(String(line._id));
+
+        return lineFrom({
+          mould: line.mould?._id || line.mould || undefined,
+          modelNumber: line.modelNumber,
+          /*
+           * The specification comes across too, not only the price [§28].
+           *
+           * The quote's rate came off a costing, and that costing named the resin, the hook, the
+           * clip and the print it was built on. Carrying them here is what makes "nothing is
+           * retyped" true of *what will be made* and not only of what it costs — an order booked
+           * this way is made of exactly what was priced, and the two stop being able to differ.
+           * Anything the PO itself specifies wins, because the buyer's paperwork governs.
+           */
+          ...registersFromPricing(line.pricing, asked),
+          colour: asked.colour,
+          printing: asked.printing,
+          packing: asked.packing || quotation.packing,
+          quantity: asked.quantity,
+          /* The rate that was offered, unless the buyer negotiated one on the PO itself. */
+          unitPrice: asked.unitPrice ?? line.unitPrice,
+          deliveryDate: asked.deliveryDate,
+          pricing: line.pricing?._id || line.pricing || undefined,
+        });
+      })
+  );
 
   const order = await SalesOrder.create({
     number: await nextNumber('SO'),
@@ -404,7 +453,7 @@ export const updateOrder = asyncHandler(async (req, res) => {
       'This order is already with production — its lines cannot be changed. Raise a clarification instead'
     );
   }
-  if (patch.lines) patch.lines = patch.lines.map(lineFrom);
+  if (patch.lines) patch.lines = await linesFrom(patch.lines);
   if (patch.assignedTo) await assertAssignable(patch.assignedTo);
 
   Object.assign(order, patch);

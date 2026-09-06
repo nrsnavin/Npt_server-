@@ -146,12 +146,7 @@ export async function seedPricing({ admin, nandhini }) {
       material: spec?.material,
       procurement: row.procurement || 'manufacture',
       printing: row.printing || undefined,
-      /*
-       * The sheet prices per piece and does not carry a lot size, so the quantity here is a
-       * plausible one rather than a transcribed one — it is the only invented number on the
-       * costing, and nothing downstream computes from it.
-       */
-      quantity: 20000,
+      /* The sheet prices per piece and carries no lot size at all — see the model's note. */
       cost: {
         gramWeight: row.gram,
         rawMaterialRate: row.rate,
