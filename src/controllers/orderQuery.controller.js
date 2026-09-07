@@ -1,5 +1,6 @@
 import OrderQuery, { QUERY_URGENCY } from '../models/OrderQuery.js';
 import SalesOrder from '../models/SalesOrder.js';
+import Dispatch from '../models/Dispatch.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
@@ -30,6 +31,9 @@ import { findDepartment } from '../config/modules.js';
 
 const POPULATE = [
   { path: 'raisedBy', select: 'name department' },
+  /* The consignment by number, so a screen showing the question can name the lorry it is
+     about rather than holding an id it cannot render. */
+  { path: 'dispatch', select: 'number status transporter lrNumber expectedDeliveryDate' },
   { path: 'answers.by', select: 'name department' },
   { path: 'closedBy', select: 'name' },
 ];
@@ -121,7 +125,7 @@ export const listQueryQueue = asyncHandler(async (req, res) => {
 export const raiseOrderQuery = asyncHandler(async (req, res) => {
   const order = await readableOrder(req.params.id, req.user);
 
-  const { line, askedOf, question, urgency = 'normal' } = req.body;
+  const { line, dispatch, askedOf, question, urgency = 'normal' } = req.body;
 
   /*
    * A line that is not on this order is refused rather than quietly dropped. A question about
@@ -131,6 +135,18 @@ export const raiseOrderQuery = asyncHandler(async (req, res) => {
   if (line && !order.lines.id(line)) {
     throw ApiError.badRequest('That line is not on this order');
   }
+
+  /*
+   * And a consignment that is not this order's, for the same reason. Checked against the order
+   * rather than merely for existence: a question tied to somebody else's consignment would put
+   * one customer's lorry number in front of another customer's marketing person.
+   */
+  if (dispatch) {
+    const consignment = await Dispatch.findById(dispatch).select('order');
+    if (!consignment || String(consignment.order) !== String(order._id)) {
+      throw ApiError.badRequest('That consignment is not on this order');
+    }
+  }
   if (!findDepartment(askedOf)) {
     throw ApiError.badRequest(`There is no ${askedOf} department to ask`);
   }
@@ -139,6 +155,7 @@ export const raiseOrderQuery = asyncHandler(async (req, res) => {
     number: await nextNumber('QRY'),
     order: order._id,
     line: line || undefined,
+    dispatch: dispatch || undefined,
     raisedBy: req.user._id,
     askedOf,
     question,

@@ -74,6 +74,21 @@ const orderQuerySchema = new mongoose.Schema(
      */
     line: { type: mongoose.Schema.Types.ObjectId },
 
+    /**
+     * The consignment it is about, when it is about one.
+     *
+     * The same argument as `line`, one stage further down. "Where is the vehicle" and "when will
+     * the balance go" are different questions, and on an order that has already gone out in
+     * three loads the first is unanswerable without knowing which. Despatch reading it without
+     * the consignment named has to guess, and a guessed answer about the wrong lorry is worse
+     * than no answer: it gets relayed to the buyer with confidence.
+     *
+     * A real reference, unlike `line`, because a dispatch is its own document rather than a
+     * subdocument of the order — so the screens that show a question beside a consignment can
+     * populate its number instead of holding an id they cannot render.
+     */
+    dispatch: { type: mongoose.Schema.Types.ObjectId, ref: 'Dispatch', index: true },
+
     raisedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     /** The department that owes an answer. Indexed: this is how a queue screen is built. */
     askedOf: { type: String, enum: QUERY_DEPARTMENTS, required: true, index: true },

@@ -18,6 +18,10 @@ import { DISPATCH_ACTIONS, dispatchActionsFrom } from '../services/dispatchActio
 import {
   assertClaimable, claimsFor, rollUpDispatchStatus, stockFor, stockOf,
 } from '../services/dispatchStock.service.js';
+import {
+  ACTIONABLE_BANDS, byDispatchUrgency, dispatchUrgencyOf,
+} from '../services/dispatchUrgency.service.js';
+import OrderQuery from '../models/OrderQuery.js';
 import { put, remove } from '../services/storage.service.js';
 import { sendCsv } from '../utils/csv.js';
 
@@ -630,4 +634,151 @@ export const setDispatchPod = asyncHandler(async (req, res) => {
 
   await dispatch.populate(POPULATE);
   res.json({ success: true, data: dispatchVisibleTo(dispatch, req.user) });
+});
+
+/* ------------------------------ The team's day ------------------------------ */
+
+/**
+ * What despatch has to do today, and who is waiting to be told.
+ *
+ * The same shape as the plant's own front page and for the same reason: a supervisor opens the
+ * app with two questions, and the second one — "what has somebody asked me that I have not
+ * answered" — is nearly always about the first. Splitting them across two screens is how a
+ * question about a lorry sits unanswered beside the lorry.
+ *
+ * Three lists rather than the plant's two, because despatch has a failure the plant does not.
+ * A consignment that is late, blocked or ready to load is at least *on the screen*; goods that
+ * were packed and for which nobody ever raised a consignment are on no screen at all. That is
+ * how stock sits on a floor for a fortnight against an order everybody believes is moving, and
+ * it is the single most useful thing this page can surface — so `unclaimed` is its own list and
+ * not a footnote under the others.
+ */
+export const dispatchDay = asyncHandler(async (req, res) => {
+  const now = new Date();
+
+  const consignments = await Dispatch.find({
+    status: { $nin: CLOSED_DISPATCH_STATUSES },
+    ...ownershipFilter(req.user),
+  })
+    .populate([
+      { path: 'customer', select: 'code name city state' },
+      { path: 'order', select: 'number' },
+      { path: 'assignedTo', select: 'name' },
+    ])
+    .limit(EXPORT_LIMIT);
+
+  const rows = consignments
+    .map((consignment) => ({
+      _id: consignment._id,
+      number: consignment.number,
+      status: consignment.status,
+      customer: consignment.customer,
+      order: consignment.order,
+      transporter: consignment.transporter,
+      lrNumber: consignment.lrNumber,
+      vehicleNumber: consignment.vehicleNumber,
+      dispatchDate: consignment.dispatchDate,
+      expectedDeliveryDate: consignment.expectedDeliveryDate,
+      dispatchQty: consignment.dispatchQty,
+      lineCount: consignment.lineCount,
+      outstandingPaperwork: consignment.outstandingPaperwork,
+      assignedTo: consignment.assignedTo?.name || null,
+      urgency: dispatchUrgencyOf(consignment, { now }),
+      link: `/dispatches/${consignment._id}`,
+    }))
+    .sort(byDispatchUrgency);
+
+  /*
+   * Goods packed against an order with no consignment claiming them.
+   *
+   * Built from the same `stockOf` the ready-stock screen uses rather than from a second count,
+   * because "free to load" is a subtraction — packed, less what other consignments have already
+   * reserved — and two implementations of a subtraction is how a screen offers the despatch team
+   * stock that is already spoken for.
+   */
+  const openOrders = await SalesOrder.find({
+    status: { $nin: [...PRE_RELEASE_STATUSES, 'cancelled', 'closed'] },
+    ...ownershipFilter(req.user),
+    'lines.production.readyQty': { $gt: 0 },
+  })
+    .populate([
+      { path: 'customer', select: 'code name city state' },
+      { path: 'lines.mould', select: 'mouldCode name' },
+    ])
+    .limit(EXPORT_LIMIT);
+
+  const claims = await claimsFor(openOrders.map((order) => order._id));
+
+  const unclaimed = openOrders
+    .flatMap((order) =>
+      (order.lines || []).map((line) => ({
+        order: { _id: order._id, number: order.number, customer: order.customer },
+        modelNumber: line.modelNumber,
+        mould: line.mould,
+        colour: line.colour,
+        deliveryDate: line.deliveryDate,
+        link: `/orders/${order._id}`,
+        ...stockOf(line, claims.get(String(line._id))),
+      }))
+    )
+    .filter((row) => row.available > 0)
+    /* Oldest promise first: what should go on today's lorry is whatever has been waiting
+       longest against a date somebody actually gave a buyer. */
+    .sort((a, b) => {
+      if (!a.deliveryDate) return 1;
+      if (!b.deliveryDate) return -1;
+      return new Date(a.deliveryDate) - new Date(b.deliveryDate);
+    })
+    .slice(0, 15);
+
+  /*
+   * The questions, from the same request — see the note on the plant's day screen. Addressed to
+   * this user's own department rather than to despatch by name, so the shape serves quality and
+   * accounts unchanged when their screens are built.
+   */
+  const queries = await OrderQuery.find({
+    askedOf: req.user.department,
+    status: { $in: ['open', 'answered'] },
+  })
+    .populate([
+      { path: 'raisedBy', select: 'name department' },
+      { path: 'answers.by', select: 'name' },
+      { path: 'order', select: 'number customer', populate: { path: 'customer', select: 'name' } },
+      /* The consignment it is about, when it names one — on an order already sent in three
+         loads, "where is the vehicle" is unanswerable without it. */
+      { path: 'dispatch', select: 'number status transporter lrNumber expectedDeliveryDate' },
+    ])
+    .sort({ status: 1, dueBy: 1 })
+    .limit(50);
+
+  const inBand = (band) => rows.filter((row) => row.urgency.band === band);
+
+  res.json({
+    success: true,
+    data: {
+      chase: inBand('chase'),
+      blocked: inBand('blocked'),
+      load: inBand('load'),
+      pod: inBand('pod'),
+      watch: inBand('watch'),
+      unclaimed,
+      queries: queries.filter((query) => query.status === 'open'),
+      answered: queries.filter((query) => query.status === 'answered'),
+    },
+    meta: {
+      chase: inBand('chase').length,
+      blocked: inBand('blocked').length,
+      load: inBand('load').length,
+      pod: inBand('pod').length,
+      open: rows.length,
+      /* Everything with a verb against it, which is the one number the team is judged on —
+         derived from the band list so it cannot drift from what the screen actually groups. */
+      actionable: rows.filter((row) => ACTIONABLE_BANDS.includes(row.urgency.band)).length,
+      /* Lines, and the pieces on them: "7 lines" understates a floor holding 340,000 pieces. */
+      unclaimed: unclaimed.length,
+      unclaimedQty: unclaimed.reduce((sum, row) => sum + row.available, 0),
+      questions: queries.filter((query) => query.status === 'open').length,
+      questionsOverdue: queries.filter((query) => query.isOverdue).length,
+    },
+  });
 });

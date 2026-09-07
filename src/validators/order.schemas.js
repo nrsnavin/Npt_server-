@@ -167,6 +167,8 @@ export const orderActionSchema = z.object({
 export const orderQuerySchema = z.object({
   /** The line it is about, when it is about one. Absent means the order as a whole. */
   line: objectId.optional(),
+  /** The consignment it is about — "where is the vehicle" on an order already sent in three. */
+  dispatch: objectId.optional(),
   askedOf: z.string().min(2),
   question: z.string().min(3, 'Say what you want to know').max(2000),
   urgency: z.enum(URGENCY_KEYS).optional(),

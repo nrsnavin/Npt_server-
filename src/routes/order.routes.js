@@ -14,7 +14,7 @@ import {
 import {
   listDispatches, dispatchBoard, exportDispatches, getDispatch, listReadyStock,
   listOrderDispatches, createDispatch, updateDispatch,
-  applyDispatchAction, listDispatchActions, setDispatchPod,
+  applyDispatchAction, listDispatchActions, setDispatchPod, dispatchDay,
 } from '../controllers/dispatch.controller.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -166,6 +166,9 @@ router.patch(
 router.get('/dispatches/export', requireModule('dispatch'), exportDispatches);
 router.get('/dispatches/board', requireModule('dispatch'), dispatchBoard);
 router.get('/dispatches/ready', requireModule('dispatch'), listReadyStock);
+/* Despatch's own front page: what to move today, what is packed with nothing claiming it, and
+   the questions marketing is waiting on — all in one reply, so it cannot render half of itself. */
+router.get('/dispatches/day', requireModule('dispatch'), dispatchDay);
 
 router.get('/dispatches', requireModule('dispatch'), listDispatches);
 router.post('/dispatches', requireModule('dispatch', 'write'), validate(dispatchSchema), createDispatch);
