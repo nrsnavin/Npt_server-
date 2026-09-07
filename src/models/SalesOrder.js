@@ -420,6 +420,47 @@ const salesOrderSchema = new mongoose.Schema(
     priorityBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     priorityAt: Date,
 
+    /**
+     * Where this order came from, when it was not typed here.
+     *
+     * Scoped by source rather than being one opaque string, because "SO-1042" means nothing on
+     * its own — the moment there are two feeds, two systems' counters collide and one order
+     * overwrites another. The pair is what identifies a row in somebody else's database.
+     *
+     * `revision` is what makes an amendment recognisable. Without it an amended order looks
+     * exactly like an unchanged one and the only way to tell is to compare every field; with it
+     * the poller can see "this is the same order, changed" and take the path §12 needs — apply
+     * it before release, and raise a question rather than mutate afterwards, because quietly
+     * changing a quantity under a running press is how the wrong quantity gets made.
+     *
+     * `importedAt` is the *first* time it arrived rather than the last, so it stays a fact about
+     * where the order came from rather than a second, worse copy of `updatedAt`.
+     */
+    externalRef: {
+      /** The feed. `chirix`, and whatever follows it. */
+      source: { type: String, trim: true },
+      /** Their identifier for the order, exactly as they gave it. */
+      id: { type: String, trim: true },
+      /** Their revision or version, when they have one. */
+      revision: { type: String, trim: true },
+      importedAt: Date,
+      _id: false,
+    },
+
+    /**
+     * What the import had to guess, in words, so nobody has to work it out from a blank field.
+     *
+     * An imported order routinely arrives with something unresolved: a buyer not on our customer
+     * master, a model code that matches no mould, a salesperson we have no user for. Dropping
+     * those orders would lose real business; importing them silently would put an order in front
+     * of somebody with no sign that the tool on it was a guess.
+     *
+     * So each unresolved join leaves a sentence here, and order confirmation reads them before
+     * ticking a single §13 check. Empty on an order that resolved cleanly, and on every order
+     * typed by hand.
+     */
+    importReview: { type: [String], default: () => [] },
+
     verification: { type: verificationSchema, default: () => ({}) },
     /** Set when the eight checks passed and somebody released it. */
     releasedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -447,6 +488,20 @@ const salesOrderSchema = new mongoose.Schema(
 );
 
 salesOrderSchema.index({ assignedTo: 1, status: 1 });
+
+/**
+ * One order per source identifier, enforced by the database rather than by the importer.
+ *
+ * Sparse, so the thousands of orders typed by hand — which carry no `externalRef` at all — do not
+ * collide with each other on a pair of nulls. Unique, because idempotency that lives only in
+ * application code fails exactly when it matters: two polls overlapping, or a retry after a
+ * timeout that actually succeeded. The index is what makes re-reading a window free, and free
+ * re-reads are what let the poller overlap rather than trust two clocks to agree.
+ */
+salesOrderSchema.index(
+  { 'externalRef.source': 1, 'externalRef.id': 1 },
+  { unique: true, sparse: true }
+);
 salesOrderSchema.index({ number: 'text', 'customerPo.number': 'text' });
 /** "What is running on this tool?" — the question the mould register's screen will ask. */
 salesOrderSchema.index({ 'lines.mould': 1 });
