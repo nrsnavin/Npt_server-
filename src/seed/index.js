@@ -18,6 +18,7 @@ import { seedMaterials } from './materials.js';
 import { seedComponents } from './components.js';
 import { seedPricing } from './pricing.js';
 import { seedRegisterCostings } from './registerCostings.js';
+import { seedOrders } from './orders.js';
 import { FULL, few } from './size.js';
 
 /** Dates relative to today, so the reminder feed always has something to show. */
@@ -192,6 +193,20 @@ async function seed() {
     nandhini: byEmail['marketing@npthangers.com'],
   });
 
+  /*
+   * Last, because every join it makes points backwards: an order names a customer and a mould,
+   * a consignment names an order, a question names a consignment. Seeded before them it would
+   * have nothing to hang on.
+   */
+  console.log('Adding sales orders, what the plant has made of them, and what has left the yard...');
+  const trade = await seedOrders({
+    priya: byEmail['orders@npthangers.com'],
+    nandhini: byEmail['marketing@npthangers.com'],
+    arun: byEmail['marketing2@npthangers.com'],
+    ramesh: byEmail['production@npthangers.com'],
+    anita: byEmail['despatch@npthangers.com'],
+  });
+
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));
 
   console.log(
@@ -241,6 +256,12 @@ async function seed() {
     `  Registers: ${derived.costings} more costings built off a mould and a resin — ` +
       `${derived.uplifted} of them in a resin heavier than PP. Heaviest is ` +
       `${derived.heaviest?.modelNumber} at ${derived.heaviest?.cost.gramWeight}g a piece.`
+  );
+  console.log(
+    `  Phase 4: ${trade.orders} released orders carrying ${trade.lines} lines, ` +
+      `${trade.dispatches} consignments and ${trade.queries} questions between marketing and ` +
+      `the plant — with ${trade.unclaimed.toLocaleString('en-IN')} pieces packed, some of it ` +
+      `claimed by a lorry and some of it waiting for one.`
   );
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');
