@@ -196,6 +196,29 @@ const dispatchSchema = new mongoose.Schema(
       note: { type: String, trim: true },
     },
 
+    /**
+     * Sent despite quality saying otherwise, and who said it was alright [§15].
+     *
+     * The plant chose a warning over a refusal here — despatch may send a consignment that has
+     * failed its pre-dispatch check or never had one — and that is the better choice, because a
+     * hard gate on a soft judgement gets worked around outside the system where nobody can see
+     * it. What makes it safe is entirely this record: the concern as it stood, the reason given,
+     * and a name.
+     *
+     * Its real purpose is the report built on it. A warning nobody has to answer for is a dialog
+     * people learn to dismiss; a warning that appears in a monthly list beside the name of
+     * whoever dismissed it is a decision. Without the list, the warning is decoration.
+     */
+    qualityOverride: {
+      /* What the screen said at the time, kept verbatim — the inspection may be superseded
+         later, and the question this answers is what was known when the lorry left. */
+      concern: { type: String, trim: true },
+      reason: { type: String, trim: true, maxlength: 500 },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      _id: false,
+    },
+
     remarks: String,
     cancellationReason: { type: String, trim: true },
 

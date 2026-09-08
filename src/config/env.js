@@ -37,6 +37,23 @@ export const env = {
     exposeInResponse: process.env.OTP_EXPOSE_IN_RESPONSE === 'true',
   },
 
+  /**
+   * Quality's one policy switch [§15].
+   *
+   * A consignment whose pre-dispatch check *failed* always warns — that is not negotiable and
+   * needs no setting. This decides the other case: whether a consignment nobody has inspected
+   * at all also warns.
+   *
+   * **Off by default, deliberately.** Turned on before the plant has adopted pre-dispatch
+   * checks, every single consignment warns, despatch types "n/a" ten times a day, and the
+   * overrides report — the one thing that makes a soft gate honest — fills with a hundred
+   * percent of consignments and tells nobody anything. A signal that fires on everything is not
+   * a signal. Switch it on once inspections are routine, and it becomes the real gate.
+   */
+  quality: {
+    requirePreDispatchCheck: process.env.QUALITY_REQUIRE_PRE_DISPATCH === 'true',
+  },
+
   smtp: {
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT || 587),

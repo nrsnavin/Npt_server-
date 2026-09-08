@@ -91,5 +91,13 @@ export const dispatchActionSchema = z.object({
   action: z.enum(DISPATCH_ACTION_KEYS),
   note: z.string().max(2000).optional(),
   cancellationReason: z.string().max(500).optional(),
+  /**
+   * Why this is going out despite quality saying otherwise [§15].
+   *
+   * Optional here and required by the controller only when there is actually something to
+   * override — a consignment that passed its check must not be made to explain itself, and a
+   * schema cannot see the inspection to know which case it is in.
+   */
+  qualityOverrideReason: z.string().max(500).optional(),
   ...paperwork,
 });

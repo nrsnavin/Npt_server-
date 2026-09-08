@@ -16,6 +16,11 @@ import {
   listOrderDispatches, createDispatch, updateDispatch,
   applyDispatchAction, listDispatchActions, setDispatchPod, dispatchDay,
 } from '../controllers/dispatch.controller.js';
+import {
+  recordInspection, listOrderInspections, listInspections,
+  qualityReport, listQualityOverrides, listQualityOptions,
+} from '../controllers/quality.controller.js';
+import { inspectionSchema } from '../validators/quality.schemas.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { singleDocument } from '../middleware/upload.js';
@@ -139,6 +144,30 @@ router.patch(
   requireModule('production', 'write'),
   validate(productionLineSchema),
   updateProductionLine
+);
+
+/*
+ * Quality [§15, stage 7].
+ *
+ * On the `quality` grant, which production, despatch and marketing all hold at read — an
+ * inspection is a fact about goods that four departments have to act on, and a verdict only the
+ * quality team can see is a verdict that stops nothing.
+ *
+ * Recording one is gated on the *order's* read grant as well as quality write, and the
+ * controller's ownership check runs inside: an inspection against an order you may not open is
+ * refused the same way the order is. The literal paths sit above `/:id` as everywhere else.
+ */
+router.get('/quality/options', requireModule('quality'), listQualityOptions);
+router.get('/quality/report', requireModule('quality'), qualityReport);
+router.get('/quality/overrides', requireModule('quality'), listQualityOverrides);
+router.get('/quality', requireModule('quality'), listInspections);
+
+router.get('/orders/:id/inspections', requireModule('quality'), listOrderInspections);
+router.post(
+  '/orders/:id/inspections',
+  requireModule('quality', 'write'),
+  validate(inspectionSchema),
+  recordInspection
 );
 
 /*

@@ -22,6 +22,7 @@ import {
   ACTIONABLE_BANDS, byDispatchUrgency, dispatchUrgencyOf,
 } from '../services/dispatchUrgency.service.js';
 import OrderQuery from '../models/OrderQuery.js';
+import { dispatchQuality } from '../services/quality.service.js';
 import { put, remove } from '../services/storage.service.js';
 import { sendCsv } from '../utils/csv.js';
 
@@ -490,7 +491,9 @@ export const applyDispatchAction = asyncHandler(async (req, res) => {
   if (!dispatch) throw ApiError.notFound('Consignment not found');
   if (!ownsRecord(req.user, dispatch)) throw ApiError.notFound('Consignment not found');
 
-  const { action, note, ...rest } = req.body;
+  /* Pulled out of `rest` rather than deleted afterwards: everything left in `rest` is assigned
+     straight onto the document, and this one belongs inside the override record, not beside it. */
+  const { action, note, qualityOverrideReason, ...rest } = req.body;
   const recipe = DISPATCH_ACTIONS[action];
   if (!recipe) throw ApiError.badRequest('That is not something you can do to a consignment');
 
@@ -517,6 +520,40 @@ export const applyDispatchAction = asyncHandler(async (req, res) => {
     );
   }
 
+  /*
+   * §15's quality check, which warns rather than refuses.
+   *
+   * Deliberately not a `gate` in the action table beside `shippable`: those refuse outright, and
+   * this one is a judgement the plant asked to keep. A consignment that failed its pre-dispatch
+   * check, or never had one, may still go — but only with a reason and a name against it, and
+   * every such decision lands in the overrides report.
+   *
+   * The first attempt comes back 409 with the concern and what to do about it, rather than 400:
+   * this is not a malformed request, it is a correct one that needs a second, deliberate press
+   * with an answer attached. A screen can tell those apart and say so.
+   */
+  if (recipe.to === 'dispatched') {
+    const quality = await dispatchQuality(dispatch._id);
+
+    if (!quality.passed) {
+      const reason = String(qualityOverrideReason || '').trim();
+
+      if (reason.length < 10) {
+        throw ApiError.conflict(
+          `${quality.concern}. It can still go, but say why — the reason is kept against the ` +
+            'consignment and appears in the monthly overrides list.',
+          { concern: quality.concern, needs: 'qualityOverrideReason' }
+        );
+      }
+
+      dispatch.qualityOverride = {
+        concern: quality.concern,
+        reason,
+        by: req.user._id,
+        at: new Date(),
+      };
+    }
+  }
   for (const field of recipe.needs) {
     if (!rest[field] && !dispatch[field]) throw ApiError.badRequest(`“${recipe.label}” needs ${field}`);
   }
