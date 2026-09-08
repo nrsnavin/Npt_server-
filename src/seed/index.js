@@ -264,6 +264,10 @@ async function seed() {
       `claimed by a lorry and some of it waiting for one.`
   );
   console.log(
+    `  Quality: ${trade.inspections} inspections — one rejection holding a line, and a ` +
+      `consignment that went past the warning with a reason on the record.`
+  );
+  console.log(
     `  Phase 5: ${trade.receivables} receivables carrying ` +
       `₹${trade.owed.toLocaleString('en-IN')} still owed — a broken promise, an overdue nobody ` +
       `has rung, a part-paid one due this week, an advance promised ahead, and one in dispute.`

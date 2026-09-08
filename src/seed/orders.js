@@ -4,6 +4,8 @@ import SalesOrder, { VERIFICATION_KEYS } from '../models/SalesOrder.js';
 import Dispatch from '../models/Dispatch.js';
 import OrderQuery from '../models/OrderQuery.js';
 import Receivable from '../models/Receivable.js';
+import Inspection from '../models/Inspection.js';
+import Material from '../models/Material.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { few } from './size.js';
 
@@ -62,6 +64,7 @@ export async function seedOrders({ priya, nandhini, arun, ramesh, anita }) {
     Dispatch.deleteMany({}),
     OrderQuery.deleteMany({}),
     Receivable.deleteMany({}),
+    Inspection.deleteMany({}),
   ]);
 
   const customers = await Customer.find({}).sort({ code: 1 });
@@ -415,6 +418,158 @@ export async function seedOrders({ priya, nandhini, arun, ramesh, anita }) {
   }
 
   /* ---------------------------------------------------------------- *
+   * What quality found [§15]
+   * ---------------------------------------------------------------- */
+
+  /*
+   * Built for the three questions the bench's screens ask, which is not the same as building
+   * "some inspections":
+   *
+   *   **Something held right now**, because a rejected final inspection stopping a line is the
+   *   whole reason the quality module exists and the screen leads with it. Nothing held means
+   *   the section that matters never renders.
+   *
+   *   **More than one tool, more than one defect, more than one resin**, because every panel on
+   *   the report is a comparison — which tool is worst, which fault is commonest — and a single
+   *   row compares with nothing. Two tools with visibly different rates, so the ordering by rate
+   *   rather than by volume is actually exercised: the worst tool here is also the one that made
+   *   the *fewest* pieces, which is the case a volume sort gets wrong.
+   *
+   *   **A consignment sent past the warning**, because the overrides list is what makes a soft
+   *   gate honest, and an empty one reads as "nobody ever overrides" rather than as "no data".
+   *
+   * The line's own `quality_hold` is set alongside the rejection, exactly as the controller does
+   * it — a fixture where the verdict says rejected and the line says running would show two
+   * records disagreeing about whether goods can ship, which is the thing the controller exists
+   * to prevent.
+   */
+
+  /*
+   * The resin, named on the inspection rather than read off the line.
+   *
+   * The order line carries a `materialRef` in the model and the seeded lines do not set one, so
+   * copying it across would leave `byMaterial` empty — a whole panel of the report drawing
+   * nothing, on a screen that would look finished. Naming it here is what the bench does anyway:
+   * the inspector knows which resin was in the hopper.
+   */
+  const resins = await Material.find({ code: { $in: ['PP-WHT', 'HIPS-WHT', 'PP-BLK'] } });
+  const resin = (n) => (resins.length ? resins[n % resins.length]?._id : undefined);
+
+  const inspect = async ({ order, lineIndex = 0, stage, verdict, checked, rejected = 0, defects = [], dispatch, at, remarks, material, by = ramesh }) => {
+    const line = order.lines[lineIndex];
+
+    return Inspection.create({
+      number: await nextNumber('QC'),
+      order: order._id,
+      line: line._id,
+      dispatch: dispatch?._id,
+      mould: line.mould,
+      materialRef: material ?? line.materialRef,
+      modelNumber: line.modelNumber,
+      colour: line.colour,
+      stage,
+      inspectedBy: by._id,
+      inspectedAt: at,
+      quantityInspected: checked,
+      quantityRejected: rejected,
+      defects,
+      verdict,
+      remarks,
+    });
+  };
+
+  const inspections = [];
+
+  if (orders[3]) {
+    /*
+     * The rejection that stops a line. On the Grey NPT-410V, which has 12,000 made and 9,000
+     * packed — so it is a line despatch would otherwise be free to claim from, which is what
+     * makes the hold mean something on the screens downstream.
+     */
+    inspections.push(await inspect({
+      order: orders[3], lineIndex: 0, stage: 'final', verdict: 'rejected',
+      checked: 12000, rejected: 900, material: resin(0),
+      defects: [
+        { type: 'short_shot', count: 620, note: 'Hook end not filling on cavities 2 and 4' },
+        { type: 'flash', count: 280 },
+      ],
+      at: days(-2, 11),
+      remarks: 'Held the lot. Tool needs a look before the balance is run.',
+    }));
+
+    /* And the line says so too, the way the controller writes it. */
+    orders[3].lines[0].production.status = 'quality_hold';
+    orders[3].lines[0].production.holdReason =
+      'Final inspection rejected 900 of 12,000 — short shot on the hook end';
+    await orders[3].save();
+  }
+
+  if (orders[0]) {
+    /* The same tool caught earlier and cheaper, which is the argument for in-process checks —
+       and it gives the stage tally two rows to compare rather than one to state. */
+    inspections.push(await inspect({
+      order: orders[0], stage: 'in_process', verdict: 'passed_with_deviation',
+      checked: 4000, rejected: 60, material: resin(1),
+      defects: [{ type: 'flow_mark', count: 60, note: 'Gate streak, first hour of the run' }],
+      at: days(-11, 10),
+      remarks: 'Pulled the streaked pieces and carried on.',
+    }));
+
+    inspections.push(await inspect({
+      order: orders[0], stage: 'final', verdict: 'passed',
+      checked: 22000, rejected: 140, material: resin(1),
+      defects: [{ type: 'surface_damage', count: 140 }],
+      at: days(-7, 15),
+    }));
+  }
+
+  if (orders[4]) {
+    /* A clean lot, so "passed" is not a verdict the screens have never drawn. */
+    inspections.push(await inspect({
+      order: orders[4], stage: 'final', verdict: 'passed',
+      checked: 25000, rejected: 0, material: resin(2),
+      at: days(-5, 12),
+      remarks: 'Nothing found.',
+    }));
+  }
+
+  if (orders[1]) {
+    /*
+     * The worst tool *by rate*, and deliberately not the one with the most rejects: 8% off
+     * 5,000 checked here, against 7.5% off 12,000 on the held line — which scrapped 900 pieces
+     * to this one's 400.
+     *
+     * That gap is the point of the fixture. A report sorted by how many were scrapped puts the
+     * big run on top every time and hides the worse tool underneath it, and a fixture where the
+     * same tool led on both measures would pass whichever way the sort was written.
+     */
+    inspections.push(await inspect({
+      order: orders[1], stage: 'final', verdict: 'passed_with_deviation',
+      checked: 5000, rejected: 400, material: resin(0),
+      defects: [
+        { type: 'colour_variation', count: 300, note: 'Half a shade light against the approved sample' },
+        { type: 'weak_hook', count: 100 },
+      ],
+      at: days(-4, 16),
+    }));
+  }
+
+  /*
+   * A consignment that went past the warning. Written here rather than pressed through the API
+   * because the seed writes against the models throughout — but written in the shape the
+   * controller writes it, so the overrides report reads a real record rather than a stub.
+   */
+  if (dispatches[0]) {
+    dispatches[0].qualityOverride = {
+      concern: 'Nothing has been inspected on this consignment',
+      reason: 'Buyer inspected the lot at our gate on Tuesday and accepted it themselves.',
+      by: anita._id,
+      at: days(-6, 15),
+    };
+    await dispatches[0].save();
+  }
+
+  /* ---------------------------------------------------------------- *
    * What is owed, and the state of the chase [§20, §25]
    * ---------------------------------------------------------------- */
 
@@ -541,6 +696,7 @@ export async function seedOrders({ priya, nandhini, arun, ramesh, anita }) {
     lines: orders.reduce((sum, order) => sum + order.lines.length, 0),
     dispatches: dispatches.length,
     queries: queries.length,
+    inspections: inspections.length,
     receivables: receivables.length,
     /* Counted rather than stated: the fixture moves and a hard-coded figure would drift. */
     owed: Math.round(receivables.reduce((sum, row) => sum + row.balance, 0)),

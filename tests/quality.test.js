@@ -539,3 +539,67 @@ test('the vocabulary comes from the server, so a form cannot invent a defect', a
     assert.ok(defect.key && defect.label && defect.group && defect.hint, `${defect.key} is incomplete`);
   }
 });
+
+test('the inspection register is scoped to the orders a marketing reader owns', async () => {
+  /*
+   * The one door in this module that leaked. The report and the overrides both resolved §29's
+   * ownership through the orders behind an inspection; the register did not, so a marketing
+   * person opening it saw every inspection in the building — their colleagues' customers
+   * included. Found by counting rows on the seeded screen against the three the same person
+   * sees on the chase list beside it.
+   *
+   * A second marketing person with an order of their own is what makes this assertable: with
+   * one owner every scope looks correct.
+   */
+  const madeUser = await api('/api/users', {
+    method: 'POST', token: admin,
+    body: {
+      name: 'Arun K', email: 'arun-quality@np.com', password: 'Mktg@654321',
+      department: 'marketing',
+    },
+  });
+  assert.equal(madeUser.status, 201, madeUser.json?.message);
+  const arunId = madeUser.json.data._id || madeUser.json.data.id;
+
+  const made = await api('/api/orders', {
+    method: 'POST', token: priya,
+    body: {
+      customer, assignedTo: arunId,
+      lines: [{
+        mould, materialRef: material, modelNumber: 'NH-410', colour: 'Grey',
+        quantity: 20000, unitPrice: 8, deliveryDate: inDays(25),
+      }],
+    },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  const theirs = made.json.data;
+
+  for (const check of CHECKS) {
+    await api(`/api/orders/${theirs._id}/checks`, { method: 'POST', token: priya, body: { check } });
+  }
+  await api(`/api/orders/${theirs._id}/actions`, {
+    method: 'POST', token: priya, body: { action: 'release' },
+  });
+
+  const seen = await inspect(theirs, {
+    line: theirs.lines[0]._id, stage: 'final',
+    quantityInspected: 500, quantityRejected: 0, verdict: 'passed',
+  });
+  assert.equal(seen.status, 201, seen.json?.message);
+
+  const mine = await api('/api/quality', { token: nandhini });
+  assert.equal(mine.status, 200, mine.json?.message);
+
+  const orders = new Set(mine.json.data.map((row) => String(row.order?._id || row.order)));
+  assert.ok(!orders.has(String(theirs._id)), "one marketing reader can see another's inspections");
+
+  /* And naming the order directly is not a way round it. */
+  const direct = await api(`/api/quality?order=${theirs._id}`, { token: nandhini });
+  assert.equal(direct.status, 200);
+  assert.equal(direct.json.data.length, 0, 'naming the order defeated the scope');
+
+  /* The bench itself is not scoped — quality inspects for the whole plant. */
+  const bench = await api('/api/quality', { token: sunil });
+  const benchOrders = new Set(bench.json.data.map((row) => String(row.order?._id || row.order)));
+  assert.ok(benchOrders.has(String(theirs._id)), 'quality cannot see an order it inspected');
+});

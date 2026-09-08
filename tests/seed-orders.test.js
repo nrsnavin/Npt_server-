@@ -36,6 +36,7 @@ let SalesOrder;
 let Dispatch;
 let OrderQuery;
 let Receivable;
+let Inspection;
 let User;
 let claimsFor;
 let stockOf;
@@ -52,6 +53,7 @@ test.before(async () => {
   ({ default: Dispatch } = await import('../src/models/Dispatch.js'));
   ({ default: OrderQuery } = await import('../src/models/OrderQuery.js'));
   ({ default: Receivable } = await import('../src/models/Receivable.js'));
+  ({ default: Inspection } = await import('../src/models/Inspection.js'));
   ({ default: User } = await import('../src/models/User.js'));
   ({ claimsFor, stockOf } = await import('../src/services/dispatchStock.service.js'));
 
@@ -74,6 +76,16 @@ test.before(async () => {
       mouldCode, name: `Hanger ${380 + i * 10}mm`, category: 'shirt', sizeMm: 380 + i * 10,
       material: 'pp', cavities: 4, partWeightGrams: 24 + i, cycleTimeSeconds: 26 + i,
     }))
+  );
+
+  /* The material register, which the quality fixture reads to name a resin on each inspection.
+     Without it every inspection names the same nothing and the report's material panel — a
+     comparison — has one row to compare with itself. */
+  const { default: Material } = await import('../src/models/Material.js');
+  await Material.create(
+    [['PP-WHT', 'PP White', 'pp'], ['HIPS-WHT', 'HIPS White', 'hips'], ['PP-BLK', 'PP Black', 'pp']].map(
+      ([code, name, type]) => ({ code, name, type, ratePerKg: 100 })
+    )
   );
 
   const { seedOrders } = await import('../src/seed/orders.js');
@@ -200,6 +212,85 @@ test('both departments have a question waiting, one of them already late', async
   assert.ok(await OrderQuery.exists({ status: 'answered' }));
 });
 
+/* ------------------------------ What quality found ------------------------------ */
+
+test('a rejected inspection holds its line, and the line agrees', async () => {
+  /*
+   * The controller sets `quality_hold` from the verdict rather than leaving the two to be kept
+   * in step by hand — two records that can disagree about whether goods are fit to send is
+   * worse than either alone. A fixture written against the models can break that, and one that
+   * did would show a screen saying "held" beside a line saying "running".
+   */
+  const rejected = await Inspection.findOne({ verdict: 'rejected' });
+  assert.ok(rejected, 'nothing is rejected, so nothing on the bench screen is held');
+  assert.ok(rejected.holdsTheLine, 'a rejected final inspection is not holding its line');
+
+  const order = await SalesOrder.findById(rejected.order);
+  const line = order.lines.id(rejected.line);
+  assert.equal(
+    line.production.status,
+    'quality_hold',
+    `${order.number} ${line.modelNumber}: rejected on the bench and ${line.production.status} on the floor`
+  );
+  assert.ok(line.production.holdReason, 'held with no reason on it');
+});
+
+test('the report has something to compare in every panel', async () => {
+  // Every panel is a comparison — which tool is worst, which fault commonest. One row compares
+  // with nothing, and a single-row chart looks finished while proving that the ordering works
+  // has never been possible.
+  const rows = await Inspection.find({});
+
+  assert.ok(new Set(rows.map((r) => String(r.mould))).size > 1, 'only one tool inspected');
+  assert.ok(new Set(rows.map((r) => String(r.materialRef))).size > 1, 'only one resin inspected');
+  assert.ok(new Set(rows.map((r) => r.stage)).size > 1, 'every inspection is at the same stage');
+  assert.ok(new Set(rows.map((r) => r.verdict)).size > 1, 'every inspection reached the same verdict');
+  assert.ok(
+    new Set(rows.flatMap((r) => r.defects.map((d) => d.type))).size > 2,
+    'too few kinds of defect for a Pareto to mean anything'
+  );
+});
+
+test('the worst tool by rate is not the tool with the most rejects', async () => {
+  /*
+   * The ordering bug the report is written to avoid, made catchable. A chart sorted by how many
+   * pieces were scrapped puts the big run on top every time and hides the bad tool underneath
+   * it — so the fixture needs a small run with a high rate, or sorting by volume would pass.
+   */
+  const byMould = new Map();
+  for (const row of await Inspection.find({})) {
+    const key = String(row.mould);
+    const entry = byMould.get(key) || { inspected: 0, rejected: 0 };
+    entry.inspected += row.quantityInspected;
+    entry.rejected += row.quantityRejected;
+    byMould.set(key, entry);
+  }
+
+  const rows = [...byMould.values()].map((row) => ({
+    ...row,
+    rate: row.inspected ? row.rejected / row.inspected : 0,
+  }));
+
+  const worstByRate = [...rows].sort((a, b) => b.rate - a.rate)[0];
+  const worstByCount = [...rows].sort((a, b) => b.rejected - a.rejected)[0];
+
+  assert.notEqual(
+    worstByRate,
+    worstByCount,
+    'the worst tool by rate is also the worst by count, so a volume sort would pass'
+  );
+});
+
+test('a consignment went out past the quality warning, with a reason on it', async () => {
+  // The overrides list is what makes a soft gate honest, and an empty one reads as "nobody
+  // overrides" rather than as "no data".
+  const waived = await Dispatch.findOne({ 'qualityOverride.at': { $exists: true } });
+  assert.ok(waived, 'nothing was sent past the warning');
+  assert.ok(waived.qualityOverride.concern, 'the override records no concern');
+  assert.ok(waived.qualityOverride.reason?.length >= 10, 'the override records no real reason');
+  assert.ok(waived.qualityOverride.by, 'the override names nobody');
+});
+
 /* --------------------------- The chase, band by band --------------------------- */
 
 test('the chase screen has a row in each of its four groups', async () => {
@@ -259,4 +350,5 @@ test('the summary counts what is actually there', async () => {
   assert.equal(result.dispatches, await Dispatch.countDocuments({}));
   assert.equal(result.queries, await OrderQuery.countDocuments({}));
   assert.equal(result.receivables, await Receivable.countDocuments({}));
+  assert.equal(result.inspections, await Inspection.countDocuments({}));
 });

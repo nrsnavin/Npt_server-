@@ -209,10 +209,33 @@ export const listInspections = asyncHandler(async (req, res) => {
     defaultSort: '-inspectedAt',
   });
 
+  /*
+   * Scoped to what the reader may see, the same way the report beside it is [§29].
+   *
+   * An inspection has no owner of its own — it belongs to the order behind it — so the scope
+   * has to be resolved through the orders first. Left out, this was the one door in the module
+   * that leaked: the report and the overrides both applied ownership and this list did not, so
+   * a marketing person reading the register saw every inspection in the building, including
+   * their colleagues' customers. Found by counting rows on the seeded screen against the three
+   * the same person sees on the chase list.
+   */
+  const scope = ownershipFilter(req.user);
+  const owned = Object.keys(scope).length
+    ? (await SalesOrder.find(scope).select('_id')).map((order) => String(order._id))
+    : null;
+
   if (req.query.stage) filter.stage = { $in: String(req.query.stage).split(',') };
   if (req.query.verdict) filter.verdict = { $in: String(req.query.verdict).split(',') };
   if (req.query.mould) filter.mould = req.query.mould;
-  if (req.query.order) filter.order = req.query.order;
+  /* A named order narrows *within* the scope rather than replacing it — asking for an order you
+     may not read must not become a way to read it. */
+  if (req.query.order) {
+    filter.order = owned && !owned.includes(String(req.query.order))
+      ? { $in: [] }
+      : req.query.order;
+  } else if (owned) {
+    filter.order = { $in: owned };
+  }
   /* The one view a quality head opens first: what is currently stopping something. */
   if (req.query.held === 'true') filter.verdict = { $in: HOLDING_VERDICTS };
 

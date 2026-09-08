@@ -109,7 +109,7 @@ export const MODULES = [
     stage: 7,
     ownerDepartment: 'quality',
     blueprint: '15',
-    available: false,
+    available: true,
   },
   {
     key: 'dispatch',
