@@ -3,6 +3,7 @@ import Mould from '../models/Mould.js';
 import SalesOrder, { VERIFICATION_KEYS } from '../models/SalesOrder.js';
 import Dispatch from '../models/Dispatch.js';
 import OrderQuery from '../models/OrderQuery.js';
+import Receivable from '../models/Receivable.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { few } from './size.js';
 
@@ -60,6 +61,7 @@ export async function seedOrders({ priya, nandhini, arun, ramesh, anita }) {
     SalesOrder.deleteMany({}),
     Dispatch.deleteMany({}),
     OrderQuery.deleteMany({}),
+    Receivable.deleteMany({}),
   ]);
 
   const customers = await Customer.find({}).sort({ code: 1 });
@@ -412,11 +414,136 @@ export async function seedOrders({ priya, nandhini, arun, ramesh, anita }) {
     }));
   }
 
+  /* ---------------------------------------------------------------- *
+   * What is owed, and the state of the chase [§20, §25]
+   * ---------------------------------------------------------------- */
+
+  /*
+   * Built band by band, the same way the consignments above were, and for the same reason: the
+   * chase screen groups by *which conversation this is* rather than sorting by a field, so a
+   * fixture without a row in each group leaves half the screen never rendered against anything.
+   *
+   * The four conversations, in the order the screen puts them:
+   *
+   *   **A broken promise** — they named a day and it has gone. The only call that opens with
+   *   something to hold the buyer to, which is why it leads.
+   *   **Overdue and never promised** — nobody has got a commitment out of them yet.
+   *   **Due this week** — the cheap call, made before it is late.
+   *   **Promised and still ahead** — nothing to do, shown so nobody rings them by mistake.
+   *
+   * Plus a part-paid one, because a balance that is neither nothing nor the whole invoice is
+   * where an off-by-one in the arithmetic hides, and an advance, because it is the same object
+   * with no consignment behind it and the screen has to read it as ordinary.
+   */
+
+  const owe = async ({ kind = 'invoice', order, dispatch, value, dueBy, owner, receipts, followUps, judgement, judgementNote }) =>
+    Receivable.create({
+      number: await nextNumber('RCV'),
+      kind,
+      customer: order.customer,
+      order: order._id,
+      dispatch: dispatch?._id,
+      assignedTo: owner._id,
+      invoice: dispatch
+        ? { number: dispatch.invoice?.number, date: dispatch.invoice?.date, value }
+        : { value, date: days(-2, 11) },
+      dueBy,
+      receipts: receipts || [],
+      followUps: followUps || [],
+      judgement,
+      judgementNote,
+    });
+
+  const receivables = [];
+
+  if (orders[0] && dispatches[0]) {
+    /* The broken promise. Said Friday, Friday has gone, and the note is what the next caller
+       opens with — the whole argument for recording who was spoken to. */
+    receivables.push(await owe({
+      order: orders[0], dispatch: dispatches[0], value: 215000,
+      dueBy: days(-24, 23), owner: nandhini,
+      followUps: [
+        {
+          at: days(-12, 11), by: nandhini._id, spokeTo: 'Mr Ravi, accounts',
+          note: 'Says the invoice is in their approval queue and will move this week.',
+        },
+        {
+          at: days(-5, 16), by: nandhini._id, spokeTo: 'Mr Ravi, accounts',
+          note: 'Promised the full amount by Friday. Says the cheque is signed.',
+          promisedDate: days(-2, 17), promisedAmount: 215000,
+        },
+      ],
+    }));
+  }
+
+  if (orders[0] && dispatches[1]) {
+    /* Overdue, and nobody has rung them. The group that exists to show what has been neglected
+       rather than what has been chased and failed. */
+    receivables.push(await owe({
+      order: orders[0], dispatch: dispatches[1], value: 168000,
+      dueBy: days(-9, 23), owner: nandhini,
+    }));
+  }
+
+  if (orders[5] && dispatches[dispatches.length - 1]) {
+    /* Part paid, and due in a few days — the cheap call. Two receipts rather than one, because
+       a single receipt equal to half the invoice is a case that passes even when the sum is
+       written as an assignment. */
+    receivables.push(await owe({
+      order: orders[5], dispatch: dispatches[dispatches.length - 1], value: 240000,
+      dueBy: days(4, 23), owner: nandhini,
+      receipts: [
+        { amount: 60000, receivedAt: days(-8, 10), mode: 'neft', reference: 'UTR 4471900231', recordedBy: priya._id },
+        { amount: 45000, receivedAt: days(-3, 10), mode: 'neft', reference: 'UTR 4472118844', recordedBy: priya._id },
+      ],
+    }));
+  }
+
+  if (orders[1]) {
+    /*
+     * Promised and still ahead of the day. Nothing to do today, and the screen says so — a row
+     * somebody rings anyway is a row that teaches the buyer the promise did not matter.
+     *
+     * Deliberately more than a week out. The groups are mutually exclusive and `soon` takes
+     * everything falling due inside seven days *before* `promised` is considered, so an advance
+     * due on day six lands in the wrong band however firm the promise against it — which is
+     * what the first version of this fixture did.
+     */
+    receivables.push(await owe({
+      order: orders[1], value: 96000, kind: 'advance',
+      dueBy: days(14, 23), owner: arun,
+      followUps: [{
+        at: days(-1, 15), by: arun._id, spokeTo: 'Mrs Latha',
+        note: 'Advance against the PO. Confirmed it goes out with their Tuesday run.',
+        promisedDate: days(12, 17), promisedAmount: 96000,
+      }],
+    }));
+  }
+
+  if (orders[3]) {
+    /* Disputed, which is the one state that stops the ladder. Overdue by a month and escalating
+       to nobody, because somebody has decided that conversation is happening elsewhere — the
+       case that proves the judgement is doing something rather than decorating a row. */
+    receivables.push(await owe({
+      order: orders[3], value: 74000,
+      dueBy: days(-31, 23), owner: arun,
+      judgement: 'disputed',
+      judgementNote: 'Short by 400 pieces on their count. Warehouse is recounting.',
+      followUps: [{
+        at: days(-20, 12), by: arun._id, spokeTo: 'Purchase office',
+        note: 'They are holding the whole invoice over a 400-piece shortfall. Escalated to their buyer.',
+      }],
+    }));
+  }
+
   return {
     orders: orders.length,
     lines: orders.reduce((sum, order) => sum + order.lines.length, 0),
     dispatches: dispatches.length,
     queries: queries.length,
+    receivables: receivables.length,
+    /* Counted rather than stated: the fixture moves and a hard-coded figure would drift. */
+    owed: Math.round(receivables.reduce((sum, row) => sum + row.balance, 0)),
     /* Counted from the fixture rather than stated, so the summary cannot drift from the data. */
     unclaimed: orders.reduce(
       (sum, order) =>

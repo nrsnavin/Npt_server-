@@ -3,6 +3,7 @@ import Lead from '../models/Lead.js';
 import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
 import SalesOrder from '../models/SalesOrder.js';
+import Receivable from '../models/Receivable.js';
 import Mould from '../models/Mould.js';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
@@ -29,6 +30,17 @@ const SOURCES = {
    * runs on, so reading who ticked which check is gated the same way as reading the order.
    */
   SalesOrder: { model: SalesOrder, module: 'orders', ownership: 'assignedTo' },
+  /*
+   * Money owed [§20]. The receipts and the judgements are the two things on a receivable that
+   * somebody may later have to answer for — "who marked this disputed", "who recorded a
+   * payment nobody can find" — and the controller has been writing that trail since the module
+   * was built. It was simply unreadable: absent from this list, the history panel on the
+   * payment screen answered 404 while the log filled up behind it.
+   *
+   * Owned the same way the chase list is scoped, so reading who did what to a receivable is
+   * gated exactly as reading the receivable is.
+   */
+  Receivable: { model: Receivable, module: 'payments', ownership: 'assignedTo' },
   // The register is shared, so there is no owner to check — only the grant.
   Mould: { model: Mould, module: 'moulds', ownership: null },
   // A person's own trail — who took their book when they left. Administration's business,

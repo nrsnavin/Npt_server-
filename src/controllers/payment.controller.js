@@ -305,8 +305,12 @@ export const recordReceipt = asyncHandler(async (req, res) => {
   if (receivable.balance <= 0) receivable.escalationLevel = 0;
 
   await receivable.save();
+  /* `doc`, not `documentId` — the service snapshots the document itself and takes its id from
+     it. Passing the id instead threw inside `recordChange`, whose catch is there so that a
+     failed audit cannot fail the write it describes: the receipt saved, the trail did not, and
+     nothing said so. */
   await recordChange({
-    model: 'Receivable', documentId: receivable._id, before, after: snapshot(receivable),
+    model: 'Receivable', doc: receivable, before,
     by: req.user, note: `Received ₹${Math.round(req.body.amount).toLocaleString('en-IN')}`,
   });
 
@@ -358,7 +362,7 @@ export const setJudgement = asyncHandler(async (req, res) => {
 
   await receivable.save();
   await recordChange({
-    model: 'Receivable', documentId: receivable._id, before, after: snapshot(receivable),
+    model: 'Receivable', doc: receivable, before,
     by: req.user, note: judgement ? `${judgement}: ${note}` : 'Dispute cleared',
   });
 

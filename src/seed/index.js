@@ -263,6 +263,11 @@ async function seed() {
       `the plant — with ${trade.unclaimed.toLocaleString('en-IN')} pieces packed, some of it ` +
       `claimed by a lorry and some of it waiting for one.`
   );
+  console.log(
+    `  Phase 5: ${trade.receivables} receivables carrying ` +
+      `₹${trade.owed.toLocaleString('en-IN')} still owed — a broken promise, an overdue nobody ` +
+      `has rung, a part-paid one due this week, an advance promised ahead, and one in dispute.`
+  );
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');
 

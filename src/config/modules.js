@@ -130,7 +130,7 @@ export const MODULES = [
     stage: 9,
     ownerDepartment: 'accounts',
     blueprint: '20',
-    available: false,
+    available: true,
   },
 
   {

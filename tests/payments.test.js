@@ -485,3 +485,35 @@ test('the day screen groups by the call to make, not by how much is owed', async
     assert.equal(typeof json.meta[key], 'number', `meta.${key}`);
   }
 });
+
+test('the change history on a receivable is readable by the people who may read it', async () => {
+  /*
+   * The controller has recorded a trail on every receipt and judgement since the module was
+   * built, and the audit endpoint's allow-list did not list Receivable — so the log filled up
+   * while the screen showing it answered 404. Written down here because the failure is silent
+   * in exactly one direction: the trail looks complete from the database and empty from the app.
+   */
+  const receivable = await Receivable.findOne({ 'receipts.0': { $exists: true } });
+  assert.ok(receivable, 'nothing has been receipted, so there is no trail to read');
+
+  const seen = await api(`/api/history/Receivable/${receivable._id}`, { token: kiran });
+  assert.equal(seen.status, 200, seen.json?.message);
+
+  /*
+   * And it has something in it. Asserting only that the endpoint answers would have passed
+   * against the bug this test was written for: `recordChange` takes the document, the
+   * controller was handing it an id, and the service's catch — which exists so a failed audit
+   * cannot fail the write it describes — swallowed the error every time. The receipts saved and
+   * the trail stayed empty, for as long as nobody looked.
+   */
+  assert.ok(seen.json.data.length, 'a receipt and a judgement left no trail behind them');
+  assert.ok(
+    seen.json.data.some((entry) => /Received/.test(entry.note || '')),
+    'the receipt is not in the history'
+  );
+
+  /* And gated on the record rather than on the URL: a department with no payments grant is
+     refused the history for the same reason it is refused the receivable. */
+  const refused = await api(`/api/history/Receivable/${receivable._id}`, { token: ramesh });
+  assert.equal(refused.status, 403, "the plant can read a receivable's history");
+});
