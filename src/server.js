@@ -6,6 +6,7 @@ import { configurationProblem as smtpConfigurationProblem } from './services/not
 import { runSamplingEscalations } from './services/escalation.service.js';
 import { runStallSweep, runLeadStaleSweep } from './services/anomaly.service.js';
 import { runQueryEscalations } from './services/queryEscalation.service.js';
+import { runPaymentEscalations } from './services/receivable.service.js';
 import { runProductionEscalations } from './services/productionEscalation.service.js';
 import { runDispatchEscalations } from './services/dispatchEscalation.service.js';
 import { isConfigured as isIndiamartConfigured } from './services/indiamart.client.js';
@@ -117,6 +118,19 @@ function startEscalationSweep() {
           `Undispatched stock: raised ${sitting.length} ` +
             `(${sitting.map((entry) => `${entry.order} ${entry.daysWaiting}d`).join(', ')})`
         );
+      }
+      /*
+       * And the money [§25's four tiers]. The last link in the chain and the one that pays for
+       * everything upstream: an order made on time, shipped on time and never collected is a
+       * loss with good paperwork.
+       *
+       * The first tier fires three days *before* the due date, which is the only rung that can
+       * still prevent the problem — a marketing person reminded on Tuesday mentions it on
+       * Wednesday's call. Everything after it is recovery.
+       */
+      const money = await runPaymentEscalations();
+      if (money.escalated) {
+        console.log(`Payments: escalated ${money.escalated} of ${money.checked} open receivables`);
       }
     } catch (error) {
       console.error('Sampling escalation sweep failed:', error.message);

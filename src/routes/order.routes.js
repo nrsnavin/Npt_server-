@@ -20,7 +20,14 @@ import {
   recordInspection, listOrderInspections, listInspections,
   qualityReport, listQualityOverrides, listQualityOptions,
 } from '../controllers/quality.controller.js';
+import {
+  listReceivables, getReceivable, paymentDay,
+  raiseAdvance, logFollowUp, recordReceipt, setJudgement,
+} from '../controllers/payment.controller.js';
 import { inspectionSchema } from '../validators/quality.schemas.js';
+import {
+  advanceSchema, followUpSchema, receiptSchema, judgementSchema,
+} from '../validators/payment.schemas.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { singleDocument } from '../middleware/upload.js';
@@ -169,6 +176,28 @@ router.post(
   validate(inspectionSchema),
   recordInspection
 );
+
+/*
+ * Payments [§20, §25] — a chase, not a ledger.
+ *
+ * Two departments work these routes and the split between them is deliberate. **Reading and
+ * following up** are on the `payments` read grant, which the separate payments team and
+ * marketing both hold: the buyer knows their marketing person and takes their call, so a chase
+ * only accounts could write is a chase where marketing rings anyway and nobody records it.
+ *
+ * **A receipt needs write**, and that is not a status distinction — it is a claim about a bank
+ * account, and the person who can check the bank account should be the one making it. Marketing
+ * hearing "we paid Tuesday" logs a follow-up, which is what it is: something they were told.
+ */
+router.get('/payments/day', requireModule('payments'), paymentDay);
+router.get('/payments', requireModule('payments'), listReceivables);
+router.get('/payments/:id', requireModule('payments'), getReceivable);
+router.post('/payments/:id/follow-ups', requireModule('payments'), validate(followUpSchema), logFollowUp);
+router.post('/payments/:id/receipts', requireModule('payments', 'write'), validate(receiptSchema), recordReceipt);
+router.post('/payments/:id/judgement', requireModule('payments', 'write'), validate(judgementSchema), setJudgement);
+
+/* The advance a buyer owes before anything is made — raised against the order it belongs to. */
+router.post('/orders/:id/advance', requireModule('payments', 'write'), validate(advanceSchema), raiseAdvance);
 
 /*
  * Dispatch [§18-19].

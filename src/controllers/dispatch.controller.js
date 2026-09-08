@@ -23,6 +23,7 @@ import {
 } from '../services/dispatchUrgency.service.js';
 import OrderQuery from '../models/OrderQuery.js';
 import { dispatchQuality } from '../services/quality.service.js';
+import { raiseForDispatch } from '../services/receivable.service.js';
 import { put, remove } from '../services/storage.service.js';
 import { sendCsv } from '../utils/csv.js';
 
@@ -577,6 +578,20 @@ export const applyDispatchAction = asyncHandler(async (req, res) => {
    * fully-dispatched, and a cancellation puts the pieces back — both are the same recomputation
    * over the same arithmetic, which is why neither is written by hand here.
    */
+  /*
+   * The invoice becomes money owed the moment the lorry leaves [§20]. Derived here rather than
+   * typed by accounts, because §19 already refused to let it go without an invoice number, date
+   * and value — every rupee is on the record, and asking for it twice is how two lists start
+   * disagreeing about what a customer owes.
+   *
+   * Best-effort: a receivable that fails to raise must not fail the dispatch. The lorry has
+   * gone, and refusing to record that because of a bookkeeping row would leave the system
+   * denying something that physically happened.
+   */
+  if (recipe.to === 'dispatched') {
+    await raiseForDispatch(dispatch, { by: req.user }).catch(() => null);
+  }
+
   const order = await SalesOrder.findById(dispatch.order);
   let moved = null;
   if (order) {
