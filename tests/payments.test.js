@@ -512,6 +512,18 @@ test('the change history on a receivable is readable by the people who may read 
     'the receipt is not in the history'
   );
 
+  /*
+   * And it says something. The receipts array is an append-only log whose row ids mean nothing
+   * to a reader — logging it produced `Receipts: nothing → 6aa012c1be…` above the two lines
+   * that actually say what happened. The figures it moved are what belongs here.
+   */
+  const fields = seen.json.data.flatMap((entry) => (entry.changes || []).map((c) => c.field));
+  assert.ok(!fields.some((f) => /^receipts/.test(f)), 'the receipts array is logged as raw ids');
+  assert.ok(
+    fields.some((f) => /received|balance/i.test(f)),
+    'the history records no figure the receipt actually moved'
+  );
+
   /* And gated on the record rather than on the URL: a department with no payments grant is
      refused the history for the same reason it is refused the receivable. */
   const refused = await api(`/api/history/Receivable/${receivable._id}`, { token: ramesh });

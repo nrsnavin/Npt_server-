@@ -35,6 +35,14 @@ const IGNORED = new Set([
   '_id', '__v', 'createdAt', 'updatedAt',
   'statusHistory', 'activities', 'contacts', 'readBy',
   'escalationLevel',
+  /*
+   * Append-only logs, whose row ids are noise to a reader. A receipt produced the line
+   * `Receipts: nothing → 6aa012c1be38847661512df4` directly above `Received: 0 → 5000` and
+   * `Balance: 74000 → 69000` — one line that says nothing, sitting on top of two that say
+   * everything, on the panel whose whole job is to be read. The note carries what happened
+   * and the derived figures carry what it did.
+   */
+  'receipts', 'followUps',
 ]);
 
 /** How deep to walk into a sub-document before treating it as one value. */
