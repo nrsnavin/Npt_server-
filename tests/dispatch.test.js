@@ -578,3 +578,50 @@ test('nothing can be dispatched against an order the plant has not been given', 
   assert.equal(early.status, 400);
   assert.match(early.json.message, /not been released to production/i);
 });
+
+test('two clerks claiming the same stock at the same moment cannot both win', async () => {
+  /*
+   * The failure this module exists to prevent, in the version its own header did not cover.
+   * That header describes a second consignment raised "an hour later" — and the check catches
+   * it. Raised in the same instant, both requests read the same free figure, both pass
+   * `assertClaimable`, and both write: a lorry loaded against goods that are already on
+   * another one, discovered at the gate.
+   *
+   * The guard is a re-check after the write, so exactly one survives — or, if both detect the
+   * collision, neither does. Both outcomes are safe; two winners is not, and that is what is
+   * asserted here.
+   */
+  const order = await released([
+    { mould, modelNumber: 'NH-RACE', colour: 'White', quantity: 40000, unitPrice: 8, deliveryDate: inDays(20) },
+  ]);
+  const line = order.lines[0];
+  await pack(order, line, { producedQty: 20000, readyQty: 20000 });
+
+  const claim = () =>
+    api('/api/dispatches', {
+      method: 'POST', token: kavitha,
+      body: { order: order._id, lines: [{ orderLine: line._id, quantity: 20000 }] },
+    });
+
+  const [first, second] = await Promise.all([claim(), claim()]);
+  const made = [first, second].filter((reply) => reply.status === 201);
+
+  assert.ok(made.length <= 1, 'both consignments were accepted against one lot of stock');
+
+  /* Whatever survived, the floor must still add up. */
+  const ready = await api(`/api/dispatches/ready?order=${order._id}`, { token: kavitha });
+  const row = ready.json.data.find((entry) => String(entry.orderLine) === String(line._id));
+  assert.ok(
+    row.reserved + row.dispatched <= row.readyQty,
+    `${row.reserved + row.dispatched} claimed against ${row.readyQty} packed`
+  );
+
+  /* And a request that lost was told why, rather than being handed a consignment that was then
+     silently removed. */
+  for (const reply of [first, second]) {
+    if (reply.status !== 201) {
+      assert.equal(reply.status, 409, reply.json?.message);
+      assert.match(reply.json.message, /claimed .* while this was being raised|free to dispatch/i);
+    }
+  }
+});

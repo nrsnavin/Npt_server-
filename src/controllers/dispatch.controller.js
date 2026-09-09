@@ -406,8 +406,41 @@ export const createDispatch = asyncHandler(async (req, res) => {
     statusHistory: [{ to: 'dispatch_request_received', by: req.user._id }],
   });
 
+  /*
+   * The claim, re-checked with this consignment counted.
+   *
+   * `assertClaimable` above is a read followed by a write, and between them is a window. Two
+   * clerks raising a load against the same line in the same instant both read 20,000 free, both
+   * pass, and both write — 40,000 claimed against 20,000 packed. That is precisely the failure
+   * this module was built to prevent, described in its own header as happening "an hour later":
+   * the arithmetic was right and it was not atomic, so the hour was the only thing protecting
+   * it.
+   *
+   * No transaction, because the deployment is a single mongod and a rule that needs a replica
+   * set is a rule that silently does nothing here. So: write, then look again with the write
+   * included, and undo if the total no longer fits. The consignment has existed for a few
+   * milliseconds and nothing has been told about it yet — the roll-up below and §19's
+   * notifications are all downstream of this point.
+   *
+   * If both writers detect it, both withdraw and nobody gets the stock. That is the safe way to
+   * be wrong: the pieces are still on the floor and the next request takes them, where the
+   * alternative is a lorry loaded against goods that are already on another one.
+   */
+  const after = await stockFor(order);
+  const overclaimed = after.find((line) => line.reserved + line.dispatched > line.readyQty);
+
+  if (overclaimed) {
+    await Dispatch.deleteOne({ _id: dispatch._id });
+    throw ApiError.conflict(
+      `Somebody claimed ${overclaimed.modelNumber || 'that model'} while this was being raised — ` +
+        `${overclaimed.readyQty.toLocaleString('en-IN')} are packed and ` +
+        `${(overclaimed.reserved + overclaimed.dispatched).toLocaleString('en-IN')} are now spoken for. ` +
+        'Nothing was saved; check what is free and raise it again.'
+    );
+  }
+
   /* The order follows its consignments — see dispatchStock.service.js for the precedence. */
-  const moved = rollUpDispatchStatus(order, await stockFor(order), req.user);
+  const moved = rollUpDispatchStatus(order, after, req.user);
   if (moved) await order.save();
 
   await dispatch.populate(POPULATE);

@@ -315,6 +315,38 @@ test('the queue defaults to what my own department is being asked', async () => 
   assert.equal(orders.json.data.length, 0, 'order confirmation is not being asked these');
 });
 
+test('nor read one, by asking the queue for another department [§29]', async () => {
+  /*
+   * The leak. The queue is filtered by *who is being asked* and resolved no ownership of its
+   * own — so a marketing person naming a department they are not in was handed every question
+   * in the building, each one populated with its order number and its customer's name. Their
+   * colleagues' customers, on a screen built to show them their own work.
+   *
+   * The serving departments must stay unscoped, which is the other half of the rule and is
+   * asserted below: production answers for the whole plant, and a queue narrowed to "their own"
+   * orders would be empty.
+   */
+  const order = await anOrder();
+  await ask(order, { question: 'Can the first 20,000 go this week?' });
+
+  const asPlant = await api('/api/order-queries?askedOf=production', { token: ramesh });
+  assert.ok(asPlant.json.data.length >= 1, 'production must see what it is being asked');
+
+  const peeking = await api('/api/order-queries?askedOf=production', { token: kavitha });
+  assert.equal(peeking.status, 200, peeking.json.message);
+
+  const theirs = peeking.json.data.filter(
+    (row) => String(row.order?._id || row.order) === String(order._id)
+  );
+  assert.equal(theirs.length, 0, "a marketing reader can see a colleague's questions");
+
+  /* Nothing about the customer either — the populate is what made this expensive. */
+  assert.ok(
+    !JSON.stringify(peeking.json.data).includes(String(order.number)),
+    "and the colleague's order number is still in the reply"
+  );
+});
+
 test('a marketing person cannot ask about a colleague’s order [§29]', async () => {
   const order = await anOrder();
 

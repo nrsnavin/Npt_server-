@@ -5,7 +5,7 @@ import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { listParams, paginated } from '../utils/query.js';
-import { ownsRecord } from '../services/ownership.service.js';
+import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { raiseTask } from '../services/task.service.js';
 import { findDepartment } from '../config/modules.js';
 
@@ -97,6 +97,25 @@ export const listQueryQueue = asyncHandler(async (req, res) => {
   });
 
   filter.askedOf = req.query.askedOf || req.user.department;
+
+  /*
+   * Scoped to what the reader may see, through the order behind each question [§29].
+   *
+   * A query carries no owner of its own, and this list did not resolve one — so a marketing
+   * person asking for `?askedOf=production` was handed every question in the building, each one
+   * populated with its order number and its customer's name. Their colleagues' customers, on a
+   * screen built to show them their own work.
+   *
+   * The serving departments are unscoped and must stay so: production, despatch and quality
+   * answer for the whole plant, and a queue narrowed to "their own" orders would be empty.
+   * `ownershipFilter` already draws exactly that line — it returns nothing to add for anyone
+   * but marketing — which is why the check is on the filter rather than on the department.
+   */
+  const scope = ownershipFilter(req.user);
+  if (Object.keys(scope).length) {
+    const owned = await SalesOrder.find(scope).select('_id');
+    filter.order = { $in: owned.map((order) => order._id) };
+  }
 
   if (req.query.status) filter.status = { $in: String(req.query.status).split(',') };
   /* The default view: what is still owed. A queue of settled questions is not a queue. */

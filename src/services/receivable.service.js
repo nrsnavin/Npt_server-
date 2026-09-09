@@ -59,22 +59,36 @@ export async function raiseForDispatch(dispatch, { by } = {}) {
 
   const customer = await Customer.findById(dispatch.customer).select('creditTermsDays assignedTo');
 
-  const receivable = await Receivable.create({
-    number: await nextNumber('RCV'),
-    kind: 'invoice',
-    customer: dispatch.customer,
-    order: dispatch.order,
-    dispatch: dispatch._id,
-    /* The consignment's owner, which was copied from the order's — so §29 answers the same way
-       here as it does three screens upstream. */
-    assignedTo: dispatch.assignedTo || customer?.assignedTo,
-    invoice: {
-      number: dispatch.invoice.number,
-      date: dispatch.invoice.date || dispatch.dispatchDate || new Date(),
-      value: dispatch.invoice.value,
-    },
-    dueBy: dueDateFor(dispatch.invoice.date || dispatch.dispatchDate, customer?.creditTermsDays),
-  });
+  let receivable;
+  try {
+    receivable = await Receivable.create({
+      number: await nextNumber('RCV'),
+      kind: 'invoice',
+      customer: dispatch.customer,
+      order: dispatch.order,
+      dispatch: dispatch._id,
+      /* The consignment's owner, which was copied from the order's — so §29 answers the same way
+         here as it does three screens upstream. */
+      assignedTo: dispatch.assignedTo || customer?.assignedTo,
+      invoice: {
+        number: dispatch.invoice.number,
+        date: dispatch.invoice.date || dispatch.dispatchDate || new Date(),
+        value: dispatch.invoice.value,
+      },
+      dueBy: dueDateFor(dispatch.invoice.date || dispatch.dispatchDate, customer?.creditTermsDays),
+    });
+  } catch (error) {
+    /*
+     * Somebody else raised it between the read above and this write — a double-pressed button,
+     * or a retry landing beside its original. The unique index on the model is what makes that
+     * a caught error rather than a customer invoiced twice for one lorry; returning the row
+     * that won is exactly what the read-first guard was already trying to do.
+     */
+    if (error?.code === 11000) {
+      return Receivable.findOne({ dispatch: dispatch._id, kind: 'invoice' });
+    }
+    throw error;
+  }
 
   /*
    * Told once, at the start. Not an escalation — nothing is late — but the moment a marketing

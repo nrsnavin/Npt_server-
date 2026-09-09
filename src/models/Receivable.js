@@ -163,6 +163,45 @@ const receivableSchema = new mongoose.Schema(
 receivableSchema.index({ assignedTo: 1, dueBy: 1 });
 receivableSchema.index({ customer: 1, dueBy: 1 });
 
+/*
+ * Two invariants the *database* enforces, because the code alone cannot.
+ *
+ * Both `raiseForDispatch` and `raiseAdvance` guard themselves by reading first and writing
+ * second, which is correct in every case except the one that matters: two callers in the same
+ * instant both read "nothing here yet" and both write. That is not a theoretical window — it is
+ * a double-pressed button, or a retry landing beside the request it was retrying. The result of
+ * the first is a customer invoiced twice for one lorry, and of the second an order carrying two
+ * advances, and neither leaves a mark anybody would notice until a statement goes out.
+ *
+ * A unique index is the only guard that holds under concurrency, because it is applied by the
+ * one component both writers go through. Partial, so the constraint says exactly what is meant:
+ * one invoice receivable per consignment, one advance per order, and no constraint at all on
+ * the ordinary case of an order with several invoices.
+ *
+ * The services catch the duplicate-key error and return the row that won, which is what their
+ * read-first guard was already trying to do — the index just makes it true.
+ */
+receivableSchema.index(
+  { dispatch: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { dispatch: { $exists: true }, kind: 'invoice' },
+    /* Named, because the field declarations above already own `dispatch_1` and `order_1` for
+       plain lookups. Two indexes on one key are fine; two with the same generated name are a
+       build failure on every deploy — and the failure is at `syncIndexes`, where nothing is
+       watching. */
+    name: 'one_invoice_per_dispatch',
+  }
+);
+receivableSchema.index(
+  { order: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { kind: 'advance' },
+    name: 'one_advance_per_order',
+  }
+);
+
 receivableSchema.virtual('received').get(function received() {
   return Math.round((this.receipts || []).reduce((sum, row) => sum + (row.amount || 0), 0) * 100) / 100;
 });

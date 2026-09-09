@@ -209,18 +209,34 @@ export const raiseAdvance = asyncHandler(async (req, res) => {
 
   const customer = await Customer.findById(order.customer).select('creditTermsDays assignedTo');
 
-  const receivable = await Receivable.create({
-    number: await nextNumber('RCV'),
-    kind: 'advance',
-    customer: order.customer,
-    order: order._id,
-    assignedTo: order.assignedTo || customer?.assignedTo,
-    invoice: { value: req.body.amount, date: new Date() },
-    /* Advances are due when they are due — usually now, sometimes a named date on the PO — so
-       the caller may say, and the credit terms are not applied: they govern invoices, not the
-       money taken before the work starts. */
-    dueBy: req.body.dueBy ? new Date(req.body.dueBy) : dueDateFor(new Date(), 0),
-  });
+  let receivable;
+  try {
+    receivable = await Receivable.create({
+      number: await nextNumber('RCV'),
+      kind: 'advance',
+      customer: order.customer,
+      order: order._id,
+      assignedTo: order.assignedTo || customer?.assignedTo,
+      invoice: { value: req.body.amount, date: new Date() },
+      /* Advances are due when they are due — usually now, sometimes a named date on the PO — so
+         the caller may say, and the credit terms are not applied: they govern invoices, not the
+         money taken before the work starts. */
+      dueBy: req.body.dueBy ? new Date(req.body.dueBy) : dueDateFor(new Date(), 0),
+    });
+  } catch (error) {
+    /*
+     * The read above lost a race — two people raising the advance in the same instant both saw
+     * none. The unique index is what turns that into this branch instead of an order carrying
+     * two advances, and the answer is the same one the read would have given.
+     */
+    if (error?.code === 11000) {
+      const already = await Receivable.findOne({ order: order._id, kind: 'advance' });
+      throw ApiError.conflict('An advance is already recorded against this order', {
+        existing: already?.number,
+      });
+    }
+    throw error;
+  }
 
   res.status(201).json({ success: true, data: await receivable.populate(POPULATE) });
 });
