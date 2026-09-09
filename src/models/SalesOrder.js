@@ -328,14 +328,27 @@ lineSchema.virtual('madePercent').get(function madePercent() {
 });
 
 /**
- * Past the date the plant agreed, with pieces still owed [§25].
+ * Past the date it is owed by, with pieces still owed [§25].
  *
  * Both halves matter. A line past its date that is finished is not late — it was delivered —
  * and a line still running inside its date is not late either. Only the pair is a problem, and
  * an alarm on either half alone is an alarm that cries wolf.
+ *
+ * **The date is the plant's if it has agreed one, and the buyer's otherwise**, which is the
+ * fallback `urgencyOf` has always used and this virtual did not. The disagreement was silent
+ * and it fell the wrong way: a line nobody had planned has no `expectedCompletion`, so however
+ * far past the delivery date the buyer was given it went, this returned false — the register's
+ * late column, its overdue filter and its count all said no, and §25's escalation never fired.
+ * The plant's own day screen called the same line "21 days past its date" the whole time.
+ *
+ * Those are exactly the lines that need the alarm. A line nobody planned is a line nobody is
+ * watching, and the absence of an internal date was being read as the absence of a promise.
+ *
+ * Once the plant *does* agree a date, that is what §25 measures against — a re-dated line is
+ * not late against the buyer's original date, which is the entire point of agreeing one.
  */
 lineSchema.virtual('isOverdue').get(function isOverdue() {
-  const due = this.production?.expectedCompletion;
+  const due = this.production?.expectedCompletion || this.deliveryDate;
   if (!due || this.production?.status === 'completed') return false;
   return new Date(due) < new Date() && this.toMakeQty > 0;
 });

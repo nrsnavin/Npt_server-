@@ -24,9 +24,18 @@ import { raiseTask } from './task.service.js';
 /** Marked on the line so an alarm rings once rather than on every sweep. */
 const originKey = (order, line) => `order:${order._id}:line:${line._id}:overdue`;
 
-/** How many days past the date the plant agreed, for saying so in the task. */
-const daysLate = (line, now) =>
-  Math.floor((now - new Date(line.production.expectedCompletion).getTime()) / (24 * 60 * 60 * 1000));
+/**
+ * How many days past the date it was owed by, for saying so in the task.
+ *
+ * The same fallback the `isOverdue` virtual uses — the plant's agreed date when there is one,
+ * the buyer's otherwise. Reading only `expectedCompletion` here produced `NaN days` on exactly
+ * the lines the alarm had just been taught to catch.
+ */
+const daysLate = (line, now) => {
+  const due = line.production?.expectedCompletion || line.deliveryDate;
+  if (!due) return 0;
+  return Math.floor((now - new Date(due).getTime()) / (24 * 60 * 60 * 1000));
+};
 
 /**
  * Who hears about it.
@@ -62,10 +71,19 @@ export async function runProductionEscalations({ now = Date.now() } = {}) {
    * Only released orders, and only ones with a line whose date has passed. The date test is
    * narrowed in the query as far as it can be — the rest has to be per line, because whether a
    * line still owes pieces is a comparison between two of its own fields.
+   *
+   * **Either date**, because a line the plant never planned carries no `expectedCompletion` at
+   * all. Matching only on that one meant such an order was never even fetched, so the alarm was
+   * silent for the lines least likely to be noticed any other way — the ones nobody had picked
+   * up. The `$or` widens what is loaded; `isOverdue` below is still the only thing that decides,
+   * so a line with an agreed date in the future stays quiet however old the buyer's date is.
    */
   const orders = await SalesOrder.find({
     status: { $nin: [...PRE_RELEASE_STATUSES, 'cancelled', 'closed'] },
-    'lines.production.expectedCompletion': { $lt: new Date(now) },
+    $or: [
+      { 'lines.production.expectedCompletion': { $lt: new Date(now) } },
+      { 'lines.deliveryDate': { $lt: new Date(now) } },
+    ],
   }).select('number assignedTo customer lines status');
 
   const raised = [];

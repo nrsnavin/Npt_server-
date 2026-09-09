@@ -74,6 +74,7 @@ export async function claimsFor(orderIds, { excluding } = {}) {
 export function stockOf(line, claim = { reserved: 0, dispatched: 0, on: [] }) {
   const readyQty = line.production?.readyQty || 0;
   const claimed = claim.reserved + claim.dispatched;
+  const available = Math.max(0, readyQty - claimed);
 
   return {
     orderLine: line._id,
@@ -84,21 +85,34 @@ export function stockOf(line, claim = { reserved: 0, dispatched: 0, on: [] }) {
     readyQty,
     reserved: claim.reserved,
     dispatched: claim.dispatched,
-    available: Math.max(0, readyQty - claimed),
+    available,
     /* What is holding it, so a refusal can name the consignment rather than only the shortfall. */
     on: claim.on,
     /**
      * Nothing left to send on this line.
      *
-     * Either the ordered quantity has gone, or the plant has called the line finished and the
-     * floor is empty. The second half matters because of the ±5% the quotation's own terms
-     * allow: a 50,000 line that finished at 49,900 and shipped all of it is delivered, and a
-     * rule that only compared against the ordered figure would leave the order one hundred
-     * pieces short of `fully_dispatched` for ever.
+     * Either the ordered quantity has physically gone, or the plant has called the line
+     * finished and the floor is genuinely empty. The second half matters because of the ±5% the
+     * quotation's own terms allow: a 50,000 line that finished at 49,900 and shipped all of it
+     * is delivered, and a rule that only compared against the ordered figure would leave the
+     * order a hundred pieces short of `fully_dispatched` for ever.
+     *
+     * **`reserved` is not `dispatched`, and reading it as such was a real bug.** The second
+     * clause tested only that nothing was *available*, and a reservation makes stock
+     * unavailable exactly as a departure does. So a completed line with 20,000 gone and 29,900
+     * held for a lorry still being loaded reported as fully shipped — and the order roll-up
+     * above moved to `fully_dispatched` with nearly thirty thousand pieces standing in the
+     * building. Marketing would have told the buyer their goods had left.
+     *
+     * The distinction is the one this whole file is built on: a reservation is reversible and a
+     * departure is not. Only the second can finish a line.
      */
     fullyShipped:
       claim.dispatched >= line.quantity ||
-      (line.production?.status === 'completed' && Math.max(0, readyQty - claimed) === 0 && claim.dispatched > 0),
+      (line.production?.status === 'completed' &&
+        claim.reserved === 0 &&
+        claim.dispatched > 0 &&
+        available === 0),
   };
 }
 

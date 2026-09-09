@@ -103,13 +103,27 @@ export function dispatchUrgencyOf(consignment, { now = new Date() } = {}) {
   /* On the road, inside its date. Shown so the team can see the whole picture, and named as
      needing nothing so nobody spends attention working out that it does not. */
   if (consignment.hasLeft) {
-    why.push(
-      late === null
-        ? 'On the road — no delivery date given'
-        : late === 0
-          ? 'Due to arrive today'
-          : `Due to arrive in ${days(late)}`
-    );
+    /*
+     * Arrived or still travelling — and the two must not share a sentence.
+     *
+     * `hasLeft` is every status past the gate, delivery included, so a consignment the customer
+     * already had was being told "Due to arrive in 2 days" off its original estimate. The
+     * estimate is a fact about a journey that is over; repeating it reads as though the goods
+     * were still on a lorry, on the one screen despatch uses to answer exactly that question.
+     */
+    const arrived = ['delivered', 'pod_pending', 'closed'].includes(consignment.status);
+
+    if (arrived) {
+      why.push(consignment.pod?.attachment ? 'Delivered, proof on file' : 'Delivered');
+    } else {
+      why.push(
+        late === null
+          ? 'On the road — no delivery date given'
+          : late === 0
+            ? 'Due to arrive today'
+            : `Due to arrive in ${days(late)}`
+      );
+    }
   }
   return { band: 'watch', rank: 4, why, daysToDue: late };
 }
