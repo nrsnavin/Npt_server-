@@ -608,9 +608,15 @@ test('two clerks claiming the same stock at the same moment cannot both win', as
 
   assert.ok(made.length <= 1, 'both consignments were accepted against one lot of stock');
 
-  /* Whatever survived, the floor must still add up. */
-  const ready = await api(`/api/dispatches/ready?order=${order._id}`, { token: kavitha });
-  const row = ready.json.data.find((entry) => String(entry.orderLine) === String(line._id));
+  /*
+   * Whatever survived, the floor must still add up. Read off the order's own tracker rather
+   * than the ready-stock queue: that queue is paged across every open order, so on a suite that
+   * has booked a dozen of them this line can fall off the end — and the first version of this
+   * test failed on the page boundary rather than on the thing it is about.
+   */
+  const tracker = await api(`/api/orders/${order._id}/dispatches`, { token: kavitha });
+  const row = tracker.json.stock.find((entry) => String(entry.orderLine) === String(line._id));
+  assert.ok(row, 'the line is not on its own order');
   assert.ok(
     row.reserved + row.dispatched <= row.readyQty,
     `${row.reserved + row.dispatched} claimed against ${row.readyQty} packed`

@@ -200,6 +200,8 @@ export const orderQueryCloseSchema = z.object({
  */
 export const productionLineSchema = z
   .strictObject({
+    /* The concurrency token — the *order's* `updatedAt`, echoed back. See the controller. */
+    expectedUpdatedAt: z.coerce.date().optional(),
     status: z.enum(PRODUCTION_STATUSES).optional(),
     plannedQty: z.number().int().nonnegative().optional(),
     producedQty: z.number().int().nonnegative().optional(),
@@ -211,7 +213,9 @@ export const productionLineSchema = z
     holdReason: z.string().max(500).optional(),
     remarks: z.string().max(2000).optional(),
   })
-  .refine((value) => Object.keys(value).length > 0, { message: 'Nothing to record' });
+  .refine((value) => Object.keys(value).some((key) => key !== 'expectedUpdatedAt'), {
+    message: 'Nothing to record',
+  });
 
 /**
  * Asking the plant to move an order up its queue, or standing that request down.

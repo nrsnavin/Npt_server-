@@ -402,3 +402,46 @@ test('a line inside its date does not ring', async () => {
   const rang = (await escalate({ now: Date.now() })).filter((entry) => entry.order === order.number);
   assert.equal(rang.length, 0);
 });
+
+test('a count built on figures somebody has already replaced is refused', async () => {
+  /*
+   * The plant's own record of what it made, going backwards silently.
+   *
+   * Two supervisors, two screens — the day screen and the register both record the same line.
+   * One saves 24,000 made. The other, working from a page loaded before that, saves 20,000. As
+   * last-write-wins the second call succeeds and the plant is four thousand pieces poorer on
+   * paper, with nothing to say it happened. The token is the order's `updatedAt`, echoed back.
+   */
+  const order = await released();
+  const line = order.lines[0];
+  const stale = order.updatedAt;
+
+  const first = await api(`/api/orders/${order._id}/lines/${line._id}/production`, {
+    method: 'PATCH', token: ramesh,
+    body: { expectedUpdatedAt: stale, status: 'running', producedQty: 24000, readyQty: 20000 },
+  });
+  assert.equal(first.status, 200, first.json.message);
+
+  const second = await api(`/api/orders/${order._id}/lines/${line._id}/production`, {
+    method: 'PATCH', token: ramesh,
+    body: { expectedUpdatedAt: stale, status: 'running', producedQty: 20000, readyQty: 20000 },
+  });
+  assert.equal(second.status, 409, 'the stale count was accepted');
+  assert.match(second.json.message, /changed this record/i);
+
+  /* And the figure that was actually recorded is still there. */
+  const now = await api(`/api/orders/${order._id}`, { token: ramesh });
+  assert.equal(now.json.data.lines[0].production.producedQty, 24000);
+});
+
+test('and a caller that sends no token is not blocked', async () => {
+  // Opt-in per request, deliberately: a script written before this existed must keep working.
+  // The screens are what we can teach, and they send it.
+  const order = await released();
+  const line = order.lines[0];
+
+  const done = await api(`/api/orders/${order._id}/lines/${line._id}/production`, {
+    method: 'PATCH', token: ramesh, body: { status: 'running', producedQty: 1000 },
+  });
+  assert.equal(done.status, 200, done.json.message);
+});

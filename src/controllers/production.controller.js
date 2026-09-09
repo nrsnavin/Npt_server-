@@ -3,6 +3,7 @@ import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { listParams, paginated } from '../utils/query.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
+import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { orderVisibleTo } from '../services/pricingVisibility.js';
 import {
@@ -80,7 +81,12 @@ export const listProductionLines = asyncHandler(async (req, res) => {
 
   let rows = orders.flatMap((order) =>
     (order.lines || []).map((line, index) => ({
-      order: { _id: order._id, number: order.number, status: order.status, customer: order.customer },
+      /* `updatedAt` travels with the row so the screen can echo it back on a write — the
+         concurrency token for a line is the order's, because the order is what gets saved. */
+      order: {
+        _id: order._id, number: order.number, status: order.status,
+        customer: order.customer, updatedAt: order.updatedAt,
+      },
       lineId: line._id,
       position: index + 1,
       modelNumber: line.modelNumber,
@@ -196,10 +202,28 @@ export const updateProductionLine = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('This order was cancelled — nothing more is made against it');
   }
 
+  /*
+   * Refuse a count built on figures somebody has already replaced.
+   *
+   * This is the screen where two people most plausibly collide: the day screen and the register
+   * both record the same line, and a plant has more than one supervisor. Without this it is
+   * last-write-wins on a *count* — one records 24,000 made, the other saves 20,000 from a
+   * screen loaded ten minutes earlier, and the plant's own record of what it made silently goes
+   * backwards. Nothing errors, so neither of them finds out.
+   *
+   * The token is the order's `updatedAt`, because the line is a subdocument and the order is
+   * what gets saved. That is coarser than the line: two supervisors recording *different* lines
+   * of the same order in the same moment will see a conflict they did not really have. The
+   * helper's own note settles that trade — a false conflict costs a reload and a false accept
+   * costs somebody's work — and on this plant's orders, which carry one or two lines, the case
+   * being protected is far commoner than the case being annoyed.
+   */
+  expectVersion(order, req.body);
+
   const before = snapshot(order);
   if (!line.production) line.production = {};
 
-  const patch = req.body;
+  const patch = withoutVersion(req.body);
   const next = {
     producedQty: patch.producedQty ?? line.production.producedQty ?? 0,
     readyQty: patch.readyQty ?? line.production.readyQty ?? 0,
@@ -322,6 +346,8 @@ export const productionDay = asyncHandler(async (req, res) => {
           number: order.number,
           status: order.status,
           customer: order.customer,
+          /* See the note on the register's row: the write needs the order's version back. */
+          updatedAt: order.updatedAt,
           priority: order.priority,
           priorityReason: order.priorityReason,
           /* Who asked, by name. The plant is being told to reorder its day and is entitled to
