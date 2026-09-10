@@ -182,7 +182,7 @@ test('flagging an order puts it on despatch\'s day, with the blocker named', asy
    */
   assert.equal(row.blocker, 'production_pending');
   assert.equal(row.blockedBy, 'production');
-  assert.match(row.why.join(' '), /50,000 pieces of 50,000 pieces still to make/);
+  assert.match(row.why.join(' '), /50,000 of 50,000 pieces still to make/);
   assert.equal(day.json.meta.urgentBlockedElsewhere, 1);
 });
 

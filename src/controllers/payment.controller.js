@@ -147,6 +147,40 @@ export const paymentDay = asyncHandler(async (req, res) => {
      it gets harder. */
   const oldest = (a, b) => new Date(a.dueBy) - new Date(b.dueBy);
 
+  /**
+   * How old the overdue money is, in the four bands every ledger uses.
+   *
+   * "₹3,83,000 overdue" is one number that answers the wrong question. Three lakh a fortnight
+   * late is a chasing problem; the same three lakh four months late is a provisioning problem,
+   * and the two want different work out of the same person. The groups above sort the calls by
+   * *what to say*; this sorts the money by *how bad it has got*, which is the figure management
+   * asks for and the one nobody could get out of this screen.
+   *
+   * Counted against the same rows as `overdueValue`, so the bands always add up to it.
+   */
+  const ageingOf = (rows) => {
+    const bands = [
+      { key: 'to30', label: 'Up to 30 days', within: (late) => late <= 30 },
+      { key: 'to60', label: '31 to 60 days', within: (late) => late <= 60 },
+      { key: 'to90', label: '61 to 90 days', within: (late) => late <= 90 },
+      { key: 'over90', label: 'Over 90 days', within: () => true },
+    ];
+
+    return bands.map(({ key, label, within }, index) => {
+      const inBand = rows.filter((row) => {
+        const late = -(row.daysToDue ?? 0);
+        return within(late) && (index === 0 || late > [30, 60, 90][index - 1]);
+      });
+
+      return {
+        key,
+        label,
+        count: inBand.length,
+        value: Math.round(inBand.reduce((sum, row) => sum + row.balance, 0)),
+      };
+    });
+  };
+
   const broken = owing.filter((row) => row.promise?.broken).sort(oldest);
   const brokenIds = new Set(broken.map((row) => String(row._id)));
 
@@ -181,6 +215,7 @@ export const paymentDay = asyncHandler(async (req, res) => {
       ),
       broken: broken.length,
       soon: soon.length,
+      ageing: ageingOf([...broken, ...overdue]),
       /* Advances still to arrive, which is money owed before anything has shipped. */
       awaitingAdvance: Math.round(
         owing.filter((row) => row.kind === 'advance').reduce((sum, row) => sum + row.balance, 0)

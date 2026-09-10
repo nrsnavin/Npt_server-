@@ -486,6 +486,49 @@ test('the day screen groups by the call to make, not by how much is owed', async
   }
 });
 
+test('the overdue money is banded by how old it is, and the bands add up to it', async () => {
+  /*
+   * "₹3,83,000 overdue" answers the wrong question. Three lakh a fortnight late is a chasing
+   * problem; the same three lakh four months late is a provisioning problem, and the two want
+   * different work out of the same person.
+   *
+   * The bands must agree with `overdueValue` exactly — an ageing table that does not add up to
+   * the headline is the fastest way to lose a finance screen's credibility, and it is the kind
+   * of disagreement nobody notices until somebody totals it by hand in a meeting.
+   */
+  const { order } = await shipped({ value: 55000, quantity: 7000 });
+  const ancient = (await owedOn(order._id))[0];
+
+  /* Written straight onto the record: how a receivable got this old is not what is under test,
+     and the only alternative is a fixture that waits four months. */
+  await Receivable.updateOne(
+    { _id: ancient._id },
+    { $set: { dueBy: new Date(Date.now() - 100 * 86400000) } }
+  );
+
+  const { json } = await api('/api/payments/day', { token: kiran });
+  const bands = json.meta.ageing;
+
+  assert.deepEqual(
+    bands.map((band) => band.key),
+    ['to30', 'to60', 'to90', 'over90'],
+    'the bands are not the four every ledger uses'
+  );
+
+  const banded = bands.reduce((sum, band) => sum + band.value, 0);
+  assert.equal(banded, json.meta.overdueValue, 'the bands do not add up to the overdue total');
+  assert.equal(
+    bands.reduce((sum, band) => sum + band.count, 0),
+    json.meta.overdue,
+    'the bands do not account for every overdue item'
+  );
+
+  /* And something a hundred days late is in the last band, not merely somewhere in the table. */
+  const oldest = bands.find((band) => band.key === 'over90');
+  assert.ok(oldest.count >= 1, 'a hundred-day-old debt is not banded over 90 days');
+  assert.ok(oldest.value >= 55000, 'the oldest band is missing its balance');
+});
+
 test('the change history on a receivable is readable by the people who may read it', async () => {
   /*
    * The controller has recorded a trail on every receipt and judgement since the module was

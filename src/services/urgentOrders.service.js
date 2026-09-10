@@ -58,7 +58,8 @@ export const BLOCKERS = {
   },
 };
 
-const pieces = (count) => `${Math.round(count).toLocaleString('en-IN')} pieces`;
+const count = (value) => Math.round(value).toLocaleString('en-IN');
+const pieces = (value) => `${count(value)} pieces`;
 
 /**
  * One urgent order, as the despatch screen reads it.
@@ -97,7 +98,9 @@ export function urgencyOfOrder(order, claims, dispatches = [], questions = []) {
     if (heldLine.production.holdReason) why.push(heldLine.production.holdReason);
   } else if (toMake > 0) {
     blocker = BLOCKERS.production_pending;
-    why.push(`${pieces(toMake)} of ${pieces(ordered)} still to make`);
+    /* "4,000 of 4,000 pieces", not "4,000 pieces of 4,000 pieces" — the noun belongs to the
+       pair, and repeating it makes the sentence read as two separate quantities. */
+    why.push(`${count(toMake)} of ${pieces(ordered)} still to make`);
   } else if (short) {
     blocker = BLOCKERS.paperwork;
     why.push(`${short.number} still needs ${short.outstandingPaperwork.join(', ')}`);
