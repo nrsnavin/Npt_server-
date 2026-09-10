@@ -201,14 +201,19 @@ test('moving an enquiry to sample required raises the request and carries the re
   assert.equal(sample.purpose, 'existing_model');
   assert.ok(sample.requiredDate, 'a due date is set for the sample team');
   /*
-   * And it is today. A week's grace sounded generous and was the wrong default: it let every
-   * request sit six days without being late, and §25's alarm could not fire until the week was
-   * up. A request that genuinely needs longer is re-dated deliberately, on the record.
+   * And it is five this afternoon — or five tomorrow, if the hour has already gone. A week's
+   * grace sounded generous and was the wrong default: it let every request sit six days without
+   * being late, and §25's alarm could not fire until the week was up. A request that genuinely
+   * needs longer is re-dated deliberately, on the record.
+   *
+   * Asserted as a bound rather than as today's date, because "today" was a wall-clock
+   * dependency: this test passed all morning and failed after five, when the default started
+   * handing out a date in the past.
    */
-  assert.equal(
-    new Date(sample.requiredDate).toISOString().slice(0, 10),
-    new Date().toISOString().slice(0, 10)
-  );
+  const due = new Date(sample.requiredDate);
+  const hoursAway = (due - Date.now()) / 3600000;
+  assert.ok(hoursAway > 0, `the sample is born overdue — due ${due.toISOString()}`);
+  assert.ok(hoursAway < 36, `the sample has too much grace — due ${due.toISOString()}`);
 });
 
 test('the sample carries the exact hook, clip, print and resin the enquiry asked for', async () => {
@@ -1092,6 +1097,41 @@ test('a sample cannot be raised against a mould that is not on the register', as
 
   assert.equal(status, 400, json.message);
   assert.match(json.message, /not on the register/i);
+});
+
+test('a sample raised after the bench has gone home is wanted tomorrow, not an hour ago', async () => {
+  /*
+   * The default due date is five this afternoon, which is right until ten past five. After that
+   * it hands out a date in the past: the request is red on the bench's day screen before
+   * anybody has seen it, and §25 escalates a sample nobody could possibly have been late with.
+   *
+   * Found by the suite failing at 17:12 and passing at 16:50 — the whole sampling module was
+   * quietly time-of-day dependent, which is why the clock is injected here rather than waited
+   * for.
+   */
+  const { defaultRequiredDate } = await import('../src/services/sampling.service.js');
+
+  const morning = new Date('2026-09-10T09:30:00');
+  const dueThisMorning = defaultRequiredDate(null, morning);
+  assert.equal(dueThisMorning.getDate(), 10, 'a morning request is wanted today');
+  assert.equal(dueThisMorning.getHours(), 17);
+  assert.ok(dueThisMorning > morning, 'a morning request is born late');
+
+  const evening = new Date('2026-09-10T17:10:00');
+  const dueTonight = defaultRequiredDate(null, evening);
+  assert.equal(dueTonight.getDate(), 11, 'an evening request is not wanted tomorrow');
+  assert.ok(dueTonight > evening, 'an evening request is born late');
+
+  /* On the hour exactly, too — a sample due this instant was never askable. */
+  const five = new Date('2026-09-10T17:00:00');
+  assert.ok(defaultRequiredDate(null, five) > five, 'a five-o-clock request is born late');
+
+  /* The enquiry's own delivery date still caps it: a sample due after the order is due never. */
+  const capped = defaultRequiredDate(
+    { requiredDeliveryDate: new Date('2026-09-10T12:00:00') },
+    morning
+  );
+  assert.equal(capped.getHours(), 12, 'the delivery date no longer caps the default');
 });
 
 /* ------------------------------- The bench's day ------------------------------- */

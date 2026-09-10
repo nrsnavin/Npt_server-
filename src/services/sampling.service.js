@@ -20,10 +20,19 @@ import { EVENTS, publish } from './events.service.js';
  * Five in the afternoon rather than midnight, so a sample raised this morning is not overdue
  * by lunchtime. An explicit date always wins, and the enquiry's own delivery date still caps
  * it: a sample due after the order is a sample due never.
+ *
+ * **And the evening shift is not born late.** Five o'clock today is not a due date at ten past
+ * five — it is a request that arrives already overdue, red on the bench's day screen before
+ * anybody has seen it. A screen that cries wolf on every request raised after the bench has
+ * gone home is a screen whose red stops meaning anything, which costs more than the day of
+ * grace it was protecting. So once the hour has gone, the sample is wanted by five tomorrow.
  */
 export function defaultRequiredDate(enquiry, from = new Date()) {
   const target = new Date(from);
   target.setHours(17, 0, 0, 0);
+
+  /* At exactly five, too: a sample due this instant is a sample that was never askable. */
+  if (target <= from) target.setDate(target.getDate() + 1);
 
   const delivery = enquiry?.requiredDeliveryDate ? new Date(enquiry.requiredDeliveryDate) : null;
   return delivery && delivery < target ? delivery : target;
