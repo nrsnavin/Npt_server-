@@ -622,11 +622,23 @@ test('two clerks claiming the same stock at the same moment cannot both win', as
     `${row.reserved + row.dispatched} claimed against ${row.readyQty} packed`
   );
 
-  /* And a request that lost was told why, rather than being handed a consignment that was then
-     silently removed. */
+  /*
+   * And a request that lost was told why, rather than being handed a consignment that was then
+   * silently removed.
+   *
+   * **Either refusal is correct, and which one fires is a race.** When the first write lands
+   * before the second request reads the floor, `assertClaimable` catches it up front and
+   * answers 400 — the better outcome, since nothing was written at all. When both reads happen
+   * first, both pass that check and the post-write re-check catches it, answering 409. This
+   * assertion named only the second and failed roughly one run in three against an application
+   * that was behaving perfectly: the timing had simply gone the good way.
+   */
   for (const reply of [first, second]) {
     if (reply.status !== 201) {
-      assert.equal(reply.status, 409, reply.json?.message);
+      assert.ok(
+        [400, 409].includes(reply.status),
+        `refused with ${reply.status}: ${reply.json?.message}`
+      );
       assert.match(reply.json.message, /claimed .* while this was being raised|free to dispatch/i);
     }
   }
