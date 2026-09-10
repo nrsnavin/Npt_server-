@@ -278,10 +278,34 @@ export const answerOrderQuery = asyncHandler(async (req, res) => {
    * and refusing to save it because a to-do could not be written would be losing the thing to
    * protect the reminder about it.
    */
-  const order = await SalesOrder.findById(query.order).select('number');
-  await raiseTask({
-    user: query.raisedBy,
-    title: `Answered: ${order?.number || 'your question'} — ${query.number}`,
+  const order = await SalesOrder.findById(query.order).select('number assignedTo priority');
+
+  /*
+   * Everyone party to it, not only whoever typed the question.
+   *
+   * The asker was the whole recipient list, and on the commonest exchange in the building that
+   * is the wrong one. Despatch raises a concern about an urgent order, production answers, and
+   * the answer goes back to despatch — while the marketing person who has to ring the buyer,
+   * and who owns the order the concern is about, hears nothing. They find out by asking.
+   *
+   * So: whoever asked, whoever owns the order, and anyone who has already answered on this
+   * thread. That last one is what carries an answer across to a third department without
+   * anybody having to nominate them — despatch that answered a question in the morning is part
+   * of the conversation by the afternoon, which is exactly what being party to it means.
+   *
+   * Minus the person answering, who does not need telling what they just wrote. A Set on the
+   * string ids, because the same person reached two ways is one person.
+   */
+  const audience = new Set(
+    [query.raisedBy, order?.assignedTo, ...query.answers.map((answer) => answer.by)]
+      .filter(Boolean)
+      .map((id) => String(id._id || id))
+  );
+  audience.delete(String(req.user._id));
+
+  await Promise.all([...audience].map((user) => raiseTask({
+    user,
+    title: `Answered: ${order?.number || 'a question'} — ${query.number}`,
     notes: `${req.user.name} answered: ${req.body.body}`.slice(0, 500),
     /*
      * Dated today, unlike the other automated tasks, and for a reason particular to this one.
@@ -294,10 +318,13 @@ export const answerOrderQuery = asyncHandler(async (req, res) => {
      * Verified on the live screen — undated, it did not appear on My day at all.
      */
     dueDate: new Date(),
-    priority: query.urgency === 'urgent' ? 'high' : 'normal',
+    /* Urgent because the asker said so, or because the order itself is escalated — either is
+       enough for the answer to be worth interrupting somebody with. */
+    priority: query.urgency === 'urgent' || order?.priority === 'critical' ? 'high' : 'normal',
     link: `/orders/${query.order}`,
+    /* Deduplicated per person, so one key across the whole audience gives each of them one. */
     originKey: `query-answered:${query._id}`,
-  }).catch(() => null);
+  }).catch(() => null)));
 
   await query.populate(POPULATE);
   res.json({ success: true, data: query });

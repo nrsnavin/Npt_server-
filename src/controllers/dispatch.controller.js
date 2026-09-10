@@ -21,7 +21,7 @@ import {
 import {
   ACTIONABLE_BANDS, byDispatchUrgency, dispatchUrgencyOf,
 } from '../services/dispatchUrgency.service.js';
-import { byOrderUrgency, urgencyOfOrder } from '../services/urgentOrders.service.js';
+import { urgentOrdersFor } from '../services/urgentOrders.service.js';
 import OrderQuery from '../models/OrderQuery.js';
 import { dispatchQuality } from '../services/quality.service.js';
 import { raiseForDispatch } from '../services/receivable.service.js';
@@ -829,33 +829,7 @@ export const dispatchDay = asyncHandler(async (req, res) => {
    * that nothing has been raised against yet is the most invisible case there is, and the one
    * most worth showing.
    */
-  const flagged = await SalesOrder.find({
-    status: { $nin: [...PRE_RELEASE_STATUSES, 'cancelled', 'closed', 'fully_dispatched'] },
-    priority: { $ne: 'normal' },
-    ...ownershipFilter(req.user),
-  })
-    .populate([
-      { path: 'customer', select: 'code name city' },
-      { path: 'assignedTo', select: 'name' },
-      { path: 'priorityBy', select: 'name' },
-    ])
-    .limit(200);
-
-  const flaggedClaims = await claimsFor(flagged.map((order) => order._id));
-  const flaggedLoads = flagged.length
-    ? await Dispatch.find({ order: { $in: flagged.map((order) => order._id) } })
-        .select('order number status invoice transporter lrNumber destination ownVehicle')
-    : [];
-
-  const loadsByOrder = new Map();
-  for (const load of flaggedLoads) {
-    const key = String(load.order);
-    loadsByOrder.set(key, [...(loadsByOrder.get(key) || []), load]);
-  }
-
-  const urgent = flagged
-    .map((order) => urgencyOfOrder(order, flaggedClaims, loadsByOrder.get(String(order._id)) || []))
-    .sort(byOrderUrgency);
+  const urgent = await urgentOrdersFor(req.user);
 
   /*
    * The questions, from the same request — see the note on the plant's day screen. Addressed to

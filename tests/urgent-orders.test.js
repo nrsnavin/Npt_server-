@@ -321,3 +321,145 @@ test('the queue can answer "what has anybody raised about my orders"', async () 
     'the owner-scoped queue returned somebody else\'s order'
   );
 });
+
+/* ---------------- The plant reads the same list from the other end ---------------- */
+
+test('the plant\'s day carries the escalated orders too, and says which are on it', async () => {
+  /*
+   * The same list the yard reads. The plant needs it because on most of these orders *the plant
+   * is the answer* — anything still being made or stopped on the floor is theirs — and because
+   * an escalated order they are not told about is one they will be asked about tomorrow.
+   */
+  const order = await released();
+  await api(`/api/orders/${order._id}/priority`, {
+    method: 'POST', token: nandhini,
+    body: { priority: 'critical', reason: 'Buyer is collecting on Monday' },
+  });
+
+  const day = await api('/api/production/day', { token: ramesh });
+  assert.equal(day.status, 200, day.json.message);
+
+  const row = day.json.data.urgent.find((entry) => String(entry._id) === String(order._id));
+  assert.ok(row, 'the plant cannot see the order marketing escalated');
+  assert.equal(row.blockedBy, 'production', 'nothing is made, so this is the plant\'s to clear');
+  assert.ok(day.json.meta.urgentOnUs >= 1, 'the count of what the plant is holding up is wrong');
+
+  /* Nobody has asked about it yet — the case where the screen should invite the question. */
+  assert.equal(row.unanswered, 0);
+  assert.ok(day.json.meta.urgentUnasked >= 1);
+});
+
+test('an urgent order not blocked on the plant still appears, and is not counted against them', async () => {
+  // Not filtered to production's own blockers: a supervisor should know about an escalated
+  // order sitting on paperwork, even though it is not theirs to fix.
+  const order = await released();
+  await api(`/api/orders/${order._id}/priority`, {
+    method: 'POST', token: nandhini, body: { priority: 'high', reason: 'Repeat buyer, chasing' },
+  });
+  await api(`/api/orders/${order._id}/lines/${order.lines[0]._id}/production`, {
+    method: 'PATCH', token: ramesh,
+    body: { status: 'completed', producedQty: 50000, readyQty: 50000 },
+  });
+
+  const day = await api('/api/production/day', { token: ramesh });
+  const row = day.json.data.urgent.find((entry) => String(entry._id) === String(order._id));
+
+  assert.ok(row, 'an escalated order vanished from the plant\'s screen once it was made');
+  assert.equal(row.blockedBy, 'despatch', 'everything is packed and free — despatch\'s to move');
+  assert.ok(
+    !day.json.data.urgent
+      .filter((entry) => entry.blockedBy === 'production')
+      .some((entry) => String(entry._id) === String(order._id)),
+    'a finished order is being counted against the plant'
+  );
+});
+
+test('the question and its answer ride on the urgent row, on every screen that shows it', async () => {
+  /*
+   * Without this each screen shows its own half — production sees what it was asked, despatch
+   * sees what it asked, and neither can tell whether the other already has the answer. That is
+   * how the same question gets asked twice in one morning.
+   */
+  const order = await released();
+  await api(`/api/orders/${order._id}/priority`, {
+    method: 'POST', token: nandhini, body: { priority: 'critical', reason: 'Fixed shipment date' },
+  });
+
+  const raised = await api(`/api/orders/${order._id}/queries`, {
+    method: 'POST', token: kavitha,
+    body: { askedOf: 'production', urgency: 'urgent', question: 'Can the first 20,000 be off by Friday?' },
+  });
+  await api(`/api/orders/${order._id}/queries/${raised.json.data._id}/answers`, {
+    method: 'POST', token: ramesh,
+    body: { body: 'Yes — on the press Wednesday, 20,000 by Friday evening.' },
+  });
+
+  for (const [who, token, path] of [
+    ['the plant', ramesh, '/api/production/day'],
+    ['the yard', kavitha, '/api/dispatches/day'],
+  ]) {
+    const day = await api(path, { token });
+    const row = day.json.data.urgent.find((entry) => String(entry._id) === String(order._id));
+    assert.ok(row, `${who} cannot see the escalated order`);
+
+    const thread = row.questions.find((query) => String(query._id) === String(raised.json.data._id));
+    assert.ok(thread, `${who} cannot see the question on it`);
+    assert.equal(thread.by, 'Kavitha D');
+    assert.equal(thread.askedOf, 'production');
+    assert.match(thread.latestAnswer.body, /20,000 by Friday evening/);
+    assert.equal(thread.latestAnswer.by, 'Ramesh Plant');
+  }
+});
+
+/* ---------------- The answer reaches everyone party to it ---------------- */
+
+test('answering tells the asker AND the order\'s owner', async () => {
+  /*
+   * The asker was the whole recipient list, and on the commonest exchange in the building that
+   * is the wrong one: despatch asks, production answers, despatch is told — and the marketing
+   * person who has to ring the buyer, and who owns the order, hears nothing.
+   */
+  const order = await released();
+  const raised = await api(`/api/orders/${order._id}/queries`, {
+    method: 'POST', token: kavitha,
+    body: { askedOf: 'production', question: 'Anything moving on this?' },
+  });
+
+  await api(`/api/orders/${order._id}/queries/${raised.json.data._id}/answers`, {
+    method: 'POST', token: ramesh, body: { body: 'On the press Thursday.' },
+  });
+
+  const told = await Todo.find({ originKey: `query-answered:${raised.json.data._id}` });
+  const users = told.map((task) => String(task.user));
+
+  const kavithaId = (await api('/api/auth/me', { token: kavitha })).json.data.id;
+  assert.ok(users.includes(String(kavithaId)), 'the asker was not told');
+  assert.ok(users.includes(String(nandhiniId)), 'the order\'s owner was not told');
+
+  const rameshId = (await api('/api/auth/me', { token: ramesh })).json.data.id;
+  assert.ok(!users.includes(String(rameshId)), 'the person answering was told about their own answer');
+});
+
+test('and anyone who answered earlier, which is how a third department stays in it', async () => {
+  // Despatch answering in the morning is party to the conversation by the afternoon, without
+  // anybody having to nominate them.
+  const order = await released();
+  const raised = await api(`/api/orders/${order._id}/queries`, {
+    method: 'POST', token: nandhini,
+    body: { askedOf: 'despatch', question: 'Can this go on Friday\'s vehicle?' },
+  });
+
+  await api(`/api/orders/${order._id}/queries/${raised.json.data._id}/answers`, {
+    method: 'POST', token: kavitha, body: { body: 'Only if it is packed by Thursday.' },
+  });
+  await api(`/api/orders/${order._id}/queries/${raised.json.data._id}/answers`, {
+    method: 'POST', token: ramesh, body: { body: 'It will be packed Wednesday.' },
+  });
+
+  const told = await Todo.find({ originKey: `query-answered:${raised.json.data._id}` });
+  const users = told.map((task) => String(task.user));
+  const kavithaId = (await api('/api/auth/me', { token: kavitha })).json.data.id;
+
+  assert.ok(users.includes(String(nandhiniId)), 'the asker was not told');
+  assert.ok(users.includes(String(kavithaId)), 'the department that answered first was dropped');
+});

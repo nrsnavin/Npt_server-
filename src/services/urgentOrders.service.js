@@ -1,6 +1,9 @@
 import { HELD_PRODUCTION_STATUSES } from './production.service.js';
-import { stockOf } from './dispatchStock.service.js';
-import { GONE_DISPATCH_STATUSES, PRE_LOAD_DISPATCH_STATUSES } from '../models/Dispatch.js';
+import { claimsFor, stockOf } from './dispatchStock.service.js';
+import Dispatch, { GONE_DISPATCH_STATUSES, PRE_LOAD_DISPATCH_STATUSES } from '../models/Dispatch.js';
+import OrderQuery from '../models/OrderQuery.js';
+import SalesOrder, { PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
+import { ownershipFilter } from './ownership.service.js';
 
 /**
  * Why an order marketing called urgent has not gone yet [§12, §29].
@@ -64,7 +67,7 @@ const pieces = (count) => `${Math.round(count).toLocaleString('en-IN')} pieces`;
  * all three of which the caller has loaded anyway, because computing them here per row is how a
  * day screen becomes a hundred queries.
  */
-export function urgencyOfOrder(order, claims, dispatches = []) {
+export function urgencyOfOrder(order, claims, dispatches = [], questions = []) {
   const stock = (order.lines || []).map((line) => stockOf(line, claims.get(String(line._id))));
 
   const toMake = stock.reduce((sum, line) => sum + Math.max(0, line.quantity - line.producedQty), 0);
@@ -133,6 +136,36 @@ export function urgencyOfOrder(order, claims, dispatches = []) {
       _id: row._id, number: row.number, status: row.status,
       gone: GONE_DISPATCH_STATUSES.includes(row.status),
     })),
+    /*
+     * What is already being asked about this order, with the latest answer.
+     *
+     * Carried on the row so every department's screen shows the same exchange against the same
+     * order. Without it each screen would show its own half — production sees what it was asked,
+     * despatch sees what it asked, and neither can tell whether the other already has the
+     * answer. That is how the same question gets asked twice in a morning.
+     */
+    questions: questions.map((query) => ({
+      _id: query._id,
+      number: query.number,
+      askedOf: query.askedOf,
+      by: query.raisedBy?.name || null,
+      byDepartment: query.raisedBy?.department || null,
+      question: query.question,
+      status: query.status,
+      urgency: query.urgency,
+      dueBy: query.dueBy,
+      isOverdue: query.isOverdue,
+      latestAnswer: query.answers?.length
+        ? {
+            body: query.answers[query.answers.length - 1].body,
+            by: query.answers[query.answers.length - 1].by?.name || null,
+            at: query.answers[query.answers.length - 1].at,
+          }
+        : null,
+    })),
+    /* Nobody has asked anything about an order somebody escalated — worth its own flag, because
+       it is the case where a screen should be inviting the question rather than showing one. */
+    unanswered: questions.filter((query) => query.status === 'open').length,
     link: `/orders/${order._id}`,
   };
 }
@@ -155,3 +188,68 @@ export const byOrderUrgency = (a, b) => {
 export const RAISABLE_BLOCKERS = Object.values(BLOCKERS)
   .filter((entry) => entry.department && entry.department !== 'despatch')
   .map((entry) => entry.key);
+
+/**
+ * Every urgent order a reader may see, with its blocker and its open questions resolved.
+ *
+ * Written once because three screens want the same list and would otherwise each assemble it:
+ * the yard's day, the plant's day, and any register that grows one later. Three assemblies of
+ * "which order is urgent and why" is three chances for two screens to disagree about an order
+ * the buyer is chasing — which is the failure this whole feature exists to prevent.
+ *
+ * Four queries however many orders come back, not four per order: the orders, then their claims,
+ * their consignments and their questions in one round each. A day screen that made a round trip
+ * per row is a day screen that gets slow exactly when the plant is busy.
+ */
+export async function urgentOrdersFor(user) {
+  const orders = await SalesOrder.find({
+    status: { $nin: [...PRE_RELEASE_STATUSES, 'cancelled', 'closed', 'fully_dispatched'] },
+    priority: { $ne: 'normal' },
+    ...ownershipFilter(user),
+  })
+    .populate([
+      { path: 'customer', select: 'code name city' },
+      { path: 'assignedTo', select: 'name' },
+      { path: 'priorityBy', select: 'name' },
+    ])
+    .limit(200);
+
+  if (!orders.length) return [];
+
+  const ids = orders.map((order) => order._id);
+
+  const [claims, loads, questions] = await Promise.all([
+    claimsFor(ids),
+    Dispatch.find({ order: { $in: ids } })
+      .select('order number status invoice transporter lrNumber destination ownVehicle'),
+    OrderQuery.find({ order: { $in: ids }, status: { $in: ['open', 'answered'] } })
+      .populate([
+        { path: 'raisedBy', select: 'name department' },
+        { path: 'answers.by', select: 'name' },
+      ])
+      .sort({ createdAt: -1 }),
+  ]);
+
+  const by = (rows, key) => {
+    const map = new Map();
+    for (const row of rows) {
+      const id = String(row[key]);
+      map.set(id, [...(map.get(id) || []), row]);
+    }
+    return map;
+  };
+
+  const loadsByOrder = by(loads, 'order');
+  const questionsByOrder = by(questions, 'order');
+
+  return orders
+    .map((order) =>
+      urgencyOfOrder(
+        order,
+        claims,
+        loadsByOrder.get(String(order._id)) || [],
+        questionsByOrder.get(String(order._id)) || []
+      )
+    )
+    .sort(byOrderUrgency);
+}

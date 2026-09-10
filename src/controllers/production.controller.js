@@ -11,6 +11,7 @@ import {
 } from '../services/production.service.js';
 import { notifyMaterialReady } from '../services/dispatchEscalation.service.js';
 import { PRESSING_BANDS, byUrgency, urgencyOf } from '../services/productionUrgency.service.js';
+import { urgentOrdersFor } from '../services/urgentOrders.service.js';
 import OrderQuery from '../models/OrderQuery.js';
 import { sendCsv } from '../utils/csv.js';
 
@@ -401,11 +402,27 @@ export const productionDay = asyncHandler(async (req, res) => {
     .sort({ status: 1, dueBy: 1 })
     .limit(50);
 
+  /*
+   * The orders marketing or despatch have escalated, and what is holding each one [§29].
+   *
+   * The same list the yard reads, from the other end. Despatch needs it because they are who
+   * gets rung; the plant needs it because on most of these orders **the plant is the answer** —
+   * `blockedBy` is production on anything still being made or stopped on the floor, which is
+   * the majority of an escalation's life.
+   *
+   * Shown whoever the blocker is, though, rather than filtered to production's own. An urgent
+   * order sitting on paperwork is not the plant's to fix and is still worth a supervisor
+   * knowing about: it is the one they will be asked about tomorrow, and the one they should not
+   * put a press on today.
+   */
+  const urgent = await urgentOrdersFor(req.user);
+
   res.json({
     success: true,
     data: {
       pressing,
       next,
+      urgent,
       /* Unanswered first: an answered question is waiting on the asker, not on the plant. */
       queries: queries.filter((query) => query.status === 'open'),
       answered: queries.filter((query) => query.status === 'answered'),
@@ -421,6 +438,13 @@ export const productionDay = asyncHandler(async (req, res) => {
       /* Said separately from the bands: a plant told "3 late" wants to know how many of those
          are late because somebody asked for something else to go first. */
       raised: running.filter((row) => row.order.priority !== 'normal').length,
+      /* Escalated orders, and the ones the plant itself is holding up — the second is the
+         number a supervisor is answerable for. */
+      urgent: urgent.length,
+      urgentOnUs: urgent.filter((row) => row.blockedBy === 'production').length,
+      /* Escalated and nobody has even asked — the case where the screen should be inviting a
+         question rather than showing one. */
+      urgentUnasked: urgent.filter((row) => !row.questions.length).length,
     },
   });
 });
