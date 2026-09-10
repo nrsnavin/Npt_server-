@@ -217,6 +217,21 @@ const sampleSchema = new mongoose.Schema(
     awbNumber: { type: String, trim: true },
     dispatchedAt: Date,
     dispatchedQuantity: { type: Number, min: 0 },
+
+    /**
+     * The shade that actually went in the bag.
+     *
+     * `colour` is what was *asked for*. Until this existed there was nothing that said what was
+     * *sent*, which left the strict flag above as a promise nothing kept: the request form tells
+     * the person raising it "tick this and the sample is only sent in this colour", and a bench
+     * could tick straight past it and send white against an Ivory condition. The register then
+     * said Ivory for ever, so the rejection three weeks later had no explanation in it.
+     *
+     * Asked for on every dispatch where a colour was named, not only the strict ones. On a
+     * preference it is the more useful of the two: the buyer is about to open a bag that does
+     * not match the sheet, and marketing should hear it from this record rather than from them.
+     */
+    dispatchedColour: { type: String, trim: true },
     deliveredAt: Date,
 
     /** What the customer said, recorded by marketing. */

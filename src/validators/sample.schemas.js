@@ -77,6 +77,7 @@ export const dispatchDetailsSchema = z.object({
   awbNumber: z.string().max(60).nullable().optional(),
   dispatchedAt: z.coerce.date().nullable().optional(),
   dispatchedQuantity: z.number().nonnegative().nullable().optional(),
+  dispatchedColour: z.string().max(60).nullable().optional(),
 });
 
 /** An explicit null hands the request back to the shared queue. */
@@ -95,6 +96,7 @@ export const sampleStatusSchema = z.object({
   awbNumber: z.string().optional(),
   dispatchedAt: z.coerce.date().optional(),
   dispatchedQuantity: z.number().nonnegative().optional(),
+  dispatchedColour: z.string().max(60).optional(),
 });
 
 export const sampleFeedbackSchema = z.object({

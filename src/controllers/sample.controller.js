@@ -21,6 +21,7 @@ import { listParams, paginated } from '../utils/query.js';
 import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
+import { raiseTask } from '../services/task.service.js';
 
 /**
  * Marketing's view of a sample runs through `requestedBy`, not `assignedTo` — the sample is
@@ -222,6 +223,7 @@ export const sampleBoard = asyncHandler(async (req, res) => {
     select:
       'number customer enquiry lead mould modelNumber colour printing quantity purpose status ' +
       'requiredDate requestedAt assignedTo requestedBy courier awbNumber dispatchedQuantity ' +
+      'colourMandatory dispatchedColour ' +
       'statusHistory.from statusHistory.to statusHistory.at createdAt',
     populate: [
       /* The customer and its owner, for the same reason the list carries them — see POPULATE. */
@@ -499,6 +501,36 @@ export const assignSample = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await withRefs(sample) });
 });
 
+/** Two shades are the same shade if they differ only in spacing or case. */
+const sameShade = (a, b) =>
+  String(a || '').trim().toLowerCase().replace(/\s+/g, ' ') ===
+  String(b || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+/**
+ * The strict colour rule, enforced rather than merely printed.
+ *
+ * `colourMandatory` has been carried from the enquiry to the sample since the module was built,
+ * and shown on three screens — and the request form promises in as many words that "the sample
+ * is only sent in this colour". Nothing checked it. A bench could send white against an Ivory
+ * condition, the register would say Ivory for ever, and the rejection three weeks later would
+ * have no explanation in it.
+ *
+ * There is deliberately no reason box to type past this. The escape is to go back to whoever
+ * set the condition and have them relax it on the record — which is a real conversation with a
+ * buyer at the end of it, not a field the bench fills in for itself at five o'clock. Any
+ * override the maker can grant themselves is the same as no rule.
+ */
+function assertColourAllowed(sample) {
+  if (!sample.colourMandatory || !sample.colour || !sample.dispatchedColour) return;
+  if (sameShade(sample.colour, sample.dispatchedColour)) return;
+
+  throw ApiError.badRequest(
+    `${sample.number} was asked for in ${sample.colour} exactly, so it cannot be sent in ` +
+      `${sample.dispatchedColour}. Either send it in ${sample.colour}, or have whoever asked ` +
+      'for it drop the exact-colour condition first.'
+  );
+}
+
 /**
  * Courier, tracking number, date and quantity — recorded whenever they are known.
  *
@@ -515,9 +547,13 @@ export const setDispatchDetails = asyncHandler(async (req, res) => {
     throw ApiError.badRequest(`A ${sample.status} sample can no longer be edited`);
   }
 
-  for (const field of ['courier', 'awbNumber', 'dispatchedAt', 'dispatchedQuantity']) {
+  for (const field of ['courier', 'awbNumber', 'dispatchedAt', 'dispatchedQuantity', 'dispatchedColour']) {
     if (req.body[field] !== undefined) sample[field] = req.body[field] ?? undefined;
   }
+
+  /* The strict colour rule holds here too. Arranging the details in advance is the natural way
+     round the check on the move itself, and a rule with a documented way round it is not one. */
+  assertColourAllowed(sample);
 
   await sample.save();
   res.json({ success: true, data: await withRefs(sample) });
@@ -536,7 +572,8 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
   if (!sample) throw ApiError.notFound('Sample not found');
   if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
 
-  const { status, note, courier, awbNumber, dispatchedAt, dispatchedQuantity } = req.body;
+  const { status, note, courier, awbNumber, dispatchedAt, dispatchedQuantity, dispatchedColour } =
+    req.body;
 
   if (status === sample.status) throw ApiError.badRequest(`Already at ${status}`);
   if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) {
@@ -555,12 +592,18 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
       courier: courier ?? sample.courier,
       awbNumber: awbNumber ?? sample.awbNumber,
       dispatchedQuantity: dispatchedQuantity ?? sample.dispatchedQuantity,
+      /* Defaults to the shade asked for, so the ordinary case — it went out as requested —
+         is not a field somebody has to retype to get the sample out of the door. */
+      dispatchedColour: dispatchedColour ?? sample.dispatchedColour ?? sample.colour,
     };
 
     const missing = [
       !details.courier && 'courier',
       !details.awbNumber && 'AWB number',
       details.dispatchedQuantity == null && 'dispatched quantity',
+      /* Only where a colour was named. A request that never asked for one has no answer to
+         give, and demanding it would be inventing a field for the bench to make up. */
+      sample.colour && !details.dispatchedColour && 'colour it was sent in',
     ].filter(Boolean);
 
     if (missing.length) {
@@ -568,6 +611,7 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
     }
 
     Object.assign(sample, details);
+    assertColourAllowed(sample);
     sample.dispatchedAt = dispatchedAt || sample.dispatchedAt || new Date();
   }
 
@@ -577,6 +621,34 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
   sample.status = status;
   sample.statusHistory.push({ from, to: status, by: req.user._id, note });
   await sample.save();
+
+  /*
+   * A sample that went out in a different shade from the one on the sheet.
+   *
+   * Only reachable on a preference — the strict ones were refused above — and on a preference
+   * it is allowed, which is the whole point of the flag. But allowed is not the same as
+   * unremarkable: the buyer is about to open a bag that does not match what they asked for, and
+   * whoever spoke to them should hear it from this record rather than from the buyer. Undated,
+   * so it sits in the to-do list as something to mention on the next call rather than
+   * interrupting today.
+   */
+  if (
+    status === 'dispatched' &&
+    sample.colour &&
+    sample.dispatchedColour &&
+    !sameShade(sample.colour, sample.dispatchedColour) &&
+    sample.requestedBy
+  ) {
+    await raiseTask({
+      user: sample.requestedBy,
+      title: `${sample.number} went out in ${sample.dispatchedColour}, not ${sample.colour}`,
+      notes:
+        'The colour was a preference rather than a condition, so the bench sent the nearest it ' +
+        'had. Worth saying before the buyer opens the bag.',
+      link: `/samples/${sample._id}`,
+      originKey: `sample-colour-substituted:${sample._id}`,
+    }).catch(() => null);
+  }
 
   publish(EVENTS.SAMPLE_STATUS_CHANGED, { sample, from, to: status, by: req.user });
   const specific = sampleStatusEvent(status);

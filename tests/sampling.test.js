@@ -270,6 +270,108 @@ test('whether the colour is a condition or a preference travels from the enquiry
   assert.equal(anyShade.colourRule, 'Ivory preferred — any available colour will do');
 });
 
+test('a sample asked for in one colour exactly cannot be dispatched in another', async () => {
+  /*
+   * The flag was carried, shown on three screens, and enforced nowhere. The request form
+   * promises in as many words that "the sample is only sent in this colour" — so a bench could
+   * send white against an Ivory condition, the register would say Ivory for ever, and the
+   * rejection three weeks later would have no explanation in it.
+   */
+  const enquiry = await raiseEnquiry({
+    requirement: { modelNumber: 'NPT-400S', colour: 'Ivory', colourMandatory: true },
+  });
+  const sample = await requestSample(enquiry._id);
+
+  for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
+    await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status } });
+  }
+
+  const wrong = await api(`/api/samples/${sample._id}/status`, {
+    method: 'POST', token: meera,
+    body: {
+      status: 'dispatched',
+      courier: 'Blue Dart', awbNumber: '77213904200', dispatchedQuantity: 5,
+      dispatchedColour: 'White',
+    },
+  });
+
+  assert.equal(wrong.status, 400, 'the wrong shade went out against an exact-colour condition');
+  assert.match(wrong.json.message, /Ivory/);
+  assert.match(wrong.json.message, /cannot be sent in White/i);
+  /* And it says how to get past it honestly, rather than only that it is refused. */
+  assert.match(wrong.json.message, /drop the exact-colour condition/i);
+
+  /* Arranging the details in advance must not be the way round the check. */
+  const sideways = await api(`/api/samples/${sample._id}/dispatch-details`, {
+    method: 'PATCH', token: meera, body: { dispatchedColour: 'White' },
+  });
+  assert.equal(sideways.status, 400, 'the check can be walked around through the details form');
+
+  /* Spacing and case are not a different shade. */
+  const right = await api(`/api/samples/${sample._id}/status`, {
+    method: 'POST', token: meera,
+    body: {
+      status: 'dispatched',
+      courier: 'Blue Dart', awbNumber: '77213904200', dispatchedQuantity: 5,
+      dispatchedColour: '  ivory ',
+    },
+  });
+  assert.equal(right.status, 200, right.json.message);
+  assert.equal(right.json.data.dispatchedColour, 'ivory');
+});
+
+test('a preferred colour may be substituted, and whoever asked is told it was', async () => {
+  /*
+   * The other half of the flag, and the reason it is worth having: unticked, the bench sends the
+   * nearest white it has rather than waiting a fortnight for the exact one. Allowed is not the
+   * same as unremarkable, though — the buyer is about to open a bag that does not match the
+   * sheet, and marketing should hear that here rather than from the buyer.
+   */
+  const enquiry = await raiseEnquiry({
+    requirement: { modelNumber: 'NPT-400S', colour: 'Ivory' },
+  });
+  const sample = await requestSample(enquiry._id);
+
+  for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
+    await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status } });
+  }
+
+  const sent = await api(`/api/samples/${sample._id}/status`, {
+    method: 'POST', token: meera,
+    body: {
+      status: 'dispatched',
+      courier: 'Blue Dart', awbNumber: '77213904201', dispatchedQuantity: 5,
+      dispatchedColour: 'Off White',
+    },
+  });
+
+  assert.equal(sent.status, 200, sent.json.message);
+  assert.equal(sent.json.data.dispatchedColour, 'Off White');
+  /* What was asked for is not overwritten by what was sent — the register has to keep both. */
+  assert.equal(sent.json.data.colour, 'Ivory');
+
+  const Todo = (await import('../src/models/Todo.js')).default;
+  const told = await Todo.findOne({ originKey: `sample-colour-substituted:${sample._id}` });
+  assert.ok(told, 'nobody was told the shade was substituted');
+  assert.match(told.title, /Off White/);
+  assert.match(told.title, /Ivory/);
+});
+
+test('a sample dispatched as asked records the shade without anybody retyping it', async () => {
+  /*
+   * The ordinary case is that it went out as requested, and a field somebody has to fill in to
+   * say "yes, the obvious thing" is a field that gets filled in with whatever clears it.
+   */
+  const enquiry = await raiseEnquiry({
+    requirement: { modelNumber: 'NPT-400S', colour: 'Ivory', colourMandatory: true },
+  });
+  const sample = await requestSample(enquiry._id);
+  const { status, json } = await dispatchSample(sample._id);
+
+  assert.equal(status, 200, json.message);
+  assert.equal(json.data.dispatchedColour, 'Ivory', 'the shade sent was not defaulted');
+});
+
 test('a sample with no colour asked for states no colour rule', async () => {
   // "Any colour will do" against a blank would read as a licence somebody actually granted.
   const enquiry = await raiseEnquiry({ requirement: { modelNumber: 'NPT-400S' } });
