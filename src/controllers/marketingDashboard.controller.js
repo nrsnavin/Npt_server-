@@ -1,6 +1,7 @@
 import Customer from '../models/Customer.js';
 import OrderQuery from '../models/OrderQuery.js';
 import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
+import SalesOrder from '../models/SalesOrder.js';
 import Sample, { WITH_CUSTOMER_STATUSES, CLOSED_SAMPLE_STATUSES } from '../models/Sample.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -88,6 +89,34 @@ export const marketingDashboard = asyncHandler(async (req, res) => {
       .select('number question askedOf dueBy createdAt order')
       .populate('order', 'number'),
   ]);
+
+  /*
+   * Concerns somebody else has raised about an order of mine [§29].
+   *
+   * The opposite direction from the questions above, and the one that was missing. Despatch
+   * looking at an urgent order that cannot go raises it with whoever can clear it — production,
+   * usually — and until now that conversation happened entirely between two departments neither
+   * of which has to ring the buyer. The owner found out when the customer asked.
+   *
+   * `raisedBy` excludes my own, because a question I asked is already in the list above and
+   * showing it twice would make the count wrong in the direction that matters.
+   */
+  const myOrders = await SalesOrder.find({ assignedTo: req.user._id }).select('_id');
+
+  const concerns = myOrders.length
+    ? await OrderQuery.find({
+        order: { $in: myOrders.map((order) => order._id) },
+        raisedBy: { $ne: req.user._id },
+        status: { $in: ['open', 'answered'] },
+      })
+        .populate([
+          { path: 'raisedBy', select: 'name department' },
+          { path: 'order', select: 'number priority customer', populate: { path: 'customer', select: 'name' } },
+          { path: 'answers.by', select: 'name' },
+        ])
+        .sort({ status: 1, dueBy: 1 })
+        .limit(50)
+    : [];
 
   const openEnquiries = enquiries.filter((entry) => !CLOSED_STATUSES.includes(entry.status));
 
@@ -232,6 +261,38 @@ export const marketingDashboard = asyncHandler(async (req, res) => {
         byStage: countBy(openEnquiries, (row) => row.status),
         bySource: countBy(enquiries, (row) => row.source),
         lostReasons: countBy(lost, (row) => row.lostReason),
+      },
+      /*
+       * Raised *at* me rather than *by* me. Kept beside the questions I asked rather than merged
+       * with them: one is work I am waiting on and the other is work waiting on me, and a single
+       * list would make the reader sort them by hand every morning.
+       */
+      concernsRaised: {
+        count: concerns.filter((row) => row.status === 'open').length,
+        answered: concerns.filter((row) => row.status === 'answered').length,
+        rows: concerns.slice(0, TOP).map((row) => ({
+          _id: row._id,
+          number: row.number,
+          order: row.order?.number || null,
+          orderId: row.order?._id || null,
+          customer: row.order?.customer?.name || null,
+          priority: row.order?.priority || 'normal',
+          by: row.raisedBy?.name || null,
+          byDepartment: row.raisedBy?.department || null,
+          askedOf: row.askedOf,
+          question: row.question,
+          status: row.status,
+          urgency: row.urgency,
+          dueBy: row.dueBy,
+          overdue: Boolean(row.status === 'open' && row.dueBy && new Date(row.dueBy) < new Date(now)),
+          latestAnswer: row.answers?.length
+            ? {
+                body: row.answers[row.answers.length - 1].body,
+                by: row.answers[row.answers.length - 1].by?.name || null,
+                at: row.answers[row.answers.length - 1].at,
+              }
+            : null,
+        })),
       },
       dormantCustomers: { count: dormant.length, days: DORMANT_DAYS, rows: dormant.slice(0, TOP) },
     },

@@ -21,6 +21,7 @@ import {
 import {
   ACTIONABLE_BANDS, byDispatchUrgency, dispatchUrgencyOf,
 } from '../services/dispatchUrgency.service.js';
+import { byOrderUrgency, urgencyOfOrder } from '../services/urgentOrders.service.js';
 import OrderQuery from '../models/OrderQuery.js';
 import { dispatchQuality } from '../services/quality.service.js';
 import { raiseForDispatch } from '../services/receivable.service.js';
@@ -817,6 +818,46 @@ export const dispatchDay = asyncHandler(async (req, res) => {
     .slice(0, 15);
 
   /*
+   * The orders marketing has flagged, and why each one has not gone [§29].
+   *
+   * Despatch is the last department before the buyer, so despatch is who gets rung about an
+   * urgent order — and very often the answer is not theirs to give. Putting the *blocker* on
+   * their screen is what lets them say "it is on a quality hold" instead of going to find out,
+   * and it is what decides who a concern gets addressed to.
+   *
+   * Every urgent order, not only the ones with a consignment: an order marketing escalated
+   * that nothing has been raised against yet is the most invisible case there is, and the one
+   * most worth showing.
+   */
+  const flagged = await SalesOrder.find({
+    status: { $nin: [...PRE_RELEASE_STATUSES, 'cancelled', 'closed', 'fully_dispatched'] },
+    priority: { $ne: 'normal' },
+    ...ownershipFilter(req.user),
+  })
+    .populate([
+      { path: 'customer', select: 'code name city' },
+      { path: 'assignedTo', select: 'name' },
+      { path: 'priorityBy', select: 'name' },
+    ])
+    .limit(200);
+
+  const flaggedClaims = await claimsFor(flagged.map((order) => order._id));
+  const flaggedLoads = flagged.length
+    ? await Dispatch.find({ order: { $in: flagged.map((order) => order._id) } })
+        .select('order number status invoice transporter lrNumber destination ownVehicle')
+    : [];
+
+  const loadsByOrder = new Map();
+  for (const load of flaggedLoads) {
+    const key = String(load.order);
+    loadsByOrder.set(key, [...(loadsByOrder.get(key) || []), load]);
+  }
+
+  const urgent = flagged
+    .map((order) => urgencyOfOrder(order, flaggedClaims, loadsByOrder.get(String(order._id)) || []))
+    .sort(byOrderUrgency);
+
+  /*
    * The questions, from the same request — see the note on the plant's day screen. Addressed to
    * this user's own department rather than to despatch by name, so the shape serves quality and
    * accounts unchanged when their screens are built.
@@ -847,6 +888,7 @@ export const dispatchDay = asyncHandler(async (req, res) => {
       pod: inBand('pod'),
       watch: inBand('watch'),
       unclaimed,
+      urgent,
       queries: queries.filter((query) => query.status === 'open'),
       answered: queries.filter((query) => query.status === 'answered'),
     },
@@ -862,6 +904,11 @@ export const dispatchDay = asyncHandler(async (req, res) => {
       /* Lines, and the pieces on them: "7 lines" understates a floor holding 340,000 pieces. */
       unclaimed: unclaimed.length,
       unclaimedQty: unclaimed.reduce((sum, row) => sum + row.available, 0),
+      urgent: urgent.length,
+      /* The half despatch cannot fix themselves — what a concern exists to hand over. */
+      urgentBlockedElsewhere: urgent.filter(
+        (row) => row.blockedBy && row.blockedBy !== 'despatch'
+      ).length,
       questions: queries.filter((query) => query.status === 'open').length,
       questionsOverdue: queries.filter((query) => query.isOverdue).length,
     },

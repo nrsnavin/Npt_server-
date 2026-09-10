@@ -96,7 +96,20 @@ export const listQueryQueue = asyncHandler(async (req, res) => {
     defaultSort: 'dueBy',
   });
 
-  filter.askedOf = req.query.askedOf || req.user.department;
+  /*
+   * Two questions this list can answer, and they are not the same one.
+   *
+   * By default: **what is my department being asked**, which is the queue production, despatch
+   * and quality work from.
+   *
+   * With `mine=true`: **what has anybody raised about the orders I own**, which is the question
+   * marketing has — and which the default could never answer, because a concern despatch raises
+   * with production is addressed to production and appears nowhere near the person whose
+   * customer is waiting. That was the gap: the order's owner is the one who has to ring the
+   * buyer, and they were the only party to the conversation who could not see it.
+   */
+  const onMyOrders = req.query.mine === 'true';
+  if (!onMyOrders) filter.askedOf = req.query.askedOf || req.user.department;
 
   /*
    * Scoped to what the reader may see, through the order behind each question [§29].
@@ -111,7 +124,12 @@ export const listQueryQueue = asyncHandler(async (req, res) => {
    * `ownershipFilter` already draws exactly that line — it returns nothing to add for anyone
    * but marketing — which is why the check is on the filter rather than on the department.
    */
-  const scope = ownershipFilter(req.user);
+  /*
+   * `mine` narrows to the caller's own orders whoever they are; otherwise ownership does it for
+   * the departments it applies to. Both end at the same filter, so a marketing reader asking
+   * for `mine` and a marketing reader asking for nothing see the same set of orders.
+   */
+  const scope = onMyOrders ? { assignedTo: req.user._id } : ownershipFilter(req.user);
   if (Object.keys(scope).length) {
     const owned = await SalesOrder.find(scope).select('_id');
     filter.order = { $in: owned.map((order) => order._id) };
@@ -181,6 +199,36 @@ export const raiseOrderQuery = asyncHandler(async (req, res) => {
     urgency,
     dueBy: dueFrom(urgency),
   });
+
+  /*
+   * The order's owner is told, when somebody else raised it [§29, §31].
+   *
+   * The department being asked picks the question up from its own queue, which is a pull and is
+   * right — a queue somebody works from does not need a nudge per row. The *owner* is different:
+   * despatch raising a concern with production about an urgent order is a conversation between
+   * two departments, neither of whom has to ring the buyer, and without this the person who does
+   * finds out when the customer asks.
+   *
+   * Skipped only when the owner raised it themselves — then it is already their own work and a
+   * task about it would be §31's notification overload in its purest form.
+   */
+  const ownerId = String(order.assignedTo?._id || order.assignedTo || '');
+
+  if (ownerId && ownerId !== String(req.user._id)) {
+    const asker = findDepartment(req.user.department)?.label || req.user.department;
+    await raiseTask({
+      user: ownerId,
+      title: `${asker} raised a concern on ${order.number}`,
+      notes: `${question}`.slice(0, 500),
+      /* Dated today for the reason the answer notification is: an undated task sits only in the
+         to-do rail, and My day would tell somebody with a blocked urgent order that their day
+         is clear. */
+      dueDate: new Date(),
+      priority: order.priority === 'critical' || urgency === 'urgent' ? 'high' : 'normal',
+      link: `/orders/${order._id}`,
+      originKey: `order-query-raised:${query._id}`,
+    }).catch(() => null);
+  }
 
   await query.populate(POPULATE);
   res.status(201).json({ success: true, data: query });
