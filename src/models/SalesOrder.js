@@ -1,3 +1,4 @@
+import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
@@ -595,4 +596,5 @@ salesOrderSchema.set('toJSON', { virtuals: true });
 salesOrderSchema.set('toObject', { virtuals: true });
 
 protectWrites(salesOrderSchema);
+protectOwnership(salesOrderSchema);
 export default mongoose.model('SalesOrder', salesOrderSchema);

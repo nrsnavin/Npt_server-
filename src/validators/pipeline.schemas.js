@@ -204,6 +204,7 @@ export const enquiryGroupSchema = z.object({
 });
 
 export const enquiryStatusSchema = z.object({
+  ...versioned,
   status: z.enum(ENQUIRY_STATUSES),
   /* Asked for at the moment it is known, because winning without it drops the enquiry out of
      the one figure the weekly review exists for [§38]. */
@@ -224,6 +225,7 @@ export const enquiryStatusSchema = z.object({
  * will disagree with itself.
  */
 export const enquiryActionSchema = z.object({
+  ...versioned,
   action: z.enum(ENQUIRY_ACTION_KEYS),
   note: z.string().optional(),
   nextAction: z.string().optional(),

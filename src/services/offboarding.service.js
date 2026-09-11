@@ -1,3 +1,7 @@
+import SalesOrder from '../models/SalesOrder.js';
+import Dispatch from '../models/Dispatch.js';
+import Receivable from '../models/Receivable.js';
+import Quotation from '../models/Quotation.js';
 import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
@@ -34,6 +38,10 @@ import Sample, { CLOSED_SAMPLE_STATUSES } from '../models/Sample.js';
  * handled by the bench's own hand-back.
  */
 const OWNED = [
+  { model: SalesOrder, field: 'assignedTo', key: 'orders' },
+  { model: Dispatch, field: 'assignedTo', key: 'dispatches' },
+  { model: Receivable, field: 'assignedTo', key: 'receivables' },
+  { model: Quotation, field: 'assignedTo', key: 'quotations' },
   { model: Customer, field: 'assignedTo', key: 'customers' },
   { model: Lead, field: 'assignedTo', key: 'leads', openWhen: { status: { $nin: ['converted', 'disqualified'] } } },
   { model: Enquiry, field: 'assignedTo', key: 'enquiries', openWhen: { status: { $nin: CLOSED_STATUSES } } },

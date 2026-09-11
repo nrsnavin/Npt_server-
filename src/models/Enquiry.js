@@ -1,3 +1,4 @@
+import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { CUSTOMER_SOURCES } from './Customer.js';
@@ -281,4 +282,5 @@ enquirySchema.set('toObject', { virtuals: true });
 withConversationRef(enquirySchema);
 
 protectWrites(enquirySchema);
+protectOwnership(enquirySchema);
 export default mongoose.model('Enquiry', enquirySchema);

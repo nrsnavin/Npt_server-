@@ -1,3 +1,4 @@
+import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { normalisePhone } from '../utils/phone.js';
@@ -98,4 +99,5 @@ customerSchema.index({ whatsapp: 1 });
 withConversationRef(customerSchema);
 
 protectWrites(customerSchema);
+protectOwnership(customerSchema);
 export default mongoose.model('Customer', customerSchema);

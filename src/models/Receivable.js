@@ -1,3 +1,4 @@
+import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 
@@ -72,6 +73,7 @@ export const PAYMENT_ESCALATIONS = [
 
 const receiptSchema = new mongoose.Schema(
   {
+    idempotencyKey: { type: String, trim: true },
     amount: { type: Number, min: 0.01, required: true },
     receivedAt: { type: Date, default: Date.now, required: true },
     mode: { type: String, enum: RECEIPT_MODES, default: 'neft' },
@@ -207,8 +209,11 @@ receivableSchema.virtual('received').get(function received() {
   return Math.round((this.receipts || []).reduce((sum, row) => sum + (row.amount || 0), 0) * 100) / 100;
 });
 
+receivableSchema.virtual('advanceApplied').get(function () { return this.$locals.advanceApplied || 0; });
+receivableSchema.virtual('receiptable').get(function () { return this.$locals.receiptable ?? this.balance; });
+
 receivableSchema.virtual('balance').get(function balance() {
-  return Math.round(Math.max(0, (this.invoice?.value || 0) - this.received) * 100) / 100;
+  return Math.round(Math.max(0, (this.invoice?.value || 0) - this.received - (this.$locals.balanceAdjustment || 0)) * 100) / 100;
 });
 
 /** Days until it is due; negative once it is late. Whole days, from midnight. */
@@ -231,7 +236,7 @@ receivableSchema.virtual('daysToDue').get(function daysToDue() {
 receivableSchema.virtual('state').get(function state() {
   if (this.balance <= 0) return 'paid';
   if (this.judgement) return this.judgement;
-  if (this.received > 0) return 'part_paid';
+  if (this.received > 0 || this.advanceApplied > 0) return 'part_paid';
 
   const days = this.daysToDue;
   if (days === null) return 'not_due';
@@ -284,4 +289,5 @@ receivableSchema.set('toJSON', { virtuals: true });
 receivableSchema.set('toObject', { virtuals: true });
 
 protectWrites(receivableSchema);
+protectOwnership(receivableSchema);
 export default mongoose.model('Receivable', receivableSchema);

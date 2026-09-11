@@ -118,7 +118,7 @@ const act = (dispatch, body, token = kavitha) =>
 
 /** The paperwork §19 gates on, in one place so a test that is not about the gate can pass it. */
 const PAPERS = {
-  invoice: { number: 'INV-2026-0091', date: inDays(0) },
+  invoice: { number: 'INV-2026-0091', date: inDays(0), value: 1000 },
   transporter: 'KPN Roadways',
   lrNumber: 'LR-88213',
   destination: { address: '14 Avinashi Road, Tiruppur', city: 'Tiruppur', state: 'Tamil Nadu' },
@@ -367,7 +367,7 @@ test('our own vehicle needs no LR number, and still needs everything else', asyn
     action: 'dispatch',
     ownVehicle: true,
     transporter: 'Own vehicle',
-    invoice: { number: 'INV-2026-0092' },
+    invoice: { ...PAPERS.invoice, number: 'INV-2026-0092' },
     destination: { address: '14 Avinashi Road, Tiruppur' },
   });
 
@@ -392,7 +392,7 @@ test('the order follows its consignments up the §12 ladder', async () => {
   assert.equal(part.json.orderMovedTo, 'part_dispatched');
 
   const second = await raise(order, [{ orderLine: line._id, quantity: 12000 }], {
-    ...PAPERS, invoice: { number: 'INV-2026-0093' },
+    ...PAPERS, invoice: { ...PAPERS.invoice, number: 'INV-2026-0093' },
   });
   const full = await act(second.json.data, { action: 'dispatch' });
   assert.equal(full.json.orderMovedTo, 'fully_dispatched');
@@ -639,7 +639,7 @@ test('two clerks claiming the same stock at the same moment cannot both win', as
         [400, 409].includes(reply.status),
         `refused with ${reply.status}: ${reply.json?.message}`
       );
-      assert.match(reply.json.message, /claimed .* while this was being raised|free to dispatch/i);
+      assert.match(reply.json.message, /claimed .* while this was being raised|free to dispatch|records are being updated/i);
     }
   }
 });

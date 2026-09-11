@@ -171,7 +171,7 @@ export const orderBoard = asyncHandler(async (req, res) => {
     perColumn: perColumnFrom(req.query),
     select:
       'number customer quotation assignedTo status orderDate customerPo lines verification ' +
-      'statusHistory.from statusHistory.to statusHistory.at createdAt',
+      'statusHistory.from statusHistory.to statusHistory.at createdAt updatedAt',
     populate: [
       { path: 'customer', select: 'code name' },
       { path: 'assignedTo', select: 'name' },
@@ -484,6 +484,8 @@ export const setOrderCheck = asyncHandler(withOrderLock(req => req.params.id, as
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
 
+  expectVersion(order, req.body);
+
   const { check, done = true, note } = req.body;
   if (!VERIFICATION_KEYS.includes(check)) {
     throw ApiError.badRequest(`${check} is not one of the §13 checks`);
@@ -544,6 +546,8 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+
+  expectVersion(order, req.body);
 
   const { action, note, ...rest } = req.body;
   const recipe = ORDER_ACTIONS[action];
@@ -701,6 +705,8 @@ export const setOrderPriority = asyncHandler(withOrderLock(req => req.params.id,
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+
+  expectVersion(order, req.body);
 
   /*
    * Whose flag this is.

@@ -1,3 +1,4 @@
+import { stockFor } from '../services/dispatchStock.service.js';
 import { withOrderLock } from '../services/operationLock.service.js';
 import SalesOrder, { PRODUCTION_STATUSES, PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
 import ApiError from '../utils/ApiError.js';
@@ -239,6 +240,10 @@ export const updateProductionLine = asyncHandler(withOrderLock(req => req.params
    * starts §25's dispatch clock and what tells despatch there is something to collect — and both
    * need the *previous* count, which the assignment loop below is about to overwrite.
    */
+  const stock = await stockFor(order);
+  const claim = stock.find(row => String(row.orderLine) === String(line._id));
+  if (next.readyQty < (claim?.reserved || 0) + (claim?.dispatched || 0)) throw ApiError.conflict('Packed quantity cannot be lower than the pieces already reserved or dispatched. Resolve the affected consignments first.');
+
   const packedMore = next.readyQty > (line.production.readyQty || 0);
 
   for (const field of [

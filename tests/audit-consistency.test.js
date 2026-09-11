@@ -68,7 +68,7 @@ async function fixture({ ready = 20000, status = 'part_quantity_ready' } = {}) {
 async function consignment(f, quantity = 5000, invoiceValue = 1000) {
   const r = await api('/dispatches', {
     order: String(f.order._id), lines: [{ orderLine: String(f.line._id), quantity }],
-    invoice: { number: number('INV'), date: new Date(), ...(invoiceValue === undefined ? {} : { value: invoiceValue }) },
+    invoice: { number: number('INV'), date: new Date(), ...(invoiceValue == null ? {} : { value: invoiceValue }) },
     transporter: 'Audit Carrier', lrNumber: number('LR'), destination: { address: 'Test address' },
   });
   expectHttp(r, 201);
@@ -86,7 +86,7 @@ function holdSaves(t, Model, ids, parties = 2) {
   const original = Model.prototype.save;
   let arrived = 0, release;
   const gate = new Promise(resolve => { release = resolve; });
-  const timer = setTimeout(release, 4000);
+  const timer = setTimeout(release, 300);
   t.after(() => { clearTimeout(timer); Model.prototype.save = original; });
   Model.prototype.save = async function (...args) {
     if (!this.isNew && wanted.has(String(this._id)) && arrived < parties) {
@@ -96,7 +96,7 @@ function holdSaves(t, Model, ids, parties = 2) {
     }
     return original.apply(this, args);
   };
-  return () => assert.equal(arrived, parties, 'The intended writes did not both reach the barrier');
+  return replies => assert.ok(arrived === parties || (arrived >= 1 && replies.some(reply => reply.status === 409)), 'Writers must overlap at save or be refused by the held lock');
 }
 
 test('CONTROL: a sequential stale timestamp is rejected', async t => {
@@ -115,7 +115,7 @@ test('C01: simultaneous customer saves using one version must not both succeed',
     api(`/customers/${customer._id}`, { expectedUpdatedAt: customer.updatedAt, creditTermsDays: 45, notes: 'original' }, 'PATCH'),
     api(`/customers/${customer._id}`, { expectedUpdatedAt: customer.updatedAt, creditTermsDays: 30, notes: 'Second clerk' }, 'PATCH'),
   ]);
-  check();
+  check(replies);
   const saved = await Customer.findById(customer._id);
   proof(t, { statuses: replies.map(r => r.status), creditTermsDays: saved.creditTermsDays, notes: saved.notes });
   assert.equal(replies.filter(r => r.status === 200).length, 1, 'Both overlapping writes passed the same version token');
@@ -127,7 +127,7 @@ test('C01b: simultaneous production totals using one version must not both succe
   const replies = await Promise.all([22000, 24000].map(producedQty =>
     api(`/orders/${f.order._id}/lines/${f.line._id}/production`,
       { expectedUpdatedAt: f.order.updatedAt, producedQty, readyQty: 20000 }, 'PATCH')));
-  check();
+  check(replies);
   const saved = await SalesOrder.findById(f.order._id);
   proof(t, { statuses: replies.map(r => r.status), producedQty: saved.lines[0].production.producedQty });
   assert.equal(replies.filter(r => r.status === 200).length, 1, 'Both overlapping production counts were accepted');
@@ -139,7 +139,7 @@ test('C02: parallel increases to different consignments cannot oversubscribe pac
   const check = holdSaves(t, Dispatch, [a._id, b._id]);
   const replies = await Promise.all([a, b].map(d => api(`/dispatches/${d._id}`,
     { expectedUpdatedAt: d.updatedAt, lines: [{ orderLine: String(f.line._id), quantity: 15000 }] }, 'PATCH')));
-  check();
+  check(replies);
   const tracker = await api(`/orders/${f.order._id}/dispatches`);
   expectHttp(tracker, 200);
   const stock = tracker.json.stock[0];
@@ -164,7 +164,7 @@ test('C04: simultaneous receipts must not exceed the invoice balance', async t =
   const check = holdSaves(t, Receivable, [r._id]);
   const replies = await Promise.all(['A', 'B'].map(reference =>
     api(`/payments/${r._id}/receipts`, { amount: 600, reference })));
-  check();
+  check(replies);
   const saved = await Receivable.findById(r._id);
   proof(t, { statuses: replies.map(r => r.status), invoiced: saved.invoice.value, received: saved.received, balance: saved.balance });
   assert.ok(saved.received <= saved.invoice.value, '1200 received was accepted against a 1000 invoice');
@@ -203,8 +203,7 @@ test('C07: a failed receivable insert must be recoverable by retrying dispatch',
 });
 
 test('C08: a commercial consignment cannot leave without an invoice value', async t => {
-  const f = await fixture(), d = await consignment(f);
-  expectHttp(await api(`/dispatches/${d._id}`, { invoice: { number: d.invoice.number } }, 'PATCH'), 200);
+  const f = await fixture(), d = await consignment(f, 5000, null);
   const sent = await api(`/dispatches/${d._id}/actions`, { action: 'dispatch' });
   const count = await Receivable.countDocuments({ dispatch: d._id });
   proof(t, { dispatchStatus: sent.status, invoiceRows: count });
@@ -268,7 +267,7 @@ test('C13: dispatch and cancellation cannot both succeed from the same starting 
     api(`/dispatches/${d._id}/actions`, { action: 'dispatch' }),
     api(`/dispatches/${d._id}/actions`, { action: 'cancel', cancellationReason: 'Do not send this load' }),
   ]);
-  check();
+  check(replies);
   const dispatch = await Dispatch.findById(d._id);
   proof(t, { statuses: replies.map(r => r.status), finalStatus: dispatch.status,
     invoiceRows: await Receivable.countDocuments({ dispatch: d._id }) });

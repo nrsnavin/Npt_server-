@@ -136,6 +136,7 @@ export const orderFromQuotationSchema = z.object({
 
 /** Ticking, or un-ticking, one of §13's eight checks. */
 export const orderCheckSchema = z.object({
+  ...versioned,
   check: z.enum(VERIFICATION_KEYS),
   /** Explicit `false` un-ticks. Absent means tick, because that is what a checkbox is for. */
   done: z.boolean().optional(),
@@ -150,6 +151,7 @@ export const orderCheckSchema = z.object({
  * meaningless on a release, and a schema that demanded both would refuse every action.
  */
 export const orderActionSchema = z.object({
+  ...versioned,
   action: z.enum(ORDER_ACTION_KEYS),
   note: z.string().optional(),
   clarificationNote: z.string().optional(),
@@ -265,6 +267,7 @@ export const productionLineSchema = z
  * collects. What makes the field work is that a name is attached to it, not its length.
  */
 export const orderPrioritySchema = z.strictObject({
+  ...versioned,
   priority: z.enum(ORDER_PRIORITIES),
   reason: z
     .string()

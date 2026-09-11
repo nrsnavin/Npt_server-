@@ -4,7 +4,7 @@ import { FREIGHT_TERMS } from '../models/Quotation.js';
 import { objectId } from './schemas.js';
 
 /** Concurrency token, the same shape every other module uses. */
-const versioned = { updatedAt: z.string().optional() };
+const versioned = { expectedUpdatedAt: z.coerce.date().optional(), updatedAt: z.coerce.date().optional() };
 
 const money = z.number().nonnegative();
 

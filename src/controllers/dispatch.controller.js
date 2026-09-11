@@ -17,7 +17,7 @@ import { allDispatchesVisibleTo, dispatchVisibleTo } from '../services/pricingVi
 import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { DISPATCH_ACTIONS, dispatchActionsFrom } from '../services/dispatchActions.js';
 import {
-  assertClaimable, claimsFor, rollUpDispatchStatus, stockFor, stockOf,
+  assertClaimable, claimsFor, stockFor, stockOf,
 } from '../services/dispatchStock.service.js';
 import {
   ACTIONABLE_BANDS, byDispatchUrgency, dispatchUrgencyOf,
@@ -25,7 +25,7 @@ import {
 import { urgentOrdersFor } from '../services/urgentOrders.service.js';
 import OrderQuery from '../models/OrderQuery.js';
 import { dispatchQuality } from '../services/quality.service.js';
-import { raiseForDispatch } from '../services/receivable.service.js';
+import { completeDispatchEffects } from '../services/dispatchRecovery.service.js';
 import { put, remove } from '../services/storage.service.js';
 import { sendCsv } from '../utils/csv.js';
 
@@ -408,42 +408,7 @@ export const createDispatch = asyncHandler(withOrderLock(req => req.body.order, 
     statusHistory: [{ to: 'dispatch_request_received', by: req.user._id }],
   });
 
-  /*
-   * The claim, re-checked with this consignment counted.
-   *
-   * `assertClaimable` above is a read followed by a write, and between them is a window. Two
-   * clerks raising a load against the same line in the same instant both read 20,000 free, both
-   * pass, and both write — 40,000 claimed against 20,000 packed. That is precisely the failure
-   * this module was built to prevent, described in its own header as happening "an hour later":
-   * the arithmetic was right and it was not atomic, so the hour was the only thing protecting
-   * it.
-   *
-   * No transaction, because the deployment is a single mongod and a rule that needs a replica
-   * set is a rule that silently does nothing here. So: write, then look again with the write
-   * included, and undo if the total no longer fits. The consignment has existed for a few
-   * milliseconds and nothing has been told about it yet — the roll-up below and §19's
-   * notifications are all downstream of this point.
-   *
-   * If both writers detect it, both withdraw and nobody gets the stock. That is the safe way to
-   * be wrong: the pieces are still on the floor and the next request takes them, where the
-   * alternative is a lorry loaded against goods that are already on another one.
-   */
-  const after = await stockFor(order);
-  const overclaimed = after.find((line) => line.reserved + line.dispatched > line.readyQty);
-
-  if (overclaimed) {
-    await Dispatch.deleteOne({ _id: dispatch._id });
-    throw ApiError.conflict(
-      `Somebody claimed ${overclaimed.modelNumber || 'that model'} while this was being raised — ` +
-        `${overclaimed.readyQty.toLocaleString('en-IN')} are packed and ` +
-        `${(overclaimed.reserved + overclaimed.dispatched).toLocaleString('en-IN')} are now spoken for. ` +
-        'Nothing was saved; check what is free and raise it again.'
-    );
-  }
-
-  /* The order follows its consignments — see dispatchStock.service.js for the precedence. */
-  const moved = rollUpDispatchStatus(order, after, req.user);
-  if (moved) await order.save();
+  const moved = await completeDispatchEffects(dispatch, req.user);
 
   await dispatch.populate(POPULATE);
   res.status(201).json({
@@ -462,6 +427,18 @@ export const createDispatch = asyncHandler(withOrderLock(req => req.body.order, 
  * quantity edited afterwards is either a correction that should be visible or a fiction. A load
  * that went out wrong is cancelled and re-raised, which leaves both facts on the record.
  */
+function applyPaperwork(dispatch, patch) {
+  if (patch.invoice) {
+    if (dispatch.hasLeft) for (const [key, value] of Object.entries(patch.invoice)) {
+      const before = dispatch.invoice?.[key];
+      if (!(key === 'date' ? +new Date(before) === +new Date(value) : before === value)) throw ApiError.conflict('An issued invoice cannot be changed here. Ask accounts to record a correction against the original invoice.');
+    }
+    patch.invoice = { ...dispatch.toObject().invoice, ...patch.invoice };
+  }
+  if (patch.destination) patch.destination = { ...dispatch.toObject().destination, ...patch.destination };
+  Object.assign(dispatch, patch);
+}
+
 export const updateDispatch = asyncHandler(withOrderLock(async req => (await Dispatch.findById(req.params.id).select('order'))?.order || req.params.id, async (req, res) => {
   const dispatch = await Dispatch.findById(req.params.id);
   if (!dispatch) throw ApiError.notFound('Consignment not found');
@@ -502,15 +479,13 @@ export const updateDispatch = asyncHandler(withOrderLock(async req => (await Dis
     });
   }
 
-  Object.assign(dispatch, patch);
+  applyPaperwork(dispatch, patch);
+  dispatch.orderSyncPending = true;
   await dispatch.save();
   await recordChange({ model: 'Dispatch', doc: dispatch, before, by: req.user });
 
   /* A changed load changes what the order can still send, so its status is recomputed. */
-  if (order) {
-    const moved = rollUpDispatchStatus(order, await stockFor(order), req.user);
-    if (moved) await order.save();
-  }
+  await completeDispatchEffects(dispatch, req.user);
 
   await dispatch.populate(POPULATE);
   res.json({
@@ -529,9 +504,17 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
 
   /* Pulled out of `rest` rather than deleted afterwards: everything left in `rest` is assigned
      straight onto the document, and this one belongs inside the override record, not beside it. */
-  const { action, note, qualityOverrideReason, ...rest } = req.body;
+  const { action, note, qualityOverrideReason, ...rest } = withoutVersion(req.body);
   const recipe = DISPATCH_ACTIONS[action];
   if (!recipe) throw ApiError.badRequest('That is not something you can do to a consignment');
+
+  if (action === 'dispatch' && dispatch.hasLeft) {
+    if (rest.invoice) applyPaperwork(dispatch, { invoice: rest.invoice });
+    await completeDispatchEffects(dispatch, req.user);
+    await dispatch.populate(POPULATE);
+    return res.json({ success: true, data: dispatchVisibleTo(dispatch, req.user), replayed: true });
+  }
+  expectVersion(dispatch, req.body);
 
   if (!dispatchActionsFrom(dispatch.status).includes(action)) {
     throw ApiError.badRequest(
@@ -544,7 +527,7 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
   /* Anything supplied alongside the action lands first, so a gate can be satisfied by the same
      request that trips it — typing the invoice number into the dispatch dialog, which is where
      somebody actually has it in front of them. */
-  Object.assign(dispatch, rest);
+  applyPaperwork(dispatch, rest);
 
   /*
    * §19's gate. Named paperwork, not a count: "still needs an invoice number and a transporter"
@@ -604,41 +587,23 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
 
   dispatch.statusHistory.push({ from: dispatch.status, to: recipe.to, by: req.user._id, note });
   dispatch.status = recipe.to;
+  dispatch.orderSyncPending = true;
+  if (recipe.to === 'dispatched') dispatch.accountingPending = true;
 
   await dispatch.save();
   await recordChange({ model: 'Dispatch', doc: dispatch, before, by: req.user, note: recipe.label });
 
-  /*
-   * The order follows. A consignment leaving is the moment an order becomes part- or
-   * fully-dispatched, and a cancellation puts the pieces back — both are the same recomputation
-   * over the same arithmetic, which is why neither is written by hand here.
-   */
-  /*
-   * The invoice becomes money owed the moment the lorry leaves [§20]. Derived here rather than
-   * typed by accounts, because §19 already refused to let it go without an invoice number, date
-   * and value — every rupee is on the record, and asking for it twice is how two lists start
-   * disagreeing about what a customer owes.
-   *
-   * Best-effort: a receivable that fails to raise must not fail the dispatch. The lorry has
-   * gone, and refusing to record that because of a bookkeeping row would leave the system
-   * denying something that physically happened.
-   */
-  if (recipe.to === 'dispatched') {
-    await raiseForDispatch(dispatch, { by: req.user }).catch(() => null);
-  }
-
-  const order = await SalesOrder.findById(dispatch.order);
-  let moved = null;
-  if (order) {
-    moved = rollUpDispatchStatus(order, await stockFor(order), req.user);
-    if (moved) await order.save();
-  }
+  let moved = null, pending = false;
+  try { moved = await completeDispatchEffects(dispatch, req.user); }
+  catch (error) { pending = true; console.error('Dispatch completion pending:', dispatch.number, error.message); }
 
   await dispatch.populate(POPULATE);
-  res.json({
+  res.status(pending ? 202 : 200).json({
     success: true,
     data: dispatchVisibleTo(dispatch, req.user),
     did: recipe.label,
+    pending,
+    message: pending ? 'Departure recorded; accounting or order totals are pending. The server will retry automatically.' : undefined,
     orderMovedTo: moved,
   });
 }));

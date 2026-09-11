@@ -1,3 +1,4 @@
+import { customerSummaries } from '../services/customerSummary.service.js';
 import mongoose from 'mongoose';
 import Mould from '../models/Mould.js';
 import Customer from '../models/Customer.js';
@@ -313,7 +314,7 @@ export const listCustomers = asyncHandler(async (req, res) => {
     Customer.countDocuments(filter),
   ]);
 
-  paginated(res, data, { page, limit, total });
+  paginated(res, await customerSummaries(data), { page, limit, total });
 });
 
 export const getCustomer = asyncHandler(async (req, res) => {
@@ -369,7 +370,7 @@ export const getCustomer = asyncHandler(async (req, res) => {
   res.json({
     success: true,
     data: {
-      customer,
+      customer: (await customerSummaries([customer]))[0],
       timeline: { enquiries, total, samples, sampleTotal, leads },
     },
   });
@@ -415,7 +416,7 @@ export const updateCustomer = asyncHandler(async (req, res) => {
   await customer.save();
   await recordChange({ model: 'Customer', doc: customer, before, by: req.user });
 
-  res.json({ success: true, data: customer });
+  res.json({ success: true, data: (await customerSummaries([customer]))[0] });
 });
 
 /**
@@ -1196,7 +1197,7 @@ export const enquiryBoard = asyncHandler(async (req, res) => {
     select:
       'number customer mould assignedTo status estimatedValue enquiryDate nextAction ' +
       'nextActionType nextFollowUpDate requirement holdReason lostReason ' +
-      'statusHistory.from statusHistory.to statusHistory.at createdAt',
+      'statusHistory.from statusHistory.to statusHistory.at createdAt updatedAt',
     populate: [
       { path: 'customer', select: 'code name' },
       { path: 'mould', select: 'mouldCode name' },
@@ -1461,6 +1462,8 @@ export const setEnquiryStatus = asyncHandler(async (req, res) => {
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
 
+  expectVersion(enquiry, req.body);
+
   await moveEnquiry(enquiry, req.body, req.user);
   res.json({ success: true, data: enquiry });
 });
@@ -1482,6 +1485,8 @@ export const applyEnquiryAction = asyncHandler(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+
+  expectVersion(enquiry, req.body);
 
   const { action, note, nextAction, nextFollowUpDate, ...rest } = req.body;
   const recipe = ENQUIRY_ACTIONS[action];

@@ -219,7 +219,7 @@ test('a consignment leaving raises what is owed, without anybody typing an invoi
   const dueOn = new Date(receivable.dueBy);
   const expected = new Date(receivable.invoice.date);
   expected.setDate(expected.getDate() + 30);
-  assert.equal(dueOn.toISOString().slice(0, 10), expected.toISOString().slice(0, 10));
+  assert.deepEqual([dueOn.getFullYear(), dueOn.getMonth(), dueOn.getDate()], [expected.getFullYear(), expected.getMonth(), expected.getDate()]);
   /* And it is the end of that day, so a payment arriving at five in the afternoon is on time. */
   assert.equal(dueOn.getHours(), 23);
 

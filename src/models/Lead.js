@@ -1,3 +1,4 @@
+import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { normalisePhone } from '../utils/phone.js';
@@ -137,4 +138,5 @@ leadSchema.set('toObject', { virtuals: true });
 withConversationRef(leadSchema);
 
 protectWrites(leadSchema);
+protectOwnership(leadSchema);
 export default mongoose.model('Lead', leadSchema);

@@ -1,3 +1,4 @@
+import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 
@@ -93,6 +94,8 @@ export const PRE_LOAD_DISPATCH_STATUSES = [
  * changes on a budget day rather than a fact about despatch. Recorded, surfaced, not gated.
  */
 export const SHIPPING_PAPERWORK = [
+  { key: 'invoice.date', label: 'an invoice date' },
+  { key: 'invoice.value', label: 'a positive invoice value' },
   { key: 'invoice.number', label: 'an invoice number' },
   { key: 'transporter', label: 'a transporter' },
   { key: 'lrNumber', label: 'an LR number', unless: 'ownVehicle' },
@@ -187,6 +190,9 @@ const dispatchSchema = new mongoose.Schema(
 
     /** Stamped when it goes, not typed — though a lorry recorded the next morning may back-date it. */
     dispatchDate: Date,
+    accountingPending: { type: Boolean, default: false, index: true },
+    accountingCompletedAt: Date,
+    orderSyncPending: { type: Boolean, default: true, index: true },
     expectedDeliveryDate: Date,
     deliveredAt: Date,
 
@@ -307,4 +313,5 @@ dispatchSchema.set('toJSON', { virtuals: true });
 dispatchSchema.set('toObject', { virtuals: true });
 
 protectWrites(dispatchSchema);
+protectOwnership(dispatchSchema);
 export default mongoose.model('Dispatch', dispatchSchema);

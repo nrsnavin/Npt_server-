@@ -9,12 +9,7 @@ import ApiError from './ApiError.js';
  * the customer was not called. On a shared record with a next-action rule hanging off it,
  * that is a lost commitment rather than a lost keystroke.
  *
- * **The token is `updatedAt`, not `__v`.** Mongoose's version key looks like the obvious
- * choice and is the wrong one: it increments only when an *array* field is modified, so
- * editing a customer's credit terms or an enquiry's remarks leaves it untouched. A guard
- * built on it would compare two identical zeroes and wave every stale write through — worse
- * than no guard, because the screen would promise a protection it does not have. Every model
- * here carries `timestamps: true`, and `updatedAt` moves on every save.
+ * Browsers echo updatedAt; protectWrites atomically compares __v on every save and advances it on query updates.
  *
  * **Opt-in per request, deliberately.** A caller that sends no timestamp is not blocked: a
  * script or an integration written before this existed must keep working rather than start
@@ -23,7 +18,7 @@ import ApiError from './ApiError.js';
  * screens where two people genuinely collide are the ones we can teach.
  */
 export function expectVersion(record, body) {
-  const seen = body?.expectedUpdatedAt;
+  const seen = body?.expectedUpdatedAt ?? body?.updatedAt;
   if (seen === undefined || seen === null || seen === '') return;
 
   const expected = new Date(seen).getTime();
@@ -53,7 +48,7 @@ export function expectVersion(record, body) {
  * `expectedUpdatedAt` is part of the protocol, not part of the record. Letting it through to
  * `Object.assign` would write it onto the document as a stray field.
  */
-export const withoutVersion = ({ expectedUpdatedAt, __v, ...rest } = {}) => rest;
+export const withoutVersion = ({ expectedUpdatedAt, updatedAt, __v, ...rest } = {}) => rest;
 
 /** Every document save compares and advances __v, including scalar-only changes. */
 export function protectWrites(schema) {

@@ -115,7 +115,7 @@ const inspect = (order, body, token = sunil) =>
   api(`/api/orders/${order._id}/inspections`, { method: 'POST', token, body });
 
 const PAPERS = {
-  invoice: { number: 'INV-2026-0091', date: inDays(0) },
+  invoice: { number: 'INV-2026-0091', date: inDays(0), value: 1000 },
   transporter: 'KPN Roadways',
   lrNumber: 'LR-88213',
   destination: { address: '14 Avinashi Road, Tiruppur', city: 'Tiruppur', state: 'Tamil Nadu' },
