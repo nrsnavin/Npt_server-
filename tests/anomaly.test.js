@@ -144,8 +144,8 @@ test('a weekend does not make everything an anomaly on Monday', () => {
    * threshold, every open sample on the bench is stalled every Monday morning because nobody
    * worked Sunday — and a list that flags everything is a list nobody reads.
    */
-  const fridayEvening = new Date('2026-08-21T18:00:00Z'); // a Friday
-  const mondayMorning = new Date('2026-08-24T09:00:00Z');
+  const fridayEvening = new Date(2026, 7, 21, 18); // a Friday
+  const mondayMorning = new Date(2026, 7, 24, 9);
 
   // Two and a half calendar days, but the plant only worked Saturday — so one working day,
   // which is under the threshold and raises nothing.
@@ -154,7 +154,7 @@ test('a weekend does not make everything an anomaly on Monday', () => {
   assert.equal(anomaly.workingDaysBetween(fridayEvening, mondayMorning, 0), 1, 'one working day');
 
   // A sample last touched on Saturday evening has had no working day pass at all by Monday.
-  const saturdayEvening = new Date('2026-08-22T18:00:00Z');
+  const saturdayEvening = new Date(2026, 7, 22, 18);
   assert.equal(anomaly.workingDaysBetween(saturdayEvening, mondayMorning, 0), 0);
 
   // And the off day is what makes the difference: with none, the same span is two days.
