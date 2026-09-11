@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS } from '../models/Mould.js';
 import { ORDER_PRIORITIES, PRODUCTION_STATUSES, VERIFICATION_KEYS } from '../models/SalesOrder.js';
 import { URGENCY_KEYS } from '../models/OrderQuery.js';
+import { ESCALATION_KIND_KEYS, SEVERITY_KEYS } from '../models/OrderEscalation.js';
 import { ORDER_ACTION_KEYS } from '../services/orderActions.js';
 import { objectId } from './schemas.js';
 import { versioned } from './pipeline.schemas.js';
@@ -181,6 +182,43 @@ export const orderAnswerSchema = z.object({
 /** Closing. The note is required only when nothing was ever answered — see the controller. */
 export const orderQueryCloseSchema = z.object({
   note: z.string().max(4000).optional(),
+});
+
+/* ----------------------------- Order escalations ----------------------------- */
+
+/**
+ * Raising an escalation against an order.
+ *
+ * `needsFrom` is checked against the live department list in the controller rather than pinned
+ * to an enum here, for the same reason `askedOf` is — a new department in the access catalogue
+ * should not need a second edit in a validator that would otherwise refuse it.
+ *
+ * The detail is required and has a floor, because a category on its own is not an escalation.
+ * "Material not available" tells the reader nothing they can act on; "no white HIPS until
+ * Thursday, the drum was short-shipped" tells them who to ring.
+ */
+export const orderEscalationSchema = z.object({
+  line: objectId.optional(),
+  dispatch: objectId.optional(),
+  kind: z.enum(ESCALATION_KIND_KEYS),
+  severity: z.enum(SEVERITY_KEYS).optional(),
+  detail: z.string().min(5, 'Say what is actually wrong').max(2000),
+  needsFrom: z.string().min(2).optional(),
+});
+
+export const escalationUpdateSchema = z.object({
+  body: z.string().min(1, 'An empty update says nothing').max(4000),
+});
+
+/**
+ * Resolving one. The sentence is required, not optional.
+ *
+ * A tick lets an escalation close on nothing having changed, and the next person to hit the same
+ * problem cannot tell whether it was fixed or given up on — which makes the record worthless
+ * exactly when somebody is trying to learn from it.
+ */
+export const escalationResolveSchema = z.object({
+  resolution: z.string().min(5, 'Say what was actually done').max(2000),
 });
 
 /* --------------------------------- Production --------------------------------- */

@@ -8,6 +8,10 @@ import {
   listOrderQueries, listQueryQueue, raiseOrderQuery, answerOrderQuery, closeOrderQuery,
 } from '../controllers/orderQuery.controller.js';
 import {
+  listOrderEscalations, listEscalationFeed, escalationOptions,
+  raiseEscalation, addEscalationUpdate, resolveEscalation,
+} from '../controllers/orderEscalation.controller.js';
+import {
   listProductionLines, exportProductionLines, updateProductionLine, listProductionStatuses,
   productionDay,
 } from '../controllers/production.controller.js';
@@ -35,6 +39,7 @@ import {
   orderSchema, orderUpdateSchema, orderFromQuotationSchema,
   orderCheckSchema, orderActionSchema,
   orderQuerySchema, orderAnswerSchema, orderQueryCloseSchema,
+  orderEscalationSchema, escalationUpdateSchema, escalationResolveSchema,
   productionLineSchema, orderPrioritySchema,
 } from '../validators/order.schemas.js';
 import {
@@ -67,6 +72,19 @@ router.get('/orders/board', requireModule('orders'), orderBoard);
  * only for tidiness — it is its own path — but above `/orders/:id` for the usual reason.
  */
 router.get('/order-queries', requireModule('orders'), listQueryQueue);
+
+/*
+ * The escalation feed: orders the floor has stopped on, across the whole plant.
+ *
+ * Read by every department's day screen, and deliberately not narrowed to one — an escalation's
+ * fix usually belongs to somebody the raiser could not have named, so a list showing each
+ * department only its own problems would be the phone call with extra steps. Ownership still
+ * scopes it through the order, inside the controller.
+ */
+router.get('/escalations', requireModule('orders'), listEscalationFeed);
+router.get('/escalations/options', requireModule('orders'), escalationOptions);
+router.post('/escalations/:escalationId/updates', requireModule('orders'), validate(escalationUpdateSchema), addEscalationUpdate);
+router.post('/escalations/:escalationId/resolve', requireModule('orders'), validate(escalationResolveSchema), resolveEscalation);
 
 router.get('/orders', requireModule('orders'), listOrders);
 router.post('/orders', requireModule('orders', 'write'), validate(orderSchema), createOrder);
@@ -124,6 +142,19 @@ router.get('/orders/:id/queries', requireModule('orders'), listOrderQueries);
 router.post('/orders/:id/queries', requireModule('orders'), validate(orderQuerySchema), raiseOrderQuery);
 router.post('/orders/:id/queries/:queryId/answers', requireModule('orders'), validate(orderAnswerSchema), answerOrderQuery);
 router.post('/orders/:id/queries/:queryId/close', requireModule('orders'), validate(orderQueryCloseSchema), closeOrderQuery);
+
+/*
+ * Escalations on one order, and raising one.
+ *
+ * On `orders` read for exactly the reason queries are: raising one writes to the escalation, not
+ * to the order, and production and despatch — the two departments this exists for — hold
+ * `orders` at read, not write. Gating it on write would lock out the floor.
+ *
+ * Who may *resolve* is narrower and lives in the controller, because the rule is about who
+ * raised it rather than which grant they hold, and a route cannot know that.
+ */
+router.get('/orders/:id/escalations', requireModule('orders'), listOrderEscalations);
+router.post('/orders/:id/escalations', requireModule('orders'), validate(orderEscalationSchema), raiseEscalation);
 
 /*
  * Production status [§14-17].
