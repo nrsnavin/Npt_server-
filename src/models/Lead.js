@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { normalisePhone } from '../utils/phone.js';
 import { CUSTOMER_SOURCES } from './Customer.js';
@@ -135,4 +136,5 @@ leadSchema.set('toObject', { virtuals: true });
 /** §8: present and null until the WhatsApp front door lands, so nothing is migrated then. */
 withConversationRef(leadSchema);
 
+protectWrites(leadSchema);
 export default mongoose.model('Lead', leadSchema);

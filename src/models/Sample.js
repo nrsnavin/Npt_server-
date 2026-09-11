@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from './Mould.js';
 
@@ -314,4 +315,5 @@ sampleSchema.virtual('colourRule').get(function colourRule() {
 sampleSchema.set('toJSON', { virtuals: true });
 sampleSchema.set('toObject', { virtuals: true });
 
+protectWrites(sampleSchema);
 export default mongoose.model('Sample', sampleSchema);

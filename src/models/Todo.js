@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 
 export const PRIORITIES = ['low', 'normal', 'high'];
@@ -30,4 +31,5 @@ todoSchema.index({ user: 1, completed: 1, dueDate: 1 });
 // Automated tasks are deduplicated on their origin, which is unique per user.
 todoSchema.index({ user: 1, originKey: 1 }, { sparse: true });
 
+protectWrites(todoSchema);
 export default mongoose.model('Todo', todoSchema);

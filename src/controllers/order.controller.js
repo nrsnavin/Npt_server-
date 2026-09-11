@@ -1,3 +1,4 @@
+import { withOrderLock } from '../services/operationLock.service.js';
 import SalesOrder, {
   CLOSED_ORDER_STATUSES,
   ORDER_STATUSES,
@@ -442,7 +443,7 @@ export const orderFromQuotation = asyncHandler(async (req, res) => {
  * count would suddenly be short against a number that moved, and nothing on the record would
  * say it had. Terms and remarks stay editable throughout, because those are paperwork.
  */
-export const updateOrder = asyncHandler(async (req, res) => {
+export const updateOrder = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -465,7 +466,7 @@ export const updateOrder = asyncHandler(async (req, res) => {
 
   await order.populate(POPULATE);
   res.json({ success: true, data: orderVisibleTo(order, req.user) });
-});
+}));
 
 /* ------------------------------ The §13 gate ------------------------------ */
 
@@ -478,7 +479,7 @@ export const updateOrder = asyncHandler(async (req, res) => {
  * happen after release: the checks describe a decision taken before the plant started, and
  * editing them afterwards rewrites the record of why the job was allowed to run.
  */
-export const setOrderCheck = asyncHandler(async (req, res) => {
+export const setOrderCheck = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -529,7 +530,7 @@ export const setOrderCheck = asyncHandler(async (req, res) => {
     outstanding: order.outstandingChecks,
     releasable: order.releasable,
   });
-});
+}));
 
 /* -------------------------------- Actions -------------------------------- */
 
@@ -539,7 +540,7 @@ const missingChecks = (order) =>
     .map((key) => VERIFICATION_CHECKS.find((check) => check.key === key).label.toLowerCase())
     .join(', ');
 
-export const applyOrderAction = asyncHandler(async (req, res) => {
+export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -601,7 +602,7 @@ export const applyOrderAction = asyncHandler(async (req, res) => {
     checks: checklistFor(order),
     did: recipe.label,
   });
-});
+}));
 
 /** The actions this order can take from where it is, so the screen need not guess. */
 export const listOrderActions = asyncHandler(async (req, res) => {
@@ -636,7 +637,7 @@ export const listOrderActions = asyncHandler(async (req, res) => {
  * can open is a tick against a phone call. Uploading it here is what makes that check mean
  * something, so this door and that one are deliberately close together.
  */
-export const setOrderPo = asyncHandler(async (req, res) => {
+export const setOrderPo = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -676,7 +677,7 @@ export const setOrderPo = asyncHandler(async (req, res) => {
 
   await order.populate(POPULATE);
   res.json({ success: true, data: orderVisibleTo(order, req.user) });
-});
+}));
 
 /**
  * Raising — or standing down — the priority marketing is asking the plant for [§29].
@@ -696,7 +697,7 @@ export const setOrderPo = asyncHandler(async (req, res) => {
  * as the other direction — a buyer who stopped chasing is a fact about the account — and it is
  * the half people skip, leaving a record that says only that somebody changed their mind.
  */
-export const setOrderPriority = asyncHandler(async (req, res) => {
+export const setOrderPriority = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -756,4 +757,4 @@ export const setOrderPriority = asyncHandler(async (req, res) => {
 
   await order.populate(POPULATE);
   res.json({ success: true, data: orderVisibleTo(order, req.user) });
-});
+}));

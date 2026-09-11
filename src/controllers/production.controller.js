@@ -1,3 +1,4 @@
+import { withOrderLock } from '../services/operationLock.service.js';
 import SalesOrder, { PRODUCTION_STATUSES, PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -186,7 +187,7 @@ export const exportProductionLines = asyncHandler(async (req, res) => {
  * let somebody set the word and the number in either order with a moment in between where the
  * record contradicts itself.
  */
-export const updateProductionLine = asyncHandler(async (req, res) => {
+export const updateProductionLine = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -313,7 +314,7 @@ export const updateProductionLine = asyncHandler(async (req, res) => {
     /* Said out loud, because the plant did not ask for it and will see it on the order. */
     orderMovedTo: moved,
   });
-});
+}));
 
 /* ------------------------------ The plant's day ------------------------------ */
 

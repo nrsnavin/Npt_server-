@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
 
@@ -593,4 +594,5 @@ salesOrderSchema.virtual('releasable').get(function releasable() {
 salesOrderSchema.set('toJSON', { virtuals: true });
 salesOrderSchema.set('toObject', { virtuals: true });
 
+protectWrites(salesOrderSchema);
 export default mongoose.model('SalesOrder', salesOrderSchema);

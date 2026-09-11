@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 
 /**
@@ -305,4 +306,5 @@ dispatchSchema.virtual('daysSinceDispatch').get(function daysSinceDispatch() {
 dispatchSchema.set('toJSON', { virtuals: true });
 dispatchSchema.set('toObject', { virtuals: true });
 
+protectWrites(dispatchSchema);
 export default mongoose.model('Dispatch', dispatchSchema);

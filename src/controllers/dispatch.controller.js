@@ -1,3 +1,4 @@
+import { withOrderLock } from '../services/operationLock.service.js';
 import Dispatch, {
   DISPATCH_STATUSES,
   CLOSED_DISPATCH_STATUSES,
@@ -354,7 +355,7 @@ async function orderForDispatch(id, user) {
  * dispute waiting for a buyer to notice it, and the way that happens is a screen sending its
  * own idea of what is on the line.
  */
-export const createDispatch = asyncHandler(async (req, res) => {
+export const createDispatch = asyncHandler(withOrderLock(req => req.body.order, async (req, res) => {
   const order = await orderForDispatch(req.body.order, req.user);
   await order.populate('customer', 'code name city state');
 
@@ -450,7 +451,7 @@ export const createDispatch = asyncHandler(async (req, res) => {
     data: dispatchVisibleTo(dispatch, req.user),
     orderMovedTo: moved,
   });
-});
+}));
 
 /**
  * Correcting a consignment.
@@ -461,7 +462,7 @@ export const createDispatch = asyncHandler(async (req, res) => {
  * quantity edited afterwards is either a correction that should be visible or a fiction. A load
  * that went out wrong is cancelled and re-raised, which leaves both facts on the record.
  */
-export const updateDispatch = asyncHandler(async (req, res) => {
+export const updateDispatch = asyncHandler(withOrderLock(async req => (await Dispatch.findById(req.params.id).select('order'))?.order || req.params.id, async (req, res) => {
   const dispatch = await Dispatch.findById(req.params.id);
   if (!dispatch) throw ApiError.notFound('Consignment not found');
   if (!ownsRecord(req.user, dispatch)) throw ApiError.notFound('Consignment not found');
@@ -517,11 +518,11 @@ export const updateDispatch = asyncHandler(async (req, res) => {
     data: dispatchVisibleTo(dispatch, req.user),
     outstanding: dispatch.outstandingPaperwork,
   });
-});
+}));
 
 /* -------------------------------- Actions -------------------------------- */
 
-export const applyDispatchAction = asyncHandler(async (req, res) => {
+export const applyDispatchAction = asyncHandler(withOrderLock(async req => (await Dispatch.findById(req.params.id).select('order'))?.order || req.params.id, async (req, res) => {
   const dispatch = await Dispatch.findById(req.params.id);
   if (!dispatch) throw ApiError.notFound('Consignment not found');
   if (!ownsRecord(req.user, dispatch)) throw ApiError.notFound('Consignment not found');
@@ -640,7 +641,7 @@ export const applyDispatchAction = asyncHandler(async (req, res) => {
     did: recipe.label,
     orderMovedTo: moved,
   });
-});
+}));
 
 /** The actions this consignment can take from where it is, so the screen need not guess. */
 export const listDispatchActions = asyncHandler(async (req, res) => {

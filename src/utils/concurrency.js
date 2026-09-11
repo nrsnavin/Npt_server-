@@ -54,3 +54,17 @@ export function expectVersion(record, body) {
  * `Object.assign` would write it onto the document as a stray field.
  */
 export const withoutVersion = ({ expectedUpdatedAt, __v, ...rest } = {}) => rest;
+
+/** Every document save compares and advances __v, including scalar-only changes. */
+export function protectWrites(schema) {
+  schema.set('optimisticConcurrency', true);
+  // Query updates must invalidate documents already loaded by another writer too.
+  schema.pre(['updateOne', 'updateMany', 'findOneAndUpdate'], function advanceVersion() {
+    const update = this.getUpdate();
+    if (!update || Array.isArray(update)) return;
+    delete update.__v;
+    if (update.$set) delete update.$set.__v;
+    if (update.$setOnInsert) delete update.$setOnInsert.__v;
+    update.$inc = { ...update.$inc, __v: 1 };
+  });
+}

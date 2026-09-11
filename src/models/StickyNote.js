@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 
 export const NOTE_COLOURS = ['amber', 'lime', 'sky', 'rose', 'violet'];
@@ -13,4 +14,5 @@ const stickyNoteSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+protectWrites(stickyNoteSchema);
 export default mongoose.model('StickyNote', stickyNoteSchema);

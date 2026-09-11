@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 
 /**
@@ -94,4 +95,5 @@ export function grammageFrom(ppGrams, factorPercent = 0) {
   return Math.round(ppGrams * (1 + (factorPercent || 0) / 100) * 1000) / 1000;
 }
 
+protectWrites(materialSchema);
 export default mongoose.model('Material', materialSchema);

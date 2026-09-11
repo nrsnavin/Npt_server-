@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 
 /**
@@ -282,4 +283,5 @@ receivableSchema.virtual('promise').get(function promise() {
 receivableSchema.set('toJSON', { virtuals: true });
 receivableSchema.set('toObject', { virtuals: true });
 
+protectWrites(receivableSchema);
 export default mongoose.model('Receivable', receivableSchema);

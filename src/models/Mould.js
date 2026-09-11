@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 
 /**
@@ -311,4 +312,5 @@ function round3(value) {
 mouldSchema.set('toJSON', { virtuals: true });
 mouldSchema.set('toObject', { virtuals: true });
 
+protectWrites(mouldSchema);
 export default mongoose.model('Mould', mouldSchema);

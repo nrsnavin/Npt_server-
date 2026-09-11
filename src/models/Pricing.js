@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { MATERIALS } from './Mould.js';
 import { MINIMUM_TIER, minimumFor, priceAt, tiersFor } from '../services/pricing.service.js';
@@ -318,4 +319,5 @@ pricingSchema.virtual('needsApproval').get(function needsApproval() {
 pricingSchema.set('toJSON', { virtuals: true });
 pricingSchema.set('toObject', { virtuals: true });
 
+protectWrites(pricingSchema);
 export default mongoose.model('Pricing', pricingSchema);

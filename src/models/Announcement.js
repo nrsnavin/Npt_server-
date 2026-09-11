@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { DEPARTMENT_KEYS } from '../config/modules.js';
 
@@ -26,4 +27,5 @@ const announcementSchema = new mongoose.Schema(
 
 announcementSchema.index({ publishedAt: -1 });
 
+protectWrites(announcementSchema);
 export default mongoose.model('Announcement', announcementSchema);
