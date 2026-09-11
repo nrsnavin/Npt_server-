@@ -22,8 +22,18 @@ export async function withOperationLock(key, work) {
   const release = await acquireOperationLock(key);
   try { return await work(); } finally { await release(); }
 }
-export const withOrderLock = (orderId, handler) => async (req, res) =>
-  withOperationLock(`order:${await orderId(req)}`, () => handler(req, res));
+/** JSON mutation replies leave only after the lock is released, so the next action can start. */
+export const withOrderLock = (orderId, handler) => async (req, res) => {
+  const json = res.json;
+  let reply, hasReply = false;
+  res.json = function (body) { reply = body; hasReply = true; return this; };
+  try {
+    await withOperationLock(`order:${await orderId(req)}`, () => handler(req, res));
+  } finally {
+    res.json = json;
+  }
+  if (hasReply) return res.json(reply);
+};
 export async function withOwnerLocks(ids, work) {
   const releases = [];
   try {

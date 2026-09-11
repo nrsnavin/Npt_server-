@@ -273,3 +273,64 @@ test('C13: dispatch and cancellation cannot both succeed from the same starting 
     invoiceRows: await Receivable.countDocuments({ dispatch: d._id }) });
   assert.equal(replies.filter(r => r.status === 200).length, 1, 'Both mutually exclusive actions reported success');
 });
+
+test('query updates invalidate a previously loaded document version', async () => {
+  const f=await fixture(); const stale=await Customer.findById(f.customer._id);
+  await Customer.updateOne({_id:stale._id},{$set:{notes:'Concurrent query'}});
+  stale.notes='Stale overwrite';await assert.rejects(stale.save(),{name:'VersionError'});
+  assert.equal((await Customer.findById(stale._id)).notes,'Concurrent query');
+});
+
+test('partial paperwork updates preserve invoice date, value and destination address', async () => {
+  const f=await fixture(),d=await consignment(f);
+  expectHttp(await api(`/dispatches/${d._id}`,{invoice:{number:'CORRECTED'},destination:{city:'Tiruppur'}},'PATCH'),200);
+  const saved=await Dispatch.findById(d._id);assert.equal(saved.invoice.value,1000);assert.equal(+saved.invoice.date,+new Date(d.invoice.date));assert.equal(saved.destination.address,'Test address');
+});
+
+test('receipt operation keys replay once and refuse changed details or fractional paise', async () => {
+  const f=await fixture(),r=await invoiceFor(f);
+  const body={amount:200,mode:'cash',idempotencyKey:number('KEY')};
+  expectHttp(await api(`/payments/${r._id}/receipts`,body),201);
+  expectHttp(await api(`/payments/${r._id}/receipts`,body),200);
+  expectHttp(await api(`/payments/${r._id}/receipts`,{...body,amount:201}),409);
+  expectHttp(await api(`/payments/${r._id}/receipts`,{amount:0.001}),400);
+  assert.equal((await Receivable.findById(r._id)).received,200);
+});
+
+test('recovery sweep completes a deferred invoice once and clears durable flags', async () => {
+  const f=await fixture(),d=await consignment(f);const original=Receivable.create;
+  let result;Receivable.create=async()=>{throw new Error('Injected outage');};
+  try{result=await api(`/dispatches/${d._id}/actions`,{action:'dispatch'});}finally{Receivable.create=original;}
+  expectHttp(result,202);assert.equal((await Dispatch.findById(d._id)).accountingPending,true);
+  const {reconcileDispatches}=await import('../src/services/dispatchRecovery.service.js');
+  await reconcileDispatches();await reconcileDispatches();
+  const saved=await Dispatch.findById(d._id);assert.equal(saved.accountingPending,false);assert.equal(saved.orderSyncPending,false);assert.ok(saved.accountingCompletedAt);assert.equal(await Receivable.countDocuments({dispatch:d._id}),1);
+});
+
+test('advance credit is allocated once across invoices and included in filtered totals', async () => {
+  const f=await fixture();const advance=await api(`/orders/${f.order._id}/advance`,{amount:300});expectHttp(advance,201);
+  expectHttp(await api(`/payments/${advance.json.data._id}/receipts`,{amount:300}),201);
+  const a=await invoiceFor(f,200),b=await invoiceFor(f,400);
+  const first=await api(`/payments/${a._id}`),second=await api(`/payments/${b._id}`);
+  assert.equal(first.json.data.balance,0);assert.equal(second.json.data.balance,300);
+  const list=await api(`/payments?order=${f.order._id}&kind=invoice&limit=1`);assert.equal(list.json.meta.outstanding,300);
+  expectHttp(await api(`/payments/${b._id}/receipts`,{amount:301}),400);
+});
+
+test('locks do not expire during long work and ordinary errors release them', async () => {
+  const {default:OperationLock}=await import('../src/models/OperationLock.js');
+  const {withOperationLock}=await import('../src/services/operationLock.service.js');
+  const key=number('LOCK');const lock=await OperationLock.create({_id:key,token:'fixture',acquiredAt:new Date(0),process:'fixture'});
+  try {await assert.rejects(withOperationLock(key,()=>assert.fail('must not enter')),e=>e.statusCode===409);}finally{await OperationLock.deleteOne({_id:lock._id,token:'fixture'});}
+  await assert.rejects(withOperationLock(key,()=>{throw new Error('ordinary failure');}),/ordinary failure/);
+  assert.equal(await withOperationLock(key,()=>42),42);
+});
+
+test('a successful HTTP reply is sent only after the order lock has been released', async () => {
+  const f=await fixture();const {withOrderLock}=await import('../src/services/operationLock.service.js');
+  const {default:OperationLock}=await import('../src/models/OperationLock.js');
+  let sent=false;
+  const res={json:async body=>{assert.equal(await OperationLock.exists({_id:`order:${f.order._id}`}),null);sent=true;return body;}};
+  await withOrderLock(()=>f.order._id,async(req,response)=>response.json({success:true}))({},res);
+  assert.equal(sent,true);
+});
