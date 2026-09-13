@@ -2,6 +2,7 @@ import Inspection, {
   DEFECT_TYPES, HOLDING_VERDICTS, INSPECTION_STAGES, VERDICTS,
 } from '../models/Inspection.js';
 import SalesOrder, { PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
+import { mouldWithPhoto } from '../models/Mould.js';
 import Dispatch from '../models/Dispatch.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -33,7 +34,7 @@ import { qualityForLines } from '../services/quality.service.js';
 
 const POPULATE = [
   { path: 'inspectedBy', select: 'name' },
-  { path: 'mould', select: 'mouldCode name category' },
+  mouldWithPhoto('mould', 'mouldCode name category'),
   { path: 'materialRef', select: 'name code type colour' },
   { path: 'order', select: 'number customer', populate: { path: 'customer', select: 'code name' } },
   { path: 'dispatch', select: 'number status lrNumber' },

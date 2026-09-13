@@ -311,4 +311,25 @@ function round3(value) {
 mouldSchema.set('toJSON', { virtuals: true });
 mouldSchema.set('toObject', { virtuals: true });
 
+/**
+ * How to populate a mould that is going to be *shown* to somebody.
+ *
+ * The part photo is a reference to an attachment, so every screen that wants to draw the piece
+ * needs a second hop — and there are a dozen of them: the enquiry, the sample, the quotation and
+ * its PDF, the order line, the costing sheet, the inspection. Written out at each one, they
+ * drift: one selects the key, the next forgets it, and the same model appears with a photograph
+ * on one screen and a grey box on the next.
+ *
+ * Only `key` off the attachment. The filename and the mime type are for downloading a document;
+ * a thumbnail needs the key and nothing else, and a populate that fetches more than it draws is
+ * a page of wasted bytes per row.
+ *
+ *   populate(mouldWithPhoto('lines.mould', 'mouldCode name packingQty'))
+ */
+export const mouldWithPhoto = (path = 'mould', select = 'mouldCode name') => ({
+  path,
+  select,
+  populate: { path: 'photo', select: 'key' },
+});
+
 export default mongoose.model('Mould', mouldSchema);

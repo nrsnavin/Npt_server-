@@ -171,6 +171,8 @@ const quotationLine = z.object({
   quantity: z.number().positive().optional(),
   /** What the rate is good for. Left out, and the mould register's minimum is copied in [§28]. */
   moq: money.optional(),
+  /** The shade the rate is offered in — see the note on the model for why it is per line. */
+  colour: z.string().optional(),
   unitPrice: money,
   remarks: z.string().optional(),
 });

@@ -5,7 +5,7 @@ import Sample, {
 import Enquiry from '../models/Enquiry.js';
 import Lead from '../models/Lead.js';
 import Customer from '../models/Customer.js';
-import Mould from '../models/Mould.js';
+import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
@@ -45,7 +45,7 @@ const POPULATE = [
   { path: 'lead', select: 'number company status' },
   { path: 'requestedBy', select: 'name' },
   { path: 'assignedTo', select: 'name' },
-  { path: 'mould', select: 'mouldCode name category sizeMm' },
+  mouldWithPhoto('mould', 'mouldCode name category sizeMm'),
   /* The registers behind the request [§28]. Name and code only — a sample screen has no
      business with what a hook costs, which is what those records exist for. */
   { path: 'materialRef', select: 'name code type colour' },
@@ -236,7 +236,7 @@ export const sampleBoard = asyncHandler(async (req, res) => {
       /* So a request made for a lead names the company rather than reading as a trial for
          nobody — the card has no other way to tell those two apart. */
       { path: 'lead', select: 'number company' },
-      { path: 'mould', select: 'mouldCode name category sizeMm' },
+      mouldWithPhoto('mould', 'mouldCode name category sizeMm'),
       { path: 'assignedTo', select: 'name' },
       { path: 'requestedBy', select: 'name' },
     ],

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -56,17 +56,34 @@ export async function put({ buffer, mimeType }) {
 }
 
 /**
- * Opens a stored file for reading.
+ * What a key is allowed to look like.
  *
- * The key is checked against a strict pattern rather than trusted: it arrives from a URL,
- * and `..` in a path segment is how a store like this becomes a way to read the .env file.
+ * Checked rather than trusted on every way in, because a key arrives from a URL and `..` in a
+ * path segment is how a store like this becomes a way to read the .env file. Named once so the
+ * three doors cannot drift — the one that forgets is the one that gets walked through.
  */
+const SAFE_KEY = /^[0-9a-f]{32}(\.[a-z0-9]{1,5})?$/;
+
+/** Opens a stored file for reading. */
 export function streamOf(key) {
-  if (!/^[0-9a-f]{32}(\.[a-z0-9]{1,5})?$/.test(key)) return null;
+  if (!SAFE_KEY.test(key)) return null;
   return createReadStream(path.join(ROOT, key));
 }
 
+/**
+ * The whole file, in memory.
+ *
+ * For the one caller that cannot take a stream: a PDF embeds an image by buffer, and the
+ * document has to be laid out before it is sent. Null rather than a throw when the file is
+ * missing — a quotation whose photograph has been deleted should still print, with a gap where
+ * the picture was, rather than failing to produce a document at all.
+ */
+export async function bufferOf(key) {
+  if (!SAFE_KEY.test(key)) return null;
+  return readFile(path.join(ROOT, key)).catch(() => null);
+}
+
 export async function remove(key) {
-  if (!/^[0-9a-f]{32}(\.[a-z0-9]{1,5})?$/.test(key)) return;
+  if (!SAFE_KEY.test(key)) return;
   await unlink(path.join(ROOT, key)).catch(() => {});
 }

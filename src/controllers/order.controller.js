@@ -6,6 +6,7 @@ import SalesOrder, {
   VERIFICATION_KEYS,
 } from '../models/SalesOrder.js';
 import Quotation from '../models/Quotation.js';
+import { mouldWithPhoto } from '../models/Mould.js';
 import Customer from '../models/Customer.js';
 import Attachment from '../models/Attachment.js';
 import ApiError from '../utils/ApiError.js';
@@ -51,7 +52,7 @@ const POPULATE = [
   /* Who asked the plant to move this job. By name, because a request to reorder somebody's day
      that arrives unsigned is one nobody can weigh — or push back on. */
   { path: 'priorityBy', select: 'name' },
-  { path: 'lines.mould', select: 'mouldCode name category sizeMm hookType material packingQty' },
+  mouldWithPhoto('lines.mould', 'mouldCode name category sizeMm hookType material packingQty'),
   /*
    * The registers behind each line [§28]. Name and code only — the rate is what these records
    * exist for and it is nobody's business on an order screen, so it is not fetched rather than

@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import Mould from '../models/Mould.js';
+import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import Customer from '../models/Customer.js';
 import Lead, { LEAD_STATUSES } from '../models/Lead.js';
 import Enquiry, {
@@ -1149,7 +1149,7 @@ export const listEnquiries = asyncHandler(async (req, res) => {
     Enquiry.find(filter)
       .populate('customer', 'code name')
       .populate('assignedTo', 'name')
-      .populate('mould', 'mouldCode name')
+      .populate(mouldWithPhoto())
       .sort(sort)
       .skip((page - 1) * limit)
       .limit(limit),
@@ -1199,7 +1199,7 @@ export const enquiryBoard = asyncHandler(async (req, res) => {
       'statusHistory.from statusHistory.to statusHistory.at createdAt',
     populate: [
       { path: 'customer', select: 'code name' },
-      { path: 'mould', select: 'mouldCode name' },
+      mouldWithPhoto(),
       { path: 'assignedTo', select: 'name' },
     ],
   });
@@ -1211,7 +1211,7 @@ export const getEnquiry = asyncHandler(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id)
     .populate('customer', 'code name mobile email assignedTo')
     .populate('assignedTo', 'name email')
-    .populate('mould', 'mouldCode name category sizeMm material hookType')
+    .populate(mouldWithPhoto('mould', 'mouldCode name category sizeMm material hookType'))
     /* The registers the requirement names [§28], so a screen can say what was asked for
        without four more requests. Name and code only — a rate is not an enquiry's business. */
     .populate('requirement.materialRef', 'name code type colour')
