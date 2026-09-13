@@ -76,7 +76,7 @@ const KNOWN = {
 /** The module key each unbuilt subject belongs to, so the reply can quote the catalogue. */
 const UNBUILT = {
   orders: 'orders',
-  quotations: 'quotations',
+  quotations: 'pricing',
   dispatch: 'dispatch',
   payments: 'payments',
   production: 'production',

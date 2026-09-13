@@ -7,8 +7,10 @@
  * PO, production, quality, dispatch and payment, and completing a stage hands the next
  * department its task automatically.
  *
- * Access is granted per user, per module, at one of two levels. A user may use a module
- * only if they hold a grant for it; the level decides whether they may change anything.
+ * Access is granted per user, per module, at one of the levels that module offers. A user may
+ * use a module only if they hold a grant for it; the level decides whether they may change
+ * anything. Most modules offer read and write; pricing offers a third in between, because it
+ * holds two jobs — quoting and costing — that §8 says the same person may not always do.
  * Admins bypass grants entirely.
  *
  * Departments are organisational, not permissions — but each carries a default set of
@@ -21,10 +23,28 @@
  * ahead of the feature, and so the blueprint's module map has one home in the code.
  */
 
-/** Ordered weakest to strongest; `write` implies `read`. */
-export const ACCESS_LEVELS = ['read', 'write'];
+/**
+ * Ordered weakest to strongest; each level implies the ones below it.
+ *
+ * `quote` exists for exactly one module and is the reason pricing and quotations could become
+ * one. §8 splits a costing sheet down the middle — marketing may see the price the plant will
+ * sell at, and never the cost, the margin or the floor underneath it — and while quoting lived
+ * in its own module that split was expressible as two grants. Merged, it is not: write on the
+ * merged module would hand the person raising the quote the whole cost base, which is the one
+ * thing §8 exists to stop.
+ *
+ * So the level sits between the two. Someone holding `quote` may do everything quoting needs —
+ * read the sheet, set the selling price, raise, revise and send the document — and still sees
+ * a sheet with the cost half redacted, exactly as they did before the merge.
+ *
+ * Most modules have no use for it, so most do not offer it: see `levelsFor`.
+ */
+export const ACCESS_LEVELS = ['read', 'quote', 'write'];
 
-const LEVEL_RANK = { read: 1, write: 2 };
+const LEVEL_RANK = { read: 1, quote: 2, write: 3 };
+
+/** What a module without its own opinion offers. */
+const DEFAULT_LEVELS = ['read', 'write'];
 
 /**
  * `stage` places a module on the order lifecycle, in the order work actually moves.
@@ -59,25 +79,35 @@ export const MODULES = [
     blueprint: '4-6',
     available: true,
   },
+  /*
+   * Costing and quoting, in one module.
+   *
+   * They were two, and the seam between them was in the wrong place. A costing exists to
+   * produce a quotation and a quotation exists to carry a costing's price to a buyer; splitting
+   * them meant two screens, two grants and two lists for one question — what are we charging
+   * this customer for this model, and what did they say.
+   *
+   * What the split was really carrying was §8, and §8 is about *fields*, not about modules. It
+   * is now carried by the `quote` level, which is where it belonged: one module, and inside it
+   * the same wall between the price and the cost behind it.
+   */
   {
     key: 'pricing',
-    label: 'Pricing & costing',
-    description: 'Cost build-up, calculated and approved selling price, and the approval route below the minimum price.',
+    label: 'Pricing & quotations',
+    description:
+      'Cost build-up, the approved selling price and the approval route below the minimum, ' +
+      'and the quotations raised off it with their full revision history.',
     group: 'Pipeline',
     stage: 3,
     ownerDepartment: 'management',
-    blueprint: '7-9',
+    blueprint: '7-11',
     available: true,
-  },
-  {
-    key: 'quotations',
-    label: 'Quotations',
-    description: 'Quotations with full revision history, and the negotiation that follows them.',
-    group: 'Pipeline',
-    stage: 4,
-    ownerDepartment: 'marketing',
-    blueprint: '10-11',
-    available: true,
+    /*
+     * The middle level is marketing's. They quote, and they must not see the cost — see the
+     * note on ACCESS_LEVELS. No other module has two different jobs inside one record, so no
+     * other module offers it.
+     */
+    levels: ['read', 'quote', 'write'],
   },
   {
     key: 'orders',
@@ -85,7 +115,7 @@ export const MODULES = [
     description:
       'Customer PO capture, the eight-check verification gate, and release to production once every one of them is ticked.',
     group: 'Pipeline',
-    stage: 5,
+    stage: 4,
     ownerDepartment: 'order_confirmation',
     blueprint: '12-13',
     available: true,
@@ -96,7 +126,7 @@ export const MODULES = [
     description:
       'Customer-facing visibility per order line: planned, made, packed and still to make, with the date the plant agreed.',
     group: 'Pipeline',
-    stage: 6,
+    stage: 5,
     ownerDepartment: 'production',
     blueprint: '14-17',
     available: true,
@@ -106,7 +136,7 @@ export const MODULES = [
     label: 'Quality',
     description: 'In-process and final inspection, passed quantity and quality holds against a production order.',
     group: 'Pipeline',
-    stage: 7,
+    stage: 6,
     ownerDepartment: 'quality',
     blueprint: '15',
     available: true,
@@ -117,7 +147,7 @@ export const MODULES = [
     description:
       'Consignments raised against packed stock, through packing, loading, invoice, LR and delivery — with what is reserved and what is still free to send.',
     group: 'Pipeline',
-    stage: 8,
+    stage: 7,
     ownerDepartment: 'despatch',
     blueprint: '18-19',
     available: true,
@@ -127,7 +157,7 @@ export const MODULES = [
     label: 'Payments',
     description: 'Invoice value, due date, amount received, balance and follow-up, visible to accounts and marketing.',
     group: 'Pipeline',
-    stage: 9,
+    stage: 8,
     ownerDepartment: 'accounts',
     blueprint: '20',
     available: true,
@@ -276,13 +306,17 @@ export const DEPARTMENTS = [
     label: 'Marketing',
     defaultAccess: {
       enquiries: 'write',
-      quotations: 'write',
       customers: 'write',
       customer_comms: 'write',
       whatsapp: 'write',
       tasks: 'write',
       samples: 'read',
-      pricing: 'read',
+      /*
+       * Quoting, without the cost behind it — the level that exists for this one line. Marketing
+       * raises, revises and sends the quotation and sets the price on it; what the piece costs
+       * to make, what the margin is and where the floor sits stay redacted [§8].
+       */
+      pricing: 'quote',
       orders: 'read',
       production: 'read',
       quality: 'read',
@@ -321,8 +355,8 @@ export const DEPARTMENTS = [
       customers: 'write',
       tasks: 'write',
       enquiries: 'read',
-      quotations: 'read',
       samples: 'read',
+      /* Reading the quote the order came off, and the costing under it stays redacted. */
       pricing: 'read',
       production: 'read',
       dispatch: 'read',
@@ -407,6 +441,33 @@ export const deferredModules = () => MODULES.filter((module) => module.deferred)
 /** True when `held` satisfies a requirement for `required`. */
 export const levelSatisfies = (held, required) =>
   Boolean(held) && LEVEL_RANK[held] >= LEVEL_RANK[required];
+
+/**
+ * The levels this module actually offers.
+ *
+ * Asked rather than assumed, because `quote` is meaningless everywhere except pricing and an
+ * access screen that offered it on despatch would be inviting an admin to grant something that
+ * does nothing. A level the module does not offer is refused on the way in [`normaliseGrants`],
+ * so this is the one list and not merely a hint to the form.
+ */
+export const levelsFor = (moduleKey) => findModule(moduleKey)?.levels || DEFAULT_LEVELS;
+
+/**
+ * Grants that no longer name a module, mapped onto the one that absorbed it.
+ *
+ * Merging quotations into pricing changes what is stored on every user who held it, and the
+ * stored grant is the whole of what access is — so without this, the merge would silently
+ * remove marketing's ability to quote at the moment it deployed. The migration rewrites them
+ * properly; this is what makes the deployment safe before it runs, and what makes an old
+ * export or a restored backup still mean something.
+ *
+ * `write` on the old quotations module is `quote` on the new one, deliberately: it was never
+ * permission to see a cost, and turning it into one would leak the cost base to every marketing
+ * person the day this shipped.
+ */
+export const RETIRED_MODULES = {
+  quotations: { module: 'pricing', levels: { read: 'read', write: 'quote' } },
+};
 
 /** The grants a department suggests, as a storable array. */
 export function defaultAccessFor(departmentKey) {

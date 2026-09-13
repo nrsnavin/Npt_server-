@@ -469,8 +469,29 @@ export const updateQuotation = asyncHandler(async (req, res) => {
    * prices as models and any of them moving is the thing §10 wants recorded.
    */
   if (req.body.lines) {
-    const priced = req.body.lines.map((line) => line.unitPrice).join();
-    if (priced !== quotation.lines.map((line) => line.unitPrice).join()) {
+    /*
+     * Every price already on the quotation must still be on it. Anything beyond that is new.
+     *
+     * The old rule joined the prices into one string and compared, which made adding a model to
+     * a draft indistinguishable from moving a price — so the one thing a multi-model quotation
+     * exists to do, carry a second hanger under the same number, was refused with "use a
+     * revision to change a price" on a quote whose prices had not moved.
+     *
+     * Matching on `_id` instead would have been worse than the bug: a patch that simply omits
+     * the id reads as a brand-new line, so anyone could move a price by dropping one field. The
+     * check has to hold whatever the client sends, so it is made against the prices themselves.
+     *
+     * Ticking them off one by one rather than with a set, because two models on one document
+     * can share a rate and a set would let one of them quietly disappear. What is allowed is
+     * exactly addition: an existing rate that is not in the patch — changed, or dropped — is
+     * still a revision's job, which is what keeps what the buyer was told on the record.
+     */
+    const unaccounted = quotation.lines.map((line) => line.unitPrice);
+    for (const line of req.body.lines) {
+      const at = unaccounted.indexOf(Number(line.unitPrice));
+      if (at !== -1) unaccounted.splice(at, 1);
+    }
+    if (unaccounted.length) {
       throw ApiError.badRequest('Use a revision to change a price, so the old one is kept');
     }
   }
@@ -495,6 +516,18 @@ export const updateQuotation = asyncHandler(async (req, res) => {
   const patch = withoutVersion(req.body);
   if (patch.lines) patch.lines = await withMouldDefaults(patch.lines, quotation.lines);
   Object.assign(quotation, patch);
+
+  /*
+   * Rev 0 follows a draft that has never been sent.
+   *
+   * Rev 0 is what was first offered, and nothing has been offered yet — so a draft edited after
+   * it was created had a Rev 0 describing a version of the quote that never left the building.
+   * Once `sentAt` is set this stops: from then on Rev 0 is what the buyer actually saw, and
+   * every later price goes through a revision.
+   */
+  if (!quotation.sentAt && quotation.revision === 0 && quotation.revisions?.length) {
+    quotation.revisions[0] = snapshotOf(quotation, 0, req.user, quotation.revisions[0].at);
+  }
 
   await quotation.save();
   await recordChange({ model: 'Quotation', doc: quotation, before, by: req.user });

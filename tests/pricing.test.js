@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
-import { CONFIDENTIAL, PUBLIC_FIGURES } from '../src/services/pricingVisibility.js';
+import { CONFIDENTIAL, PUBLIC_FIGURES, seesCosting } from '../src/services/pricingVisibility.js';
 import { minimumFor, priceAt, priceFrom, tiersFor } from '../src/services/pricing.service.js';
 
 process.env.JWT_SECRET = 'pricing-test-secret-value';
@@ -1190,4 +1190,215 @@ test('the costing on a quotation carries nothing §8 protects', async () => {
   assert.equal(pricing.minimumSellingPrice, undefined);
   assert.equal(pricing.totalCost, undefined);
   assert.equal(pricing.grossMarginPercent, undefined);
+});
+
+/* ------------------- One module, three levels [§7–§11, §8] ------------------- */
+
+/**
+ * Pricing and quotations are one module now, and the seam that used to run between them runs
+ * through the middle of it instead: `quote` may raise the document, `write` may build the sheet.
+ *
+ * These are the tests that make the merge safe. The whole risk of folding the two together is
+ * that the person who quotes ends up holding write on pricing — which would hand every
+ * marketing person the cost base, the margin and the floor price on the day it deployed. That
+ * failure is silent: nothing errors, the sheet simply arrives complete.
+ */
+
+test('marketing holds quote, not write — it may offer a price and never see the cost', async () => {
+  const me = await api('/api/auth/me', { token: nandhini });
+  const pricing = me.json.data.modules.find((module) => module.key === 'pricing');
+
+  assert.equal(pricing.level, 'quote');
+  assert.equal(pricing.canRead, true);
+  assert.equal(pricing.canQuote, true);
+  assert.equal(pricing.canWrite, false, 'quoting must not imply seeing the cost');
+});
+
+test('the quotations module is gone, and the sheet is still redacted', async () => {
+  const me = await api('/api/auth/me', { token: nandhini });
+  assert.equal(
+    me.json.data.modules.find((module) => module.key === 'quotations'),
+    undefined,
+    'quotations was merged into pricing and must not still be granted separately'
+  );
+
+  const sheet = await costed({ approvedSellingPrice: 9 });
+  const seen = await api(`/api/pricings/${sheet._id}`, { token: nandhini });
+
+  assert.equal(seen.status, 200, 'marketing must still be able to open the sheet');
+  for (const field of CONFIDENTIAL) {
+    assert.equal(seen.json.data[field], undefined, `${field} must not reach a quoting reader`);
+  }
+});
+
+test('quoting is not costing: the same person cannot build the sheet', async () => {
+  const made = await api('/api/pricings', {
+    method: 'POST',
+    token: nandhini,
+    body: { customer, quantity: 1000, modelNumber: 'NH-LEVELS' },
+  });
+  assert.equal(made.status, 201, 'marketing may still ask for a costing');
+
+  const built = await api(`/api/pricings/${made.json.data._id}/cost`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { cost: { gramWeight: 20, rawMaterialRate: 90 }, markupPercent: 20 },
+  });
+  assert.equal(built.status, 403);
+  assert.match(built.json.message, /costing or management/i);
+});
+
+test('a grant for the retired quotations module still lets its holder quote', async () => {
+  /*
+   * Access is whatever is stored on the user, so the day this merge deploys every marketing
+   * person is carrying a grant for a module that no longer exists. Read as pricing, or they
+   * lose the ability to quote at the moment of the deploy with nothing on screen to say why.
+   *
+   * `write` on the old module becomes `quote`, never `write`: it was permission to raise a
+   * document, and promoting it would publish the cost base to everyone who had it.
+   */
+  const { normaliseGrants } = await import('../src/services/access.service.js');
+  const { accessLevel } = await import('../src/services/access.service.js');
+
+  const legacy = { isActive: true, moduleAccess: [{ module: 'quotations', level: 'write' }] };
+  assert.equal(accessLevel(legacy, 'pricing'), 'quote');
+  assert.equal(seesCosting(legacy), false, 'the old grant must not become a costing grant');
+
+  assert.deepEqual(normaliseGrants(legacy.moduleAccess), [{ module: 'pricing', level: 'quote' }]);
+
+  // Never a demotion: somebody who already held the sheet keeps it.
+  assert.deepEqual(
+    normaliseGrants([
+      { module: 'quotations', level: 'write' },
+      { module: 'pricing', level: 'write' },
+    ]),
+    [{ module: 'pricing', level: 'write' }]
+  );
+});
+
+test('quote is pricing’s level and nobody else’s', async () => {
+  const { normaliseGrants } = await import('../src/services/access.service.js');
+
+  /* Offered where it means something... */
+  assert.deepEqual(normaliseGrants([{ module: 'pricing', level: 'quote' }]), [
+    { module: 'pricing', level: 'quote' },
+  ]);
+
+  /* ...and refused where it would store a level that grants nothing and reads as access. */
+  assert.deepEqual(normaliseGrants([{ module: 'dispatch', level: 'quote' }]), []);
+});
+
+/* ------------------ A second model onto the same quotation ------------------ */
+
+/**
+ * A costing prices one model; a quotation is one conversation with one buyer.
+ *
+ * Without a way to put a second costing onto a quote that already exists, eight approved
+ * costings for one customer produced eight quotation numbers — and the plant's own document
+ * carries eight models under one. The person quoting had to choose between the real document
+ * and the system's idea of one, which is how quoting goes back to a spreadsheet.
+ */
+
+test('a second costing goes onto a draft already being written', async () => {
+  const first = await costed({ approvedSellingPrice: 9 });
+  const second = await costed({ approvedSellingPrice: 12 });
+
+  const raised = await api(`/api/pricings/${first._id}/quotation`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+  assert.equal(raised.status, 201);
+  const draft = raised.json.data;
+
+  const added = await api(`/api/pricings/${second._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quotation: draft._id },
+  });
+
+  assert.equal(added.status, 200, added.json.message);
+  assert.equal(added.json.data.number, draft.number, 'it must be the same document, not a new one');
+  assert.equal(added.json.data.lines.length, 2);
+  assert.deepEqual(
+    added.json.data.lines.map((line) => line.unitPrice).sort((a, b) => a - b),
+    [9, 12]
+  );
+
+  /* Rev 0 is what will be offered, and nothing has been offered yet — so it carries both. */
+  assert.equal(added.json.data.revisions[0].lines.length, 2);
+
+  /* And both costings can see the quote they ended up on. */
+  for (const sheet of [first, second]) {
+    const back = await api(`/api/pricings/${sheet._id}/quotations`, { token: nandhini });
+    assert.ok(
+      back.json.data.some((row) => row.number === draft.number),
+      `${sheet.number} lost the quotation it was put on`
+    );
+  }
+});
+
+test('the same costing cannot be put on one quotation twice', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+  const raised = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+
+  const again = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quotation: raised.json.data._id },
+  });
+
+  assert.equal(again.status, 400);
+  assert.match(again.json.message, /already on/i);
+});
+
+test('a quotation the buyer has seen takes a revision, not another line', async () => {
+  /*
+   * The line that matters. Appending to a sent quote changes what the customer was told with
+   * nothing in the history to say so — which is the whole of what §10 exists to prevent, and
+   * exactly the shortcut "add this model to that quote" invites.
+   */
+  const first = await costed({ approvedSellingPrice: 9 });
+  const second = await costed({ approvedSellingPrice: 12 });
+
+  const raised = await api(`/api/pricings/${first._id}/quotation`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+  const sent = await api(`/api/quotations/${raised.json.data._id}/send`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+  assert.equal(sent.status, 200, sent.json.message);
+
+  const added = await api(`/api/pricings/${second._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quotation: raised.json.data._id },
+  });
+
+  assert.equal(added.status, 400);
+  assert.match(added.json.message, /already gone out/i);
+});
+
+test('a costing cannot be added to another customer’s quotation', async () => {
+  const other = await api('/api/customers', {
+    method: 'POST', token: nandhini, body: { name: 'Anugraha Exports', mobile: '9840099887' },
+  });
+
+  const theirs = await api('/api/pricings', {
+    method: 'POST',
+    token: admin,
+    body: { customer: other.json.data._id, quantity: 5000, modelNumber: 'NH-OTHER' },
+  });
+  const built = await api(`/api/pricings/${theirs.json.data._id}/cost`, {
+    method: 'PATCH',
+    token: admin,
+    body: { cost: { gramWeight: 20, rawMaterialRate: 90 }, markupPercent: 20, approvedSellingPrice: 9 },
+  });
+  assert.equal(built.status, 200, built.json.message);
+
+  const mine = await costed({ approvedSellingPrice: 9 });
+  const raised = await api(`/api/pricings/${mine._id}/quotation`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+
+  const crossed = await api(`/api/pricings/${theirs.json.data._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quotation: raised.json.data._id },
+  });
+
+  assert.equal(crossed.status, 400);
+  assert.match(crossed.json.message, /different customer/i);
 });
