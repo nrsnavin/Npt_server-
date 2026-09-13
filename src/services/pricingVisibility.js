@@ -65,9 +65,21 @@ export const PUBLIC_FIGURES = [
  * costing team so `pricing: write` sits with management, and that granting a marketing person
  * pricing rights should put them inside the sheet without anything here changing.
  */
-export const seesCosting = (user) =>
-  user?.role === 'admin' ||
-  (user?.moduleAccess || []).some((grant) => grant.module === 'pricing' && grant.level === 'write');
+export const seesCosting = (user) => levelSatisfies(accessLevel(user, 'pricing'), 'write');
+
+/**
+ * True when this person may raise, price and send a quotation.
+ *
+ * The middle level, and the hinge the merge turns on. Quoting used to be its own module, which
+ * is how marketing could hold write on the document and nothing at all on the cost behind it.
+ * With one module the same person needs to write *into* pricing — and `write` means the cost
+ * base, the margin and the floor. `quote` is that permission without that consequence.
+ *
+ * Read through `accessLevel` rather than off the grants directly, so an admin (who holds
+ * everything implicitly) and a user still carrying the retired `quotations` grant both answer
+ * correctly. Reading the array by hand is what made the old version silently wrong for admins.
+ */
+export const mayQuote = (user) => levelSatisfies(accessLevel(user, 'pricing'), 'quote');
 
 /**
  * One costing, as this person is allowed to see it.
@@ -262,7 +274,9 @@ export function assertMayCost(user) {
  */
 export const seesOrderValue = (user) =>
   user?.role === 'admin' ||
-  Boolean(accessLevel(user, 'quotations')) ||
+  /* Whoever may read the quotation the order came off — which is now the pricing grant, at any
+     level, since reading a quote is what `read` on the merged module already means. */
+  Boolean(accessLevel(user, 'pricing')) ||
   Boolean(accessLevel(user, 'payments'));
 
 /**

@@ -2,7 +2,7 @@ import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
 import Pricing from '../models/Pricing.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
-import Mould from '../models/Mould.js';
+import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
@@ -12,6 +12,7 @@ import { recordChange, snapshot } from '../services/audit.service.js';
 import { EVENTS, publish } from '../services/events.service.js';
 import { narrowToOwner, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { renderQuotationPdf } from '../services/quotationPdf.js';
+import { bufferOf } from '../services/storage.service.js';
 import { lineCosting } from '../services/pricingVisibility.js';
 
 /**
@@ -225,7 +226,7 @@ export const getQuotation = asyncHandler(async (req, res) => {
     .populate('customer', 'code name city state gstin mobile email')
     .populate('enquiry', 'number status')
     .populate('assignedTo', 'name')
-    .populate('lines.mould', 'mouldCode name category sizeMm material hookType moq')
+    .populate(mouldWithPhoto('lines.mould', 'mouldCode name category sizeMm material hookType moq'))
     /* Whole, and narrowed per line below: what may be shown depends on who is asking. */
     .populate('lines.pricing')
     .populate('revisions.by', 'name')
@@ -404,8 +405,14 @@ const DOCUMENT_FIELDS = [
   'paymentTerms', 'deliveryTerms', 'freightTerms', 'packing', 'validUntil', 'remarks',
 ];
 
-/** What the buyer reads on a line: change any of it after sending and it is a new offer. */
-const LINE_FIELDS = ['modelNumber', 'quantity', 'moq', 'unitPrice'];
+/**
+ * What the buyer reads on a line: change any of it after sending and it is a new offer.
+ *
+ * `colour` counts. The rate is offered in a shade, the shade is printed on the document, and
+ * quietly changing "white" to "black" under a sent quotation would leave the buyer holding a
+ * price for a piece we are no longer offering at it.
+ */
+const LINE_FIELDS = ['modelNumber', 'quantity', 'moq', 'colour', 'unitPrice'];
 
 /** The lines reduced to what the customer was told, so two sets can be compared. */
 const offerOf = (lines = []) =>
@@ -462,8 +469,29 @@ export const updateQuotation = asyncHandler(async (req, res) => {
    * prices as models and any of them moving is the thing §10 wants recorded.
    */
   if (req.body.lines) {
-    const priced = req.body.lines.map((line) => line.unitPrice).join();
-    if (priced !== quotation.lines.map((line) => line.unitPrice).join()) {
+    /*
+     * Every price already on the quotation must still be on it. Anything beyond that is new.
+     *
+     * The old rule joined the prices into one string and compared, which made adding a model to
+     * a draft indistinguishable from moving a price — so the one thing a multi-model quotation
+     * exists to do, carry a second hanger under the same number, was refused with "use a
+     * revision to change a price" on a quote whose prices had not moved.
+     *
+     * Matching on `_id` instead would have been worse than the bug: a patch that simply omits
+     * the id reads as a brand-new line, so anyone could move a price by dropping one field. The
+     * check has to hold whatever the client sends, so it is made against the prices themselves.
+     *
+     * Ticking them off one by one rather than with a set, because two models on one document
+     * can share a rate and a set would let one of them quietly disappear. What is allowed is
+     * exactly addition: an existing rate that is not in the patch — changed, or dropped — is
+     * still a revision's job, which is what keeps what the buyer was told on the record.
+     */
+    const unaccounted = quotation.lines.map((line) => line.unitPrice);
+    for (const line of req.body.lines) {
+      const at = unaccounted.indexOf(Number(line.unitPrice));
+      if (at !== -1) unaccounted.splice(at, 1);
+    }
+    if (unaccounted.length) {
       throw ApiError.badRequest('Use a revision to change a price, so the old one is kept');
     }
   }
@@ -488,6 +516,18 @@ export const updateQuotation = asyncHandler(async (req, res) => {
   const patch = withoutVersion(req.body);
   if (patch.lines) patch.lines = await withMouldDefaults(patch.lines, quotation.lines);
   Object.assign(quotation, patch);
+
+  /*
+   * Rev 0 follows a draft that has never been sent.
+   *
+   * Rev 0 is what was first offered, and nothing has been offered yet — so a draft edited after
+   * it was created had a Rev 0 describing a version of the quote that never left the building.
+   * Once `sentAt` is set this stops: from then on Rev 0 is what the buyer actually saw, and
+   * every later price goes through a revision.
+   */
+  if (!quotation.sentAt && quotation.revision === 0 && quotation.revisions?.length) {
+    quotation.revisions[0] = snapshotOf(quotation, 0, req.user, quotation.revisions[0].at);
+  }
 
   await quotation.save();
   await recordChange({ model: 'Quotation', doc: quotation, before, by: req.user });
@@ -644,12 +684,38 @@ export const quotationPdf = asyncHandler(async (req, res) => {
     .populate('enquiry', 'number')
     .populate('assignedTo', 'name')
     /* Per line now: the document's item table describes each model it carries. */
-    .populate('lines.mould', 'mouldCode name category sizeMm material hookType');
+    .populate(mouldWithPhoto('lines.mould', 'mouldCode name category sizeMm material hookType'));
 
   if (!quotation) throw ApiError.notFound('Quotation not found');
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
 
-  const pdf = await renderQuotationPdf(quotation);
+  /*
+   * The part photographs, in hand before anything is drawn.
+   *
+   * pdfkit embeds an image from a buffer, so there is no point in the layout where it could go
+   * and fetch one — and a document is laid out in one pass. Loaded here rather than inside the
+   * renderer so the renderer stays a pure function of what it is given, which is what lets it
+   * be tested without a filesystem.
+   *
+   * Deduplicated by key: one quotation quoting three colours off the same tool is three lines
+   * and one photograph, and reading the same file three times is three times the work for the
+   * same bytes. A file that will not read resolves to null and the cell prints empty — see the
+   * note at the top of the renderer.
+   */
+  const keys = [
+    ...new Set(
+      (quotation.lines || [])
+        .map((line) => line.mould?.photo?.key)
+        .filter(Boolean)
+    ),
+  ];
+
+  const photos = new Map(
+    (await Promise.all(keys.map(async (key) => [key, await bufferOf(key)])))
+      .filter(([, bytes]) => bytes)
+  );
+
+  const pdf = await renderQuotationPdf(quotation, photos);
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Length', pdf.length);

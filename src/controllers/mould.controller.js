@@ -45,6 +45,9 @@ export const listMoulds = asyncHandler(async (req, res) => {
 
   const [data, total] = await Promise.all([
     Mould.find(filter)
+      /* The part photo on the list, not only on one record. The register is read as a page of
+         tools and recognised by shape — a thumbnail per row is the whole reason it is kept. */
+      .populate('photo', 'key')
       .sort(sort)
       .skip((page - 1) * limit)
       .limit(limit),
@@ -239,6 +242,16 @@ export const setMouldPhoto = asyncHandler(async (req, res) => {
       await old.deleteOne();
     }
   }
+
+  /*
+   * Populated on the way out, like every other read of a mould.
+   *
+   * `save()` leaves `photo` as the id it was just set to, so the reply described the record
+   * correctly and uselessly: the screen that had just uploaded a picture got back a mould with
+   * no key to draw it from, and went on showing the old thumbnail — or none — until somebody
+   * reloaded. The one call whose whole purpose is the photograph was the one not returning it.
+   */
+  await mould.populate('photo', 'key filename mimeType');
 
   res.json({ success: true, data: mouldVisibleTo(mould, req.user) });
 });

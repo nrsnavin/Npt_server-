@@ -504,8 +504,8 @@ first WhatsApp message to payment, and completing a stage hands the next departm
 task. The lifecycle, in order:
 
 ```
-1 enquiries → 2 samples → 3 pricing → 4 quotations → 5 orders
-→ 6 production → 7 quality → 8 dispatch → 9 payments
+1 enquiries → 2 samples → 3 pricing → 4 orders → 5 production
+→ 6 quality → 7 dispatch → 8 payments
 ```
 
 Alongside it sit the masters (`customers`, `products`), communication (`customer_comms`,

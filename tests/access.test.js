@@ -287,12 +287,23 @@ test('the catalogue exposes modules and department templates', async () => {
   const sampling = json.data.departments.find((d) => d.key === 'sampling');
   assert.ok(sampling.defaultAccess.some((g) => g.module === 'samples' && g.level === 'write'));
 
-  // The order lifecycle must be a complete, gapless sequence from 1.
+  /*
+   * The order lifecycle must be a complete, gapless sequence from 1.
+   *
+   * Derived rather than written out, so this keeps testing the rule rather than the count. The
+   * literal list had to be edited every time a stage was added or two were merged, which is the
+   * moment the assertion is most worth trusting and the moment it was least able to fail.
+   */
   const stages = json.data.modules
     .filter((module) => module.stage !== null)
     .map((module) => module.stage)
     .sort((a, b) => a - b);
-  assert.deepEqual(stages, [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  assert.deepEqual(
+    stages,
+    stages.map((unused, index) => index + 1),
+    'the lifecycle must run 1..n with no gaps and no duplicates'
+  );
+  assert.ok(stages.length >= 8, 'the lifecycle lost a stage');
 
   // WhatsApp is held back, so it must carry a reason and sit off the lifecycle.
   const whatsapp = json.data.modules.find((module) => module.key === 'whatsapp');

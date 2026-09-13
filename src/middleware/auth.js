@@ -50,10 +50,18 @@ export const requireModule =
     if (levelSatisfies(held, required)) return next();
 
     const label = findModule(moduleKey).label;
+    /*
+     * The level actually held, not the word "read-only".
+     *
+     * With three levels on pricing, "you have read-only access" is simply false for somebody
+     * holding `quote` and refused a costing — and a refusal that misdescribes what you have is
+     * one nobody can act on: it points the reader at the wrong thing to ask their admin for.
+     */
+    const WORDS = { read: 'read-only', quote: 'quoting-only' };
     return next(
       ApiError.forbidden(
         held
-          ? `You have read-only access to ${label}.`
+          ? `You have ${WORDS[held] || held} access to ${label}.`
           : `You do not have access to ${label}.`
       )
     );

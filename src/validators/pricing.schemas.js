@@ -134,6 +134,17 @@ export const pricingDecisionSchema = z.object({
  * anything is sent, so quoting under it raises the approval rather than slipping past it.
  */
 export const pricingQuoteSchema = z.object({
+  /**
+   * A draft to add this model to, rather than a new quotation.
+   *
+   * Named, never inferred. Guessing "the customer's newest draft" would sooner or later put a
+   * model on a document somebody else was in the middle of writing — the quoter is the only one
+   * who knows which conversation this price belongs to.
+   *
+   * When it is given, the terms below are the draft's own and are ignored: a quotation has one
+   * validity and one set of payment terms for every model on it.
+   */
+  quotation: objectId.optional(),
   moq: money.optional(),
   unitPrice: money.optional(),
   gstPercent: z.number().min(0).max(100).optional(),
@@ -171,6 +182,8 @@ const quotationLine = z.object({
   quantity: z.number().positive().optional(),
   /** What the rate is good for. Left out, and the mould register's minimum is copied in [§28]. */
   moq: money.optional(),
+  /** The shade the rate is offered in — see the note on the model for why it is per line. */
+  colour: z.string().optional(),
   unitPrice: money,
   remarks: z.string().optional(),
 });

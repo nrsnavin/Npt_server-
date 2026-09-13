@@ -94,6 +94,20 @@ const lineSchema = new mongoose.Schema(
      */
     moq: { type: Number, min: 0, default: 0 },
 
+    /**
+     * The shade the rate is offered in.
+     *
+     * A fact about the price, not about the tool. Natural PP and a masterbatch colour come off
+     * the same mould at different money, and the plant's own quote sheet has always printed
+     * "PP : WHITE" against every line — so a document that named only the resin was quoting a
+     * rate without saying what it was a rate *for*.
+     *
+     * On the line rather than the document, for the reason the minimum is: one quotation
+     * carrying a white shirt hanger and a black suit hanger is ordinary, and a single
+     * document-wide colour would have to be wrong about one of them.
+     */
+    colour: { type: String, trim: true },
+
     unitPrice: { type: Number, min: 0, required: true },
     remarks: String,
   },

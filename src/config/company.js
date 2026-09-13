@@ -24,6 +24,24 @@ export const company = {
   email: process.env.COMPANY_EMAIL || 'sales@navinhangers.com',
   website: process.env.COMPANY_WEBSITE || 'www.navinhangers.com',
 
+  /**
+   * The tariff heading the plant quotes under.
+   *
+   * One code for every line, because it is one code for everything this plant makes — moulded
+   * plastic hangers, 3926.90.69. A per-model field would be five characters of truth and a
+   * hundred rows of the same value copied by hand, which is how a wrong one gets in.
+   */
+  hsnCode: process.env.COMPANY_HSN || '39269069',
+
+  /**
+   * What the document says about tax, in the plant's own words.
+   *
+   * A quotation is a rate, and this plant's sheet has always said "GST 18% EXTRA" rather than
+   * computing a tax line — because the rate is what is being offered, and the tax is a fact
+   * about the invoice that has not been raised yet.
+   */
+  gstNote: process.env.COMPANY_GST_NOTE || 'GST 18% EXTRA',
+
   /** Printed under the signature block, where a quotation's standing conditions live. */
   standardTerms: (
     process.env.COMPANY_QUOTE_TERMS ||

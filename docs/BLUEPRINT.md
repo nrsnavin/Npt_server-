@@ -46,13 +46,12 @@ received; **who has the next action**.
 | --- | --- | --- | --- |
 | `enquiries` — Leads & enquiries | 1 | Marketing | §3 |
 | `samples` — Sampling | 2 | Sample team | §4–6 |
-| `pricing` — Pricing & costing | 3 | Management | §7–9 |
-| `quotations` — Quotations & negotiation | 4 | Marketing | §10–11 |
-| `orders` — Sales orders | 5 | Order confirmation | §12–13 |
-| `production` — Production status | 6 | Production | §14–17 |
-| `quality` — Quality | 7 | Quality | §15 |
-| `dispatch` — Dispatch | 8 | Despatch | §18–19 |
-| `payments` — Payments | 9 | Accounts | §20 |
+| `pricing` — Pricing & quotations | 3 | Management | §7–11 |
+| `orders` — Sales orders | 4 | Order confirmation | §12–13 |
+| `production` — Production status | 5 | Production | §14–17 |
+| `quality` — Quality | 6 | Quality | §15 |
+| `dispatch` — Dispatch | 7 | Despatch | §18–19 |
+| `payments` — Payments | 8 | Accounts | §20 |
 | `customers` — Customer master | — | Marketing | §2 |
 | `moulds` — Mould & model register | — | Production | §28 |
 | `customer_comms` — Send to customer | — | Marketing | §42 |
@@ -392,7 +391,7 @@ Build and stabilise each phase — do not build everything at once.
 | --- | --- | --- |
 | 1 | Sales | `customers`, `enquiries`, `moulds`, follow-ups |
 | 2 | Sampling | `samples` and approval tracking |
-| 3 | Pricing & quoting | `pricing`, `quotations`, negotiation, approval route |
+| 3 | Pricing & quoting | `pricing` — costing, quotations, negotiation, approval route |
 | 4 | Order coordination | `orders`, `production`, `quality` |
 | 5 | Dispatch & payment | `dispatch` incl. part dispatch, `payments` |
 | 6 | Automation & dashboards | escalations, notifications, `tasks`, `reports` |

@@ -6,6 +6,7 @@ import Attachment from '../models/Attachment.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownsRecord } from '../services/ownership.service.js';
+import { canRead } from '../services/access.service.js';
 import { put, remove, streamOf } from '../services/storage.service.js';
 import { listParams, paginated } from '../utils/query.js';
 
@@ -201,9 +202,27 @@ export const downloadAttachment = asyncHandler(async (req, res) => {
    * anybody holding the key — and the keys are random, but "unguessable" is not a permission
    * model. A file whose owner cannot be resolved is served to nobody.
    */
-  const owner = await ownerOf(attachment);
-  if (!owner) throw ApiError.notFound('File not found');
-  if (!ownsRecord(req.user, owner.record, owner.ownership)) throw ApiError.notFound('File not found');
+  /*
+   * A part photo off the mould register is the exception, and it is not an ownership question.
+   *
+   * A mould belongs to nobody — it is the model master [§28], readable by everyone holding the
+   * grant, and the photograph of what it makes goes out on the price quote to customers. So the
+   * check is the module's, not a record owner's.
+   *
+   * This is what was wrong: `ownerOf` knew about samples, customers and enquiries, so a photo
+   * hanging off a mould resolved to no owner and the route refused it to *everybody*. The
+   * register could take a photograph and could never show one — an upload that succeeded and a
+   * picture that never appeared, which reads as the upload having silently failed.
+   */
+  if (attachment.mould) {
+    if (!canRead(req.user, 'moulds')) throw ApiError.notFound('File not found');
+  } else {
+    const owner = await ownerOf(attachment);
+    if (!owner) throw ApiError.notFound('File not found');
+    if (!ownsRecord(req.user, owner.record, owner.ownership)) {
+      throw ApiError.notFound('File not found');
+    }
+  }
 
   const stream = streamOf(attachment.key);
   if (!stream) throw ApiError.notFound('File not found');

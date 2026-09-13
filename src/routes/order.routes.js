@@ -284,7 +284,7 @@ router.get('/orders/:id/dispatches', requireModule('orders'), listOrderDispatche
  */
 router.post(
   '/quotations/:id/order',
-  requireModule('quotations'),
+  requireModule('pricing'),
   requireModule('orders', 'write'),
   validate(orderFromQuotationSchema),
   orderFromQuotation

@@ -2,7 +2,9 @@ import {
   MODULES,
   MODULE_KEYS,
   DEPARTMENTS,
+  RETIRED_MODULES,
   levelSatisfies,
+  levelsFor,
   defaultAccessFor,
 } from '../config/modules.js';
 
@@ -17,8 +19,27 @@ export function accessLevel(user, moduleKey) {
   if (!user || !user.isActive) return null;
   if (user.role === 'admin') return 'write';
 
-  const grant = (user.moduleAccess || []).find((entry) => entry.module === moduleKey);
-  return grant?.level || null;
+  const grants = user.moduleAccess || [];
+  const grant = grants.find((entry) => entry.module === moduleKey);
+  if (grant?.level) return grant.level;
+
+  /*
+   * A grant naming a module that no longer exists, read as the module that absorbed it.
+   *
+   * Access is whatever is stored on the user, so merging quotations into pricing would have
+   * taken marketing's ability to quote away the moment it deployed — before anybody could run
+   * the migration, and with no error to explain it. Read-time is the only place that can be
+   * true on the first request after a deploy. The migration then makes it permanent; until it
+   * has run, or if an old export is restored afterwards, this is what keeps the grant meaning
+   * what the admin who wrote it meant.
+   */
+  const retired = Object.entries(RETIRED_MODULES)
+    .filter(([, target]) => target.module === moduleKey)
+    .map(([key, target]) => target.levels[grants.find((e) => e.module === key)?.level])
+    .filter(Boolean);
+
+  /* Strongest wins, the same rule normaliseGrants applies to a duplicate. */
+  return retired.sort((a, b) => (levelSatisfies(a, b) ? -1 : 1))[0] || null;
 }
 
 export const canRead = (user, moduleKey) =>
@@ -41,8 +62,12 @@ export function moduleAccessFor(user) {
       group: module.group,
       stage: module.stage,
       available: module.available,
+      levels: levelsFor(module.key),
       level,
       canRead: levelSatisfies(level, 'read'),
+      /* The middle level, for the one module that has one. The client needs it to decide
+         whether to offer a Raise a quote button to somebody who may not touch the costing. */
+      canQuote: levelSatisfies(level, 'quote'),
       canWrite: levelSatisfies(level, 'write'),
     };
   });
@@ -55,14 +80,23 @@ export function moduleAccessFor(user) {
 export function normaliseGrants(grants = []) {
   const strongest = new Map();
 
-  for (const grant of grants) {
+  for (const raw of grants) {
+    /* A grant for a module that has been absorbed is rewritten rather than dropped — the same
+       reading `accessLevel` does, made permanent the next time the user is saved. */
+    const retired = RETIRED_MODULES[raw?.module];
+    const grant = retired
+      ? { module: retired.module, level: retired.levels[raw?.level] }
+      : raw;
+
     const moduleKey = grant?.module;
     const level = grant?.level;
     if (!MODULE_KEYS.includes(moduleKey)) continue;
-    if (level !== 'read' && level !== 'write') continue;
+    /* Against what this module offers, not against the global list: `quote` is pricing's and
+       granting it on despatch would store a level that satisfies nothing and reads as access. */
+    if (!levelsFor(moduleKey).includes(level)) continue;
 
     const held = strongest.get(moduleKey);
-    if (!held || (held === 'read' && level === 'write')) strongest.set(moduleKey, level);
+    if (!held || levelSatisfies(level, held)) strongest.set(moduleKey, level);
   }
 
   // Stored in catalogue order so a stored document is easy to read.
@@ -74,7 +108,13 @@ export function normaliseGrants(grants = []) {
 
 /** The catalogue and department templates an admin screen needs to render its form. */
 export const accessCatalogue = () => ({
-  modules: MODULES.map(({ ownerDepartment, ...module }) => ({ ...module, ownerDepartment })),
+  modules: MODULES.map(({ ownerDepartment, ...module }) => ({
+    ...module,
+    ownerDepartment,
+    /* Named per module so the access form offers what that module actually has, rather than
+       three buttons everywhere and two of them meaning the same thing. */
+    levels: levelsFor(module.key),
+  })),
   departments: DEPARTMENTS.map((department) => ({
     key: department.key,
     label: department.label,

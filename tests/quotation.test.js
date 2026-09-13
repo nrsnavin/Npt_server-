@@ -701,6 +701,196 @@ test('a revision keeps the costing behind a line it does not re-name', async () 
   assert.match(sent.json.message, /below the approved minimum/i);
 });
 
+/* ------------------------- The document the buyer gets ------------------------- */
+
+/**
+ * A one-pixel PNG. Enough to prove the picture reached the page — what it is a picture *of* is
+ * not something a test can check, and a real photograph in the repository would be a megabyte
+ * committed to prove a buffer moved.
+ */
+const PIXEL = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64'
+);
+
+/**
+ * The words a PDF actually prints.
+ *
+ * pdfkit deflates its content streams, so the text is not in the bytes as text — a test that
+ * greps the raw file passes on a document that says nothing at all. Every stream that inflates
+ * is inflated; the ones that do not are the images.
+ *
+ * Inside, a run of text is a hex-encoded array with kerning between the pieces:
+ * `[<50524943452051> 10 <554f> 40 <5445>] TJ` is "PRICE QUOTE". Only the hex pieces are taken,
+ * and they are joined with nothing between them — take the numbers too and the page reads
+ * "PRICE Q10UO40TE".
+ */
+const textOf = async (bytes) => {
+  const { inflateSync } = await import('node:zlib');
+  const raw = bytes.toString('latin1');
+  const streams = [];
+
+  for (const match of raw.matchAll(/stream\r?\n/g)) {
+    const from = match.index + match[0].length;
+    const to = raw.indexOf('endstream', from);
+    if (to < 0) continue;
+    try {
+      streams.push(inflateSync(Buffer.from(raw.slice(from, to), 'latin1')).toString('latin1'));
+    } catch {
+      /* An image, or a stream stored flat. Neither carries the words. */
+    }
+  }
+
+  const fromHex = (hex) =>
+    Buffer.from(hex.length % 2 ? `${hex}0` : hex, 'hex').toString('latin1');
+
+  return streams
+    .join('\n')
+    /* Each text-showing array, reduced to the characters it shows. */
+    .replace(/\[((?:\s*<[0-9a-fA-F]*>|\s*-?\d+(?:\.\d+)?)*)\]\s*TJ/g, (whole, inner) =>
+      ` ${(inner.match(/<([0-9a-fA-F]*)>/g) || [])
+        .map((run) => fromHex(run.slice(1, -1)))
+        .join('')} `)
+    /* And the simple form, for anything drawn without kerning. */
+    .replace(/\(((?:[^()\\]|\\.)*)\)\s*Tj/g, (whole, inner) => ` ${inner} `)
+    .replace(/\s+/g, ' ');
+};
+
+/** Puts a part photo on a mould, the way the register form does. */
+const photograph = async (mouldId) => {
+  const boundary = `----npt${Date.now()}`;
+  const body = Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="part.png"\r\n` +
+        'Content-Type: image/png\r\n\r\n'
+    ),
+    PIXEL,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+
+  const response = await fetch(`${baseUrl}/api/moulds/${mouldId}/photo`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${admin}`,
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      'Content-Length': String(body.length),
+    },
+    body,
+  });
+  return { status: response.status, json: await response.json().catch(() => ({})) };
+};
+
+test('the part photo comes back on the record that was just given one', async () => {
+  /*
+   * `save()` leaves the reference as the id it was set to, so the reply described the record
+   * correctly and uselessly: the screen that had just uploaded a picture got no key to draw it
+   * from and went on showing nothing until somebody reloaded. The one call whose whole purpose
+   * is the photograph was the one not returning it.
+   */
+  const { status, json } = await photograph(mould);
+
+  assert.equal(status, 200, json.message);
+  assert.ok(json.data.photo?.key, 'the upload did not return the key it just stored');
+});
+
+test('a part photo can actually be fetched by anybody who may read the register', async () => {
+  /*
+   * The register could take a photograph and could never show one.
+   *
+   * The file route resolves who may read a file through the record it hangs off, and it knew
+   * about samples, customers and enquiries. A photo hanging off a *mould* resolved to no owner
+   * at all, so it was refused to everybody — an upload that returned 200 and a picture that
+   * never appeared, which reads as the upload having silently failed.
+   *
+   * A mould belongs to nobody: it is the model master [§28], and the photograph of what it
+   * makes goes out on the price quote. So the rule is the module's grant, not an owner's.
+   */
+  const { json } = await photograph(mould);
+  const key = json.data.photo.key;
+
+  for (const [who, token] of [['marketing', nandhini], ['an administrator', admin]]) {
+    const response = await fetch(`${baseUrl}/api/files/${key}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.status, 200, `${who} cannot see the part photo`);
+    assert.match(response.headers.get('content-type'), /^image\//);
+  }
+});
+
+test('the quote carries the part photo, the shade and the tariff heading', async () => {
+  /*
+   * The document is the product here. A hanger is bought by its shape — six near-identical
+   * codes with no picture is how a buyer orders NCP-27 and means NCP-30 — and the plant's own
+   * sheet has carried the photographs for years for exactly that reason.
+   *
+   * Asserted on the PDF's own bytes rather than on a render call returning: an image that fails
+   * to embed throws inside pdfkit and is swallowed by design, so "it rendered" is true of a
+   * document with an empty picture column.
+   */
+  await photograph(mould);
+
+  const made = await quote({
+    lines: [{ mould, modelNumber: 'NH-400', colour: 'White', unitPrice: 4.9, moq: 5000 }],
+  });
+
+  assert.equal(made.lines[0].colour, 'White', 'the shade the rate is offered in was dropped');
+
+  const response = await fetch(`${baseUrl}/api/quotations/${made._id}/pdf`, {
+    headers: { Authorization: `Bearer ${nandhini}` },
+  });
+  assert.equal(response.status, 200);
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+
+  /* An embedded image declares itself in the page's resources, which are not compressed. No
+     XObject, no picture — and "it rendered" is true of a document with an empty photo column. */
+  assert.match(
+    bytes.toString('latin1'),
+    /\/Subtype\s*\/Image/,
+    'no image was embedded in the quotation'
+  );
+
+  /* The words themselves live in a deflated content stream, so they have to be inflated to be
+     read. Worth the few lines: without it the test passes on a PDF that says anything at all. */
+  const printed = await textOf(bytes);
+  assert.match(printed, /PRICE QUOTE/);
+  assert.match(printed, /HSN\/SAC/);
+  assert.match(printed, /GST 18% EXTRA/);
+  /* The fixture's tool is registered as `plastic`; what matters is that the resin and the
+     shade both reach the page, joined the way the plant's sheet prints them. */
+  assert.match(printed, /PLASTIC : WHITE/, 'the resin and shade are not on the document');
+  assert.match(printed, /39269069/, 'the tariff heading is not on the document');
+});
+
+test('a quotation whose photograph has gone still prints', async () => {
+  /*
+   * The file can be deleted underneath the record — a restored backup, a cleared volume. A
+   * document somebody is waiting to send should come out with a gap where the picture was
+   * rather than fail, because the rate is the part the buyer is waiting for.
+   */
+  await photograph(mould);
+
+  const Attachment = (await import('../src/models/Attachment.js')).default;
+  const Mould = (await import('../src/models/Mould.js')).default;
+  const record = await Mould.findById(mould);
+  const attachment = await Attachment.findById(record.photo);
+
+  const { remove } = await import('../src/services/storage.service.js');
+  await remove(attachment.key);
+
+  const made = await quote({ lines: [{ mould, modelNumber: 'NH-400', unitPrice: 4.9 }] });
+  const response = await fetch(`${baseUrl}/api/quotations/${made._id}/pdf`, {
+    headers: { Authorization: `Bearer ${nandhini}` },
+  });
+
+  assert.equal(response.status, 200, 'a missing photo took the whole document down');
+
+  const bytes = Buffer.from(await response.arrayBuffer());
+  assert.match(await textOf(bytes), /PRICE QUOTE/);
+  /* And the cell is simply empty — no half-written image object left behind. */
+  assert.doesNotMatch(bytes.toString('latin1'), /\/Subtype\s*\/Image/);
+});
+
 test('an eight-model quotation does not spill blank pages', async () => {
   /*
    * The renderer was written when a quotation carried one model and assumed one page. With

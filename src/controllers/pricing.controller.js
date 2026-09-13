@@ -1,7 +1,7 @@
 import Pricing, { CLOSED_PRICING_STATUSES } from '../models/Pricing.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
-import Mould from '../models/Mould.js';
+import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import Material, { grammageFrom } from '../models/Material.js';
 import Component from '../models/Component.js';
 import Quotation from '../models/Quotation.js';
@@ -14,6 +14,7 @@ import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { EVENTS, publish } from '../services/events.service.js';
 import { allVisibleTo, assertMayCost, visibleTo } from '../services/pricingVisibility.js';
+import { ownsRecord } from '../services/ownership.service.js';
 import { priceFrom } from '../services/pricing.service.js';
 
 /**
@@ -46,13 +47,18 @@ const POPULATE = [
    * The first line is what the product master used to supply — the model's own code, size,
    * category, hook and minimum — which the costing screen reads to say what is being priced.
    */
-  {
-    path: 'mould',
-    select:
-      'mouldCode name category sizeMm hookType moq packingQty ' +
+  /*
+   * The part photo comes with it, like everywhere else a mould is named. The costing screen
+   * draws the thumbnail beside the code, and a named select that omits `photo` does not fail —
+   * it quietly hands back a mould with no picture, so the screen falls through to its "no photo
+   * on the register" placeholder and every costing looks like a model nobody photographed.
+   */
+  mouldWithPhoto(
+    'mould',
+    'mouldCode name category sizeMm hookType moq packingQty ' +
       'cavities activeCavities partWeightGrams runnerWeightGrams ' +
-      'regrindRecoveryPercent cycleTimeSeconds efficiencyPercent status material machine',
-  },
+      'regrindRecoveryPercent cycleTimeSeconds efficiencyPercent status material machine'
+  ),
   { path: 'materialRef', select: 'name code type colour ratePerKg grammageFactorPercent' },
   { path: 'hookRef', select: 'name code colour ratePerPiece kind' },
   { path: 'clipRef', select: 'name code colour ratePerPiece kind' },
@@ -539,32 +545,78 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
    * costing — a figure nobody had agreed to — and then sat on the quote looking like one that
    * had. The minimum above is the only quantity the offer is actually conditional on.
    */
-  const { moq: _m, unitPrice: _u, ...terms } = req.body;
+  const { moq: _m, unitPrice: _u, quotation: _q, ...terms } = req.body;
 
   /*
-   * One line, because one costing prices one model. The quotation can carry more — that is the
-   * whole point of it having lines — but they arrive by editing the quote afterwards or by
-   * quoting a second costing onto it, not by this door inventing models the sheet never priced.
+   * One line, because one costing prices one model. The quotation carries as many as the buyer
+   * is being offered — the plant's own NP/26-27/1 puts eight models under one number — and they
+   * arrive one costing at a time through this door, not by it inventing models nothing priced.
    */
+  const line = {
+    moq,
+    unitPrice: req.body.unitPrice ?? pricing.approvedSellingPrice,
+    pricing: pricing._id,
+    mould: pricing.mould || undefined,
+    modelNumber: pricing.modelNumber,
+  };
+
+  /*
+   * Onto a quotation already being drafted, when one is named.
+   *
+   * Without this, eight approved costings for one buyer produced eight quotation numbers, and
+   * the person quoting had to choose between the plant's real document and the system's idea of
+   * one. A costing is per model and a quotation is per conversation; this is the join.
+   */
+  if (req.body.quotation) {
+    const quotation = await Quotation.findById(req.body.quotation);
+    if (!quotation) throw ApiError.badRequest('That quotation does not exist');
+    if (!ownsRecord(req.user, quotation)) {
+      throw ApiError.badRequest('That quotation does not exist');
+    }
+
+    /*
+     * A draft, and only a draft. Once a quote has been sent, adding a model to it changes what
+     * the buyer was told — §10 routes that through a revision, and quietly appending a line
+     * here would be the offer moving with nothing in the history to say so.
+     */
+    if (quotation.sentAt || quotation.status !== 'draft') {
+      throw ApiError.badRequest(
+        `${quotation.number} has already gone out — raise a revision on it, or start a new quote`
+      );
+    }
+    if (String(quotation.customer) !== String(pricing.customer)) {
+      throw ApiError.badRequest(`${quotation.number} is for a different customer`);
+    }
+    if (quotation.lines.some((existing) => String(existing.pricing) === String(pricing._id))) {
+      throw ApiError.badRequest(`${pricing.number} is already on ${quotation.number}`);
+    }
+
+    quotation.lines.push(line);
+    /* Rev 0 is what will be offered, and nothing has been offered yet — see `updateQuotation`. */
+    quotation.revisions[0] = {
+      ...quotation.revisions[0].toObject(),
+      lines: quotation.lines.map((row) => {
+        const plain = row.toObject();
+        delete plain._id;
+        return plain;
+      }),
+    };
+    await quotation.save();
+
+    return res.status(200).json({ success: true, data: quotation });
+  }
+
   const quotation = await newQuotation(
     {
       ...terms,
-      lines: [
-        {
-          moq,
-          unitPrice: req.body.unitPrice ?? pricing.approvedSellingPrice,
-          pricing: pricing._id,
-          mould: pricing.mould || undefined,
-          modelNumber: pricing.modelNumber,
-        },
-      ],
+      lines: [line],
       customer: pricing.customer,
       enquiry: pricing.enquiry || undefined,
     },
     req.user
   );
 
-  res.status(201).json({ success: true, data: quotation });
+  return res.status(201).json({ success: true, data: quotation });
 });
 
 /**
