@@ -1,7 +1,7 @@
 import Pricing, { CLOSED_PRICING_STATUSES } from '../models/Pricing.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
-import Mould from '../models/Mould.js';
+import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import Material, { grammageFrom } from '../models/Material.js';
 import Component from '../models/Component.js';
 import Quotation from '../models/Quotation.js';
@@ -46,13 +46,18 @@ const POPULATE = [
    * The first line is what the product master used to supply — the model's own code, size,
    * category, hook and minimum — which the costing screen reads to say what is being priced.
    */
-  {
-    path: 'mould',
-    select:
-      'mouldCode name category sizeMm hookType moq packingQty ' +
+  /*
+   * The part photo comes with it, like everywhere else a mould is named. The costing screen
+   * draws the thumbnail beside the code, and a named select that omits `photo` does not fail —
+   * it quietly hands back a mould with no picture, so the screen falls through to its "no photo
+   * on the register" placeholder and every costing looks like a model nobody photographed.
+   */
+  mouldWithPhoto(
+    'mould',
+    'mouldCode name category sizeMm hookType moq packingQty ' +
       'cavities activeCavities partWeightGrams runnerWeightGrams ' +
-      'regrindRecoveryPercent cycleTimeSeconds efficiencyPercent status material machine',
-  },
+      'regrindRecoveryPercent cycleTimeSeconds efficiencyPercent status material machine'
+  ),
   { path: 'materialRef', select: 'name code type colour ratePerKg grammageFactorPercent' },
   { path: 'hookRef', select: 'name code colour ratePerPiece kind' },
   { path: 'clipRef', select: 'name code colour ratePerPiece kind' },

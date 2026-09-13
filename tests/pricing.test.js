@@ -719,6 +719,56 @@ test('a costing comes back with the model master and what it was quoted at', asy
   assert.equal(seen.json.quotations[0].lines[0].moq, 3000);
 });
 
+/**
+ * A one-pixel PNG — enough to prove the picture travelled. See the note in quotation.test.js.
+ */
+const PIXEL = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64'
+);
+
+/** Puts a part photo on a mould, the way the register form does. */
+const photograph = async (mouldId) => {
+  const boundary = `----npt${Date.now()}`;
+  const body = Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="part.png"\r\n` +
+        'Content-Type: image/png\r\n\r\n'
+    ),
+    PIXEL,
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+
+  const response = await fetch(`${baseUrl}/api/moulds/${mouldId}/photo`, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${admin}`,
+      'Content-Type': `multipart/form-data; boundary=${boundary}`,
+      'Content-Length': String(body.length),
+    },
+    body,
+  });
+  return response.json();
+};
+
+test('the costing carries the part photo, like everywhere else the model is named', async () => {
+  /*
+   * The costing screen draws the thumbnail beside the code, and this populate names its fields
+   * explicitly — which is right, but it means a field left off the list is simply absent. There
+   * is no error for that: the sheet arrives with a mould that has no picture, the screen falls
+   * through to its "no photo on the register" placeholder, and every costing in the plant looks
+   * like a model nobody ever photographed.
+   */
+  const tool = await modelWithMoq('NH-PHOTO', 2000);
+  await photograph(tool);
+
+  const sheet = await costed({ approvedSellingPrice: 9, mould: tool });
+  const seen = await api(`/api/pricings/${sheet._id}`, { token: admin });
+
+  assert.equal(seen.status, 200);
+  assert.ok(seen.json.data.mould.photo?.key, 'the costing lost the part photo on the way out');
+});
+
 test('the detail keeps §8 for a marketing reader', async () => {
   const sheet = await costed({ approvedSellingPrice: 9 });
 
