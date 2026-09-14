@@ -1,3 +1,5 @@
+import { protectOwnership } from '../utils/ownershipWrites.js';
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { normalisePhone } from '../utils/phone.js';
 import { withConversationRef } from './conversationRef.js';
@@ -96,4 +98,6 @@ customerSchema.index({ whatsapp: 1 });
 /** §8: present and null until the WhatsApp front door lands, so nothing is migrated then. */
 withConversationRef(customerSchema);
 
+protectWrites(customerSchema);
+protectOwnership(customerSchema);
 export default mongoose.model('Customer', customerSchema);

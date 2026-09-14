@@ -1,3 +1,5 @@
+import { protectOwnership } from '../utils/ownershipWrites.js';
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 
 /**
@@ -256,4 +258,6 @@ quotationSchema.virtual('isExpired').get(function isExpired() {
 quotationSchema.set('toJSON', { virtuals: true });
 quotationSchema.set('toObject', { virtuals: true });
 
+protectWrites(quotationSchema);
+protectOwnership(quotationSchema);
 export default mongoose.model('Quotation', quotationSchema);

@@ -1,3 +1,4 @@
+import { reconcileDispatches } from './services/dispatchRecovery.service.js';
 import app from './app.js';
 import { env, escalationIntervalMinutes, isProduction } from './config/env.js';
 import { connectDatabase } from './config/db.js';
@@ -208,12 +209,16 @@ async function start() {
       console.log(`NPT ERP API listening on port ${env.port} (${env.nodeEnv})`);
     });
 
+    const recover = () => reconcileDispatches().catch(error => console.error('Dispatch recovery failed:', error.message));
+    await recover();
+    const recovery = setInterval(recover, 60000).unref();
     const escalations = startEscalationSweep();
     const indiamart = startIndiamartPoll();
 
     const shutdown = (signal) => {
       console.log(`${signal} received, shutting down`);
       clearInterval(escalations);
+      clearInterval(recovery);
       if (indiamart) clearInterval(indiamart);
       server.close(() => process.exit(0));
     };

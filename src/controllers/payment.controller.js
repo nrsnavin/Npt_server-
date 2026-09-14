@@ -1,3 +1,5 @@
+import { applyPaymentPositions } from '../services/paymentPosition.service.js';
+import { withOrderLock } from '../services/operationLock.service.js';
 import Receivable, { JUDGED_STATUSES } from '../models/Receivable.js';
 import SalesOrder from '../models/SalesOrder.js';
 import Customer from '../models/Customer.js';
@@ -37,6 +39,7 @@ async function readable(id, user) {
   const receivable = await Receivable.findById(id).populate(POPULATE);
   if (!receivable) throw ApiError.notFound('Nothing owed under that reference');
   if (!ownsRecord(user, receivable)) throw ApiError.notFound('Nothing owed under that reference');
+  await applyPaymentPositions([receivable]);
   return receivable;
 }
 
@@ -65,7 +68,10 @@ export const listReceivables = asyncHandler(async (req, res) => {
    * cannot be a database filter — and a headline computed over one page would change when
    * somebody turned it, which reads as the debt changing.
    */
-  const open = await Receivable.find(filter).limit(5000);
+  const open = await Receivable.find(filter);
+  await applyPaymentPositions(open);
+  const positions = new Map(open.map(row => [String(row._id), row.$locals]));
+  for (const row of rows) Object.assign(row.$locals, positions.get(String(row._id)));
   const owing = open.filter((row) => row.balance > 0);
 
   paginated(res, rows, { page, limit, total }, {
@@ -112,8 +118,8 @@ export const paymentDay = asyncHandler(async (req, res) => {
       { path: 'order', select: 'number' },
       { path: 'assignedTo', select: 'name' },
       { path: 'followUps.by', select: 'name' },
-    ])
-    .limit(2000);
+    ]);
+  await applyPaymentPositions(rows);
 
   const owing = rows.filter((row) => row.balance > 0 && !row.judgement);
 
@@ -127,6 +133,7 @@ export const paymentDay = asyncHandler(async (req, res) => {
     owner: receivable.assignedTo?.name || null,
     value: receivable.invoice?.value || 0,
     received: receivable.received,
+    advanceApplied: receivable.advanceApplied,
     balance: receivable.balance,
     dueBy: receivable.dueBy,
     daysToDue: receivable.daysToDue,
@@ -234,7 +241,7 @@ export const paymentDay = asyncHandler(async (req, res) => {
  * percentage out of a sentence is the kind of cleverness that is right nine times and books the
  * wrong number the tenth. The person typing it has the PO in front of them.
  */
-export const raiseAdvance = asyncHandler(async (req, res) => {
+export const raiseAdvance = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -273,8 +280,9 @@ export const raiseAdvance = asyncHandler(async (req, res) => {
     throw error;
   }
 
+  await applyPaymentPositions([receivable]);
   res.status(201).json({ success: true, data: await receivable.populate(POPULATE) });
-});
+}));
 
 /**
  * A conversation, logged.
@@ -330,10 +338,18 @@ export const logFollowUp = asyncHandler(async (req, res) => {
  * that as a *follow-up*, which is what it is: something they were told, not something anybody
  * has seen.
  */
-export const recordReceipt = asyncHandler(async (req, res) => {
+export const recordReceipt = asyncHandler(withOrderLock(async req => (await Receivable.findById(req.params.id).select('order'))?.order || req.params.id, async (req, res) => {
   const receivable = await readable(req.params.id, req.user);
 
-  if (req.body.amount > receivable.balance) {
+  const key = req.body.idempotencyKey;
+  const reference = req.body.reference?.trim();
+  const duplicate = receivable.receipts.find(row => key ? row.idempotencyKey === key : reference && row.reference === reference && row.mode === (req.body.mode || 'neft') && row.amount === req.body.amount);
+  if (duplicate) {
+    if (duplicate.amount !== req.body.amount || duplicate.mode !== (req.body.mode || 'neft') || (duplicate.reference || '') !== (reference || '') ||
+        (req.body.receivedAt && +duplicate.receivedAt !== +new Date(req.body.receivedAt)) || (duplicate.note || '') !== (req.body.note?.trim() || '')) throw ApiError.conflict('This payment operation was already used with different details.');
+    return res.json({ success: true, data: receivable, replayed: true });
+  }
+  if (req.body.amount > receivable.receiptable) {
     throw ApiError.badRequest(
       `That is more than the ₹${Math.round(receivable.balance).toLocaleString('en-IN')} still owed on this one — ` +
         'record the rest against the invoice it belongs to'
@@ -343,6 +359,7 @@ export const recordReceipt = asyncHandler(async (req, res) => {
   const before = snapshot(receivable);
 
   receivable.receipts.push({
+    idempotencyKey: key,
     amount: req.body.amount,
     receivedAt: req.body.receivedAt || new Date(),
     mode: req.body.mode,
@@ -350,6 +367,8 @@ export const recordReceipt = asyncHandler(async (req, res) => {
     note: req.body.note,
     recordedBy: req.user._id,
   });
+
+  await applyPaymentPositions([receivable]);
 
   /* Settled: the ladder stops, and a re-opened balance starts it again from wherever it stands
      rather than from where it left off. */
@@ -383,7 +402,7 @@ export const recordReceipt = asyncHandler(async (req, res) => {
 
   await receivable.populate(POPULATE);
   res.status(201).json({ success: true, data: receivable });
-});
+}));
 
 /**
  * Marking one disputed or on hold, and clearing it again.

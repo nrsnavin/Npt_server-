@@ -1,3 +1,4 @@
+import { withOwnerLocks } from '../services/operationLock.service.js';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -107,7 +108,7 @@ export const create = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: publicUser(user) });
 });
 
-export const update = asyncHandler(async (req, res) => {
+export const update = asyncHandler(async (req, res) => withOwnerLocks([req.params.id, req.query.transferTo || req.body?.transferTo], async () => {
   const user = await User.findById(req.params.id);
   if (!user) throw ApiError.notFound('User not found');
 
@@ -127,6 +128,7 @@ export const update = asyncHandler(async (req, res) => {
     }
   }
 
+  if (isActive === false && (await workloadOf(user._id)).open > 0) throw ApiError.badRequest('Use offboarding and choose a colleague to receive this person’s work.');
   if (name) user.name = name;
   if (department) user.department = department;
   if (role) user.role = role;
@@ -147,7 +149,7 @@ export const update = asyncHandler(async (req, res) => {
 
   await user.save();
   res.json({ success: true, data: publicUser(user) });
-});
+}));
 
 /** Replaces a user's grants wholesale, so the request is the complete intended state. */
 export const setAccess = asyncHandler(async (req, res) => {
@@ -201,7 +203,7 @@ export const workload = asyncHandler(async (req, res) => {
  * Somebody holding open work cannot be removed without saying where it goes. Anyone with
  * nothing open can be deactivated on the spot.
  */
-export const remove = asyncHandler(async (req, res) => {
+export const remove = asyncHandler(async (req, res) => withOwnerLocks([req.params.id, req.query.transferTo || req.body?.transferTo], async () => {
   const user = await User.findById(req.params.id);
   if (!user) throw ApiError.notFound('User not found');
 
@@ -239,6 +241,8 @@ export const remove = asyncHandler(async (req, res) => {
       throw ApiError.badRequest(`${successor.name} is not active, so the work would go nowhere`);
     }
 
+    user.isActive = false;
+    await user.save();
     moved = await transferBook(user._id, successor._id);
 
     // A whole book changing hands is the single largest ownership event the system has, and
@@ -257,4 +261,4 @@ export const remove = asyncHandler(async (req, res) => {
   await user.save();
 
   res.json({ success: true, data: { ...publicUser(user), transferred: moved } });
-});
+}));

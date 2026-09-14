@@ -224,7 +224,7 @@ export const sampleBoard = asyncHandler(async (req, res) => {
       'number customer enquiry lead mould modelNumber colour printing quantity purpose status ' +
       'requiredDate requestedAt assignedTo requestedBy courier awbNumber dispatchedQuantity ' +
       'colourMandatory dispatchedColour ' +
-      'statusHistory.from statusHistory.to statusHistory.at createdAt',
+      'statusHistory.from statusHistory.to statusHistory.at createdAt updatedAt',
     populate: [
       /* The customer and its owner, for the same reason the list carries them — see POPULATE. */
       {
@@ -571,6 +571,8 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
   if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
+
+  expectVersion(sample, req.body);
 
   const { status, note, courier, awbNumber, dispatchedAt, dispatchedQuantity, dispatchedColour } =
     req.body;

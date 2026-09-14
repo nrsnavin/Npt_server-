@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 
 /**
@@ -332,4 +333,5 @@ export const mouldWithPhoto = (path = 'mould', select = 'mouldCode name') => ({
   populate: { path: 'photo', select: 'key' },
 });
 
+protectWrites(mouldSchema);
 export default mongoose.model('Mould', mouldSchema);

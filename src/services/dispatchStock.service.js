@@ -1,5 +1,5 @@
 import Dispatch, { CLOSED_DISPATCH_STATUSES, GONE_DISPATCH_STATUSES } from '../models/Dispatch.js';
-import { ROLLED_UP_STATUSES } from './production.service.js';
+import { ROLLED_UP_STATUSES, orderStatusFor } from './production.service.js';
 
 /**
  * What is free to put on a lorry [BLUEPRINT §17–19].
@@ -212,7 +212,7 @@ export function orderStatusFromStock(stock) {
 export function rollUpDispatchStatus(order, stock, user) {
   if (!DISPATCH_ROLLED_UP_STATUSES.includes(order.status)) return null;
 
-  const next = orderStatusFromStock(stock);
+  const next = orderStatusFromStock(stock) || (['dispatch_planning', 'part_dispatched', 'fully_dispatched'].includes(order.status) ? orderStatusFor(order.lines) : null);
   if (!next || next === order.status) return null;
 
   order.statusHistory.push({

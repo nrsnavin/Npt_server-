@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import { normalisePhone } from '../utils/phone.js';
@@ -69,4 +70,5 @@ userSchema.methods.hasPassword = function hasPassword() {
   return Boolean(this.password);
 };
 
+protectWrites(userSchema);
 export default mongoose.model('User', userSchema);

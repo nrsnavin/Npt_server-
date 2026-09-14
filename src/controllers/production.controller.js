@@ -1,3 +1,5 @@
+import { stockFor } from '../services/dispatchStock.service.js';
+import { withOrderLock } from '../services/operationLock.service.js';
 import SalesOrder, { PRODUCTION_STATUSES, PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -186,7 +188,7 @@ export const exportProductionLines = asyncHandler(async (req, res) => {
  * let somebody set the word and the number in either order with a moment in between where the
  * record contradicts itself.
  */
-export const updateProductionLine = asyncHandler(async (req, res) => {
+export const updateProductionLine = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -238,6 +240,10 @@ export const updateProductionLine = asyncHandler(async (req, res) => {
    * starts §25's dispatch clock and what tells despatch there is something to collect — and both
    * need the *previous* count, which the assignment loop below is about to overwrite.
    */
+  const stock = await stockFor(order);
+  const claim = stock.find(row => String(row.orderLine) === String(line._id));
+  if (next.readyQty < (claim?.reserved || 0) + (claim?.dispatched || 0)) throw ApiError.conflict('Packed quantity cannot be lower than the pieces already reserved or dispatched. Resolve the affected consignments first.');
+
   const packedMore = next.readyQty > (line.production.readyQty || 0);
 
   for (const field of [
@@ -313,7 +319,7 @@ export const updateProductionLine = asyncHandler(async (req, res) => {
     /* Said out loud, because the plant did not ask for it and will see it on the order. */
     orderMovedTo: moved,
   });
-});
+}));
 
 /* ------------------------------ The plant's day ------------------------------ */
 

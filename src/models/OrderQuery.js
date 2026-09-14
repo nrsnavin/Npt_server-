@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { DEPARTMENTS } from '../config/modules.js';
 
@@ -145,4 +146,5 @@ orderQuerySchema.virtual('waitingHours').get(function waitingHours() {
 orderQuerySchema.set('toJSON', { virtuals: true });
 orderQuerySchema.set('toObject', { virtuals: true });
 
+protectWrites(orderQuerySchema);
 export default mongoose.model('OrderQuery', orderQuerySchema);

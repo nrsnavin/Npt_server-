@@ -1,3 +1,4 @@
+import { versioned } from './pipeline.schemas.js';
 import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from '../models/Mould.js';
 import { SAMPLE_PURPOSES, SAMPLE_STATUSES, FEEDBACK_STATUSES } from '../models/Sample.js';
@@ -88,6 +89,7 @@ export const sampleAssignSchema = z.object({ assignedTo: objectId.nullable().opt
  * is on a different grant, so the schema refuses them before the controller has to explain.
  */
 export const sampleStatusSchema = z.object({
+  ...versioned,
   status: z.enum(SAMPLE_STATUSES).refine((status) => !FEEDBACK_STATUSES.includes(status), {
     message: 'Record customer feedback through the feedback action',
   }),

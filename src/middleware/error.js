@@ -10,7 +10,9 @@ export function notFoundHandler(req, _res, next) {
 export function errorHandler(err, _req, res, _next) {
   let error = err;
 
-  if (err instanceof mongoose.Error.ValidationError) {
+  if (err instanceof mongoose.Error.VersionError || err instanceof mongoose.Error.DocumentNotFoundError) {
+    error = ApiError.conflict('Someone else changed this record. Reload it and try your change again.');
+  } else if (err instanceof mongoose.Error.ValidationError) {
     error = ApiError.badRequest(
       'Validation failed',
       Object.values(err.errors).map((item) => ({ field: item.path, message: item.message }))

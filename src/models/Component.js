@@ -1,3 +1,4 @@
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 
 /**
@@ -89,4 +90,5 @@ componentSchema.index({ name: 'text', code: 'text' });
 componentSchema.set('toJSON', { virtuals: true });
 componentSchema.set('toObject', { virtuals: true });
 
+protectWrites(componentSchema);
 export default mongoose.model('Component', componentSchema);

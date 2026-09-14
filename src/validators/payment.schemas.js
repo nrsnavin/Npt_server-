@@ -10,7 +10,7 @@ import { JUDGED_STATUSES, RECEIPT_MODES } from '../models/Receivable.js';
  */
 
 /** Money, to the paisa, and never zero: a receipt of nothing is a row that means nothing. */
-const money = z.number().positive().max(1e11);
+const money = z.number().positive().max(1e11).multipleOf(0.01, 'Use whole paise');
 
 export const advanceSchema = z.strictObject({
   amount: money,
@@ -32,6 +32,7 @@ export const followUpSchema = z.strictObject({
 });
 
 export const receiptSchema = z.strictObject({
+  idempotencyKey: z.string().trim().min(1).max(128).optional(),
   amount: money,
   receivedAt: z.coerce.date().optional(),
   mode: z.enum(RECEIPT_MODES).optional(),

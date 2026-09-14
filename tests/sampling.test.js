@@ -1247,6 +1247,7 @@ test('the bench’s day separates what is new, what is late and what needs a nex
   const fresh = await requestSample((await raiseEnquiry())._id);
 
   const working = await requestSample((await raiseEnquiry())._id);
+  await api(`/api/samples/${working._id}`, { method: 'PATCH', token: meera, body: { requiredDate: soon(1) } });
   await api(`/api/samples/${working._id}/status`, {
     method: 'POST', token: meera, body: { status: 'printing_required' },
   });
@@ -1316,6 +1317,7 @@ test('the register lists late first, then first come first served, like the day 
    */
   const first = await requestSample((await raiseEnquiry())._id);
   const second = await requestSample((await raiseEnquiry())._id);
+  await api(`/api/samples/${first._id}`, { method: 'PATCH', token: meera, body: { requiredDate: soon(1) } });
 
   /* Make the *later* of the two late, so precedence is actually being tested: on the old
      ordering it would sit below the earlier one, and on this one it has to sit above it. */

@@ -1,3 +1,4 @@
+import { applyPaymentPositions } from './paymentPosition.service.js';
 import Receivable, { PAYMENT_ESCALATIONS } from '../models/Receivable.js';
 import Customer from '../models/Customer.js';
 import User from '../models/User.js';
@@ -185,6 +186,8 @@ export async function runPaymentEscalations({ now = new Date() } = {}) {
     .populate('customer', 'code name')
     .populate('order', 'number')
     .limit(1000);
+
+  await applyPaymentPositions(due);
 
   /* Fetched once: the same handful of managers is told about every late invoice, and one query
      per receivable would be a query per row on a list that gets long precisely when it is busy. */

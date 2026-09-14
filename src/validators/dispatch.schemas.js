@@ -23,6 +23,8 @@ const dispatchLine = z.object({
   remarks: z.string().max(500).optional(),
 });
 
+const dispatchLines = z.array(dispatchLine).min(1).refine(lines => new Set(lines.map(line => String(line.orderLine))).size === lines.length, 'Each order line can appear only once in a consignment');
+
 const destination = z.object({
   name: z.string().max(200).optional(),
   address: z.string().max(500).optional(),
@@ -56,7 +58,7 @@ const paperwork = {
 
 export const dispatchSchema = z.object({
   order: objectId,
-  lines: z.array(dispatchLine).min(1, 'Say what is going on the lorry'),
+  lines: dispatchLines,
   ...paperwork,
 });
 
@@ -70,7 +72,7 @@ export const dispatchSchema = z.object({
 export const dispatchUpdateSchema = z
   .strictObject({
     /** Accepted only before the lorry is loaded — the controller holds that rule. */
-    lines: z.array(dispatchLine).min(1).optional(),
+    lines: dispatchLines.optional(),
     deliveredAt: z.coerce.date().optional(),
     ...paperwork,
     ...versioned,
@@ -88,6 +90,7 @@ export const dispatchUpdateSchema = z
  * the person save a form, read a refusal, and save it again.
  */
 export const dispatchActionSchema = z.object({
+  ...versioned,
   action: z.enum(DISPATCH_ACTION_KEYS),
   note: z.string().max(2000).optional(),
   cancellationReason: z.string().max(500).optional(),

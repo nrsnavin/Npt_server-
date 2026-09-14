@@ -1,3 +1,5 @@
+import { protectOwnership } from '../utils/ownershipWrites.js';
+import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { CUSTOMER_SOURCES } from './Customer.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
@@ -279,4 +281,6 @@ enquirySchema.set('toObject', { virtuals: true });
 /** §8: present and null until the WhatsApp front door lands, so nothing is migrated then. */
 withConversationRef(enquirySchema);
 
+protectWrites(enquirySchema);
+protectOwnership(enquirySchema);
 export default mongoose.model('Enquiry', enquirySchema);
