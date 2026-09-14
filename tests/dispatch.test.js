@@ -428,25 +428,76 @@ test('despatch may load a lorry; marketing may only watch it', async () => {
   assert.equal(tracker.status, 200, tracker.json.message);
 });
 
-test('the invoice value is hidden from despatch and shown to marketing', async () => {
+/**
+ * §19 will not release a consignment without a positive invoice value, and despatch is the only
+ * group that fills the form in. Hiding the field from them left the gate naming a requirement
+ * they had no way to satisfy — the board said "still needs a positive invoice value" and the
+ * box was not on their screen.
+ */
+test('despatch reads the invoice value on the consignment, because they type it', async () => {
   const line = await readyLine({ readyQty: 20000 });
   const made = await raise(shared, [{ orderLine: line._id, quantity: 5000 }], {
     ...PAPERS, invoice: { number: 'INV-2026-0094', value: 37500 },
   });
   assert.equal(made.status, 201, made.json.message);
 
-  /* Despatch prepares the paperwork against a figure accounts gives them. What the goods are
-     worth is not a fact they need in order to load a lorry. */
   const theirs = await api(`/api/dispatches/${made.json.data._id}`, { token: kavitha });
   assert.equal(theirs.json.data.invoice.number, 'INV-2026-0094');
-  assert.equal(theirs.json.data.invoice.value, undefined);
-  assert.equal(theirs.json.data.valueHidden, true);
+  assert.equal(theirs.json.data.invoice.value, 37500, 'the figure on the paper in their hand');
+  assert.notEqual(theirs.json.data.valueHidden, true);
 
   const marketing = await api(`/api/dispatches/${made.json.data._id}`, { token: nandhini });
   assert.equal(marketing.json.data.invoice.value, 37500);
 });
 
-test('the export carries the redaction the screen does', async () => {
+test('despatch can write the invoice value, and §19 then lets the lorry go', async () => {
+  /* The whole point: the value arrives from the same person the gate is blocking. */
+  const line = await readyLine({ readyQty: 20000 });
+  const made = await raise(shared, [{ orderLine: line._id, quantity: 4000 }], {
+    ...PAPERS, invoice: { number: 'INV-2026-0099' },
+  }, kavitha);
+  assert.equal(made.status, 201, made.json.message);
+
+  const before = await api(`/api/dispatches/${made.json.data._id}`, { token: kavitha });
+  assert.ok(
+    before.json.outstanding?.some((item) => /invoice value/i.test(item)),
+    'the gate is asking for it'
+  );
+
+  const typed = await api(`/api/dispatches/${made.json.data._id}`, {
+    method: 'PATCH',
+    token: kavitha,
+    body: { invoice: { value: 29000 } },
+  });
+  assert.equal(typed.status, 200, typed.json.message);
+  assert.equal(typed.json.data.invoice.value, 29000, 'and reads back what they just typed');
+  assert.equal(typed.json.data.invoice.number, 'INV-2026-0099', 'without wiping the rest');
+  assert.ok(
+    !(typed.json.outstanding || []).some((item) => /invoice value/i.test(item)),
+    'the gate stops asking'
+  );
+});
+
+/**
+ * And the line that did not move.
+ *
+ * Letting despatch read one consignment's invoice is not letting them read the order's
+ * commercial terms. §8 is about the plant's own position — the rates it agreed, the margin it
+ * is taking — and none of that is on a lorry's paperwork.
+ */
+test('despatch still sees no money on the order itself', async () => {
+  const order = await api(`/api/orders/${shared._id}`, { token: kavitha });
+
+  assert.equal(order.json.data.valueHidden, true);
+  assert.equal(order.json.data.netValue, undefined);
+  assert.equal(order.json.data.gstPercent, undefined);
+  for (const line of order.json.data.lines || []) {
+    assert.equal(line.unitPrice, undefined, '§8: never the rate');
+    assert.equal(line.lineValue, undefined, '§8: never the line value');
+  }
+});
+
+test('the export carries the same answer the screen gives', async () => {
   const response = await fetch(`${baseUrl}/api/dispatches/export`, {
     headers: { Authorization: `Bearer ${kavitha}` },
   });
@@ -454,8 +505,27 @@ test('the export carries the redaction the screen does', async () => {
 
   assert.equal(response.status, 200);
   assert.match(csv, /Consignment,Order,Customer/);
-  /* A redaction the Export button walks around is not a redaction. */
-  assert.doesNotMatch(csv, /Invoice value/);
+  /* The screen shows despatch the invoice value now, so the file must too — a redaction the
+     Export button walks around is not a redaction, and neither is one it applies alone. */
+  assert.match(csv, /Invoice value/);
+});
+
+test('a reader with neither grant still gets no invoice value', async () => {
+  /* Production watches a consignment through §19's tracker on the order. They neither prepare
+     the paperwork nor chase the money, so nothing here changed for them. */
+  const line = await readyLine({ readyQty: 20000 });
+  const made = await raise(shared, [{ orderLine: line._id, quantity: 3000 }], {
+    ...PAPERS, invoice: { number: 'INV-2026-0101', value: 22500 },
+  });
+  assert.equal(made.status, 201, made.json.message);
+
+  const tracker = await api(`/api/orders/${shared._id}/dispatches`, { token: ramesh });
+  assert.equal(tracker.status, 200, tracker.json.message);
+
+  const seen = (tracker.json.data || []).find((row) => row._id === made.json.data._id);
+  assert.ok(seen, 'production can see the consignment exists');
+  assert.equal(seen.invoice?.value, undefined, 'without what it is worth');
+  assert.equal(seen.valueHidden, true);
 });
 
 /* --------------------------- What is free to send --------------------------- */

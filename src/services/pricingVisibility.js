@@ -325,19 +325,38 @@ export const allOrdersVisibleTo = (rows, user) => rows.map((row) => orderVisible
  * destination, the transporter, the vehicle, the invoice *number*, the LR and the dates all go
  * to anybody who may open it.
  *
- * The invoice **value** does not, and it is the one field here that behaves like a price. It is
- * the order's own money arriving through a second door — a consignment for the whole of a
- * 50,000-piece line states what that line is worth, and a despatch clerk who may not see the
- * rate on the order can divide. Same rule as the order, read off the same grants: whoever may
- * read a quotation or chase a payment sees it, and nobody else.
+ * The invoice **value** is the one field here that behaves like a price, so it is held back —
+ * but not from despatch, and the exception is the point.
  *
- * Note that despatch and production hold neither grant by default, and that is right. They
- * prepare the paperwork against a figure accounts gives them; what the goods are worth is not
- * a fact they need in order to load a lorry.
+ * §19 will not let a consignment leave without `invoice.value` among five other documents, and
+ * despatch is the only group that fills that form in. Hiding the field from them left the gate
+ * naming a requirement they had no way to satisfy: the board said "still needs a positive
+ * invoice value" and the box was not on their screen. A redaction that blocks the work it is
+ * redacting is not a rule, it is a bug wearing one.
+ *
+ * And the fiction was thin anyway. The tax invoice is a piece of paper in the despatch clerk's
+ * hand — they are reading the figure off it in order to type it, and the rate per piece is
+ * printed on it beside the quantity. What §8 actually protects is the plant's own commercial
+ * position: the cost base, the margin, the floor, and the rates on the *order*. None of that
+ * moves here — `orderVisibleTo` still redacts every one of them for despatch, so the order
+ * screen is as bare as it was.
+ *
+ * Worth being plain about the consequence: a consignment for the whole of a 50,000-piece line
+ * states what that line is worth, and anyone who can see the quantity beside it can divide. The
+ * judgement is that a despatch clerk holding the invoice already has that number, and blocking
+ * the dispatch gate to pretend otherwise costs more than it protects.
+ *
+ * Production, quality and sampling hold no dispatch grant and see no change.
  */
+export const seesConsignmentValue = (user) =>
+  seesOrderValue(user) ||
+  /* At any level: reading a consignment and writing its paperwork are the same job on this
+     module, and a reader who may open the lorry's documents may read the invoice on them. */
+  Boolean(accessLevel(user, 'dispatch'));
+
 export function dispatchVisibleTo(dispatch, user) {
   const plain = typeof dispatch?.toJSON === 'function' ? dispatch.toJSON() : { ...dispatch };
-  if (seesOrderValue(user)) return plain;
+  if (seesConsignmentValue(user)) return plain;
 
   if (plain.invoice) {
     const { value, ...invoice } = plain.invoice;
