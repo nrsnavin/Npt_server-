@@ -1402,3 +1402,70 @@ test('a costing cannot be added to another customer’s quotation', async () => 
   assert.equal(crossed.status, 400);
   assert.match(crossed.json.message, /different customer/i);
 });
+
+/* ------------------------- Sorting, and what it can leak ------------------------- */
+
+/**
+ * An ordering is information about the field it orders by.
+ *
+ * This is the hole a sortable table opens. §8's redaction deletes the cost base on the way out,
+ * and `?sort=markupPercent` hands back the very same sheets *ranked by the figure it deleted* —
+ * cheapest job first is a fact about the cost base, and a few requests with a moving filter
+ * narrow a hidden number a long way. Nothing errors; the response looks exactly like a sorted
+ * list, because it is one.
+ */
+test('marketing cannot order the register by a figure §8 hides from them', async () => {
+  for (const field of ['markupPercent', 'minimumOverride']) {
+    const refused = await api(`/api/pricings?sort=-${field}`, { token: nandhini });
+    assert.equal(refused.status, 400, `${field} must not be a sort key for marketing`);
+    assert.match(refused.json.message, /Cannot sort by/);
+    assert.ok(!refused.json.data, 'and no rows come back');
+  }
+});
+
+test('costing can, because it is their own column', async () => {
+  const { status, json } = await api('/api/pricings?sort=-markupPercent&limit=50', { token: admin });
+  assert.equal(status, 200, json.message);
+
+  const markups = json.data.map((row) => row.markupPercent).filter((value) => value != null);
+  assert.ok(markups.length > 1, 'needs at least two sheets to be an ordering');
+  assert.deepEqual(
+    markups,
+    [...markups].sort((a, b) => b - a),
+    'descending is descending'
+  );
+});
+
+test('both may sort by the price marketing is meant to see', async () => {
+  /* `approvedSellingPrice` is on PUBLIC_FIGURES — it is the price they quote, so ordering by it
+     tells them nothing they did not already have on the screen. */
+  for (const token of [admin, nandhini]) {
+    const { status } = await api('/api/pricings?sort=approvedSellingPrice', { token });
+    assert.equal(status, 200);
+  }
+});
+
+test('a field that is not a column at all is refused, and the message says what is', async () => {
+  const refused = await api('/api/pricings?sort=customer.gstin', { token: admin });
+
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.message, /Cannot sort by "customer\.gstin"/);
+  /* Named rather than left to guesswork: a screen asking for an ordering it cannot have is a
+     bug, and a refusal that does not say what is allowed is a bug somebody has to bisect. */
+  assert.match(refused.json.message, /This list sorts by: .*number/);
+});
+
+/**
+ * The virtuals, which are the trap on this particular list.
+ *
+ * `totalCost` and `grossMarginPercent` are computed on the way out of the document — there is
+ * nothing in the collection to order by, so Mongo would return the default order and the table
+ * would draw an arrow over a column it had not sorted. Refusing is the honest answer, and it is
+ * refused for costing too: this one is not about permissions at all.
+ */
+test('a virtual cannot be sorted by, and is refused rather than silently ignored', async () => {
+  for (const field of ['totalCost', 'grossMarginPercent', 'minimumSellingPrice']) {
+    const refused = await api(`/api/pricings?sort=-${field}`, { token: admin });
+    assert.equal(refused.status, 400, `${field} is a virtual and cannot order a query`);
+  }
+});

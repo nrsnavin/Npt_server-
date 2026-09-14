@@ -13,7 +13,7 @@ import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { EVENTS, publish } from '../services/events.service.js';
-import { allVisibleTo, assertMayCost, visibleTo } from '../services/pricingVisibility.js';
+import { allVisibleTo, assertMayCost, seesCosting, visibleTo } from '../services/pricingVisibility.js';
 import { ownsRecord } from '../services/ownership.service.js';
 import { priceFrom } from '../services/pricing.service.js';
 
@@ -151,10 +151,40 @@ async function partsFrom(body) {
   return parts;
 }
 
+/**
+ * What the costing register will order by, and the one place on these screens where the answer
+ * depends on who is asking.
+ *
+ * An ordering is information about the field it orders by. §8 keeps the cost base and the floor
+ * away from marketing, and `?sort=markupPercent` would hand them back the same sheets ranked by
+ * a figure `visibleTo` had just deleted — cheapest job first is a fact about the cost base, and
+ * a few requests with a moving filter narrow it a long way. A redaction the sort parameter walks
+ * around is not a redaction. So the confidential keys are offered only to a reader who could
+ * already read those columns.
+ *
+ * The split follows `CONFIDENTIAL` and `PUBLIC_FIGURES` in `pricingVisibility` rather than a
+ * fresh judgement about each field: the approved price, the target and the quantity are money
+ * marketing is *meant* to see, and the markup and the override are not.
+ *
+ * Most of `CONFIDENTIAL` appears on neither list, for a second and simpler reason: `totalCost`,
+ * `minimumSellingPrice`, `grossMarginPercent` and the tiers are virtuals, computed on the way
+ * out of the document, so there is nothing in the collection for Mongo to order by. Offering
+ * them would produce a table that draws a sort arrow and does not sort — which is worse than a
+ * column that cannot be sorted at all, because it looks like it worked.
+ */
+const PRICING_SORTABLE = [
+  'number', 'requestedAt', 'quantity', 'status', 'modelNumber',
+  'approvedSellingPrice', 'calculatedSellingPrice', 'targetPrice',
+];
+const PRICING_COSTING_SORTABLE = ['markupPercent', 'minimumOverride'];
+
 export const listPricings = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = listParams(req.query, {
     searchFields: ['number', 'modelNumber'],
     defaultSort: '-requestedAt',
+    sortable: seesCosting(req.user)
+      ? [...PRICING_SORTABLE, ...PRICING_COSTING_SORTABLE]
+      : PRICING_SORTABLE,
   });
 
   if (req.query.status) filter.status = { $in: String(req.query.status).split(',') };

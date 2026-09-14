@@ -475,8 +475,22 @@ export const checkDuplicateCustomer = asyncHandler(async (req, res) => {
 
 /* --------------------------------- Leads --------------------------------- */
 
+/**
+ * What the leads table will order by — the columns it actually draws, and nothing else.
+ *
+ * `company` rather than a contact name, because the table leads with the firm. `estimatedValue`
+ * is on the list and is not a §8 figure: a lead's estimate is marketing's own guess about a
+ * party who has not said what they want yet, not a price the plant has worked out.
+ */
+const LEAD_SORTABLE = [
+  'number', 'company', 'city', 'estimatedValue', 'nextFollowUpDate', 'status', 'createdAt',
+];
+
 export const listLeads = asyncHandler(async (req, res) => {
-  const { page, limit, sort } = listParams(req.query, { searchFields: LEAD_SEARCH_FIELDS });
+  const { page, limit, sort } = listParams(req.query, {
+    searchFields: LEAD_SEARCH_FIELDS,
+    sortable: LEAD_SORTABLE,
+  });
 
   const filter = leadFilters(req);
 
@@ -1128,10 +1142,24 @@ async function enquiryFilters(req, { withStatus = true } = {}) {
   return filter;
 }
 
+/**
+ * The enquiry table's orderings.
+ *
+ * `requirement.quantity` is reachable by its path, which is how Mongoose spells a nested field
+ * and what the column shows. The estimated value is marketing's own figure here too — the
+ * costing that §8 protects does not exist yet at this stage, which is the whole reason an
+ * enquiry becomes one.
+ */
+const ENQUIRY_SORTABLE = [
+  'number', 'enquiryDate', 'requirement.quantity', 'estimatedValue',
+  'nextFollowUpDate', 'status', 'createdAt',
+];
+
 export const listEnquiries = asyncHandler(async (req, res) => {
   const { page, limit, sort } = listParams(req.query, {
     searchFields: ENQUIRY_SEARCH_FIELDS,
     defaultSort: '-enquiryDate',
+    sortable: ENQUIRY_SORTABLE,
   });
 
   const filter = await enquiryFilters(req);

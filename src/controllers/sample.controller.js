@@ -140,6 +140,15 @@ export const listSamples = asyncHandler(async (req, res) => {
      * the two screens now differ in what they *show*, never in how they are read.
      */
     defaultSort: 'number',
+    /*
+     * The columns the register draws, and no more.
+     *
+     * Asking for any of these is also asking for the late-first grouping below to be dropped —
+     * see the note there. That is the right trade and it is the reader's to make: somebody who
+     * clicks "Required by" wants the requests in date order, not lateness first and date second,
+     * which would produce a column that sorts within invisible bands.
+     */
+    sortable: ['number', 'requestedAt', 'requiredDate', 'quantity', 'status', 'modelNumber'],
   });
 
   const filter = sampleFilters(req);
