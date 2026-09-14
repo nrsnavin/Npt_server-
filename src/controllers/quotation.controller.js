@@ -37,6 +37,16 @@ const POPULATE = [
   { path: 'customer', select: 'code name' },
   { path: 'enquiry', select: 'number status' },
   { path: 'assignedTo', select: 'name' },
+  /*
+   * The costing behind each line, on the list and not only on the detail.
+   *
+   * "What did we work this price out from?" is the first question asked of a quotation that has
+   * gone to a customer, and answering it used to mean opening the document and then opening the
+   * sheet — two screens deep, for a fact that belongs on the row. Whole rather than projected,
+   * and narrowed per line below: the sheet's totals are virtuals recomputed on the way out
+   * whatever a `select` said, so a projection here would be a redaction that does not redact.
+   */
+  { path: 'lines.pricing' },
 ];
 
 /**
@@ -152,6 +162,23 @@ export const listQuotations = asyncHandler(async (req, res) => {
   if (req.query.enquiry) filter.enquiry = req.query.enquiry;
   if (req.query.customer) filter.customer = req.query.customer;
 
+  /*
+   * Has it actually gone to the customer?
+   *
+   * Not a status — that is the point of asking it separately. `sent` is only the state a quote
+   * sits in between going out and being answered; a quotation that was sent and then revised,
+   * accepted or refused has left the building just the same, and a board built on
+   * `status === 'sent'` would quietly drop every one of them. `sentAt` is the fact: it is
+   * stamped once, on the way out, and nothing afterwards clears it.
+   */
+  const sentOnly =
+    req.query.sent === 'true'
+      ? { sentAt: { $ne: null } }
+      : req.query.sent === 'false'
+        ? { sentAt: null }
+        : null;
+  if (sentOnly) Object.assign(filter, sentOnly);
+
   const [data, total, stages] = await Promise.all([
     Quotation.find(filter).populate(POPULATE).sort(sort).skip((page - 1) * limit).limit(limit),
     Quotation.countDocuments(filter),
@@ -163,7 +190,13 @@ export const listQuotations = asyncHandler(async (req, res) => {
      * schema one and gets chased for a day.
      */
     Quotation.aggregate([
-      { $match: scope },
+      /*
+       * The chips still count the whole board rather than the chip that is selected — that is
+       * what makes them a pipeline and not a echo of the current filter. But `sent` is the board,
+       * not a chip: on a screen showing only what has gone out, a Draft chip counting drafts
+       * would offer a filter that can only ever come back empty.
+       */
+      { $match: sentOnly ? { ...scope, ...sentOnly } : scope },
       {
         $group: {
           _id: '$status',
@@ -192,7 +225,22 @@ export const listQuotations = asyncHandler(async (req, res) => {
     ]),
   ]);
 
-  paginated(res, data, { page, limit, total }, {
+  /*
+   * The same allow-list `getQuotation` runs, for the same reason and by the same route. Two
+   * people reading one list see different things about the same line, which is a property of the
+   * reader rather than of the query — so it cannot live in the projection, and the populate above
+   * deliberately fetched the sheet whole so that this is the only thing standing between a cost
+   * base and the screen.
+   */
+  const rows = data.map((quotation) => {
+    const row = quotation.toJSON();
+    for (const line of row.lines || []) {
+      line.pricing = lineCosting(line.pricing, line.unitPrice, req.user);
+    }
+    return row;
+  });
+
+  paginated(res, rows, { page, limit, total }, {
     stageCounts: Object.fromEntries(
       stages.map((row) => [row._id, { leads: row.leads, value: Math.round(row.value || 0) }])
     ),

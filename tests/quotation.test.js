@@ -924,3 +924,130 @@ test('an eight-model quotation does not spill blank pages', async () => {
   const pages = Number(pdf.match(/\/Count\s+(\d+)/)?.[1]);
   assert.ok(pages >= 1 && pages <= 2, `eight lines should not need ${pages} pages`);
 });
+
+/* ---------------------- What has actually gone to a buyer ---------------------- */
+
+/**
+ * `sent` is a question about the document, not about its status.
+ *
+ * The distinction is the whole reason the filter exists. `sent` is only the state a quotation
+ * rests in between leaving the building and being answered; the moment the buyer says something,
+ * or the price moves, the status becomes `accepted`, `rejected` or `revised` — and every one of
+ * those has still been in front of a customer. A board built on the status would show a plant
+ * three quotations out with buyers when it has sent thirty.
+ */
+test('sent=true is every quote that has left the building, whatever its status now says', async () => {
+  const draft = await quote({ modelNumber: 'SENT-DRAFT' });
+
+  const gone = await quote({ modelNumber: 'SENT-PLAIN' });
+  await api(`/api/quotations/${gone._id}/send`, { method: 'POST', token: nandhini, body: {} });
+
+  /* Sent, then the price moved: `revised`, and still something the buyer has seen. */
+  const moved = await quote({ modelNumber: 'SENT-REVISED' });
+  await api(`/api/quotations/${moved._id}/send`, { method: 'POST', token: nandhini, body: {} });
+  await api(`/api/quotations/${moved._id}/revisions`, {
+    method: 'POST',
+    token: nandhini,
+    body: { lines: [{ quantity: 40000, modelNumber: 'SENT-REVISED', unitPrice: 7.1 }] },
+  });
+
+  /* Sent, then answered: `accepted`, and the one people most often go looking for. */
+  const won = await quote({ modelNumber: 'SENT-WON' });
+  await api(`/api/quotations/${won._id}/send`, { method: 'POST', token: nandhini, body: {} });
+  await api(`/api/quotations/${won._id}/response`, {
+    method: 'POST',
+    token: nandhini,
+    body: { accepted: true },
+  });
+
+  const { json } = await api('/api/quotations?sent=true&limit=200', { token: admin });
+  const ids = json.data.map((row) => String(row._id));
+
+  assert.ok(ids.includes(String(gone._id)), 'the plain sent one');
+  assert.ok(ids.includes(String(moved._id)), 'and the one revised after going out');
+  assert.ok(ids.includes(String(won._id)), 'and the one the buyer accepted');
+  assert.ok(!ids.includes(String(draft._id)), 'but never a draft nobody has been shown');
+  assert.ok(json.data.every((row) => row.sentAt), 'nothing on this board is unsent');
+});
+
+test('sent=false is the other half, and the two do not overlap', async () => {
+  const draft = await quote({ modelNumber: 'UNSENT-ONE' });
+  const gone = await quote({ modelNumber: 'UNSENT-TWO' });
+  await api(`/api/quotations/${gone._id}/send`, { method: 'POST', token: nandhini, body: {} });
+
+  const { json } = await api('/api/quotations?sent=false&limit=200', { token: admin });
+  const ids = json.data.map((row) => String(row._id));
+
+  assert.ok(ids.includes(String(draft._id)));
+  assert.ok(!ids.includes(String(gone._id)));
+  assert.ok(json.data.every((row) => !row.sentAt));
+});
+
+/**
+ * The stage chips follow the board they sit on.
+ *
+ * Everywhere else in this application the pipeline counts the whole register rather than the
+ * current filter, because that is what makes it a pipeline and not an echo. `sent` is the
+ * exception, and deliberately: it scopes the screen rather than selecting within it, so a Draft
+ * chip counting drafts on a sent-only board would offer a filter that can only come back empty.
+ */
+test('the stage counts on a sent board count only what was sent', async () => {
+  const draft = await quote({ modelNumber: 'COUNT-DRAFT' });
+
+  const { json } = await api('/api/quotations?sent=true&limit=200', { token: admin });
+  const drafts = json.stageCounts?.draft?.leads ?? 0;
+
+  const everything = await api('/api/quotations?limit=200', { token: admin });
+  assert.ok(
+    (everything.json.stageCounts?.draft?.leads ?? 0) > drafts,
+    'the unscoped board still counts the drafts the sent board leaves out'
+  );
+  assert.ok(draft._id, 'a draft exists to be left out');
+});
+
+/**
+ * The costing on the row, not two screens down.
+ *
+ * "What did we work this price out from?" is the first question asked of a quotation that has
+ * gone out. It was answerable only by opening the document and then opening the sheet.
+ */
+test('a listed line carries the costing it was priced off', async () => {
+  const pricing = await withCosting({ minimum: 7, approved: 7.5 });
+  const made = await quote({ pricing, unitPrice: 7.5, modelNumber: 'ATTACHED' });
+  await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
+
+  const { json } = await api('/api/quotations?sent=true&limit=200', { token: admin });
+  const row = json.data.find((entry) => String(entry._id) === String(made._id));
+
+  assert.ok(row, 'the quote is on the board');
+  assert.ok(row.lines[0].pricing, 'and its line names the sheet behind it');
+  assert.match(row.lines[0].pricing.number, /^PR/i);
+  assert.equal(row.lines[0].pricing.minimumSellingPrice, 7, 'costing sees the floor');
+});
+
+/**
+ * And §8 holds on the list exactly as it does on the document.
+ *
+ * This is the risk the change carries: the sheet is populated whole so that the allow-list has
+ * something to work from, and an allow-list that is applied on one route and forgotten on
+ * another publishes the cost base to marketing on a screen nobody thought to check.
+ */
+test('marketing reads the same board without the cost base on it', async () => {
+  const pricing = await withCosting({ minimum: 7, approved: 7.5 });
+  const made = await quote({ pricing, unitPrice: 7.5, modelNumber: 'REDACTED' });
+  await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
+
+  const { json } = await api('/api/quotations?sent=true&limit=200', { token: nandhini });
+  const row = json.data.find((entry) => String(entry._id) === String(made._id));
+  const costing = row.lines[0].pricing;
+
+  assert.ok(costing, 'marketing still gets the sheet number, which is how they ask about it');
+  assert.equal(costing.number !== undefined, true);
+  assert.equal(costing.totalCost, undefined, '§8: never the cost base');
+  assert.equal(costing.minimumSellingPrice, undefined, '§8: never the floor');
+  assert.equal(costing.marginPercent, undefined, '§8: never the margin');
+  assert.equal(costing.belowFloor, false, 'only whether, which is what a block has to explain');
+
+  const raw = JSON.stringify(json.data);
+  assert.ok(!raw.includes('machineCostPerPiece'), 'and nothing leaks through the populated sheet');
+});
