@@ -3,6 +3,7 @@ import SalesOrder, {
   CLOSED_ORDER_STATUSES,
   ORDER_STATUSES,
   PRE_RELEASE_STATUSES,
+  RAISED_PRIORITIES,
   VERIFICATION_CHECKS,
   VERIFICATION_KEYS,
 } from '../models/SalesOrder.js';
@@ -103,6 +104,17 @@ async function orderFilters(req, { withStatus = true } = {}) {
   if (req.query.quotation) filter.quotation = req.query.quotation;
   if (req.query.enquiry) filter.enquiry = req.query.enquiry;
   if (req.query.mould) filter['lines.mould'] = req.query.mould;
+
+  /*
+   * What marketing has asked the plant to pull forward.
+   *
+   * `raised` rather than a level, because the question people actually ask the register is "what
+   * have we flagged", not "what is exactly high". A named level still works for the narrower
+   * read — `priority=critical` — and both go through the same parameter so a screen offering a
+   * toggle and a screen offering a picker cannot drift apart.
+   */
+  if (req.query.priority === 'raised') filter.priority = { $in: RAISED_PRIORITIES };
+  else if (req.query.priority) filter.priority = { $in: String(req.query.priority).split(',') };
 
   /**
    * The queue the gate creates: released, or still waiting on a check.

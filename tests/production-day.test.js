@@ -510,3 +510,58 @@ test('a second answer does not stack a second task', async () => {
   const told = await Todo.find({ originKey: `query-answered:${asked.json.data._id}` });
   assert.equal(told.length, 1);
 });
+
+/* --------------------- Finding the flagged ones on the register --------------------- */
+
+/**
+ * The register could not answer "what have we flagged?".
+ *
+ * Marketing could raise a priority and both day screens reacted, but the sales order list had
+ * no column for it and no filter — so the only way to see what had been marked was to open
+ * orders one at a time, and an over-used flag was invisible to the person best placed to notice.
+ */
+test('the order register can be asked for what has been marked urgent', async () => {
+  const flagged = await released();
+  const calm = await released();
+
+  await api(`/api/orders/${flagged._id}/priority`, {
+    method: 'POST',
+    token: nandhini,
+    body: { priority: 'high', reason: 'Buyer is chasing this one daily and threatening to move' },
+  });
+
+  const { status, json } = await api('/api/orders?priority=raised&limit=100', { token: nandhini });
+  assert.equal(status, 200, json.message);
+
+  const ids = json.data.map((row) => String(row._id));
+  assert.ok(ids.includes(String(flagged._id)), 'the flagged one is there');
+  assert.ok(!ids.includes(String(calm._id)), 'and an ordinary order is not');
+  assert.ok(
+    json.data.every((row) => row.priority && row.priority !== 'normal'),
+    'nothing normal is on a board of what was asked for'
+  );
+});
+
+test('a named level narrows it further, and the row carries who asked', async () => {
+  const order = await released();
+  await api(`/api/orders/${order._id}/priority`, {
+    method: 'POST',
+    token: nandhini,
+    body: { priority: 'critical', reason: 'First order from this buyer and they visit on Monday' },
+  });
+
+  const { json } = await api('/api/orders?priority=critical&limit=100', { token: nandhini });
+  const row = json.data.find((entry) => String(entry._id) === String(order._id));
+
+  assert.ok(row, 'the critical one comes back');
+  assert.equal(row.priority, 'critical');
+  /* The register draws the name beside the level — a request to reorder somebody's day that
+     arrives unsigned is one nobody can weigh, or push back on. */
+  assert.ok(row.priorityBy?.name, 'and names who asked, without opening the order');
+  assert.match(row.priorityReason, /visit on Monday/);
+
+  assert.ok(
+    json.data.every((entry) => entry.priority === 'critical'),
+    'high is not critical, and a filter that blurs them sorts nothing'
+  );
+});
