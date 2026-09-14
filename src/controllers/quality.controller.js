@@ -139,7 +139,7 @@ export const recordInspection = asyncHandler(async (req, res) => {
         `${inspection.number}: ${quantityRejected} of ${quantityInspected} rejected`;
       await order.save();
       await recordChange({
-        model: 'SalesOrder', documentId: order._id, before, after: snapshot(order), by: req.user,
+        model: 'SalesOrder', doc: order, before, by: req.user,
         note: `Quality hold from ${inspection.number}`,
       });
       heldLine = true;

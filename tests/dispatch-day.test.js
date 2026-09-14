@@ -164,17 +164,32 @@ test.after(async () => {
 
 /* --------------------------- The bands, on their own --------------------------- */
 
-/** A consignment as the ranking sees it: the model's virtuals, hand-made. */
-const consignment = (over = {}) => ({
-  status: 'packing',
-  shippable: true,
-  outstandingPaperwork: [],
-  isOverdue: false,
-  hasLeft: false,
-  daysSinceDispatch: null,
-  expectedDeliveryDate: inDays(5),
-  ...over,
-});
+/**
+ * A consignment as the ranking sees it: the model's virtuals, hand-made.
+ *
+ * `dueDate` is one of them, and it is derived here the way the model derives it — the promise
+ * when there is one, the plant's estimate otherwise. The ranking deliberately does not work
+ * this out for itself: a second definition of which date counts is exactly how a screen and a
+ * model come to disagree about whether something is late.
+ */
+const consignment = (over = {}) => {
+  const row = {
+    status: 'packing',
+    shippable: true,
+    outstandingPaperwork: [],
+    isOverdue: false,
+    hasLeft: false,
+    daysSinceDispatch: null,
+    expectedDeliveryDate: inDays(5),
+    ...over,
+  };
+
+  return {
+    ...row,
+    dueDate: row.promise?.date || row.expectedDeliveryDate || null,
+    dueDateIsPromise: Boolean(row.promise?.date),
+  };
+};
 
 test('a consignment past its promised delivery leads, and names who to ring', async () => {
   const chased = dispatchUrgencyOf(
@@ -451,4 +466,404 @@ test('the screen is scoped to what the reader owns, not to the whole yard', asyn
   for (const query of json.data.queries) {
     assert.equal(query.raisedBy.department !== undefined, true);
   }
+});
+
+/* ------------- What marketing asked for, carried the last mile ------------- */
+
+/**
+ * Marketing's priority and the customer's promised date, on the despatch board.
+ *
+ * These are the tests for the half of §25 that was missing. Marketing could mark an order
+ * critical and watch the press queue lift it — and then watch it arrive in despatch as an
+ * ordinary row, because `dispatchDay` populated the order with `select: 'number'` and nothing
+ * else. The last department before the buyer, and the one the buyer rings, could not see the
+ * flag. That failure is silent: the board renders perfectly, just in the wrong order.
+ */
+
+test('a priority orders a band and never moves a consignment out of one', async () => {
+  /*
+   * The rule that separates this ranking from production's. These bands are verbs, so lifting a
+   * consignment out of `load` and into `chase` would tell a clerk to ring a transporter about
+   * goods still in the yard — an instruction that contradicts the row it is printed on.
+   */
+  const ordinary = dispatchUrgencyOf(consignment(), { priority: 'normal' });
+  const urgent = dispatchUrgencyOf(consignment(), { priority: 'critical' });
+
+  assert.equal(ordinary.band, 'load');
+  assert.equal(urgent.band, 'load', 'a priority must not change what the team is told to do');
+  assert.equal(urgent.rank, ordinary.rank, 'nor which group it is told to do it in');
+
+  /* What it does change is the order inside that group. */
+  assert.ok(urgent.lift > ordinary.lift);
+  assert.equal(urgent.priority, 'critical');
+});
+
+test('inside a band, what marketing asked for comes first', async () => {
+  const rows = [
+    { id: 'normal-soon', urgency: dispatchUrgencyOf(consignment({ expectedDeliveryDate: inDays(1) }), { priority: 'normal' }) },
+    { id: 'critical-later', urgency: dispatchUrgencyOf(consignment({ expectedDeliveryDate: inDays(6) }), { priority: 'critical' }) },
+    { id: 'high-later', urgency: dispatchUrgencyOf(consignment({ expectedDeliveryDate: inDays(9) }), { priority: 'high' }) },
+  ];
+
+  const order = [...rows].sort(byDispatchUrgency).map((row) => row.id);
+
+  /* All three are "load it". A despatch team works down the list, so first in the group is
+     first on the lorry — which is the whole of what a priority buys here. */
+  assert.deepEqual(order, ['critical-later', 'high-later', 'normal-soon']);
+});
+
+test('a band still outranks a priority, because the verb has to stay true', async () => {
+  const late = { urgency: dispatchUrgencyOf(consignment({ status: 'dispatched', hasLeft: true, isOverdue: true, expectedDeliveryDate: inDays(-2) }), { priority: 'normal' }) };
+  const urgent = { urgency: dispatchUrgencyOf(consignment(), { priority: 'critical' }) };
+
+  const [first] = [urgent, late].sort(byDispatchUrgency);
+  assert.equal(first.urgency.band, 'chase', 'a customer already let down leads, whatever else is flagged');
+});
+
+test('a promise to the customer is the date lateness is measured against', async () => {
+  /*
+   * The plant plans a lorry for next week and somebody tells the buyer Thursday. Measured
+   * against the estimate this consignment is comfortable; measured against what was actually
+   * said to a customer it is late, and only one of those is a person being let down.
+   */
+  const promised = consignment({
+    status: 'dispatched',
+    hasLeft: true,
+    expectedDeliveryDate: inDays(7),
+    promise: { date: inDays(-2), note: 'Their line stops Thursday' },
+    isOverdue: true,
+  });
+
+  const urgency = dispatchUrgencyOf(promised);
+
+  assert.equal(urgency.band, 'chase');
+  assert.equal(urgency.promised, true);
+  assert.match(urgency.why[0], /Promised to the customer 2 days ago/);
+  /* And why they need it, which is the half a date cannot say. */
+  assert.ok(urgency.why.some((line) => /line stops Thursday/.test(line)), urgency.why.join(' / '));
+});
+
+test('with no promise the row still talks about arriving, not about promises', async () => {
+  const plain = dispatchUrgencyOf(
+    consignment({ status: 'dispatched', hasLeft: true, expectedDeliveryDate: inDays(-1), isOverdue: true })
+  );
+
+  assert.equal(plain.promised, false);
+  assert.match(plain.why[0], /Should have arrived yesterday/);
+  assert.ok(!plain.why.some((line) => /promised/i.test(line)), plain.why.join(' / '));
+});
+
+test('the board hands the screen the priority it was never given', async () => {
+  /*
+   * The end-to-end half. Everything above tests the ranking in isolation; this tests that the
+   * controller actually fetches the field, which is where it was broken — a populate that omits
+   * `priority` does not fail, it just returns an order that appears to have none.
+   */
+  const order = await released([
+    { mould, modelNumber: 'NH-URGENT', quantity: 30000, unitPrice: 7.5, deliveryDate: inDays(20) },
+  ]);
+  const line = order.lines[0];
+  await pack(order, line, 12000);
+
+  const raised = await api('/api/dispatches', {
+    method: 'POST', token: kavitha,
+    body: { order: order._id, lines: [{ orderLine: line._id, quantity: 12000 }], ...PAPERS },
+  });
+  assert.equal(raised.status, 201, raised.json.message);
+
+  /* Marketing owns the order, so marketing is who may say the buyer is about to walk. */
+  const flagged = await api(`/api/orders/${order._id}/priority`, {
+    method: 'POST', token: nandhini,
+    body: { priority: 'critical', reason: 'Buyer is threatening to cancel the season' },
+  });
+  assert.equal(flagged.status, 200, flagged.json.message);
+
+  const { json } = await day();
+  const everything = [
+    ...json.data.chase, ...json.data.blocked, ...json.data.load, ...json.data.watch,
+  ];
+  const found = everything.find((row) => row.number === raised.json.data.number);
+
+  assert.ok(found, 'the consignment is on the board');
+  assert.equal(found.order.priority, 'critical', 'the flag must reach the people who load it');
+  assert.equal(found.urgency.priority, 'critical');
+  assert.match(found.order.priorityReason, /threatening to cancel/);
+  assert.ok(found.order.priorityBy?.name, 'and say who asked, so it is not the system asking');
+});
+
+test('a promise set by marketing reaches the board and moves the date', async () => {
+  const order = await released([
+    { mould, modelNumber: 'NH-PROMISE', quantity: 30000, unitPrice: 7.5, deliveryDate: inDays(30) },
+  ]);
+  const line = order.lines[0];
+  await pack(order, line, 9000);
+
+  const raised = await api('/api/dispatches', {
+    method: 'POST', token: kavitha,
+    body: {
+      order: order._id,
+      lines: [{ orderLine: line._id, quantity: 9000 }],
+      ...PAPERS,
+      expectedDeliveryDate: inDays(12),
+    },
+  });
+  assert.equal(raised.status, 201, raised.json.message);
+
+  /* The plant is planning the 12th day out; the buyer was told two days ago. */
+  const promised = await api(`/api/dispatches/${raised.json.data._id}/promise`, {
+    method: 'PUT', token: nandhini,
+    body: { date: inDays(-2), note: 'Their line stops Thursday' },
+  });
+  assert.equal(promised.status, 200, promised.json.message);
+
+  const { json } = await day();
+  const found = json.data.chase.find((row) => row.number === raised.json.data.number);
+
+  assert.ok(found, 'measured against what the customer was told, this is late');
+  assert.match(found.urgency.why[0], /Promised to the customer 2 days ago/);
+  assert.equal(found.promise.note, 'Their line stops Thursday');
+  assert.equal(found.promise.by, 'Nandhini S', 'whose promise it is, not the system\'s');
+  /* Both dates travel, because "promised the 14th, we planned the 26th" is the sentence that
+     says this is a gap somebody has to close rather than a scheduling detail. */
+  assert.ok(found.expectedDeliveryDate, 'the plant\'s own estimate is still there');
+});
+
+test('despatch cannot invent a promise, because it was not on the call', async () => {
+  const order = await released([
+    { mould, modelNumber: 'NH-NOPROMISE', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(30) },
+  ]);
+  const line = order.lines[0];
+  await pack(order, line, 5000);
+
+  const raised = await api('/api/dispatches', {
+    method: 'POST', token: kavitha,
+    body: { order: order._id, lines: [{ orderLine: line._id, quantity: 5000 }], ...PAPERS },
+  });
+
+  /*
+   * Despatch, not production — production holds no dispatch grant at all and is stopped at the
+   * door, which proves nothing about this rule. Despatch can read and write consignments all
+   * day; what it cannot do is put a date in a customer's mouth.
+   */
+  const tried = await api(`/api/dispatches/${raised.json.data._id}/promise`, {
+    method: 'PUT', token: kavitha,
+    body: { date: inDays(3), note: 'We can manage Wednesday' },
+  });
+
+  assert.equal(tried.status, 403);
+  assert.match(tried.json.message, /what the customer was promised/i);
+});
+
+test('clearing a promise hands lateness back to the plant\'s own estimate', async () => {
+  const order = await released([
+    { mould, modelNumber: 'NH-CLEARED', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(30) },
+  ]);
+  const line = order.lines[0];
+  await pack(order, line, 6000);
+
+  const raised = await api('/api/dispatches', {
+    method: 'POST', token: kavitha,
+    body: {
+      order: order._id,
+      lines: [{ orderLine: line._id, quantity: 6000 }],
+      ...PAPERS,
+      expectedDeliveryDate: inDays(10),
+    },
+  });
+
+  await api(`/api/dispatches/${raised.json.data._id}/promise`, {
+    method: 'PUT', token: nandhini, body: { date: inDays(-1), note: 'Was due yesterday' },
+  });
+  assert.ok(
+    (await day()).json.data.chase.some((row) => row.number === raised.json.data.number),
+    'late against the promise'
+  );
+
+  /*
+   * Renegotiated. Without a way to withdraw it the consignment would sit on the late list for
+   * ever against a date nobody is holding the plant to any more.
+   */
+  const cleared = await api(`/api/dispatches/${raised.json.data._id}/promise`, {
+    method: 'PUT', token: nandhini, body: { date: null },
+  });
+  assert.equal(cleared.status, 200, cleared.json.message);
+
+  const after = await day();
+  assert.ok(
+    !after.json.data.chase.some((row) => row.number === raised.json.data.number),
+    'and comfortable again against the estimate'
+  );
+});
+
+/* --------------------- Answering the person who is waiting --------------------- */
+
+test('despatch can tell whoever flagged it where the lorry has got to', async () => {
+  /*
+   * The answer to the question this whole board exists to stop being asked. Somebody marks an
+   * order critical, then rings despatch to find out what happened — and the answer is given on
+   * the phone, to one person, and lost. The next person to wonder rings again.
+   */
+  const order = await released([
+    { mould, modelNumber: 'NH-TELL', quantity: 30000, unitPrice: 7.5, deliveryDate: inDays(20) },
+  ]);
+  const line = order.lines[0];
+  await pack(order, line, 8000);
+
+  const raised = await api('/api/dispatches', {
+    method: 'POST', token: kavitha,
+    body: { order: order._id, lines: [{ orderLine: line._id, quantity: 8000 }], ...PAPERS },
+  });
+
+  await api(`/api/orders/${order._id}/priority`, {
+    method: 'POST', token: nandhini,
+    body: { priority: 'critical', reason: 'Buyer is on the phone every day' },
+  });
+
+  const told = await api(`/api/dispatches/${raised.json.data._id}/tell-marketing`, {
+    method: 'POST', token: kavitha,
+    body: { note: 'On KPN, LR-88213, leaves tonight' },
+  });
+
+  assert.equal(told.status, 200, told.json.message);
+  assert.equal(told.json.data.told, 1);
+
+  /* It lands where they already look, dated today — an undated task sits in the rail only and
+     My day would call their day clear while an answer they are waiting for is in it. */
+  const task = await Todo.findOne({
+    user: nandhiniId,
+    originKey: `dispatch-update:${raised.json.data._id}`,
+  });
+  assert.ok(task, 'the person who flagged it is told');
+  assert.match(task.notes, /LR-88213/);
+  assert.match(task.notes, /leaves tonight/);
+  assert.ok(task.dueDate, 'dated, or My day will not show it');
+  assert.equal(task.priority, 'high', 'a critical order makes its update worth reading first');
+});
+
+test('a second update replaces the first rather than stacking', async () => {
+  const order = await released([
+    { mould, modelNumber: 'NH-TELL2', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(20) },
+  ]);
+  const line = order.lines[0];
+  await pack(order, line, 4000);
+
+  const raised = await api('/api/dispatches', {
+    method: 'POST', token: kavitha,
+    body: { order: order._id, lines: [{ orderLine: line._id, quantity: 4000 }], ...PAPERS },
+  });
+  await api(`/api/orders/${order._id}/priority`, {
+    method: 'POST', token: nandhini, body: { priority: 'high', reason: 'Season is closing' },
+  });
+
+  for (const note of ['Loading now', 'Left the yard', 'Reached Erode']) {
+    await api(`/api/dispatches/${raised.json.data._id}/tell-marketing`, {
+      method: 'POST', token: kavitha, body: { note },
+    });
+  }
+
+  /* A to-do list is a list of things to do, and "read this" three times is one thing. */
+  const open = await Todo.countDocuments({
+    user: nandhiniId,
+    originKey: `dispatch-update:${raised.json.data._id}`,
+    completed: false,
+  });
+  assert.equal(open, 1);
+});
+
+test('with nobody waiting, there is nobody to tell', async () => {
+  const order = await released([
+    { mould, modelNumber: 'NH-QUIET', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(20) },
+  ]);
+  const line = order.lines[0];
+  await pack(order, line, 3000);
+
+  const raised = await api('/api/dispatches', {
+    method: 'POST', token: kavitha,
+    body: { order: order._id, lines: [{ orderLine: line._id, quantity: 3000 }], ...PAPERS },
+  });
+
+  const told = await api(`/api/dispatches/${raised.json.data._id}/tell-marketing`, {
+    method: 'POST', token: kavitha, body: { note: 'Going out tomorrow' },
+  });
+
+  /* Refused rather than silently doing nothing: a button that reports success and sends nothing
+     is worse than one that says why it cannot. */
+  assert.equal(told.status, 400);
+  assert.match(told.json.message, /nobody has asked/i);
+});
+
+test('asking the plant to pull an order forward is actually written to the trail', async () => {
+  /*
+   * `recordChange` takes `doc`, and this call site passed `documentId` and a pre-built `after` —
+   * so it threw inside the function's own try/catch and wrote nothing at all. The comment beside
+   * it said a decision with a cost belongs in the trail beside the ones about money, and for as
+   * long as it has existed the trail has been empty.
+   */
+  const { default: AuditLog } = await import('../src/models/AuditLog.js');
+
+  const order = await released([
+    { mould, modelNumber: 'NH-AUDIT', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(20) },
+  ]);
+
+  await api(`/api/orders/${order._id}/priority`, {
+    method: 'POST', token: nandhini,
+    body: { priority: 'critical', reason: 'Buyer threatening to cancel' },
+  });
+
+  const entry = await AuditLog.findOne({ model: 'SalesOrder', recordId: order._id })
+    .sort('-createdAt');
+
+  assert.ok(entry, 'the priority change is on the record');
+  assert.match(entry.note, /Priority critical: Buyer threatening to cancel/);
+});
+
+test('filling in one missing document does not take the others with it', async () => {
+  /*
+   * The board lets a clerk type the invoice number straight into the row it is missing from.
+   * That sends a partial `invoice`, and `Object.assign` replaces a nested path wholesale — so
+   * without merging, supplying the number would silently delete the date and the value accounts
+   * had already put on it. Nothing errors; the figures are simply gone.
+   */
+  const order = await released([
+    { mould, modelNumber: 'NH-MERGE', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(20) },
+  ]);
+  const line = order.lines[0];
+  await pack(order, line, 5000);
+
+  const raised = await api('/api/dispatches', {
+    method: 'POST', token: kavitha,
+    body: {
+      order: order._id,
+      lines: [{ orderLine: line._id, quantity: 5000 }],
+      destination: { address: '14 Avinashi Road', city: 'Tiruppur', state: 'Tamil Nadu' },
+      invoice: { date: inDays(0), value: 37500 },
+    },
+  });
+  assert.equal(raised.status, 201, raised.json.message);
+
+  const filled = await api(`/api/dispatches/${raised.json.data._id}`, {
+    method: 'PATCH', token: kavitha,
+    body: { invoice: { number: 'INV-2026-0444' } },
+  });
+  assert.equal(filled.status, 200, filled.json.message);
+
+  assert.equal(filled.json.data.invoice.number, 'INV-2026-0444');
+  assert.ok(filled.json.data.invoice.date, 'the date must survive');
+
+  /*
+   * The value is read back as somebody who may see it. Despatch may not — what the goods are
+   * worth is redacted on the way out to them, which is right and is not the same thing as the
+   * figure having been lost. Asserting on despatch's own copy would have passed for the wrong
+   * reason the day the merge broke.
+   */
+  const seen = await api(`/api/dispatches/${raised.json.data._id}`, { token: admin });
+  assert.equal(seen.json.data.invoice.value, 37500, 'the value accounts put on must survive');
+
+  /* Same for the address, which arrives with the order and is completed by the yard. */
+  const addressed = await api(`/api/dispatches/${raised.json.data._id}`, {
+    method: 'PATCH', token: kavitha,
+    body: { destination: { pincode: '641604' } },
+  });
+  assert.equal(addressed.json.data.destination.city, 'Tiruppur', 'the city must survive');
+  assert.equal(addressed.json.data.destination.pincode, '641604');
 });

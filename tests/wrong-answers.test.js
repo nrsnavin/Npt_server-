@@ -89,17 +89,27 @@ test('everything ordered having gone is enough on its own', () => {
 
 /* ------------------ A journey that is over [§18] ------------------ */
 
-const arrived = (over = {}) => ({
-  status: 'delivered',
-  expectedDeliveryDate: days(2),
-  dispatchDate: days(-1),
-  isOverdue: false,
-  hasLeft: true,
-  shippable: true,
-  outstandingPaperwork: [],
-  daysSinceDispatch: 1,
-  ...over,
-});
+/* The model's virtuals, hand-made — `dueDate` among them, derived the way the model derives it:
+   what the customer was promised when there is a promise, the plant's estimate otherwise. */
+const arrived = (over = {}) => {
+  const row = {
+    status: 'delivered',
+    expectedDeliveryDate: days(2),
+    dispatchDate: days(-1),
+    isOverdue: false,
+    hasLeft: true,
+    shippable: true,
+    outstandingPaperwork: [],
+    daysSinceDispatch: 1,
+    ...over,
+  };
+
+  return {
+    ...row,
+    dueDate: row.promise?.date || row.expectedDeliveryDate || null,
+    dueDateIsPromise: Boolean(row.promise?.date),
+  };
+};
 
 test('a delivered consignment is not told it is "due to arrive"', () => {
   /*

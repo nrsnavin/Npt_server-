@@ -189,6 +189,28 @@ const dispatchSchema = new mongoose.Schema(
     expectedDeliveryDate: Date,
     deliveredAt: Date,
 
+    /**
+     * The date the customer was actually given, and who gave it.
+     *
+     * A different fact from `expectedDeliveryDate`, which is the plant's own estimate of when
+     * this lorry arrives. This is a promise made to a buyer — usually on the phone, usually by
+     * the person who owns the relationship, and often for a part shipment against a much later
+     * order date. Until now it lived only in that conversation, so a consignment could be
+     * comfortably inside the plant's estimate and three days past what the customer was told,
+     * and no screen in the building could show the difference.
+     *
+     * It is deliberately not a second estimate. Nobody in despatch sets this; marketing does,
+     * because only marketing knows what was said. What despatch gets is the consequence: the
+     * date lateness is measured against.
+     */
+    promise: {
+      date: Date,
+      /** Why the buyer needs it by then — "their line stops Thursday". Printed on the row. */
+      note: { type: String, trim: true, maxlength: 500 },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+    },
+
     /** Proof of delivery: the signed copy coming back, and when it did. */
     pod: {
       attachment: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
@@ -285,15 +307,41 @@ dispatchSchema.virtual('shippable').get(function shippable() {
 });
 
 /**
+ * The date this consignment is actually judged against.
+ *
+ * The promise wins when there is one, because it is the date a person gave a customer and the
+ * estimate is the date the plant gave itself. When a buyer has been told Thursday and the
+ * lorry is planned for Monday week, Thursday is when somebody is let down — and a screen
+ * measuring against Monday week would call that consignment comfortable for four more days.
+ *
+ * The earlier of the two is *not* the rule, deliberately. A promise later than the estimate is
+ * still the real deadline: it means marketing has already bought time from the buyer, and
+ * treating the plant's own earlier estimate as the deadline would keep a consignment on the
+ * late list after the person who owns the relationship has settled it.
+ */
+dispatchSchema.virtual('dueDate').get(function dueDate() {
+  return this.promise?.date || this.expectedDeliveryDate || null;
+});
+
+/** True when the date being judged against is one a customer was given, not the plant's guess. */
+dispatchSchema.virtual('dueDateIsPromise').get(function dueDateIsPromise() {
+  return Boolean(this.promise?.date);
+});
+
+/**
  * Past the delivery date it was given, and not there yet.
  *
  * Both halves, the same as a production line: a consignment delivered a day after its estimate
  * arrived, and one still in transit inside its estimate is not a problem. Only the pair is.
+ *
+ * Measured against `dueDate`, so a promise to the customer moves this — which is the whole
+ * point of recording one.
  */
 dispatchSchema.virtual('isOverdue').get(function isOverdue() {
-  if (!this.expectedDeliveryDate) return false;
+  const due = this.dueDate;
+  if (!due) return false;
   if (['delivered', 'pod_pending', 'closed', 'cancelled'].includes(this.status)) return false;
-  return new Date(this.expectedDeliveryDate) < new Date();
+  return new Date(due) < new Date();
 });
 
 /** How long it has been on the road, for the tracker's "sent 3 days ago". */

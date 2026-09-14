@@ -101,3 +101,37 @@ export const dispatchActionSchema = z.object({
   qualityOverrideReason: z.string().max(500).optional(),
   ...paperwork,
 });
+
+/**
+ * What the customer was told, and why they need it then.
+ *
+ * The date is nullable rather than optional, and the difference carries the feature: `null` is
+ * "there is no promise any more", which clears it and hands lateness back to the plant's own
+ * estimate. Omitting the field would be indistinguishable from not having touched it, and a
+ * renegotiated promise would then be impossible to withdraw — the consignment would sit on the
+ * late list against a date nobody is holding the plant to.
+ *
+ * The note is where the useful half lives. "Their line stops Thursday" is what makes a despatch
+ * clerk put this consignment on the first lorry instead of the third, and it is the sentence a
+ * date on its own cannot say.
+ */
+export const dispatchPromiseSchema = z
+  .object({
+    date: z.coerce.date().nullable(),
+    note: z.string().max(500).optional(),
+  })
+  .refine((value) => value.date !== null || !value.note, {
+    message: 'Clearing the promise removes its reason too — send the date or neither',
+    path: ['note'],
+  });
+
+/**
+ * A line back to whoever is waiting on this consignment.
+ *
+ * Required and non-empty, because the point is the sentence. "Update from despatch" with
+ * nothing under it is a notification that costs the reader a click to learn nothing, and a
+ * channel that does that twice stops being read.
+ */
+export const dispatchUpdateNoteSchema = z.object({
+  note: z.string().trim().min(1, 'Say where it has got to').max(500),
+});

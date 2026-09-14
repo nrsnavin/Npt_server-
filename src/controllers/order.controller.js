@@ -746,9 +746,8 @@ export const setOrderPriority = asyncHandler(async (req, res) => {
   await order.save();
   await recordChange({
     model: 'SalesOrder',
-    documentId: order._id,
+    doc: order,
     before,
-    after: snapshot(order),
     by: req.user,
     /* The plant is being asked to reorder its day on somebody's say-so. That is a decision with
        a cost, and a decision with a cost belongs in the trail beside the ones about money. */

@@ -26,6 +26,7 @@ import OrderQuery from '../models/OrderQuery.js';
 import { dispatchQuality } from '../services/quality.service.js';
 import { raiseForDispatch } from '../services/receivable.service.js';
 import { put, remove } from '../services/storage.service.js';
+import { raiseTask } from '../services/task.service.js';
 import { sendCsv } from '../utils/csv.js';
 
 /**
@@ -54,6 +55,9 @@ const POPULATE = [
   { path: 'order', select: 'number status customerPo orderDate' },
   { path: 'assignedTo', select: 'name' },
   { path: 'raisedBy', select: 'name' },
+  /* Who gave the customer the date, so the row can say whose promise it is rather than
+     presenting it as the system's own. */
+  { path: 'promise.by', select: 'name' },
   { path: 'lines.mould', select: 'mouldCode name category sizeMm packingQty' },
   { path: 'pod.attachment', select: 'key filename mimeType size' },
 ];
@@ -501,6 +505,24 @@ export const updateDispatch = asyncHandler(async (req, res) => {
     });
   }
 
+  /*
+   * The nested paperwork merges rather than replaces.
+   *
+   * `invoice` and `destination` are objects that get filled in over time and by different
+   * people: accounts puts the value on, despatch puts the number on, and the address arrives
+   * with the order. `Object.assign` replaces a nested path wholesale, so a caller sending just
+   * the number — which is exactly what a "fill in what is missing" control sends — would take
+   * the invoice's date and value with it. Nothing would error; the figures would simply be gone.
+   *
+   * Merging changes nothing for a caller that sends the whole object, which is what every form
+   * did before there was a partial one.
+   */
+  for (const key of ['invoice', 'destination']) {
+    if (patch[key]) {
+      patch[key] = { ...(dispatch[key]?.toObject?.() || dispatch[key] || {}), ...patch[key] };
+    }
+  }
+
   Object.assign(dispatch, patch);
   await dispatch.save();
   await recordChange({ model: 'Dispatch', doc: dispatch, before, by: req.user });
@@ -662,6 +684,151 @@ export const listDispatchActions = asyncHandler(async (req, res) => {
   });
 });
 
+/* ------------------------- What the customer was told ------------------------- */
+
+/**
+ * The date a buyer was actually given for this consignment.
+ *
+ * Marketing's to set, and only marketing's — the same rule as the order priority, for the same
+ * reason. Its entire value is that it carries something the plant cannot know: what was said on
+ * a phone call to a buyer. A despatch team that could set it would be marking its own homework,
+ * and "promised Thursday" would stop meaning anybody had promised anything.
+ *
+ * Guarded at read level on the route, like the priority. Setting this changes nothing about the
+ * consignment's contents, its quantity or its paperwork — it records a fact about the customer
+ * relationship — and gating it on `dispatch: write` would leave it to the despatch team, who
+ * are precisely the people not in the conversation.
+ *
+ * A null date clears it, and lateness falls back to the plant's own estimate. That matters:
+ * a promise renegotiated away should not leave a consignment on the late list for ever.
+ */
+export const setDispatchPromise = asyncHandler(async (req, res) => {
+  const dispatch = await Dispatch.findById(req.params.id);
+  if (!dispatch) throw ApiError.notFound('Consignment not found');
+  if (!ownsRecord(req.user, dispatch)) throw ApiError.notFound('Consignment not found');
+
+  /*
+   * Refused with a reason rather than a 404, exactly as the order priority is: the plant may
+   * genuinely read this consignment, so pretending it is missing would be a lie told to
+   * somebody entitled to the truth — and without the explanation they conclude the screen is
+   * broken and ring marketing to ask, which is the phone call this whole feature removes.
+   */
+  const owner = String(dispatch.assignedTo) === String(req.user._id);
+  const oversees = req.user.role === 'admin' || req.user.department === 'management';
+  const sells = req.user.department === 'marketing';
+  if (!owner && !oversees && !sells) {
+    throw ApiError.forbidden(
+      'Only marketing can record what the customer was promised — it is what was said to them'
+    );
+  }
+
+  if (CLOSED_DISPATCH_STATUSES.includes(dispatch.status)) {
+    throw ApiError.badRequest('This consignment is finished — a promise cannot change it now');
+  }
+
+  const before = snapshot(dispatch);
+  const { date, note } = req.body;
+
+  if (date === null) {
+    dispatch.promise = undefined;
+  } else {
+    dispatch.promise = { date, note, by: req.user._id, at: new Date() };
+  }
+
+  await dispatch.save();
+  await recordChange({
+    model: 'Dispatch',
+    doc: dispatch,
+    before,
+    by: req.user,
+    /* A date given to a customer is a commitment the plant is now judged against, so it belongs
+       in the trail beside the other commitments. */
+    note: date === null
+      ? 'Cleared what the customer was promised'
+      : `Promised the customer ${new Date(date).toISOString().slice(0, 10)}${note ? `: ${note}` : ''}`,
+  });
+
+  await dispatch.populate(POPULATE);
+  res.json({ success: true, data: dispatchVisibleTo(dispatch, req.user) });
+});
+
+/** `pod_pending` is not a sentence. This is, and it is the first thing the reader wants. */
+const readableStatus = (status) =>
+  String(status || '').replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+
+/**
+ * Telling marketing where a consignment has got to.
+ *
+ * The answer to the question this board exists to stop being asked. Somebody flags an order
+ * critical or promises a buyer Thursday, and then rings despatch to find out what happened —
+ * and the answer is given on the phone, to one person, and lost. The next person to wonder
+ * rings again.
+ *
+ * So the update goes back up the same thread it came down: to whoever raised the priority, and
+ * to whoever made the promise. It lands on their to-do list, which is a place they already
+ * look, rather than in a notification centre built for this one message.
+ *
+ * **Dated today**, because `raiseTask` puts an undated task in the rail only, and My day would
+ * call their day clear while an answer they are waiting for sits in it.
+ *
+ * **Deduplicated per consignment**, not per message. A despatch clerk updating the same
+ * consignment three times in a morning should replace one open item, not stack three — the
+ * to-do list is a list of things to do, and "read this" three times is one thing.
+ */
+export const tellMarketing = asyncHandler(async (req, res) => {
+  const dispatch = await Dispatch.findById(req.params.id).populate([
+    { path: 'order', select: 'number priorityBy priority' },
+    { path: 'customer', select: 'name' },
+  ]);
+  if (!dispatch) throw ApiError.notFound('Consignment not found');
+  if (!ownsRecord(req.user, dispatch)) throw ApiError.notFound('Consignment not found');
+
+  const note = req.body.note.trim();
+
+  /*
+   * Everyone with a stake in this consignment's date, deduplicated — the two are usually the
+   * same person and occasionally are not, and sending one person the same update twice is how
+   * a useful channel becomes one people mute.
+   */
+  const audience = new Set(
+    [dispatch.order?.priorityBy, dispatch.promise?.by]
+      .map((who) => String(who?._id || who || ''))
+      .filter((id) => id && id !== String(req.user._id))
+  );
+
+  if (!audience.size) {
+    throw ApiError.badRequest(
+      'Nobody has asked about this consignment — there is no priority or promise on it to answer'
+    );
+  }
+
+  for (const user of audience) {
+    await raiseTask({
+      user,
+      title: `${dispatch.number} — update from despatch`,
+      /* The status in front of the note, because "loaded" is often the whole answer and the
+         sentence after it is the detail. */
+      notes: `${readableStatus(dispatch.status)}. ${note}`.slice(0, 500),
+      dueDate: new Date(),
+      priority: dispatch.order?.priority === 'critical' ? 'high' : 'normal',
+      link: `/dispatches/${dispatch._id}`,
+      originKey: `dispatch-update:${dispatch._id}`,
+    }).catch(() => null);
+  }
+
+  /* No `before`: nothing on the record moved. The change *is* the note — see `recordChange`,
+     which tells the two cases apart rather than writing a diff against nothing. */
+  await recordChange({
+    model: 'Dispatch',
+    doc: dispatch,
+    before: null,
+    by: req.user,
+    note: `Told marketing: ${note}`,
+  });
+
+  res.json({ success: true, data: { told: audience.size, note } });
+});
+
 /* --------------------------------- The POD --------------------------------- */
 
 /**
@@ -748,8 +915,23 @@ export const dispatchDay = asyncHandler(async (req, res) => {
   })
     .populate([
       { path: 'customer', select: 'code name city state' },
-      { path: 'order', select: 'number' },
+      /*
+       * The order's priority, which this screen has never had.
+       *
+       * `select: 'number'` was the whole of it — so marketing could mark an order critical,
+       * watch the press queue lift it, and then watch it land in despatch as an ordinary row.
+       * The last department before the buyer, and the one the buyer actually rings, was the one
+       * that could not see the flag. A populate that omits the field does not fail; it just
+       * quietly hands back an order with no priority on it.
+       */
+      {
+        path: 'order',
+        select: 'number priority priorityReason priorityAt priorityBy',
+        /* Nested, so the row can say "Nandhini asked for this" rather than showing an id. */
+        populate: { path: 'priorityBy', select: 'name' },
+      },
       { path: 'assignedTo', select: 'name' },
+      { path: 'promise.by', select: 'name' },
     ])
     .limit(EXPORT_LIMIT);
 
@@ -765,11 +947,31 @@ export const dispatchDay = asyncHandler(async (req, res) => {
       vehicleNumber: consignment.vehicleNumber,
       dispatchDate: consignment.dispatchDate,
       expectedDeliveryDate: consignment.expectedDeliveryDate,
+      /*
+       * Both dates, and which of them is being judged against.
+       *
+       * The screen needs the pair rather than the winner: "promised the 14th, we planned the
+       * 20th" is the sentence that tells a despatch clerk this is not a scheduling detail but a
+       * gap somebody has to close, and it cannot be reconstructed from one date.
+       */
+      dueDate: consignment.dueDate,
+      promise: consignment.promise?.date
+        ? {
+            date: consignment.promise.date,
+            note: consignment.promise.note || null,
+            by: consignment.promise.by?.name || null,
+            at: consignment.promise.at,
+          }
+        : null,
       dispatchQty: consignment.dispatchQty,
       lineCount: consignment.lineCount,
       outstandingPaperwork: consignment.outstandingPaperwork,
       assignedTo: consignment.assignedTo?.name || null,
-      urgency: dispatchUrgencyOf(consignment, { now }),
+      urgency: dispatchUrgencyOf(consignment, {
+        now,
+        /* What marketing asked the plant for, carried the last mile to the people who load it. */
+        priority: consignment.order?.priority || 'normal',
+      }),
       link: `/dispatches/${consignment._id}`,
     }))
     .sort(byDispatchUrgency);

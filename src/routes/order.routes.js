@@ -18,7 +18,8 @@ import {
 import {
   listDispatches, dispatchBoard, exportDispatches, getDispatch, listReadyStock,
   listOrderDispatches, createDispatch, updateDispatch,
-  applyDispatchAction, listDispatchActions, setDispatchPod, dispatchDay,
+  applyDispatchAction, listDispatchActions, setDispatchPod, setDispatchPromise,
+  tellMarketing, dispatchDay,
 } from '../controllers/dispatch.controller.js';
 import {
   recordInspection, listOrderInspections, listInspections,
@@ -43,7 +44,8 @@ import {
   productionLineSchema, orderPrioritySchema,
 } from '../validators/order.schemas.js';
 import {
-  dispatchSchema, dispatchUpdateSchema, dispatchActionSchema,
+  dispatchSchema, dispatchUpdateSchema, dispatchActionSchema, dispatchPromiseSchema,
+  dispatchUpdateNoteSchema,
 } from '../validators/dispatch.schemas.js';
 
 const router = Router();
@@ -270,6 +272,36 @@ router.post('/dispatches/:id/actions', requireModule('dispatch', 'write'), valid
 /* The signed delivery note coming back. A document rather than an image, though both go through
    the same door — a POD arrives as a photograph from a driver as often as a scan. */
 router.put('/dispatches/:id/pod', requireModule('dispatch', 'write'), singleDocument('file'), setDispatchPod);
+
+/*
+ * What the customer was promised — marketing's fact, not despatch's.
+ *
+ * Read level, like the order priority above and for the same reason: this changes nothing about
+ * the consignment's contents, quantity or paperwork. It records what was said to a buyer, and
+ * the controller refuses anybody outside marketing, management or the record's own owner.
+ * Gating it on `dispatch: write` would hand it to the despatch team, who are exactly the people
+ * not on that phone call.
+ */
+/*
+ * Despatch answering the person who is waiting.
+ *
+ * `dispatch: write`, unlike the promise above — this is the team reporting on their own work,
+ * which is exactly the thing they are the authority on. It writes nothing to the consignment;
+ * it puts a line on the to-do list of whoever raised the priority or made the promise.
+ */
+router.post(
+  '/dispatches/:id/tell-marketing',
+  requireModule('dispatch', 'write'),
+  validate(dispatchUpdateNoteSchema),
+  tellMarketing
+);
+
+router.put(
+  '/dispatches/:id/promise',
+  requireModule('dispatch'),
+  validate(dispatchPromiseSchema),
+  setDispatchPromise
+);
 
 /* The tracker panel, on the order's grant — see the note above. */
 router.get('/orders/:id/dispatches', requireModule('orders'), listOrderDispatches);
