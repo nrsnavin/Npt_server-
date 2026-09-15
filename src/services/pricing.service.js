@@ -48,22 +48,42 @@ export const MINIMUM_TIER = STANDARD_TIERS[0];
 export const PRICE_STEP = 0.05;
 
 /**
- * Cost plus a markup, rounded **up** to the nearest five paise.
+ * The step the **quoted** price is rounded to: ten paise, so it carries one decimal.
+ *
+ * The price a sheet actually puts forward — cost plus whatever margin this job is working to —
+ * is the number that gets read down a phone and written on a quotation, and one decimal is what
+ * a person says out loud. ₹7.65 is a computed figure; ₹7.70 is a price.
+ *
+ * Deliberately only the cost-plus price. The three standing tiers and the §9 floor stay on the
+ * five-paise step, because they are reference figures the sheet shows *beside* the price rather
+ * than the price itself — and moving the floor would change which sheets need MD's signature,
+ * which is a different decision from how a quote reads.
+ *
+ * The visible consequence, which is worth knowing rather than discovering: the price can now
+ * sit up to five paise **above** the tier column it corresponds to. A sheet at 20% on a ₹3.59
+ * cost shows tiers of 3.95 / 4.15 / 4.35 and a price of ₹4.40. That is the safe direction — the
+ * price is never under the tier, and never under the floor — but the two figures no longer
+ * always agree to the paisa, and somebody reading the sheet will notice.
+ */
+export const QUOTED_PRICE_STEP = 0.1;
+
+/**
+ * Cost plus a markup, rounded **up** to a step.
  *
  * Up, never to nearest. The floor in `minimumFor` is the 10% tier run through this same
  * function, so rounding down would produce a "minimum" a few paise under the true cost-plus-ten
  * — quietly shaving the floor that §9's below-minimum approval exists to defend. Rounding up
- * can only ever be safe, and it costs at most four paise.
+ * can only ever be safe, and it costs at most one step less a paisa.
  *
  * Worked in whole paise (`× 100`, ceil, `/ 100`) because `Math.ceil(x / 0.05) * 0.05` in binary
  * floating point turns an exact ₹7.65 into ₹7.70: 7.65 / 0.05 is 152.99999999999997, and the
  * ceiling of that is 153. Scaling to integers first keeps a price that is already on the step
  * exactly where it is.
  */
-export function priceAt(cost, percent) {
+export function priceAt(cost, percent, step = PRICE_STEP) {
   if (!cost) return undefined;
 
-  const stepInPaise = Math.round(PRICE_STEP * 100);
+  const stepInPaise = Math.round(step * 100);
   const paise = Math.round(cost * (1 + (percent || 0) / 100) * 100);
   return (Math.ceil(paise / stepInPaise) * stepInPaise) / 100;
 }
@@ -85,11 +105,19 @@ export function tiersFor(cost) {
  *
  * Defaults to the minimum tier rather than to zero, so a sheet where nobody has said otherwise
  * still produces the price the plant would quote by standing policy.
+ *
+ * This is the one figure on the sheet that rounds to ten paise rather than five — it is the
+ * price being put forward, and a price carries one decimal. See `QUOTED_PRICE_STEP`.
+ *
+ * A price somebody *types* into `approvedSellingPrice` is not touched by any of this. The
+ * rounding governs what the system works out; a figure a person entered is one they agreed with
+ * a buyer, and moving it by five paise after the fact is how a sheet comes to disagree with a
+ * conversation.
  */
 export function priceFrom(pricing) {
   const cost = pricing.totalCost;
   if (!cost) return undefined;
-  return priceAt(cost, pricing.markupPercent ?? MINIMUM_TIER);
+  return priceAt(cost, pricing.markupPercent ?? MINIMUM_TIER, QUOTED_PRICE_STEP);
 }
 
 /**
