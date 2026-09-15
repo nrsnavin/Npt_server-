@@ -298,10 +298,35 @@ export const exportEnquiries = asyncHandler(async (req, res) => {
   ]);
 });
 
+/**
+ * What the customer table will order by.
+ *
+ * The three money columns — business, outstanding, last order — are **deliberately absent**,
+ * and this is the sharpest example in the app of why a sortable list has to be written by hand.
+ *
+ * Customer carries stored fields by those names, so `?sort=totalBusinessValue` looks like it
+ * should work and Mongo would happily accept it. But nothing in the running system writes any
+ * of them: `customerSummaries` recomputes all three from the orders and receivables on every
+ * read and overwrites them on the way out, and the only code that ever set the stored copies is
+ * the seed. So that ordering would rank the page by a dead figure and then draw a different,
+ * live one in the column — a table visibly disagreeing with its own sort arrow, which is the
+ * worst of the three possible outcomes and the hardest to diagnose.
+ *
+ * Sorting the page in memory after summarising would be worse still: it would order the
+ * twenty-five rows that happened to be fetched and call it a ranking, so page two would hold
+ * larger values than page one. Making these sortable means storing the summaries for real,
+ * which is a different piece of work.
+ */
+const CUSTOMER_SORTABLE = [
+  'name', 'code', 'customerType', 'city', 'state', 'rating', 'status',
+  'creditTermsDays', 'createdAt',
+];
+
 export const listCustomers = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = listParams(req.query, {
     searchFields: ['name', 'code', 'gstin', 'mobile', 'whatsapp', 'email'],
     defaultSort: 'name',
+    sortable: CUSTOMER_SORTABLE,
   });
 
   Object.assign(filter, ownershipFilter(req.user));

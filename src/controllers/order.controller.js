@@ -69,6 +69,29 @@ const POPULATE = [
 
 const EXPORT_LIMIT = 5000;
 
+/**
+ * What the orders table will order by.
+ *
+ * Shorter than the table is wide, and the gap is not an oversight. Pieces and value are
+ * **virtuals** — an order has no stored total, only lines that sum to one on the way out — so
+ * Mongo has nothing to rank them by. Offering the column anyway would draw a sort arrow that
+ * silently did nothing, which reads as the software being broken rather than as the column
+ * being unsortable, so those two headers stay plain.
+ *
+ * Customer is missing for a different reason: it is a reference, and sorting by it would rank
+ * orders by the hexadecimal of an ObjectId. The list is searchable by customer instead, which
+ * is the question somebody actually has.
+ *
+ * `priority` is offered with a caveat worth writing down: it is stored as a string, so Mongo
+ * ranks it alphabetically — critical, high, normal — which happens to be escalation order
+ * ascending. That is a coincidence of spelling, not a design, and renaming a level would
+ * quietly reverse the column. The screen's "Marked urgent" filter is the reliable way to ask
+ * the question; this ordering is a convenience on top of it.
+ */
+const ORDER_SORTABLE = [
+  'number', 'orderDate', 'status', 'priority', 'priorityAt', 'createdAt', 'customerPo.date',
+];
+
 /* ------------------------------- Reading them ------------------------------- */
 
 /**
@@ -86,6 +109,7 @@ async function orderFilters(req, { withStatus = true } = {}) {
     /* Model numbers live on the lines, so searching for one has to look inside them. */
     searchFields: ['number', 'customerPo.number', 'lines.modelNumber'],
     defaultSort: '-orderDate',
+    sortable: ORDER_SORTABLE,
   });
 
   const scope = ownershipFilter(req.user);

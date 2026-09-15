@@ -10,11 +10,33 @@ import { sendCsv } from '../utils/csv.js';
 /** The same ceiling every other export uses — see pipeline.controller.js. */
 const EXPORT_LIMIT = 5000;
 
+/**
+ * What the material register will order by.
+ *
+ * `ratePerKg` is on the list, and it is worth saying why when §8 spends so much effort hiding
+ * the material cost on a costing sheet. The two are not the same fact. What §8 protects is the
+ * plant's *worked* cost — this resin, at this grammage, through this tool, plus conversion —
+ * because that is the number that reconstructs a margin. A published rate per kilo for a named
+ * grade is close to a market price: the supplier quotes it to everyone, and the register exists
+ * so the person who knows it is not the only one who can price a job.
+ *
+ * The register is behind its own grant either way, so anybody who can ask for this ordering can
+ * already read the column it ranks.
+ *
+ * `rateUpdatedAt` is the one that earns a column heading: a rate nobody has confirmed for six
+ * months is a costing built on a guess, and ascending puts the stalest first.
+ */
+const MATERIAL_SORTABLE = [
+  'name', 'code', 'type', 'colour', 'ratePerKg', 'grammageFactorPercent',
+  'supplier', 'rateUpdatedAt', 'isActive', 'createdAt',
+];
+
 /** What the register's list understands, shared by the screen and its download. */
 function materialQuery(query) {
   const params = listParams(query, {
     searchFields: ['name', 'code', 'colour', 'supplier'],
     defaultSort: 'name',
+    sortable: MATERIAL_SORTABLE,
   });
 
   if (query.type) params.filter.type = query.type;

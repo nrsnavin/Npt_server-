@@ -11,6 +11,7 @@ import { defaultAccessFor, findDepartment } from '../config/modules.js';
 import { resolveIdentifier } from '../services/otp.service.js';
 import { transferBook, workloadOf } from '../services/offboarding.service.js';
 import { recordChange } from '../services/audit.service.js';
+import { listParams } from '../utils/query.js';
 
 const publicUser = (user) => ({
   id: user._id,
@@ -34,25 +35,45 @@ export const catalogue = asyncHandler(async (_req, res) => {
   res.json({ success: true, data: accessCatalogue() });
 });
 
-export const list = asyncHandler(async (req, res) => {
-  const page = Math.max(Number(req.query.page) || 1, 1);
-  const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
+/**
+ * What the people list will order by.
+ *
+ * `lastLoginAt` is the reason this screen needed a sort at all. Ascending — with the never-
+ * signed-in at the end, which `chooseSort` leaves to Mongo and Mongo puts first for a null —
+ * is the dormant-account list, and a dormant account holding module grants is the one piece of
+ * housekeeping an access screen exists to make visible.
+ *
+ * `moduleAccess` is not sortable and could not usefully be: it is an array of grants, and the
+ * column draws a summary of it. The department and role filters are how that question is
+ * actually asked.
+ *
+ * `password` is not on the list, and the allow-list is why that sentence is worth writing: an
+ * ordering is information about the field it orders by, and a hash ranked lexicographically
+ * would leak its first characters a page at a time.
+ */
+const USER_SORTABLE = ['name', 'email', 'department', 'role', 'lastLoginAt', 'isActive', 'createdAt'];
 
-  const filter = {};
+export const list = asyncHandler(async (req, res) => {
+  /*
+   * On the shared plumbing rather than its own copy of it. This list hand-rolled paging, the
+   * limit clamp and the regex escape — three things every other list in the app gets from
+   * `listParams`, and three places for the copies to drift.
+   */
+  const { page, limit, sort, filter } = listParams(req.query, {
+    searchFields: ['name', 'email', 'phone'],
+    defaultSort: 'name',
+    sortable: USER_SORTABLE,
+  });
+
   if (req.query.department) filter.department = req.query.department;
   if (req.query.role) filter.role = req.query.role;
   if (req.query.isActive === 'true' || req.query.isActive === 'false') {
     filter.isActive = req.query.isActive === 'true';
   }
-  if (req.query.search) {
-    const escaped = String(req.query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(escaped, 'i');
-    filter.$or = [{ name: regex }, { email: regex }, { phone: regex }];
-  }
 
   const [users, total] = await Promise.all([
     User.find(filter)
-      .sort('name')
+      .sort(sort)
       .skip((page - 1) * limit)
       .limit(limit),
     User.countDocuments(filter),

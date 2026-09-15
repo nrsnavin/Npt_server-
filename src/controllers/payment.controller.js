@@ -43,6 +43,25 @@ async function readable(id, user) {
   return receivable;
 }
 
+/**
+ * What the chase list will order by.
+ *
+ * `escalationLevel` is the one to notice: it is the ladder accounts climbs — a reminder, then
+ * a call, then somebody senior — so ranking by it descending is "who have we already chased
+ * hardest and still not been paid", which is a different and more urgent list than "who is
+ * most overdue".
+ *
+ * The **outstanding** column is not here, and this is the one omission on the screen that is
+ * likely to be asked about. The balance is a virtual: receipts are a sub-document and what is
+ * still owed is the invoice less their sum, computed on the way out. Mongo cannot rank by it
+ * without an aggregation this list does not run, so the column draws no arrow rather than an
+ * arrow that lies. Due date is the near-enough proxy the screen already opens on.
+ */
+const RECEIVABLE_SORTABLE = [
+  'number', 'dueBy', 'createdAt', 'kind', 'escalationLevel',
+  'invoice.number', 'invoice.date', 'invoice.value',
+];
+
 /* --------------------------------- Reading --------------------------------- */
 
 export const listReceivables = asyncHandler(async (req, res) => {
@@ -51,6 +70,7 @@ export const listReceivables = asyncHandler(async (req, res) => {
     /* Soonest first, because a chase list is worked from the top and the top is what is oldest
        against a promise somebody made. */
     defaultSort: 'dueBy',
+    sortable: RECEIVABLE_SORTABLE,
   });
 
   Object.assign(filter, ownershipFilter(req.user));

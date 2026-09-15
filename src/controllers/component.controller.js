@@ -25,11 +25,27 @@ function kindOf(value) {
   return value;
 }
 
+/**
+ * What the hook, clip and print registers will order by.
+ *
+ * The same list for all three, because they are the same collection under a `kind` filter and
+ * the screens draw the same columns. `ratePerPiece` is published here on the same reasoning as
+ * the resin rate next door: a bought-in part has a supplier price, and the register exists so
+ * that price is not one person's knowledge.
+ *
+ * `rateUpdatedAt` ascending is the register's own housekeeping list — which prices nobody has
+ * confirmed lately, and therefore which costings are quietly out of date.
+ */
+const COMPONENT_SORTABLE = [
+  'name', 'code', 'colour', 'ratePerPiece', 'supplier', 'rateUpdatedAt', 'isActive', 'createdAt',
+];
+
 /** What a register's list understands, shared by the screen and its download. */
 function componentQuery(query) {
   const params = listParams(query, {
     searchFields: ['name', 'code', 'colour', 'supplier'],
     defaultSort: 'name',
+    sortable: COMPONENT_SORTABLE,
   });
 
   params.filter.kind = kindOf(query.kind);

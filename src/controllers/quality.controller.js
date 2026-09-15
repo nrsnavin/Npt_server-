@@ -203,11 +203,29 @@ export const listOrderInspections = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * What the quality register will order by.
+ *
+ * The rejection **percentage** is the figure a quality head actually wants ranked, and it is a
+ * virtual — rejected over inspected, computed on the way out — so it is not offered. The two
+ * counts it is made of are, which gets most of the way there: `quantityRejected` descending is
+ * the worst batches by volume, which is the version that matters when deciding what to do
+ * about a mould.
+ *
+ * `verdict` and `stage` are enums and sort alphabetically rather than by severity, so they are
+ * here as a grouping convenience — the screen's own verdict filter is the precise way to ask.
+ */
+const INSPECTION_SORTABLE = [
+  'number', 'inspectedAt', 'createdAt', 'modelNumber', 'colour',
+  'stage', 'verdict', 'quantityInspected', 'quantityRejected',
+];
+
 /** The quality register: every inspection, filterable — the module's own list screen. */
 export const listInspections = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = listParams(req.query, {
     searchFields: ['number', 'modelNumber', 'remarks'],
     defaultSort: '-inspectedAt',
+    sortable: INSPECTION_SORTABLE,
   });
 
   /*

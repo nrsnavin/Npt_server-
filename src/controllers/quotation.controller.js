@@ -144,11 +144,31 @@ async function priceIsCleared(quotation) {
   };
 }
 
+/**
+ * What the quotation boards will order by — both of them, the open register and the sent list.
+ *
+ * `sentAt` and `respondedAt` are the two the sent board is really about: how long a price has
+ * been with a buyer unanswered is the question that screen exists to ask, and it is a
+ * subtraction between those two dates and today.
+ *
+ * The rate per piece is deliberately absent. It lives on `lines.unitPrice`, and ordering by a
+ * field inside an array makes Mongo rank each document by the smallest (or largest) value in
+ * it — so a three-line quotation would sort by a price that is not the one the table draws.
+ * A column that sorts by a number the reader cannot see on the row is worse than no sort.
+ *
+ * `validUntil` is included because an expiring quote is a real queue: a price that lapses
+ * tomorrow is a call somebody should make today.
+ */
+const QUOTATION_SORTABLE = [
+  'number', 'createdAt', 'status', 'validUntil', 'sentAt', 'respondedAt', 'revision',
+];
+
 export const listQuotations = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = listParams(req.query, {
     /* Model codes moved onto the lines, so searching for one has to look inside them. */
     searchFields: ['number', 'lines.modelNumber'],
     defaultSort: '-createdAt',
+    sortable: QUOTATION_SORTABLE,
   });
 
   const scope = ownershipFilter(req.user);

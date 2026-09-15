@@ -71,6 +71,62 @@ export function listParams(
 }
 
 /**
+ * The same ordering, applied to rows this process built rather than to a collection.
+ *
+ * Two of the busiest screens in the plant — the production line list and despatch's ready
+ * stock — are not lists of documents at all. They flatten every open order into one row per
+ * *line*, because that is the unit the work is done in, and the flattening happens here rather
+ * than in Mongo. So `.sort()` is not available to them, and without this helper those two
+ * tables would be the only ones in the app whose column headers did nothing.
+ *
+ * Three things it has to get right, all of which were wrong in the first draft:
+ *
+ * **The screen's own ordering stays the default.** Both lists open on a hand-written ranking —
+ * late first, then by the date the plant promised — and that ranking is the reason the screen
+ * is useful. An explicit `?sort=` replaces it; no parameter leaves it exactly as it was.
+ *
+ * **Empty sorts last in either direction.** A line with no delivery date is not the earliest
+ * line, and flipping to descending should not promote it to the top. Ascending and descending
+ * are about the rows that *have* the value.
+ *
+ * **Ties keep their previous order.** `Array.prototype.sort` is stable, so sorting the already
+ * ranked rows by, say, quantity leaves equal quantities in promise-date order underneath —
+ * which is what a second sort key would have given, without asking the screen to name one.
+ */
+export function sortRows(rows, asked, sortable, { defaultSort = null } = {}) {
+  const requested = chooseSort(asked, defaultSort, sortable);
+  if (!requested) return rows;
+
+  const descending = requested.startsWith('-');
+  const path = requested.replace(/^-/, '');
+  const read = (row) => path.split('.').reduce((value, key) => (value == null ? value : value[key]), row);
+
+  return rows.slice().sort((a, b) => {
+    const left = read(a);
+    const right = read(b);
+    const leftEmpty = left === undefined || left === null || left === '';
+    const rightEmpty = right === undefined || right === null || right === '';
+    if (leftEmpty || rightEmpty) {
+      if (leftEmpty && rightEmpty) return 0;
+      return leftEmpty ? 1 : -1;
+    }
+
+    let order;
+    if (left instanceof Date || right instanceof Date) {
+      order = new Date(left) - new Date(right);
+    } else if (typeof left === 'number' && typeof right === 'number') {
+      order = left - right;
+    } else {
+      /* `numeric` so "MAU-9" sorts before "MAU-10", which is what anybody reading a model
+         number expects and what a plain string comparison gets backwards. */
+      order = String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: 'base' });
+    }
+
+    return descending ? -order : order;
+  });
+}
+
+/**
  * `extra` carries anything the screen needs *about the whole result*, not this page of it —
  * a tally per status, say. It belongs in the same reply because it has to be computed from
  * the same filter: a count fetched separately is a count that can disagree with the rows

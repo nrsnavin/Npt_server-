@@ -9,7 +9,7 @@ import Attachment from '../models/Attachment.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
-import { listParams, paginated } from '../utils/query.js';
+import { listParams, paginated, sortRows } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
@@ -65,6 +65,54 @@ const POPULATE = [
 
 const EXPORT_LIMIT = 5000;
 
+/**
+ * What the consignment table will order by.
+ *
+ * `expectedDeliveryDate` is the one that earns its place: the whole §19 conversation is about
+ * a date somebody gave a buyer, and a board ranked by it is the board despatch actually works
+ * from. `dispatchDate` answers the other half — what has already gone, most recent first.
+ *
+ * Pieces is a virtual summed over the lines, so it is not here, for the reason written on the
+ * orders list: a sort arrow that does nothing is worse than no arrow.
+ *
+ * Promise and status history are left out on purpose. `promise.date` looks tempting and would
+ * rank a board by a field most rows do not carry, burying every consignment nobody has
+ * promised anything about — which is most of them, and the ones with room left to promise.
+ *
+ * `invoice.value` is on the list, and it is the one entry here that deserves an argument,
+ * because every other list in the app that carries a figure gates the ordering on who may read
+ * the column [§8].
+ *
+ * It is not gated here because **the gate is already the door**. This list is served only
+ * behind `requireModule('dispatch')`, and `seesConsignmentValue` is satisfied by holding a
+ * dispatch grant at any level — so every reader who gets far enough to send a `?sort=` has
+ * already passed the check a split would apply. Writing one anyway produces a conditional that
+ * reads like a security control and can never refuse anything, which is worse than no check at
+ * all: the next person to touch this file trusts it.
+ *
+ * The redaction in `dispatchVisibleTo` is *not* redundant in the same way, and the difference
+ * is worth keeping straight — consignments are also reachable through the order tracker at
+ * `/orders/:id/dispatches`, which is behind the `orders` grant, so a production reader does
+ * arrive at a consignment record without a dispatch grant. That route is not a sortable list.
+ */
+const DISPATCH_SORTABLE = [
+  'number', 'createdAt', 'status', 'dispatchDate', 'expectedDeliveryDate',
+  'deliveredAt', 'invoice.number', 'invoice.date', 'invoice.value', 'destination.city',
+];
+
+/**
+ * What the ready-stock table will order by.
+ *
+ * Every key here is a column the screen draws, and every one of them is a plain number or a
+ * date on a row this process built — so unlike the consignment list above, nothing is off the
+ * table for being a virtual. `available` is the one that matters most: "biggest load first" is
+ * how a clerk fills a lorry that is going out half empty.
+ */
+const STOCK_SORTABLE = [
+  'modelNumber', 'order.number', 'deliveryDate',
+  'quantity', 'readyQty', 'reserved', 'dispatched', 'available',
+];
+
 /* ------------------------------- Reading them ------------------------------- */
 
 /**
@@ -78,6 +126,7 @@ function dispatchFilters(req, { withStatus = true } = {}) {
   const { page, limit, sort, filter } = listParams(req.query, {
     searchFields: ['number', 'invoice.number', 'lrNumber', 'vehicleNumber', 'lines.modelNumber'],
     defaultSort: '-createdAt',
+    sortable: DISPATCH_SORTABLE,
   });
 
   /*
@@ -278,6 +327,14 @@ export const listReadyStock = asyncHandler(async (req, res) => {
     if (!b.deliveryDate) return -1;
     return new Date(a.deliveryDate) - new Date(b.deliveryDate);
   });
+
+  /*
+   * And then whatever the clerk asked for, on top of that ranking rather than instead of it.
+   * The rows are built here rather than fetched, so this is `sortRows` and not `.sort()` — but
+   * it refuses an unknown key with the same message every other list gives, which is the point
+   * of the shared helper.
+   */
+  rows = sortRows(rows, req.query.sort, STOCK_SORTABLE);
 
   const { page, limit } = listParams(req.query, { defaultLimit: 25 });
   const start = (page - 1) * limit;

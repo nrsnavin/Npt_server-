@@ -3,7 +3,7 @@ import { withOrderLock } from '../services/operationLock.service.js';
 import SalesOrder, { PRODUCTION_STATUSES, PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
-import { listParams, paginated } from '../utils/query.js';
+import { listParams, paginated, sortRows } from '../utils/query.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
@@ -50,6 +50,25 @@ const EXPORT_LIMIT = 5000;
  * still turn into different jobs.
  */
 const RELEASED = { status: { $nin: [...PRE_RELEASE_STATUSES, 'cancelled'] } };
+
+/**
+ * What the line queue will order by.
+ *
+ * These rows are built here, one per order line, so every column the screen draws is a plain
+ * value on the row and all of them can be ranked — which makes this the one big table in the
+ * app with no unsortable columns to apologise for.
+ *
+ * `madePercent` is the interesting one. It is a virtual on the line, but it has already been
+ * read off the document by the time the row exists, so sorting it is ordinary arithmetic here
+ * where it would have been impossible in Mongo. Ascending gives the run that has moved least,
+ * which is a more useful "what is stuck" than the date on its own: a line due Friday that is
+ * 95% made needs nobody, and one due Friday at 4% needs a press today.
+ */
+const PRODUCTION_SORTABLE = [
+  'modelNumber', 'order.number', 'colour', 'quantity', 'deliveryDate',
+  'production.status', 'production.producedQty', 'production.readyQty',
+  'production.expectedCompletion', 'toMakeQty', 'madePercent',
+];
 
 /* --------------------------------- The queue --------------------------------- */
 
@@ -129,6 +148,14 @@ export const listProductionLines = asyncHandler(async (req, res) => {
     if (!right) return -1;
     return new Date(left) - new Date(right);
   });
+
+  /*
+   * Then whatever the floor asked for, layered on top. The ranking above stays the default,
+   * because it is the answer to the question the screen is for; an explicit `?sort=` is
+   * somebody asking a different question — "which model are we furthest behind on", "what is
+   * the biggest run open" — and the stable sort leaves ties in promise order underneath.
+   */
+  rows = sortRows(rows, req.query.sort, PRODUCTION_SORTABLE);
 
   const total = rows.length;
   const start = (page - 1) * limit;

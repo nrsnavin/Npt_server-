@@ -13,16 +13,56 @@ import { allMouldsVisibleTo, mouldVisibleTo, seesMachineRate } from '../services
 const EXPORT_LIMIT = 5000;
 
 /**
+ * What the mould register will order by.
+ *
+ * The register's whole purpose is that the tool room's knowledge stops being one person's, so
+ * this list is generous: the geometry, the weights, the cycle and the output are all facts
+ * anybody holding the grant may already read on the row, and ranking by them is how somebody
+ * finds "the 400 mm tools we can run fastest".
+ *
+ * What is missing is missing for arithmetic, not secrecy. Consumption per piece, pieces per
+ * hour and the runner percentage are **virtuals** computed from the cavities, the weights and
+ * the cycle time — so the columns the screen draws under those headings have nothing stored
+ * behind them to sort. The inputs are all here instead, which gets a reader most of the way:
+ * ranking by `cycleTimeSeconds` ascending and by `cavities` descending are the two halves of
+ * "what is quickest", and both are honest.
+ */
+const MOULD_SORTABLE = [
+  'mouldCode', 'name', 'category', 'sizeMm', 'hookType', 'moq', 'packingQty',
+  'cavities', 'activeCavities', 'partWeightGrams', 'runnerWeightGrams',
+  'cycleTimeSeconds', 'efficiencyPercent', 'regrindRecoveryPercent',
+  'status', 'commissionedOn', 'location', 'machine.code', 'createdAt',
+];
+
+/**
+ * The register's own confidential orderings [§8].
+ *
+ * These are the per-piece conversion costs and the machine hour rate — the cost base, copied
+ * straight onto a costing sheet where §8 hides it. `MOULD_CONFIDENTIAL` keeps them off the row
+ * for a marketing reader, and this keeps them out of the sort parameter, which is the same
+ * wall: ranking the register cheapest-tool-first states the cost order of every tool in it.
+ *
+ * Offered to whoever `seesMachineRate` already trusts with the figures — costing, and the
+ * production people who own and update the register.
+ */
+const MOULD_RATE_SORTABLE = [
+  'machine.hourRate', 'jobWorkCost', 'hookCost', 'clipsCost', 'printingCost', 'packingCost',
+];
+
+/**
  * What the moulds list understands, in one function.
  *
  * Shared by the list and the export for the reason every other module shares it: the promise
  * of a download is that the file is what was on the screen, and two copies of a filter block
  * start agreeing and stop without anybody noticing.
  */
-function mouldQuery(query) {
+function mouldQuery(query, user) {
   const params = listParams(query, {
     searchFields: ['mouldCode', 'name', 'machine.code', 'location'],
     defaultSort: 'mouldCode',
+    sortable: seesMachineRate(user)
+      ? [...MOULD_SORTABLE, ...MOULD_RATE_SORTABLE]
+      : MOULD_SORTABLE,
   });
 
   if (query.status) params.filter.status = query.status;
@@ -41,7 +81,7 @@ function mouldQuery(query) {
 }
 
 export const listMoulds = asyncHandler(async (req, res) => {
-  const { page, limit, sort, filter } = mouldQuery(req.query);
+  const { page, limit, sort, filter } = mouldQuery(req.query, req.user);
 
   const [data, total] = await Promise.all([
     Mould.find(filter)
@@ -137,7 +177,7 @@ export const updateMould = asyncHandler(async (req, res) => {
 });
 
 export const exportMoulds = asyncHandler(async (req, res) => {
-  const { sort, filter } = mouldQuery(req.query);
+  const { sort, filter } = mouldQuery(req.query, req.user);
 
   const rows = await Mould.find(filter)
     .sort(sort)
