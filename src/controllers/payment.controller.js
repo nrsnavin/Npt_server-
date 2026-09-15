@@ -78,21 +78,61 @@ export const listReceivables = asyncHandler(async (req, res) => {
   if (req.query.order) filter.order = req.query.order;
   if (req.query.kind) filter.kind = req.query.kind;
 
-  const [rows, total] = await Promise.all([
-    Receivable.find(filter).populate(POPULATE).sort(sort).skip((page - 1) * limit).limit(limit),
-    Receivable.countDocuments(filter),
-  ]);
+  /*
+   * What the reader is asking for, when it is a question the database cannot answer.
+   *
+   * Still owed, past its date, and a promise that was broken are the three filters this screen
+   * is actually worked from — and all three turn on `balance`, which is the invoice less the
+   * receipts and is computed on the way out. There is nothing in the collection to match on.
+   *
+   * The headline below already loads the whole open set to compute itself, so the rows for
+   * these can be paged out of that rather than fetched again. That is the same shape the
+   * production queue and despatch's ready stock use, and for the same reason: when the question
+   * is about a figure this process works out, this process is where the answer gets filtered.
+   *
+   * It was worth doing because the management home already links here with `?overdue=true` on a
+   * tile reading "2 invoices are past their day". Before this, that link landed on the whole
+   * ledger — the figure and the list it opened disagreed, and the figure was right.
+   */
+  const asked =
+    (req.query.overdue === 'true' && 'overdue') ||
+    (req.query.broken === 'true' && 'broken') ||
+    (req.query.open === 'true' && 'open') ||
+    null;
 
   /*
    * The open set, not this page. `balance` and `state` are virtuals, so "what is still owed"
    * cannot be a database filter — and a headline computed over one page would change when
    * somebody turned it, which reads as the debt changing.
    */
-  const open = await Receivable.find(filter);
+  const open = await Receivable.find(filter).sort(sort);
   await applyPaymentPositions(open);
-  const positions = new Map(open.map(row => [String(row._id), row.$locals]));
-  for (const row of rows) Object.assign(row.$locals, positions.get(String(row._id)));
   const owing = open.filter((row) => row.balance > 0);
+
+  let rows;
+  let total;
+
+  if (asked) {
+    const matched =
+      asked === 'overdue' ? owing.filter((row) => row.isOverdue)
+        : asked === 'broken' ? owing.filter((row) => row.promise?.broken)
+          : owing;
+
+    total = matched.length;
+    const start = (page - 1) * limit;
+    /* Populated only for the page that is going out — the set above is loaded to be counted
+       and filtered, and populating all of it to send twenty-five would be the expensive half
+       of this endpoint for no reader's benefit. */
+    rows = await Receivable.populate(matched.slice(start, start + limit), POPULATE);
+  } else {
+    [rows, total] = await Promise.all([
+      Receivable.find(filter).populate(POPULATE).sort(sort).skip((page - 1) * limit).limit(limit),
+      Receivable.countDocuments(filter),
+    ]);
+
+    const positions = new Map(open.map((row) => [String(row._id), row.$locals]));
+    for (const row of rows) Object.assign(row.$locals, positions.get(String(row._id)));
+  }
 
   paginated(res, rows, { page, limit, total }, {
     meta: {

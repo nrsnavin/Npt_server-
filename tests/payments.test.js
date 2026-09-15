@@ -572,3 +572,77 @@ test('the change history on a receivable is readable by the people who may read 
   const refused = await api(`/api/history/Receivable/${receivable._id}`, { token: ramesh });
   assert.equal(refused.status, 403, "the plant can read a receivable's history");
 });
+
+/* ---------------- Which slice of the ledger, and why it cannot be a query ---------------- */
+
+/**
+ * "Still owed", "past its date" and "promise broken" all turn on the **balance** — the invoice
+ * less the receipts — and a balance is worked out on the way out of the record rather than
+ * stored. There is nothing in the collection to match on, so these three cannot be Mongo
+ * filters and are applied to the open set the endpoint already loads to compute its headline.
+ *
+ * Worth a test rather than a comment because of how the gap showed up. The management home has
+ * a tile reading "Overdue money · 2 invoices are past their day" that links straight to
+ * `/payments?overdue=true`. Nothing on either side understood the parameter, so the tile opened
+ * the **whole ledger** — a figure counting two rows beside a list showing every row, with no
+ * error anywhere and nothing to tell the reader which of the two was wrong.
+ */
+test('the chase list can be narrowed to what is actually overdue', async () => {
+  /* One that is owed and late, and one that is owed and not due for a month. */
+  const late = await shipped({ value: 90000 });
+  const soon = await shipped({ value: 70000 });
+
+  const [lateRow] = await owedOn(late.order._id);
+  const [soonRow] = await owedOn(soon.order._id);
+  assert.ok(lateRow && soonRow, 'both consignments should owe something');
+
+  await Receivable.updateOne({ _id: lateRow._id }, { dueBy: inDays(-20) });
+  await Receivable.updateOne({ _id: soonRow._id }, { dueBy: inDays(30) });
+
+  const whole = await api('/api/payments?limit=100', { token: kiran });
+  assert.equal(whole.status, 200, whole.json.message);
+
+  const overdue = await api('/api/payments?overdue=true&limit=100', { token: kiran });
+  assert.equal(overdue.status, 200, overdue.json.message);
+
+  const ids = overdue.json.data.map((row) => String(row._id));
+  assert.ok(ids.includes(String(lateRow._id)), 'the late one is missing from the overdue list');
+  assert.ok(!ids.includes(String(soonRow._id)), 'one due next month is not overdue');
+
+  /* Fewer than the whole ledger — the assertion the bug above would have failed, since it
+     answered every one of these requests with the same rows. */
+  assert.ok(
+    overdue.json.data.length < whole.json.data.length,
+    'narrowing to overdue returned the whole ledger'
+  );
+  /* And the count agrees with the headline the tile is drawn from, which is the disagreement
+     that started this. */
+  assert.equal(
+    overdue.json.pagination.total,
+    overdue.json.meta.overdue,
+    'the list and the figure above it disagree about how many are overdue'
+  );
+});
+
+/** Settled in full, so the balance is nil — owed by nothing, and therefore on no chase list. */
+test('what has been paid drops off the "still owed" list without being deleted', async () => {
+  const { order } = await shipped({ value: 50000 });
+  const [row] = await owedOn(order._id);
+
+  const paid = await api(`/api/payments/${row._id}/receipts`, {
+    method: 'POST', token: kiran,
+    body: { amount: 50000, receivedAt: new Date(), mode: 'neft', reference: 'UTR-5512' },
+  });
+  assert.equal(paid.status, 201, paid.json.message);
+
+  const owed = await api('/api/payments?open=true&limit=100', { token: kiran });
+  assert.equal(owed.status, 200, owed.json.message);
+  assert.ok(
+    !owed.json.data.some((entry) => String(entry._id) === String(row._id)),
+    'a settled invoice is still being chased'
+  );
+
+  /* Still there, though — the record is the history of the money, not a to-do item. */
+  const still = await api(`/api/payments/${row._id}`, { token: kiran });
+  assert.equal(still.status, 200, 'a paid receivable was deleted rather than closed');
+});
