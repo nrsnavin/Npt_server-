@@ -159,6 +159,75 @@ test('a message with no usable sender is refused, but not with a retryable error
   assert.equal(json.outcome, 'rejected');
 });
 
+/**
+ * Twilio posts a form, not JSON — and every other test in this file posts JSON.
+ *
+ * That gap is worth closing explicitly. `express.urlencoded` is what makes the real provider
+ * work, nothing else in the suite exercises it, and removing it would leave a webhook that
+ * passes every test and receives an empty body from Twilio: `From` undefined, so every live
+ * message is rejected for having no sender, and the inbox simply stays empty.
+ */
+test('a real Twilio post — form-encoded, not JSON — is understood', async () => {
+  const form = new URLSearchParams({
+    From: 'whatsapp:+919000000222',
+    Body: 'Do you supply to Bengaluru?',
+    MessageSid: 'SM-FORM-0001',
+    ProfileName: 'Ravi',
+    NumMedia: '0',
+  });
+
+  const response = await fetch(`${baseUrl}/api/whatsapp/inbound`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'x-webhook-token': 'test-webhook-token',
+    },
+    body: form.toString(),
+  });
+  const json = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(json.outcome, 'created', json.why);
+
+  const thread = await threadFor('+919000000222');
+  assert.ok(thread, 'the conversation exists');
+  assert.equal(thread.profileName, 'Ravi', 'and the form fields were actually read');
+  assert.match(thread.lastMessagePreview, /Bengaluru/);
+});
+
+/**
+ * The same post with the token on the query string, which is how it will really be configured.
+ *
+ * Twilio's console takes a URL and a method and nothing else — there is no field for a custom
+ * header. So `?token=` is the form the live webhook actually uses, and testing only the header
+ * would be testing the path nobody can configure.
+ */
+test('the token may travel on the query string, because that is all Twilio can send', async () => {
+  const form = new URLSearchParams({
+    From: 'whatsapp:+919000000223',
+    Body: 'Rate for 500 pieces?',
+    MessageSid: 'SM-FORM-0002',
+  });
+
+  const response = await fetch(
+    `${baseUrl}/api/whatsapp/inbound?token=test-webhook-token`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    }
+  );
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).outcome, 'created');
+
+  const refused = await fetch(`${baseUrl}/api/whatsapp/inbound?token=wrong`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form.toString(),
+  });
+  assert.equal(refused.status, 401, 'and a wrong one on the query string is still refused');
+});
+
 /* --------------------- §41.2: match before you create --------------------- */
 
 test('a known customer’s number attaches to that customer, and to their owner', async () => {
