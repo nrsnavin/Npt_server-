@@ -179,7 +179,7 @@ test.before(async () => {
    * assertions below read a refusal or a task title, and both name the model.
    */
   shared = await released(
-    Array.from({ length: 20 }, (unused, index) => ({
+    Array.from({ length: 24 }, (unused, index) => ({
       mould,
       modelNumber: `NH-${String(index + 1).padStart(2, '0')}`,
       colour: 'white',
@@ -712,4 +712,100 @@ test('two clerks claiming the same stock at the same moment cannot both win', as
       assert.match(reply.json.message, /claimed .* while this was being raised|free to dispatch|records are being updated/i);
     }
   }
+});
+
+/* ---------------------- Late, as a query rather than as a flag ---------------------- */
+
+/**
+ * The board's "Past their delivery date" tile, made into the filter it describes.
+ *
+ * `isOverdue` is a virtual, and this system is full of virtuals that cannot be filtered on
+ * because they are sums over a sub-document. This one is different and it is worth being
+ * explicit: a consignment's due date is `promise.date` when marketing has given the buyer one
+ * and `expectedDeliveryDate` otherwise, both of which are stored — so the rule *is* expressible
+ * as a query, and the tile can narrow the list instead of only counting.
+ *
+ * What these tests actually guard is that the two expressions of the rule agree. A board that
+ * filtered to four rows and then drew three of them without the late badge would be worse than
+ * one that could not filter at all, and nothing about it would throw.
+ */
+test('the late list and the late badge agree about every row', async () => {
+  const line = await readyLine({ readyQty: 9000 });
+  const late = await raise(shared, [{ orderLine: line._id, quantity: 3000 }], {
+    ...PAPERS, expectedDeliveryDate: inDays(-6),
+  });
+  assert.equal(late.status, 201, late.json.message);
+
+  const soon = await raise(shared, [{ orderLine: line._id, quantity: 3000 }], {
+    ...PAPERS, expectedDeliveryDate: inDays(20),
+  });
+  assert.equal(soon.status, 201, soon.json.message);
+
+  const listed = await api('/api/dispatches?overdue=true&limit=100', { token: kavitha });
+  assert.equal(listed.status, 200, listed.json.message);
+
+  const ids = listed.json.data.map((row) => String(row._id));
+  assert.ok(ids.includes(String(late.json.data._id)), 'one six days past its date is not on the late list');
+  assert.ok(!ids.includes(String(soon.json.data._id)), 'one due in three weeks is on the late list');
+
+  /* The agreement itself: everything the query returned says it is late. */
+  for (const row of listed.json.data) {
+    assert.equal(row.isOverdue, true, `${row.number} was filtered in but does not read as late`);
+  }
+
+  /* And the other way — nothing late is missing from it. */
+  const whole = await api('/api/dispatches?limit=200', { token: kavitha });
+  const missed = whole.json.data.filter((row) => row.isOverdue && !ids.includes(String(row._id)));
+  assert.deepEqual(missed.map((row) => row.number), [], 'late consignments the filter did not return');
+});
+
+/**
+ * A promise moves the date, which is the whole point of recording one — so it has to move the
+ * filter too. This is the branch a hand-written query gets wrong: `expectedDeliveryDate` is
+ * still in the past, and the consignment is no longer late.
+ */
+test('a promise to the buyer takes a consignment off the late list', async () => {
+  const line = await readyLine({ readyQty: 9000 });
+  const raised = await raise(shared, [{ orderLine: line._id, quantity: 4000 }], {
+    ...PAPERS, expectedDeliveryDate: inDays(-9),
+  });
+  assert.equal(raised.status, 201, raised.json.message);
+
+  const before = await api('/api/dispatches?overdue=true&limit=100', { token: kavitha });
+  assert.ok(
+    before.json.data.some((row) => String(row._id) === String(raised.json.data._id)),
+    'it should be late before anybody promises anything'
+  );
+
+  const promised = await api(`/api/dispatches/${raised.json.data._id}/promise`, {
+    method: 'PUT',
+    token: nandhini,
+    body: { date: inDays(14), note: 'Buyer agreed to take it with the next month\'s order' },
+  });
+  assert.equal(promised.status, 200, promised.json.message);
+
+  const after = await api('/api/dispatches?overdue=true&limit=100', { token: kavitha });
+  assert.ok(
+    !after.json.data.some((row) => String(row._id) === String(raised.json.data._id)),
+    'a consignment marketing has bought time on is still being counted as late'
+  );
+});
+
+/** Arrived is not late, however long ago the date was. */
+test('a delivered consignment leaves the late list', async () => {
+  const line = await readyLine({ readyQty: 9000 });
+  const raised = await raise(shared, [{ orderLine: line._id, quantity: 5000 }], {
+    ...PAPERS, expectedDeliveryDate: inDays(-15),
+  });
+  assert.equal(raised.status, 201, raised.json.message);
+
+  await act(raised.json.data, { action: 'dispatch' });
+  const arrived = await act(raised.json.data, { action: 'deliver' });
+  assert.equal(arrived.status, 200, arrived.json.message);
+
+  const listed = await api('/api/dispatches?overdue=true&limit=100', { token: kavitha });
+  assert.ok(
+    !listed.json.data.some((row) => String(row._id) === String(raised.json.data._id)),
+    'something that has arrived cannot be late'
+  );
 });

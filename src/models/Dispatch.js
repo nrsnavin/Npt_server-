@@ -62,6 +62,15 @@ export const GONE_DISPATCH_STATUSES = ['dispatched', 'delivered', 'pod_pending',
 export const CLOSED_DISPATCH_STATUSES = ['closed', 'cancelled'];
 
 /**
+ * The statuses that mean a consignment has arrived, so it cannot be late any more.
+ *
+ * Named rather than written out inside `isOverdue`, because the list endpoint has to express
+ * the same rule as a database query — and the version this was copied into by hand immediately
+ * drifted from the one being copied.
+ */
+export const ARRIVED_DISPATCH_STATUSES = ['delivered', 'pod_pending', 'closed', 'cancelled'];
+
+/**
  * While the load can still be changed.
  *
  * Once a lorry is loaded the quantity on the record is a claim about what is physically on it,
@@ -347,7 +356,7 @@ dispatchSchema.virtual('dueDateIsPromise').get(function dueDateIsPromise() {
 dispatchSchema.virtual('isOverdue').get(function isOverdue() {
   const due = this.dueDate;
   if (!due) return false;
-  if (['delivered', 'pod_pending', 'closed', 'cancelled'].includes(this.status)) return false;
+  if (ARRIVED_DISPATCH_STATUSES.includes(this.status)) return false;
   return new Date(due) < new Date();
 });
 

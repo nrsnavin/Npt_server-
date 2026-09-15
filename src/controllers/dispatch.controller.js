@@ -1,5 +1,6 @@
 import { withOrderLock } from '../services/operationLock.service.js';
 import Dispatch, {
+  ARRIVED_DISPATCH_STATUSES,
   DISPATCH_STATUSES,
   CLOSED_DISPATCH_STATUSES,
   GONE_DISPATCH_STATUSES,
@@ -148,6 +149,34 @@ function dispatchFilters(req, { withStatus = true } = {}) {
   }
   if (req.query.order) filter.order = req.query.order;
   if (req.query.customer) filter.customer = req.query.customer;
+
+  /*
+   * Past the date it was given, and not there yet — `isOverdue` on the model, said as a query.
+   *
+   * Unlike most of the "is it late" questions in this system this one **is** expressible, and
+   * that is worth spelling out because the first attempt assumed it was not. A consignment's
+   * due date is `promise.date` if marketing has given the buyer one and `expectedDeliveryDate`
+   * otherwise; both are stored, so the precedence is an `$or` with the fallback branch
+   * requiring the promise to be absent. `null` matches a missing field as well as an explicit
+   * one, which is what makes that branch correct rather than merely close.
+   *
+   * The statuses come from the model beside the virtual, so the query and the flag on the row
+   * cannot disagree — a board that filtered to four rows and then drew three of them without
+   * the late badge would be the worst possible version of this.
+   */
+  if (req.query.overdue === 'true') {
+    const now = new Date();
+    filter.status = { $nin: ARRIVED_DISPATCH_STATUSES };
+    filter.$and = [
+      ...(filter.$and || []),
+      {
+        $or: [
+          { 'promise.date': { $lt: now } },
+          { 'promise.date': null, expectedDeliveryDate: { $lt: now } },
+        ],
+      },
+    ];
+  }
 
   return { page, limit, sort, filter };
 }
