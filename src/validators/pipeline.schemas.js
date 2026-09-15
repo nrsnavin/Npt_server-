@@ -150,7 +150,7 @@ const requirementSchema = z.object({
   packing: z.string().optional(),
 });
 
-const enquiryCore = {
+export const enquiryCore = {
   /** The tool that makes it. Absent for a new development, and for anything bought in. */
   mould: objectId.optional(),
   isNewDevelopment: z.boolean().optional(),

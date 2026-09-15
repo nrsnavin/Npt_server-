@@ -221,13 +221,13 @@ export const MODULES = [
     stage: null,
     ownerDepartment: 'marketing',
     blueprint: '41',
-    available: false,
-    /**
-     * Held back until every other module is built. It feeds the enquiry module rather than
-     * replacing it: manual entry is the primary path and remains fully supported after this
-     * lands, because most enquiries will never arrive over WhatsApp.
+    available: true,
+    /*
+     * Built last, as planned, and it feeds the enquiry module rather than replacing it. Manual
+     * entry is still the primary path and stays fully supported: walk-ins, phone calls, trade
+     * shows and email are never going to arrive over WhatsApp, so nothing downstream may assume
+     * a conversation exists behind a record.
      */
-    deferred: 'Automated last. Data is entered manually until then, and manual entry stays.',
   },
   {
     key: 'customer_comms',

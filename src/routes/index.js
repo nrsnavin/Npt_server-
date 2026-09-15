@@ -7,12 +7,14 @@ import pipelineRoutes from './pipeline.routes.js';
 import pricingRoutes from './pricing.routes.js';
 import orderRoutes from './order.routes.js';
 import sampleRoutes from './sample.routes.js';
+import whatsappRoutes from './whatsapp.routes.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
 import { globalSearch } from '../controllers/search.controller.js';
 import { recordHistory } from '../controllers/audit.controller.js';
 import { ask, status as jarvisStatus } from '../controllers/jarvis.controller.js';
 import { listStates, listCities } from '../controllers/place.controller.js';
 import { indiamartStatus, runIndiamartSync } from '../controllers/indiamart.controller.js';
+import { inboundWebhook } from '../controllers/whatsapp.controller.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 
 const router = Router();
@@ -21,6 +23,16 @@ router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
 router.use('/workspace', workspaceRoutes);
 router.use('/samples', sampleRoutes);
+/*
+ * The WhatsApp front door [§41].
+ *
+ * The webhook is mounted here, above `authenticate` and outside every module grant, because
+ * Twilio has no session and never will. Its own guard is the shared token the controller
+ * checks — which is why it is the one route in this file that must be read before it is
+ * changed: everything else is protected by the middleware above it, and this one is not.
+ */
+router.post('/whatsapp/inbound', inboundWebhook);
+router.use('/whatsapp', whatsappRoutes);
 /*
  * One search across everything [§32]. Not inside a module's routes because it belongs to no
  * module — it decides per record type what the caller may read, and returns only those.

@@ -1050,7 +1050,7 @@ async function requirementSpec(input = {}) {
 }
 
 /** Shared by the create endpoint and by lead conversion. */
-async function createEnquiryRecord(input, user) {
+export async function createEnquiryRecord(input, user) {
   await assertEnquiryValid(input);
 
   const enquiry = new Enquiry({

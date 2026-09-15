@@ -305,13 +305,18 @@ test('the catalogue exposes modules and department templates', async () => {
   );
   assert.ok(stages.length >= 8, 'the lifecycle lost a stage');
 
-  // WhatsApp is held back, so it must carry a reason and sit off the lifecycle.
+  /*
+   * The WhatsApp front door is built [§41], and it still sits *off* the lifecycle — which is
+   * the part worth asserting. It feeds the chain rather than being a link in it: manual entry
+   * stays the primary path, so nothing downstream may assume a conversation exists behind a
+   * record. A stage number here would say the opposite.
+   */
   const whatsapp = json.data.modules.find((module) => module.key === 'whatsapp');
-  assert.equal(whatsapp.stage, null);
-  assert.ok(whatsapp.deferred, 'a deferred module states why');
-  assert.equal(whatsapp.available, false);
+  assert.equal(whatsapp.stage, null, 'the front door feeds the chain, it is not a link in it');
+  assert.equal(whatsapp.available, true);
+  assert.ok(!whatsapp.deferred, 'and it no longer carries a reason for being held back');
 
-  // Enquiries heads the chain now that the front door is deferred.
+  // Enquiries still heads the chain: a WhatsApp conversation becomes one rather than replacing it.
   const head = json.data.modules.find((module) => module.stage === 1);
   assert.equal(head.key, 'enquiries');
 });
