@@ -37,7 +37,14 @@ import { priceFrom } from '../services/pricing.service.js';
 /** Marketing can see whose enquiry it is; the ownership rule lives on the enquiry, not here. */
 const POPULATE = [
   { path: 'enquiry', select: 'number status requirement targetPrice' },
-  { path: 'customer', select: 'code name' },
+  /*
+   * `assignedTo` because quoting is scoped to the buyer's owner [§29], and the register could
+   * not tell. Every approved sheet offered marketing a Raise a quote button, including the ones
+   * for accounts a colleague works — where the quote door answers "that customer belongs to
+   * another marketing person" after the form has been filled in. Carrying the owner lets the
+   * row say whose it is instead of offering a step that cannot be taken.
+   */
+  { path: 'customer', select: 'code name assignedTo', populate: { path: 'assignedTo', select: 'name' } },
   /*
    * Named fields rather than a bare populate. The mould's virtuals recompute on serialisation
    * whatever is projected — that is what a virtual is — so the derived figures come through
@@ -200,8 +207,34 @@ export const listPricings = asyncHandler(async (req, res) => {
     Pricing.aggregate([{ $group: { _id: '$status', leads: { $sum: 1 } } }]),
   ]);
 
+  /*
+   * Which of these sheets already has an offer out on it.
+   *
+   * One costing raises one live quotation — the quote door refuses a second — and without this
+   * the register cannot say so. Every approved row offered "Raise a quote" and the ones already
+   * quoted answered with a refusal, which teaches people to distrust the button rather than to
+   * read the rule. Scoped to the rows on this page, so it is one bounded query however large
+   * the register grows.
+   */
+  const live = rows.length
+    ? await Quotation.find({
+        'lines.pricing': { $in: rows.map((row) => row._id) },
+        status: { $nin: CLOSED_QUOTATION_STATUSES },
+      }).select('number status lines.pricing')
+    : [];
+
+  const quotedOn = {};
+  for (const quotation of live) {
+    for (const line of quotation.lines || []) {
+      if (line.pricing) {
+        quotedOn[String(line.pricing)] = { _id: quotation._id, number: quotation.number, status: quotation.status };
+      }
+    }
+  }
+
   paginated(res, allVisibleTo(rows, req.user), { page, limit, total }, {
     stageCounts: Object.fromEntries(stages.map((row) => [row._id, { leads: row.leads, value: 0 }])),
+    quotedOn,
   });
 });
 
