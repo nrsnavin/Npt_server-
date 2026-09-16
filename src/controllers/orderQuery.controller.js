@@ -1,4 +1,4 @@
-import OrderQuery, { QUERY_URGENCY } from '../models/OrderQuery.js';
+import OrderQuery, { dueFrom } from '../models/OrderQuery.js';
 import SalesOrder from '../models/SalesOrder.js';
 import Dispatch from '../models/Dispatch.js';
 import ApiError from '../utils/ApiError.js';
@@ -45,12 +45,6 @@ async function readableOrder(id, user) {
   if (!ownsRecord(user, order)) throw ApiError.notFound('Order not found');
   return order;
 }
-
-/** Where the clock is set from — see `QUERY_URGENCY` for why these hours and not §25's. */
-const dueFrom = (urgency) => {
-  const tier = QUERY_URGENCY.find((entry) => entry.key === urgency) || QUERY_URGENCY[0];
-  return new Date(Date.now() + tier.hours * 3600000);
-};
 
 /* --------------------------------- Reading --------------------------------- */
 

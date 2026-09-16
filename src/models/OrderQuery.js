@@ -49,6 +49,19 @@ export const QUERY_URGENCY = [
 
 export const URGENCY_KEYS = QUERY_URGENCY.map((entry) => entry.key);
 
+/**
+ * When an answer stops being timely, from the urgency it was raised at [§25].
+ *
+ * Beside the tiers rather than in whichever controller wanted it first, because there is now a
+ * second caller — the Chirix import raises a question when an amendment lands on an order the
+ * plant has already started — and two copies of this would let the escalation clock mean one
+ * thing for a question a person asked and another for a question the importer asked.
+ */
+export const dueFrom = (urgency) => {
+  const tier = QUERY_URGENCY.find((entry) => entry.key === urgency) || QUERY_URGENCY[0];
+  return new Date(Date.now() + tier.hours * 3600000);
+};
+
 const answerSchema = new mongoose.Schema(
   {
     body: { type: String, required: true, trim: true, maxlength: 4000 },

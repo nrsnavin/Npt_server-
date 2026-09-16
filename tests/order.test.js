@@ -578,3 +578,152 @@ test('the awaiting-release queue is the gate’s own list', async () => {
   const numbers = json.data.map((row) => row.number);
   assert.ok(!numbers.includes(made.number), 'a released order has left the queue');
 });
+
+/* --------------------- Three things one order must not be --------------------- */
+
+/**
+ * A settled order is a record of a job that is over.
+ *
+ * Every other module in this system refuses an edit on a closed record — a cancelled sample
+ * takes none, an answered quotation takes none — and orders were the one that did not. So the
+ * terms, the owner, the order date and the buyer's PO number could all still be rewritten on an
+ * order cancelled months earlier, with nothing on the screen saying the order was over. A closed
+ * order is what the invoice, the dispatch paperwork and the receivable were all built from.
+ */
+test('a cancelled order cannot be edited, and says what to do instead', async () => {
+  const made = await order();
+  const killed = await api(`/api/orders/${made._id}/actions`, {
+    method: 'POST',
+    token: priya,
+    body: { action: 'cancel', cancellationReason: 'The buyer withdrew it' },
+  });
+  assert.equal(killed.status, 200, killed.json.message);
+
+  const edit = await api(`/api/orders/${made._id}`, {
+    method: 'PATCH', token: priya, body: { paymentTerms: '90 days' },
+  });
+  assert.equal(edit.status, 400);
+  assert.match(edit.json.message, /record of a job that is over/i);
+  /* There is no reopen — `orderActionsFrom` offers nothing at all from a closed status — so the
+     refusal has to name the way forward, or it is one people work around in the database. */
+  assert.match(edit.json.message, /new order/i);
+
+  const seen = await api(`/api/orders/${made._id}`, { token: priya });
+  assert.equal(seen.json.data.paymentTerms, '30 days', 'and nothing moved');
+});
+
+/**
+ * One live order per buyer per PO number.
+ *
+ * A buyer does not issue two purchase orders under one number, so two open orders carrying one
+ * are the same commitment booked twice — and the plant makes it twice. It happens for ordinary
+ * reasons: a slow save pressed again, or one person entering the PO another already entered.
+ */
+test('a second order against one buyer’s PO number is refused, and names the first', async () => {
+  const first = await order({ customerPo: { number: 'PO/2026/0919', date: inDays(-1) } });
+
+  const second = await api('/api/orders', {
+    method: 'POST',
+    token: priya,
+    body: {
+      customer,
+      customerPo: { number: 'PO/2026/0919', date: inDays(-1) },
+      lines: [{ mould, modelNumber: 'NH-400', quantity: 1000, unitPrice: 7.5 }],
+    },
+  });
+
+  assert.equal(second.status, 409, second.json.message);
+  assert.match(second.json.message, new RegExp(first.number), 'names the order that holds it');
+  assert.match(second.json.message, /rather than booking the PO twice/i);
+
+  /* Scoped to the buyer, because PO numbers are only unique inside the firm that issues them —
+     "PO/001" is the first order half the buyers in Tiruppur ever place. */
+  const other = await api('/api/customers', {
+    method: 'POST', token: nandhini, body: { name: 'Trendline Apparels', mobile: '9840044556' },
+  });
+  const elsewhere = await api('/api/orders', {
+    method: 'POST',
+    token: priya,
+    body: {
+      customer: other.json.data._id,
+      customerPo: { number: 'PO/2026/0919', date: inDays(-1) },
+      lines: [{ mould, modelNumber: 'NH-400', quantity: 1000, unitPrice: 7.5 }],
+    },
+  });
+  assert.equal(elsewhere.status, 201, 'another buyer may use the same number');
+});
+
+/** And a cancelled order stops reserving its number, because a PO withdrawn and re-issued under
+    the same number is the ordinary way a buyer corrects one. */
+test('a cancelled order releases its PO number', async () => {
+  const first = await order({ customerPo: { number: 'PO/2026/0920', date: inDays(-1) } });
+  await api(`/api/orders/${first._id}/actions`, {
+    method: 'POST', token: priya, body: { action: 'cancel', cancellationReason: 'Re-issued' },
+  });
+
+  const again = await api('/api/orders', {
+    method: 'POST',
+    token: priya,
+    body: {
+      customer,
+      customerPo: { number: 'PO/2026/0920', date: inDays(-1) },
+      lines: [{ mould, modelNumber: 'NH-400', quantity: 1000, unitPrice: 7.5 }],
+    },
+  });
+  assert.equal(again.status, 201, again.json.message);
+});
+
+/**
+ * The reference an imported order carries, which is what stops the poller booking it twice.
+ *
+ * The field, its unique index and the whole matching service were already built, and the create
+ * validator had no `externalRef` on it — so zod stripped it from every request and the reference
+ * was written nowhere at all. The de-duplication was unreachable from the one door a person
+ * uses when they type in an order the feed has not caught up with yet.
+ */
+test('an order can be told which outside record it is, and only once', async () => {
+  const ref = { source: 'chirix', id: 'SO-7781' };
+
+  const made = await api('/api/orders', {
+    method: 'POST',
+    token: priya,
+    body: {
+      customer,
+      customerPo: { number: 'PO/CHX/1', date: inDays(-1) },
+      lines: [{ mould, modelNumber: 'NH-400', quantity: 1000, unitPrice: 7.5 }],
+      externalRef: ref,
+    },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  assert.equal(made.json.data.externalRef?.id, 'SO-7781');
+  assert.equal(made.json.data.externalRef?.source, 'chirix');
+  assert.ok(made.json.data.externalRef?.importedAt, 'stamped here, not taken from the request');
+
+  const again = await api('/api/orders', {
+    method: 'POST',
+    token: priya,
+    body: {
+      customer,
+      customerPo: { number: 'PO/CHX/2', date: inDays(-1) },
+      lines: [{ mould, modelNumber: 'NH-400', quantity: 1000, unitPrice: 7.5 }],
+      externalRef: ref,
+    },
+  });
+  assert.equal(again.status, 409, again.json.message);
+  assert.match(again.json.message, new RegExp(made.json.data.number), 'says where it already is');
+
+  /* The importer's own account of what it saw is never a client's to set — a request that could
+     write `revision` could make an amendment look as though it had already been applied. */
+  const sneaky = await api('/api/orders', {
+    method: 'POST',
+    token: priya,
+    body: {
+      customer,
+      customerPo: { number: 'PO/CHX/3', date: inDays(-1) },
+      lines: [{ mould, modelNumber: 'NH-400', quantity: 1000, unitPrice: 7.5 }],
+      externalRef: { source: 'chirix', id: 'SO-7782', revision: '9' },
+    },
+  });
+  assert.equal(sneaky.status, 201, sneaky.json.message);
+  assert.equal(sneaky.json.data.externalRef?.revision, undefined, 'the revision was not taken');
+});

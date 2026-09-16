@@ -58,6 +58,25 @@ const customerPo = z.object({
   date: z.coerce.date().optional(),
 });
 
+/**
+ * Where this order came from, when somebody is entering one they already have elsewhere.
+ *
+ * The importer sets this by itself, so the obvious reading is that no client should be able to.
+ * The case that changes it is the ordinary one: an order is phoned through and typed here before
+ * the poll picks it up. Without a way to say "this is Chirix SO-1042", the poll arrives an hour
+ * later, finds nothing with that reference and books the same order a second time — which is
+ * exactly the duplicate the reference exists to prevent, arriving through the gap between the
+ * two ways an order can be entered.
+ *
+ * `revision` and `importedAt` are deliberately not accepted. They are the importer's account of
+ * what it saw and when, and a client that could set them could make an amendment look as though
+ * it had already been applied.
+ */
+const externalRef = z.object({
+  source: z.string().trim().min(1, 'Say which system this order came from'),
+  id: z.string().trim().min(1, 'Say what that system calls this order'),
+});
+
 const terms = {
   gstPercent: z.number().min(0).max(100).optional(),
   isExport: z.boolean().optional(),
@@ -74,6 +93,7 @@ export const orderSchema = z.object({
   assignedTo: objectId.optional(),
   orderDate: z.coerce.date().optional(),
   customerPo: customerPo.optional(),
+  externalRef: externalRef.optional(),
   lines,
   ...terms,
 });

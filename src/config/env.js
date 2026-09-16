@@ -113,6 +113,52 @@ export const env = {
     overlapMinutes: Number(process.env.INDIAMART_OVERLAP_MINUTES ?? 10),
     timeoutMs: Number(process.env.INDIAMART_TIMEOUT_MS || 20000),
   },
+
+  /**
+   * Chirix ERP's sales order feed [§12].
+   *
+   * Read-only and one-directional by design: orders raised in Chirix appear here so the plant
+   * is not typing them a second time, and nothing is ever written back. Two systems writing to
+   * each other produce a class of disagreement that cannot be debugged from either side.
+   *
+   * Off unless `CHIRIX_API_KEY` is set, like IndiaMART above — which is the right state for a
+   * deployment that does not run Chirix, and the right state for every deployment until the
+   * vendor answers the questions in `docs/CHIRIX_API_REQUEST.md`.
+   *
+   * `fallbackOwnerEmail` rather than an id, because a `.env` written by a person should not
+   * contain a Mongo ObjectId they have to look up — and because the id changes when the
+   * database is re-seeded and the email does not. It is resolved at poll time.
+   */
+  chirix: {
+    key: process.env.CHIRIX_API_KEY,
+    baseUrl: process.env.CHIRIX_API_URL,
+    /** How the key is presented. See the guide — vendors differ and this is cheaper than a fork. */
+    authHeader: process.env.CHIRIX_AUTH_HEADER || 'Authorization',
+    authScheme: process.env.CHIRIX_AUTH_SCHEME ?? 'Bearer',
+    /**
+     * The poll interval, in minutes.
+     *
+     * Slower than it could be, on purpose. A sales order is not a lead: nothing downstream of it
+     * happens in under an hour anyway, and the §13 checks take longer than that. Polling every
+     * minute would buy nothing and spend the vendor's rate limit — see question 5 in the request
+     * document.
+     */
+    pollMinutes: Number(process.env.CHIRIX_POLL_MINUTES ?? 15),
+    /** How far back the very first run reaches, before there is a watermark. */
+    backfillDays: Number(process.env.CHIRIX_BACKFILL_DAYS ?? 7),
+    /**
+     * Overlap re-asked on every poll.
+     *
+     * Their `modifiedSince` is their clock, not ours, and an order landing either side of the
+     * watermark would fall between two windows and never arrive. Re-reading is free because the
+     * import is idempotent on `(source, id)` — that is the whole point of the unique index on
+     * `externalRef` — so the overlap costs a few rows and closes the gap.
+     */
+    overlapMinutes: Number(process.env.CHIRIX_OVERLAP_MINUTES ?? 30),
+    timeoutMs: Number(process.env.CHIRIX_TIMEOUT_MS || 20000),
+    /** Who an imported order belongs to when nothing else resolves an owner [§29]. */
+    fallbackOwnerEmail: process.env.CHIRIX_FALLBACK_OWNER_EMAIL,
+  },
 };
 
 /**

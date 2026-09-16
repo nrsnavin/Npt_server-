@@ -32,6 +32,19 @@ export const ORDER_STATUSES = [
 export const CLOSED_ORDER_STATUSES = ['closed', 'cancelled'];
 
 /**
+ * Everything that is not finished, written out as a list rather than as "not those two".
+ *
+ * Only because a partial index has to be: Mongo supports `$in` in `partialFilterExpression` and
+ * rejects `$nin`, which it rewrites to a `$not` it will not index on. Derived rather than typed
+ * out, so a status added to the ladder above joins this automatically — a hand-written copy
+ * would silently leave the new status outside the uniqueness rule, which is the kind of gap
+ * nobody notices until two orders exist.
+ */
+export const OPEN_ORDER_STATUSES = ORDER_STATUSES.filter(
+  (status) => !CLOSED_ORDER_STATUSES.includes(status)
+);
+
+/**
  * How far up the plant's queue marketing has asked for an order, and what each level means.
  *
  * Three, and no more. A five-point scale invites the middle, and the middle of a priority scale
@@ -516,6 +529,39 @@ salesOrderSchema.index({ assignedTo: 1, status: 1 });
 salesOrderSchema.index(
   { 'externalRef.source': 1, 'externalRef.id': 1 },
   { unique: true, sparse: true }
+);
+/**
+ * One live order per buyer per PO number.
+ *
+ * A buyer does not issue two purchase orders under one number, so two open orders carrying one
+ * are the same commitment booked twice — and the plant makes it twice. It happens for ordinary
+ * reasons: a slow save pressed again, one person entering the PO that another already entered,
+ * and, once the feed is running, a Chirix order typed by hand before the poll fetched it.
+ *
+ * Scoped to the customer because PO numbers are only unique inside the firm that issues them —
+ * "PO/001" is the first order half the buyers in Tiruppur ever place, and a global unique index
+ * would refuse the second buyer's.
+ *
+ * `partialFilterExpression` rather than `sparse`, for two reasons a plain sparse index gets
+ * wrong. A compound sparse index only skips a document missing *every* indexed field, so an
+ * order with a customer and no PO number would still be indexed — and the second such order
+ * would collide with the first on a shared null. And a cancelled order has to stop reserving
+ * its number: a PO withdrawn and re-issued under the same number is the ordinary way a buyer
+ * corrects one, and the register must take it.
+ *
+ * Spelled as `$in` over the open statuses because Mongo refuses `$nin` in a partial filter — it
+ * becomes a `$not`, which it will not index on. `OPEN_ORDER_STATUSES` is derived from the ladder
+ * so the two cannot drift.
+ */
+salesOrderSchema.index(
+  { customer: 1, 'customerPo.number': 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      'customerPo.number': { $type: 'string' },
+      status: { $in: OPEN_ORDER_STATUSES },
+    },
+  }
 );
 salesOrderSchema.index({ number: 'text', 'customerPo.number': 'text' });
 /** "What is running on this tool?" — the question the mould register's screen will ask. */

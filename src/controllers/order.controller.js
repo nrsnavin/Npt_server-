@@ -340,6 +340,66 @@ const lineFrom = async (line) => {
 const linesFrom = (lines = []) => Promise.all(lines.map(lineFrom));
 
 /**
+ * The buyer's PO number, checked against what is already on the books.
+ *
+ * The unique index is what actually guarantees this, and it is the one that survives two saves
+ * landing at once. This exists for the message: Mongo's duplicate-key error becomes "a record
+ * with this customer, customerPo.number already exists", which tells somebody that something
+ * went wrong without telling them what to do. Naming the order that holds the number turns it
+ * into an instruction — go and look at SO-2026-0041.
+ *
+ * Skipped when there is no number. Plenty of real orders arrive before the document does.
+ */
+async function assertPoIsNew(customer, customerPo, { excluding } = {}) {
+  const number = customerPo?.number?.trim();
+  if (!number) return;
+
+  const clash = await SalesOrder.findOne({
+    customer,
+    'customerPo.number': number,
+    status: { $nin: CLOSED_ORDER_STATUSES },
+    ...(excluding ? { _id: { $ne: excluding } } : {}),
+  }).select('number status');
+
+  if (clash) {
+    throw ApiError.conflict(
+      `${number} is already on ${clash.number}, which is ${clash.status.replace(/_/g, ' ')}. ` +
+        'Add the models to that order rather than booking the PO twice.'
+    );
+  }
+}
+
+/**
+ * The outside system's identifier, checked against what has already been imported.
+ *
+ * Same division of labour as the PO check above: the unique index is the guarantee, this is the
+ * message. It matters more here than there, because the person who meets it is usually typing an
+ * order the poller has already brought in — and "SO-1042 arrived at 09:15 as SO-2026-0113" is
+ * the sentence that stops them entering it a third time.
+ *
+ * Not scoped to open orders, unlike the PO. A cancelled import still occupies its reference: the
+ * feed will offer that row again on the next poll, and treating the cancellation as a free slot
+ * is how a withdrawn order quietly comes back.
+ */
+async function assertRefIsNew(externalRef) {
+  const source = externalRef?.source?.trim();
+  const id = externalRef?.id?.trim();
+  if (!source || !id) return;
+
+  const clash = await SalesOrder.findOne({
+    'externalRef.source': source,
+    'externalRef.id': id,
+  }).select('number status importedAt');
+
+  if (clash) {
+    throw ApiError.conflict(
+      `${source} ${id} is already here as ${clash.number} (${clash.status.replace(/_/g, ' ')}).`,
+      { order: { id: clash._id, number: clash.number, status: clash.status } }
+    );
+  }
+}
+
+/**
  * Raising an order.
  *
  * Two doors, and this is the general one — a repeat job, a tender, an order placed against a
@@ -351,9 +411,15 @@ export const createOrder = asyncHandler(async (req, res) => {
   if (!customer) throw ApiError.badRequest('That customer does not exist');
 
   if (req.body.assignedTo) await assertAssignable(req.body.assignedTo);
+  await assertPoIsNew(customer._id, req.body.customerPo);
+  await assertRefIsNew(req.body.externalRef);
 
   const order = await SalesOrder.create({
     ...req.body,
+    /* Stamped here rather than taken from the request — see the note on the schema. */
+    ...(req.body.externalRef
+      ? { externalRef: { ...req.body.externalRef, importedAt: new Date() } }
+      : {}),
     lines: await linesFrom(req.body.lines),
     number: await nextNumber('SO'),
     assignedTo: req.body.assignedTo || req.user._id,
@@ -402,6 +468,9 @@ export const orderFromQuotation = asyncHandler(async (req, res) => {
       order: { id: existing._id, number: existing.number, status: existing.status },
     });
   }
+
+  /* The same PO cannot arrive twice through this door either — see `assertPoIsNew`. */
+  await assertPoIsNew(quotation.customer, req.body.customerPo);
 
   /*
    * The quantities, keyed by the quotation line they belong to. A line the PO does not mention
@@ -486,6 +555,31 @@ export const updateOrder = asyncHandler(withOrderLock(req => req.params.id, asyn
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
 
   expectVersion(order, req.body);
+
+  /*
+   * A settled order is a record, not a working document.
+   *
+   * Every other module refuses this — a cancelled sample takes no edits, an answered quotation
+   * takes none — and orders were the one that did not. So the terms, the owner, the order date
+   * and the customer's PO number on an order that had been cancelled or closed could all still
+   * be rewritten, months later, with nothing on the screen saying the order was over. A closed
+   * order is what the invoice, the dispatch paperwork and the receivable were all built from,
+   * and editing it changes the account of a job that has already happened.
+   *
+   * There is deliberately no reopen: `orderActionsFrom` returns nothing at all from a closed
+   * status, and the cancel action's own hint says a withdrawn order comes back "re-cut as
+   * another order". That is the right answer rather than a missing feature — the buyer re-issues
+   * the PO, so the plant's commitment is a fresh one and deserves its own number and its own
+   * eight checks. The message says so, because a refusal that names no way forward is one people
+   * work around in the database.
+   */
+  if (CLOSED_ORDER_STATUSES.includes(order.status)) {
+    throw ApiError.badRequest(
+      `This order is ${order.status} — what it says is the record of a job that is over. ` +
+        'If the buyer has come back, raise it as a new order against their new PO.'
+    );
+  }
+
   const before = snapshot(order);
   const patch = withoutVersion(req.body);
 
@@ -496,6 +590,11 @@ export const updateOrder = asyncHandler(withOrderLock(req => req.params.id, asyn
   }
   if (patch.lines) patch.lines = await linesFrom(patch.lines);
   if (patch.assignedTo) await assertAssignable(patch.assignedTo);
+  /* Correcting a PO number onto one another live order already carries is the same duplicate,
+     reached by a different door — and this is the door a mistyped number is fixed through. */
+  if (patch.customerPo) {
+    await assertPoIsNew(order.customer, patch.customerPo, { excluding: order._id });
+  }
 
   Object.assign(order, patch);
   await order.save();
