@@ -1,6 +1,6 @@
 import Sample, {
   CLOSED_SAMPLE_STATUSES, FEEDBACK_STATUSES, NOT_ESCALATED_STATUSES,
-  SAMPLE_STATUSES, WITH_CUSTOMER_STATUSES,
+  ON_THE_BENCH_STATUSES, SAMPLE_STATUSES, WITH_CUSTOMER_STATUSES,
 } from '../models/Sample.js';
 import Enquiry from '../models/Enquiry.js';
 import Lead from '../models/Lead.js';
@@ -593,6 +593,55 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
   if (FEEDBACK_STATUSES.includes(status)) {
     throw ApiError.badRequest(
       'What the customer said is recorded through the feedback action, by whoever spoke to them'
+    );
+  }
+
+  /*
+   * Two rules about which way a request may move, and both are about the piece itself rather
+   * than about tidiness of the funnel.
+   *
+   * There is deliberately no general "no going backwards" here, which is what the enquiry
+   * module has. A sample legitimately goes back: one that breaks on the bench returns to
+   * `production_required`, one that fails a check returns to `checking_stock`. Forbidding that
+   * would be forbidding the plant's ordinary day.
+   *
+   * **Once it has left the building, the bench's stages are behind it.** The status said the
+   * bench was still choosing stock for a piece sitting on a buyer's desk — and because the
+   * bench statuses are the ones §25 escalates, the sample re-entered the overdue queue and
+   * chased somebody for work that was already done. The way out of a dispatch made in error is
+   * to cancel the request or record the outcome, not to pretend it never went.
+   *
+   * **Delivered means it arrived, so it has to have gone.** Reached straight from the bench it
+   * set `deliveredAt`, skipped §6's paperwork gate entirely — no courier, no AWB, nothing for
+   * marketing to tell the buyer — and then satisfied the feedback action, which accepts any
+   * with-customer status. One dropdown click removed the whole promise of §6.
+   */
+  if (WITH_CUSTOMER_STATUSES.includes(sample.status) && ON_THE_BENCH_STATUSES.includes(status)) {
+    throw ApiError.badRequest(
+      `${sample.number} has already gone to the customer, so it cannot go back to the bench. ` +
+        'Cancel the request if it should not have been sent, or record what the customer said.'
+    );
+  }
+  /*
+   * **Dispatching is the only door into the customer's hands**, and it is the door §6's
+   * paperwork gate stands in.
+   *
+   * Written as "any with-customer status except dispatched" rather than naming `delivered`,
+   * because naming one of them was the first version of this fix and it left the hole open
+   * next to it: a request could go straight from `request_received` to `customer_feedback_pending`
+   * — never made, never sent, no courier, no AWB — and `recordFeedback` accepts any
+   * with-customer status, so the next click marked it **approved**. An approved sample is what
+   * §13 checks an order against, so the end of that path is an order verified against a piece
+   * that was never made.
+   */
+  if (
+    WITH_CUSTOMER_STATUSES.includes(status) &&
+    status !== 'dispatched' &&
+    !WITH_CUSTOMER_STATUSES.includes(sample.status)
+  ) {
+    throw ApiError.badRequest(
+      `${sample.number} has not been sent yet, so it cannot be ${status.replace(/_/g, ' ')}. ` +
+        'Dispatch it first, with the courier and AWB.'
     );
   }
 

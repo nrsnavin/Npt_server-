@@ -47,6 +47,22 @@ export const WITH_CUSTOMER_STATUSES = ['dispatched', 'delivered', 'customer_feed
 export const NOT_ESCALATED_STATUSES = [...CLOSED_SAMPLE_STATUSES, ...WITH_CUSTOMER_STATUSES];
 
 /**
+ * A request that is finished with *for the purpose of raising another one* [§4, §6].
+ *
+ * Wider than `CLOSED_SAMPLE_STATUSES` by one: `modification_required` is an answer the customer
+ * gave, so it is out of the way even though the request is still open — that is what makes a
+ * re-sample possible at all.
+ *
+ * Derived rather than written out, and that is the whole reason it exists. The dedupe that
+ * stops a re-applied enquiry status raising a second request had its own hand-written list,
+ * and that list had never learned about `cancelled`. So the model called a cancelled request
+ * closed and the dedupe called it open: cancelling the sample for an enquiry — which §4 added
+ * precisely so that losing the enquiry takes the sample off the bench — left it standing in
+ * the way of the next one, and the refusal named a cancelled sample as "already open".
+ */
+export const ANSWERED_SAMPLE_STATUSES = [...CLOSED_SAMPLE_STATUSES, 'modification_required'];
+
+/**
  * What the bench actually has to *do* from each status.
  *
  * A queue that says "pending action: 7" tells nobody anything — the whole difficulty of a
@@ -68,6 +84,15 @@ export const SAMPLE_NEXT_STEP = {
 
 /** The statuses with something for the bench to do. Derived, so the two cannot drift. */
 export const IN_WORK_STATUSES = Object.keys(SAMPLE_NEXT_STEP);
+
+/**
+ * The stages where the plant still has the piece.
+ *
+ * Named for the rule it serves rather than for its own sake: the bench's stages are behind you
+ * once the sample has gone, and "behind you" needs a list to mean anything. Below
+ * `IN_WORK_STATUSES` because it is built from it.
+ */
+export const ON_THE_BENCH_STATUSES = ['request_received', ...IN_WORK_STATUSES];
 
 /** Why the sample is being made [§4]. Drives what "approved" actually settles. */
 export const SAMPLE_PURPOSES = [

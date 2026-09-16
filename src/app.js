@@ -58,7 +58,22 @@ const credentialLimiter = rateLimit({
 app.use('/api/auth/login', credentialLimiter);
 app.use('/api/auth/register', credentialLimiter);
 app.use('/api/auth/otp', credentialLimiter);
-app.use('/api', rateLimit({ windowMs: 60 * 1000, max: 300, standardHeaders: true, legacyHeaders: false }));
+/*
+ * The general ceiling, and the one knob on it.
+ *
+ * 300 a minute is what a deployed server allows a single caller, and that stays the default —
+ * nothing about production changes unless somebody sets the variable. It became configurable
+ * because the test suites drive this app in-process at a speed no person can: one file walking
+ * fifty sample requests through their stages spends several hundred calls in a few seconds and
+ * starts getting 429s, which reads as a broken feature rather than as a limiter doing its job.
+ *
+ * Configurable rather than disabled under NODE_ENV, so the limiter is still mounted and still
+ * behaves the same way — only the number moves, and only where somebody has said so.
+ */
+const requestsPerMinute = Number(process.env.RATE_LIMIT_MAX) || 300;
+app.use('/api', rateLimit({
+  windowMs: 60 * 1000, max: requestsPerMinute, standardHeaders: true, legacyHeaders: false,
+}));
 
 // Outside /api, so the rate limiters above do not apply — probes must never be throttled.
 app.use('/health', healthRoutes);

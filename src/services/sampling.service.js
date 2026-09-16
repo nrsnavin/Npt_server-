@@ -1,4 +1,4 @@
-import Sample from '../models/Sample.js';
+import Sample, { ANSWERED_SAMPLE_STATUSES } from '../models/Sample.js';
 import Mould from '../models/Mould.js';
 import { nextNumber } from './numbering.service.js';
 import { EVENTS, publish } from './events.service.js';
@@ -121,11 +121,18 @@ const stated = (input) =>
  * Moving an enquiry to `sample_required` twice — which happens whenever marketing corrects a
  * status — must not produce two live requests for the same thing. A request that has already
  * been answered is not in the way, so a re-sample after `modification_required` still works.
+ *
+ * The list is `ANSWERED_SAMPLE_STATUSES` from the model rather than a copy of it here, and the
+ * copy is what went wrong: it named approved, rejected and modification_required, and never
+ * learned about `cancelled`. So the model called a cancelled request closed and this called it
+ * open. Cancelling the sample for an enquiry — which §4 added precisely so that losing the
+ * enquiry takes the sample off the bench — left it standing in the way of the next one, and
+ * the refusal named a cancelled sample as "already open against" the enquiry.
  */
 export async function openSampleFor(enquiryId) {
   return Sample.findOne({
     enquiry: enquiryId,
-    status: { $nin: ['approved', 'rejected', 'modification_required'] },
+    status: { $nin: ANSWERED_SAMPLE_STATUSES },
   });
 }
 

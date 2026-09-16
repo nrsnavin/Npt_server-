@@ -9,6 +9,9 @@ import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
+/* This file drives several hundred calls in a few seconds, which the deployed ceiling of 300
+   a minute correctly refuses. The limiter stays mounted; only the number moves. */
+process.env.RATE_LIMIT_MAX = '100000';
 process.env.JWT_SECRET = 'sampling-test-secret-value';
 
 let mongo;
@@ -1385,4 +1388,125 @@ test('an explicit sort is obeyed rather than regrouped', async () => {
   const { json } = await api('/api/samples?limit=200&sort=-number', { token: meera });
   const numbers = json.data.map((row) => row.number);
   assert.deepEqual(numbers, [...numbers].sort().reverse());
+});
+
+/* ------------------ Which way a request may move, and why ------------------ */
+
+/**
+ * There is deliberately no general "no going backwards" rule on a sample, unlike an enquiry.
+ * A piece that breaks on the bench genuinely returns to `production_required`; one that fails
+ * a check returns to `checking_stock`. Forbidding that would forbid the plant's ordinary day.
+ *
+ * Two narrower rules exist instead, and both are about the piece rather than about the tidiness
+ * of the funnel.
+ */
+
+/**
+ * Delivered means it arrived, so it has to have gone.
+ *
+ * Reached straight off the bench it set `deliveredAt`, skipped §6's paperwork gate entirely —
+ * no courier, no AWB, nothing marketing could tell the buyer — and then satisfied the feedback
+ * action, which accepts any with-customer status. The whole promise of §6 was one dropdown
+ * click from being skipped, and nothing anywhere said so.
+ */
+test('a sample cannot reach the customer without having been sent', async () => {
+  const enquiry = await raiseEnquiry();
+  const sample = await requestSample(enquiry._id);
+
+  /*
+   * Both doors, because fixing only `delivered` left the one beside it open — and that one is
+   * worse. `request_received` straight to `customer_feedback_pending` is a piece never made and
+   * never sent, and `recordFeedback` accepts any with-customer status, so the very next click
+   * marked it **approved**. An approved sample is what §13 checks an order against.
+   */
+  for (const status of ['delivered', 'customer_feedback_pending']) {
+    const jumped = await api(`/api/samples/${sample._id}/status`, {
+      method: 'POST', token: meera, body: { status },
+    });
+    assert.equal(jumped.status, 400, `a sample reached ${status} without leaving the building`);
+    assert.match(jumped.json.message, /has not been sent yet/i);
+  }
+
+  /* The end of that path, closed: nothing can be approved that never went. */
+  const verdict = await api(`/api/samples/${sample._id}/feedback`, {
+    method: 'POST', token: nandhini, body: { outcome: 'approved', note: 'Fine' },
+  });
+  assert.equal(verdict.status, 400, 'a sample that never left was approved');
+
+  /* And nothing was written — no arrival date on something that never went. */
+  const after = await api(`/api/samples/${sample._id}`, { token: meera });
+  assert.ok(!after.json.data.deliveredAt, 'it recorded an arrival anyway');
+  assert.equal(after.json.data.status, 'request_received');
+
+  /* The ordinary route still works, and only that route sets the date. */
+  await dispatchSample(sample._id);
+  const arrived = await api(`/api/samples/${sample._id}/status`, {
+    method: 'POST', token: meera, body: { status: 'delivered' },
+  });
+  assert.equal(arrived.status, 200, arrived.json.message);
+  assert.ok(arrived.json.data.deliveredAt, 'the real arrival was not recorded');
+});
+
+/**
+ * Once it has left the building, the bench's stages are behind it.
+ *
+ * The status said the bench was still checking stock for a piece sitting on a buyer's desk —
+ * and because the bench statuses are the ones §25 escalates, the request re-entered the overdue
+ * queue and chased somebody for work that was already done.
+ */
+test('a sample with the customer cannot be dragged back onto the bench', async () => {
+  const enquiry = await raiseEnquiry();
+  const sample = await requestSample(enquiry._id);
+  await dispatchSample(sample._id);
+
+  for (const status of ['checking_stock', 'production_required', 'sample_ready', 'request_received']) {
+    const back = await api(`/api/samples/${sample._id}/status`, {
+      method: 'POST', token: meera, body: { status },
+    });
+    assert.equal(back.status, 400, `a dispatched sample went back to ${status}`);
+    assert.match(back.json.message, /already gone to the customer/i);
+  }
+
+  /* The two ways out that do exist, so the rule has a legitimate escape. */
+  const cancelled = await api(`/api/samples/${sample._id}/status`, {
+    method: 'POST', token: meera, body: { status: 'cancelled', note: 'Sent in error' },
+  });
+  assert.equal(cancelled.status, 200, cancelled.json.message);
+});
+
+/**
+ * A cancelled request must not stand in the way of the next one.
+ *
+ * `CLOSED_SAMPLE_STATUSES` has always counted `cancelled` as finished, and the dedupe that
+ * stops a re-applied enquiry status raising a second request kept its own list — which named
+ * approved, rejected and modification_required and had never learned about it. So the model
+ * called a cancelled request closed and the dedupe called it open: cancelling the sample for
+ * an enquiry, which §4 added precisely so that losing the enquiry takes the sample off the
+ * bench, left it blocking the next one. The refusal named a cancelled sample as "already open".
+ */
+test('a cancelled request does not block the next one for the same enquiry', async () => {
+  const enquiry = await raiseEnquiry();
+  const first = await requestSample(enquiry._id);
+
+  const cancelled = await api(`/api/samples/${first._id}/status`, {
+    method: 'POST', token: meera, body: { status: 'cancelled', note: 'Buyer dropped the model' },
+  });
+  assert.equal(cancelled.status, 200, cancelled.json.message);
+
+  const second = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: { enquiry: enquiry._id, mould: mouldId, quantity: 2, requiredDate: soon(7) },
+  });
+  assert.equal(second.status, 201, `the cancelled one blocked it: ${second.json.message}`);
+  assert.notEqual(String(second.json.data._id), String(first._id), 'it handed back the cancelled one');
+
+  /* And the rule it protects still holds: a genuinely open request is still in the way. */
+  const third = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: { enquiry: enquiry._id, mould: mouldId, quantity: 2, requiredDate: soon(7) },
+  });
+  assert.equal(third.status, 409, 'two live requests were raised for one enquiry');
+  assert.match(third.json.message, /already open/);
 });
