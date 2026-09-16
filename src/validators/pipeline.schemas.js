@@ -102,6 +102,15 @@ export const leadUpdateSchema = leadSchema.partial().extend({
   status: z.enum(LEAD_STATUSES).optional(),
   disqualifyReason: z.enum(DISQUALIFY_REASONS).optional(),
   disqualifyNote: z.string().optional(),
+  /**
+   * Why a written-off lead is being brought back.
+   *
+   * Required by the controller on that one transition and ignored on every other, which is why
+   * it is optional here: a schema that demanded it would refuse an ordinary rename. It is not
+   * stored on the lead — it becomes a log entry beside the write-off it undoes, the same way an
+   * enquiry's reopen note lands in its history.
+   */
+  note: z.string().max(500).optional(),
   ...versioned,
 });
 

@@ -333,7 +333,14 @@ test('the queue keeps the four failures apart, because they have different fixes
   await Lead.deleteMany({});
   const now = Date.now();
 
-  await makeLead({ company: 'Overdue Mills', nextAction: 'Call', nextFollowUpDate: new Date(now - 4 * DAY) });
+  /*
+   * Aged rather than created overdue. A follow-up date already in the past is refused at the
+   * door now — a reminder born late reads as neglect on the day it was made — so the lead is
+   * created with a date ahead of it and the clock is then wound past it, which is the only way
+   * a lead actually becomes overdue.
+   */
+  const late = await makeLead({ company: 'Overdue Mills', nextAction: 'Call', nextFollowUpDate: new Date(now + DAY) });
+  await Lead.updateOne({ _id: late._id }, { $set: { nextFollowUpDate: new Date(now - 4 * DAY) } });
   await makeLead({ company: 'Due Today Ltd', nextAction: 'Call', nextFollowUpDate: new Date(now + 60 * 1000) });
   await makeLead({ company: 'Undecided Exports' });
 

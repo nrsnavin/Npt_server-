@@ -12,6 +12,7 @@ import mongoose from 'mongoose';
 process.env.JWT_SECRET = 'pipeline-test-secret-value';
 
 let mongo;
+let Lead;
 let server;
 let baseUrl;
 let admin;      // management, sees everything
@@ -53,6 +54,9 @@ test.before(async () => {
 
   events = await import('../src/services/events.service.js');
   const { default: app } = await import('../src/app.js');
+  /* After the connection is up, like `app`. One test ages a lead past its follow-up date the
+     way time does, which the API deliberately will not do. */
+  ({ default: Lead } = await import('../src/models/Lead.js'));
   server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -745,4 +749,218 @@ test('a record cannot be handed to somebody who is not there', async () => {
   });
   assert.equal(departed.status, 400, 'work sent after somebody has left goes nowhere');
   assert.match(departed.json.message, /not active/i);
+});
+
+/* ------------------- The two halves of one pipeline, agreeing ------------------- */
+
+/**
+ * A lead and an enquiry are the same relationship at two stages, and three rules had been
+ * settled on the enquiry half and never carried back to the lead half. Each of these is that
+ * gap, and each was reachable from the screen.
+ */
+
+const aLead = async (over = {}) => {
+  const made = await api('/api/leads', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      company: `Pipeline ${Math.random().toString(36).slice(2, 8)}`,
+      mobile: `98411${String(Math.floor(Math.random() * 90000) + 10000)}`,
+      ...over,
+    },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  return made.json.data;
+};
+
+const inDays = (n) => {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+
+/**
+ * A reminder born overdue.
+ *
+ * The enquiry half refuses a follow-up date that has already gone, and the lead half accepted
+ * one — which was the worse of the two places to allow it, because a lead's next step becomes a
+ * real task in somebody's list. A lead entered on Friday with Tuesday's date put an
+ * already-late reminder in the morning queue and read as neglect on the day it was created.
+ *
+ * What is refused is *setting* a date that is gone. A lead whose date passed while nobody rang
+ * is correctly overdue, and editing its notes must still work — that distinction is the whole
+ * of the rule, so it is tested in both directions.
+ */
+test('a lead cannot be given a follow-up date that has already gone', async () => {
+  const born = await api('/api/leads', {
+    method: 'POST',
+    token: nandhini,
+    body: { company: 'Late Start Mills', mobile: '9841100001', nextAction: 'Call', nextFollowUpDate: inDays(-10) },
+  });
+  assert.equal(born.status, 400, 'a lead was created with a reminder already late');
+  assert.match(born.json.message, /past/i);
+
+  const lead = await aLead();
+  const moved = await api(`/api/leads/${lead._id}`, {
+    method: 'PATCH', token: nandhini, body: { nextAction: 'Call', nextFollowUpDate: inDays(-3) },
+  });
+  assert.equal(moved.status, 400, 'a lead was edited to a date already gone');
+
+  const logged = await api(`/api/leads/${lead._id}/activities`, {
+    method: 'POST',
+    token: nandhini,
+    body: { type: 'call', summary: 'Rang, no answer', nextAction: 'Try again', nextFollowUpDate: inDays(-1) },
+  });
+  assert.equal(logged.status, 400, 'the activity door set a date already gone');
+
+  /* And the other direction: a date that passed on its own does not block ordinary edits. */
+  const aged = await aLead({ nextAction: 'Call', nextFollowUpDate: inDays(1) });
+  await Lead.updateOne({ _id: aged._id }, { $set: { nextFollowUpDate: inDays(-5) } });
+  const edited = await api(`/api/leads/${aged._id}`, {
+    method: 'PATCH', token: nandhini, body: { notes: 'Buyer asked us to try next month' },
+  });
+  assert.equal(edited.status, 200, 'an overdue lead could not be corrected');
+});
+
+/**
+ * Bringing a written-off lead back.
+ *
+ * It used to happen silently, and the lead kept the reason it was written off — so the list
+ * drew it as *Qualified* with "price shopper" still attached, a record contradicting itself.
+ * It also walked around `convertLead`'s own refusal in a single PATCH, with nothing recorded
+ * about who decided the write-off was wrong.
+ *
+ * The enquiry half had already answered both questions when it learned to reopen: deliberately
+ * or not at all, and reopening clears what closed it.
+ */
+test('a disqualified lead comes back only with a reason, and stops reading as written off', async () => {
+  const lead = await aLead();
+  const out = await api(`/api/leads/${lead._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { status: 'disqualified', disqualifyReason: 'price_shopper', disqualifyNote: 'Wanted ₹4.10' },
+  });
+  assert.equal(out.status, 200, out.json.message);
+
+  const silent = await api(`/api/leads/${lead._id}`, {
+    method: 'PATCH', token: nandhini, body: { status: 'qualified' },
+  });
+  assert.equal(silent.status, 400, 'a written-off lead was revived with nothing recorded');
+  assert.match(silent.json.message, /why/i);
+
+  const back = await api(`/api/leads/${lead._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { status: 'qualified', note: 'Came back at our price after their supplier let them down' },
+  });
+  assert.equal(back.status, 200, back.json.message);
+  assert.equal(back.json.data.status, 'qualified');
+
+  /* The half that made the record lie: the write-off reason is gone. */
+  assert.ok(!back.json.data.disqualifyReason, 'it still reads as written off');
+  assert.ok(!back.json.data.disqualifyNote);
+
+  /* And why is on the record, beside the write-off it undoes. */
+  assert.ok(
+    (back.json.data.activities || []).some((entry) => /supplier let them down/.test(entry.summary)),
+    'the reason it came back was not written down anywhere'
+  );
+
+  /* Which is the point: it can now be converted, and that is a decision somebody signed. */
+  const converted = await api(`/api/leads/${lead._id}/convert`, { method: 'POST', token: nandhini, body: {} });
+  assert.equal(converted.status, 201, converted.json.message);
+});
+
+/**
+ * The door `updateLead` closed and this one left open.
+ *
+ * Both write `nextAction` and `nextFollowUpDate`. So a converted lead could be given a live
+ * next step through the activity endpoint, and the leads list then drew a row reading
+ * *Converted* beside "Chase · in 9 days" — for work that moved to the customer weeks ago.
+ */
+test('a converted lead takes no more activity, the same as it takes no more edits', async () => {
+  const lead = await aLead({ nextAction: 'Call', nextFollowUpDate: inDays(3) });
+  const converted = await api(`/api/leads/${lead._id}/convert`, { method: 'POST', token: nandhini, body: {} });
+  assert.equal(converted.status, 201, converted.json.message);
+
+  const edited = await api(`/api/leads/${lead._id}`, {
+    method: 'PATCH', token: nandhini, body: { notes: 'after' },
+  });
+  assert.equal(edited.status, 400, 'the edit door was open');
+
+  const logged = await api(`/api/leads/${lead._id}/activities`, {
+    method: 'POST',
+    token: nandhini,
+    body: { type: 'call', summary: 'Rang them again', nextAction: 'Chase', nextFollowUpDate: inDays(9) },
+  });
+  assert.equal(logged.status, 400, 'a converted lead accepted a new next step');
+  assert.match(logged.json.message, /customer it became/i);
+
+  /* And nothing was written: the lead still says what it said when it closed. */
+  const after = await api(`/api/leads/${lead._id}`, { token: nandhini });
+  assert.equal(after.json.data.nextAction, 'Call', 'the next step was overwritten anyway');
+});
+
+/**
+ * Reopening a closed enquiry, and what the refusal says.
+ *
+ * Closing clears the follow-up, so a reopen always arrives with both fields empty. The generic
+ * open-enquiry guard then answered "an open enquiry needs a next action and a follow-up date"
+ * — true, and no use at all to somebody who had just supplied the note the reopen rule asked
+ * them for. A refusal that names one requirement at a time is a form filled in twice.
+ */
+test('reopening names everything it needs at once, not one thing per attempt', async () => {
+  const customer = (await api('/api/customers?limit=1', { token: nandhini })).json.data[0];
+  const made = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customer._id,
+      requirement: { modelNumber: 'REOPEN-1' },
+      nextAction: 'Call the buyer',
+      nextFollowUpDate: inDays(4),
+    },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  const id = made.json.data._id;
+
+  const lost = await api(`/api/enquiries/${id}/status`, {
+    method: 'POST', token: nandhini, body: { status: 'lost', lostReason: 'price' },
+  });
+  assert.equal(lost.status, 200, lost.json.message);
+
+  /* Nothing supplied: all three are named together. */
+  const bare = await api(`/api/enquiries/${id}/status`, {
+    method: 'POST', token: nandhini, body: { status: 'negotiation' },
+  });
+  assert.equal(bare.status, 400);
+  assert.match(bare.json.message, /why it is being reopened/);
+  assert.match(bare.json.message, /what happens next/);
+  assert.match(bare.json.message, /when to come back to it/);
+
+  /* The note alone was the case that read as a fault in the software. */
+  const noted = await api(`/api/enquiries/${id}/status`, {
+    method: 'POST', token: nandhini, body: { status: 'negotiation', note: 'Buyer rang back' },
+  });
+  assert.equal(noted.status, 400);
+  assert.match(noted.json.message, /what happens next/);
+  assert.ok(
+    !/why it is being reopened/.test(noted.json.message),
+    'it asked again for the note that was just given'
+  );
+
+  const back = await api(`/api/enquiries/${id}/status`, {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      status: 'negotiation',
+      note: 'Buyer rang back wanting to renegotiate',
+      nextAction: 'Re-quote at the revised quantity',
+      nextFollowUpDate: inDays(5),
+    },
+  });
+  assert.equal(back.status, 200, back.json.message);
+  assert.equal(back.json.data.status, 'negotiation');
+  /* And it stops reading as lost, which is the other half of reopening. */
+  assert.ok(!back.json.data.lostReason, 'a reopened enquiry still says why it was lost');
 });

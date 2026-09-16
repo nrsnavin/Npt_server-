@@ -85,6 +85,16 @@ function leadFilters(req, { withStatus = true } = {}) {
   if (withStatus && req.query.open === 'true') {
     filter.status = { $nin: ['converted', 'disqualified'] };
   }
+  /*
+   * Everything that should already have been chased, the same question the enquiry list
+   * answers with the same parameter — and the same caveat with it. Chasing a lead that
+   * converted last week is not a follow-up, so a due list that carried the closed ones would
+   * be a morning queue with finished work in it.
+   */
+  if (withStatus && req.query.dueBy) {
+    filter.nextFollowUpDate = { $lte: new Date(req.query.dueBy) };
+    if (!filter.status) filter.status = { $nin: ['converted', 'disqualified'] };
+  }
 
   return filter;
 }
@@ -607,6 +617,7 @@ export const createLead = asyncHandler(async (req, res) => {
     throw ApiError.forbidden('Only an administrator can assign a lead to someone else');
   }
   if (req.body.assignedTo) await assertAssignable(req.body.assignedTo);
+  assertFutureFollowUp(req.body.nextFollowUpDate);
 
   // Round-robin across marketing for a lead that arrives with nobody attached [§41.3]. A
   // marketing person entering their own call keeps it; see the service for why.
@@ -643,17 +654,58 @@ export const updateLead = asyncHandler(async (req, res) => {
 
   await assertReassignment(lead.assignedTo, req.body.assignedTo, req.user);
 
-  const { status, disqualifyReason } = req.body;
+  const { status, disqualifyReason, note } = req.body;
   if (status === 'disqualified' && !disqualifyReason && !lead.disqualifyReason) {
     throw ApiError.badRequest('Give a reason when disqualifying a lead');
   }
   if (status === 'converted') {
     throw ApiError.badRequest('Use the convert action rather than setting the status directly');
   }
+  assertFutureFollowUp(req.body.nextFollowUpDate);
+
+  /*
+   * Bringing a written-off lead back, which used to happen silently and left the record
+   * contradicting itself.
+   *
+   * Two things were wrong and they compounded. A lead could go from `disqualified` to any open
+   * stage with nothing recorded — so `convertLead`'s own refusal ("a disqualified lead cannot
+   * be converted") was one PATCH away from being bypassed, with no trace of who decided the
+   * write-off was wrong. And `disqualifyReason` survived the move, so the lead then read
+   * *Qualified* on the list with "price shopper" still attached to it.
+   *
+   * The enquiry half of this module already settled both questions when it learned to reopen a
+   * closed enquiry: it reopens deliberately or not at all, and reopening clears what closed it.
+   * The same answer, in the same words, because a lead and an enquiry coming back from the dead
+   * are the same event at two stages of one pipeline.
+   */
+  const reviving = lead.status === 'disqualified' && status && status !== 'disqualified';
+  if (reviving) {
+    if (!note?.trim()) {
+      throw ApiError.badRequest(
+        'Say why this lead is being brought back — it goes into the log beside the write-off'
+      );
+    }
+  }
 
   expectVersion(lead, req.body);
   const before = snapshot(lead);
-  Object.assign(lead, withoutVersion(req.body));
+  /* `note` is not a field on a lead — it is why this change is being made, and it belongs in
+     the log rather than assigned over the record. */
+  const { note: _why, ...patch } = withoutVersion(req.body);
+  Object.assign(lead, patch);
+
+  if (reviving) {
+    /* Or the lead reads Qualified with the reason it was written off still beside it. */
+    lead.disqualifyReason = undefined;
+    lead.disqualifyNote = undefined;
+    /* Beside the write-off in the log, which is the half somebody reads six weeks later. */
+    lead.activities.push({
+      type: 'note',
+      summary: `Brought back from disqualified — ${note.trim()}`,
+      createdBy: req.user._id,
+    });
+  }
+
   await lead.save();
   await recordChange({ model: 'Lead', doc: lead, before, by: req.user });
   // A moved date replaces its reminder rather than leaving the old one to be chased.
@@ -666,6 +718,21 @@ export const addLeadActivity = asyncHandler(async (req, res) => {
   const lead = await Lead.findById(req.params.id);
   if (!lead) throw ApiError.notFound('Lead not found');
   if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
+  /*
+   * The same door `updateLead` closed, closed here too.
+   *
+   * It was shut on the PATCH and left open on this one, and the two write the same fields: this
+   * endpoint sets `nextAction` and `nextFollowUpDate` as well as pushing the log entry. So a
+   * converted lead could be given a live next step through the back door, and the leads list
+   * then drew it — a row reading *Converted* beside "Chase · in 9 days", for work that moved to
+   * the customer weeks ago. The screen hid the form, which is not the same as the rule existing.
+   */
+  if (lead.status === 'converted') {
+    throw ApiError.badRequest(
+      'This lead has been converted — log the call against the customer it became'
+    );
+  }
+  assertFutureFollowUp(req.body.nextFollowUpDate);
 
   lead.activities.push({ ...req.body, createdBy: req.user._id });
   // Logging contact is itself progress, so a new lead stops being new.
@@ -1408,17 +1475,32 @@ async function moveEnquiry(enquiry, body, user) {
    * not drift back open by accident, and the figures behind a weekly review must not move
    * quietly under whoever read them.
    *
-   * So it reopens deliberately or not at all: only to an open stage, and only with a note
-   * saying why. The note is the part that matters — it lands in the history beside the close
-   * it undoes, so the record explains itself to whoever reads it next.
+   * So it reopens deliberately or not at all: only to an open stage, with a note saying why,
+   * and with the next step it is coming back to. The note lands in the history beside the
+   * close it undoes, so the record explains itself to whoever reads it next.
+   *
+   * The next step is named here rather than left to `assertNextAction` at the bottom, and the
+   * difference is only in what the refusal says. Closing an enquiry clears its follow-up, so a
+   * reopen always arrives with both fields empty and the generic guard answered "an open
+   * enquiry needs a next action and a follow-up date" — true, and no help at all to somebody
+   * who had just supplied the note the rule above asked them for. A refusal that names one
+   * requirement at a time is a form somebody fills in twice.
    */
   const reopening = CLOSED_STATUSES.includes(enquiry.status);
   if (reopening) {
     if (CLOSED_STATUSES.includes(status)) {
       throw ApiError.badRequest(`A ${enquiry.status} enquiry cannot be closed again`);
     }
-    if (!note?.trim()) {
-      throw ApiError.badRequest('Say why this is being reopened — it goes into the history');
+    const missing = [
+      !note?.trim() && 'why it is being reopened',
+      !(nextAction ?? enquiry.nextAction) && 'what happens next',
+      !(nextFollowUpDate ?? enquiry.nextFollowUpDate) && 'when to come back to it',
+    ].filter(Boolean);
+
+    if (missing.length) {
+      throw ApiError.badRequest(
+        `Reopening a ${enquiry.status} enquiry needs ${missing.join(', ')}.`
+      );
     }
   }
 
