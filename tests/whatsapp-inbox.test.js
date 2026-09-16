@@ -19,6 +19,8 @@ process.env.JWT_SECRET = 'whatsapp-test-secret-value';
 process.env.WHATSAPP_WEBHOOK_TOKEN = 'test-webhook-token';
 
 let mongo;
+let WhatsappThread;
+let Customer;
 let server;
 let baseUrl;
 let admin;
@@ -76,6 +78,10 @@ test.before(async () => {
   await mongoose.connect(process.env.MONGO_URI);
 
   const { default: app } = await import('../src/app.js');
+  /* Imported after the connection is up, like `app` — these two tests reach past the API to
+     check what was actually written, and to delete a thread so the matcher runs again. */
+  ({ default: WhatsappThread } = await import('../src/models/WhatsappThread.js'));
+  ({ default: Customer } = await import('../src/models/Customer.js'));
   server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -577,4 +583,172 @@ test('the conversation is gated on the grant, like everything else', async () =>
 
   const refused = await api('/api/whatsapp/threads', { token: bench });
   assert.equal(refused.status, 403, 'the bench does not read the front door');
+});
+
+/* ------------------------ Who holds one, and who may take one ------------------------ */
+
+/**
+ * The inbox screen asks two questions about people at once, and they have different answers.
+ *
+ * **Who is holding conversations** builds the owner filter. **Who may be given one** is §41.3's
+ * rotation, and it is a different set — the person a conversation should go to next may be
+ * holding none at all, so a picker built from the first list could never reach them. An inbox
+ * whose Unassigned queue can only be handed to somebody already busy is an inbox that makes the
+ * rotation worse.
+ */
+test('the inbox says who is holding conversations and who could take one', async () => {
+  const { status, json } = await api('/api/whatsapp/threads/owners', { token: admin });
+  assert.equal(status, 200, json.message);
+
+  const roster = json.team.map((person) => person.name);
+  assert.ok(roster.includes('Nandhini S'), 'the rotation is who may take one');
+  assert.ok(roster.includes('Arun K'), 'including somebody currently holding nothing');
+
+  /* Holders are a subset of the roster, never the other way round. */
+  for (const holder of json.data) {
+    assert.ok(roster.includes(holder.name), `${holder.name} holds threads but is not on the roster`);
+    assert.ok(holder.open > 0, 'somebody with nothing open is not a holder');
+  }
+
+  assert.equal(typeof json.unassigned, 'number', 'the unowned queue is counted outright');
+});
+
+/**
+ * And both are scoped [§29], which is the half worth a test.
+ *
+ * A marketing person gets one name in each — their own. That is not a limitation dressed up:
+ * the queue they need to act on is Unassigned and taking a conversation off it is the whole
+ * action, while handing somebody else's conversation to a third person is a decision about who
+ * owns an account. Returning the roster to everyone so the screen could offer a control most of
+ * them should not use would put every colleague's name and id on a screen that is not allowed
+ * to show their records.
+ */
+test('a marketing person is offered only themselves, in both lists', async () => {
+  const { status, json } = await api('/api/whatsapp/threads/owners', { token: nandhini });
+  assert.equal(status, 200, json.message);
+
+  assert.deepEqual(json.team.map((person) => person.name), ['Nandhini S']);
+  assert.ok(
+    json.data.every((person) => String(person._id) === String(nandhiniId)),
+    'a colleague appears in the holder list'
+  );
+  assert.ok(
+    !JSON.stringify(json).includes(String(arunId)),
+    "a colleague's id reached a screen that cannot show their records"
+  );
+});
+
+/**
+ * The owner filter the inbox list was missing entirely.
+ *
+ * Narrowed through `narrowToOwner`, so it can only ever narrow: a marketing person typing a
+ * colleague's id into the address bar gets nothing rather than that colleague's inbox.
+ */
+test('the inbox can be narrowed to one person, and never widened by asking', async () => {
+  await inbound('+919000000701', 'Need 20,000 shirt hangers');
+  const thread = await threadFor('+919000000701');
+  assert.ok(thread, 'the conversation exists');
+
+  const taken = await api(`/api/whatsapp/threads/${thread._id}`, {
+    method: 'PATCH', token: admin, body: { assignedTo: arunId },
+  });
+  assert.equal(taken.status, 200, taken.json.message);
+
+  const arunsInbox = await api(`/api/whatsapp/threads?assignedTo=${arunId}&limit=100`, { token: admin });
+  assert.equal(arunsInbox.status, 200);
+  assert.ok(
+    arunsInbox.json.data.some((row) => String(row._id) === String(thread._id)),
+    'narrowing to Arun did not return the conversation he was just given'
+  );
+  assert.ok(
+    arunsInbox.json.data.every((row) => String(row.assignedTo?._id) === String(arunId)),
+    'narrowing to one person returned somebody else as well'
+  );
+
+  /* And the rule that matters: Nandhini asking for Arun's inbox gets nothing, not Arun's. */
+  const overreach = await api(`/api/whatsapp/threads?assignedTo=${arunId}&limit=100`, { token: nandhini });
+  assert.equal(overreach.status, 200, 'refused by returning nothing, not by erroring');
+  assert.equal(overreach.json.data.length, 0, "a colleague's inbox was handed over by query string");
+});
+
+/* ---------------- Linking by hand, and why it has to be a one-off ---------------- */
+
+/**
+ * Linking a conversation to a customer files the number against them, so the **next** message
+ * from it matches on its own [§41.2].
+ *
+ * That is the entire justification for doing this on the inbox rather than sending somebody off
+ * to edit the customer record, and the first version of it did not work. It filed the number
+ * only when the customer had neither a mobile nor a WhatsApp number on file — a case that
+ * almost never arises, because a customer on file has a number and the person messaging is
+ * somebody at that company whose WhatsApp is a different one. So the link was remembered for
+ * nobody and the same chore came back with every message from the same buyer.
+ *
+ * Both branches are tested, and in both the assertion that matters is the second one: the
+ * number is on the record *and* the matcher finds it.
+ */
+
+/** The company already has a WhatsApp number, so this is a second person at it. */
+test('a number for a customer who already has one is filed as a contact', async () => {
+  const before = await Customer.findById(customer);
+  assert.ok(before.whatsapp, 'this branch needs a customer who already has a WhatsApp number');
+  const held = before.whatsapp;
+
+  const colleague = '+919000000801';
+  await inbound(colleague, 'Hi, Karthik here — same company, different phone. Need 30,000.');
+
+  const thread = await threadFor(colleague);
+  assert.equal(thread.matchedBy, 'unknown', 'nobody has this number yet');
+
+  /* As admin, because §41.3's rotation decides who gets a new conversation and this test is
+     about the filing rule rather than about whose turn it was. */
+  const linked = await api(`/api/whatsapp/threads/${thread._id}`, {
+    method: 'PATCH', token: admin, body: { customer },
+  });
+  assert.equal(linked.status, 200, linked.json.message);
+  assert.equal(linked.json.data.matchedBy, 'customer');
+
+  const after = await Customer.findById(customer);
+  assert.equal(after.whatsapp, held, "the company's own WhatsApp number was overwritten");
+  assert.ok(
+    (after.contacts || []).some((contact) => contact.whatsapp === colleague),
+    'the number went nowhere the matcher will look'
+  );
+
+  /* The half that matters. A fresh conversation, so this is the matcher rather than the link. */
+  await WhatsappThread.deleteOne({ number: colleague });
+  await inbound(colleague, 'Following up on the 30,000');
+
+  const second = await threadFor(colleague);
+  assert.equal(second.matchedBy, 'customer', 'the next message from that number still matched nobody');
+  assert.equal(String(second.customer?._id ?? second.customer), String(customer));
+});
+
+/** No WhatsApp number on file, so it goes on the customer itself — and the phone is left alone. */
+test('a number for a customer who has none is filed against them directly', async () => {
+  const made = await api('/api/customers', {
+    method: 'POST',
+    token: nandhini,
+    body: { name: 'Anbu Garments', mobile: '+919000000901', city: 'Erode' },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  const anbu = made.json.data._id;
+
+  const from = '+919000000902';
+  await inbound(from, 'Anbu Garments here — do you do 500mm trouser hangers?');
+  const thread = await threadFor(from);
+
+  const linked = await api(`/api/whatsapp/threads/${thread._id}`, {
+    method: 'PATCH', token: admin, body: { customer: anbu },
+  });
+  assert.equal(linked.status, 200, linked.json.message);
+
+  const after = await Customer.findById(anbu);
+  assert.equal(after.whatsapp, from, 'the number was not filed on the customer');
+  /* Their phone number is a different fact about the same firm and is not a place to put this. */
+  assert.equal(after.mobile, '+919000000901', 'linking overwrote their phone number');
+
+  await WhatsappThread.deleteOne({ number: from });
+  await inbound(from, 'Any update on that?');
+  assert.equal((await threadFor(from)).matchedBy, 'customer');
 });

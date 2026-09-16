@@ -144,6 +144,53 @@ governs a thing is the grant for that thing, wherever the button happens to live
 
 ---
 
+## 6. Working the inbox
+
+The screen is **WhatsApp → Inbox**. The queue is on the left and the conversation opens beside
+it, so triaging twenty messages does not mean twenty round trips through a detail page.
+
+Across the top are §41.5's queues with their counts, and **Nobody owns it** kept apart from the
+rest — a conversation nobody owns can be in any queue and is the one that goes unanswered.
+Clicking a queue shows it; clicking it again clears it. The default is everything still open,
+so converted and closed conversations are out of the way without anybody applying a filter.
+
+Opening a conversation shows four things and nothing else:
+
+- **Who is this.** A badge saying how the number was matched — *Known customer*, *Open lead* or
+  *Nobody we know* — and a picker to say so by hand when the matcher could not.
+- **Which queue** it sits in. *Converted* is not on offer until there is an enquiry behind it,
+  because converting is something you do, not a status you type.
+- **Who owns it**, with **Take it** to claim one. Management additionally gets a picker to hand
+  a conversation to somebody else; marketing does not, because who owns an account is not their
+  decision to make [§29].
+- **Raise an enquiry**, which is the point of the screen.
+
+### Linking a buyer the matcher did not recognise
+
+This is the one piece of manual work the integration cannot do for you, and it is a **one-off**
+per number. Choosing the customer in *Who is this* also files the number against them — on their
+record if they have no WhatsApp number yet, otherwise as a named contact — so the next message
+from that number matches on its own. Their ordinary phone number is left alone.
+
+### Raising the enquiry
+
+The buyer, the owner, the source and a reference back to this conversation all come across on
+their own. What you fill in is **what they asked for**: the model from the register, the colour,
+the packing — the part that arrived as prose in a chat and has to become something the plant can
+price and make.
+
+The button stays disabled until a customer is linked, and says why. An enquiry against nobody is
+not an enquiry.
+
+### Photographs
+
+An attachment is named on the message — "1 attachment — image/jpeg" — rather than shown. The file
+is still held by WhatsApp and fetching it needs Twilio's own credentials, so drawing it here
+would render a broken image on every one. Copying media into the plant's own storage is a
+separate piece of work; until it is done, ask the buyer to resend anything you need to keep.
+
+---
+
 ## What happens to a message when it arrives
 
 Worth knowing, because it explains what you will see in the inbox.

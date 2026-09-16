@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  listThreads, getThread, markRead, updateThread, convertToEnquiry,
+  listThreads, threadOwners, getThread, markRead, updateThread, convertToEnquiry,
 } from '../controllers/whatsapp.controller.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -19,6 +19,8 @@ router.use(authenticate);
  * grant for that thing, wherever the button happens to live.
  */
 router.get('/threads', requireModule('whatsapp'), listThreads);
+/* Above `/threads/:id`, or "owners" is read as a conversation id and answers 404. */
+router.get('/threads/owners', requireModule('whatsapp'), threadOwners);
 router.get('/threads/:id', requireModule('whatsapp'), getThread);
 
 router.post('/threads/:id/read', requireModule('whatsapp', 'write'), markRead);

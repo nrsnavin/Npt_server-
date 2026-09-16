@@ -63,7 +63,10 @@ def P(text, s="body"):
 def bullets(items, s="bullet"):
     return ListFlowable(
         [ListItem(Paragraph(i, S[s]), leftIndent=12) for i in items],
-        bulletType="bullet", bulletFontSize=6, bulletOffsetY=1.5,
+        # 6pt and offset upward drew a tick floating above the first word rather than a bullet
+        # beside it — small enough to read as a printing artefact. Sized to the text and dropped
+        # onto its baseline.
+        bulletType="bullet", bulletFontSize=8, bulletOffsetY=-1.5,
         leftIndent=12, bulletColor=GREEN, spaceAfter=6,
     )
 
@@ -294,6 +297,54 @@ story += [bullets([
 story += [P("Converting a conversation into an enquiry additionally needs "
             "<font face='Courier'>enquiries: write</font> — the grant that governs a thing is "
             "the grant for that thing, wherever the button happens to live.", "body")]
+
+# ------------------------------------------------------------------ working it
+story += [PageBreak()]
+story += [P("6 · Working the inbox", "h1")]
+story += [P("The screen is <b>WhatsApp → Inbox</b>. The queue is on the left and the "
+            "conversation opens beside it, so triaging twenty messages does not mean twenty "
+            "round trips through a detail page.", "body")]
+story += [P("Across the top are the queues with their counts, and <b>Nobody owns it</b> kept "
+            "apart from the rest — a conversation nobody owns can be in any queue and is the "
+            "one that goes unanswered. Clicking a queue shows it; clicking it again clears it. "
+            "The default is everything still open, so converted and closed conversations are "
+            "out of the way without anybody applying a filter.", "body")]
+
+story += [P("Opening a conversation shows four things and nothing else:", "body")]
+story += [bullets([
+    "<b>Who is this.</b> A badge saying how the number was matched — <i>Known customer</i>, "
+    "<i>Open lead</i> or <i>Nobody we know</i> — and a picker to say so by hand when the "
+    "matcher could not.",
+    "<b>Which queue</b> it sits in. <i>Converted</i> is not on offer until there is an enquiry "
+    "behind it, because converting is something you do, not a status you type.",
+    "<b>Who owns it</b>, with <b>Take it</b> to claim one. Management additionally gets a "
+    "picker to hand a conversation to somebody else; marketing does not, because who owns an "
+    "account is not their decision to make [§29].",
+    "<b>Raise an enquiry</b>, which is the point of the screen.",
+])]
+
+story += [P("Linking a buyer the matcher did not recognise", "h2")]
+story += [P("This is the one piece of manual work the integration cannot do for you, and it is "
+            "a <b>one-off per number</b>. Choosing the customer in <i>Who is this</i> also files "
+            "the number against them — on their record if they have no WhatsApp number yet, "
+            "otherwise as a named contact — so the next message from that number matches on its "
+            "own. Their ordinary phone number is left alone.", "body")]
+
+story += [P("Raising the enquiry", "h2")]
+story += [P("The buyer, the owner, the source and a reference back to this conversation all "
+            "come across on their own. What you fill in is <b>what they asked for</b>: the model "
+            "from the register, the colour, the packing — the part that arrived as prose in a "
+            "chat and has to become something the plant can price and make.", "body")]
+story += [P("The button stays disabled until a customer is linked, and says why. An enquiry "
+            "against nobody is not an enquiry.", "body")]
+
+story += [callout(
+    "Photographs are named, not shown",
+    "An attachment appears on the message as \u201c1 attachment \u2014 image/jpeg\u201d rather "
+    "than as a picture. The file is still held by WhatsApp and fetching it needs Twilio\u2019s "
+    "own credentials, so drawing it here would render a broken image on every one. Copying "
+    "media into the plant\u2019s own storage is a separate piece of work; until it is done, ask "
+    "the buyer to resend anything you need to keep.")]
 
 # ------------------------------------------------------------------ what happens
 story += [P("What happens to a message when it arrives", "h1")]

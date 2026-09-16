@@ -3,8 +3,10 @@ import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import { receiveMessage } from '../services/whatsapp.inbox.js';
 import { createEnquiryRecord } from './pipeline.controller.js';
-import { assertAssignable } from '../services/assignment.service.js';
-import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
+import { assertAssignable, marketingTeam } from '../services/assignment.service.js';
+import {
+  isOwnershipScoped, narrowToOwner, ownershipFilter, ownsRecord,
+} from '../services/ownership.service.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { listParams, paginated } from '../utils/query.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -99,6 +101,9 @@ export const listThreads = asyncHandler(async (req, res) => {
   const scope = scopeFor(req);
   Object.assign(filter, scope);
 
+  const owner = narrowToOwner(scope, req.query.assignedTo);
+  if (owner !== undefined) filter.assignedTo = owner;
+
   if (req.query.status) filter.status = { $in: String(req.query.status).split(',') };
   /* The working inbox: everything not yet finished with. The default view of the screen. */
   if (req.query.open === 'true') filter.status = { $nin: CLOSED_THREAD_STATUSES };
@@ -132,6 +137,57 @@ export const listThreads = asyncHandler(async (req, res) => {
   paginated(res, rows, { page, limit, total }, {
     stageCounts: Object.fromEntries(stages.map((row) => [row._id, { leads: row.leads }])),
     unassigned,
+  });
+});
+
+/**
+ * Who a conversation can be handed to, and who is already holding some.
+ *
+ * Two questions in one reply because the screen asks both at once, and because they have
+ * different answers. **Who holds threads** is the inbox's owner filter. **Who may take one** is
+ * the §41.3 rotation, which is a different set: the person a conversation should go to next may
+ * be holding none at all, so an assign picker built from the first list could never reach them.
+ *
+ * Both are scoped like every other list [§29], and the second one is the half worth arguing
+ * about. A marketing person gets exactly one name in each — their own — which means their assign
+ * control is "Take it" and nothing else. That is the right shape rather than a limitation: the
+ * queue a marketing person needs to act on is Unassigned, and taking a conversation off it is
+ * the whole action. Handing somebody else's conversation to a third person is a decision about
+ * who owns an account, which is management's, and returning the roster to everyone so the UI
+ * could offer a control most of them should not use would put every colleague's name and id on
+ * a screen that is not allowed to show their records.
+ */
+export const threadOwners = asyncHandler(async (req, res) => {
+  const scope = scopeFor(req);
+
+  const [rows, roster] = await Promise.all([
+    WhatsappThread.aggregate([
+      { $match: { ...scope, status: { $nin: CLOSED_THREAD_STATUSES } } },
+      { $group: { _id: '$assignedTo', open: { $sum: 1 } } },
+    ]),
+    marketingTeam(),
+  ]);
+
+  const counts = new Map(rows.map((row) => [String(row._id), row.open]));
+  /* The scope, applied to people rather than to records — same rule, same one-name answer. */
+  const team = isOwnershipScoped(req.user)
+    ? roster.filter((person) => String(person._id) === String(req.user._id))
+    : roster;
+
+  res.json({
+    success: true,
+    /* Currently holding something, for the filter. */
+    data: team
+      .filter((person) => counts.has(String(person._id)))
+      .map((person) => ({ _id: person._id, name: person.name, open: counts.get(String(person._id)) })),
+    /* Able to hold something, for the assign picker. */
+    team: team.map((person) => ({
+      _id: person._id,
+      name: person.name,
+      open: counts.get(String(person._id)) || 0,
+    })),
+    /* Said outright rather than left to be inferred from a total that will not add up. */
+    unassigned: counts.get('null') || counts.get('undefined') || 0,
   });
 });
 
@@ -212,9 +268,40 @@ export const updateThread = asyncHandler(async (req, res) => {
     /* The conversation follows the account [§29] unless somebody has already taken it. */
     if (!thread.assignedTo) thread.assignedTo = record.assignedTo;
 
-    /* So the next message from this number matches without anybody doing this again. */
-    if (!record.whatsapp && !record.mobile) {
-      record.whatsapp = thread.number;
+    /*
+     * So the next message from this number matches without anybody doing this again — which is
+     * the entire justification for linking by hand here rather than sending somebody to edit
+     * the customer record.
+     *
+     * The first version of this only filed the number when the customer had **no** phone number
+     * at all, and that is the case that almost never happens: a customer on file has an office
+     * mobile, and the buyer messaging is a person at that company whose WhatsApp is a different
+     * number. So the link was remembered for nobody and the chore came back with every message.
+     *
+     * Two places it can go, and both are already in the matcher's lookup [§41.2]:
+     *
+     * - The customer's own `whatsapp`, when that is empty. Their `mobile` is a different fact
+     *   about the same company and is left alone — overwriting a phone number with a WhatsApp
+     *   number loses something nobody asked to lose.
+     * - Otherwise a contact, because the company already has a WhatsApp number on file and this
+     *   is a second person at it. Named from the sender's own profile so the record says who,
+     *   falling back to the number itself rather than inventing a name.
+     */
+    const known = [record.whatsapp, record.mobile, ...(record.contacts || []).flatMap(
+      (contact) => [contact.whatsapp, contact.mobile]
+    )].filter(Boolean);
+
+    if (!known.includes(thread.number)) {
+      if (!record.whatsapp) {
+        record.whatsapp = thread.number;
+      } else {
+        record.contacts.push({
+          name: thread.profileName || thread.number,
+          whatsapp: thread.number,
+          /* Not primary: somebody who messaged once is not automatically the main contact. */
+          isPrimary: false,
+        });
+      }
       await record.save();
     }
   }
