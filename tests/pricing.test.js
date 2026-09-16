@@ -631,7 +631,7 @@ test('an enquiry’s costings and quotations are reachable from it', async () =>
   await api(`/api/pricings/${made.json.data._id}/cost`, {
     method: 'PATCH',
     token: admin,
-    body: { cost: { gramWeight: 22, rawMaterialRate: 95 }, markupPercent: 20, minimumOverride: 1 },
+    body: { cost: { gramWeight: 22, rawMaterialRate: 95 }, markupPercent: 20 },
   });
   await api(`/api/pricings/${made.json.data._id}/quotation`, {
     method: 'POST', token: nandhini, body: { quantity: 20000 },
@@ -805,7 +805,7 @@ test('re-sending a quote during a negotiation does not pull the enquiry back', a
   await api(`/api/pricings/${made.json.data._id}/cost`, {
     method: 'PATCH',
     token: admin,
-    body: { cost: { gramWeight: 22, rawMaterialRate: 95 }, markupPercent: 20, minimumOverride: 1 },
+    body: { cost: { gramWeight: 22, rawMaterialRate: 95 }, markupPercent: 20 },
   });
 
   const quote = await api(`/api/pricings/${made.json.data._id}/quotation`, {
@@ -829,9 +829,19 @@ test('re-sending a quote during a negotiation does not pull the enquiry back', a
    * the same one that first moved the enquiry forward, and without the guard it would march
    * the funnel backwards while marketing did exactly the right thing.
    */
-  await api(`/api/quotations/${quote.json.data._id}/revisions`, {
-    method: 'POST', token: nandhini, body: { unitPrice: 6.9 },
+  const revised = await api(`/api/quotations/${quote.json.data._id}/revisions`, {
+    method: 'POST',
+    token: nandhini,
+    body: { lines: [{ quantity: 20000, unitPrice: 6.9 }], note: 'Buyer pushed on price' },
   });
+  /*
+   * Asserted, because a revision is the precondition of the thing being tested and it used to be
+   * sent as a bare `unitPrice` — which the revision schema has no field for, so zod stripped it,
+   * the controller refused an empty revision, and the send below was a plain re-send of the same
+   * offer. The test still passed, on a path it was not written to exercise.
+   */
+  assert.equal(revised.status, 200, revised.json.message);
+
   await api(`/api/quotations/${quote.json.data._id}/send`, {
     method: 'POST', token: nandhini, body: {},
   });
@@ -1544,4 +1554,181 @@ test('a price somebody typed is left exactly where they typed it', async () => {
 
   assert.equal(sheet.approvedSellingPrice, 4.37, 'not nudged to 4.40');
   assert.equal(sheet.calculatedSellingPrice, 4.4, 'while the calculated one is on the step');
+});
+
+/* ------------------- Four rules the sheet only implied ------------------- */
+
+/**
+ * §9's floor is what routes an under-priced job to a signature. A floor below cost is not a
+ * lower floor — it is no floor at all, because every price that clears it is already above
+ * the number the approval exists to defend. The screen offers "Minimum override" beside
+ * "Approved price" and nothing distinguished them, so the shortcut for "let this one through"
+ * was to type a small number into the wrong box: the sheet then approved itself outright and
+ * §9 never fired again for that model.
+ */
+test('a floor under what the piece costs is refused, and says where the price goes instead', async () => {
+  const made = await api('/api/pricings', {
+    method: 'POST', token: admin, body: { customer, quantity: 40000, modelNumber: 'NH-401' },
+  });
+
+  const built = await api(`/api/pricings/${made.json.data._id}/cost`, {
+    method: 'PATCH',
+    token: admin,
+    /* Cost is 3.59: 22g at ₹95/kg is 2.09, plus 1.10 job work and 0.40 packing. */
+    body: {
+      cost: { gramWeight: 22, rawMaterialRate: 95, jobWorkCost: 1.1, packingCost: 0.4 },
+      markupPercent: 20,
+      minimumOverride: 1,
+    },
+  });
+
+  assert.equal(built.status, 400);
+  assert.match(built.json.message, /below what the piece costs/i);
+  /* The refusal has to point at the box that does what they wanted, or they will find another
+     way round it. */
+  assert.match(built.json.message, /goes for approval/i);
+
+  /* And a floor above cost is ordinary business: a model the plant will not sell cheaply. */
+  const higher = await api(`/api/pricings/${made.json.data._id}/cost`, {
+    method: 'PATCH',
+    token: admin,
+    body: {
+      cost: { gramWeight: 22, rawMaterialRate: 95, jobWorkCost: 1.1, packingCost: 0.4 },
+      markupPercent: 20,
+      minimumOverride: 9,
+    },
+  });
+  assert.equal(higher.status, 200, higher.json.message);
+  assert.equal(higher.json.data.minimumSellingPrice, 9);
+  assert.equal(higher.json.data.status, 'approval_pending', 'a price under its own floor waits');
+});
+
+/**
+ * One costing, one live offer.
+ *
+ * "Raise quotation" sits on the costing screen and did nothing to say it had already been
+ * pressed. Two quotations off one sheet both carry the same model at the same price under
+ * different numbers, and the buyer answers one of them: the other stays open for ever on the
+ * sent board, counts twice in the §11 conversion figure, and chases a customer who has already
+ * decided.
+ */
+test('a costing that already has a live quotation will not raise a second', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+
+  const first = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quantity: 12000 },
+  });
+  assert.equal(first.status, 201, first.json.message);
+
+  const second = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quantity: 12000 },
+  });
+  assert.equal(second.status, 409, second.json.message);
+  assert.match(second.json.message, new RegExp(first.json.data.number));
+  assert.match(second.json.message, /revise/i, 'and names the way through');
+
+  /* Once the buyer has answered, the sheet is free again — a repeat order next season is a new
+     quotation, not a revision of a closed one. */
+  await api(`/api/quotations/${first.json.data._id}/send`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+  const answered = await api(`/api/quotations/${first.json.data._id}/response`, {
+    method: 'POST', token: nandhini, body: { accepted: false, note: 'Went elsewhere on price' },
+  });
+  assert.equal(answered.status, 200, answered.json.message);
+
+  const later = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quantity: 12000 },
+  });
+  assert.equal(later.status, 201, 'a settled quotation no longer holds the sheet');
+});
+
+/**
+ * Sending is a fact about a day, not a button.
+ *
+ * `sentAt` is overwritten on every send, and it is what the sent board counts "unanswered for N
+ * days" from. Pressing Send twice on the same offer therefore reset the chase clock on a quote
+ * the buyer had been sitting on for a fortnight — and fired §42's message at them again with
+ * nothing changed in it. A revision is the honest way to send the same job twice, and it is what
+ * the refusal names.
+ */
+test('a quotation already with the customer cannot simply be sent again', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+  const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quantity: 12000 },
+  });
+
+  const sent = await api(`/api/quotations/${quote.json.data._id}/send`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+  assert.equal(sent.status, 200, sent.json.message);
+  const firstSentAt = sent.json.data.sentAt;
+
+  const again = await api(`/api/quotations/${quote.json.data._id}/send`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+  assert.equal(again.status, 400);
+  assert.match(again.json.message, /already gone to the customer/i);
+
+  const seen = await api(`/api/quotations/${quote.json.data._id}`, { token: nandhini });
+  assert.equal(seen.json.data.sentAt, firstSentAt, 'the chase clock is where it was');
+
+  /* Revise it and the door opens again, because the buyer is being told something new. */
+  const revised = await api(`/api/quotations/${quote.json.data._id}/revisions`, {
+    method: 'POST',
+    token: nandhini,
+    body: { lines: [{ quantity: 12000, unitPrice: 8.5 }], note: 'Buyer pushed on price' },
+  });
+  assert.equal(revised.status, 200, revised.json.message);
+  const resent = await api(`/api/quotations/${quote.json.data._id}/send`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+  assert.equal(resent.status, 200, resent.json.message);
+});
+
+/**
+ * A validity date is a promise with a deadline in it. One typed in the past is a quotation that
+ * is expired on the screen it was created on: the sent board files it under Expired, the accept
+ * action refuses it, and the buyer holds a PDF saying the offer ran out before it was written.
+ * Every door that can set the date gets the same check, because marketing reaches the field from
+ * three of them.
+ */
+test('a validity date already gone is refused wherever it is typed', async () => {
+  const sheet = await costed({ approvedSellingPrice: 9 });
+
+  const raised = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quantity: 12000, validUntil: inDays(-5) },
+  });
+  assert.equal(raised.status, 400, 'from the costing screen');
+  assert.match(raised.json.message, /valid/i);
+
+  const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: { quantity: 12000, validUntil: inDays(30) },
+  });
+  assert.equal(quote.status, 201, quote.json.message);
+
+  const edited = await api(`/api/quotations/${quote.json.data._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { validUntil: inDays(-1), expectedUpdatedAt: quote.json.data.updatedAt },
+  });
+  assert.equal(edited.status, 400, 'and from the edit door');
+
+  await api(`/api/quotations/${quote.json.data._id}/send`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+  const revised = await api(`/api/quotations/${quote.json.data._id}/revisions`, {
+    method: 'POST',
+    token: nandhini,
+    body: { lines: [{ quantity: 12000, unitPrice: 8.5 }], validUntil: inDays(-1) },
+  });
+  assert.equal(revised.status, 400, 'and from the revision door');
+
+  /* Today is not the past: an offer good until close of business is an ordinary thing to write. */
+  const today = await api(`/api/quotations/${quote.json.data._id}/revisions`, {
+    method: 'POST',
+    token: nandhini,
+    body: { lines: [{ quantity: 12000, unitPrice: 8.5 }], validUntil: inDays(0) },
+  });
+  assert.equal(today.status, 200, today.json.message);
 });

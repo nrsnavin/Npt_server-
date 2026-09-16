@@ -4,7 +4,7 @@ import Customer from '../models/Customer.js';
 import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import Material, { grammageFrom } from '../models/Material.js';
 import Component from '../models/Component.js';
-import Quotation from '../models/Quotation.js';
+import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
 import { newQuotation } from './quotation.controller.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -437,6 +437,32 @@ export const costPricing = asyncHandler(async (req, res) => {
   if (procurement !== undefined) pricing.procurement = procurement;
   if (remarks !== undefined) pricing.remarks = remarks;
 
+  /*
+   * A floor beneath the cost is not a floor [§9].
+   *
+   * `minimumOverride` exists because a particular buyer or job sometimes has a minimum of its
+   * own, and a rule with no exception is one people work around by keeping the real number
+   * somewhere the system cannot see. But the override was unbounded, and an override under the
+   * cost quietly dismantles the whole gate rather than bending it: `belowMinimum` compares the
+   * price against this number, so a floor of one paisa is false for every price there is. The
+   * sheet then approves itself, the quotation gate finds nothing to stop, and a price that
+   * loses money on every piece goes out with nobody's signature on it — which is the one
+   * outcome §9 was written to prevent.
+   *
+   * Refused rather than routed for approval, because the escape already exists and is the
+   * better one: put the price you actually want on the sheet and let §9 send *that* for a
+   * signature. Somebody then approves a price they can see, rather than approving a floor whose
+   * consequence is invisible.
+   */
+  if (pricing.minimumOverride != null && pricing.totalCost && pricing.minimumOverride < pricing.totalCost) {
+    throw ApiError.badRequest(
+      `A minimum of ${pricing.minimumOverride.toFixed(2)} is below what the piece costs to make ` +
+        `(${pricing.totalCost.toFixed(2)}), so it would let any price through unchecked. Put the ` +
+        'price you want on the sheet instead — anything under the standing minimum goes for ' +
+        'approval, which is the decision being made here.'
+    );
+  }
+
   // Derived, never typed — see the note above.
   pricing.calculatedSellingPrice = priceFrom(pricing);
   pricing.approvedSellingPrice =
@@ -634,6 +660,33 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
     await quotation.save();
 
     return res.status(200).json({ success: true, data: quotation });
+  }
+
+  /*
+   * One live quotation per sheet.
+   *
+   * Adding a sheet to an existing quotation is carefully guarded a few lines above — it refuses
+   * a sheet already on that document. Starting a *new* one was guarded by nothing, and the
+   * button that does it sits on a screen somebody presses on their way past: two presses, and
+   * there are two quotation numbers offering the same model to the same buyer at the same
+   * price. Which of them the buyer holds is then whichever was emailed, and the other sits in
+   * the sent board being chased.
+   *
+   * Refused rather than handed back, because a second press is usually a mistake and the useful
+   * answer names the document that already exists. A quotation the customer has *answered* is
+   * not in the way: they said no to that price, so re-costing and re-quoting is the ordinary
+   * next move and exactly what this door is for.
+   */
+  const live = await Quotation.findOne({
+    'lines.pricing': pricing._id,
+    status: { $nin: CLOSED_QUOTATION_STATUSES },
+  });
+
+  if (live) {
+    throw ApiError.conflict(
+      `${pricing.number} is already quoted on ${live.number}. Revise that one, or record what ` +
+        'the customer said about it first.'
+    );
   }
 
   const quotation = await newQuotation(

@@ -420,7 +420,38 @@ function snapshotOf(quotation, revision, user, at = new Date()) {
   };
 }
 
+/**
+ * A validity date that has already gone.
+ *
+ * Refused at every door that sets one, because a quotation born expired is a document that is
+ * wrong the moment it exists: `isExpired` is true on creation, the sent board draws "Validity
+ * passed" against a quote nobody has even sent, and the count of offers still live is short by
+ * one before anybody has done anything.
+ *
+ * What is refused is *setting* a date that is gone. A quotation whose validity lapsed while the
+ * buyer thought about it is correctly expired and must still be revisable and answerable — that
+ * distinction is the whole of the rule, and it is why this is checked against what the request
+ * supplies rather than against what the document holds.
+ */
+function assertValidityAhead(value) {
+  if (value === undefined || value === null || value === '') return;
+
+  const until = new Date(value);
+  if (Number.isNaN(until.getTime())) return; // The schema has its own opinion about shape.
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (until < today) {
+    throw ApiError.badRequest(
+      'A quotation cannot be given a validity date that has already passed — it would be ' +
+        'expired before it was sent.'
+    );
+  }
+}
+
 export async function newQuotation(fields, user) {
+  assertValidityAhead(fields.validUntil);
+
   const enquiry = fields.enquiry ? await Enquiry.findById(fields.enquiry) : null;
   if (fields.enquiry && !enquiry) throw ApiError.badRequest('That enquiry does not exist');
 
@@ -578,6 +609,8 @@ export const updateQuotation = asyncHandler(async (req, res) => {
     }
   }
 
+  assertValidityAhead(req.body.validUntil);
+
   expectVersion(quotation, req.body);
   const before = snapshot(quotation);
 
@@ -618,6 +651,7 @@ export const reviseQuotation = asyncHandler(async (req, res) => {
   }
 
   const { lines, note, ...terms } = req.body;
+  assertValidityAhead(terms.validUntil);
 
   /*
    * Defaults first, then compare. A line that leaves `moq` out is asking for the register's
@@ -664,6 +698,25 @@ export const sendQuotation = asyncHandler(async (req, res) => {
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
   if (CLOSED_QUOTATION_STATUSES.includes(quotation.status)) {
     throw ApiError.badRequest(`A ${quotation.status} quotation has already been answered`);
+  }
+  /*
+   * Sending something the buyer already has.
+   *
+   * Only the two answered statuses were blocked, so a quotation sitting at `sent` could be sent
+   * again — and that is not the harmless no-op it looks like. `sentAt` is stamped afresh, which
+   * resets the one figure the sent board exists to show: how long a price has been with a buyer
+   * unanswered. A quote ignored for three weeks reads as sent today, and the chase that was due
+   * disappears off the board. The §42 customer message fires a second time as well, so the
+   * buyer gets the same quotation twice with nothing having changed.
+   *
+   * The legitimate way to send again is the one §10 already provides: revise it, which moves it
+   * to `revised` and lets it go out carrying what actually changed.
+   */
+  if (quotation.status === 'sent') {
+    throw ApiError.badRequest(
+      `${quotation.number} has already gone to the customer. Revise it if the offer has changed, ` +
+        'or record their answer.'
+    );
   }
 
   const { cleared, why } = await priceIsCleared(quotation);
