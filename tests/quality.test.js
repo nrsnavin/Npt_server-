@@ -401,7 +401,14 @@ test('it goes with a reason, and the reason is kept with a name against it', asy
   assert.equal(json.data.status, 'dispatched');
   assert.match(json.data.qualityOverride.reason, /accepted the lot/);
   assert.match(json.data.qualityOverride.concern, /Nobody has inspected/);
-  assert.ok(json.data.qualityOverride.by);
+  /*
+   * "With a name against it" is this test's own title, and it was checking only that an id was
+   * stored. It was: unpopulated, so every screen drawing the notice — the order screen's
+   * tracker, the consignment's own page — rendered "Sent past a quality warning:" with nothing
+   * where the name belongs, which reads as if nobody had. The record is worth having only
+   * because somebody can be asked about it.
+   */
+  assert.equal(json.data.qualityOverride.by?.name, 'Kavitha D', 'by name, not by id');
   assert.ok(json.data.qualityOverride.at);
 });
 

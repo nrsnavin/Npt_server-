@@ -179,7 +179,7 @@ test.before(async () => {
    * assertions below read a refusal or a task title, and both name the model.
    */
   shared = await released(
-    Array.from({ length: 24 }, (unused, index) => ({
+    Array.from({ length: 30 }, (unused, index) => ({
       mould,
       modelNumber: `NH-${String(index + 1).padStart(2, '0')}`,
       colour: 'white',
@@ -808,4 +808,113 @@ test('a delivered consignment leaves the late list', async () => {
     !listed.json.data.some((row) => String(row._id) === String(raised.json.data._id)),
     'something that has arrived cannot be late'
   );
+});
+
+/* ------------- The proof of delivery, and closing without one [§19] ------------- */
+
+/**
+ * Closing was the silent escape from the POD chase.
+ *
+ * The day screen's `pod` band catches a consignment delivered without its receipt, and `closed`
+ * drops out of the despatch queue altogether — so the one status that made a missing proof
+ * invisible was the one requiring no explanation. `pod_pending` exists to hold exactly this
+ * gap and keeps it on a list; `close` skipped past it. The action's own hint already assumed
+ * otherwise: "Delivered and the proof is on file — nothing left to do."
+ *
+ * Refused outright would be the wrong fix. A POD needs an attachment, and not every delivery
+ * produces one somebody can lay hands on — an own-vehicle drop, a buyer who confirmed by
+ * phone. A hard gate there gets satisfied by scanning any piece of paper into the field, which
+ * is a POD column full of nothing. So the same shape as §15's quality override: it closes, with
+ * a reason and a name, and the reason is what makes the exception countable.
+ */
+const delivered = async () => {
+  const line = await readyLine({ readyQty: 32000 });
+  const made = await raise(shared, [{ orderLine: line._id, quantity: 8000 }], PAPERS);
+  assert.equal(made.status, 201, made.json.message);
+
+  const gone = await act(made.json.data, { action: 'dispatch' });
+  assert.equal(gone.status, 200, gone.json.message);
+
+  const arrived = await act(gone.json.data, { action: 'deliver' });
+  assert.equal(arrived.status, 200, arrived.json.message);
+  return arrived.json.data;
+};
+
+test('a consignment cannot be quietly closed with no proof of delivery', async () => {
+  const consignment = await delivered();
+
+  const bare = await act(consignment, { action: 'close' });
+
+  /*
+   * 409 rather than 400, matching the quality override: this is not a malformed request, it is
+   * a correct one that needs a second, deliberate press with an answer attached. A screen can
+   * tell those apart and ask for the one thing that is missing.
+   */
+  assert.equal(bare.status, 409, bare.json.message);
+  assert.match(bare.json.message, /no proof of delivery/i);
+  assert.equal(bare.json.details?.needs, 'noPodReason', 'names the field a screen must collect');
+  /* And points at the status that exists for this, so the easy path is the honest one. */
+  assert.match(bare.json.message, /waiting on the POD/i);
+
+  const seen = await api(`/api/dispatches/${consignment._id}`, { token: kavitha });
+  assert.equal(seen.json.data.status, 'delivered', 'and nothing moved');
+});
+
+test('a shrug is not a reason', async () => {
+  const consignment = await delivered();
+  const thin = await act(consignment, { action: 'close', noPodReason: 'lost' });
+  assert.equal(thin.status, 409, 'four characters is not an account of anything');
+});
+
+test('with a reason it closes, and the reason is countable afterwards', async () => {
+  const consignment = await delivered();
+
+  const done = await act(consignment, {
+    action: 'close',
+    noPodReason: 'Own vehicle drop — buyer confirmed receipt by phone, no signed copy issued',
+  });
+  assert.ok([200, 202].includes(done.status), done.json.message);
+
+  const seen = await api(`/api/dispatches/${consignment._id}`, { token: kavitha });
+  assert.equal(seen.json.data.status, 'closed');
+  assert.match(seen.json.data.closedWithoutPod.reason, /confirmed receipt by phone/);
+  /*
+   * A **name**, not an id. The value of the record is the report built on it — how many were
+   * closed with no proof, and who closed them — and `by` on its own satisfies that only if
+   * something resolves it. It does not: the reply is what every screen draws from, and with the
+   * author left unpopulated each of them printed the reason with an empty space where the name
+   * goes, which reads as though the system closed it by itself. The same hole was open on
+   * `qualityOverride.by` from the day it was added, on the notice whose entire purpose is
+   * naming somebody.
+   */
+  assert.equal(
+    typeof seen.json.data.closedWithoutPod.by?.name,
+    'string',
+    'the author is populated, or the screens have an id and print nothing'
+  );
+  assert.equal(seen.json.data.closedWithoutPod.by.name, 'Kavitha D');
+  assert.ok(seen.json.data.closedWithoutPod.at);
+});
+
+test('a consignment whose signed copy came back closes with no questions asked', async () => {
+  const consignment = await delivered();
+
+  const form = new FormData();
+  form.append('file', new Blob([Buffer.from('%PDF-1.4')], { type: 'application/pdf' }), 'pod.pdf');
+  const filed = await fetch(`${baseUrl}/api/dispatches/${consignment._id}/pod`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${kavitha}` },
+    body: form,
+  });
+  assert.equal(filed.status, 200);
+
+  const fresh = await api(`/api/dispatches/${consignment._id}`, { token: kavitha });
+  const done = await act(fresh.json.data, { action: 'close' });
+  assert.ok([200, 202].includes(done.status), done.json.message);
+
+  const seen = await api(`/api/dispatches/${consignment._id}`, { token: kavitha });
+  assert.equal(seen.json.data.status, 'closed');
+  /* Nothing recorded as an exception, because it was not one — a field that fills itself on
+     the ordinary path is a field nobody trusts on the unusual one. */
+  assert.equal(seen.json.data.closedWithoutPod?.reason, undefined);
 });

@@ -62,6 +62,14 @@ const POPULATE = [
   { path: 'promise.by', select: 'name' },
   { path: 'lines.mould', select: 'mouldCode name category sizeMm packingQty' },
   { path: 'pod.attachment', select: 'key filename mimeType size' },
+  /*
+   * The two names behind an override [§15, §19]. Both fields exist so that "sent past a quality
+   * warning" and "closed with no proof" are answerable by a *person*, and without the populate
+   * the screens hold an id, print nothing where the name goes, and the record reads as though
+   * the system decided by itself.
+   */
+  { path: 'qualityOverride.by', select: 'name' },
+  { path: 'closedWithoutPod.by', select: 'name' },
 ];
 
 const EXPORT_LIMIT = 5000;
@@ -329,7 +337,20 @@ export const listReadyStock = asyncHandler(async (req, res) => {
     (order.lines || []).map((line) => ({
       order: { _id: order._id, number: order.number, status: order.status, customer: order.customer },
       mould: line.mould,
-      deliveryDate: line.deliveryDate,
+      /*
+       * What the buyer is owed, not only what the PO said.
+       *
+       * `dueToBuyer` reads the re-agreed date when marketing has recorded one and the PO's own
+       * otherwise. Reading `deliveryDate` alone meant this queue and the production queue showed
+       * different dates for the same line the moment a buyer was given more time — two screens
+       * disagreeing in front of the same person, which is worse than either being wrong.
+       *
+       * The PO's date travels too, so a row can say "was 7 Oct" rather than silently drawing a
+       * date the paperwork does not carry.
+       */
+      deliveryDate: line.dueToBuyer,
+      poDeliveryDate: line.deliveryDate,
+      promisedDate: line.promisedDate,
       productionStatus: line.production?.status,
       ...stockOf(line, claims.get(String(line._id))),
     }))
@@ -398,6 +419,9 @@ export const listOrderDispatches = asyncHandler(async (req, res) => {
       .populate([
         { path: 'raisedBy', select: 'name' },
         { path: 'pod.attachment', select: 'key filename mimeType' },
+        /* The tracker panel draws both override notices, so it needs the names too. */
+        { path: 'qualityOverride.by', select: 'name' },
+        { path: 'closedWithoutPod.by', select: 'name' },
       ])
       .sort('-createdAt'),
     stockFor(order),
@@ -602,7 +626,7 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
 
   /* Pulled out of `rest` rather than deleted afterwards: everything left in `rest` is assigned
      straight onto the document, and this one belongs inside the override record, not beside it. */
-  const { action, note, qualityOverrideReason, ...rest } = withoutVersion(req.body);
+  const { action, note, qualityOverrideReason, noPodReason, ...rest } = withoutVersion(req.body);
   const recipe = DISPATCH_ACTIONS[action];
   if (!recipe) throw ApiError.badRequest('That is not something you can do to a consignment');
 
@@ -671,6 +695,37 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
       };
     }
   }
+  /*
+   * §19's proof of delivery, on the same warn-rather-than-refuse footing as the quality check
+   * above — and for a reason the action's own hint had already assumed: "Delivered and the proof
+   * is on file — nothing left to do". Nothing checked that it was.
+   *
+   * Closing was the silent escape from the POD chase. The day screen's `pod` band catches a
+   * consignment delivered without its receipt, and `closed` drops out of the despatch queue
+   * altogether — so the one status that made a missing proof invisible was the one needing no
+   * explanation, while `pod_pending`, which exists to hold exactly this gap, kept it on a list.
+   *
+   * Refused outright would be wrong: a POD needs an attachment and not every delivery produces
+   * one a clerk can lay hands on. A gate there gets satisfied by scanning any piece of paper,
+   * which is a POD column full of nothing. So it closes with a reason, and the reason is what
+   * makes "how many did we close with no proof, and who" answerable — the question accounts
+   * asks when a buyer disputes receiving a load.
+   */
+  if (recipe.to === 'closed' && !dispatch.pod?.attachment) {
+    const reason = String(noPodReason || '').trim();
+
+    if (reason.length < 10) {
+      throw ApiError.conflict(
+        `${dispatch.number} has no proof of delivery on file. It can still be closed, but say ` +
+          'why — the reason is kept against the consignment. Otherwise leave it waiting on the ' +
+          'POD, where the chase will keep it in front of somebody.',
+        { needs: 'noPodReason' }
+      );
+    }
+
+    dispatch.closedWithoutPod = { reason, by: req.user._id, at: new Date() };
+  }
+
   for (const field of recipe.needs) {
     if (!rest[field] && !dispatch[field]) throw ApiError.badRequest(`“${recipe.label}” needs ${field}`);
   }
@@ -1046,7 +1101,10 @@ export const dispatchDay = asyncHandler(async (req, res) => {
         modelNumber: line.modelNumber,
         mould: line.mould,
         colour: line.colour,
-        deliveryDate: line.deliveryDate,
+        /* The buyer's date, re-agreed or not — see the note on the ready queue. */
+        deliveryDate: line.dueToBuyer,
+        poDeliveryDate: line.deliveryDate,
+        promisedDate: line.promisedDate,
         link: `/orders/${order._id}`,
         ...stockOf(line, claims.get(String(line._id))),
       }))

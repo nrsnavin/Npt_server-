@@ -102,6 +102,15 @@ export const dispatchActionSchema = z.object({
    * schema cannot see the inspection to know which case it is in.
    */
   qualityOverrideReason: z.string().max(500).optional(),
+  /**
+   * Why this is being closed with no proof of delivery on file [§19].
+   *
+   * Optional here and required by the controller only when there is actually no POD, on the
+   * same argument as the quality reason above: a consignment whose signed copy came back must
+   * not be made to explain itself, and a schema cannot see the attachment to know which case
+   * it is in.
+   */
+  noPodReason: z.string().max(500).optional(),
   ...paperwork,
 });
 

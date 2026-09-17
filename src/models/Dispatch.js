@@ -257,6 +257,32 @@ const dispatchSchema = new mongoose.Schema(
       _id: false,
     },
 
+    /**
+     * Closed with no proof of delivery, and who said that was alright [§19].
+     *
+     * The same shape as `qualityOverride` above, and for the same reasons. A POD needs an
+     * attachment, and not every delivery produces one a clerk can get hold of — an own-vehicle
+     * drop where the signed copy never came back, a buyer who confirmed receipt by phone. A hard
+     * gate on that would be worked around by scanning any piece of paper into the field, which
+     * is a POD column full of nothing.
+     *
+     * What makes the exception safe is that it is recorded. Until now closing was the *silent*
+     * escape from the POD chase: the day screen's `pod` band catches a consignment delivered
+     * without its receipt, and `closed` drops out of the despatch queue entirely — so the one
+     * status that made a missing proof invisible was the one requiring no explanation, while
+     * `pod_pending`, the status that exists to hold exactly this gap, kept it on a list.
+     *
+     * The value is the report: how many consignments were closed with no proof, and who closed
+     * them. That is the question accounts asks when a buyer disputes receiving a load, and it
+     * was unanswerable.
+     */
+    closedWithoutPod: {
+      reason: { type: String, trim: true, maxlength: 500 },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      _id: false,
+    },
+
     remarks: String,
     cancellationReason: { type: String, trim: true },
 
