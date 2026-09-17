@@ -148,8 +148,8 @@ test('the selling price is cost plus a markup, the way the sheet works it', asyn
    */
   assert.equal(priceFrom({ totalCost: 10, markupPercent: 20 }), 12);
   assert.equal(priceFrom({ totalCost: 10, markupPercent: 0 }), 10);
-  /* ₹7.645 exactly. Five paise would make it 7.65; the quoted price rounds to ten. */
-  assert.equal(priceFrom({ totalCost: 6.95, markupPercent: 10 }), 7.7, "the sheet's first row");
+  /* ₹7.645 exactly, rounded up to the five-paise step the whole sheet works on. */
+  assert.equal(priceFrom({ totalCost: 6.95, markupPercent: 10 }), 7.65, "the sheet's first row");
   assert.equal(priceFrom({ totalCost: 0, markupPercent: 20 }), undefined, 'no cost, no price');
 
   // All three standing tiers at once, because the sheet shows them side by side.
@@ -192,10 +192,13 @@ test('the sheet adds up, and the calculated price cannot be typed', async () => 
   // 22g at ₹95/kg = ₹2.09, plus 1.1 job work and 0.4 packing = ₹3.59.
   assert.equal(sheet.materialCost, 2.09);
   assert.equal(Math.round(sheet.totalCost * 100) / 100, 3.59);
-  assert.equal(sheet.calculatedSellingPrice, 4.4, '3.59 plus a 20% markup, rounded up to 10 paise');
+  assert.equal(sheet.calculatedSellingPrice, 4.35, '3.59 plus a 20% markup, rounded up to 5 paise');
 
   // And all three standing tiers come back, because the sheet chooses between them.
   assert.deepEqual(sheet.tiers, { 10: 3.95, 15: 4.15, 20: 4.35 });
+  /* The price *is* the 20% tier, to the paisa. It used to read 4.40 against a 4.35 column,
+     which looked like one of the two being wrong. */
+  assert.equal(sheet.calculatedSellingPrice, sheet.tiers[20]);
 
   const typed = await api(`/api/pricings/${sheet._id}/cost`, {
     method: 'PATCH',
@@ -1501,44 +1504,50 @@ test('a virtual cannot be sorted by, and is refused rather than silently ignored
  * itself — and moving the floor would change which sheets need MD's signature, which is a
  * different decision from how a quote reads.
  */
-test('the calculated price rounds up to ten paise', async () => {
-  assert.equal(priceFrom({ totalCost: 6.95, markupPercent: 10 }), 7.7, '7.645 → 7.70');
+test('the calculated price rounds up to five paise', async () => {
+  assert.equal(priceFrom({ totalCost: 6.95, markupPercent: 10 }), 7.65, '7.645 → 7.65');
   assert.equal(priceFrom({ totalCost: 6.95, markupPercent: 15 }), 8, '7.9925 → 8.00');
-  assert.equal(priceFrom({ totalCost: 6.95, markupPercent: 20 }), 8.4, '8.34 → 8.40');
+  assert.equal(priceFrom({ totalCost: 6.95, markupPercent: 20 }), 8.35, '8.34 → 8.35');
 
-  /* Already on a ten-paise step, and it must not drift up. This is the binary-float trap the
-     whole-paise arithmetic exists for: `Math.ceil(7.7 / 0.1)` is 78, not 77. */
+  /*
+   * Already on the step, and it must not drift up. This is the binary-float trap the
+   * whole-paise arithmetic exists for, and on five paise it is the sharper one: 7.65 / 0.05 is
+   * 152.99999999999997, so a naive `Math.ceil(x / 0.05) * 0.05` turns an exact ₹7.65 into ₹7.70.
+   */
+  assert.equal(priceFrom({ totalCost: 7.65, markupPercent: 0 }), 7.65, 'the exact 7.65 case');
   assert.equal(priceFrom({ totalCost: 7, markupPercent: 10 }), 7.7, 'already on the step');
   assert.equal(priceFrom({ totalCost: 10, markupPercent: 20 }), 12, 'a round number stays round');
   assert.equal(priceFrom({ totalCost: 10, markupPercent: 0 }), 10);
 });
 
-test('the tiers and the floor keep the five-paise step', async () => {
-  /* Unchanged on purpose: these are the reference columns, not the offer. */
+test('one step for the whole sheet: the tiers, the floor and the price', async () => {
   assert.deepEqual(tiersFor(6.95), { 10: 7.65, 15: 8, 20: 8.35 });
   assert.equal(minimumFor({ totalCost: 6.95 }), 7.65);
-  assert.equal(priceAt(6.95, 20), 8.35, 'priceAt itself still steps by five paise');
+  assert.equal(priceAt(6.95, 20), 8.35);
+  /* And the price is the same arithmetic, not a second convention beside it. */
+  assert.equal(priceFrom({ totalCost: 6.95, markupPercent: 20 }), priceAt(6.95, 20));
+  assert.equal(priceFrom({ totalCost: 6.95, markupPercent: 10 }), minimumFor({ totalCost: 6.95 }));
 });
 
 /**
- * The consequence, asserted rather than left to be discovered.
+ * The two figures agree now, which is the whole reason the step changed.
  *
- * Two different steps on one sheet means the price and the tier beside it can disagree by up to
- * five paise. That is worth a test precisely because it looks like a bug when you first see it:
- * somebody will read 4.35 in the 20% column, ₹4.40 as the price, and wonder which is wrong.
+ * The price used to round to ten paise while the tiers beside it rounded to five, so it could
+ * sit up to five paise **above** the column it corresponds to: 4.35 in the 20% tier and ₹4.40 as
+ * the price. Safe in direction and confusing on the page, because the two are meant to be the
+ * same arithmetic and visibly were not. This is the test that pins them together.
  */
-test('the price can sit above its tier, and never below', async () => {
+test('the price is its tier, to the paisa', async () => {
   const cost = 3.59;
   const tiers = tiersFor(cost);
 
   for (const percent of [10, 15, 20]) {
     const price = priceFrom({ totalCost: cost, markupPercent: percent });
-    assert.ok(price >= tiers[percent], `${percent}%: ${price} must not fall under its tier ${tiers[percent]}`);
-    assert.ok(price - tiers[percent] < 0.1, 'and never by a whole step');
+    assert.equal(price, tiers[percent], `${percent}%: ${price} should be its tier ${tiers[percent]}`);
   }
 
   assert.equal(tiers[20], 4.35);
-  assert.equal(priceFrom({ totalCost: cost, markupPercent: 20 }), 4.4, 'the case the comment names');
+  assert.equal(priceFrom({ totalCost: cost, markupPercent: 20 }), 4.35, 'the case that used to read 4.40');
 });
 
 test('the quoted price is never under cost plus the markup', async () => {
@@ -1549,8 +1558,8 @@ test('the quoted price is never under cost plus the markup', async () => {
       const exact = Math.round(cost * (1 + percent / 100) * 100) / 100;
       const price = priceFrom({ totalCost: cost, markupPercent: percent });
       assert.ok(price >= exact, `${cost} at ${percent}%: ${price} is under ${exact}`);
-      /* And on a ten-paise step, expressed as whole paise so the check is exact. */
-      assert.equal(Math.round(price * 100) % 10, 0, `${price} is not on a ten-paise step`);
+      /* And on a five-paise step, expressed as whole paise so the check is exact. */
+      assert.equal(Math.round(price * 100) % 5, 0, `${price} is not on a five-paise step`);
     }
   }
 });
@@ -1561,8 +1570,8 @@ test('a price somebody typed is left exactly where they typed it', async () => {
      disagree with a conversation. */
   const sheet = await costed({ approvedSellingPrice: 4.37 });
 
-  assert.equal(sheet.approvedSellingPrice, 4.37, 'not nudged to 4.40');
-  assert.equal(sheet.calculatedSellingPrice, 4.4, 'while the calculated one is on the step');
+  assert.equal(sheet.approvedSellingPrice, 4.37, 'not nudged to 4.35 or 4.40');
+  assert.equal(sheet.calculatedSellingPrice, 4.35, 'while the calculated one is on the step');
 });
 
 /* ------------------- Four rules the sheet only implied ------------------- */

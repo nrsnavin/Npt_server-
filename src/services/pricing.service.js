@@ -48,24 +48,22 @@ export const MINIMUM_TIER = STANDARD_TIERS[0];
 export const PRICE_STEP = 0.05;
 
 /**
- * The step the **quoted** price is rounded to: ten paise, so it carries one decimal.
+ * The step the quoted price is rounded to: five paise, the same as everything else on the sheet.
  *
- * The price a sheet actually puts forward — cost plus whatever margin this job is working to —
- * is the number that gets read down a phone and written on a quotation, and one decimal is what
- * a person says out loud. ₹7.65 is a computed figure; ₹7.70 is a price.
+ * This was ten paise for a while, on the argument that a price is read down a phone and one
+ * decimal is what a person says out loud — ₹7.65 being a computed figure and ₹7.70 a price.
  *
- * Deliberately only the cost-plus price. The three standing tiers and the §9 floor stay on the
- * five-paise step, because they are reference figures the sheet shows *beside* the price rather
- * than the price itself — and moving the floor would change which sheets need MD's signature,
- * which is a different decision from how a quote reads.
+ * The cost of that turned out to be the thing worth avoiding. It put the price on a different
+ * step from the three standing tiers and the §9 floor, which the sheet shows in the same column
+ * block, so the price could sit up to five paise **above** the tier it corresponds to: a sheet at
+ * 20% on a ₹3.59 cost showed tiers of 3.95 / 4.15 / 4.35 and then a price of ₹4.40. Safe in
+ * direction — never under the tier, never under the floor — and confusing on the page, because
+ * the two figures are meant to be the same arithmetic and visibly were not.
  *
- * The visible consequence, which is worth knowing rather than discovering: the price can now
- * sit up to five paise **above** the tier column it corresponds to. A sheet at 20% on a ₹3.59
- * cost shows tiers of 3.95 / 4.15 / 4.35 and a price of ₹4.40. That is the safe direction — the
- * price is never under the tier, and never under the floor — but the two figures no longer
- * always agree to the paisa, and somebody reading the sheet will notice.
+ * One step for the whole sheet. The price now lands on its tier exactly, and 4.35 is as sayable
+ * as 4.40. Still rounded **up**, which is the part that actually protects the margin.
  */
-export const QUOTED_PRICE_STEP = 0.1;
+export const QUOTED_PRICE_STEP = PRICE_STEP;
 
 /**
  * Cost plus a markup, rounded **up** to a step.
