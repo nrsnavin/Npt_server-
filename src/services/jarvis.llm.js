@@ -1,6 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { parse as parseByRule, KNOWN_SUBJECTS } from './jarvis.intents.js';
+import { askForJson, llmConfigured, BUDGETS } from './llm.client.js';
 
 /**
  * Ask Jarvis: reading the question with a language model.
@@ -32,7 +32,8 @@ import { parse as parseByRule, KNOWN_SUBJECTS } from './jarvis.intents.js';
  * refusal, a response that fails its schema — each falls back to `jarvis.intents.js` rather
  * than failing the question. A plant office should not lose its assistant because a network
  * somewhere is having a bad afternoon, and the rules answer the common questions well enough
- * that most people would not notice the difference.
+ * that most people would not notice the difference. The giving-up is in `llm.client.js`, which
+ * is also where the timeout this comment used to promise now actually lives.
  */
 
 /** The aspects the answer layer implements. Shared with the schema so the two cannot drift. */
@@ -89,8 +90,17 @@ const FORMAT = {
 const IntentSchema = z.object({
   subject: z.enum([...KNOWN_SUBJECTS, 'unknown']),
   aspect: z.enum([...ASPECTS, 'unknown']),
-  reference: z.string().nullable(),
-  party: z.string().nullable(),
+  /*
+   * Bounded, both of them.
+   *
+   * `party` becomes a `RegExp` in `byName` — escaped, so there is nothing to inject, but a
+   * thousand-character pattern is still a thousand-character pattern run against every customer
+   * the asker may see. `reference` is a document number: real ones are seventeen characters and
+   * anything longer is a lookup that was always going to miss. Neither needs the room, and a
+   * generated string with no ceiling on it is exactly the input that should have one.
+   */
+  reference: z.string().max(64).nullable(),
+  party: z.string().max(120).nullable(),
   windowDays: z.number().int().nullable(),
 });
 
@@ -117,20 +127,7 @@ Rules:
 /** Latency matters more than eloquence for a classification, so the ceiling is small. */
 const MAX_TOKENS = 1024;
 
-let client;
-/**
- * Built once, and only when a key exists.
- *
- * Constructing it eagerly would make the module throw at import time on every deployment that
- * has not configured a key — including the test suite, which must never reach the network.
- */
-function anthropic() {
-  if (!process.env.ANTHROPIC_API_KEY) return null;
-  if (!client) client = new Anthropic();
-  return client;
-}
-
-export const llmConfigured = () => Boolean(process.env.ANTHROPIC_API_KEY);
+export { llmConfigured };
 
 /** The window label, derived here rather than taken from the model, so the wording is fixed. */
 function windowFrom(days) {
@@ -149,55 +146,40 @@ function windowFrom(days) {
  */
 export async function parse(message) {
   const byRule = parseByRule(message);
-  const api = anthropic();
-  if (!api) return byRule;
 
-  try {
-    const response = await api.messages.create({
-      model: process.env.JARVIS_MODEL || 'claude-opus-5',
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM,
-      /*
-       * Low effort: this is a classification against a fixed list, not a problem to work
-       * through, and the person is waiting with a panel open. Thinking stays adaptive rather
-       * than disabled — disabling it on this model is its own set of problems, and low effort
-       * is the cheaper, better-behaved way to the same latency.
-       */
-      output_config: { effort: 'low', format: FORMAT },
-      messages: [{ role: 'user', content: message }],
-    });
+  /*
+   * Interactive: somebody typed a question and is watching the panel. Eight seconds, one retry,
+   * and then the rules answer — which they do well for the common questions, so the wait is
+   * never worth more than that.
+   */
+  const read = await askForJson({
+    label: 'jarvis',
+    model: process.env.JARVIS_MODEL || 'claude-opus-5',
+    system: SYSTEM,
+    user: message,
+    format: FORMAT,
+    schema: IntentSchema,
+    effort: 'low',
+    maxTokens: MAX_TOKENS,
+    budget: BUDGETS.interactive,
+  });
 
-    // A refusal is a 200 with no usable content; treat it as a parse that did not happen.
-    if (response.stop_reason === 'refusal') return byRule;
+  if (!read) return byRule;
 
-    const body = (response.content || []).find((block) => block.type === 'text')?.text;
-    if (!body) return byRule;
+  const { subject, aspect, reference, party, windowDays } = read;
 
-    const checked = IntentSchema.safeParse(JSON.parse(body));
-    if (!checked.success) return byRule;
-
-    const { subject, aspect, reference, party, windowDays } = checked.data;
-
-    return {
-      subject: subject === 'unknown' ? null : subject,
-      aspect: aspect === 'unknown' ? null : aspect,
-      entities: {
-        reference: reference || null,
-        party: party || null,
-        // The rules parser reads a phone number off the sentence; the model is not asked for
-        // one, so that stays where it already worked.
-        phone: byRule.entities.phone,
-        window: windowFrom(windowDays) || byRule.entities.window,
-      },
-      text: byRule.text,
-      readBy: 'model',
-    };
-  } catch (error) {
-    /*
-     * Logged, not raised. The question still gets answered by the rules, and a network
-     * problem at Anthropic is not a reason for the bench to lose its assistant.
-     */
-    console.error('[jarvis] the model could not read the question, using the rules:', error.message);
-    return byRule;
-  }
+  return {
+    subject: subject === 'unknown' ? null : subject,
+    aspect: aspect === 'unknown' ? null : aspect,
+    entities: {
+      reference: reference || null,
+      party: party || null,
+      // The rules parser reads a phone number off the sentence; the model is not asked for
+      // one, so that stays where it already worked.
+      phone: byRule.entities.phone,
+      window: windowFrom(windowDays) || byRule.entities.window,
+    },
+    text: byRule.text,
+    readBy: 'model',
+  };
 }

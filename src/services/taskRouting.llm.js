@@ -1,7 +1,7 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { DEPARTMENT_KEYS } from '../config/modules.js';
 import { describeTask, suggestByRules } from './taskRouting.rules.js';
+import { askForJson, llmConfigured, BUDGETS } from './llm.client.js';
 
 /**
  * Reading a task to say whose it is — with a language model [BLUEPRINT §25, §35].
@@ -98,20 +98,7 @@ Rules:
 /** A classification against a fixed list — no eloquence needed, and somebody is waiting. */
 const MAX_TOKENS = 1024;
 
-let client;
-/**
- * Built once, and only when a key exists.
- *
- * Constructing it eagerly would make the module throw at import time on every deployment that
- * has not configured a key — including the test suite, which must never reach the network.
- */
-function anthropic() {
-  if (!process.env.ANTHROPIC_API_KEY) return null;
-  if (!client) client = new Anthropic();
-  return client;
-}
-
-export const routingModelConfigured = () => Boolean(process.env.ANTHROPIC_API_KEY);
+export const routingModelConfigured = llmConfigured;
 
 /**
  * Whose job this is, how urgent, and why.
@@ -125,56 +112,41 @@ export const routingModelConfigured = () => Boolean(process.env.ANTHROPIC_API_KE
  */
 export async function suggestRouting(task, { exclude } = {}) {
   const byRule = suggestByRules(task, { exclude });
-  const api = anthropic();
-  if (!api) return byRule;
 
   const text = describeTask(task);
   if (!text.trim()) return byRule;
 
-  try {
-    const response = await api.messages.create({
-      model: process.env.TASK_ROUTING_MODEL || 'claude-opus-5',
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM,
-      /*
-       * Low effort: this is a pick from eight options, not a problem to work through, and
-       * somebody is watching a dialog. Thinking stays adaptive rather than disabled — on this
-       * model, disabling it brings its own failure modes, and low effort is the cheaper, better
-       * behaved route to the same latency.
-       */
-      output_config: { effort: 'low', format: FORMAT },
-      messages: [{ role: 'user', content: text }],
-    });
+  /*
+   * Interactive: the escalation dialog is open and the dropdown is already usable. Eight
+   * seconds is generous for a pick from eight options, and past that the keyword table has an
+   * answer — which is the whole reason it was kept.
+   */
+  const read = await askForJson({
+    label: 'tasks',
+    model: process.env.TASK_ROUTING_MODEL || 'claude-opus-5',
+    system: SYSTEM,
+    user: text,
+    format: FORMAT,
+    schema: SuggestionSchema,
+    effort: 'low',
+    maxTokens: MAX_TOKENS,
+    budget: BUDGETS.interactive,
+  });
 
-    /* A refusal is a 200 with nothing usable in it. Treat it as a read that did not happen. */
-    if (response.stop_reason === 'refusal') return byRule;
+  if (!read) return byRule;
 
-    const body = (response.content || []).find((block) => block.type === 'text')?.text;
-    if (!body) return byRule;
+  const { department, urgent, reason } = read;
+  const picked = department === 'unknown' || department === exclude ? null : department;
 
-    const checked = SuggestionSchema.safeParse(JSON.parse(body));
-    if (!checked.success) return byRule;
-
-    const { department, urgent, reason } = checked.data;
-    const picked = department === 'unknown' || department === exclude ? null : department;
-
-    return {
-      department: picked,
-      /*
-       * Only ever raised, never lowered. A model that can talk a task down from the priority a
-       * supervisor set is a model that can quietly bury work somebody decided mattered — and
-       * the person who set it is not in the room to argue.
-       */
-      priority: urgent ? 'high' : null,
-      reason: picked ? reason || null : null,
-      from: 'model',
-    };
-  } catch (error) {
+  return {
+    department: picked,
     /*
-     * Logged, not raised. The dropdown still works and the rules still answer; a bad afternoon
-     * on somebody else's network is not a reason for the plant to lose a feature.
+     * Only ever raised, never lowered. A model that can talk a task down from the priority a
+     * supervisor set is a model that can quietly bury work somebody decided mattered — and
+     * the person who set it is not in the room to argue.
      */
-    console.error('[tasks] the model could not read the task, using the rules:', error.message);
-    return byRule;
-  }
+    priority: urgent ? 'high' : null,
+    reason: picked ? reason || null : null,
+    from: 'model',
+  };
 }

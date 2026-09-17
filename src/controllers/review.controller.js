@@ -33,6 +33,31 @@ function scopeFor(req) {
   return { department: req.user.department, wide: false };
 }
 
+/**
+ * Which departments this person may hand a problem to.
+ *
+ * Separate from `scopeFor`, and deliberately not built on it, because the two answer different
+ * questions and the write path was getting the reading one. `scopeFor` honours `?scope=plant`,
+ * which is right for a read — a despatch clerk asking to see the whole plant is asking to be
+ * better informed, and every figure in it is one their own screens already show them.
+ *
+ * Raising is not reading. It puts a job on somebody else's queue, and a query parameter must
+ * never be what decides that. So this reads the account and nothing else: management and admins
+ * may raise anywhere, which is the cross-plant judgement their brief is for, and everybody else
+ * may raise only into their own department — exactly the slice their brief is drawn from.
+ *
+ * It was wide open. `raiseFinding` took the department out of the request body, checked only
+ * that it was a real department, and raised. An accounts clerk whose own brief is empty could
+ * post `production_late` and put a task on the press floor's queue; marketing, which sees no
+ * findings at all, could queue work to despatch. Nothing fabricated — the finding is re-derived
+ * either way — but the scoping the read path argues for carefully was simply absent on the write,
+ * which makes it a decision about presentation rather than about authority.
+ */
+function mayRaiseTo(req, department) {
+  if (req.user.role === 'admin' || req.user.department === 'management') return true;
+  return Boolean(req.user.department) && req.user.department === department;
+}
+
 export const plantReview = asyncHandler(async (req, res) => {
   const { department, wide } = scopeFor(req);
 
@@ -48,7 +73,9 @@ export const plantReview = asyncHandler(async (req, res) => {
   }
 
   const findings = await gatherFindings({ department });
-  const review = await reviewFindings(findings);
+  /* The scope is part of the cache key: a department's slice is ranked as a slice, and the same
+     problem can sit differently in its own department's brief than in the whole plant's. */
+  const review = await reviewFindings(findings, { scope: wide ? 'plant' : department });
 
   /*
    * The findings are returned in full alongside the ranking, in severity order.
@@ -91,6 +118,18 @@ export const plantReview = asyncHandler(async (req, res) => {
 export const raiseFinding = asyncHandler(async (req, res) => {
   const { kind, department } = req.body;
   if (!DEPARTMENT_KEYS.includes(department)) throw ApiError.badRequest('That is not a department');
+
+  if (!mayRaiseTo(req, department)) {
+    /*
+     * Said in terms of what they can do rather than what they cannot. Somebody who reaches this
+     * has a brief in front of them that does not contain this problem, so the useful sentence is
+     * who to take it to — not a lecture about scope.
+     */
+    throw ApiError.forbidden(
+      'You can raise the problems on your own department\'s brief. This one belongs to ' +
+        `${department.replace(/_/g, ' ')} — management can hand it to them.`
+    );
+  }
 
   const findings = await gatherFindings({ department });
   const finding = findings.find((row) => row.kind === kind);

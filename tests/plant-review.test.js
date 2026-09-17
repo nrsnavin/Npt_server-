@@ -353,3 +353,78 @@ test('a day count reads as a sentence at every edge, including zero and one', ()
      sentence: "…, due today" and "came from production today". */
   assert.notEqual(over(0), since(0));
 });
+
+/* ------------------------- Who may hand a problem on ------------------------- */
+
+test('a finding can only be raised into a brief the person is actually shown', async () => {
+  /*
+   * The read path scopes carefully — a despatch clerk is shown despatch's trouble, because a
+   * brief full of held presses is a brief they stop reading. The write path did not: it took the
+   * department out of the request body, checked only that it was one of the eight, and raised.
+   *
+   * So an accounts clerk whose own brief is empty could post `production_late` and put a job on
+   * the press floor's queue, and marketing — which is shown no findings at all — could queue
+   * work to despatch. Nothing fabricated, since the finding is re-derived server side either
+   * way. But it made the scoping a decision about presentation rather than about authority, and
+   * the first time a department's queue fills up with another department's reading of their job
+   * is the last time they read it.
+   */
+  const { default: User } = await import('../src/models/User.js');
+  await api('/api/users', {
+    method: 'POST', token: admin,
+    body: { name: 'Anand A', email: 'anand@np.com', password: 'Acct@123456', department: 'accounts' },
+  });
+  const anand = await signIn('anand@np.com', 'Acct@123456');
+
+  /* Nothing on their own brief: there is no accounts finding on this fixture. */
+  const theirs = await api('/api/workspace/review', { token: anand });
+  assert.equal(theirs.json.meta.scope, 'accounts');
+  assert.equal(theirs.json.data.findings.length, 0, 'accounts has nothing of its own here');
+
+  const reached = await api('/api/workspace/review/raise', {
+    method: 'POST', token: anand,
+    body: { kind: 'production_late', department: 'production' },
+  });
+  assert.equal(reached.status, 403, 'and cannot put one on the press floor\'s queue');
+  assert.match(reached.json.message, /your own department/i);
+  assert.match(reached.json.message, /management/i, 'and says who can');
+
+  /* Their own department is still theirs to raise, when there is something in it. */
+  const own = await api('/api/workspace/review/raise', {
+    method: 'POST', token: anand,
+    body: { kind: 'money_overdue', department: 'accounts' },
+  });
+  assert.equal(own.status, 409, 'refused because nothing is overdue, not because they may not');
+
+  await User.deleteOne({ email: 'anand@np.com' });
+});
+
+test('asking to see the whole plant does not become leave to write to it', async () => {
+  /*
+   * `?scope=plant` is a reading choice: a department reader wanting to be better informed, about
+   * figures their own screens already show them. It must not also be how somebody grants
+   * themselves a queue they were not given, so the raise path reads the account and never the
+   * query string.
+   */
+  const wide = await api('/api/workspace/review?scope=plant', { token: kavitha });
+  assert.ok(
+    wide.json.data.findings.some((f) => f.department === 'production'),
+    'despatch can see production\'s trouble when they ask'
+  );
+
+  const raised = await api('/api/workspace/review/raise?scope=plant', {
+    method: 'POST', token: kavitha,
+    body: { kind: 'production_late', department: 'production' },
+  });
+  assert.equal(raised.status, 403, 'but cannot raise it for them');
+});
+
+test('management can hand a problem to whichever department owns it', async () => {
+  /* The cross-plant judgement the whole-plant brief is for. */
+  const raised = await api('/api/workspace/review/raise', {
+    method: 'POST', token: admin,
+    body: { kind: 'production_late', department: 'production' },
+  });
+  assert.equal(raised.status, 201);
+  assert.equal(raised.json.data.department, 'production');
+});

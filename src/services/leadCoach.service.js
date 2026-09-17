@@ -1,7 +1,7 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { NEXT_ACTION_TYPES } from '../models/Lead.js';
 import { analyse } from './leadLog.service.js';
+import { askForJson, llmConfigured, BUDGETS } from './llm.client.js';
 
 /**
  * Reading a lead's activity log, and suggesting what to do about it.
@@ -96,14 +96,17 @@ Rules:
 /** A classification-plus-a-paragraph. Not a problem to work through. */
 const MAX_TOKENS = 2048;
 
-let client;
-function anthropic() {
-  if (!process.env.ANTHROPIC_API_KEY) return null;
-  if (!client) client = new Anthropic();
-  return client;
-}
+export const coachConfigured = llmConfigured;
 
-export const coachConfigured = () => Boolean(process.env.ANTHROPIC_API_KEY);
+/**
+ * One log entry's worth of room.
+ *
+ * Staff type these, and they paste into them — a buyer's whole reply, a price list, a WhatsApp
+ * thread. Forty entries with no ceiling on any of them is a prompt of unknown size, which at
+ * best costs more than it should and at worst leaves no room under `max_tokens` for the answer.
+ * Three hundred characters is a diary line, which is what these are for.
+ */
+const ENTRY_ROOM = 300;
 
 /** The log as the model sees it: what happened, when, and by which channel. */
 function transcript(lead) {
@@ -114,7 +117,13 @@ function transcript(lead) {
   if (!entries.length) return 'The log is empty — nobody has recorded contacting them yet.';
 
   return entries
-    .map((entry) => `${new Date(entry.occurredAt).toISOString().slice(0, 10)} · ${entry.type}: ${entry.summary}`)
+    .map((entry) => {
+      /* Onto one line and bounded. A pasted email with its own blank lines and "From:" headers
+         otherwise reads as structure in the transcript rather than as the contents of one entry. */
+      const said = String(entry.summary || '').replace(/\s+/g, ' ').trim();
+      const room = said.length > ENTRY_ROOM ? `${said.slice(0, ENTRY_ROOM - 1)}…` : said;
+      return `${new Date(entry.occurredAt).toISOString().slice(0, 10)} · ${entry.type}: ${room}`;
+    })
     .join('\n');
 }
 
@@ -179,8 +188,7 @@ export function withoutModel(lead, stats) {
  */
 export async function suggestNextStep(lead, { now = Date.now() } = {}) {
   const stats = analyse(lead, now);
-  const api = anthropic();
-  if (!api) return { ...withoutModel(lead, stats), stats };
+  if (!llmConfigured()) return { ...withoutModel(lead, stats), stats };
 
   const facts = [
     `Company: ${lead.company}`,
@@ -200,31 +208,26 @@ export async function suggestNextStep(lead, { now = Date.now() } = {}) {
     .filter(Boolean)
     .join('\n');
 
-  try {
-    const response = await api.messages.create({
-      model: process.env.JARVIS_MODEL || 'claude-opus-5',
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM,
-      output_config: { effort: 'medium', format: FORMAT },
-      messages: [
-        {
-          role: 'user',
-          content: `${facts}\n\nThe log, oldest first:\n${transcript(lead)}`,
-        },
-      ],
-    });
+  const read = await askForJson({
+    label: 'lead coach',
+    /*
+     * Its own variable, with the same default.
+     *
+     * This read `JARVIS_MODEL` — a different feature's setting. Anybody pinning the assistant to
+     * a cheaper model for cost, or to an older one to reproduce a complaint, silently moved the
+     * lead coach with it and would have had no reason to look here.
+     */
+    model: process.env.LEAD_COACH_MODEL || 'claude-opus-5',
+    system: SYSTEM,
+    user: `${facts}\n\nThe log, oldest first:\n${transcript(lead)}`,
+    format: FORMAT,
+    schema: SuggestionSchema,
+    effort: 'medium',
+    maxTokens: MAX_TOKENS,
+    /* Considered: a marketing person pressed a button and expects a reading, not a reflex. */
+    budget: BUDGETS.considered,
+  });
 
-    if (response.stop_reason === 'refusal') return { ...withoutModel(lead, stats), stats };
-
-    const body = (response.content || []).find((block) => block.type === 'text')?.text;
-    if (!body) return { ...withoutModel(lead, stats), stats };
-
-    const checked = SuggestionSchema.safeParse(JSON.parse(body));
-    if (!checked.success) return { ...withoutModel(lead, stats), stats };
-
-    return { ...checked.data, readBy: 'model', stats };
-  } catch (error) {
-    console.error('[lead coach] falling back to the arithmetic:', error.message);
-    return { ...withoutModel(lead, stats), stats };
-  }
+  if (!read) return { ...withoutModel(lead, stats), stats };
+  return { ...read, readBy: 'model', stats };
 }
