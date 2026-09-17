@@ -61,8 +61,10 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     {
       name: 'SCM Garments Pvt Ltd',
       customerType: 'garment_factory',
+      address: '14/3 Kumaran Road, Mangalam Extension',
       city: 'Tiruppur',
       state: 'Tamil Nadu',
+      pincode: '641604',
       mobile: '9840011221',
       whatsapp: '9840011221',
       email: 'purchase@scmgarments.in',
@@ -83,8 +85,10 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     {
       name: 'Sunrise Exports',
       customerType: 'exporter',
+      address: '22 Avinashi Road, Kongu Nagar',
       city: 'Tiruppur',
       state: 'Tamil Nadu',
+      pincode: '641602',
       mobile: '9843022331',
       email: 'ops@sunriseexports.com',
       gstin: '33AACCS7781L1Z8',
@@ -101,8 +105,10 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     {
       name: 'Trendline Apparels',
       customerType: 'buying_house',
+      address: 'Plot 8, Peenya Industrial Area, 2nd Stage',
       city: 'Bengaluru',
       state: 'Karnataka',
+      pincode: '560058',
       mobile: '9880144552',
       email: 'sourcing@trendline.co.in',
       gstin: '29AAGCT4410M1ZR',
@@ -117,8 +123,10 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     {
       name: 'Metro Wholesale Traders',
       customerType: 'domestic_distributor',
+      address: '38 Oppanakara Street, Town Hall',
       city: 'Coimbatore',
       state: 'Tamil Nadu',
+      pincode: '641001',
       mobile: '9842177880',
       email: 'metro.wholesale@gmail.com',
       assignedTo: nandhini._id,
@@ -134,8 +142,10 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     {
       name: 'Vogue Retail India',
       customerType: 'retailer',
+      address: '2nd Floor, 91 Mount Road, Teynampet',
       city: 'Chennai',
       state: 'Tamil Nadu',
+      pincode: '600018',
       mobile: '9791066443',
       email: 'store.ops@vogueretail.in',
       gstin: '33AAECV9021H1ZM',
@@ -150,6 +160,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     {
       name: 'Orient Sourcing FZE',
       customerType: 'overseas_buyer',
+      address: 'Warehouse 14, Jebel Ali Free Zone South',
       city: 'Dubai',
       state: '',
       country: 'United Arab Emirates',

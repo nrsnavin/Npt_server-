@@ -52,8 +52,12 @@ const conversationRef = z
 export const customerSchema = z.object({
   name: z.string().min(2).max(160),
   customerType: z.enum(CUSTOMER_TYPES).optional(),
+  /* Where a lorry goes. §19 gates a consignment on having one, and the consignment prefills
+     itself from here — see the field's own note on the model. */
+  address: z.string().max(500).optional(),
   city: z.string().optional(),
   state: z.string().optional(),
+  pincode: z.string().max(12).optional(),
   country: z.string().optional(),
   mobile: z.string().optional(),
   whatsapp: z.string().optional(),

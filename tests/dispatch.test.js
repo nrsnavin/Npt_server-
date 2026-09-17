@@ -76,19 +76,19 @@ const CHECKS = [
   'sampleApproved', 'priceApproved', 'deliveryDateConfirmed', 'packingConfirmed',
 ];
 
-const booked = async (lines) => {
+const booked = async (lines, { customer: buyer = customer } = {}) => {
   const made = await api('/api/orders', {
     method: 'POST',
     token: priya,
-    body: { customer, assignedTo: nandhiniId, lines },
+    body: { customer: buyer, assignedTo: nandhiniId, lines },
   });
   assert.equal(made.status, 201, made.json.message);
   return made.json.data;
 };
 
 /** A released order, which is the only kind that can ever have anything to send. */
-const released = async (lines) => {
-  const order = await booked(lines);
+const released = async (lines, options = {}) => {
+  const order = await booked(lines, options);
 
   for (const check of CHECKS) {
     await api(`/api/orders/${order._id}/checks`, { method: 'POST', token: priya, body: { check } });
@@ -179,7 +179,16 @@ test.before(async () => {
   const madeCustomer = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Sri Kumaran Knits', mobile: '9840011223', city: 'Tiruppur', state: 'Tamil Nadu' },
+    body: {
+      assignedTo: await tokenOwnerId(nandhini),
+      name: 'Sri Kumaran Knits',
+      mobile: '9840011223',
+      /* A street address, because §19 gates despatch on one and the consignment copies it. */
+      address: '14/3 Kumaran Road, Mangalam Extension',
+      city: 'Tiruppur',
+      state: 'Tamil Nadu',
+      pincode: '641604',
+    },
   });
   customer = madeCustomer.json.data._id;
 
@@ -339,13 +348,70 @@ test('a consignment cannot be dispatched without the paperwork §19 promises', a
   assert.match(early.json.message, /invoice number/i);
   assert.match(early.json.message, /transporter/i);
   assert.match(early.json.message, /LR number/i);
-  assert.match(early.json.message, /delivery address/i);
+  /*
+   * And *not* the delivery address, because this buyer has one on record and the consignment
+   * copied it at creation. That is the fix: the gate used to name an address that nothing could
+   * ever fill, since `createDispatch` claimed to prefill it from the customer master and the
+   * customer master had no such field.
+   */
+  assert.doesNotMatch(early.json.message, /delivery address/i);
 
   /* And listed with its reason rather than hidden — hiding the button hides the goal. */
   const actions = await api(`/api/dispatches/${made.json.data._id}/actions`, { token: kavitha });
   const dispatch = actions.json.data.find((action) => action.action === 'dispatch');
   assert.ok(dispatch, 'dispatch should be listed even while it is blocked');
   assert.match(dispatch.blockedBy, /still needs/i);
+});
+
+test('a buyer with no address on record still trips the §19 gate', async () => {
+  /*
+   * The half of the old assertion that is still a rule. Nothing fills an address the plant does
+   * not have, so the gate has to say so — and the consignment's own page is now where somebody
+   * can answer it.
+   */
+  const unaddressed = await api('/api/customers', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      assignedTo: await tokenOwnerId(nandhini),
+      name: 'No Address Knits',
+      mobile: '9840099887',
+      city: 'Tiruppur',
+      state: 'Tamil Nadu',
+    },
+  });
+  assert.equal(unaddressed.status, 201, unaddressed.json.message);
+
+  const order = await released(
+    [{ mould, modelNumber: 'NH-NOADDR', quantity: 5000, unitPrice: 7.5 }],
+    { customer: unaddressed.json.data._id }
+  );
+  const line = order.lines[0];
+  await pack(order, line, { producedQty: 5000, readyQty: 5000 });
+  const made = await raise(order, [{ orderLine: line._id, quantity: 1000 }]);
+  assert.equal(made.json.data.destination.address || '', '', 'nothing to copy, so nothing copied');
+
+  /* Everything §19 asks for *except* the address, so the address is the only thing left. */
+  const { destination: _fromPapers, ...paperworkOnly } = PAPERS;
+  const blocked = await act(made.json.data, { action: 'dispatch', ...paperworkOnly });
+  assert.equal(blocked.status, 400, blocked.json.message);
+  assert.match(blocked.json.message, /delivery address/i);
+  assert.doesNotMatch(blocked.json.message, /invoice/i, 'and nothing else is outstanding');
+
+  /* Typed on the consignment, and then it goes. */
+  const typed = await api(`/api/dispatches/${made.json.data._id}`, {
+    method: 'PATCH', token: kavitha,
+    body: { destination: { address: '9 Kangeyam Road' } },
+  });
+  assert.equal(typed.status, 200, typed.json.message);
+
+  const gone = await act(made.json.data, {
+    action: 'dispatch',
+    ...paperworkOnly,
+    invoice: { ...PAPERS.invoice, number: 'INV-2026-0099' },
+  });
+  assert.equal(gone.status, 200, gone.json.message);
+  assert.equal(gone.json.data.destination.address, '9 Kangeyam Road', 'it went where somebody typed');
 });
 
 test('the paperwork can be typed in the same breath as the dispatch', async () => {
@@ -639,12 +705,83 @@ test('the destination is prefilled from the customer and can be overridden', asy
   const plain = await raise(shared, [{ orderLine: line._id, quantity: 1000 }]);
   assert.equal(plain.json.data.destination.city, 'Tiruppur');
   assert.equal(plain.json.data.destination.name, 'Sri Kumaran Knits');
+  /*
+   * The street address too, which is the field §19 actually gates on.
+   *
+   * It was left out of the prefill, and the comment beside it said the opposite — "prefilled
+   * from the customer, because the ordinary consignment goes to the address the customer master
+   * already holds", describing a field the customer register did not have. So every consignment
+   * was raised one paperwork item short and nothing on its own page could supply it.
+   */
+  assert.equal(plain.json.data.destination.address, '14/3 Kumaran Road, Mangalam Extension');
+  assert.equal(plain.json.data.destination.pincode, '641604');
+  assert.equal(plain.json.data.destination.state, 'Tamil Nadu');
 
   /* A buying house places the order and the goods go to a garment unit somewhere else. */
   const elsewhere = await raise(shared, [{ orderLine: line._id, quantity: 1000 }], {
     destination: { name: 'Ganga Garments', address: 'Plot 8, SIDCO', city: 'Erode' },
   });
   assert.equal(elsewhere.json.data.destination.city, 'Erode');
+  assert.equal(elsewhere.json.data.destination.address, 'Plot 8, SIDCO');
+});
+
+test('the address on a consignment is a copy, not a pointer at the customer', async () => {
+  /*
+   * A delivery note says where the load was actually sent, and it has to keep saying that. If
+   * the consignment referenced the buyer's address instead of copying it, correcting the buyer
+   * next month would quietly rewrite where a lorry went last month — and the recorded address
+   * would then disagree with the POD sitting in the file.
+   */
+  const line = await readyLine({ readyQty: 20000 });
+  const sent = await raise(shared, [{ orderLine: line._id, quantity: 1000 }]);
+  assert.equal(sent.json.data.destination.address, '14/3 Kumaran Road, Mangalam Extension');
+
+  const moved = await api(`/api/customers/${customer}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { address: 'New premises: 60 Palladam Road' },
+  });
+  assert.equal(moved.status, 200, moved.json.message);
+
+  const again = await api(`/api/dispatches/${sent.json.data._id}`, { token: kavitha });
+  assert.equal(
+    again.json.data.destination.address,
+    '14/3 Kumaran Road, Mangalam Extension',
+    'the consignment still says where it actually went'
+  );
+
+  /* While the *next* consignment picks up the new address, which is the point of copying. */
+  const after = await raise(shared, [{ orderLine: line._id, quantity: 1000 }]);
+  assert.equal(after.json.data.destination.address, 'New premises: 60 Palladam Road');
+});
+
+test('a delivery address can be typed onto a consignment that has none', async () => {
+  /* The gate names the missing address; until now the only box that could supply one was on the
+     despatch board's blocked card, not on the consignment itself. */
+  const line = await readyLine({ readyQty: 20000 });
+  const blank = await raise(shared, [{ orderLine: line._id, quantity: 500 }], {
+    destination: { name: 'Ganga Garments', address: '', city: 'Erode' },
+  });
+  assert.equal(blank.json.data.destination.address || '', '', 'raised without one');
+
+  const typed = await api(`/api/dispatches/${blank.json.data._id}`, {
+    method: 'PATCH',
+    token: kavitha,
+    body: {
+      destination: {
+        address: 'Plot 12, SIDCO Industrial Estate',
+        city: 'Erode',
+        state: 'Tamil Nadu',
+        pincode: '638011',
+        contactMobile: '9840055667',
+      },
+    },
+  });
+  assert.equal(typed.status, 200, typed.json.message);
+  assert.equal(typed.json.data.destination.address, 'Plot 12, SIDCO Industrial Estate');
+  assert.equal(typed.json.data.destination.pincode, '638011');
+  /* Merged, not replaced: the consignee name this consignment was raised with survives. */
+  assert.equal(typed.json.data.destination.name, 'Ganga Garments');
 });
 
 test('nothing can be dispatched against an order the plant has not been given', async () => {

@@ -41,8 +41,25 @@ const customerSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     customerType: { type: String, enum: CUSTOMER_TYPES, default: 'garment_factory' },
 
+    /**
+     * Where a lorry actually goes.
+     *
+     * The register held a town and a state and nothing that a driver could find, which made a
+     * whole feature quietly impossible: §19 will not let a consignment leave without
+     * `destination.address`, and `createDispatch` claimed to prefill it "from the address the
+     * customer master already holds" — from a field that did not exist. So every consignment was
+     * raised one paperwork item short, and the only way to supply it was a quick-fill box on the
+     * despatch board's blocked card. The consignment's own page could not answer the question.
+     *
+     * One address per customer, deliberately. A buying house's goods go to a garment unit and an
+     * exporter's to a CFS, so the *consignment* is where a different destination belongs — and it
+     * already has its own copy of all of this. A list of named addresses here would be a second
+     * place for the same truth to be wrong in.
+     */
+    address: { type: String, trim: true },
     city: { type: String, trim: true },
     state: { type: String, trim: true },
+    pincode: { type: String, trim: true },
     country: { type: String, trim: true, default: 'India' },
 
     /** Stored in E.164 so the WhatsApp de-duplication rule can match on them later. */

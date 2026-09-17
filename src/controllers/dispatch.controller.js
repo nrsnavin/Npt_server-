@@ -53,7 +53,9 @@ import { sendCsv } from '../utils/csv.js';
  */
 
 const POPULATE = [
-  { path: 'customer', select: 'code name city state gstin mobile' },
+  /* `address` and `pincode` too, so the consignment page can offer "use the customer's
+     address" without a second request for a record it is already showing. */
+  { path: 'customer', select: 'code name address city state pincode gstin mobile' },
   { path: 'order', select: 'number status customerPo orderDate' },
   { path: 'assignedTo', select: 'name' },
   { path: 'raisedBy', select: 'name' },
@@ -471,7 +473,8 @@ async function orderForDispatch(id, user) {
  */
 export const createDispatch = asyncHandler(withOrderLock(req => req.body.order, async (req, res) => {
   const order = await orderForDispatch(req.body.order, req.user);
-  await order.populate('customer', 'code name city state');
+  /* `address` and `pincode` as well, or the prefill below has nothing to read. */
+  await order.populate('customer', 'code name address city state pincode');
 
   const stock = await stockFor(order);
   const refusal = assertClaimable(stock, req.body.lines);
@@ -507,8 +510,13 @@ export const createDispatch = asyncHandler(withOrderLock(req => req.body.order, 
      */
     destination: {
       name: req.body.destination?.name || order.customer?.name,
+      /* The street address too, which is the one §19 actually gates on. It was left out of this
+         list because the customer register had no such field, so the comment above described a
+         prefill that could not happen and every consignment was raised one item short. */
+      address: req.body.destination?.address || order.customer?.address,
       city: req.body.destination?.city || order.customer?.city,
       state: req.body.destination?.state || order.customer?.state,
+      pincode: req.body.destination?.pincode || order.customer?.pincode,
       ...req.body.destination,
     },
     ownVehicle: req.body.ownVehicle,
