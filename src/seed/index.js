@@ -80,25 +80,58 @@ async function seed() {
    */
   const adminTodos = [
     // Deliberately spread across overdue, today and tomorrow so the reminder is populated.
-    { user: admin._id, title: 'Approve velvet hanger sample for Trendline', dueDate: days(-2), priority: 'high' },
-    { user: admin._id, title: 'Sign off October production plan', dueDate: days(-1), priority: 'high' },
-    { user: admin._id, title: 'Review PP resin quotes from Southern Polymers', dueDate: days(0, 12), priority: 'high', notes: 'Compare against Bharat Wire landed cost.' },
-    { user: admin._id, title: 'Call Sunrise Exports about the 25,000 pc order', dueDate: days(0, 16), priority: 'normal' },
-    { user: admin._id, title: 'Check mould M-201 maintenance log', dueDate: days(0, 18), priority: 'normal' },
-    { user: admin._id, title: 'Interview shift supervisor candidate', dueDate: days(1, 11), priority: 'normal' },
-    { user: admin._id, title: 'Renew GRS certification paperwork', dueDate: days(6), priority: 'low' },
-    { user: admin._id, title: 'Update hanger price list for Q4', priority: 'low', notes: 'No fixed date — pick up when the resin price settles.' },
-    { user: admin._id, title: 'Send Diwali greetings to key buyers', dueDate: days(-4), priority: 'normal', completed: true, completedAt: days(-4) },
-    { user: admin._id, title: 'Reconcile September despatch register', dueDate: days(-3), priority: 'normal', completed: true, completedAt: days(-3) },
+    { user: admin._id, department: admin.department, title: 'Approve velvet hanger sample for Trendline', dueDate: days(-2), priority: 'high' },
+    { user: admin._id, department: admin.department, title: 'Sign off October production plan', dueDate: days(-1), priority: 'high' },
+    { user: admin._id, department: admin.department, title: 'Review PP resin quotes from Southern Polymers', dueDate: days(0, 12), priority: 'high', notes: 'Compare against Bharat Wire landed cost.' },
+    { user: admin._id, department: admin.department, title: 'Call Sunrise Exports about the 25,000 pc order', dueDate: days(0, 16), priority: 'normal' },
+    { user: admin._id, department: admin.department, title: 'Check mould M-201 maintenance log', dueDate: days(0, 18), priority: 'normal' },
+    { user: admin._id, department: admin.department, title: 'Interview shift supervisor candidate', dueDate: days(1, 11), priority: 'normal' },
+    { user: admin._id, department: admin.department, title: 'Renew GRS certification paperwork', dueDate: days(6), priority: 'low' },
+    { user: admin._id, department: admin.department, title: 'Update hanger price list for Q4', priority: 'low', notes: 'No fixed date — pick up when the resin price settles.' },
+    { user: admin._id, department: admin.department, title: 'Send Diwali greetings to key buyers', dueDate: days(-4), priority: 'normal', completed: true, completedAt: days(-4) },
+    { user: admin._id, department: admin.department, title: 'Reconcile September despatch register', dueDate: days(-3), priority: 'normal', completed: true, completedAt: days(-3) },
   ];
 
   const despatchTodos = [
-    { user: despatch._id, title: 'Pack 12,000 shirt hangers for Metro Wholesale', dueDate: days(0, 14), priority: 'high' },
-    { user: despatch._id, title: 'Book transport for Tiruppur delivery', dueDate: days(0, 15), priority: 'high' },
-    { user: despatch._id, title: 'Print e-way bills for tomorrow', dueDate: days(1, 9), priority: 'normal' },
+    { user: despatch._id, department: despatch.department, title: 'Pack 12,000 shirt hangers for Metro Wholesale', dueDate: days(0, 14), priority: 'high' },
+    { user: despatch._id, department: despatch.department, title: 'Book transport for Tiruppur delivery', dueDate: days(0, 15), priority: 'high' },
+    { user: despatch._id, department: despatch.department, title: 'Print e-way bills for tomorrow', dueDate: days(1, 9), priority: 'normal' },
   ];
 
-  const todos = await Todo.create([...few(adminTodos), ...few(despatchTodos, 3)]);
+  /*
+   * Two rows the private-list fixture could not show, and which a fresh install needs in order
+   * to demonstrate what the queue is for: a job on despatch's queue that nobody has claimed,
+   * and one production has handed over with a reason.
+   */
+  const queueTodos = [
+    {
+      department: 'despatch',
+      title: 'Cut the e-way bill for the Metro Wholesale load',
+      dueDate: days(0, 13),
+      priority: 'high',
+      system: true,
+      notes: 'Nobody has picked this up — anyone in despatch can take it.',
+    },
+    {
+      department: 'despatch',
+      title: 'Packed lot for SCM has no e-way bill and the lorry is waiting',
+      dueDate: days(0, 11),
+      priority: 'high',
+      escalation: {
+        from: 'production',
+        to: 'despatch',
+        by: admin._id,
+        at: days(0, 9),
+        reason: 'Lorry is at the gate, the lot is packed and the e-way bill was never cut.',
+      },
+    },
+  ];
+
+  const todos = await Todo.create([
+    ...few(adminTodos),
+    ...few(despatchTodos, 3),
+    ...queueTodos,
+  ]);
 
   const notes = await StickyNote.create([
     ...few([

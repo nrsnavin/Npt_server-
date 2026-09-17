@@ -19,6 +19,7 @@
     "migrate:quotation-lines": "node scripts/migrate-quotation-lines.js",
     "migrate:moulds": "node scripts/migrate-catalogue-to-moulds.js",
     "migrate:grants": "node scripts/migrate-module-grants.js",
+    "migrate:task-departments": "node scripts/migrate-task-departments.js",
     "doctor:consistency": "node scripts/doctor-consistency.js"
   },
   "dependencies": {

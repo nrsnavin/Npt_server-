@@ -78,6 +78,10 @@ export const todoSchema = z.object({
   notes: z.string().max(2000).optional(),
   dueDate: z.coerce.date().optional(),
   priority: z.enum(PRIORITIES).optional(),
+  /* What it is about, so marketing can find it on their buyer's behalf later [§29]. Optional:
+     most tasks somebody types are about nothing in particular and should stay that way. */
+  customer: objectId.optional(),
+  order: objectId.optional(),
 });
 
 export const todoUpdateSchema = z.object({
@@ -92,6 +96,25 @@ export const todoUpdateSchema = z.object({
   dueDate: z.union([z.null(), z.coerce.date()]).optional(),
   priority: z.enum(PRIORITIES).optional(),
   completed: z.boolean().optional(),
+  /**
+   * Taking a job off the department queue, or putting it back.
+   *
+   * Deliberately a boolean rather than a user id: claiming is something you do to your own
+   * hands, and "assign this to Kavitha" is a different power that nobody has asked for. A
+   * three-state field — true, false, absent — because putting a job back is as necessary as
+   * taking it, and absent has to keep meaning "leave the owner alone".
+   */
+  claim: z.boolean().optional(),
+});
+
+/** Handing a task to another department, with the sentence they will act on [§25]. */
+export const todoEscalateSchema = z.object({
+  department: z.enum(DEPARTMENT_KEYS),
+  reason: z
+    .string()
+    .trim()
+    .min(10, 'Say why it is going to them — they have not seen the record')
+    .max(500),
 });
 
 export const noteSchema = z.object({
