@@ -535,3 +535,65 @@ test('the owner is not told — they have had it on their screen for a fortnight
     'telling them again is not new information; management is who can reassign or write it off'
   );
 });
+
+/* ------------------------- The sentence a person actually reads ------------------------- */
+
+test('the coach\'s own summary agrees with itself at every count', async () => {
+  /*
+   * This is not fluency for its own sake. On a deployment with no key — which is this plant's —
+   * `withoutModel` is not a fallback nobody sees, it is the whole answer, and its summary is the
+   * first line a marketing person reads when they press the button.
+   *
+   * A lead with one contact read: *"1 contacts over 0 days, last one 0 days ago. 1 of them were
+   * calls or meetings."* Four errors in one sentence — two plurals, a span of zero days printed
+   * as a duration, and "0 days ago" for today. It is the same class of bug the findings service
+   * grew three times over, in a second file that did not share its helpers; they share them now.
+   */
+  const { withoutModel } = await import('../src/services/leadCoach.service.js');
+  const now = Date.now();
+  const at = (days) => new Date(now - days * DAY);
+  const summaryFor = (lead) => withoutModel(lead, leadLog.analyse(lead, now)).summary;
+
+  const one = summaryFor({ status: 'contacted', activities: [{ type: 'call', summary: 'spoke', occurredAt: at(0) }] });
+  assert.match(one, /^1 contact,/, 'never "1 contacts"');
+  assert.match(one, /1 contact, today\./, 'and never "0 days ago" for today');
+  assert.match(one, /One of them was a call or a meeting\./, 'never "1 of them were"');
+  assert.doesNotMatch(one, /over 0 days/, 'one contact spans nothing, so it says nothing about a span');
+  assert.doesNotMatch(one, /the last/, 'with one contact there is no "last" — there is only the one');
+
+  const two = summaryFor({
+    status: 'contacted',
+    activities: [
+      { type: 'call', summary: 'a', occurredAt: at(4) },
+      { type: 'meeting', summary: 'b', occurredAt: at(2) },
+    ],
+  });
+  /* First to last is two days, not four: the span is between the contacts, not since. */
+  assert.match(two, /^2 contacts over 2 days, the last 2 days ago/);
+  assert.match(two, /2 of them were calls or meetings\./, 'the noun agrees as well as the verb');
+
+  const quiet = summaryFor({
+    status: 'contacted',
+    activities: [
+      { type: 'whatsapp', summary: 'a', occurredAt: at(31) },
+      { type: 'whatsapp', summary: 'b', occurredAt: at(30) },
+    ],
+  });
+  assert.match(quiet, /over 1 day/, 'never "over 1 days"');
+  assert.match(quiet, /None of them were calls or meetings\./);
+
+  const yesterday = summaryFor({
+    status: 'contacted',
+    activities: [
+      { type: 'call', summary: 'a', occurredAt: at(3) },
+      { type: 'call', summary: 'b', occurredAt: at(1) },
+    ],
+  });
+  assert.match(yesterday, /the last yesterday/, 'and "1 days ago" is not a thing anybody says');
+
+  /* Nothing logged at all still reads as a sentence. */
+  assert.equal(
+    summaryFor({ status: 'new', activities: [] }),
+    'Nothing has been logged against this lead yet.'
+  );
+});

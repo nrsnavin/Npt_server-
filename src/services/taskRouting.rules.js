@@ -35,11 +35,15 @@ const VOCABULARY = {
     'mould', 'mold', 'cavity', 'cavities', 'cycle time', 'regrind', 'runner',
     'shot weight', 'press', 'machine', 'shift', 'resin', 'moulding', 'production run',
     'output', 'pieces short', 'short by', 'downtime',
+    /* Its own name. "Ask production whether Monday is realistic" is the plainest statement of
+       whose job a thing is, and the table did not match it. */
+    'production', 'press floor', 'shop floor',
   ],
   quality: [
     'inspection', 'inspect', 'reject', 'rejects', 'rejection', 'defect', 'flash',
     'short shot', 'warp', 'warpage', 'sink mark', 'quality check', 'pre-dispatch check',
     'lab dip', 'tolerance', '\\bQC\\b',
+    'quality', 'quality hold',
   ],
   sampling: [
     'sample', 'sampling', 'counter sample', 'bench', 'trial', 'prototype',
@@ -49,11 +53,12 @@ const VOCABULARY = {
     'invoice', 'payment', 'receipt', 'outstanding', 'overdue payment', 'advance',
     'credit note', 'debit note', '\\bTDS\\b', '\\bGST\\b', 'reconcile', 'ledger',
     'cheque', '\\bRTGS\\b', '\\bNEFT\\b', 'disputing the invoice',
+    'accounts', 'accounts team',
   ],
   marketing: [
     'buyer', 'customer wants', 'quotation', 'quote', 'enquiry', 'price', 'pricing',
     'negotiat', 'follow up with', 'ring the', 'call the customer', 'target price',
-    'relationship',
+    'relationship', 'marketing',
   ],
   order_confirmation: [
     '\\bPO\\b', 'purchase order', 'order confirmation', 'confirm the order',
@@ -62,7 +67,8 @@ const VOCABULARY = {
   ],
   management: [
     'approval', 'approve the', 'sign off', 'signature', 'below the floor',
-    'below cost', 'escalate to management', 'policy',
+    'below cost', 'escalate to management', 'policy', 'management', 'managing director',
+    '\\bMD\\b',
   ],
 };
 

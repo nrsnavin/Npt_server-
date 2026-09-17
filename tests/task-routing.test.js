@@ -431,3 +431,51 @@ test('no key means the rules answer, and nothing reaches the network', async () 
   assert.equal(answered.from, 'rules');
   assert.equal(answered.department, 'despatch');
 });
+
+/* --------------------- The plainest statement of whose job it is --------------------- */
+
+test('a department is matched by its own name', async () => {
+  /*
+   * Five of the eight departments had no entry for their own name, so the most explicit sentence
+   * a supervisor can write routed nowhere: "Send this to quality" → null, "Ask production whether
+   * Monday is realistic" → null, "Accounts must confirm before we release" → null. The table was
+   * built from the vocabulary of each trade — moulds, e-way bills, short shots — and nobody
+   * noticed that the word people actually reach for first was missing from most of it.
+   *
+   * This is the path that runs on this plant every day, because no key is configured.
+   */
+  const { suggestByRules } = await import('../src/services/taskRouting.rules.js');
+  const plainly = {
+    'Send this to quality': 'quality',
+    'Ask production whether Monday is realistic': 'production',
+    'Accounts must confirm before we release': 'accounts',
+    'Hand it to despatch': 'despatch',
+    'Sampling to redo the counter sample': 'sampling',
+    'Marketing should ring them back': 'marketing',
+    'Needs management sign off': 'management',
+  };
+
+  for (const [title, department] of Object.entries(plainly)) {
+    assert.equal(suggestByRules({ title }).department, department, `"${title}"`);
+  }
+});
+
+test('a quality hold on a consignment is quality\'s, not despatch\'s', async () => {
+  /*
+   * It used to read "despatch", because "despatch" was in the table and "quality" was not — so a
+   * hold went to the people who cannot lift it. Now both words score and the honest outcome is
+   * whichever is actually named as the subject.
+   */
+  const { suggestByRules } = await import('../src/services/taskRouting.rules.js');
+  assert.equal(suggestByRules({ title: 'Quality hold on the despatch of SO-2026-0004' }).department, 'quality');
+});
+
+test('two departments named equally is still a question, not a guess', async () => {
+  /* The self-names must not turn ties into confident wrong answers. */
+  const { suggestByRules } = await import('../src/services/taskRouting.rules.js');
+  assert.equal(
+    suggestByRules({ title: 'Production asked accounts to confirm the resin payment' }).department,
+    null,
+    'a sentence naming two departments equally leaves the person to choose'
+  );
+});

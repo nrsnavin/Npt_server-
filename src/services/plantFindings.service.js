@@ -4,6 +4,7 @@ import OrderQuery from '../models/OrderQuery.js';
 import Receivable from '../models/Receivable.js';
 import Todo from '../models/Todo.js';
 import { stockFor } from './dispatchStock.service.js';
+import { over, since, plural } from '../utils/phrases.js';
 
 /**
  * Everything actually wrong in the plant right now, as a closed list [BLUEPRINT §25].
@@ -50,41 +51,20 @@ const DAY = 24 * 60 * 60 * 1000;
 const daysSince = (date) => Math.max(0, Math.floor((Date.now() - new Date(date).getTime()) / DAY));
 
 /**
- * A day count as a person would say it — two helpers, because one does not compose.
+ * The day-count wording, re-exported from `utils/phrases.js`.
  *
- * The first attempt was a single function returning "today" for zero, which read correctly on
- * its own and produced *"came from production today ago"* and *"QRY-2026-0001, today over"* at
- * the call sites. A helper that returns a phrase can only be used where that exact phrase fits,
- * and "zero days" needs different wording in "N over" than in "N ago" — so the wording for zero
- * belongs in each, not in something shared.
- *
- * Both were wrong in the same direction as the bug they replaced: a brief is read in ten seconds
- * and a sentence that does not parse costs it the reader's confidence in everything beside it.
- *
- * Exported for that reason. Three separate wrong sentences came out of these few lines — "1 days
- * over", "-1 days ago", "today ago" — and every one of them was caught by reading the screen
- * rather than by a test. The wording is a pure function of a number, so it can be asserted
- * directly, and the edges that broke are exactly the ones a fixture rarely lands on.
+ * It was written here and its edges were found here — "1 days over", "-1 days ago", "today ago",
+ * three wrong sentences in five lines, every one caught by reading a screen. It moved because
+ * the lead coach then grew the same class of bug independently in its own summary. Re-exported
+ * so the test that pins those edges still reads against the feature that earned them.
  */
-
-/** How long past a date: "due today", "1 day over", "12 days over". */
-export const over = (days) => {
-  if (days <= 0) return 'due today';
-  return days === 1 ? '1 day over' : `${days} days over`;
-};
-
-/** How long ago something happened: "today", "yesterday", "5 days ago". */
-export const since = (days) => {
-  if (days <= 0) return 'today';
-  if (days === 1) return 'yesterday';
-  return `${days} days ago`;
-};
+export { over, since };
 
 /** In rupees, the way the plant says them: 2.15L rather than 215000. */
 const lakh = (value) =>
   value >= 100000 ? `₹${(value / 100000).toFixed(2)}L` : `₹${Math.round(value).toLocaleString('en-IN')}`;
 
-const plural = (n, one, many) => `${n.toLocaleString('en-IN')} ${n === 1 ? one : many}`;
+
 
 /**
  * Severity, computed and not asked for.

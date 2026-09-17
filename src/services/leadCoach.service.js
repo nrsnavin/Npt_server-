@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { NEXT_ACTION_TYPES } from '../models/Lead.js';
 import { analyse } from './leadLog.service.js';
 import { askForJson, llmConfigured, BUDGETS } from './llm.client.js';
+import { plural, since, span } from '../utils/phrases.js';
 
 /**
  * Reading a lead's activity log, and suggesting what to do about it.
@@ -128,6 +129,43 @@ function transcript(lead) {
 }
 
 /**
+ * What the log adds up to, in one sentence a person would actually say.
+ *
+ * Built in clauses rather than as one template, because this sentence was wrong four ways at
+ * once: *"1 contacts over 0 days, last one 0 days ago. 1 of them were calls or meetings."* Two
+ * plurals off, a span of zero days printed as a duration, and "0 days ago" for today. It is the
+ * first thing a marketing person reads when they press the button, and on a deployment with no
+ * key — which is this one — it is the whole answer rather than a fallback nobody sees.
+ *
+ * A single contact has no span and no cadence: there is no second contact to measure a gap from,
+ * so those clauses are left out entirely instead of printing zero. A count that agrees with its
+ * verb has to agree with its noun too, which is why the two-way clause is written out both ways
+ * rather than pluralised in the middle.
+ */
+function contactSummary(stats) {
+  const clauses = [plural(stats.total, 'contact', 'contacts')];
+  if (stats.total > 1) clauses.push(span(stats.spanDays));
+  /* With one contact there is no "last" — there is only the one, and calling it the last of
+     itself is the same kind of wrong as "1 contacts". */
+  clauses.push(stats.total > 1 ? `the last ${since(stats.daysSinceContact)}` : since(stats.daysSinceContact));
+  if (stats.cadenceDays) {
+    clauses.push(`against a usual gap of ${plural(stats.cadenceDays, 'day', 'days')}`);
+  }
+
+  const spoke =
+    stats.twoWayContacts === 0
+      ? 'None of them were calls or meetings.'
+      : stats.twoWayContacts === 1
+        ? 'One of them was a call or a meeting.'
+        : `${stats.twoWayContacts} of them were calls or meetings.`;
+
+  /* The first two clauses belong to the same breath — "6 contacts over 25 days" — and the rest
+     are asides after it. */
+  const [count, ...rest] = clauses;
+  return `${count}${stats.total > 1 ? ` ${rest.shift()}` : ''}, ${rest.join(' ')}. ${spoke}`;
+}
+
+/**
  * What can be said from the arithmetic alone.
  *
  * Not a pretence at the model's job. These are the things that are simply true of a stalled
@@ -148,7 +186,8 @@ export function withoutModel(lead, stats) {
   }
   if (stats.cooling) {
     suggestions.push(
-      `They have gone quiet — ${stats.daysSinceContact} days against a usual ${stats.cadenceDays} — so this is the moment, not next week`
+      `They have gone quiet — ${plural(stats.daysSinceContact, 'day', 'days')} against a usual ` +
+        `${plural(stats.cadenceDays, 'day', 'days')} — so this is the moment, not next week`
     );
   }
   if (!lead.nextAction) blockers.push('No next action is set, so nothing is scheduled to happen');
@@ -161,11 +200,16 @@ export function withoutModel(lead, stats) {
         ? 'ready'
         : 'warming';
 
-  const summary = stats.total
-    ? `${stats.total} contacts over ${stats.spanDays} days, last one ${stats.daysSinceContact} days ago` +
-      `${stats.cadenceDays ? ` against a usual gap of ${stats.cadenceDays} days` : ''}.` +
-      `${stats.twoWayContacts ? ` ${stats.twoWayContacts} of them were calls or meetings.` : ' None of them were calls or meetings.'}`
-    : 'Nothing has been logged against this lead yet.';
+  /*
+   * Written through the shared phrase helpers, because this sentence was wrong four ways at once.
+   *
+   * A lead with a single contact twelve days ago read: *"1 contacts over 0 days, last one 0 days
+   * ago. 1 of them were calls or meetings."* Two plurals off, a span of zero days printed as a
+   * duration, and a day count that says "0 days ago" for today. It is the first thing a marketing
+   * person reads when they press the button, and on a deployment with no key — which is this one
+   * — it is the whole answer rather than a fallback nobody sees.
+   */
+  const summary = stats.total ? contactSummary(stats) : 'Nothing has been logged against this lead yet.';
 
   return {
     summary,

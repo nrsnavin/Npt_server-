@@ -202,6 +202,26 @@ function remember(key, review) {
   cache.set(key, { at: Date.now(), review });
 }
 
+/**
+ * The rankings currently being asked for, so a cold cache is not fifteen questions.
+ *
+ * The cache above only helps a reader who arrives after somebody else's answer has come back.
+ * The case it was written for is the one it missed: nine o'clock, everybody opens their
+ * dashboard within the same few seconds, and all fifteen find an empty cache, all fifteen ask,
+ * and all fifteen wait — which is precisely the bill the cache was supposed to remove. Measured
+ * at fifteen concurrent reads: fifteen calls.
+ *
+ * So the *promise* is what is shared, not just the result. The first reader to want a ranking
+ * starts it and puts it here; everyone arriving while it is still in flight waits on that same
+ * one. They are asking an identical question about an identical list — there is no version of
+ * this where the right answer differs between them.
+ *
+ * A failure is shared too, and that is deliberate: fifteen readers hitting one dead minute get
+ * one timeout between them rather than fifteen, and because failures are never written to the
+ * cache the next reader after that still retries properly.
+ */
+const inFlight = new Map();
+
 /** For the tests, and for a deployment that wants to clear it without a restart. */
 export function forgetReviews() {
   cache.clear();
@@ -217,10 +237,22 @@ export async function reviewFindings(findings, { scope = 'plant' } = {}) {
   if (!findings.length) return { picks: [], summary: null, from: 'rules' };
   if (!llmConfigured()) return byRules(findings);
 
-  const key = `${scope} ${signature(findings)}`;
+  const key = `${scope}\u0000${signature(findings)}`;
   const hit = cached(key);
   if (hit) return hit;
 
+  /* Somebody is already asking this exact question. Wait on their answer rather than paying for
+     a second identical one — see `inFlight` above for why the cache alone did not cover this. */
+  const already = inFlight.get(key);
+  if (already) return already;
+
+  const work = rank(findings, key).finally(() => inFlight.delete(key));
+  inFlight.set(key, work);
+  return work;
+}
+
+/** The call itself, and what is done with what comes back. One reader at a time reaches here. */
+async function rank(findings, key) {
   const read = await askForJson({
     label: 'review',
     model: process.env.PLANT_REVIEW_MODEL || 'claude-opus-5',

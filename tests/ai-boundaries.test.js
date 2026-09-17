@@ -523,3 +523,78 @@ test('nothing calls out on a deployment with no key', async () => {
     process.env.ANTHROPIC_API_KEY = was;
   }
 });
+
+/* ===================== A cold cache is not fifteen questions ===================== */
+
+test('everybody opening a dashboard at once asks once between them', async () => {
+  /*
+   * The cache alone did not fix what it was written for. It only helps a reader arriving after
+   * somebody else's answer is back — and the case in its own commit message is nine o'clock,
+   * when fifteen dashboards mount within the same few seconds, all find an empty cache, all ask
+   * and all wait. Measured before the fix: fifteen reads, fifteen calls.
+   *
+   * They are asking an identical question about an identical list, so there is no version of
+   * this where the right answer differs between them.
+   */
+  forgetReviews();
+  const calls = stub(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 60)); // a real call takes a moment
+    return {
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: JSON.stringify({ picks: [{ id: 'f1', why: 'ok' }], summary: null }) }],
+    };
+  });
+
+  const problems = [finding('f1'), finding('f2')];
+  const everybody = await Promise.all(
+    Array.from({ length: 15 }, () => reviewFindings(problems, { scope: 'despatch' }))
+  );
+
+  assert.equal(calls.length, 1, `fifteen at once cost ${calls.length} calls`);
+  assert.ok(everybody.every((review) => review.from === 'model'), 'and all fifteen got the ranking');
+  assert.ok(everybody.every((review) => review.picks[0].id === 'f1'));
+});
+
+test('one dead minute costs one timeout, not fifteen', async () => {
+  /* The failure is shared for the same reason the answer is. And because a failure is never
+     written to the cache, the next reader after it still retries properly. */
+  forgetReviews();
+  const wasError = console.error;
+  console.error = () => {};
+  try {
+    const failing = stub(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      throw new Error('ECONNRESET');
+    });
+    const all = await Promise.all(
+      Array.from({ length: 8 }, () => reviewFindings([finding('f1')], { scope: 'despatch' }))
+    );
+    assert.equal(failing.length, 1, 'one call between them');
+    assert.ok(all.every((review) => review.from === 'rules'), 'and all eight fall back');
+
+    const after = stub(answers({ picks: [{ id: 'f1', why: 'ok' }], summary: null }));
+    const recovered = await reviewFindings([finding('f1')], { scope: 'despatch' });
+    assert.equal(after.length, 1, 'the next reader is still a genuine retry');
+    assert.equal(recovered.from, 'model');
+  } finally {
+    console.error = wasError;
+  }
+});
+
+test('two different questions in flight at once do not collide', async () => {
+  forgetReviews();
+  const calls = stub(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    return {
+      stop_reason: 'end_turn',
+      content: [{ type: 'text', text: JSON.stringify({ picks: [{ id: 'f1', why: 'ok' }], summary: null }) }],
+    };
+  });
+
+  await Promise.all([
+    reviewFindings([finding('f1')], { scope: 'despatch' }),
+    reviewFindings([finding('f1')], { scope: 'plant' }),
+    reviewFindings([finding('f1')], { scope: 'despatch' }),
+  ]);
+  assert.equal(calls.length, 2, 'one per distinct question, not one overall');
+});
