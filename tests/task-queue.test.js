@@ -307,17 +307,24 @@ test('the person who escalated it keeps watching', async () => {
 });
 
 test('it shows on the receiving department card until they pick it up', async () => {
-  const card = await api('/api/workspace/todos/escalated', { token: kavitha });
-  const row = card.json.data.find((t) => t.title === 'Handover: the packed lot has no e-way bill');
+  const card = await api('/api/workspace/todos/needs-me', { token: kavitha });
+  const row = card.json.data.handedOver.find(
+    (t) => t.title === 'Handover: the packed lot has no e-way bill'
+  );
 
   assert.ok(row, 'highlighted for despatch');
   assert.equal(row.escalation.from, 'production');
-  assert.equal(card.json.meta.open, card.json.data.length);
+  assert.equal(
+    card.json.meta.open,
+    card.json.data.handedOver.length + card.json.data.urgent.length
+  );
 
   /* Production is not shown their own escalation back — they sent it. */
-  const theirs2 = await api('/api/workspace/todos/escalated', { token: suresh });
+  const theirs2 = await api('/api/workspace/todos/needs-me', { token: suresh });
   assert.ok(
-    !theirs2.json.data.some((t) => t.title === 'Handover: the packed lot has no e-way bill')
+    !theirs2.json.data.handedOver.some(
+      (t) => t.title === 'Handover: the packed lot has no e-way bill'
+    )
   );
 
   /* Taking it is the acknowledgement. A separate "mark as seen" is a button people press to
@@ -326,9 +333,9 @@ test('it shows on the receiving department card until they pick it up', async ()
     method: 'PATCH', token: kavitha, body: { claim: true },
   });
 
-  const after = await api('/api/workspace/todos/escalated', { token: kavitha });
+  const after = await api('/api/workspace/todos/needs-me', { token: kavitha });
   assert.ok(
-    !after.json.data.some((t) => t._id === row._id),
+    !after.json.data.handedOver.some((t) => t._id === row._id),
     'off the card once somebody has it — the card is what is unanswered, not a second queue'
   );
 });

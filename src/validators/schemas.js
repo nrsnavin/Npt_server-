@@ -115,6 +115,17 @@ export const todoEscalateSchema = z.object({
     .trim()
     .min(10, 'Say why it is going to them — they have not seen the record')
     .max(500),
+  /**
+   * Marking it urgent on the way over, and saying who decided that.
+   *
+   * `high` only — a handover can raise the priority and never lower it, so there is nothing for
+   * `low` or `normal` to mean here. `suggestedBy` is what lets the receiving department's card
+   * distinguish "somebody marked this urgent" from "a model thought it looked urgent", which is
+   * the difference between a card people act on and one they learn to discount.
+   */
+  priority: z.literal('high').optional(),
+  suggestedBy: z.enum(['model', 'rules']).optional(),
+  suggestedReason: z.string().trim().max(400).optional(),
 });
 
 export const noteSchema = z.object({

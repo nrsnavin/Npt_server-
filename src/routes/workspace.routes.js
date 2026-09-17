@@ -5,7 +5,8 @@ import {
   updateTodo,
   deleteTodo,
   escalateTodo,
-  escalatedToMe,
+  needsMeToday,
+  suggestRoutingFor,
   reminders,
   listNotes,
   createNote,
@@ -43,10 +44,18 @@ router.use(authenticate);
  * as a task called "reminders".
  */
 router.get('/todos/reminders', reminders);
-router.get('/todos/escalated', escalatedToMe);
+router.get('/todos/needs-me', needsMeToday);
 router.get('/todos', listTodos);
 router.post('/todos', validate(todoSchema), createTodo);
 router.patch('/todos/:id', validate(todoUpdateSchema), updateTodo);
+/*
+ * Whose job is this — asked of the model, answered by keyword rules when there is no key.
+ *
+ * A GET, because it reads and proposes and changes nothing: the escalation below still needs
+ * its own press. Behind the same door as the task itself, so a suggestion cannot be used to
+ * learn about a task the asker may not see.
+ */
+router.get('/todos/:id/suggest', suggestRoutingFor);
 router.post('/todos/:id/escalate', validate(todoEscalateSchema), escalateTodo);
 router.delete('/todos/:id', deleteTodo);
 

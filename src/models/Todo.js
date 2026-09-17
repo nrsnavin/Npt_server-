@@ -87,6 +87,26 @@ const todoSchema = new mongoose.Schema(
     },
 
     /**
+     * A priority proposed by the model rather than set by a person.
+     *
+     * The card that leads with "urgent" is only worth reading if its contents can be trusted,
+     * and "Kavitha marked this high" and "a model thought this looked urgent" are not the same
+     * claim. So where a suggestion supplied the priority, that is recorded and the screen says
+     * so — which also means the day somebody stops believing the suggestions, the honest rows
+     * are still distinguishable from the guessed ones.
+     *
+     * Cleared the moment a person sets the priority themselves: at that point it is theirs.
+     */
+    prioritySuggested: {
+      /** `model` or `rules` — a keyword match and a read sentence deserve different trust. */
+      by: { type: String, enum: ['model', 'rules'] },
+      at: Date,
+      /** What it said, so the row can show its reasoning rather than only its conclusion. */
+      reason: { type: String, trim: true, maxlength: 400 },
+      _id: false,
+    },
+
+    /**
      * Raised by automation rather than typed [BLUEPRINT §35]: completing a stage creates the
      * next person's task. `link` points the dock at the record, and `originKey` identifies
      * what raised it so the same handover cannot queue twice.

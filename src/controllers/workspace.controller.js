@@ -6,6 +6,7 @@ import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
+import { suggestRouting, routingModelConfigured } from '../services/taskRouting.llm.js';
 import { DEPARTMENT_KEYS } from '../config/modules.js';
 import { listParams, paginated } from '../utils/query.js';
 
@@ -121,30 +122,98 @@ export const listTodos = asyncHandler(async (req, res) => {
 });
 
 /**
- * What has been escalated to us and not yet picked up — the dashboard's card.
+ * What needs somebody in this department today — the dashboard's card [§25, §35].
  *
- * Separate from the list rather than a filter on it, because it is drawn somewhere else and
- * answers a different question: not "what is on the queue" but "what has another department
- * stopped and handed to us this morning". Unacknowledged only, so the card empties as the
- * department works it rather than becoming a second copy of the queue.
+ * Two groups rather than two cards, because a dashboard that answers "what now" in four
+ * warning-coloured blocks answers it in none. Both are on the same queue and both want the same
+ * response, so they belong in one place a person scans at nine o'clock:
+ *
+ * **`handedOver`** — another department stopped and passed it here, and nobody here has picked
+ * it up. First, because it has already waited through somebody else's day.
+ *
+ * **`urgent`** — high priority or past its date, on our own queue. Unclaimed first inside that,
+ * since a job nobody holds is the one at risk of being everybody's assumption.
+ *
+ * Both are *unanswered* work: taking a job removes it from the handover group, and finishing
+ * one removes it from either. The card empties as the department works, which is the only thing
+ * that keeps it from becoming a second copy of the queue.
  */
-export const escalatedToMe = asyncHandler(async (req, res) => {
+export const needsMeToday = asyncHandler(async (req, res) => {
   if (!req.user.department) {
-    res.json({ success: true, data: [], meta: { open: 0 } });
+    res.json({ success: true, data: { handedOver: [], urgent: [] }, meta: { open: 0 } });
     return;
   }
 
-  const rows = await Todo.find({
-    department: req.user.department,
-    completed: false,
-    'escalation.at': { $exists: true },
-    'escalation.acknowledgedAt': { $exists: false },
-  })
-    .populate(TODO_POPULATE)
-    .sort({ 'escalation.at': -1 })
-    .limit(25);
+  const mine = { department: req.user.department, completed: false };
+  const startOfToday = dayBounds().start;
 
-  res.json({ success: true, data: rows, meta: { open: rows.length } });
+  const [handedOver, urgent] = await Promise.all([
+    Todo.find({
+      ...mine,
+      'escalation.at': { $exists: true },
+      'escalation.acknowledgedAt': { $exists: false },
+    })
+      .populate(TODO_POPULATE)
+      .sort({ 'escalation.at': -1 })
+      .limit(25),
+
+    Todo.find({
+      ...mine,
+      /*
+       * Urgent means one of two facts, not a mood: somebody set the priority high, or the date
+       * has gone. `$lt` the start of today rather than `now`, so a task due at five o'clock
+       * does not appear as late at nine in the morning — the same midnight-to-midnight rule the
+       * reminder buckets use, so the two screens cannot disagree about what "late" is.
+       */
+      $or: [{ priority: 'high' }, { dueDate: { $lt: startOfToday } }],
+      /* Not the handovers — they are in the group above, and one job should appear once. */
+      $nor: [{ 'escalation.at': { $exists: true }, 'escalation.acknowledgedAt': { $exists: false } }],
+    })
+      .populate(TODO_POPULATE)
+      /* Unclaimed first, then soonest due. A row nobody holds is the one that goes unnoticed. */
+      .sort({ user: 1, dueDate: 1, createdAt: -1 })
+      .limit(25),
+  ]);
+
+  res.json({
+    success: true,
+    data: { handedOver, urgent },
+    meta: {
+      open: handedOver.length + urgent.length,
+      handedOver: handedOver.length,
+      urgent: urgent.length,
+      department: req.user.department,
+    },
+  });
+});
+
+/**
+ * Whose job is this, and is it urgent — asked of the model, answered either way [§25, §35].
+ *
+ * A read, not a write: it proposes and nothing moves. The escalation still needs the press,
+ * still checks the presser may see the task, and still records who did it. That is what makes
+ * it safe to have a model in the loop at all — the worst a wrong answer does is pre-select the
+ * wrong entry in a dropdown somebody is already looking at.
+ *
+ * The queue the task is already on is excluded, because suggesting that back suggests nothing.
+ */
+export const suggestRoutingFor = asyncHandler(async (req, res) => {
+  const todo = await todoInView(req);
+  await todo.populate([
+    { path: 'customer', select: 'name' },
+    { path: 'order', select: 'number' },
+  ]);
+
+  const suggestion = await suggestRouting(todo, { exclude: todo.department });
+
+  res.json({
+    success: true,
+    data: {
+      ...suggestion,
+      /* So the dialog can say "suggested" rather than presenting it as somebody's decision. */
+      configured: routingModelConfigured(),
+    },
+  });
 });
 
 export const createTodo = asyncHandler(async (req, res) => {
@@ -232,7 +301,13 @@ export const updateTodo = asyncHandler(async (req, res) => {
   if (title !== undefined) todo.title = title;
   if (notes !== undefined) todo.notes = notes;
   if (dueDate !== undefined) todo.dueDate = dueDate || undefined;
-  if (priority !== undefined) todo.priority = priority;
+  /* A person setting the priority makes it theirs, so the "suggested" label comes off. That
+     matters both ways round: accepting a suggestion by hand is a decision, and overruling one
+     must not leave the row still claiming a model chose it. */
+  if (priority !== undefined) {
+    todo.priority = priority;
+    todo.prioritySuggested = undefined;
+  }
 
   /*
    * Taking an unclaimed job off the queue, and putting one back.
@@ -314,6 +389,25 @@ export const escalateTodo = asyncHandler(async (req, res) => {
   todo.department = to;
   /* Unclaimed in its new queue: whoever held it in the old department does not hold it here. */
   todo.user = undefined;
+
+  /*
+   * Urgency carried on the handover, and attributed.
+   *
+   * The dialog offers the suggestion's priority pre-selected, so somebody who presses through
+   * without reading it has still — technically — accepted it. `suggestedBy` records which it
+   * was, and the card labels a suggested priority differently from one a person typed. That
+   * distinction is the whole reason a model is allowed near the urgent list: the day one of
+   * these is wrong, it is visibly a suggestion rather than somebody's decision.
+   *
+   * Only ever raised. A handover cannot talk a task *down* from the priority its own department
+   * set, model or no model.
+   */
+  if (req.body.priority === 'high' && todo.priority !== 'high') {
+    todo.priority = 'high';
+    todo.prioritySuggested = req.body.suggestedBy
+      ? { by: req.body.suggestedBy, at: new Date(), reason: req.body.suggestedReason || undefined }
+      : undefined;
+  }
 
   await todo.save();
   res.json({ success: true, data: await todo.populate(TODO_POPULATE) });
