@@ -19,6 +19,7 @@ let mongo;
 let server;
 let baseUrl;
 let token;
+let ownerId;   // Creating a customer names its owner now — see `assertCanOwnBuyer`.
 let Customer;
 let findUnexpectedIndexes;
 let dropIndexes;
@@ -44,7 +45,11 @@ const plantStaleIndex = () =>
 let sequence = 0;
 const newCustomer = () => {
   sequence += 1;
-  return { name: `Buyer ${sequence}`, mobile: `98765${String(100000 + sequence).slice(-5)}` };
+  return {
+    name: `Buyer ${sequence}`,
+    mobile: `98765${String(100000 + sequence).slice(-5)}`,
+    assignedTo: ownerId,
+  };
 };
 
 test.before(async () => {
@@ -71,6 +76,7 @@ test.before(async () => {
     body: { email: 'admin@np.com', password: 'Admin@12345' },
   });
   token = login.json.data.token;
+  ownerId = login.json.data.user.id;
 });
 
 test.after(async () => {
@@ -143,7 +149,7 @@ test('dropping it restores creation', async () => {
 
 test('a genuine duplicate still reads as a duplicate', async () => {
   // The improved message must not swallow the ordinary case it was carved out of.
-  const body = { name: 'Twice Ltd', gstin: '33AABCT9999Z1ZQ', mobile: '9876511111' };
+  const body = { name: 'Twice Ltd', gstin: '33AABCT9999Z1ZQ', mobile: '9876511111', assignedTo: ownerId };
   const first = await api('/api/customers', { method: 'POST', body });
   assert.equal(first.status, 201);
 

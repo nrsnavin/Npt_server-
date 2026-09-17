@@ -48,6 +48,15 @@ const api = async (path, { method = 'GET', body, token, headers = {} } = {}) => 
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
 
+/**
+ * Who a token belongs to.
+ *
+ * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
+ * owns it", which is what they relied on the old default for; this says it out loud.
+ */
+const tokenOwnerId = async (token) => (await api('/api/auth/me', { token })).json.data.id;
+
 const signIn = async (email, password) => {
   const { json } = await api('/api/auth/login', { method: 'POST', body: { email, password } });
   return json.data?.token;
@@ -116,7 +125,7 @@ test.before(async () => {
   const madeCustomer = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: {
+    body: { assignedTo: await tokenOwnerId(nandhini),
       name: 'Sri Kumaran Knits',
       whatsapp: KNOWN,
       city: 'Tiruppur',
@@ -281,7 +290,7 @@ test('an open lead carrying the number captures the conversation', async () => {
   const lead = await api('/api/leads', {
     method: 'POST',
     token: nandhini,
-    body: {
+    body: { assignedTo: await tokenOwnerId(nandhini),
       company: 'Everblue Knitwear', mobile: '+919000000077',
       nextAction: 'Call about their hanger requirement', nextFollowUpDate: '2026-10-01',
     },
@@ -312,7 +321,7 @@ test('a number on both a customer and an open lead matches the customer', async 
   const account = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Vogue Retail India', whatsapp: BOTH, city: 'Chennai', state: 'Tamil Nadu' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Vogue Retail India', whatsapp: BOTH, city: 'Chennai', state: 'Tamil Nadu' },
   });
   assert.equal(account.status, 201, account.json.message);
 
@@ -320,7 +329,7 @@ test('a number on both a customer and an open lead matches the customer', async 
   const stale = await api('/api/leads', {
     method: 'POST',
     token: arun,
-    body: {
+    body: { assignedTo: await tokenOwnerId(arun),
       company: 'Vogue Retail (old enquiry)', mobile: BOTH,
       nextAction: 'Call them back', nextFollowUpDate: '2026-10-01',
     },
@@ -348,7 +357,7 @@ test('a disqualified lead does not capture a fresh message', async () => {
   const lead = await api('/api/leads', {
     method: 'POST',
     token: nandhini,
-    body: {
+    body: { assignedTo: await tokenOwnerId(nandhini),
       company: 'Coral Fashions', mobile: '+919000000088',
       nextAction: 'Call them', nextFollowUpDate: '2026-10-01',
     },
@@ -484,7 +493,7 @@ test('linking a customer also teaches the number, so the next message matches it
   const fresh = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Northstar Apparel', city: 'Tiruppur', state: 'Tamil Nadu' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Northstar Apparel', city: 'Tiruppur', state: 'Tamil Nadu' },
   });
   assert.equal(fresh.status, 201, fresh.json.message);
 
@@ -729,7 +738,7 @@ test('a number for a customer who has none is filed against them directly', asyn
   const made = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Anbu Garments', mobile: '+919000000901', city: 'Erode' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Anbu Garments', mobile: '+919000000901', city: 'Erode' },
   });
   assert.equal(made.status, 201, made.json.message);
   const anbu = made.json.data._id;

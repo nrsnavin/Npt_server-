@@ -3,6 +3,7 @@ import {
   listCustomers, getCustomer, createCustomer, updateCustomer, checkDuplicateCustomer,
   listLeads, leadBoard, getLead, createLead, updateLead, addLeadActivity, convertLead,
   suggestLeadNextStep, leadLogAnalytics, leadFollowUps, leadScoreboard, leadsOverview, leadOwners,
+  marketingRoster,
   enquiryOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, applyEnquiryAction, listEnquiryActions, promoteToMould, enquiryPipeline,
@@ -100,6 +101,11 @@ router.patch('/components/:id', requireModule('materials', 'write'), validate(co
 // Customers
 router.get('/customers/export', requireModule('customers'), exportCustomers);
 router.get('/customers/check-duplicate', requireModule('customers'), checkDuplicateCustomer);
+/*
+ * Who a new customer may be given to. Above `/customers/:id` so the literal segment wins, and
+ * on the read grant: it is a list of names, and anybody who can open the form needs it.
+ */
+router.get('/customers/team', requireModule('customers'), marketingRoster);
 router.get('/customers', requireModule('customers'), listCustomers);
 router.post('/customers', requireModule('customers', 'write'), validate(customerSchema), createCustomer);
 router.get('/customers/:id', requireModule('customers'), getCustomer);
@@ -123,6 +129,8 @@ router.get('/leads/overview', requireModule('enquiries'), leadsOverview);
 // Who holds leads, for the owner filter. Scoped, so it offers a marketing person only
 // themselves — which is what keeps the filter safe to put on everybody's screen.
 router.get('/leads/owners', requireModule('enquiries'), leadOwners);
+/* And who a new one may be given to — the whole marketing team, not just who holds leads now. */
+router.get('/leads/team', requireModule('enquiries'), marketingRoster);
 router.get('/leads', requireModule('enquiries'), listLeads);
 router.post('/leads', requireModule('enquiries', 'write'), validate(leadSchema), createLead);
 router.get('/leads/:id', requireModule('enquiries'), getLead);

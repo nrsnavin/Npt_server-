@@ -33,6 +33,15 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
 
+/**
+ * Who a token belongs to.
+ *
+ * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
+ * owns it", which is what they relied on the old default for; this says it out loud.
+ */
+const tokenOwnerId = async (token) => (await api('/api/auth/me', { token })).json.data.id;
+
 const signIn = async (email, password) => {
   const { json } = await api('/api/auth/login', { method: 'POST', body: { email, password } });
   return json.data?.token;
@@ -136,7 +145,7 @@ test('a customer gets an auto number and is owned by its creator', async () => {
   const { status, json } = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'SCM Garments', customerType: 'garment_factory', gstin: '33AABCS1429B1ZP', mobile: '9876500011' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'SCM Garments', customerType: 'garment_factory', gstin: '33AABCS1429B1ZP', mobile: '9876500011' },
   });
 
   assert.equal(status, 201);
@@ -148,7 +157,7 @@ test('a duplicate customer is refused, by GST and by number', async () => {
   const byGst = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'SCM Garments Unit 2', gstin: '33AABCS1429B1ZP' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'SCM Garments Unit 2', gstin: '33AABCS1429B1ZP' },
   });
   assert.equal(byGst.status, 409);
   assert.match(byGst.json.message, /GST number/);
@@ -156,7 +165,7 @@ test('a duplicate customer is refused, by GST and by number', async () => {
   const byNumber = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Someone Else', mobile: '09876500011' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Someone Else', mobile: '09876500011' },
   });
   assert.equal(byNumber.status, 409);
   assert.match(byNumber.json.message, /phone number/);
@@ -197,7 +206,7 @@ test('a lead is created, worked, and logging contact advances it', async () => {
   const created = await api('/api/leads', {
     method: 'POST',
     token: nandhini,
-    body: {
+    body: { assignedTo: await tokenOwnerId(nandhini),
       company: 'Urban Threads',
       contactName: 'Sneha Iyer',
       mobile: '9000012345',
@@ -240,7 +249,7 @@ test('converting a lead creates the customer, its contact and the first enquiry'
   const lead = await api('/api/leads', {
     method: 'POST',
     token: nandhini,
-    body: {
+    body: { assignedTo: await tokenOwnerId(nandhini),
       company: 'Coastal Apparels',
       contactName: 'Nithya Rao',
       designation: 'Sourcing Head',
@@ -314,7 +323,7 @@ test('conversion is refused when the customer already exists, and offers that cu
   const lead = await api('/api/leads', {
     method: 'POST',
     token: nandhini,
-    body: { company: 'SCM Again', mobile: '9876500011', ...followUp },
+    body: { assignedTo: await tokenOwnerId(nandhini), company: 'SCM Again', mobile: '9876500011', ...followUp },
   });
 
   const converted = await api(`/api/leads/${lead.json.data._id}/convert`, {
@@ -645,7 +654,7 @@ test('a customer with a long history says how long it is', async () => {
   const customer = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Longhistory Exports', customerType: 'garment_factory', mobile: '9811100022' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Longhistory Exports', customerType: 'garment_factory', mobile: '9811100022' },
   });
   const customerId = customer.json.data._id;
 
@@ -679,7 +688,7 @@ test('an enquiry cannot be handed over by the person holding it', async () => {
   const customer = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Handover Garments', mobile: '9812200033' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Handover Garments', mobile: '9812200033' },
   });
   const enquiry = (await api('/api/enquiries', {
     method: 'POST',
@@ -719,7 +728,7 @@ test('a record cannot be handed to somebody who is not there', async () => {
   const customer = (await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Ghost Owner Mills', mobile: '9812200044' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Ghost Owner Mills', mobile: '9812200044' },
   })).json.data;
 
   const ghost = await api(`/api/customers/${customer._id}`, {
@@ -763,7 +772,7 @@ const aLead = async (over = {}) => {
   const made = await api('/api/leads', {
     method: 'POST',
     token: nandhini,
-    body: {
+    body: { assignedTo: await tokenOwnerId(nandhini),
       company: `Pipeline ${Math.random().toString(36).slice(2, 8)}`,
       mobile: `98411${String(Math.floor(Math.random() * 90000) + 10000)}`,
       ...over,
@@ -795,7 +804,7 @@ test('a lead cannot be given a follow-up date that has already gone', async () =
   const born = await api('/api/leads', {
     method: 'POST',
     token: nandhini,
-    body: { company: 'Late Start Mills', mobile: '9841100001', nextAction: 'Call', nextFollowUpDate: inDays(-10) },
+    body: { assignedTo: await tokenOwnerId(nandhini), company: 'Late Start Mills', mobile: '9841100001', nextAction: 'Call', nextFollowUpDate: inDays(-10) },
   });
   assert.equal(born.status, 400, 'a lead was created with a reminder already late');
   assert.match(born.json.message, /past/i);

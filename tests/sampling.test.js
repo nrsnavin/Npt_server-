@@ -39,6 +39,15 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
 
+/**
+ * Who a token belongs to.
+ *
+ * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
+ * owns it", which is what they relied on the old default for; this says it out loud.
+ */
+const tokenOwnerId = async (token) => (await api('/api/auth/me', { token })).json.data.id;
+
 const signIn = async (email, password) => {
   const { json } = await api('/api/auth/login', { method: 'POST', body: { email, password } });
   return json.data?.token;
@@ -173,7 +182,7 @@ test.before(async () => {
   const customer = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'SCM Garments', gstin: '33AABCS1429B1ZP', mobile: '9876500011' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'SCM Garments', gstin: '33AABCS1429B1ZP', mobile: '9876500011' },
   });
   customerId = customer.json.data._id;
 });
@@ -804,7 +813,7 @@ test('a request cannot be attached to another customer’s enquiry', async () =>
   const other = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Somebody Else Ltd', mobile: '9876590001' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Somebody Else Ltd', mobile: '9876590001' },
   });
   const otherEnquiry = await api('/api/enquiries', {
     method: 'POST',
@@ -1019,7 +1028,7 @@ test('a trial raised for nobody can have its customer named later', async () => 
   const customer = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Walked In Exports', mobile: '9876591234' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Walked In Exports', mobile: '9876591234' },
   });
 
   const linked = await api(`/api/samples/${id}/link-customer`, {
@@ -1062,7 +1071,7 @@ test('a request that came from an enquiry takes its customer from there', async 
   const other = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Unrelated Buyer Ltd', mobile: '9876591299' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Unrelated Buyer Ltd', mobile: '9876591299' },
   });
 
   // And it cannot be moved to somebody else, whichever way round it is refused: the sample

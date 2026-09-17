@@ -62,6 +62,38 @@ export async function marketingTeam() {
 }
 
 /**
+ * Refuses an owner who could not chase a buyer.
+ *
+ * Stricter than `assertAssignable`, and used where a *person is choosing* an owner rather than
+ * where the plant is resolving one for itself. A lead or a customer belongs to one marketing
+ * person [§29], so a record handed to despatch is owned — and therefore on nobody's queue — by
+ * somebody whose screens do not show it.
+ *
+ * **Admins and management pass as well**, and that is deliberate rather than a loophole. They
+ * hold every module already, `ownsRecord` never scopes them, and the seeded administrator owns
+ * records today. Excluding them would be a new rule the blueprint does not ask for, and it would
+ * leave a plant that has not hired its marketing team yet unable to register a buyer at all.
+ *
+ * So the picker and this check are deliberately not the same list. The form offers marketing,
+ * because choosing which of them will chase the buyer is the decision being asked for; the
+ * server refuses the class of answer that would strand a record, which is a wider net. A UI that
+ * narrows and a server that guards the class is the normal shape, and the narrower of the two is
+ * the one a person sees.
+ */
+export async function assertCanOwnBuyer(assignTo) {
+  const chosen = await assertAssignable(assignTo);
+  if (chosen.role === 'admin' || chosen.department === 'management') return chosen;
+
+  const team = await marketingTeam();
+  if (team.some((person) => String(person._id) === String(chosen._id))) return chosen;
+
+  throw ApiError.badRequest(
+    `${chosen.name} could not chase a buyer from ${chosen.department || 'no department'}, so the ` +
+      'record would belong to nobody who can work it. Choose somebody in marketing.'
+  );
+}
+
+/**
  * The next marketing person in the rotation, or null when there is nobody to rotate over.
  *
  * Null rather than a guess: the caller knows what to fall back to, and silently assigning a
@@ -84,13 +116,17 @@ export async function nextInRotation() {
 }
 
 /**
- * Who a lead being created should belong to.
+ * Who a lead being created should belong to, when there is nobody to ask.
  *
- * A marketing person typing in a lead they just spoke to is its natural owner, and handing it
- * to a colleague on their behalf would be surprising rather than fair — §41.3 is about the
- * lead that arrives with nobody attached to it. So the rotation is for everyone else: an
- * administrator entering leads from a trade show list, and later the WhatsApp front door,
- * where an unknown number genuinely has no owner.
+ * This is now the *front-door* rule only — the WhatsApp number nobody recognises, the IndiaMART
+ * enquiry that arrives at two in the morning. There is no person at the keyboard on either, so
+ * something has to choose, and §41.3 says round-robin across marketing.
+ *
+ * It used to answer for the form as well, and that was the wrong shape for a human: somebody
+ * filling in a lead they had just taken a call about would submit it and find it had gone to a
+ * colleague by rotation, or — if they were in marketing themselves — silently to them. Neither
+ * was a decision anybody made, and a record whose owner nobody chose is one that gets chased by
+ * whoever notices. The form asks now; see `createLead`.
  */
 export async function ownerForNewLead({ requested, creator }) {
   if (requested) return { user: requested, rotated: false };

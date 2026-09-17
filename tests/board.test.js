@@ -46,6 +46,15 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
 
+/**
+ * Who a token belongs to.
+ *
+ * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
+ * owns it", which is what they relied on the old default for; this says it out loud.
+ */
+const tokenOwnerId = async (token) => (await api('/api/auth/me', { token })).json.data.id;
+
 const signIn = async (email, password) => {
   const { json } = await api('/api/auth/login', { method: 'POST', body: { email, password } });
   return json.data?.token;
@@ -58,7 +67,7 @@ const raiseLead = async (company, extra = {}, token = nandhini) => {
   const { status, json } = await api('/api/leads', {
     method: 'POST',
     token,
-    body: {
+    body: { assignedTo: await tokenOwnerId(token),
       company,
       contactName: 'Buyer',
       mobile: `98400${String(Math.floor(Math.random() * 90000) + 10000)}`,
@@ -142,14 +151,14 @@ test.before(async () => {
   const madeCustomer = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Sri Kumaran Knits', mobile: '9840011223' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Sri Kumaran Knits', mobile: '9840011223' },
   });
   customer = madeCustomer.json.data._id;
 
   const arunsCustomer = await api('/api/customers', {
     method: 'POST',
     token: arun,
-    body: { name: 'Velan Apparels', mobile: '9840099887' },
+    body: { assignedTo: await tokenOwnerId(arun), name: 'Velan Apparels', mobile: '9840099887' },
   });
   arunCustomer = arunsCustomer.json.data._id;
 });

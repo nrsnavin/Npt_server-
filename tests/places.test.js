@@ -33,6 +33,15 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
 
+/**
+ * Who a token belongs to.
+ *
+ * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
+ * owns it", which is what they relied on the old default for; this says it out loud.
+ */
+const tokenOwnerId = async (token) => (await api('/api/auth/me', { token })).json.data.id;
+
 const signIn = async (email, password) => {
   const { json } = await api('/api/auth/login', { method: 'POST', body: { email, password } });
   return json.data?.token;
@@ -135,7 +144,7 @@ test('a town the plant typed is offered the next time, even unbundled', async ()
   await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Perundurai Knits', mobile: '9840011555', city: 'Perundurai', state: 'Tamil Nadu' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Perundurai Knits', mobile: '9840011555', city: 'Perundurai', state: 'Tamil Nadu' },
   });
 
   const after = await api('/api/places/cities?q=perund', { token: nandhini });
@@ -147,7 +156,7 @@ test('a town first entered on a lead is offered on the customer it becomes', asy
   await api('/api/leads', {
     method: 'POST',
     token: nandhini,
-    body: { company: 'Sivakasi Garments', contactName: 'R Kumar', mobile: '9840011666', city: 'Sivakasi' },
+    body: { assignedTo: await tokenOwnerId(nandhini), company: 'Sivakasi Garments', contactName: 'R Kumar', mobile: '9840011666', city: 'Sivakasi' },
   });
 
   const { json } = await api('/api/places/cities?q=sivak', { token: nandhini });
@@ -163,7 +172,7 @@ test('the canonical spelling wins over the variant already in the database', asy
   await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Variant Spelling Mills', mobile: '9840011777', city: 'tirupur', state: 'Tamil Nadu' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Variant Spelling Mills', mobile: '9840011777', city: 'tirupur', state: 'Tamil Nadu' },
   });
 
   const { json } = await api('/api/places/cities?q=tirup', { token: nandhini });
@@ -181,7 +190,7 @@ test('a town nobody has heard of is still enterable', async () => {
   const { status, json } = await api('/api/leads', {
     method: 'POST',
     token: nandhini,
-    body: {
+    body: { assignedTo: await tokenOwnerId(nandhini),
       company: 'Backwater Exports',
       contactName: 'A Nair',
       mobile: '9840011888',
@@ -199,7 +208,7 @@ test('a state that is not one of the thirty-six is still accepted', async () => 
   const { status, json } = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Dubai Sourcing FZE', mobile: '9840011999', city: 'Dubai', state: 'Dubai', country: 'UAE' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Dubai Sourcing FZE', mobile: '9840011999', city: 'Dubai', state: 'Dubai', country: 'UAE' },
   });
 
   assert.equal(status, 201, json.message);

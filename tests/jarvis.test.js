@@ -36,6 +36,15 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
 
+/**
+ * Who a token belongs to.
+ *
+ * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
+ * owns it", which is what they relied on the old default for; this says it out loud.
+ */
+const tokenOwnerId = async (token) => (await api('/api/auth/me', { token })).json.data.id;
+
 const signIn = async (email, password) => {
   const { json } = await api('/api/auth/login', { method: 'POST', body: { email, password } });
   return json.data?.token;
@@ -99,7 +108,7 @@ test.before(async () => {
   customerId = (await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Trendline Apparels', mobile: '9840011221', customerType: 'garment_factory' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Trendline Apparels', mobile: '9840011221', customerType: 'garment_factory' },
   })).json.data._id;
 
   // A live pipeline to ask about. Without one, "how many are open" answers "nothing" and
@@ -196,7 +205,7 @@ test('two customers matching one name are reported, not resolved to the first', 
   await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { name: 'Trendline Exports', mobile: '9840011999' },
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Trendline Exports', mobile: '9840011999' },
   });
 
   const { answer, rows } = await ask('what is happening with Trendline', admin);

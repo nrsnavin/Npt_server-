@@ -55,6 +55,15 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
 
+/**
+ * Who a token belongs to.
+ *
+ * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
+ * owns it", which is what they relied on the old default for; this says it out loud.
+ */
+const tokenOwnerId = async (token) => (await api('/api/auth/me', { token })).json.data.id;
+
 const signIn = async (email, password) => {
   const { json } = await api('/api/auth/login', { method: 'POST', body: { email, password } });
   return json.data?.token;
@@ -78,7 +87,7 @@ async function pipelineTo(status, { customer: customerOverrides = {}, sample: sa
   const customer = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: {
+    body: { assignedTo: await tokenOwnerId(nandhini),
       name: `Buyer ${sequence}`,
       mobile: `98400${String(100000 + sequence).slice(-5)}`,
       email: `buyer${sequence}@example.com`,

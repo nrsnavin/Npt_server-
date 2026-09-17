@@ -60,7 +60,15 @@ export const customerSchema = z.object({
   email: z.string().email().optional(),
   gstin: z.string().optional(),
   contacts: z.array(contactSchema).optional(),
-  assignedTo: objectId.optional(),
+  /*
+   * Required, and chosen from the marketing team [§29].
+   *
+   * Optional here meant the controller filled it in — the creator for a customer, the rotation
+   * for a lead — and a guess that looks like a decision is worse than a question. `.partial()`
+   * makes it optional again on the update schemas below, which is right: an edit that does not
+   * mention the owner is not an edit that clears it.
+   */
+  assignedTo: objectId,
   creditTermsDays: z.number().nonnegative().optional(),
   paymentTerms: z.string().optional(),
   rating: z.enum(RATINGS).optional(),
@@ -90,7 +98,7 @@ export const leadSchema = z.object({
   conversation: conversationRef,
   productInterest: z.string().optional(),
   estimatedValue: z.number().nonnegative().optional(),
-  assignedTo: objectId.optional(),
+  assignedTo: objectId,
   nextAction: z.string().optional(),
   nextActionType: z.enum(NEXT_ACTION_TYPES).optional(),
   nextFollowUpDate: clearableDate,

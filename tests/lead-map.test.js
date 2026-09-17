@@ -196,6 +196,7 @@ let mongo;
 let server;
 let baseUrl;
 let token;
+let ownerId;   // Creating a lead names its owner now — see `assertCanOwnBuyer`.
 
 const api = async (path, { method = 'GET', body } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -228,6 +229,7 @@ test.before(async () => {
     body: { email: 'admin@np.com', password: 'Admin@12345' },
   });
   token = json.data.token;
+  ownerId = json.data.user.id;
 
   for (const [company, city, state] of [
     ['Sri Kumaran Knits', 'Tiruppur', 'Tamil Nadu'],
@@ -237,7 +239,7 @@ test.before(async () => {
   ]) {
     await api('/api/leads', {
       method: 'POST',
-      body: { company, city, state, mobile: '9840000000' },
+      body: { company, city, state, mobile: '9840000000', assignedTo: ownerId },
     });
   }
 });

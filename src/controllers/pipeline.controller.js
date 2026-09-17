@@ -12,7 +12,12 @@ import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { narrowToOwner, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
-import { assertAssignable, ownerForNewLead } from '../services/assignment.service.js';
+import {
+  assertAssignable,
+  assertCanOwnBuyer,
+  marketingTeam,
+  ownerForNewLead,
+} from '../services/assignment.service.js';
 import { EVENTS, publish, statusEvent } from '../services/events.service.js';
 import { normalisePhone } from '../utils/phone.js';
 import { listParams, paginated } from '../utils/query.js';
@@ -419,13 +424,20 @@ export const createCustomer = asyncHandler(async (req, res) => {
     );
   }
 
-  if (req.body.assignedTo) await assertAssignable(req.body.assignedTo);
+  /*
+   * The owner is chosen, never assumed.
+   *
+   * It used to default to whoever created the record. That is a guess that looks like a
+   * decision: an administrator entering a buyer from a card became its account owner, which
+   * under §29 means the one marketing person who should have been chasing them cannot see them
+   * at all. The form asks, from the marketing team, and the answer is somebody's.
+   */
+  await assertCanOwnBuyer(req.body.assignedTo);
 
   const customer = await Customer.create({
     ...req.body,
     code: await nextNumber('CUST'),
-    // Ownership defaults to whoever created the record, unless an admin assigns it.
-    assignedTo: req.body.assignedTo || req.user._id,
+    assignedTo: req.body.assignedTo,
   });
 
   res.status(201).json({ success: true, data: customer });
@@ -610,36 +622,33 @@ export const getLead = asyncHandler(async (req, res) => {
 });
 
 export const createLead = asyncHandler(async (req, res) => {
-  // The same rule `updateLead` holds. Enforced on one and not the other, it is not a rule:
-  // handing a lead to a colleague was refused by a PATCH and allowed by the POST, so anyone
-  // could do in one step what they were forbidden from doing in two.
-  if (req.body.assignedTo && req.user.role !== 'admin') {
-    throw ApiError.forbidden('Only an administrator can assign a lead to someone else');
-  }
-  if (req.body.assignedTo) await assertAssignable(req.body.assignedTo);
+  /*
+   * Whose lead it is, asked rather than worked out.
+   *
+   * This used to be the rotation's job [§41.3]: a marketing person entering a lead kept it,
+   * everybody else's went round-robin across the team. It is the right rule for the front doors
+   * — WhatsApp and IndiaMART have nobody to ask, and `ownerForNewLead` still answers for them —
+   * but on a form it made a decision nobody had taken. Somebody typed up a call they had just
+   * had and the lead went to a colleague, with a line on the record saying "by rotation" as
+   * though that explained it.
+   *
+   * The old admin-only gate goes with it. It was there because handing a lead to a colleague was
+   * refused by `updateLead` and allowed by this one, so anybody could do in one step what they
+   * were forbidden from doing in two. That reasoning holds for a *reassignment*, which takes a
+   * record off the person who has been working it — and it does not apply here, because a lead
+   * being created has no owner yet to take it from. `updateLead` is untouched: moving a lead
+   * after the fact is still a management decision.
+   */
+  await assertCanOwnBuyer(req.body.assignedTo);
   assertFutureFollowUp(req.body.nextFollowUpDate);
-
-  // Round-robin across marketing for a lead that arrives with nobody attached [§41.3]. A
-  // marketing person entering their own call keeps it; see the service for why.
-  const owner = await ownerForNewLead({ requested: req.body.assignedTo, creator: req.user });
 
   const lead = await Lead.create({
     ...req.body,
     number: await nextNumber('LEAD'),
-    assignedTo: owner.user,
+    assignedTo: req.body.assignedTo,
   });
 
   await syncFollowUpReminder(lead);
-
-  // Said out loud on the record, so nobody has to guess why it landed with them.
-  if (owner.rotated) {
-    lead.activities.push({
-      type: 'note',
-      summary: `Assigned to ${owner.name} by rotation`,
-      createdBy: req.user._id,
-    });
-    await lead.save();
-  }
 
   res.status(201).json({ success: true, data: lead });
 });
@@ -826,6 +835,35 @@ export const leadOwners = asyncHandler((req, res) => ownersOf(Lead, req, res));
 
 /** The same question about enquiries, answered by the same rule — see `ownersOf`. */
 export const enquiryOwners = asyncHandler((req, res) => ownersOf(Enquiry, req, res));
+
+/**
+ * Who a new lead or customer may be given to: the marketing team.
+ *
+ * A different question from `ownersOf`, which answers "who currently *holds* records" for the
+ * owner filter and is therefore ownership-scoped down to one name. This one answers "who *may*
+ * hold a new one", and it is deliberately the whole team for everybody who can reach it.
+ *
+ * That is the point of asking. A picker offering a marketing person only themselves would be a
+ * label, not a choice, and the reason the form asks at all is that the plant wants a person to
+ * decide which of them is going to chase this buyer — which is a decision about the team, made
+ * by whoever is looking at the enquiry in front of them.
+ *
+ * The consequence is worth being plain about: under §29, choosing a colleague hands the record
+ * away, and a marketing person who does that will not see it on their own list afterwards. The
+ * screen says so rather than hiding it.
+ */
+export const marketingRoster = asyncHandler(async (req, res) => {
+  const team = await marketingTeam();
+
+  res.json({
+    success: true,
+    data: team.map((person) => ({ _id: person._id, name: person.name })),
+    meta: {
+      /* So the form can say who it would be, and mark the reader's own name in the list. */
+      you: team.some((person) => String(person._id) === String(req.user._id)) ? req.user._id : null,
+    },
+  });
+});
 
 export const leadsOverview = asyncHandler(async (req, res) => {
   const scope = ownershipFilter(req.user);
