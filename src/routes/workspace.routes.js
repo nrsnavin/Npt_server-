@@ -17,12 +17,14 @@ import {
   markAnnouncementRead,
   deleteAnnouncement,
 } from '../controllers/workspace.controller.js';
+import { plantReview, raiseFinding } from '../controllers/review.controller.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
   todoSchema,
   todoUpdateSchema,
   todoEscalateSchema,
+  raiseFindingSchema,
   noteSchema,
   noteUpdateSchema,
   announcementSchema,
@@ -58,6 +60,20 @@ router.patch('/todos/:id', validate(todoUpdateSchema), updateTodo);
 router.get('/todos/:id/suggest', suggestRoutingFor);
 router.post('/todos/:id/escalate', validate(todoEscalateSchema), escalateTodo);
 router.delete('/todos/:id', deleteTodo);
+
+/*
+ * The review [§25]: what matters now, across the plant for management and inside their own
+ * department for everybody else.
+ *
+ * No module grant. The scoping is the *department*, as with tasks — and the findings are built
+ * from queries the reader's own screens already run, so the brief cannot show somebody a figure
+ * they could not reach by navigating. Management and admins get the whole plant, which is the
+ * audience §25's red flag names.
+ */
+router.get('/review', plantReview);
+/* And handing one of them to the department that can clear it — an ordinary task, raised by the
+   person who pressed it. The finding is re-derived server side, never accepted from the body. */
+router.post('/review/raise', validate(raiseFindingSchema), raiseFinding);
 
 router.get('/notes', listNotes);
 router.post('/notes', validate(noteSchema), createNote);

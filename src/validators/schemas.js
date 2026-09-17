@@ -181,3 +181,16 @@ export const confirmVerificationSchema = z.object({
   target: z.enum(['email', 'phone']).default('email'),
   code: z.string().regex(/^\d{4,8}$/, 'Enter the numeric code'),
 });
+
+/**
+ * Handing one of the review's findings to a department [§25].
+ *
+ * Only *which* finding — its kind and the department it belongs to. The headline, the detail and
+ * the severity are re-derived on the server from the same queries that produced the brief,
+ * because a body that could carry its own headline could put any sentence on any department's
+ * queue and have it look like the plant's own finding.
+ */
+export const raiseFindingSchema = z.object({
+  kind: z.string().trim().min(1).max(64),
+  department: z.enum(DEPARTMENT_KEYS),
+});
