@@ -17,6 +17,10 @@ import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
+/* This file now drives several hundred calls in a few seconds — each `released()` books an
+   order, ticks eight checks and releases it — which the deployed ceiling of 300 a minute
+   correctly refuses. The limiter stays mounted; only the number moves. */
+process.env.RATE_LIMIT_MAX = '100000';
 process.env.JWT_SECRET = 'production-test-secret-value';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -444,4 +448,208 @@ test('and a caller that sends no token is not blocked', async () => {
     method: 'PATCH', token: ramesh, body: { status: 'running', producedQty: 1000 },
   });
   assert.equal(done.status, 200, done.json.message);
+});
+
+/* ------------- The buyer's date, and what may move it [§14, §25] ------------- */
+
+/**
+ * The plant's own forecast must not clear a promise to the buyer.
+ *
+ * `isOverdue` read `expectedCompletion || deliveryDate`, justified as "a re-dated line is not
+ * late against the buyer's original date, which is the entire point of agreeing one". The
+ * reasoning was sound and the field was wrong: `expectedCompletion` is production's forecast,
+ * set on the production screen with no buyer in the conversation. So a line five days past the
+ * buyer's date became on-time the moment somebody recorded the slip — it dropped out of the
+ * overdue queue and disarmed the §25 escalation whose whole job is to tell marketing the buyer
+ * will be disappointed. Pushing the estimate out far enough made a line permanently punctual.
+ */
+test('recording a slip does not make a late line on-time again', async () => {
+  const order = await released([
+    { mould, modelNumber: 'NH-400', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(-5) },
+  ]);
+  const line = order.lines[0];
+
+  const before = await api(`/api/orders/${order._id}`, { token: ramesh });
+  assert.equal(before.json.data.lines[0].isOverdue, true, 'past the buyer’s date with pieces owed');
+
+  const slip = await record(order, line, {
+    expectedCompletion: inDays(21),
+    expectedUpdatedAt: order.updatedAt,
+  });
+  assert.equal(slip.status, 200, slip.json.message);
+
+  const after = await api(`/api/orders/${order._id}`, { token: ramesh });
+  assert.equal(after.json.data.lines[0].isOverdue, true, 'still late — the promise did not move');
+  assert.equal(after.json.data.hasOverdueLine, true, 'and the order still says so');
+});
+
+/** The plant's own date can still bring lateness *forward* — a missed internal target is worth
+    hearing about before the buyer's date arrives, which is the only warning worth anything. */
+test('a tighter target of the plant’s own still makes a line late early', async () => {
+  const order = await released([
+    { mould, modelNumber: 'NH-401', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(30) },
+  ]);
+
+  await record(order, order.lines[0], {
+    expectedCompletion: inDays(-2),
+    expectedUpdatedAt: order.updatedAt,
+  });
+
+  const seen = await api(`/api/orders/${order._id}`, { token: ramesh });
+  assert.equal(seen.json.data.lines[0].isOverdue, true, 'past its own target, inside the buyer’s');
+});
+
+/**
+ * The only date that may move a deadline, and it is not the plant's to set.
+ *
+ * Lines are frozen after release [§12], so a buyer agreeing to a fortnight's grace had nowhere
+ * to be recorded at all — and the only field that looked like it would serve was the plant's
+ * own estimate. That is how a forecast came to be used to clear a promise. Giving the real
+ * thing a door is what lets `isOverdue` stop accepting the fake one.
+ */
+test('a date the buyer has agreed to does move the deadline, with a name against it', async () => {
+  const order = await released([
+    { mould, modelNumber: 'NH-402', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(-5) },
+  ]);
+  const line = order.lines[0];
+
+  const promised = await api(`/api/orders/${order._id}/lines/${line._id}/promise`, {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      promisedDate: inDays(14),
+      reason: 'Buyer agreed a fortnight for the resin delay',
+      expectedUpdatedAt: order.updatedAt,
+    },
+  });
+  assert.equal(promised.status, 200, promised.json.message);
+
+  const seen = await api(`/api/orders/${order._id}`, { token: nandhini });
+  const fresh = seen.json.data.lines[0];
+  assert.equal(fresh.isOverdue, false, 'no longer late against a date the buyer accepted');
+  assert.equal(String(fresh.promisedDate).slice(0, 10), inDays(14));
+  assert.ok(fresh.promisedBy, 'somebody told a customer something — the trail says who');
+  assert.match(fresh.promisedReason, /resin delay/);
+
+  /* The PO's own date is never overwritten. "What did we promise originally" has to stay
+     answerable six months later when somebody asks why an order ran late. */
+  assert.equal(String(fresh.deliveryDate).slice(0, 10), inDays(-5), 'the PO still says what it said');
+});
+
+test('a re-promise has to say what the buyer agreed, and may only move later', async () => {
+  const order = await released([
+    { mould, modelNumber: 'NH-403', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(10) },
+  ]);
+  const line = order.lines[0];
+  const promise = (body) =>
+    api(`/api/orders/${order._id}/lines/${line._id}/promise`, {
+      method: 'POST', token: nandhini, body: { expectedUpdatedAt: order.updatedAt, ...body },
+    });
+
+  const thin = await promise({ promisedDate: inDays(20), reason: 'ok' });
+  assert.equal(thin.status, 400, 'a reason has to be a sentence, not a shrug');
+
+  /*
+   * Earlier than the standing promise is not a renegotiation — nobody rings a buyer to agree to
+   * *less* time — so it is a typo or somebody making the plant look late, and both are better
+   * refused than recorded.
+   */
+  const backwards = await promise({
+    promisedDate: inDays(3), reason: 'Bringing this one forward for the buyer',
+  });
+  assert.equal(backwards.status, 400);
+  assert.match(backwards.json.message, /already owed/i);
+  assert.match(backwards.json.message, /priority/i, 'and names what to do instead');
+});
+
+/**
+ * The plant cannot re-promise on the buyer's behalf.
+ *
+ * Production holds `orders` at read, so the `orders` grant alone let them through — which is
+ * precisely the thing this door exists to stop. `customers` at write is the honest line between
+ * the departments that talk to buyers and the ones that do not.
+ */
+test('only the departments that talk to buyers may re-promise', async () => {
+  const order = await released([
+    { mould, modelNumber: 'NH-404', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(-3) },
+  ]);
+
+  const byPlant = await api(`/api/orders/${order._id}/lines/${order.lines[0]._id}/promise`, {
+    method: 'POST',
+    token: ramesh,
+    body: {
+      promisedDate: inDays(30),
+      reason: 'We need longer for this one, the tool is on another job',
+      expectedUpdatedAt: order.updatedAt,
+    },
+  });
+  assert.equal(byPlant.status, 403, byPlant.json.message);
+
+  const seen = await api(`/api/orders/${order._id}`, { token: ramesh });
+  assert.equal(seen.json.data.lines[0].promisedDate, undefined, 'and nothing moved');
+  assert.equal(seen.json.data.lines[0].isOverdue, true);
+});
+
+/**
+ * The warning that arrives while it is still a conversation.
+ *
+ * §25's alarm waits for a date to *pass*, which is the right trigger for a slip nobody saw
+ * coming and the wrong one for a slip somebody typed. On an order due in five weeks, a forecast
+ * that misses it by a fortnight was known on day one and announced on day thirty-five — by
+ * which point the only thing left to do is apologise.
+ */
+test('committing past the buyer’s date asks marketing, on the day', async () => {
+  const order = await released([
+    { mould, modelNumber: 'NH-405', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(10) },
+  ]);
+  const line = order.lines[0];
+
+  const slip = await record(order, line, {
+    expectedCompletion: inDays(40),
+    expectedUpdatedAt: order.updatedAt,
+  });
+  assert.equal(slip.status, 200, slip.json.message);
+  /* Said back to whoever typed it, not only to marketing: a screen that accepts a date and
+     quietly starts a conversation elsewhere reads as going behind somebody's back. */
+  assert.equal(slip.json.willMissPromise, true);
+
+  const queries = await api(`/api/orders/${order._id}/queries`, { token: nandhini });
+  const raised = (queries.json.data || []).filter((row) => /the buyer is owed/.test(row.question));
+  assert.equal(raised.length, 1);
+  assert.equal(raised[0].askedOf, 'marketing', 'they are the only ones who can ring the buyer');
+  assert.equal(raised[0].urgency, 'urgent', 'the whole value of this is the head start');
+  assert.match(raised[0].question, /30 days past/, 'says how far past, in days');
+  assert.match(raised[0].question, /Expedite it, re-agree the date|split the delivery/,
+    'and what the answers are');
+
+  /* A supervisor correcting a count on an already-slipped line must not collect a fresh urgent
+     question per keystroke. */
+  const current = await api(`/api/orders/${order._id}`, { token: ramesh });
+  await record(order, line, { producedQty: 500, expectedUpdatedAt: current.json.data.updatedAt });
+
+  const again = await api(`/api/orders/${order._id}/queries`, { token: nandhini });
+  assert.equal(
+    (again.json.data || []).filter((row) => /the buyer is owed/.test(row.question)).length,
+    1,
+    'asked once, not on every save afterwards'
+  );
+});
+
+/** A forecast inside the buyer's date says nothing — the flag is about a broken promise, not
+    about having a forecast at all. */
+test('a forecast that meets the promise raises nothing', async () => {
+  const order = await released([
+    { mould, modelNumber: 'NH-406', quantity: 20000, unitPrice: 7.5, deliveryDate: inDays(30) },
+  ]);
+
+  const fine = await record(order, order.lines[0], {
+    expectedCompletion: inDays(20),
+    expectedUpdatedAt: order.updatedAt,
+  });
+  assert.equal(fine.status, 200);
+  assert.equal(fine.json.willMissPromise, undefined);
+  assert.equal(fine.json.line.willMissPromise, false);
+
+  const queries = await api(`/api/orders/${order._id}/queries`, { token: nandhini });
+  assert.equal((queries.json.data || []).length, 0);
 });

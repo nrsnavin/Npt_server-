@@ -12,6 +12,7 @@ import {
   HELD_PRODUCTION_STATUSES, assertProductionFigures, assertStatusFits, rollUpOrderStatus,
 } from '../services/production.service.js';
 import { notifyMaterialReady } from '../services/dispatchEscalation.service.js';
+import { warnPromiseWillSlip } from '../services/productionEscalation.service.js';
 import { PRESSING_BANDS, byUrgency, urgencyOf } from '../services/productionUrgency.service.js';
 import { urgentOrdersFor } from '../services/urgentOrders.service.js';
 import OrderQuery from '../models/OrderQuery.js';
@@ -117,10 +118,21 @@ export const listProductionLines = asyncHandler(async (req, res) => {
       printing: line.printing,
       quantity: line.quantity,
       deliveryDate: line.deliveryDate,
+      /*
+       * What the buyer is actually owed, and whether it has been re-agreed. The PO's own date
+       * travels too, so a screen can show "was 7 Oct, now 21 Oct" rather than silently drawing
+       * the new one as though it had always said that.
+       */
+      promisedDate: line.promisedDate,
+      promisedReason: line.promisedReason,
+      dueToBuyer: line.dueToBuyer,
       production: line.production,
       toMakeQty: line.toMakeQty,
       madePercent: line.madePercent,
       isOverdue: line.isOverdue,
+      /* Known before any date passes — see the virtual. The row carries it so the queue can put
+         a job in front of a supervisor while there is still time to do something about it. */
+      willMissPromise: line.willMissPromise,
     }))
   );
 
@@ -142,11 +154,28 @@ export const listProductionLines = asyncHandler(async (req, res) => {
    */
   rows.sort((a, b) => {
     if (a.isOverdue !== b.isOverdue) return a.isOverdue ? -1 : 1;
-    const left = a.production?.expectedCompletion || a.deliveryDate;
-    const right = b.production?.expectedCompletion || b.deliveryDate;
-    if (!left) return 1;
-    if (!right) return -1;
-    return new Date(left) - new Date(right);
+    /*
+     * Then the ones already known to be heading past their promise, ahead of the ones merely
+     * due soon. A line whose own forecast misses the buyer's date by a fortnight is a job to
+     * move today; a line due Friday and on track is not.
+     */
+    if (a.willMissPromise !== b.willMissPromise) return a.willMissPromise ? -1 : 1;
+    /*
+     * The earlier of the two dates, not the plant's in preference to the buyer's — the same
+     * correction as `isOverdue`. Ranking by the forecast let a line pushed out to November sit
+     * below one due next week, when the first is the one that has already broken a promise.
+     */
+    const soonest = (row) => {
+      const dates = [row.dueToBuyer, row.production?.expectedCompletion]
+        .filter(Boolean)
+        .map((date) => new Date(date).getTime());
+      return dates.length ? Math.min(...dates) : null;
+    };
+    const left = soonest(a);
+    const right = soonest(b);
+    if (left === null) return 1;
+    if (right === null) return -1;
+    return left - right;
   });
 
   /*
@@ -273,6 +302,18 @@ export const updateProductionLine = asyncHandler(withOrderLock(req => req.params
 
   const packedMore = next.readyQty > (line.production.readyQty || 0);
 
+  /*
+   * Whether this save is the moment the plant admits it will miss the buyer's date.
+   *
+   * Read before the assignment below overwrites the old forecast, and compared against the old
+   * one so the warning fires on the change rather than on every subsequent save of an already
+   * known slip. §25's alarm cannot help here: it waits for a date to *pass*, so on an order due
+   * in five weeks a commitment that misses it by a fortnight sat silent for five weeks and then
+   * announced itself as a failure. This is the same fact a month earlier, while it is still a
+   * conversation somebody can have with the buyer.
+   */
+  const wasMissing = line.willMissPromise;
+
   for (const field of [
     'plannedQty', 'producedQty', 'readyQty',
     'plannedStart', 'expectedCompletion', 'actualStart', 'remarks',
@@ -339,12 +380,32 @@ export const updateProductionLine = asyncHandler(withOrderLock(req => req.params
     await notifyMaterialReady(order, order.lines.id(req.params.lineId)).catch(() => {});
   }
 
+  /*
+   * And marketing hears about a forecast that breaks the promise, on the day it is recorded.
+   *
+   * Only on the transition, so a plant correcting a produced count on an already-slipped line
+   * does not re-ask the same question every time. Outside the save's result for the same reason
+   * the dispatch notification is: a message that failed must not take down the record of what
+   * the plant actually made.
+   */
+  const saved = order.lines.id(req.params.lineId);
+  if (saved.willMissPromise && !wasMissing) {
+    await warnPromiseWillSlip(order, saved, req.user).catch(() => {});
+  }
+
   res.json({
     success: true,
     data: orderVisibleTo(order, req.user),
-    line: order.lines.id(req.params.lineId),
+    line: saved,
     /* Said out loud, because the plant did not ask for it and will see it on the order. */
     orderMovedTo: moved,
+    /*
+     * Said back to the person who just typed it, rather than only to marketing. Somebody
+     * recording a slip should see that it lands on a promise — otherwise the screen accepts a
+     * date that quietly starts a conversation elsewhere, which reads as the software going
+     * behind their back.
+     */
+    willMissPromise: saved.willMissPromise || undefined,
   });
 }));
 

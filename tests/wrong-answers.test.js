@@ -166,15 +166,82 @@ test('a line past the buyer\'s date with no plant date agreed is late — and th
   assert.equal(line.isOverdue, true, 'and so must the line, or the alarm never fires');
 });
 
-test('once the plant agrees a date, that is what late is measured against', () => {
-  // A re-dated line is not late against the buyer's original date. That is the whole point of
-  // the plant agreeing one, and the fallback must not override it.
+/**
+ * The plant's own forecast cannot clear a promise to the buyer.
+ *
+ * This test used to assert the opposite — "once the plant agrees a date, that is what late is
+ * measured against" — on the reasoning that a re-dated line is not late against the buyer's
+ * original date. The reasoning is right and it was attached to the wrong field.
+ * `expectedCompletion` is *production's forecast*, typed on the production screen with no buyer
+ * in the conversation. So "agreeing a date" meant the plant agreeing with itself, and the
+ * consequence was that a line ten days past the buyer's promise reported itself on-time the
+ * moment somebody recorded the slip: out of the overdue queue, and §25's escalation — whose one
+ * job is to tell marketing the buyer will be disappointed — switched off by the act of
+ * recording the disappointment. Pushed out far enough, a line was punctual for ever.
+ *
+ * The date that *can* move the deadline is `promisedDate`: what the buyer has agreed to
+ * instead. It is marketing's to set, through its own door, with a reason and a name — and the
+ * test below is the one this file should always have had.
+ */
+test('the plant\'s own forecast does not clear the buyer\'s date', () => {
   const line = order({
     deliveryDate: days(-10),
     production: { producedQty: 0, status: 'running', expectedCompletion: days(5) },
   }).lines[0];
 
-  assert.equal(line.isOverdue, false);
+  assert.equal(line.isOverdue, true, 'ten days past the promise, whatever the plant now expects');
+  /* And the forecast is five days out against a date that fell ten days ago, so it misses the
+     promise too — both flags true, describing the same slip from either end of it. */
+  assert.equal(line.willMissPromise, true);
+});
+
+test('a date the buyer agreed to does clear it', () => {
+  const line = order({
+    deliveryDate: days(-10),
+    promisedDate: days(5),
+    production: { producedQty: 0, status: 'running', expectedCompletion: days(3) },
+  }).lines[0];
+
+  assert.equal(line.isOverdue, false, 'the buyer accepted a new date, so nothing is owed yet');
+  /* `days()` in this file returns a Date, so compare on the day rather than on the object. */
+  assert.equal(
+    line.deliveryDate.toISOString().slice(0, 10),
+    days(-10).toISOString().slice(0, 10),
+    'and the PO still says what it said'
+  );
+});
+
+/** A tighter target of the plant's own still brings lateness forward — a missed internal date
+    is worth hearing about before the buyer's arrives, which is the only useful warning. */
+test('the plant\'s own date can make a line late earlier, never later', () => {
+  const line = order({
+    deliveryDate: days(30),
+    production: { producedQty: 0, status: 'running', expectedCompletion: days(-2) },
+  }).lines[0];
+
+  assert.equal(line.isOverdue, true, 'past its own target, comfortably inside the buyer\'s');
+});
+
+/**
+ * And the warning that does not wait for a date to pass.
+ *
+ * `isOverdue` cannot help while both dates are in the future, which is exactly when something
+ * can still be done. A forecast that lands past the promise is known on the day it is typed.
+ */
+test('a forecast past the promise is known before either date arrives', () => {
+  const line = order({
+    deliveryDate: days(10),
+    production: { producedQty: 0, status: 'running', expectedCompletion: days(40) },
+  }).lines[0];
+
+  assert.equal(line.isOverdue, false, 'nothing has passed yet');
+  assert.equal(line.willMissPromise, true, 'and yet the promise is already broken');
+
+  const met = order({
+    deliveryDate: days(40),
+    production: { producedQty: 0, status: 'running', expectedCompletion: days(10) },
+  }).lines[0];
+  assert.equal(met.willMissPromise, false, 'a forecast that meets the promise says nothing');
 });
 
 test('a finished line is late on neither date, and a dateless one cannot be', () => {

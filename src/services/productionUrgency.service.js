@@ -68,7 +68,19 @@ const plural = (count, one, many) => `${count.toLocaleString('en-IN')} ${count =
 export function urgencyOf(row, { now = new Date(), priority = 'normal' } = {}) {
   const why = [];
 
-  const due = row.production?.expectedCompletion || row.deliveryDate;
+  /*
+   * The soonest of the two dates, not the plant's in preference to the buyer's.
+   *
+   * This read `expectedCompletion || deliveryDate`, which let the plant's own forecast hide a
+   * broken promise: pushing the estimate out took a line that was five days late and ranked it
+   * as comfortable. The band has to answer "how much trouble is this in", and the answer is
+   * governed by whichever deadline is nearest — the buyer's promise, or the plant's own tighter
+   * target when it has set one. See the note on `isOverdue` in the model.
+   */
+  const deadlines = [row.dueToBuyer ?? row.promisedDate ?? row.deliveryDate, row.production?.expectedCompletion]
+    .filter(Boolean)
+    .map((date) => new Date(date));
+  const due = deadlines.length ? new Date(Math.min(...deadlines.map((d) => d.getTime()))) : null;
   const days = daysUntil(due, now);
   const left = Math.max(0, row.toMakeQty ?? 0);
   const done = row.production?.status === 'completed';

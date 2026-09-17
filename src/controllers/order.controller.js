@@ -899,3 +899,88 @@ export const setOrderPriority = asyncHandler(withOrderLock(req => req.params.id,
   await order.populate(POPULATE);
   res.json({ success: true, data: orderVisibleTo(order, req.user) });
 }));
+
+/**
+ * A new delivery date the buyer has agreed to [§25].
+ *
+ * The one thing that may move a line's deadline, and it is deliberately not the plant's to do.
+ * `expectedCompletion` is production's forecast; this is the buyer's word, and only the person
+ * who spoke to them can record it — which is why this sits on the orders module rather than the
+ * production one, and why the reason is required.
+ *
+ * It exists because the honest version of "we agreed a fortnight's grace" had nowhere to go.
+ * Lines are frozen after release [§12], so the original `deliveryDate` cannot be edited — and
+ * the only field that looked like it would serve was the plant's own estimate, which is how a
+ * forecast came to be used to clear a promise and switch off §25's alarm. See the note on
+ * `isOverdue`.
+ *
+ * The PO's own date is never overwritten. "What did we promise originally" has to stay
+ * answerable six months later when somebody asks why an order ran late, and a field that
+ * quietly absorbs each renegotiation answers it with the last excuse rather than the promise.
+ */
+export const setLinePromisedDate = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
+  const order = await SalesOrder.findById(req.params.id);
+  if (!order) throw ApiError.notFound('Order not found');
+  if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+
+  const line = order.lines.id(req.params.lineId);
+  if (!line) throw ApiError.notFound('That line is not on this order');
+
+  expectVersion(order, req.body);
+
+  if (CLOSED_ORDER_STATUSES.includes(order.status)) {
+    throw ApiError.badRequest(`This order is ${order.status} — there is nothing left to re-promise`);
+  }
+
+  const { promisedDate, reason } = req.body;
+
+  /*
+   * Forward only, against whatever the buyer is currently owed.
+   *
+   * A date earlier than the standing promise is not a renegotiation — nobody rings a buyer to
+   * agree to *less* time — so it is either a typo or somebody using this field to make the
+   * plant look late, and both are better refused than recorded. Pulling a date in is the
+   * priority action's job, which is about the queue rather than the promise.
+   */
+  const standing = line.promisedDate || line.deliveryDate;
+  if (standing && new Date(promisedDate) <= new Date(standing)) {
+    throw ApiError.badRequest(
+      `The buyer is already owed this line by ${new Date(standing).toISOString().slice(0, 10)}. ` +
+        'A re-agreed date moves later — to pull one forward, raise the order\'s priority instead.'
+    );
+  }
+
+  const before = snapshot(order);
+
+  line.promisedDate = promisedDate;
+  line.promisedReason = reason;
+  line.promisedBy = req.user._id;
+  line.promisedAt = new Date();
+
+  /*
+   * The §25 alarm is re-armed, because this is a different promise. A line escalated against
+   * the old date and left stamped would never ring again if it went on to miss the new one too
+   * — which is the second slip, and the one the buyer has already been patient about once.
+   */
+  if (line.production) {
+    line.production.escalatedAt = undefined;
+  }
+
+  await order.save();
+  await recordChange({
+    model: 'SalesOrder',
+    doc: order,
+    before,
+    by: req.user,
+    /* In the trail beside the priority decisions, and for the same reason: somebody told a
+       customer something, and six months from now the question will be who and why. */
+    note: `${line.modelNumber || 'A line'} re-promised for ${new Date(promisedDate).toISOString().slice(0, 10)}: ${reason}`,
+  });
+
+  await order.populate(POPULATE);
+  res.json({
+    success: true,
+    data: orderVisibleTo(order, req.user),
+    line: order.lines.id(req.params.lineId),
+  });
+}));

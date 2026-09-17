@@ -110,6 +110,19 @@ const orderQuerySchema = new mongoose.Schema(
     question: { type: String, required: true, trim: true, maxlength: 2000 },
     urgency: { type: String, enum: URGENCY_KEYS, default: 'normal' },
 
+    /**
+     * What raised this, when something other than a person did [§25].
+     *
+     * The same idea `raiseTask` carries, and here for the same reason: a question raised by a
+     * rule runs on every save that trips it, and a rule with no marker asks the same question
+     * again every time. A supervisor correcting a produced count on a line whose forecast
+     * already misses the buyer's date would collect a fresh urgent query per keystroke.
+     *
+     * Absent on every question a person asked, which is most of them — so the index is sparse
+     * and unique only among the ones that carry a key.
+     */
+    originKey: { type: String, trim: true },
+
     /** When an answer stops being timely. Set from `urgency` at creation [§25]. */
     dueBy: { type: Date, index: true },
 
@@ -133,6 +146,20 @@ const orderQuerySchema = new mongoose.Schema(
 /** The queue screen's own query: what my department owes, oldest first. */
 orderQuerySchema.index({ askedOf: 1, status: 1, dueBy: 1 });
 orderQuerySchema.index({ order: 1, createdAt: -1 });
+
+/**
+ * One question per rule per thing it is about.
+ *
+ * Partial rather than sparse: the questions a person asked carry no `originKey` at all, and a
+ * compound sparse index would still index them on a shared null and let the second one collide
+ * with the first. Unique because the check in application code is a read followed by a write,
+ * and two saves landing together both walk through the gap between them — which on this rule
+ * means two identical urgent queries about the same slip.
+ */
+orderQuerySchema.index(
+  { originKey: 1 },
+  { unique: true, partialFilterExpression: { originKey: { $type: 'string' } } }
+);
 
 orderQuerySchema.virtual('isOpen').get(function isOpen() {
   return this.status !== 'closed';

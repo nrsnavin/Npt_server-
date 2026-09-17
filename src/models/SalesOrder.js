@@ -300,6 +300,28 @@ const lineSchema = new mongoose.Schema(
     /** When this line is promised. Per line, because two models rarely ship together. */
     deliveryDate: Date,
 
+    /**
+     * A new date the buyer has agreed to, when one has been agreed [§25].
+     *
+     * The PO's `deliveryDate` is what the buyer ordered against and it does not change — the
+     * document says what it says. This is the renegotiation, and the two are kept apart so that
+     * "what did we promise originally" stays answerable six months later when somebody asks why
+     * an order ran late.
+     *
+     * It exists because the lateness test had no honest way to move. Lines are frozen after
+     * release [§12], so a buyer agreeing to a fortnight's grace could not be recorded anywhere
+     * at all — and the only field that looked like it would do the job was the plant's own
+     * `expectedCompletion`, which is how a forecast came to be used to clear a promise. Giving
+     * the real thing a door is what lets `isOverdue` stop accepting the fake one.
+     *
+     * Marketing's, not the plant's, and that is the point: only the person who spoke to the
+     * buyer can say the buyer agreed. The reason and the name travel with it.
+     */
+    promisedDate: Date,
+    promisedReason: { type: String, trim: true, maxlength: 500 },
+    promisedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    promisedAt: Date,
+
     /** The costing behind the price, so a margin question has somewhere to be answered. */
     pricing: { type: mongoose.Schema.Types.ObjectId, ref: 'Pricing' },
 
@@ -343,29 +365,69 @@ lineSchema.virtual('madePercent').get(function madePercent() {
 });
 
 /**
+ * The date this line is owed to the buyer by.
+ *
+ * `promisedDate` when the buyer has agreed a new one, the PO's own `deliveryDate` otherwise.
+ * One place, because the escalation, the urgency ranking, the register's late column and every
+ * screen have to answer "owed by when" identically or they contradict each other in front of
+ * the same person.
+ */
+lineSchema.virtual('dueToBuyer').get(function dueToBuyer() {
+  return this.promisedDate || this.deliveryDate || null;
+});
+
+/**
  * Past the date it is owed by, with pieces still owed [§25].
  *
  * Both halves matter. A line past its date that is finished is not late — it was delivered —
  * and a line still running inside its date is not late either. Only the pair is a problem, and
  * an alarm on either half alone is an alarm that cries wolf.
  *
- * **The date is the plant's if it has agreed one, and the buyer's otherwise**, which is the
- * fallback `urgencyOf` has always used and this virtual did not. The disagreement was silent
- * and it fell the wrong way: a line nobody had planned has no `expectedCompletion`, so however
- * far past the delivery date the buyer was given it went, this returned false — the register's
- * late column, its overdue filter and its count all said no, and §25's escalation never fired.
- * The plant's own day screen called the same line "21 days past its date" the whole time.
+ * **Late against either date, and the plant's own can only ever bring that forward.**
  *
- * Those are exactly the lines that need the alarm. A line nobody planned is a line nobody is
- * watching, and the absence of an internal date was being read as the absence of a promise.
+ * This used to read `expectedCompletion || deliveryDate`, justified as "a re-dated line is not
+ * late against the buyer's original date, which is the entire point of agreeing one". The
+ * reasoning is sound and the field was wrong: `expectedCompletion` is *production's own
+ * forecast*, set on the production screen with no buyer in the conversation. So the plant could
+ * clear a broken promise by revising its own estimate — a line five days past the buyer's date
+ * became on-time the moment somebody recorded the slip, dropped out of the overdue queue, and
+ * disarmed §25's escalation. The escalation exists to tell marketing the buyer will be
+ * disappointed, and the act of recording the disappointment was what switched it off. Moving
+ * the estimate out far enough made a line permanently punctual.
  *
- * Once the plant *does* agree a date, that is what §25 measures against — a re-dated line is
- * not late against the buyer's original date, which is the entire point of agreeing one.
+ * The date that *can* move the deadline is `promisedDate` — what the buyer has agreed to
+ * instead — and it is marketing's to set, through its own door, with a reason. See the note on
+ * the field.
+ *
+ * Keeping `expectedCompletion` in the test is not redundant: a plant that sets itself a tighter
+ * internal target wants to hear about missing it, and hearing about it before the buyer's date
+ * arrives is the only warning that is worth anything.
  */
 lineSchema.virtual('isOverdue').get(function isOverdue() {
-  const due = this.production?.expectedCompletion || this.deliveryDate;
-  if (!due || this.production?.status === 'completed') return false;
-  return new Date(due) < new Date() && this.toMakeQty > 0;
+  if (this.production?.status === 'completed' || this.toMakeQty <= 0) return false;
+
+  const now = new Date();
+  const dates = [this.dueToBuyer, this.production?.expectedCompletion].filter(Boolean);
+  return dates.some((date) => new Date(date) < now);
+});
+
+/**
+ * The plant's forecast is later than what the buyer has been promised.
+ *
+ * Known on the day the forecast is recorded, and that is the whole value of it: the alarm above
+ * cannot ring until a date actually passes, so on an order due in five weeks a commitment that
+ * misses it by a fortnight stayed silent for five weeks and then announced itself as a failure.
+ * This is the same fact a month earlier, while it is still a conversation somebody can have.
+ *
+ * False once the line is finished, and false while pieces are not owed — a line that overran
+ * its forecast and still delivered has nothing to warn about.
+ */
+lineSchema.virtual('willMissPromise').get(function willMissPromise() {
+  const plant = this.production?.expectedCompletion;
+  const owed = this.dueToBuyer;
+  if (!plant || !owed) return false;
+  if (this.production?.status === 'completed' || this.toMakeQty <= 0) return false;
+  return new Date(plant) > new Date(owed);
 });
 
 lineSchema.set('toJSON', { virtuals: true });

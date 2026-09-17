@@ -295,3 +295,21 @@ export const orderPrioritySchema = z.strictObject({
     .min(10, 'Say why, in a sentence — the plant is being asked to move a job for this')
     .max(500),
 });
+
+/**
+ * A new delivery date the buyer has agreed to [§25].
+ *
+ * The reason is required and held to a sentence, for the same argument as the priority schema
+ * above: this is a record that somebody told a customer something, and "changed" is not an
+ * account anybody can act on six months later. Whether the date actually moves *later* is the
+ * controller's to judge, because it needs the line in hand to know what is currently owed.
+ */
+export const linePromiseSchema = z.strictObject({
+  ...versioned,
+  promisedDate: z.coerce.date(),
+  reason: z
+    .string()
+    .trim()
+    .min(10, 'Say what the buyer agreed to, in a sentence — this is the promise the plant is held to')
+    .max(500),
+});

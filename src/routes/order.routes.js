@@ -3,6 +3,7 @@ import {
   listOrders, orderBoard, getOrder, exportOrders,
   createOrder, orderFromQuotation, updateOrder,
   setOrderCheck, applyOrderAction, listOrderActions, setOrderPo, setOrderPriority,
+  setLinePromisedDate,
 } from '../controllers/order.controller.js';
 import {
   listOrderQueries, listQueryQueue, raiseOrderQuery, answerOrderQuery, closeOrderQuery,
@@ -41,7 +42,7 @@ import {
   orderCheckSchema, orderActionSchema,
   orderQuerySchema, orderAnswerSchema, orderQueryCloseSchema,
   orderEscalationSchema, escalationUpdateSchema, escalationResolveSchema,
-  productionLineSchema, orderPrioritySchema,
+  productionLineSchema, orderPrioritySchema, linePromiseSchema,
 } from '../validators/order.schemas.js';
 import {
   dispatchSchema, dispatchUpdateSchema, dispatchActionSchema, dispatchPromiseSchema,
@@ -114,6 +115,29 @@ router.post(
   requireModule('orders'),
   validate(orderPrioritySchema),
   setOrderPriority
+);
+
+/*
+ * A new delivery date the buyer has agreed to [§25].
+ *
+ * Two grants, both required, and the second is the one that matters. `orders` at read is where
+ * marketing sits — the same reason the priority route above is on read rather than write. But
+ * production holds `orders` at read too, so that alone let the plant re-promise on the buyer's
+ * behalf: exactly the thing this door exists to stop, since the whole defect it closes was the
+ * plant's own forecast being used to clear a customer promise.
+ *
+ * `customers` at write is the honest line between the departments that talk to buyers —
+ * marketing, order confirmation, management — and the ones that do not. Production and despatch
+ * hold customers at read. The access catalogue's own note says a rule like this is not
+ * expressible as one module level and has to be enforced where it applies; two grants side by
+ * side is that, said declaratively rather than buried in the handler.
+ */
+router.post(
+  '/orders/:id/lines/:lineId/promise',
+  requireModule('orders'),
+  requireModule('customers', 'write'),
+  validate(linePromiseSchema),
+  setLinePromisedDate
 );
 
 /*
