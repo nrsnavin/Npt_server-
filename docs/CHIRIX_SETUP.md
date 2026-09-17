@@ -11,6 +11,11 @@ The other half is `CHIRIX_API_REQUEST.md`: the questions to ask the vendor, and 
 matters. **Read that first if the API details are not yet in hand.** Several decisions below
 depend on answers only Chirix can give, and each one is marked where it comes up.
 
+**To print or send:** `Chirix-Setup-Guide.pdf` in this directory carries the same content laid
+out for paper. It is generated — `python3 docs/build-chirix-pdf.py` rebuilds it — so edit this
+file and that script together, or the two will disagree and the printed one is the copy somebody
+is holding.
+
 > **Status.** The matching, the de-duplication and the amendment rules are built and tested.
 > The HTTP client is the last piece and is deliberately not written yet, because writing a
 > normaliser against a guessed response shape is how a field mapping gets silently wrong. The
