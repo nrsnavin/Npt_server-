@@ -143,6 +143,12 @@ export const listProductionLines = asyncHandler(async (req, res) => {
   /** The queue that matters: everything not finished. */
   if (req.query.open === 'true') rows = rows.filter((row) => row.production?.status !== 'completed');
   if (req.query.overdue === 'true') rows = rows.filter((row) => row.isOverdue);
+  /*
+   * The lines heading for trouble, as opposed to already in it. The plant's home screen has
+   * counted these for a while under "Will miss — not enough days left to make it" and the
+   * register had no way to open them, so the figure was a fact with nowhere to go.
+   */
+  if (req.query.willMiss === 'true') rows = rows.filter((row) => row.willMissPromise);
   if (req.query.held === 'true') {
     rows = rows.filter((row) => HELD_PRODUCTION_STATUSES.includes(row.production?.status));
   }
@@ -194,6 +200,8 @@ export const listProductionLines = asyncHandler(async (req, res) => {
       /* The three figures a production head opens this screen for. */
       open: rows.filter((row) => row.production?.status !== 'completed').length,
       overdue: rows.filter((row) => row.isOverdue).length,
+      /* Known before any date passes, which is what makes it worth a tile of its own. */
+      willMiss: rows.filter((row) => row.willMissPromise).length,
       held: rows.filter((row) => HELD_PRODUCTION_STATUSES.includes(row.production?.status)).length,
       toMake: rows.reduce((sum, row) => sum + row.toMakeQty, 0),
     },
