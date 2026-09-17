@@ -479,3 +479,41 @@ test('two departments named equally is still a question, not a guess', async () 
     'a sentence naming two departments equally leaves the person to choose'
   );
 });
+
+test('it judges by what the job is, not by who is mentioned', async () => {
+  /*
+   * The model's prompt has always carried this rule, in these words: "Judge by what the job is,
+   * not who mentioned it. 'Buyer is disputing the invoice' is accounts even though a buyer is
+   * named; 'the press is short 400 pieces on SCM's order' is production even though a customer
+   * is named." The keyword table did not carry it at all — every match counted as one, so
+   * "buyer" scored exactly as hard as "invoice", the two tied, and the rules returned nothing on
+   * the very sentence the prompt uses as its example.
+   *
+   * Returning nothing is defensible when the text really does name two departments' work. It is
+   * not defensible here: almost every task in a plant mentions a buyer somewhere, so a word that
+   * appears in half the sentences was holding the word that named the work to a draw, and "ask
+   * the person" stopped being a judgement and became the usual outcome.
+   */
+  const { suggestByRules } = await import('../src/services/taskRouting.rules.js');
+  const judged = {
+    'Buyer is disputing the invoice': 'accounts',
+    'Buyer is disputing invoice INV-2026-0041': 'accounts',
+    'The press is short 400 pieces on the buyer order': 'production',
+    'Buyer is asking where the lorry has got to': 'despatch',
+    'Buyer asked accounts about the payment': 'accounts',
+  };
+  for (const [title, department] of Object.entries(judged)) {
+    assert.equal(suggestByRules({ title }).department, department, `"${title}"`);
+  }
+});
+
+test('a mention on its own is still a suggestion', async () => {
+  /*
+   * Weighing a party word below a subject word must not silence it. A task whose only signal is
+   * the buyer genuinely is marketing's, and a table that shrugged at it would have traded one
+   * wrong answer for a different one.
+   */
+  const { suggestByRules } = await import('../src/services/taskRouting.rules.js');
+  assert.equal(suggestByRules({ title: 'Buyer wants to talk about the relationship' }).department, 'marketing');
+  assert.equal(suggestByRules({ title: 'Buyer wants a revised quotation' }).department, 'marketing');
+});

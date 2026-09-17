@@ -103,6 +103,34 @@ const URGENT = [
  * 2 words the despatch team owns" asks them to take it on trust and tells them nothing about
  * whether it read the sentence the way they would.
  */
+/**
+ * Words that say *who is involved* rather than *what the job is*.
+ *
+ * The model's prompt has always carried this rule, in these words: "Judge by what the job is, not
+ * who mentioned it. 'Buyer is disputing the invoice' is accounts even though a buyer is named."
+ * The keyword table did not carry it at all — every match counted as one, so "buyer" scored
+ * exactly as hard as "invoice", the two departments tied, and the rules returned nothing on the
+ * very sentence the prompt uses as its example.
+ *
+ * Returning nothing is not a disaster, and it was chosen on purpose: a tie means the text names
+ * two departments equally and asking the person is the honest answer. But this is not that case.
+ * Almost every task in a plant mentions a buyer somewhere, and a word that appears in half the
+ * sentences cannot be worth as much as one that names the work. Nearly nine in ten tasks would
+ * carry a party word, so treating them as equals turns "ask the person" from a considered
+ * judgement into the usual outcome.
+ *
+ * So a mention is worth less than a subject, and not nothing — a task that says only "buyer wants
+ * a price" is genuinely marketing's, and should still route. Two mentions still lose to one
+ * subject, which is the whole point.
+ */
+const MENTIONS = new Set(['buyer', 'customer wants', 'relationship']);
+
+/** A mention counts, but never enough to outweigh a word that names the work. */
+const WHAT_A_MENTION_IS_WORTH = 0.4;
+
+const weigh = (words) =>
+  words.reduce((total, word) => total + (MENTIONS.has(word) ? WHAT_A_MENTION_IS_WORTH : 1), 0);
+
 function score(text) {
   const hits = {};
   for (const [department, patterns] of Object.entries(PATTERNS)) {
@@ -175,15 +203,19 @@ export function suggestByRules(task, { exclude } = {}) {
   /* Never the queue it is already on: suggesting that is suggesting nothing. */
   if (exclude) delete hits[exclude];
 
-  const ranked = Object.entries(hits).sort((a, b) => b[1].length - a[1].length);
+  const ranked = Object.entries(hits).sort((a, b) => weigh(b[1]) - weigh(a[1]));
   const [best, second] = ranked;
 
   /*
-   * A clear winner or nothing. `best.length === second.length` is the case this guards: "invoice
-   * not cut before the lorry leaves" scores accounts and despatch equally, and picking either is
-   * a guess dressed as an answer.
+   * A clear winner or nothing. An equal score is the case this guards: "invoice not cut before
+   * the lorry leaves" weighs accounts and despatch the same, and picking either is a guess
+   * dressed as an answer.
+   *
+   * Weighed rather than counted, so that a word naming the buyer cannot hold a word naming the
+   * work to a draw — see `MENTIONS`. A sentence that genuinely names two departments' work still
+   * ties, and still goes back to the person.
    */
-  const clear = best && (!second || best[1].length > second[1].length);
+  const clear = best && (!second || weigh(best[1]) > weigh(second[1]));
   const department = clear && DEPARTMENT_KEYS.includes(best[0]) ? best[0] : null;
 
   return {
