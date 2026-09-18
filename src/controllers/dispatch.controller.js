@@ -4,6 +4,7 @@ import Dispatch, {
   DISPATCH_STATUSES,
   CLOSED_DISPATCH_STATUSES,
   GONE_DISPATCH_STATUSES,
+  MIN_OVERRIDE_REASON,
 } from '../models/Dispatch.js';
 import SalesOrder, { PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
 import Attachment from '../models/Attachment.js';
@@ -638,9 +639,9 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
      straight onto the document, and this one belongs inside the override record, not beside it. */
   const { action, note, qualityOverrideReason, noPodReason, addressOverrideReason, ...rest } =
     withoutVersion(req.body);
-  /* Keyed by the `needs` name on the paperwork row, so the gate below can look up the answer
-     to whichever item is short without a branch per item. */
-  const answers = { addressOverrideReason };
+  /* Keyed by the `needs` name each soft gate asks for, so the block below can look one up
+     without a branch per gate — and so one request can answer every gate it tripped. */
+  const answers = { addressOverrideReason, qualityOverrideReason, noPodReason };
   const recipe = DISPATCH_ACTIONS[action];
   if (!recipe) throw ApiError.badRequest('That is not something you can do to a consignment');
 
@@ -665,28 +666,37 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
     );
   }
 
+  /*
+   * Everything this action writes is diffed, so `before` is taken before any of it.
+   *
+   * It used to be taken after the paperwork had landed and after all three overrides had been
+   * assigned, which made the audit row for a dispatch say only that the status moved: the
+   * invoice number typed in the same breath, and the reason somebody gave for going past a
+   * check, were both in `before` and in `after` and so diffed to nothing. The one field a
+   * person might later have to answer for was the one the trail did not keep.
+   */
+  const before = snapshot(dispatch);
+
   /* Anything supplied alongside the action lands first, so a gate can be satisfied by the same
      request that trips it — typing the invoice number into the dispatch dialog, which is where
      somebody actually has it in front of them. */
   applyPaperwork(dispatch, rest);
 
   /*
-   * §19's gate. Named paperwork, not a count: "still needs an invoice number and a transporter"
-   * is something a person can go and do, and "not shippable" is not.
+   * §19's hard gate. Named paperwork, not a count: "still needs an invoice number and a
+   * transporter" is something a person can go and do, and "not shippable" is not.
    *
    * Two kinds of shortfall, and the difference is whether an answer exists in the world. An
-   * invoice number does: somebody cut the invoice, and the refusal sends them to go and read
-   * it off it. A delivery address sometimes does not — a buyer's own lorry collecting at the
-   * gate — and that row carries a way past, on the same warn-with-a-reason footing as the
-   * quality check below. See `SHIPPING_PAPERWORK` for why it is the only one.
+   * invoice number does — somebody cut the invoice, and the refusal sends them to go and read
+   * it off it. A delivery address sometimes does not, and that row carries a way past; it joins
+   * the soft gates gathered below. See `SHIPPING_PAPERWORK` for why it is the only one.
    *
-   * The hard half is checked first, so a consignment short of both is not asked to explain the
-   * address while it is still waiting on an invoice — that would be a dialog demanding a reason
-   * for something the person had not yet been told was in their way.
+   * The hard half is checked first, and on its own, so a consignment short of both is not asked
+   * to explain the address while it is still waiting on an invoice — that would be a dialog
+   * demanding a reason for something nobody had yet been told was in the way.
    */
   if (recipe.gate === 'shippable' && !dispatch.shippable) {
-    const short = dispatch.paperworkShortfall;
-    const mustSupply = short.filter((field) => !field.needs);
+    const mustSupply = dispatch.paperworkShortfall.filter((field) => !field.needs);
 
     if (mustSupply.length) {
       throw ApiError.badRequest(
@@ -694,96 +704,115 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
           'before it can be dispatched'
       );
     }
-
-    /*
-     * Everything left can be answered for. 409 rather than 400, exactly as the quality and POD
-     * overrides do: this is not a malformed request, it is a correct one awaiting a second,
-     * deliberate press with a reason attached — and a screen can tell those apart.
-     */
-    for (const field of short) {
-      const reason = String(answers[field.needs] || '').trim();
-
-      if (reason.length < 10) {
-        throw ApiError.conflict(`${dispatch.number} ${field.refusal}`, {
-          needs: field.needs,
-          missing: field.label,
-        });
-      }
-
-      dispatch.set(field.overrideField, { reason, by: req.user._id, at: new Date() });
-    }
   }
 
   /*
-   * §15's quality check, which warns rather than refuses.
+   * The soft gates: gathered, then answered or asked about together [§15, §19].
    *
-   * Deliberately not a `gate` in the action table beside `shippable`: those refuse outright, and
-   * this one is a judgement the plant asked to keep. A consignment that failed its pre-dispatch
-   * check, or never had one, may still go — but only with a reason and a name against it, and
-   * every such decision lands in the overrides report.
+   * Three of them warn rather than refuse — a load quality has not cleared, a consignment with
+   * no proof of delivery, a consignment with no delivery address. Each is the right call on its
+   * own: a hard gate on a soft judgement gets worked around outside the system, where nobody
+   * can see it. What makes each safe is the record — the reason, the name, the day.
    *
-   * The first attempt comes back 409 with the concern and what to do about it, rather than 400:
-   * this is not a malformed request, it is a correct one that needs a second, deliberate press
-   * with an answer attached. A screen can tell those apart and say so.
+   * **They are collected rather than thrown one at a time, and that is the whole point of this
+   * shape.** Written as three sequential `if (…) throw`, a consignment short of two of them
+   * could never be dispatched at all. Each request is atomic, so an override assigned in memory
+   * is lost when the next gate throws; the screen sends back only the field it was last asked
+   * for; and the server then asks for the other one again. Measured, pressing Dispatched on a
+   * consignment with no address and no inspection went:
+   *
+   *     press 1                  → 409 addressOverrideReason
+   *     press 2 (address only)   → 409 qualityOverrideReason
+   *     press 3 (quality only)   → 409 addressOverrideReason
+   *     press 4 (address only)   → 409 qualityOverrideReason
+   *
+   * — forever, with the load on the lorry and the record unable to say so. Gathering them makes
+   * the refusal name everything it wants (`needsAll`) and, more importantly, makes one request
+   * able to answer everything it named.
    */
+  const soft = [];
+
+  if (recipe.gate === 'shippable' && !dispatch.shippable) {
+    for (const field of dispatch.paperworkShortfall) {
+      soft.push({
+        needs: field.needs,
+        refusal: `${dispatch.number} ${field.refusal}`,
+        details: { missing: field.label },
+        apply: (reason) => dispatch.set(field.overrideField, { reason, by: req.user._id, at: new Date() }),
+      });
+    }
+  }
+
   if (recipe.to === 'dispatched') {
     const quality = await dispatchQuality(dispatch._id);
 
     if (!quality.passed) {
-      const reason = String(qualityOverrideReason || '').trim();
-
-      if (reason.length < 10) {
-        throw ApiError.conflict(
+      soft.push({
+        needs: 'qualityOverrideReason',
+        refusal:
           `${quality.concern}. It can still go, but say why — the reason is kept against the ` +
-            'consignment and appears in the monthly overrides list.',
-          { concern: quality.concern, needs: 'qualityOverrideReason' }
-        );
-      }
-
-      dispatch.qualityOverride = {
-        concern: quality.concern,
-        reason,
-        by: req.user._id,
-        at: new Date(),
-      };
+          'consignment and appears in the monthly overrides list.',
+        /* The concern travels with the refusal: it is more specific than anything the dialog
+           could say for itself, and it is what the record keeps. */
+        details: { concern: quality.concern },
+        apply: (reason) => {
+          dispatch.qualityOverride = {
+            concern: quality.concern, reason, by: req.user._id, at: new Date(),
+          };
+        },
+      });
     }
   }
+
   /*
-   * §19's proof of delivery, on the same warn-rather-than-refuse footing as the quality check
-   * above — and for a reason the action's own hint had already assumed: "Delivered and the proof
-   * is on file — nothing left to do". Nothing checked that it was.
-   *
    * Closing was the silent escape from the POD chase. The day screen's `pod` band catches a
    * consignment delivered without its receipt, and `closed` drops out of the despatch queue
-   * altogether — so the one status that made a missing proof invisible was the one needing no
+   * altogether — so the one status that made a missing proof invisible was the one requiring no
    * explanation, while `pod_pending`, which exists to hold exactly this gap, kept it on a list.
    *
    * Refused outright would be wrong: a POD needs an attachment and not every delivery produces
    * one a clerk can lay hands on. A gate there gets satisfied by scanning any piece of paper,
-   * which is a POD column full of nothing. So it closes with a reason, and the reason is what
-   * makes "how many did we close with no proof, and who" answerable — the question accounts
-   * asks when a buyer disputes receiving a load.
+   * which is a POD column full of nothing.
    */
   if (recipe.to === 'closed' && !dispatch.pod?.attachment) {
-    const reason = String(noPodReason || '').trim();
-
-    if (reason.length < 10) {
-      throw ApiError.conflict(
+    soft.push({
+      needs: 'noPodReason',
+      refusal:
         `${dispatch.number} has no proof of delivery on file. It can still be closed, but say ` +
-          'why — the reason is kept against the consignment. Otherwise leave it waiting on the ' +
-          'POD, where the chase will keep it in front of somebody.',
-        { needs: 'noPodReason' }
-      );
-    }
-
-    dispatch.closedWithoutPod = { reason, by: req.user._id, at: new Date() };
+        'why — the reason is kept against the consignment. Otherwise leave it waiting on the ' +
+        'POD, where the chase will keep it in front of somebody.',
+      apply: (reason) => {
+        dispatch.closedWithoutPod = { reason, by: req.user._id, at: new Date() };
+      },
+    });
   }
+
+  const unanswered = soft.filter(
+    (gate) => String(answers[gate.needs] || '').trim().length < MIN_OVERRIDE_REASON
+  );
+
+  if (unanswered.length) {
+    /*
+     * 409 rather than 400: this is not a malformed request, it is a correct one awaiting a
+     * second, deliberate press with an answer attached — and a screen can tell those apart.
+     *
+     * Phrased for the first one, because a dialog asks one question at a time and a paragraph
+     * naming two gets read as neither. `needsAll` is beside it so the screen can say there is
+     * another question coming rather than springing it.
+     */
+    const [first] = unanswered;
+    throw ApiError.conflict(first.refusal, {
+      needs: first.needs,
+      ...first.details,
+      needsAll: unanswered.map((gate) => gate.needs),
+    });
+  }
+
+  for (const gate of soft) gate.apply(String(answers[gate.needs]).trim());
 
   for (const field of recipe.needs) {
     if (!rest[field] && !dispatch[field]) throw ApiError.badRequest(`“${recipe.label}” needs ${field}`);
   }
-
-  const before = snapshot(dispatch);
 
   /* Stamped from the action rather than typed, so the dates cannot disagree with the status.
      A back-dated value supplied in the same request wins — a lorry recorded the next morning

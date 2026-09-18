@@ -311,12 +311,28 @@ async function enquiryForLead(lead, spec, user) {
     REQUIREMENT_FIELDS.map((field) => [field, spec[field]]).filter(([, value]) => value != null)
   );
 
+  /*
+   * §3 asks an open enquiry for a next action *and* a date, and the marketing dashboard counts
+   * one without both as an exception. Seeding only the action produced an enquiry that arrived
+   * on that exception list at birth, already carrying the action — a screen saying "this needs
+   * a next step" about a record that visibly had one.
+   *
+   * The date is the day the sample is wanted, because that is the day there is something to
+   * say: the bench is done, or it is late and the buyer should hear why. A caller may back-date
+   * a sample — a request written up the morning after it was made — and a follow-up already in
+   * the past is refused by `assertFutureFollowUp` and would read on somebody's morning list as
+   * neglect on the day it was created, so a past date falls back to the standing default.
+   */
+  const wanted = spec.requiredDate ? new Date(spec.requiredDate) : null;
+  const chaseOn = wanted && wanted > new Date() ? wanted : defaultRequiredDate();
+
   const seed = {
     mould: spec.mould || undefined,
     requirement,
     remarks: spec.remarks || undefined,
     /* The reason it exists, on the record rather than inferable from the dates. */
     nextAction: 'Sample requested — show it to them when the bench is done',
+    nextFollowUpDate: chaseOn,
   };
 
   try {

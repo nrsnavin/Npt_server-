@@ -619,3 +619,191 @@ test('the inspection register is scoped to the orders a marketing reader owns', 
   const benchOrders = new Set(bench.json.data.map((row) => String(row.order?._id || row.order)));
   assert.ok(benchOrders.has(String(theirs._id)), 'quality cannot see an order it inspected');
 });
+
+/* --------------------- More than one soft gate on one press --------------------- */
+
+test('a consignment short of two soft gates can still be sent, in one round each', async () => {
+  /*
+   * The bug this replaced was a loop, not a refusal, and it is worth naming exactly.
+   *
+   * Written as three sequential `if (…) throw`, each request was atomic: an override assigned
+   * in memory was lost when the next gate threw, the screen sent back only the field it was
+   * last asked for, and the server then asked for the other one again. Pressing Dispatched on a
+   * consignment with no address and no inspection measured as:
+   *
+   *     press 1                  → 409 addressOverrideReason
+   *     press 2 (address only)   → 409 qualityOverrideReason
+   *     press 3 (quality only)   → 409 addressOverrideReason
+   *     press 4 (address only)   → 409 qualityOverrideReason
+   *
+   * — forever, with the load on the lorry and the record unable to say so. Both halves of the
+   * fix are asserted: the refusal names everything it wants, and one request can answer it.
+   */
+  const order = await released();
+  const line = order.lines[0];
+  await pack(order, line, 20000);
+
+  const raised = await api('/api/dispatches', {
+    method: 'POST', token: kavitha,
+    body: {
+      order: order._id, lines: [{ orderLine: line._id, quantity: 5000 }],
+      invoice: PAPERS.invoice, transporter: PAPERS.transporter, lrNumber: PAPERS.lrNumber,
+    },
+  });
+  assert.equal(raised.status, 201, raised.json.message);
+  const id = raised.json.data._id;
+
+  /* No address, and nobody has inspected it — two soft gates, no hard ones. */
+  const cleared = await api(`/api/dispatches/${id}`, {
+    method: 'PATCH', token: kavitha, body: { destination: { address: '' } },
+  });
+  assert.equal(cleared.status, 200, cleared.json.message);
+
+  const act = (body) => api(`/api/dispatches/${id}/actions`, { method: 'POST', token: kavitha, body });
+  const ADDRESS = "Buyer's own lorry collected at our gate, driver Selvam 98400 11223";
+  const QUALITY = 'Buyer inspected at our gate and accepted the lot themselves';
+
+  /* The first press names both, so the screen can say another question is coming. */
+  const first = await act({ action: 'dispatch' });
+  assert.equal(first.status, 409, first.json.message);
+  assert.deepEqual(
+    [...(first.json.details?.needsAll || [])].sort(),
+    ['addressOverrideReason', 'qualityOverrideReason'],
+    'the refusal names everything it wants, not only the first'
+  );
+  assert.ok(first.json.details?.needs, 'and still asks one question at a time');
+
+  /* Answering one is progress, not a different question about the same thing. */
+  const second = await act({ action: 'dispatch', addressOverrideReason: ADDRESS });
+  assert.equal(second.status, 409);
+  assert.deepEqual(second.json.details?.needsAll, ['qualityOverrideReason'], 'one left');
+  assert.equal(second.json.details?.needs, 'qualityOverrideReason');
+
+  /* And the screen carries every answer it has given, which is what breaks the circle. */
+  const gone = await act({
+    action: 'dispatch', addressOverrideReason: ADDRESS, qualityOverrideReason: QUALITY,
+  });
+  assert.equal(gone.status, 200, gone.json.message);
+  assert.equal(gone.json.data.status, 'dispatched');
+  assert.match(gone.json.data.addressOverride.reason, /collected at our gate/);
+  assert.match(gone.json.data.qualityOverride.reason, /accepted the lot/);
+  assert.equal(gone.json.data.addressOverride.by?.name, 'Kavitha D');
+  assert.equal(gone.json.data.qualityOverride.by?.name, 'Kavitha D');
+  assert.match(gone.json.data.qualityOverride.concern, /Nobody has inspected/);
+});
+
+test('answering the wrong gate does not send it, and records nothing', async () => {
+  /*
+   * The half that must stay refused. The loop made "answer one, get asked the other" feel like
+   * progress; it has to remain true that a gate nobody answered still stops the lorry, and that
+   * an answer given for a gate that *was* tripped is not banked on a request that failed.
+   */
+  const order = await released();
+  const line = order.lines[0];
+  await pack(order, line, 20000);
+  const raised = await api('/api/dispatches', {
+    method: 'POST', token: kavitha,
+    body: {
+      order: order._id, lines: [{ orderLine: line._id, quantity: 5000 }],
+      invoice: PAPERS.invoice, transporter: PAPERS.transporter, lrNumber: PAPERS.lrNumber,
+    },
+  });
+  const id = raised.json.data._id;
+  await api(`/api/dispatches/${id}`, {
+    method: 'PATCH', token: kavitha, body: { destination: { address: '' } },
+  });
+
+  const refused = await api(`/api/dispatches/${id}/actions`, {
+    method: 'POST', token: kavitha,
+    body: { action: 'dispatch', qualityOverrideReason: 'Buyer inspected at our gate and accepted it' },
+  });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(refused.json.details?.needsAll, ['addressOverrideReason']);
+
+  const read = await api(`/api/dispatches/${id}`, { token: kavitha });
+  assert.equal(read.json.data.status, 'dispatch_request_received', 'still in the yard');
+  assert.equal(read.json.data.qualityOverride?.reason, undefined, 'and nothing was banked');
+  assert.equal(read.json.data.addressOverride?.reason, undefined);
+});
+
+test('a hard shortfall is still asked for on its own, before any reason is wanted', async () => {
+  /*
+   * An invoice number exists in the world, so it is fetched rather than explained — and asked
+   * for first. A dialog demanding a reason for something nobody had yet been told was in the
+   * way is how a person learns to type anything into it.
+   */
+  const order = await released();
+  const line = order.lines[0];
+  await pack(order, line, 20000);
+  const raised = await api('/api/dispatches', {
+    method: 'POST', token: kavitha,
+    body: { order: order._id, lines: [{ orderLine: line._id, quantity: 5000 }] },
+  });
+  const id = raised.json.data._id;
+  await api(`/api/dispatches/${id}`, {
+    method: 'PATCH', token: kavitha, body: { destination: { address: '' } },
+  });
+
+  const { status, json } = await api(`/api/dispatches/${id}/actions`, {
+    method: 'POST', token: kavitha,
+    body: {
+      action: 'dispatch',
+      addressOverrideReason: "Buyer's own lorry collected at our gate, driver Selvam",
+      qualityOverrideReason: 'Buyer inspected at our gate and accepted the lot themselves',
+    },
+  });
+
+  assert.equal(status, 400, json.message);
+  assert.match(json.message, /invoice/i);
+  assert.equal(json.details?.needsAll, undefined, 'a 400 is not a question');
+});
+
+test('a consignment sent with no address turns up in the findings', async () => {
+  /*
+   * The accountability half, and the whole justification for allowing the exception. A reason
+   * on the record makes one consignment defensible; what makes the *practice* defensible is
+   * somebody seeing how often it is used. Two a month is a buyer collecting at the gate. Twenty
+   * is a delivery register that has stopped recording deliveries — and the reason field is
+   * worth nothing if nobody ever reads the column.
+   */
+  const { gatherFindings } = await import('../src/services/plantFindings.service.js');
+
+  const before = await gatherFindings({ department: 'despatch' });
+  const wasThere = before.find((f) => f.kind === 'dispatch_no_address');
+
+  const order = await released();
+  const line = order.lines[0];
+  await pack(order, line, 20000);
+  const raised = await api('/api/dispatches', {
+    method: 'POST', token: kavitha,
+    body: {
+      order: order._id, lines: [{ orderLine: line._id, quantity: 5000 }],
+      invoice: PAPERS.invoice, transporter: PAPERS.transporter, lrNumber: PAPERS.lrNumber,
+    },
+  });
+  const id = raised.json.data._id;
+  await api(`/api/dispatches/${id}`, {
+    method: 'PATCH', token: kavitha, body: { destination: { address: '' } },
+  });
+
+  const gone = await api(`/api/dispatches/${id}/actions`, {
+    method: 'POST', token: kavitha,
+    body: {
+      action: 'dispatch',
+      addressOverrideReason: "Buyer's own lorry collected at our gate, driver Selvam",
+      qualityOverrideReason: 'Buyer inspected at our gate and accepted the lot themselves',
+    },
+  });
+  assert.equal(gone.status, 200, gone.json.message);
+
+  const after = await gatherFindings({ department: 'despatch' });
+  const finding = after.find((f) => f.kind === 'dispatch_no_address');
+
+  assert.ok(finding, 'the override is visible to whoever has to ask about it');
+  assert.equal(finding.count, (wasThere?.count || 0) + 1, 'and it counts them');
+  assert.match(finding.headline, /no delivery address/i);
+  assert.match(finding.detail, new RegExp(gone.json.data.number), 'naming the most recent');
+  assert.match(finding.detail, /Kavitha D/, 'and who sent it');
+  assert.equal(finding.department, 'despatch');
+  assert.ok(finding.severity > 0 && finding.severity <= 100);
+});

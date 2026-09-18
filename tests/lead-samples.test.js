@@ -207,6 +207,51 @@ test('the enquiry is seeded from what the request said, not re-keyed [§41.4]', 
   assert.match(enquiry.nextAction, /sample/i, 'and it says why it exists [§3]');
 });
 
+test('the enquiry is not born on the "needs a next step" list', async () => {
+  /*
+   * §3 asks an open enquiry for a next action *and* a date, and the marketing dashboard counts
+   * one carrying only half as an exception. Seeding the action alone produced an enquiry that
+   * arrived on that list at birth, already visibly carrying an action — a screen telling
+   * somebody to decide the next step about a record that had one written on it.
+   *
+   * The date is the day the sample is wanted, because that is the day there is something to
+   * say: the bench is done, or it is late and the buyer should hear why.
+   */
+  const lead = await raiseLead();
+  const wanted = inDays(9);
+  const { json } = await requestSample(lead, nandhini, { requiredDate: wanted });
+
+  const enquiry = (await api(`/api/enquiries/${json.converted.enquiry.id}`, { token: nandhini })).json.data;
+  assert.ok(enquiry.nextFollowUpDate, 'it carries a date as well as an action');
+  assert.equal(enquiry.nextFollowUpDate.slice(0, 10), wanted, 'the day the sample is wanted');
+
+  /* And the dashboard agrees, which is the thing that was wrong. */
+  const board = await api('/api/marketing/dashboard', { token: nandhini });
+  const stuck = JSON.stringify(board.json.data || {});
+  assert.ok(
+    !stuck.includes(json.converted.enquiry.number),
+    `${json.converted.enquiry.number} should not be on the needs-a-next-step list the day it was made`
+  );
+});
+
+test('a sample wanted on a date already past does not back-date the follow-up', async () => {
+  /*
+   * A request written up the morning after it was made carries yesterday's date. A follow-up
+   * born in the past is refused outright by §3's future check, and would read on somebody's
+   * morning list as neglect on the day it was created — so it falls back to the standing
+   * default rather than failing the whole request.
+   */
+  const lead = await raiseLead();
+  const { status, json } = await requestSample(lead, nandhini, { requiredDate: inDays(-3) });
+
+  assert.equal(status, 201, json.message);
+  const enquiry = (await api(`/api/enquiries/${json.converted.enquiry.id}`, { token: nandhini })).json.data;
+  assert.ok(
+    new Date(enquiry.nextFollowUpDate) >= new Date(new Date().toDateString()),
+    `follow-up landed in the past: ${enquiry.nextFollowUpDate}`
+  );
+});
+
 test("the lead's own screen still lists what was made for it", async () => {
   /* The lead does not stop being the record the request came from. */
   const lead = await raiseLead();

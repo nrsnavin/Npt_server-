@@ -102,6 +102,19 @@ export const PRE_LOAD_DISPATCH_STATUSES = [
  * road, which is most consignments and not all of them, and the threshold is a tax rule that
  * changes on a budget day rather than a fact about despatch. Recorded, surfaced, not gated.
  */
+/**
+ * The shortest answer a soft gate will take.
+ *
+ * Ten characters, which is not a spell-check — it is the difference between an account and a
+ * dismissal. "ok" and "asked to" are what a box with no floor collects, and a reason nobody can
+ * read next month is the same as no reason at all, except that it looks like one on a report.
+ *
+ * Named here rather than typed into three refusals, and mirrored by `MIN_REASON` on the web so
+ * the button refuses before the server has to. A dialog that accepts four characters and then
+ * comes back 409 teaches people the dialog is the obstacle.
+ */
+export const MIN_OVERRIDE_REASON = 10;
+
 export const SHIPPING_PAPERWORK = [
   { key: 'invoice.date', label: 'an invoice date' },
   { key: 'invoice.value', label: 'a positive invoice value' },
