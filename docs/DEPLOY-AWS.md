@@ -459,6 +459,159 @@ chmod +x /srv/npt/deploy.sh
 requests. `npm ci` on the web side needs the swap file from step 3 — a Vite build on 2 GB with
 MongoDB running is exactly what it is there for.
 
+This is the floor, and it keeps working whatever else breaks. Step 11 makes it happen by itself.
+
+---
+
+## 11. Deploying by itself: a runner on the box
+
+An agent on the EC2 instance that pulls and builds when something lands on `main`, so a merge
+reaches the plant without anybody opening a terminal.
+
+**What it is.** A **GitHub Actions self-hosted runner** — a small service on the box that dials
+out to GitHub, waits for work, and runs it locally. Both repos already run their tests on
+GitHub's own machines on every push; the runner adds one more job at the end of that, which only
+starts if those tests went green.
+
+**Why this rather than the alternatives.** No inbound port is opened and no SSH key is stored at
+GitHub — the runner makes an outbound connection and nothing on the internet can reach it. A
+deploy key at GitHub is a key that can log into your server, held somewhere you do not control.
+AWS CodeDeploy is the other obvious answer and is the wrong size for one box: it wants S3 or
+CodePipeline, IAM roles and an `appspec.yml` to do what forty lines of bash does here.
+
+> **Private repositories only.** A self-hosted runner on a public repo lets anyone who opens a
+> pull request run code on your server — GitHub says so in its own documentation. Both of these
+> repos are private. If either is ever made public, take the runner off it the same day.
+
+### 11.1 Two runners, because there are two repositories
+
+A personal account cannot share one runner across repositories, so the box runs one per repo.
+They are small — idle, a runner is a few MB of RAM.
+
+```bash
+sudo mkdir -p /srv/runners/{server,web}
+sudo chown -R ubuntu:ubuntu /srv/runners
+```
+
+Get the download line and the token from GitHub, per repo:
+
+**`nrsnavin/Npt_server-` → Settings → Actions → Runners → New self-hosted runner → Linux x64.**
+
+It shows a `curl` for the current release and a `./config.sh` line carrying a token that expires
+in an hour. Use *its* URLs rather than the ones written here, which age.
+
+```bash
+cd /srv/runners/server
+# the curl + tar lines GitHub showed you, then:
+./config.sh --url https://github.com/nrsnavin/Npt_server- \
+            --token <THE-TOKEN-GITHUB-SHOWED> \
+            --name npt-box-server \
+            --labels npt \
+            --work _work \
+            --unattended
+```
+
+The **`npt` label matters** — it is what `runs-on: [self-hosted, npt]` in the workflow matches. A
+runner without it never picks the job up, and the job sits queued forever with no error.
+
+Install it as a service so it survives a reboot:
+
+```bash
+sudo ./svc.sh install ubuntu
+sudo ./svc.sh start
+```
+
+Then the same again for the web repo, from **`nrsnavin/Npt_web-` → Settings → Actions → Runners**:
+
+```bash
+cd /srv/runners/web
+# its own curl + tar, then:
+./config.sh --url https://github.com/nrsnavin/Npt_web- \
+            --token <ITS-OWN-TOKEN> \
+            --name npt-box-web \
+            --labels npt \
+            --work _work \
+            --unattended
+sudo ./svc.sh install ubuntu
+sudo ./svc.sh start
+```
+
+Both should now read **Idle** on their repo's Runners page.
+
+### 11.2 What runs
+
+Each repo carries its own `deploy/on-box.sh`, and the workflow's `deploy` job runs it. Nothing
+is configured at GitHub: the scripts are in the repos, reviewed like any other code, and the
+same file deploys by hand over SSH when the runner is down.
+
+| | `Npt_server-` | `Npt_web-` |
+|---|---|---|
+| Waits for | the test job | the checks job |
+| Pulls into | `/srv/npt/server` | `/srv/npt/web` |
+| Then | `npm ci --omit=dev`, `pm2 reload npt-api` | `npm ci`, builds, renames into `dist/` |
+| Proves it worked | `/health/ready` answers within 20s | the site answers, and `dist/index.html` is not empty |
+| If it did not | **resets to the previous commit and reloads** | leaves the previous build in `dist.old` |
+
+Two things the scripts deliberately do **not** do:
+
+**They do not run the tests again.** Those ran on GitHub against this exact commit on a machine
+with room for them. Running them on 2 GB beside MongoDB buys nothing and is the step most likely
+to die for want of memory. The health check is the protection that matters here, because it asks
+the process actually serving traffic whether it can reach the database — which no test can.
+
+**They never run a migration.** Migrations rewrite existing rows, several are not reversible, and
+every one of them comes with "take a dump first". A deploy that ran them unattended could lose
+the plant's data at three in the afternoon with nobody watching. When a release carries one, the
+API's script says so at the end and stops:
+
+```
+→ THIS RELEASE CARRIES DATA SCRIPTS — none of them have been run
+  scripts/backfill-delivery-addresses.js
+```
+
+That is your cue to do §9's dump and then run it by hand.
+
+### 11.3 Turning it on
+
+Merge to `main` in either repo. The Actions tab shows tests, then `deploy` on `npt-box-server`
+or `npt-box-web`.
+
+There is also a button: **Actions → the workflow → Run workflow**. Use it when the box was down
+while something merged — catching up should not require inventing a commit.
+
+### 11.4 Watching it
+
+```bash
+sudo journalctl -u 'actions.runner.*' -f     # both runners, live
+pm2 logs npt-api --lines 50                  # what the API did on reload
+ls -la /srv/npt/web/dist.old                 # the build before this one
+```
+
+Rolling the web back by hand, if a build is bad in a way the checks did not catch:
+
+```bash
+cd /srv/npt/web && mv dist dist.bad && mv dist.old dist
+```
+
+The API rolls itself back on a failed health check, so the manual equivalent is rarely needed:
+
+```bash
+cd /srv/npt/server && git reset --hard <previous-sha> && npm ci --omit=dev && pm2 reload npt-api
+```
+
+### 11.5 What this does not give you
+
+Honest limits, so they are not discovered later:
+
+- **The box still deploys to itself.** There is one instance, so a deploy that takes the API down
+  takes it down for everybody. The health check shortens that to seconds; it cannot remove it.
+- **Both runners share 2 GB with MongoDB.** The `concurrency` blocks in the workflows stop two
+  deploys of the same repo overlapping, but an API deploy and a web build *can* run at once. That
+  is what the swap file from step 3 is for.
+- **A runner is a machine with your code on it.** Anyone who can merge to `main` can run commands
+  on this server. That is the same trust as a deploy key, and it is why branch protection on
+  `main` is worth turning on before this is.
+
 ---
 
 ## Checks and common failures
@@ -481,6 +634,8 @@ df -h && free -m
 | API restarts in a loop | `pm2 logs npt-api` — usually `MONGO_URI` auth, or a missing `.env` |
 | Whole box unresponsive after a deploy | Out of memory. Confirm swap is on with `free -m` |
 | Sign-in codes never arrive | SMTP. `pm2 logs` names the variable that is wrong |
+| The `deploy` job sits queued and never starts | No runner with the `npt` label is online. `sudo ./svc.sh status` in `/srv/runners/*` |
+| Deploy ran, site unchanged | The web build failed its check and left `dist` alone. Read the job log; `dist.old` is the previous one |
 
 ---
 

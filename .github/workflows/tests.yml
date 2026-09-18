@@ -4,6 +4,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  # The button on the Actions tab. A box that was down when something merged needs a way to
+  # catch up that is not "commit something to trigger a deploy".
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -18,3 +21,32 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: node --import ./audit-runtime.mjs --test --test-concurrency=2 tests/*.test.js
+
+  # ---------------------------------------------------------------------------
+  # Put it on the box, once the tests above have gone green [docs/DEPLOY-AWS.md §11].
+  #
+  # `needs: tests` is the whole safety argument: the runner on the EC2 box never sees a commit
+  # that has not already passed the suite on a machine with room to run it. Deploying and then
+  # testing would mean the plant finds out first.
+  #
+  # `runs-on: self-hosted` is the agent on the box — it pulls and builds there, so nothing needs
+  # an SSH key stored at GitHub and no inbound port is opened. The runner dials out.
+  #
+  # Manual too, because the reason to deploy is not always a push: a box that was down when
+  # something merged needs a way to catch up that is not "commit something".
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: tests
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, npt]
+    timeout-minutes: 15
+    # Never two deploys at once, and never cancel one half-done: `cancel-in-progress: false` is
+    # load-bearing. A deploy killed between `git reset` and `pm2 reload` leaves the box on new
+    # code running the old process.
+    concurrency:
+      group: deploy-server
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy
+        run: bash deploy/on-box.sh
