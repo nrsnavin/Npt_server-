@@ -197,7 +197,7 @@ test.before(async () => {
    * assertions below read a refusal or a task title, and both name the model.
    */
   shared = await released(
-    Array.from({ length: 30 }, (unused, index) => ({
+    Array.from({ length: 36 }, (unused, index) => ({
       mould,
       modelNumber: `NH-${String(index + 1).padStart(2, '0')}`,
       colour: 'white',
@@ -1168,4 +1168,125 @@ test('a consignment whose signed copy came back closes with no questions asked',
   /* Nothing recorded as an exception, because it was not one — a field that fills itself on
      the ordinary path is a field nobody trusts on the unusual one. */
   assert.equal(seen.json.data.closedWithoutPod?.reason, undefined);
+});
+
+/* ------------------------- Who did what to a consignment ------------------------- */
+
+test('a consignment keeps a change history somebody can actually read', async () => {
+  /*
+   * The trail has been written on every paperwork save and every action since the module was
+   * built, and nothing could read a line of it: `Dispatch` was absent from the history route's
+   * table, so `/history/Dispatch/:id` answered "No history is kept for that" while the log
+   * filled up behind it. The panel was already on the consignment page and returns `null` when
+   * it cannot load — deliberately, so a record that is otherwise fine does not sit under a red
+   * error — which is exactly why nobody noticed it had never once appeared.
+   *
+   * It is the record with the most to answer for. Three of despatch's gates warn rather than
+   * refuse, and each is only defensible because somebody can be asked afterwards.
+   */
+  const line = await readyLine({ readyQty: 20000 });
+  const made = await raise(shared, [{ orderLine: line._id, quantity: 1200 }]);
+  const id = made.json.data._id;
+
+  /* A correction of the kind a dispute is actually about: the LR changed after the fact. */
+  const fixed = await api(`/api/dispatches/${id}`, {
+    method: 'PATCH', token: kavitha, body: { lrNumber: 'LR-FIRST' },
+  });
+  assert.equal(fixed.status, 200, fixed.json.message);
+  const again = await api(`/api/dispatches/${id}`, {
+    method: 'PATCH', token: kavitha, body: { lrNumber: 'LR-CORRECTED' },
+  });
+  assert.equal(again.status, 200, again.json.message);
+
+  const { status, json } = await api(`/api/history/Dispatch/${id}`, { token: kavitha });
+  assert.equal(status, 200, json.message);
+  assert.ok(json.data.length, 'the log is readable at last');
+
+  const lr = json.data.flatMap((entry) => entry.changes || []).find((c) => c.field === 'lrNumber');
+  assert.ok(lr, 'the LR change is in it');
+  assert.equal(lr.from, 'LR-FIRST');
+  assert.equal(lr.to, 'LR-CORRECTED');
+  assert.equal(json.data[0].by?.name, 'Kavitha D', 'by name, not by id');
+});
+
+test('what an action wrote is in the history, not only that the status moved', async () => {
+  /*
+   * The second half, and the one that made the first half nearly worthless. `before` used to be
+   * snapshotted *after* the paperwork had landed and after every override had been assigned, so
+   * those fields were in `before` and in `after` and diffed to nothing: an audit row for a
+   * dispatch said the status moved and nothing else. The invoice number typed in the same breath
+   * — and the reason somebody gave for going past a check — were the two things it dropped.
+   */
+  const line = await readyLine({ readyQty: 20000 });
+  const made = await raise(shared, [{ orderLine: line._id, quantity: 1300 }]);
+  const id = made.json.data._id;
+
+  const gone = await act(made.json.data, {
+    action: 'dispatch',
+    ...PAPERS,
+    invoice: { ...PAPERS.invoice, number: 'INV-2026-0311' },
+  });
+  assert.equal(gone.status, 200, gone.json.message);
+
+  const { json } = await api(`/api/history/Dispatch/${id}`, { token: kavitha });
+  const fields = json.data.flatMap((entry) => entry.changes || []).map((c) => c.field);
+
+  assert.ok(fields.includes('status'), 'the move is there');
+  assert.ok(
+    fields.some((f) => f.startsWith('invoice')),
+    `the paperwork typed with the action is there too — got: ${fields.join(', ')}`
+  );
+  assert.ok(
+    json.data.some((entry) => entry.note === 'Dispatched'),
+    'and the action is named'
+  );
+});
+
+test('an override is on the record and in the trail, with a name on both', async () => {
+  /* What the whole soft-gate bargain rests on: the decision is answerable afterwards. */
+  const line = await readyLine({ readyQty: 20000 });
+  const made = await raise(shared, [{ orderLine: line._id, quantity: 1400 }]);
+  const id = made.json.data._id;
+  await api(`/api/dispatches/${id}`, {
+    method: 'PATCH', token: kavitha, body: { destination: { address: '' } },
+  });
+
+  const { destination: _unused, ...paperworkOnly } = PAPERS;
+  const gone = await act(made.json.data, {
+    action: 'dispatch',
+    ...paperworkOnly,
+    invoice: { ...PAPERS.invoice, number: 'INV-2026-0312' },
+    addressOverrideReason: "Buyer's own lorry collected at our gate, driver Selvam",
+  });
+  assert.equal(gone.status, 200, gone.json.message);
+
+  const { json } = await api(`/api/history/Dispatch/${id}`, { token: kavitha });
+  const changes = json.data.flatMap((entry) => entry.changes || []);
+  const reason = changes.find((c) => c.field === 'addressOverride.reason');
+
+  assert.ok(reason, `the override is in the trail — got: ${changes.map((c) => c.field).join(', ')}`);
+  assert.match(String(reason.to), /collected at our gate/);
+});
+
+test('reading a consignment history is gated exactly as reading the consignment is', async () => {
+  /*
+   * A log that answers questions about records you may not open is a way around the permission
+   * system with an innocent name. Nandhini owns the shared order, so she may read it; the
+   * refusal for somebody who does not is the same 404 the record itself gives.
+   */
+  const line = await readyLine({ readyQty: 20000 });
+  const made = await raise(shared, [{ orderLine: line._id, quantity: 1500 }]);
+
+  const owner = await api(`/api/history/Dispatch/${made.json.data._id}`, { token: nandhini });
+  assert.equal(owner.status, 200, 'the marketing person who owns it can read it');
+
+  const stranger = await api('/api/users', {
+    method: 'POST', token: admin,
+    body: { name: 'Other Marketing', email: 'other@np.com', password: 'Mktg@123456', department: 'marketing' },
+  });
+  assert.equal(stranger.status, 201, stranger.json.message);
+  const theirs = await signIn('other@np.com', 'Mktg@123456');
+
+  const refused = await api(`/api/history/Dispatch/${made.json.data._id}`, { token: theirs });
+  assert.equal(refused.status, 404, 'and somebody else’s reads as missing, not as forbidden');
 });

@@ -78,6 +78,35 @@ function comparable(value) {
   return value;
 }
 
+/** An ISO instant, as opposed to any other string that happens to be stored. */
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T/;
+
+/**
+ * What counts as the *same* value, which is not the same question as what to store.
+ *
+ * The two jobs were one function, and a date is where they part company. **A date is its day.**
+ * Nothing in this plant is a time somebody chose: every date a person enters comes from an
+ * `<input type=date>`, and every other one is stamped by an action. So a value that moves within
+ * the same day was not edited by anybody, and logging it is the same false statement as
+ * "Notes: nothing → nothing" — true of the JSON, and not a thing that happened.
+ *
+ * It is unreadable besides, which is how it was found. A stored invoice date carrying a time
+ * round-trips through the form as midnight, and the panel then prints
+ *
+ *     Invoice › Date   15 Sept 2026 → 15 Sept 2026
+ *
+ * — a row claiming a change and showing none, on the one panel whose whole job is to be trusted
+ * about detail. Three such rows were burying the single true one.
+ *
+ * Only the *comparison* is coarsened. What gets stored is still the full instant from
+ * `comparable`, because the panel renders it and a real move should read precisely.
+ */
+const sameness = (value) => {
+  if (typeof value === 'string' && ISO_INSTANT.test(value)) return value.slice(0, 10);
+  if (Array.isArray(value)) return value.map(sameness);
+  return value;
+};
+
 /** Every field that differs, as dot paths a person would recognise from the form. */
 export function diff(before = {}, after = {}, prefix = '', depth = 0) {
   const changes = [];
@@ -107,7 +136,7 @@ export function diff(before = {}, after = {}, prefix = '', depth = 0) {
 
     const a = comparable(from);
     const b = comparable(to);
-    if (JSON.stringify(a) === JSON.stringify(b)) continue;
+    if (JSON.stringify(sameness(a)) === JSON.stringify(sameness(b))) continue;
 
     changes.push({ field: path, from: a, to: b });
   }
@@ -115,8 +144,46 @@ export function diff(before = {}, after = {}, prefix = '', depth = 0) {
   return changes;
 }
 
-/** A plain object of the record as it stands, safe to hold across a mutation. */
-export const snapshot = (doc) => (doc?.toObject ? doc.toObject({ depopulate: true }) : { ...doc });
+/**
+ * The derived fields that are worth keeping, per model. Everything else computed is dropped.
+ *
+ * A virtual is normally noise in a history: it is computed from the fields beside it, so it
+ * cannot be *changed* — it only echoes something that was, and the something is already in the
+ * diff one line above. A consignment carries ten of them in a twenty-six key snapshot, so
+ * correcting an LR number logged the LR and then `dueDate`, `shippable`, `isOverdue` and
+ * whatever else had followed, burying the one true line under four derived from it. One,
+ * `paperworkShortfall`, is a list of objects, and no history is improved by a row reading
+ * `[{"key":"destination.address",…}]`.
+ *
+ * A receivable is the exception that makes this a list rather than a rule. Its `receipts` array
+ * is deliberately *not* logged — the row ids mean nothing to a reader, and logging them put
+ * `Receipts: nothing → 6aa012c1be…` above the lines that said what happened. So `received` and
+ * `balance`, which are computed from it, are the only witnesses a receipt leaves behind. Drop
+ * them and the trail records that somebody edited a receivable and not that money arrived.
+ *
+ * Named per model rather than guessed, because the difference is not a property of the field —
+ * it is whether the thing it is derived from is in the log beside it.
+ */
+const KEPT_VIRTUALS = {
+  Receivable: ['received', 'balance'],
+};
+
+/**
+ * A plain object of the record as it stands, safe to hold across a mutation.
+ *
+ * Virtuals come out, except the ones their model has claimed above. This surfaced when the
+ * consignment history became readable at all — it had been written this way for every model
+ * all along, and nobody could see it on the one record that carries ten of them.
+ */
+export const snapshot = (doc) => {
+  if (!doc?.toObject) return { ...doc };
+
+  const plain = doc.toObject({ depopulate: true, virtuals: false });
+  for (const field of KEPT_VIRTUALS[doc.constructor?.modelName] || []) {
+    plain[field] = doc[field];
+  }
+  return plain;
+};
 
 /**
  * Writes what changed between two snapshots.

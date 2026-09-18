@@ -4,6 +4,7 @@ import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
 import SalesOrder from '../models/SalesOrder.js';
 import Receivable from '../models/Receivable.js';
+import Dispatch from '../models/Dispatch.js';
 import Mould from '../models/Mould.js';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
@@ -41,6 +42,23 @@ const SOURCES = {
    * gated exactly as reading the receivable is.
    */
   Receivable: { model: Receivable, module: 'payments', ownership: 'assignedTo' },
+  /*
+   * A consignment [§18–19], and the same story as the receivable above: the controller has
+   * written this trail on every paperwork save and every action since the module was built, and
+   * nothing could read a line of it — `/history/Dispatch/:id` answered "No history is kept for
+   * that" while the log filled up behind it.
+   *
+   * It is the record with the most to answer for. Three of despatch's gates warn rather than
+   * refuse, and each is only defensible because somebody can be asked afterwards: who sent this
+   * past a quality warning, who closed it with no proof of delivery, who sent it with no
+   * delivery address. The reason and the name are on the consignment, which answers "why" —
+   * this answers the harder questions beside it: when the invoice number changed and who
+   * changed it, whether the LR was edited after the lorry left.
+   *
+   * Owned on the consignment's own `assignedTo`, copied from the order it came from, so reading
+   * who did what to a consignment is gated exactly as reading the consignment is.
+   */
+  Dispatch: { model: Dispatch, module: 'dispatch', ownership: 'assignedTo' },
   // The register is shared, so there is no owner to check — only the grant.
   Mould: { model: Mould, module: 'moulds', ownership: null },
   // A person's own trail — who took their book when they left. Administration's business,

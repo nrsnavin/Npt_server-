@@ -23,6 +23,7 @@ let nandhini;
 let priya;
 let mouldId;
 let diff;
+let snapshot;
 
 const api = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -77,7 +78,7 @@ test.before(async () => {
   mongo = await MongoMemoryServer.create();
   process.env.MONGO_URI = mongo.getUri();
   await mongoose.connect(process.env.MONGO_URI);
-  ({ diff } = await import('../src/services/audit.service.js'));
+  ({ diff, snapshot } = await import('../src/services/audit.service.js'));
 
   const { default: app } = await import('../src/app.js');
   server = app.listen(0);
@@ -130,6 +131,104 @@ test('only what moved is recorded, as paths a person recognises', () => {
   assert.equal(changes[0].field, 'requirement.quantity', 'the path reads like the form');
   assert.equal(changes[0].from, 100);
   assert.equal(changes[0].to, 200);
+});
+
+test('a date that moved only within its day is not a change', () => {
+  /*
+   * A date is its day. Nothing in this plant is a *time* somebody chose — every date a person
+   * enters comes from an `<input type=date>`, every other one is stamped by an action — so a
+   * value that moves within the same day was not edited by anybody.
+   *
+   * Found when the consignment history became readable: a stored invoice date carrying a time
+   * round-trips through the form as midnight, and the panel printed
+   * `Invoice › Date  15 Sept 2026 → 15 Sept 2026` — a row claiming a change and showing none.
+   * Three such rows were burying the single true one beside them.
+   */
+  const changes = diff(
+    { invoice: { date: new Date('2026-09-15T04:12:33.000Z'), number: 'INV-1' } },
+    { invoice: { date: new Date('2026-09-15T00:00:00.000Z'), number: 'INV-1' } }
+  );
+
+  assert.deepEqual(changes, [], 'same day, so nothing a person did');
+});
+
+test('a date that moved to another day still reads, and reads precisely', () => {
+  /* The other half. Only the *comparison* is by day: what is stored is still the full instant,
+     because the panel renders it and a real move should read exactly. */
+  const changes = diff(
+    { expectedDeliveryDate: new Date('2026-09-21T00:00:00.000Z') },
+    { expectedDeliveryDate: new Date('2026-09-18T00:00:00.000Z') }
+  );
+
+  assert.equal(changes.length, 1, 'shortening a delivery date is exactly what this exists for');
+  assert.equal(changes[0].field, 'expectedDeliveryDate');
+  assert.match(String(changes[0].from), /^2026-09-21T/, 'stored as the instant, not the day');
+  assert.match(String(changes[0].to), /^2026-09-18T/);
+});
+
+test('a virtual is never a change, because nobody can change one', () => {
+  /*
+   * A virtual is computed from the fields beside it, so it only ever echoes something that
+   * moved — and the something is already in the diff one line above. A consignment carries ten
+   * of them in a twenty-six key snapshot, so correcting an LR number logged the LR *and*
+   * `dueDate`, `shippable`, `isOverdue` and whatever else had followed, burying the one true
+   * line under four derived from it. One of them, `paperworkShortfall`, is a list of objects,
+   * and no history is improved by a row reading `[{"key":"destination.address",…}]`.
+   *
+   * Checked on the snapshot rather than on `diff`, because that is where they were let in.
+   */
+  const dispatch = new (mongoose.model('Dispatch'))({
+    number: 'DSP-TEST-1',
+    order: new mongoose.Types.ObjectId(),
+    customer: new mongoose.Types.ObjectId(),
+    assignedTo: new mongoose.Types.ObjectId(),
+    raisedBy: new mongoose.Types.ObjectId(),
+    expectedDeliveryDate: new Date('2026-09-21T00:00:00.000Z'),
+  });
+
+  const snap = snapshot(dispatch);
+  for (const derived of [
+    'dueDate', 'shippable', 'outstandingPaperwork', 'paperworkShortfall',
+    'isOverdue', 'hasLeft', 'isOpen', 'isEditable', 'lineCount', 'dueDateIsPromise',
+  ]) {
+    assert.ok(!(derived in snap), `${derived} is derived and has no business in a change log`);
+  }
+
+  /* And the real fields are still there, or the snapshot would diff to nothing at all. */
+  assert.equal(snap.number, 'DSP-TEST-1');
+  assert.ok(snap.expectedDeliveryDate instanceof Date);
+});
+
+test('a receivable keeps the two derived figures a receipt actually moves', () => {
+  /*
+   * The exception that makes the rule above a list rather than a blanket.
+   *
+   * A receivable's `receipts` array is deliberately not logged — the row ids mean nothing to a
+   * reader, and logging them put `Receipts: nothing → 6aa012c1be…` above the lines that said
+   * what happened. `received` and `balance` are computed from it, so they are the only
+   * witnesses a receipt leaves behind: drop them with the rest of the virtuals and the trail
+   * records that somebody edited a receivable, not that money arrived.
+   *
+   * Written down because the blanket version of the fix passed every test in this file and
+   * broke that one, in the one direction nobody checks.
+   */
+  const receivable = new (mongoose.model('Receivable'))({
+    number: 'RCV-TEST-1',
+    order: new mongoose.Types.ObjectId(),
+    customer: new mongoose.Types.ObjectId(),
+    assignedTo: new mongoose.Types.ObjectId(),
+    invoice: { number: 'INV-TEST-1', value: 1000, date: new Date('2026-09-01T00:00:00.000Z') },
+  });
+
+  const snap = snapshot(receivable);
+  assert.equal(snap.received, 0, 'what has come in is on the record');
+  assert.equal(snap.balance, 1000, 'and what is still owed');
+
+  /* The other derived fields on the same model stay out, so this is an exception and not a
+     quiet reversal of the rule. */
+  for (const derived of ['receiptable', 'isOverdue', 'daysToDue']) {
+    assert.ok(!(derived in snap), `${derived} was not claimed and should not be here`);
+  }
 });
 
 test('a reference and its populated form are the same owner', () => {
