@@ -259,6 +259,46 @@ async function despatchFindings() {
   }
 
   /*
+   * Gone out with nothing on the delivery note saying where.
+   *
+   * The counterpart of the override that lets it happen [§19]. A reason on the record is what
+   * makes the exception defensible one consignment at a time; what makes it defensible as a
+   * practice is somebody seeing how often it is used. Two a month is a buyer collecting at the
+   * gate. Twenty is a delivery register that has stopped recording deliveries — and the whole
+   * point of the reason field is lost if nobody ever reads the column.
+   *
+   * Counted from the override rather than from a blank address, deliberately: a consignment
+   * still sitting in the yard with no address yet is a job, not a finding, and the boards
+   * already carry it as one.
+   */
+  const noAddress = await Dispatch.find({
+    'addressOverride.reason': { $exists: true },
+    'addressOverride.at': { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+  })
+    .populate('addressOverride.by', 'name')
+    .select('number addressOverride')
+    /* Newest first, so `[0]` is the one to name. Sorted rather than taken off the end of an
+       unordered page — `limit` without a sort returns whatever order the index gave. */
+    .sort({ 'addressOverride.at': -1 })
+    .limit(200);
+
+  if (noAddress.length) {
+    const latest = noAddress[0];
+    findings.push({
+      kind: 'dispatch_no_address',
+      department: 'despatch',
+      headline: `${plural(noAddress.length, 'consignment', 'consignments')} left with no delivery address`,
+      detail:
+        `The most recent was ${latest.number}, sent ${since(daysSince(latest.addressOverride.at))} ` +
+        `by ${latest.addressOverride.by?.name || 'somebody'} with a reason instead of an ` +
+        'address. Worth a look if this is becoming the usual way.',
+      severity: severity({ base: 20, count: noAddress.length }),
+      count: noAddress.length,
+      link: '/dispatches',
+    });
+  }
+
+  /*
    * Made, packed, free to send, and nobody has raised a consignment for it.
    *
    * Computed from the same stock arithmetic the despatch screens use, so this cannot disagree

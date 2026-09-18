@@ -108,11 +108,50 @@ export const SHIPPING_PAPERWORK = [
   { key: 'invoice.number', label: 'an invoice number' },
   { key: 'transporter', label: 'a transporter' },
   { key: 'lrNumber', label: 'an LR number', unless: 'ownVehicle' },
-  { key: 'destination.address', label: 'a delivery address' },
+  {
+    key: 'destination.address',
+    label: 'a delivery address',
+    /**
+     * The one item on this list that can be *genuinely* absent, so the only one with a way past.
+     *
+     * The other five always exist somewhere: an invoice has been cut, a transporter has been
+     * booked, an LR has been issued or the plant drove it. A delivery address sometimes has no
+     * answer at all — a buyer's own lorry collecting ex-works at the gate, a walk-in taking
+     * cartons away in a car, a transporter picking up on a standing route to a godown the buyer
+     * never named. The customer master has nothing to copy for any of them.
+     *
+     * A hard refusal on those is refused *outside* the system: the load goes on the lorry, and
+     * the record either never reaches `dispatched` or somebody types "Tiruppur" into the box to
+     * get past it. Both are worse than the exception, and the second is worse than no field —
+     * a delivery note that names a town nobody sent anything to.
+     *
+     * So it warns, on the same footing as the quality check and the missing POD: it can still
+     * go, with a reason and a name against it, and that record is what the exception rests on.
+     */
+    overrideField: 'addressOverride',
+    needs: 'addressOverrideReason',
+    refusal:
+      'has no delivery address, so nothing on the delivery note says where it went. It can ' +
+      'still go — a buyer collecting at the gate has no address to give — but say where it is ' +
+      'going and who is taking it. The reason is kept against the consignment.',
+  },
 ];
 
 /** Reads `a.b` off a document, so the list above can name a nested field. */
 const at = (doc, path) => path.split('.').reduce((value, key) => value?.[key], doc);
+
+/**
+ * Whether one §19 item is still outstanding on this consignment.
+ *
+ * Three ways it is not: the field is filled, the exception that excuses it applies (`unless`),
+ * or somebody has answered for its absence on the record (`overrideField`). The third is what
+ * makes the override worth anything to the boards — once the reason is given the consignment
+ * stops being listed as blocked, because it no longer is.
+ */
+const stillShort = (doc, field) =>
+  !(field.unless && doc[field.unless]) &&
+  !at(doc, field.key) &&
+  !(field.overrideField && at(doc, `${field.overrideField}.reason`));
 
 /**
  * One model on one lorry.
@@ -283,6 +322,28 @@ const dispatchSchema = new mongoose.Schema(
       _id: false,
     },
 
+    /**
+     * Sent with no delivery address, and who said where it was going [§19].
+     *
+     * The third of the same shape, for the reason set out on `SHIPPING_PAPERWORK`'s address
+     * row: sometimes there is no address to type, and a hard gate on that is satisfied by
+     * typing a town nobody sent anything to. The reason is a free line rather than an address
+     * field on purpose — "buyer's lorry collected from the gate, driver Selvam, 98xxx" is the
+     * true answer and is not an address, and pretending it into `destination.address` would
+     * put it on the delivery note as though it were one.
+     *
+     * It also clears the board: `stillShort` treats an answered absence as no longer
+     * outstanding, so a consignment does not sit on the blocked list for a gap somebody has
+     * already accounted for. The record is what the exception rests on — which is why the
+     * finding on the management card counts these, by name.
+     */
+    addressOverride: {
+      reason: { type: String, trim: true, maxlength: 500 },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      _id: false,
+    },
+
     remarks: String,
     cancellationReason: { type: String, trim: true },
 
@@ -332,15 +393,24 @@ dispatchSchema.virtual('isEditable').get(function isEditable() {
 });
 
 /**
+ * The §19 entries still outstanding, as the table's own rows.
+ *
+ * The objects rather than the labels, because the gate has to tell two kinds apart: what must
+ * be supplied before the lorry leaves, and the one thing that can be answered for instead. The
+ * labels are still what a person reads — see `outstandingPaperwork` just below.
+ */
+dispatchSchema.virtual('paperworkShortfall').get(function paperworkShortfall() {
+  return SHIPPING_PAPERWORK.filter((field) => stillShort(this, field));
+});
+
+/**
  * The §19 paperwork still missing, in words rather than field names.
  *
  * Returns labels rather than booleans so the refusal can name them, exactly as §13's checklist
  * does: "still needs an invoice number and a transporter" is something a person can go and do.
  */
 dispatchSchema.virtual('outstandingPaperwork').get(function outstandingPaperwork() {
-  return SHIPPING_PAPERWORK.filter(
-    (field) => !(field.unless && this[field.unless]) && !at(this, field.key)
-  ).map((field) => field.label);
+  return this.paperworkShortfall.map((field) => field.label);
 });
 
 /** True when §19's promise to marketing can actually be kept. */

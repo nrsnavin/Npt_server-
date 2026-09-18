@@ -111,6 +111,15 @@ export const dispatchActionSchema = z.object({
    * it is in.
    */
   noPodReason: z.string().max(500).optional(),
+  /**
+   * Where it is going, when there is no address to put on the delivery note [§19].
+   *
+   * Optional here for the same reason as the two above, and with the same division of labour:
+   * the schema cannot see whether `destination.address` is filled, so the controller asks for
+   * this only when it is actually short. A free line rather than an address, because the true
+   * answer — "buyer's lorry collected at the gate, driver Selvam" — is not one.
+   */
+  addressOverrideReason: z.string().max(500).optional(),
   ...paperwork,
 });
 

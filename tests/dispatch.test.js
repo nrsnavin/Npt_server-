@@ -363,11 +363,19 @@ test('a consignment cannot be dispatched without the paperwork §19 promises', a
   assert.match(dispatch.blockedBy, /still needs/i);
 });
 
-test('a buyer with no address on record still trips the §19 gate', async () => {
+test('a buyer with no address on record is asked where it is going, not refused', async () => {
   /*
-   * The half of the old assertion that is still a rule. Nothing fills an address the plant does
-   * not have, so the gate has to say so — and the consignment's own page is now where somebody
-   * can answer it.
+   * §19's gate, in the shape it takes for the one item that can be genuinely absent.
+   *
+   * Nothing fills an address the plant does not have, so the gate still has to stop and say so.
+   * What changed is what it asks for: a buyer's own lorry collecting at the gate has no address
+   * to give, and a hard refusal there is refused *outside* the system — the load goes, and
+   * either the record never reaches `dispatched` or somebody types a town nobody sent anything
+   * to. So it comes back 409 with the key it wants, exactly as the quality and POD overrides do:
+   * a correct request awaiting a second, deliberate press with a reason attached.
+   *
+   * Both ways out are asserted, because the screen offers both: type the address, or say why
+   * there is not one.
    */
   const unaddressed = await api('/api/customers', {
     method: 'POST',
@@ -393,12 +401,20 @@ test('a buyer with no address on record still trips the §19 gate', async () => 
 
   /* Everything §19 asks for *except* the address, so the address is the only thing left. */
   const { destination: _fromPapers, ...paperworkOnly } = PAPERS;
-  const blocked = await act(made.json.data, { action: 'dispatch', ...paperworkOnly });
-  assert.equal(blocked.status, 400, blocked.json.message);
-  assert.match(blocked.json.message, /delivery address/i);
-  assert.doesNotMatch(blocked.json.message, /invoice/i, 'and nothing else is outstanding');
+  const asked = await act(made.json.data, { action: 'dispatch', ...paperworkOnly });
+  assert.equal(asked.status, 409, asked.json.message);
+  assert.match(asked.json.message, /delivery address/i);
+  assert.doesNotMatch(asked.json.message, /invoice/i, 'and nothing else is outstanding');
+  assert.equal(asked.json.details?.needs, 'addressOverrideReason', 'it says what to send back');
+  assert.match(asked.json.details?.missing, /delivery address/i);
 
-  /* Typed on the consignment, and then it goes. */
+  /* A reason too short to be a reason is not one. Same ten characters as the other two. */
+  const waved = await act(made.json.data, {
+    action: 'dispatch', ...paperworkOnly, addressOverrideReason: 'no',
+  });
+  assert.equal(waved.status, 409, 'a word is not an answer');
+
+  /* Typed on the consignment, and then it goes — the ordinary way out. */
   const typed = await api(`/api/dispatches/${made.json.data._id}`, {
     method: 'PATCH', token: kavitha,
     body: { destination: { address: '9 Kangeyam Road' } },
@@ -412,6 +428,95 @@ test('a buyer with no address on record still trips the §19 gate', async () => 
   });
   assert.equal(gone.status, 200, gone.json.message);
   assert.equal(gone.json.data.destination.address, '9 Kangeyam Road', 'it went where somebody typed');
+  assert.equal(gone.json.data.addressOverride?.reason, undefined, 'and nothing was overridden');
+});
+
+test('a consignment with no address can go on a reason, and the reason is kept', async () => {
+  /*
+   * The other way out, and the one the record has to hold onto. What makes the exception
+   * defensible is not that it exists — it is that the reason, the name and the moment are on
+   * the consignment afterwards, so "where did this one go?" has an answer and "how often are we
+   * doing this?" is countable.
+   */
+  const line = await readyLine({ readyQty: 20000 });
+  const made = await raise(shared, [{ orderLine: line._id, quantity: 2000 }]);
+
+  /* Clear the address the create path copied off the buyer — this is the collect-at-the-gate
+     case, where there was never one to copy. */
+  const cleared = await api(`/api/dispatches/${made.json.data._id}`, {
+    method: 'PATCH', token: kavitha,
+    body: { destination: { address: '' } },
+  });
+  assert.equal(cleared.status, 200, cleared.json.message);
+  assert.equal(cleared.json.outstanding?.includes('a delivery address'), true, 'the board says so');
+
+  const { destination: _unused, ...paperworkOnly } = PAPERS;
+  const gone = await act(made.json.data, {
+    action: 'dispatch',
+    ...paperworkOnly,
+    invoice: { ...PAPERS.invoice, number: 'INV-2026-0177' },
+    addressOverrideReason: "Buyer's own lorry collected at the gate, driver Selvam 9840011223",
+  });
+
+  assert.equal(gone.status, 200, gone.json.message);
+  assert.equal(gone.json.data.status, 'dispatched');
+  assert.match(gone.json.data.addressOverride.reason, /collected at the gate/);
+  assert.ok(gone.json.data.addressOverride.at, 'stamped with when');
+  assert.equal(gone.json.data.addressOverride.by?.name, 'Kavitha D', 'and who said so');
+
+  /* An answered absence stops being outstanding — the consignment is not left on a blocked
+     list for a gap somebody has already accounted for. */
+  const read = await api(`/api/dispatches/${made.json.data._id}`, { token: kavitha });
+  assert.equal(read.json.outstanding?.length ?? 0, 0);
+
+  /*
+   * The answer travels with the action, not only with the next read.
+   *
+   * The screen keeps whatever it last held when a response omits `outstanding`, which is right
+   * for a response that genuinely does not know and wrong for this one: dispatching answered
+   * for the missing address, and the paperwork header went on reading "Needs a delivery
+   * address" over a consignment already on the road, because nothing had told it otherwise.
+   */
+  assert.deepEqual(gone.json.outstanding, [], 'the action says what is left, and nothing is');
+
+  /* And marking it delivered then works, which is the whole point of unblocking it. */
+  const delivered = await act(read.json.data, { action: 'deliver' });
+  assert.equal(delivered.status, 200, delivered.json.message);
+  assert.equal(delivered.json.data.status, 'delivered');
+  assert.deepEqual(delivered.json.outstanding, [], 'on every action, not just the one that answered');
+});
+
+test('a missing invoice is still a flat refusal, and is asked for first', async () => {
+  /*
+   * The line between the two kinds of shortfall. An invoice number exists in the world —
+   * somebody cut the invoice — so the refusal sends them to read it off it, and no reason is
+   * accepted in its place. Short of both, the person is told about the invoice rather than
+   * asked to explain the address: a dialog demanding a reason for something they had not yet
+   * been told was in their way is how a person learns to type anything into it.
+   */
+  const line = await readyLine({ readyQty: 20000 });
+  const made = await raise(shared, [{ orderLine: line._id, quantity: 1500 }]);
+  const cleared = await api(`/api/dispatches/${made.json.data._id}`, {
+    method: 'PATCH', token: kavitha,
+    body: { destination: { address: '' } },
+  });
+  assert.equal(cleared.status, 200, cleared.json.message);
+
+  /* No paperwork at all, and a reason offered for the address anyway. */
+  const refused = await act(made.json.data, {
+    action: 'dispatch',
+    addressOverrideReason: "Buyer's own lorry collected at the gate, driver Selvam",
+  });
+  assert.equal(refused.status, 400, refused.json.message);
+  assert.match(refused.json.message, /invoice/i);
+  assert.doesNotMatch(
+    refused.json.message,
+    /delivery address/i,
+    'one thing at a time — the address is asked about once it is the only thing left'
+  );
+
+  const after = await api(`/api/dispatches/${made.json.data._id}`, { token: kavitha });
+  assert.equal(after.json.data.addressOverride?.reason, undefined, 'and nothing was recorded');
 });
 
 test('the paperwork can be typed in the same breath as the dispatch', async () => {

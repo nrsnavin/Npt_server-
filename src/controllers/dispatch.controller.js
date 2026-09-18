@@ -65,13 +65,14 @@ const POPULATE = [
   { path: 'lines.mould', select: 'mouldCode name category sizeMm packingQty' },
   { path: 'pod.attachment', select: 'key filename mimeType size' },
   /*
-   * The two names behind an override [§15, §19]. Both fields exist so that "sent past a quality
-   * warning" and "closed with no proof" are answerable by a *person*, and without the populate
-   * the screens hold an id, print nothing where the name goes, and the record reads as though
-   * the system decided by itself.
+   * The three names behind an override [§15, §19]. All three fields exist so that "sent past a
+   * quality warning", "closed with no proof" and "sent with no delivery address" are answerable
+   * by a *person*, and without the populate the screens hold an id, print nothing where the
+   * name goes, and the record reads as though the system decided by itself.
    */
   { path: 'qualityOverride.by', select: 'name' },
   { path: 'closedWithoutPod.by', select: 'name' },
+  { path: 'addressOverride.by', select: 'name' },
 ];
 
 const EXPORT_LIMIT = 5000;
@@ -421,9 +422,10 @@ export const listOrderDispatches = asyncHandler(async (req, res) => {
       .populate([
         { path: 'raisedBy', select: 'name' },
         { path: 'pod.attachment', select: 'key filename mimeType' },
-        /* The tracker panel draws both override notices, so it needs the names too. */
+        /* The tracker panel draws every override notice, so it needs the names too. */
         { path: 'qualityOverride.by', select: 'name' },
         { path: 'closedWithoutPod.by', select: 'name' },
+        { path: 'addressOverride.by', select: 'name' },
       ])
       .sort('-createdAt'),
     stockFor(order),
@@ -634,7 +636,11 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
 
   /* Pulled out of `rest` rather than deleted afterwards: everything left in `rest` is assigned
      straight onto the document, and this one belongs inside the override record, not beside it. */
-  const { action, note, qualityOverrideReason, noPodReason, ...rest } = withoutVersion(req.body);
+  const { action, note, qualityOverrideReason, noPodReason, addressOverrideReason, ...rest } =
+    withoutVersion(req.body);
+  /* Keyed by the `needs` name on the paperwork row, so the gate below can look up the answer
+     to whichever item is short without a branch per item. */
+  const answers = { addressOverrideReason };
   const recipe = DISPATCH_ACTIONS[action];
   if (!recipe) throw ApiError.badRequest('That is not something you can do to a consignment');
 
@@ -642,7 +648,12 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
     if (rest.invoice) applyPaperwork(dispatch, { invoice: rest.invoice });
     await completeDispatchEffects(dispatch, req.user);
     await dispatch.populate(POPULATE);
-    return res.json({ success: true, data: dispatchVisibleTo(dispatch, req.user), replayed: true });
+    return res.json({
+      success: true,
+      data: dispatchVisibleTo(dispatch, req.user),
+      outstanding: dispatch.outstandingPaperwork,
+      replayed: true,
+    });
   }
   expectVersion(dispatch, req.body);
 
@@ -662,11 +673,45 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
   /*
    * §19's gate. Named paperwork, not a count: "still needs an invoice number and a transporter"
    * is something a person can go and do, and "not shippable" is not.
+   *
+   * Two kinds of shortfall, and the difference is whether an answer exists in the world. An
+   * invoice number does: somebody cut the invoice, and the refusal sends them to go and read
+   * it off it. A delivery address sometimes does not — a buyer's own lorry collecting at the
+   * gate — and that row carries a way past, on the same warn-with-a-reason footing as the
+   * quality check below. See `SHIPPING_PAPERWORK` for why it is the only one.
+   *
+   * The hard half is checked first, so a consignment short of both is not asked to explain the
+   * address while it is still waiting on an invoice — that would be a dialog demanding a reason
+   * for something the person had not yet been told was in their way.
    */
   if (recipe.gate === 'shippable' && !dispatch.shippable) {
-    throw ApiError.badRequest(
-      `This consignment still needs ${dispatch.outstandingPaperwork.join(', ')} before it can be dispatched`
-    );
+    const short = dispatch.paperworkShortfall;
+    const mustSupply = short.filter((field) => !field.needs);
+
+    if (mustSupply.length) {
+      throw ApiError.badRequest(
+        `This consignment still needs ${mustSupply.map((field) => field.label).join(', ')} ` +
+          'before it can be dispatched'
+      );
+    }
+
+    /*
+     * Everything left can be answered for. 409 rather than 400, exactly as the quality and POD
+     * overrides do: this is not a malformed request, it is a correct one awaiting a second,
+     * deliberate press with a reason attached — and a screen can tell those apart.
+     */
+    for (const field of short) {
+      const reason = String(answers[field.needs] || '').trim();
+
+      if (reason.length < 10) {
+        throw ApiError.conflict(`${dispatch.number} ${field.refusal}`, {
+          needs: field.needs,
+          missing: field.label,
+        });
+      }
+
+      dispatch.set(field.overrideField, { reason, by: req.user._id, at: new Date() });
+    }
   }
 
   /*
@@ -762,6 +807,14 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
   res.status(pending ? 202 : 200).json({
     success: true,
     data: dispatchVisibleTo(dispatch, req.user),
+    /*
+     * What is still short *after* the action, on every action rather than only on the paperwork
+     * PATCH. The screen keeps whatever it last held when a response omits this, which is right
+     * for a response that genuinely does not know — and wrong here: dispatching answered for the
+     * missing address, and the header went on reading "Needs a delivery address" over a
+     * consignment already on the road, because nothing had told it otherwise.
+     */
+    outstanding: dispatch.outstandingPaperwork,
     did: recipe.label,
     pending,
     message: pending ? 'Departure recorded; accounting or order totals are pending. The server will retry automatically.' : undefined,
@@ -775,17 +828,38 @@ export const listDispatchActions = asyncHandler(async (req, res) => {
   if (!dispatch) throw ApiError.notFound('Consignment not found');
   if (!ownsRecord(req.user, dispatch)) throw ApiError.notFound('Consignment not found');
 
+  /*
+   * A shortfall is reported as one of two different things, because the screen has to do two
+   * different things with them.
+   *
+   * `blockedBy` greys the button: nothing the person can say here will help, they have to go and
+   * fetch the invoice number. `answerable` leaves it live and tells the dialog what it will be
+   * asked for — the address that genuinely has no answer is not a blockage, it is a question.
+   * Collapsing the two would grey out the one button whose whole point is that it can be pressed.
+   */
+  const short = dispatch.paperworkShortfall;
+  const mustSupply = short.filter((field) => !field.needs);
+  const answerable = short.filter((field) => field.needs);
+
   res.json({
     success: true,
-    data: dispatchActionsFrom(dispatch.status).map((key) => ({
-      action: key,
-      ...DISPATCH_ACTIONS[key],
-      /* Listed disabled with the reason, never hidden — see the note in dispatchActions.js. */
-      blockedBy:
-        DISPATCH_ACTIONS[key].gate === 'shippable' && !dispatch.shippable
-          ? `Still needs ${dispatch.outstandingPaperwork.join(', ')}`
-          : null,
-    })),
+    data: dispatchActionsFrom(dispatch.status).map((key) => {
+      const gated = DISPATCH_ACTIONS[key].gate === 'shippable';
+
+      return {
+        action: key,
+        ...DISPATCH_ACTIONS[key],
+        /* Listed disabled with the reason, never hidden — see the note in dispatchActions.js. */
+        blockedBy:
+          gated && mustSupply.length
+            ? `Still needs ${mustSupply.map((field) => field.label).join(', ')}`
+            : null,
+        answerable:
+          gated && !mustSupply.length && answerable.length
+            ? answerable.map((field) => ({ missing: field.label, needs: field.needs }))
+            : null,
+      };
+    }),
   });
 });
 
