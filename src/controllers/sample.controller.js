@@ -22,6 +22,9 @@ import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { raiseTask } from '../services/task.service.js';
+/* A sample for a lead raises that lead's first enquiry, which is a conversion — shared with
+   the endpoint rather than copied, so the two can never disagree about what conversion is. */
+import { convertLeadRecord } from './pipeline.controller.js';
 
 /**
  * Marketing's view of a sample runs through `requestedBy`, not `assignedTo` — the sample is
@@ -274,6 +277,69 @@ export const getSample = asyncHandler(async (req, res) => {
   res.json({ success: true, data: sample });
 });
 
+/** The requirement fields an enquiry carries, so a sample's spec can seed one [§28]. */
+const REQUIREMENT_FIELDS = [
+  'modelNumber', 'category', 'sizeMm',
+  'materialRef', 'hookRef', 'clipRef', 'printRef',
+  'material', 'colour', 'colourMandatory', 'printing', 'packing',
+];
+
+/**
+ * A sample asked for on behalf of a lead raises that lead's first enquiry [§5, added].
+ *
+ * Asking for a sample is the clearest signal a lead gives: somebody has described a piece
+ * well enough to make it, and is waiting to see it. Leaving that as a bare sample request
+ * meant the requirement lived only on the bench's card — the enquiry pipeline showed nothing,
+ * §3's follow-up discipline had no record to act on, and the quotation that follows a sample
+ * approval had nothing to be raised against. So the enquiry is raised here, seeded from the
+ * specification the request was just resolved against, and nothing is re-keyed [§41.4].
+ *
+ * An enquiry needs a customer, so **raising one for a lead is converting that lead** — that is
+ * the whole of why this calls conversion rather than creating an enquiry directly. It is a
+ * real consequence and it is the right one: a buyer who is being sent a sample is a buyer, and
+ * the alternatives were a customer master with a `null` in it or a sample the pipeline cannot
+ * see.
+ *
+ * One case conversion refuses that this must not: the lead's company is already on the
+ * customer master. That is an attachment, not a duplicate — the enquiry belongs on the record
+ * that exists — and conversion already hands back which customer when the caller may see it.
+ * When they may not, the refusal is theirs to read: somebody else holds that buyer, and a
+ * sample raised here would put work in their book without them knowing.
+ */
+async function enquiryForLead(lead, spec, user) {
+  const requirement = Object.fromEntries(
+    REQUIREMENT_FIELDS.map((field) => [field, spec[field]]).filter(([, value]) => value != null)
+  );
+
+  const seed = {
+    mould: spec.mould || undefined,
+    requirement,
+    remarks: spec.remarks || undefined,
+    /* The reason it exists, on the record rather than inferable from the dates. */
+    nextAction: 'Sample requested — show it to them when the bench is done',
+  };
+
+  try {
+    return await convertLeadRecord(lead, user, { enquiry: seed });
+  } catch (problem) {
+    if (problem.statusCode !== 409) throw problem;
+
+    /* Ours to attach to: the enquiry is raised against the customer that already exists. */
+    if (problem.details?.customer?.id) {
+      return convertLeadRecord(lead, user, {
+        existingCustomer: problem.details.customer.id,
+        enquiry: seed,
+      });
+    }
+
+    throw ApiError.conflict(
+      `${lead.company} is already a customer of ${problem.details?.owner || 'somebody else'}. ` +
+        'Ask them to raise the enquiry, and the sample against it.',
+      problem.details
+    );
+  }
+}
+
 /**
  * Raises a request by hand.
  *
@@ -328,6 +394,16 @@ export const createSample = asyncHandler(async (req, res) => {
         'A request names the lead or the customer, not both — a lead is a party who is not a customer yet'
       );
     }
+    /*
+     * And not an enquiry either. An enquiry already names a customer, so a request naming both
+     * says the party is and is not a customer at the same time — and since a lead request now
+     * raises its own enquiry, the two would end up as two enquiries for one conversation.
+     */
+    if (enquiryId) {
+      throw ApiError.badRequest(
+        'A request names the lead or the enquiry, not both — an enquiry already belongs to a customer'
+      );
+    }
 
     lead = await Lead.findById(leadId);
     if (!lead) throw ApiError.badRequest('That lead does not exist');
@@ -374,8 +450,31 @@ export const createSample = asyncHandler(async (req, res) => {
    */
   const spec = await buildSpec(input);
 
+  /*
+   * A lead's request raises the lead's first enquiry, which converts the lead [§5]. See
+   * `enquiryForLead`.
+   *
+   * Before the sample rather than after, deliberately. Conversion is the step that can be
+   * refused — a company already on the master, a mould that has gone off the register — and a
+   * sample written first would survive that refusal as a request against a lead that never
+   * became anybody, which is the orphan §6 and §42 have nobody to tell about.
+   */
+  let converted = null;
+  if (lead) {
+    converted = await enquiryForLead(lead, spec, req.user);
+    enquiry = converted.enquiry;
+    customer = converted.customer;
+  }
+
   const { sample, created } = await createSampleRequest(
-    { enquiry, customer: customer?._id ?? undefined, lead: lead?._id ?? undefined, ...spec },
+    {
+      enquiry,
+      customer: customer?._id ?? undefined,
+      /* Kept alongside the customer it became: it is where the request came from, and the
+         lead's own screen lists what was made for it. */
+      lead: lead?._id ?? undefined,
+      ...spec,
+    },
     req.user
   );
 
@@ -385,7 +484,28 @@ export const createSample = asyncHandler(async (req, res) => {
     );
   }
 
-  res.status(201).json({ success: true, data: await withRefs(sample) });
+  /*
+   * What happened to the lead travels with the answer, because it was not asked for.
+   *
+   * The person pressed "request a sample" and a customer and an enquiry came into being. That
+   * is the right behaviour and a surprise, so the screen is given the two records by name to
+   * say so — a consequence nobody is told about is one they discover later as a record they
+   * cannot account for.
+   */
+  res.status(201).json({
+    success: true,
+    data: await withRefs(sample),
+    ...(converted
+      ? {
+          converted: {
+            lead: { id: converted.lead._id, number: converted.lead.number },
+            customer: { id: converted.customer._id, code: converted.customer.code, name: converted.customer.name },
+            enquiry: { id: converted.enquiry._id, number: converted.enquiry.number },
+            attached: converted.attached,
+          },
+        }
+      : {}),
+  });
 });
 
 /**

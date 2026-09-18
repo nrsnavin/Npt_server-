@@ -184,6 +184,7 @@ overdue · grey not started.
 | Trigger | Effect | Ref |
 | --- | --- | --- |
 | Enquiry → **Sample required** | Create sample request, assign to sample team, set due date, acknowledge to marketing | §6 |
+| **Sample requested for a lead** | Convert the lead: create the customer, raise their first enquiry seeded from the request, and name both in the answer | §6, §41.4 |
 | Sample → **Sample ready** | Notify the requesting marketing person | §6 |
 | Sample → **Dispatched** | Courier, AWB, dispatch date and quantity become **mandatory**; enquiry moves to Sample feedback pending | §6 |
 | Enquiry → **Pricing required** | Create pricing task | §41.8 |

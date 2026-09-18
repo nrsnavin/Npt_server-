@@ -1,15 +1,21 @@
 /**
- * Samples raised against a lead.
+ * Samples raised against a lead — and the enquiry each one now raises [§5].
  *
  * Asking for a sample is often the *first* thing a party does — "send me one and I will tell you
  * whether we are interested" — which happens before anybody is a customer and before there is an
- * enquiry to hang the request on. The two ways round it were both bad: invent a customer for a
- * party that has bought nothing, which puts a stranger in the master and then in every count
- * built on it; or raise it standalone with the company name typed into the remarks, which works
- * until somebody opens the lead and cannot see that a sample was ever sent.
+ * enquiry to hang the request on.
  *
- * The half worth testing hardest is what happens at conversion. A sample made for a lead must
- * not be orphaned at the exact moment the relationship becomes real.
+ * The request used to stop there: a sample against a lead, no customer and no enquiry. That is
+ * what changed. Asking for a sample is the clearest signal a lead gives — somebody has described
+ * a piece well enough to make it and is waiting to see it — and leaving it as a bare bench card
+ * meant the enquiry pipeline showed nothing, §3's follow-up discipline had no record to act on,
+ * and the quotation that follows an approved sample had nothing to be raised against.
+ *
+ * An enquiry needs a customer, so raising one for a lead **is** converting that lead. That is a
+ * real consequence and it is deliberate: a buyer being sent a sample is a buyer, and the
+ * alternatives were a `null` in the customer master or a sample the pipeline cannot see. What
+ * this file defends is that the conversion is complete, honest about itself in the answer, and
+ * refused in the cases where it would write into somebody else's book.
  *
  *   node --test tests/lead-samples.test.js
  */
@@ -91,6 +97,9 @@ const requestSample = (lead, token = nandhini, extra = {}) =>
     },
   });
 
+const readLead = async (lead, token = nandhini) =>
+  (await api(`/api/leads/${lead._id ?? lead}`, { token })).json.data;
+
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
   process.env.MONGO_URI = mongo.getUri();
@@ -142,31 +151,94 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-/* ------------------------------- Raising one ------------------------------- */
+/* --------------------- The sample raises the enquiry --------------------- */
 
-test('a sample can be raised for a lead, before anybody is a customer', async () => {
+test('a sample for a lead makes them a customer and raises their first enquiry', async () => {
+  /*
+   * The whole feature in one assertion set. Three records exist afterwards where the request
+   * named one, and the answer says so by name — the person pressed "request a sample" and did
+   * not ask for a customer, so a consequence they are not told about is one they meet later as
+   * a record they cannot account for.
+   */
   const lead = await raiseLead();
   const { status, json } = await requestSample(lead);
 
   assert.equal(status, 201, json.message);
-  assert.equal(String(json.data.lead._id), String(lead._id), 'and it names the lead that asked');
-  assert.equal(json.data.customer, undefined, 'with no customer invented for a party that is not one');
-  assert.equal(json.data.enquiry, undefined);
+  assert.equal(String(json.data.lead._id), String(lead._id), 'the request still names the lead that asked');
+  assert.ok(json.data.customer, 'and the customer that lead has just become');
+  assert.ok(json.data.enquiry, 'and the enquiry raised for it');
+
+  assert.ok(json.converted, 'the answer says what happened to the lead');
+  assert.equal(String(json.converted.lead.id), String(lead._id));
+  assert.equal(json.converted.customer.name, lead.company, 'the customer carries the company name');
+  assert.ok(json.converted.customer.code, 'with a customer code of its own');
+  assert.ok(json.converted.enquiry.number);
+  assert.equal(json.converted.attached, false, 'nothing existed to attach to');
+
+  assert.equal(String(json.data.customer._id), String(json.converted.customer.id));
+  assert.equal(String(json.data.enquiry._id), String(json.converted.enquiry.id));
 });
 
-test("the lead's own list is what its screen reads", async () => {
+test('the lead is closed against both records it became', async () => {
+  const lead = await raiseLead();
+  const { json } = await requestSample(lead);
+
+  const after = await readLead(lead);
+  assert.equal(after.status, 'converted');
+  assert.equal(String(after.convertedCustomer?._id || after.convertedCustomer), String(json.converted.customer.id));
+  assert.equal(String(after.convertedEnquiry?._id || after.convertedEnquiry), String(json.converted.enquiry.id));
+});
+
+test('the enquiry is seeded from what the request said, not re-keyed [§41.4]', async () => {
+  /*
+   * The point of raising it here rather than asking somebody to type it again. The requirement
+   * on the enquiry has to be the specification the bench was given, resolved through the same
+   * registers [§28] — an enquiry that says nothing about the piece is a row in a pipeline and
+   * not a record of a conversation.
+   */
+  const lead = await raiseLead();
+  const { json } = await requestSample(lead, nandhini, { colour: 'Ivory', sizeMm: 400 });
+
+  const enquiry = (await api(`/api/enquiries/${json.converted.enquiry.id}`, { token: nandhini })).json.data;
+  assert.equal(String(enquiry.mould?._id || enquiry.mould), String(mouldId), 'the tool it is made on');
+  assert.equal(enquiry.requirement.colour, 'Ivory', 'and the shade that was asked for');
+  assert.equal(enquiry.requirement.sizeMm, 400);
+  assert.equal(enquiry.requirement.category, 'shirt', 'filled in from the mould, as any enquiry would be');
+  assert.match(enquiry.nextAction, /sample/i, 'and it says why it exists [§3]');
+});
+
+test("the lead's own screen still lists what was made for it", async () => {
+  /* The lead does not stop being the record the request came from. */
   const lead = await raiseLead();
   await requestSample(lead);
-  await requestSample(lead, nandhini, { colour: 'Black' });
 
   const { json } = await api(`/api/samples?lead=${lead._id}`, { token: nandhini });
-  assert.equal(json.data.length, 2);
-  assert.ok(json.data.every((row) => String(row.lead._id) === String(lead._id)));
+  assert.equal(json.data.length, 1);
+  assert.equal(String(json.data[0].lead._id), String(lead._id));
+  assert.ok(json.data[0].customer, 'carrying the buyer it belongs to now');
 });
 
-test('the request still has to say what to make', async () => {
-  // No enquiry to inherit a specification from, so the existing rule applies unchanged: a
-  // sample the bench cannot identify is a job it cannot start.
+test('the second sample is asked for against the customer, not the lead again', async () => {
+  // The lead is converted by the first request, and the existing rule then applies unchanged:
+  // the work has moved, and adding to the lead would file it against a record nobody opens.
+  const lead = await raiseLead();
+  const first = await requestSample(lead);
+  assert.equal(first.status, 201, first.json.message);
+
+  const again = await requestSample(lead);
+  assert.equal(again.status, 400);
+  assert.match(again.json.message, /converted/i);
+  assert.match(again.json.message, /customer it became/i, 'and says where to go instead');
+});
+
+/* ------------------- Nothing converts on a refused request ------------------- */
+
+test('the request still has to say what to make, and nothing is converted when it does not', async () => {
+  /*
+   * A refusal must not leave the lead half-converted. Every guard runs before conversion, so
+   * this checks the lead as well as the status code — a customer created by a request that was
+   * then rejected is the one failure mode of doing the two together.
+   */
   const lead = await raiseLead();
   const { status, json } = await api('/api/samples', {
     method: 'POST',
@@ -176,6 +248,7 @@ test('the request still has to say what to make', async () => {
 
   assert.equal(status, 400);
   assert.match(json.message, /model|describe/i);
+  assert.equal((await readLead(lead)).status, 'new', 'and the lead is untouched');
 });
 
 test('a lead and a customer are not both named on one request', async () => {
@@ -186,31 +259,47 @@ test('a lead and a customer are not both named on one request', async () => {
 
   assert.equal(status, 400);
   assert.match(json.message, /not both/i);
+  assert.equal((await readLead(lead)).status, 'new');
+});
+
+test('a lead and an enquiry are not both named either', async () => {
+  /*
+   * An enquiry already belongs to a customer, so a request naming both says the party is and is
+   * not a customer at once — and since a lead's request raises its own enquiry, letting it
+   * through would produce two enquiries for one conversation.
+   */
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      mould: mouldId,
+      requirement: { modelNumber: 'NPT-400S' },
+      nextAction: 'Send the quote',
+      nextFollowUpDate: inDays(3),
+    },
+  });
+  assert.equal(enquiry.status, 201, enquiry.json.message);
+
+  const lead = await raiseLead();
+  const { status, json } = await requestSample(lead, nandhini, { enquiry: enquiry.json.data._id });
+
+  assert.equal(status, 400);
+  assert.match(json.message, /not both/i);
+  assert.equal((await readLead(lead)).status, 'new');
 });
 
 /* ------------------------------- Who may ask ------------------------------- */
 
-test("a lead somebody else holds cannot have samples raised against it", async () => {
-  // §29. Without this, raising a request against a lead you cannot see would file it in its
-  // owner's queue — a way to write into somebody else's book through a side door.
+test('a lead somebody else holds cannot have samples raised against it', async () => {
+  // §29. Without this, raising a request against a lead you cannot see would convert it into a
+  // customer in its owner's book — a way to write into somebody else's ledger through a side
+  // door, and now a considerably larger one than a stray bench card.
   const hers = await raiseLead(nandhini);
   const { status } = await requestSample(hers, priya);
 
   assert.equal(status, 404, 'and it reads as missing rather than forbidden');
-});
-
-test('a converted lead sends you to the customer it became', async () => {
-  const lead = await raiseLead();
-  await api(`/api/leads/${lead._id}/convert`, {
-    method: 'POST',
-    token: nandhini,
-    body: { customer: { name: `Converted Mills ${leadSeq}`, mobile: `98400${String(21000 + leadSeq)}` } },
-  });
-
-  const { status, json } = await requestSample(lead);
-  assert.equal(status, 400);
-  assert.match(json.message, /converted/i);
-  assert.match(json.message, /customer it became/i, 'and says where to go instead');
+  assert.equal((await readLead(hers)).status, 'new', 'and nothing was converted');
 });
 
 test('a disqualified lead is not making samples for anybody', async () => {
@@ -226,18 +315,84 @@ test('a disqualified lead is not making samples for anybody', async () => {
   assert.match(json.message, /disqualified/i);
 });
 
+/* ----------------------- Already on the customer master ----------------------- */
+
+test('a lead that is already a customer attaches, rather than making a second master record', async () => {
+  /*
+   * The commonest awkward case in the book, and the one that would otherwise turn this feature
+   * into a duplicate factory: a new contact at a company we already supply fills in the website
+   * form. Conversion refuses a second master record and advises attaching — advice this path
+   * has to follow itself, because nobody asked it to convert anything in the first place.
+   */
+  const shared = `98400${String(71000 + ++leadSeq)}`;
+  const existing = await api('/api/customers', {
+    method: 'POST',
+    token: nandhini,
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Rathna Knits', mobile: shared },
+  });
+  assert.equal(existing.status, 201, existing.json.message);
+
+  const lead = await raiseLead(nandhini, { company: 'Rathna Knits — new buyer', mobile: shared });
+  const { status, json } = await requestSample(lead);
+
+  assert.equal(status, 201, json.message);
+  assert.equal(json.converted.attached, true, 'the answer says it attached rather than created');
+  assert.equal(
+    String(json.converted.customer.id),
+    String(existing.json.data._id),
+    'and the enquiry belongs to the record that already existed'
+  );
+  assert.equal(String(json.data.customer._id), String(existing.json.data._id));
+
+  const count = await api('/api/customers?search=Rathna', { token: nandhini });
+  assert.equal(count.json.data.length, 1, 'one company, one master record');
+});
+
+test('a lead whose company somebody else holds is refused, naming them', async () => {
+  /*
+   * The other half of the same rule. The duplicate check deliberately finds customers the
+   * caller cannot see, and handing one over here would move a relationship through a sample
+   * form — precisely what §29 reserves to management.
+   */
+  const shared = `98400${String(81000 + ++leadSeq)}`;
+  const theirs = await api('/api/customers', {
+    method: 'POST',
+    token: priya,
+    body: { assignedTo: await tokenOwnerId(priya), name: 'Kovai Exports', mobile: shared },
+  });
+  assert.equal(theirs.status, 201, theirs.json.message);
+
+  const lead = await raiseLead(nandhini, { company: 'Kovai Exports', mobile: shared });
+  const { status, json } = await requestSample(lead);
+
+  assert.equal(status, 409);
+  assert.match(json.message, /Kovai Exports/);
+  assert.match(json.message, /Priya/, 'and says who to ask');
+  assert.equal((await readLead(lead)).status, 'new', 'and the lead is left as it was');
+});
+
 /* ------------------------------- Conversion ------------------------------- */
 
-test('converting a lead carries its samples onto the customer', async () => {
+test('a sample raised before this rule existed is still carried onto the customer', async () => {
   /*
-   * The case the whole feature turns on. Without it, asking for a sample before anybody is a
-   * customer means the request is orphaned at the moment the relationship becomes real: the
-   * lead stops being a screen anybody opens, and the sample has no buyer on it — so the §6 and
-   * §42 notifications have nobody to tell when it is ready and when it ships.
+   * The carry at conversion is now a migration path rather than the everyday one — every
+   * request raised through the API converts its own lead — but the plant has samples on leads
+   * from before, and losing their buyer at the moment the relationship becomes real is exactly
+   * the orphan §6 and §42 would then have nobody to tell about. Written straight to the
+   * collection because the door that used to produce this state is closed.
    */
   const lead = await raiseLead();
-  const made = await requestSample(lead);
-  assert.equal(made.status, 201, made.json.message);
+  const Sample = mongoose.model('Sample');
+  const legacy = await Sample.create({
+    number: `SMP-LEGACY-${leadSeq}`,
+    lead: lead._id,
+    mould: mouldId,
+    modelNumber: 'NPT-400S',
+    quantity: 5,
+    purpose: 'buyer_approval',
+    requiredDate: new Date(Date.now() + 7 * DAY),
+    requestedBy: await tokenOwnerId(nandhini),
+  });
 
   const converted = await api(`/api/leads/${lead._id}/convert`, {
     method: 'POST',
@@ -245,22 +400,40 @@ test('converting a lead carries its samples onto the customer', async () => {
     body: { customer: { name: `Everblue Ltd ${leadSeq}`, mobile: `98400${String(31000 + leadSeq)}` } },
   });
   assert.equal(converted.status, 201, converted.json.message);
-  const newCustomer = converted.json.data.customer;
 
-  const { json } = await api(`/api/samples/${made.json.data._id}`, { token: nandhini });
-  assert.equal(String(json.data.customer._id), String(newCustomer._id), 'the buyer is on it now');
+  const { json } = await api(`/api/samples/${legacy._id}`, { token: nandhini });
+  assert.equal(
+    String(json.data.customer._id),
+    String(converted.json.data.customer._id),
+    'the buyer is on it now'
+  );
   assert.equal(String(json.data.lead._id), String(lead._id), 'and the lead that asked is still there');
 });
 
 test('conversion does not guess which sample belongs to the new enquiry', async () => {
   /*
-   * That the lead became this customer is a fact. Which of two samples belongs to the one
-   * enquiry conversion happened to create is a judgement, and `linkEnquiry` exists for somebody
-   * to make it deliberately. Attaching both would put a request against work it was not for.
+   * That the lead became this customer is a fact. Which of two legacy samples belongs to the
+   * one enquiry conversion happened to create is a judgement, and `linkEnquiry` exists for
+   * somebody to make it deliberately. Attaching both would put a request against work it was
+   * not for — which is a different thing from a request raising *its own* enquiry, where there
+   * is no guess to make.
    */
   const lead = await raiseLead();
-  await requestSample(lead);
-  await requestSample(lead, nandhini, { colour: 'White' });
+  const Sample = mongoose.model('Sample');
+  const requestedBy = await tokenOwnerId(nandhini);
+  for (const colour of ['Black', 'White']) {
+    await Sample.create({
+      number: `SMP-LEGACY-${leadSeq}-${colour}`,
+      lead: lead._id,
+      mould: mouldId,
+      modelNumber: 'NPT-400S',
+      colour,
+      quantity: 5,
+      purpose: 'buyer_approval',
+      requiredDate: new Date(Date.now() + 7 * DAY),
+      requestedBy,
+    });
+  }
 
   const converted = await api(`/api/leads/${lead._id}/convert`, {
     method: 'POST',
@@ -269,7 +442,7 @@ test('conversion does not guess which sample belongs to the new enquiry', async 
       customer: { name: `Twin Sample Mills ${leadSeq}`, mobile: `98400${String(41000 + leadSeq)}` },
       enquiry: {
         mould: mouldId,
-        requirement: { quantity: 10000, modelNumber: 'NPT-400S' },
+        requirement: { modelNumber: 'NPT-400S' },
         nextAction: 'Send the quote',
         nextFollowUpDate: inDays(3),
       },
@@ -283,50 +456,63 @@ test('conversion does not guess which sample belongs to the new enquiry', async 
   assert.ok(json.data.every((row) => !row.enquiry), 'and neither was guessed onto the enquiry');
 });
 
-test('marketing may attach a lead sample to the enquiry it turns into', async () => {
+test('marketing may attach a standalone request to the enquiry that turns up after it', async () => {
   /*
-   * The escape hatch the conversion rule points at has to be reachable by the people who use
-   * it. Marketing raises a sample for a party who is not a customer yet, converts the lead and
-   * creates the first enquiry — and on `samples` write alone could not then attach the one to
-   * the other, which would leave the feature with a dead end at the moment it pays off.
+   * The counter request — somebody walks in and asks for one — still starts with no enquiry
+   * behind it, and the escape hatch has to be reachable by the people who use it. Marketing
+   * holds `samples` write, and without it the feature would dead-end at the moment it pays off.
    */
-  const lead = await raiseLead();
-  const made = await requestSample(lead);
-
-  const converted = await api(`/api/leads/${lead._id}/convert`, {
+  const made = await api('/api/samples', {
     method: 'POST',
     token: nandhini,
     body: {
-      customer: { name: `Linkable Mills ${leadSeq}`, mobile: `98400${String(61000 + leadSeq)}` },
-      enquiry: {
-        mould: mouldId,
-        requirement: { quantity: 8000, modelNumber: 'NPT-400S' },
-        nextAction: 'Send the quote',
-        nextFollowUpDate: inDays(3),
-      },
+      customer: customerId,
+      mould: mouldId,
+      quantity: 5,
+      purpose: 'buyer_approval',
+      standaloneReason: 'Asked for one at the counter',
+      requiredDate: inDays(7),
     },
   });
-  assert.equal(converted.status, 201, converted.json.message);
+  assert.equal(made.status, 201, made.json.message);
+
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      mould: mouldId,
+      requirement: { modelNumber: 'NPT-400S' },
+      nextAction: 'Send the quote',
+      nextFollowUpDate: inDays(3),
+    },
+  });
+  assert.equal(enquiry.status, 201, enquiry.json.message);
 
   const linked = await api(`/api/samples/${made.json.data._id}/link-enquiry`, {
     method: 'POST',
     token: nandhini,
-    body: { enquiry: converted.json.data.enquiry._id },
+    body: { enquiry: enquiry.json.data._id },
   });
   assert.equal(linked.status, 200, linked.json.message);
-  assert.equal(String(linked.json.data.enquiry._id), String(converted.json.data.enquiry._id));
+  assert.equal(String(linked.json.data.enquiry._id), String(enquiry.json.data._id));
 });
 
 test('a customer already named by hand is not overwritten by conversion', async () => {
   // Only requests with no customer are carried, so anything set deliberately survives.
   const lead = await raiseLead();
-  const made = await requestSample(lead);
-  const linked = await api(`/api/samples/${made.json.data._id}/link-customer`, {
-    method: 'POST',
-    token: nandhini,
-    body: { customer: customerId },
+  const Sample = mongoose.model('Sample');
+  const legacy = await Sample.create({
+    number: `SMP-LEGACY-HAND-${leadSeq}`,
+    lead: lead._id,
+    customer: customerId,
+    mould: mouldId,
+    modelNumber: 'NPT-400S',
+    quantity: 5,
+    purpose: 'buyer_approval',
+    requiredDate: new Date(Date.now() + 7 * DAY),
+    requestedBy: await tokenOwnerId(nandhini),
   });
-  assert.equal(linked.status, 200, linked.json.message);
 
   await api(`/api/leads/${lead._id}/convert`, {
     method: 'POST',
@@ -334,6 +520,6 @@ test('a customer already named by hand is not overwritten by conversion', async 
     body: { customer: { name: `Untouched Mills ${leadSeq}`, mobile: `98400${String(51000 + leadSeq)}` } },
   });
 
-  const { json } = await api(`/api/samples/${made.json.data._id}`, { token: nandhini });
+  const { json } = await api(`/api/samples/${legacy._id}`, { token: nandhini });
   assert.equal(String(json.data.customer._id), String(customerId), 'the one somebody chose stands');
 });

@@ -261,20 +261,31 @@ test('samples raised for the lead carry over when it is attached', async () => {
    * The same promise a normal conversion makes, on the path that writes no customer. A sample
    * asked for before anybody was a customer must not be orphaned because the buyer turned out
    * to be one we already supply — that is the case this whole route exists for.
+   *
+   * The sample is written straight to the collection rather than asked for through the API,
+   * because that door now closes this case by itself: a request raised against a lead converts
+   * it on the spot, attaching to the customer that already exists. So what is left for the
+   * carry to protect is the plant's existing samples, raised on leads before that rule — which
+   * is exactly this state, and only reachable this way. See `lead-samples.test.js`.
    */
   const customer = await addCustomer();
   const lead = await raiseLead();
 
-  const sample = await api('/api/samples', {
-    method: 'POST',
-    token: nandhini,
-    body: { lead: lead._id, mould: mouldId, quantity: 5, requiredDate: inDays(7) },
+  const Sample = mongoose.model('Sample');
+  const legacy = await Sample.create({
+    number: `SMP-ATTACH-${String(lead.number).slice(-6)}`,
+    lead: lead._id,
+    mould: mouldId,
+    modelNumber: 'NPT-400S',
+    quantity: 5,
+    purpose: 'buyer_approval',
+    requiredDate: new Date(Date.now() + 7 * DAY),
+    requestedBy: await tokenOwnerId(nandhini),
   });
-  assert.equal(sample.status, 201, sample.json.message);
 
   await convert(lead, { existingCustomer: customer._id, enquiry: requirement });
 
-  const after = await api(`/api/samples/${sample.json.data._id}`, { token: nandhini });
+  const after = await api(`/api/samples/${legacy._id}`, { token: nandhini });
   assert.equal(
     String(after.json.data.customer._id),
     String(customer._id),

@@ -892,24 +892,25 @@ export const leadScoreboard = asyncHandler(async (req, res) => {
 });
 
 /**
- * Converts a qualified lead into a Customer, its first Contact and the first Enquiry, in
- * one action [BLUEPRINT §41.4 — nothing may be re-keyed].
+ * Turns a qualified lead into a Customer, its first Contact and the first Enquiry, in one
+ * action [BLUEPRINT §41.4 — nothing may be re-keyed].
  *
  * The enquiry is optional: sometimes a lead is worth keeping as a customer before any firm
  * requirement exists. When one is given it follows the same rules as any other enquiry.
+ *
+ * Exported because a sample requested against a lead now runs it too: an enquiry needs a
+ * customer, so raising one for a lead *is* converting that lead, and the alternative was a
+ * second copy of these hundred lines that would drift from this one. Same pattern as
+ * `createEnquiryRecord`, which `whatsapp.controller` already shares.
+ *
+ * The caller has loaded the lead and checked it may be converted. This writes.
  */
-export const convertLead = asyncHandler(async (req, res) => {
-  const lead = await Lead.findById(req.params.id);
-  if (!lead) throw ApiError.notFound('Lead not found');
-  if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
-  if (lead.status === 'converted') throw ApiError.conflict('This lead has already been converted');
-  if (lead.status === 'disqualified') throw ApiError.badRequest('A disqualified lead cannot be converted');
-
+export async function convertLeadRecord(lead, user, body = {}) {
   const {
     customer: customerOverrides = {},
     existingCustomer: existingCustomerId,
     enquiry: enquiryInput,
-  } = req.body;
+  } = body;
 
   /*
    * The lead is a party we already supply.
@@ -939,7 +940,7 @@ export const convertLead = asyncHandler(async (req, res) => {
      * into somebody else's book otherwise — the duplicate check deliberately finds customers
      * the caller cannot see, so this is the door that has to be shut.
      */
-    if (!ownsRecord(req.user, existing)) throw ApiError.notFound('Customer not found');
+    if (!ownsRecord(user, existing)) throw ApiError.notFound('Customer not found');
   }
 
   const merged = {
@@ -956,7 +957,7 @@ export const convertLead = asyncHandler(async (req, res) => {
      * may actually see it — a customer somebody else holds is reported as existing, with who to
      * talk to, and never handed over. Same rule as `checkDuplicateCustomer`.
      */
-    const visible = ownsRecord(req.user, duplicate);
+    const visible = ownsRecord(user, duplicate);
     throw ApiError.conflict(
       `${duplicate.name} (${duplicate.code}) already exists with the same ${duplicate.matchedOn}. ` +
         (visible
@@ -1032,7 +1033,7 @@ export const convertLead = asyncHandler(async (req, res) => {
         conversation: lead.conversation,
         lead: lead._id,
       },
-      req.user
+      user
     );
   }
 
@@ -1067,6 +1068,24 @@ export const convertLead = asyncHandler(async (req, res) => {
     lead, customer, enquiry, samples: carried.modifiedCount, attached: Boolean(existing),
   });
 
+  return { lead, customer, enquiry, samplesCarried: carried.modifiedCount, attached: Boolean(existing) };
+}
+
+/**
+ * The endpoint: load the lead, check it may be converted, convert it.
+ *
+ * The guards live here rather than in `convertLeadRecord` because the other caller has its own
+ * — a sample request refuses a converted or disqualified lead in its own words, before it gets
+ * this far, and a second copy of the same refusal would be the one that drifted.
+ */
+export const convertLead = asyncHandler(async (req, res) => {
+  const lead = await Lead.findById(req.params.id);
+  if (!lead) throw ApiError.notFound('Lead not found');
+  if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
+  if (lead.status === 'converted') throw ApiError.conflict('This lead has already been converted');
+  if (lead.status === 'disqualified') throw ApiError.badRequest('A disqualified lead cannot be converted');
+
+  const { customer, enquiry } = await convertLeadRecord(lead, req.user, req.body);
   res.status(201).json({ success: true, data: { lead, customer, enquiry } });
 });
 
