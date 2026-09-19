@@ -41,6 +41,54 @@ const contactSchema = z.object({
   isPrimary: z.boolean().optional(),
 });
 
+/* -------------------------------- Enquiries -------------------------------- */
+
+/**
+ * What the buyer asked for.
+ *
+ * Everything optional, including the model — an enquiry is the record of a conversation that
+ * has only just started, and requiring a field at this stage is requiring somebody to invent
+ * one. The quantity that used to be mandatory here is gone entirely: nothing before the
+ * purchase order knows how many, and the polite figure a buyer gives on the phone used to
+ * travel the whole chain as if it were a commitment. `estimatedValue` beside it carries what
+ * can honestly be said about size, and says on its face that it is an estimate.
+ */
+const requirementSchema = z.object({
+  modelNumber: z.string().optional(),
+  category: z.enum(HANGER_CATEGORIES).optional(),
+  sizeMm: z.number().nonnegative().optional(),
+  /* The registers [§28], checked against the right one in the controller. */
+  materialRef: objectId.optional(),
+  hookRef: objectId.optional(),
+  clipRef: objectId.optional(),
+  printRef: objectId.optional(),
+  material: z.enum(MATERIALS).optional(),
+  colour: z.string().optional(),
+  /** Whether that colour binds the bench or merely guides it — see the sample model. */
+  colourMandatory: z.boolean().optional(),
+  printing: z.string().optional(),
+  packing: z.string().optional(),
+  /*
+   * No quantity, on an item any more than on the requirement it was extracted from.
+   *
+   * It was removed from the enquiry deliberately and the reason holds for a list of items just
+   * as well: nothing before the purchase order knows how many, and the polite figure a buyer
+   * gives on the phone travels the whole chain as though somebody had agreed to it. Adding it
+   * back here would have reopened that door one row at a time — `order-registers.test.js` was
+   * the thing that noticed.
+   */
+});
+
+/**
+ * The list, when a conversation covered more than one thing.
+ *
+ * Capped, because a list nobody can read is not a record: past a dozen models this is a price
+ * list rather than an enquiry, and the person entering it has lost track of which row they are
+ * on. Empty rows are dropped by the controller rather than refused here — somebody tabbing
+ * through a form leaves them behind and refusing the save over one is a refusal about nothing.
+ */
+const requirementListSchema = z.array(requirementSchema).max(12).optional();
+
 /** §8: the thread a record came out of. Null until the WhatsApp front door lands. */
 const conversationRef = z
   .object({
@@ -101,6 +149,9 @@ export const leadSchema = z.object({
   source: z.enum(CUSTOMER_SOURCES).optional(),
   conversation: conversationRef,
   productInterest: z.string().optional(),
+  /* What they said they want, when the call went far enough to write it down. Most leads have
+     none; `productInterest` above is the line of free text a first call usually produces. */
+  items: requirementListSchema,
   estimatedValue: z.number().nonnegative().optional(),
   assignedTo: objectId,
   nextAction: z.string().optional(),
@@ -142,40 +193,19 @@ export const leadActivitySchema = z.object({
   occurredAt: z.coerce.date().optional(),
 });
 
-/* -------------------------------- Enquiries -------------------------------- */
-
-/**
- * What the buyer asked for.
- *
- * Everything optional, including the model — an enquiry is the record of a conversation that
- * has only just started, and requiring a field at this stage is requiring somebody to invent
- * one. The quantity that used to be mandatory here is gone entirely: nothing before the
- * purchase order knows how many, and the polite figure a buyer gives on the phone used to
- * travel the whole chain as if it were a commitment. `estimatedValue` beside it carries what
- * can honestly be said about size, and says on its face that it is an estimate.
- */
-const requirementSchema = z.object({
-  modelNumber: z.string().optional(),
-  category: z.enum(HANGER_CATEGORIES).optional(),
-  sizeMm: z.number().nonnegative().optional(),
-  /* The registers [§28], checked against the right one in the controller. */
-  materialRef: objectId.optional(),
-  hookRef: objectId.optional(),
-  clipRef: objectId.optional(),
-  printRef: objectId.optional(),
-  material: z.enum(MATERIALS).optional(),
-  colour: z.string().optional(),
-  /** Whether that colour binds the bench or merely guides it — see the sample model. */
-  colourMandatory: z.boolean().optional(),
-  printing: z.string().optional(),
-  packing: z.string().optional(),
-});
 
 export const enquiryCore = {
   /** The tool that makes it. Absent for a new development, and for anything bought in. */
   mould: objectId.optional(),
   isNewDevelopment: z.boolean().optional(),
-  requirement: requirementSchema,
+  /*
+   * Optional now, because a caller may send the list instead — the model keeps the two in step
+   * and seeds whichever is missing. What cannot be sent is neither, and the controller says so
+   * in words rather than this refusing with a field name: "name the mould, or the model" is an
+   * instruction, and "requirement: Required" is a puzzle.
+   */
+  requirement: requirementSchema.optional(),
+  items: requirementListSchema,
   targetPrice: z.number().nonnegative().optional(),
   requiredDeliveryDate: z.coerce.date().optional(),
   referenceImageUrl: z.string().optional(),

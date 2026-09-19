@@ -2,6 +2,7 @@ import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { normalisePhone } from '../utils/phone.js';
+import { requirementSchema } from './requirement.schema.js';
 import { CUSTOMER_SOURCES } from './Customer.js';
 import { withConversationRef } from './conversationRef.js';
 
@@ -68,6 +69,21 @@ const leadSchema = new mongoose.Schema(
     source: { type: String, enum: CUSTOMER_SOURCES, default: 'manual' },
     /** Free text: at lead stage the buyer rarely names a model. */
     productInterest: { type: String, trim: true },
+
+    /**
+     * What they said they want, when they have said it in enough detail to write down.
+     *
+     * `productInterest` above stays, and the two are not the same question. It is a line of
+     * free text — "shirt hangers, maybe trouser too" — which is what a first call usually
+     * produces and what every lead already on the system has. These rows are for the call that
+     * went further: a model, a size, a material, a colour. Most leads will have none.
+     *
+     * The same shape an enquiry carries [requirement.schema.js], deliberately, because that is
+     * what makes conversion a copy rather than a re-interview: whatever was learned on the lead
+     * arrives on the enquiry as the same fields pointing at the same register rows, instead of
+     * being retyped by somebody who was not on the call.
+     */
+    items: { type: [requirementSchema()], default: () => [] },
     /**
      * Legacy, and no longer asked for.
      *

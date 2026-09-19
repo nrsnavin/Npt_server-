@@ -1,0 +1,344 @@
+/**
+ * Several things on one lead and one enquiry [§2, §3].
+ *
+ * A buyer rings about shirt hangers *and* trouser hangers on the same call. Recording that as
+ * two enquiries splits one conversation into two follow-up dates, two next actions and two
+ * places to look for what was said — so both records carry a list.
+ *
+ * **The whole of the risk is in one rule**: `requirement` and `items[0]` are the same fact, and
+ * a great deal already reads `requirement` — the sample §6 raises automatically, the costing,
+ * the export, the boards, the customer timeline. Keeping the two in step is what let all of
+ * that stay as it was; getting the rule wrong silently loses an edit, which is exactly what the
+ * first version of it did. That is what most of this file is about.
+ *
+ *   node --test tests/pipeline-items.test.js
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import mongoose from 'mongoose';
+
+process.env.JWT_SECRET = 'pipeline-items-test-secret';
+
+let mongo;
+let server;
+let baseUrl;
+let admin;
+let nandhini;
+let nandhiniId;
+let customerId;
+
+const api = async (path, { method = 'GET', body, token } = {}) => {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  return { status: response.status, json: await response.json().catch(() => ({})) };
+};
+
+const signIn = async (email, password) => {
+  const { json } = await api('/api/auth/login', { method: 'POST', body: { email, password } });
+  return json.data?.token;
+};
+
+const inDays = (days) => {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString();
+};
+
+/** Enough for an enquiry to be accepted: a next action and a date. */
+const followUp = { nextAction: 'Send the quote', nextFollowUpDate: inDays(3) };
+
+test.before(async () => {
+  mongo = await MongoMemoryServer.create();
+  process.env.MONGO_URI = mongo.getUri();
+  await mongoose.connect(process.env.MONGO_URI);
+
+  const { default: app } = await import('../src/app.js');
+  server = app.listen(0);
+  await new Promise((resolve) => server.once('listening', resolve));
+  baseUrl = `http://127.0.0.1:${server.address().port}`;
+
+  await api('/api/auth/register', {
+    method: 'POST',
+    body: { name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', department: 'management' },
+  });
+  admin = await signIn('admin@np.com', 'Admin@12345');
+
+  const made = await api('/api/users', {
+    method: 'POST',
+    token: admin,
+    body: { name: 'Nandhini S', email: 'nandhini@np.com', password: 'Pass@123456', department: 'marketing' },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  nandhini = await signIn('nandhini@np.com', 'Pass@123456');
+  nandhiniId = (await api('/api/auth/me', { token: nandhini })).json.data.id;
+
+  const customer = await api('/api/customers', {
+    method: 'POST',
+    token: nandhini,
+    body: { assignedTo: nandhiniId, name: 'SCM Garments', mobile: '9876500011' },
+  });
+  assert.equal(customer.status, 201, customer.json.message);
+  customerId = customer.json.data._id;
+});
+
+test.after(async () => {
+  server?.close();
+  await mongoose.connection.close();
+  await mongo?.stop();
+});
+
+/* ------------------------------- An enquiry's list ------------------------------- */
+
+test('an enquiry can be raised with several items', async () => {
+  const { status, json } = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [
+        { modelNumber: 'NPT-400S', colour: 'White' },
+        { modelNumber: 'NPT-700T', colour: 'Black' },
+        { modelNumber: 'NPT-250K' },
+      ],
+      ...followUp,
+    },
+  });
+
+  assert.equal(status, 201, json.message);
+  assert.equal(json.data.items.length, 3);
+  assert.deepEqual(json.data.items.map((item) => item.modelNumber),
+    ['NPT-400S', 'NPT-700T', 'NPT-250K']);
+});
+
+test('the first item and the requirement are one fact', async () => {
+  /*
+   * The rule everything else in this module rests on. A great deal reads `requirement` — the
+   * sample §6 raises, the costing, the export, the timeline — and every one of those is right
+   * for the first item and would be a guess for the rest. So the two cannot be allowed to
+   * differ, and nothing had to be rewritten to read a list.
+   */
+  const { json } = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [{ modelNumber: 'NPT-401S', colour: 'Grey' }, { modelNumber: 'NPT-702T' }],
+      ...followUp,
+    },
+  });
+
+  assert.equal(json.data.requirement.modelNumber, 'NPT-401S');
+  assert.equal(json.data.requirement.colour, 'Grey');
+});
+
+test('an enquiry raised the old way still answers as a list', async () => {
+  /*
+   * Every enquiry already on the system, and every caller that has not been changed — the
+   * WhatsApp conversion, the lead conversion, an integration. They send a requirement and no
+   * list, and they have to come back with one, or a screen reading `items` shows an enquiry
+   * with nothing in it.
+   */
+  const { json } = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      requirement: { modelNumber: 'NPT-500S', colour: 'Navy' },
+      ...followUp,
+    },
+  });
+
+  assert.equal(json.data.items.length, 1, 'seeded from the requirement');
+  assert.equal(json.data.items[0].modelNumber, 'NPT-500S');
+  assert.equal(json.data.items[0].colour, 'Navy');
+});
+
+test('correcting the requirement alone is not reverted', async () => {
+  /*
+   * The bug the first version of the mirror had, and the reason the rule is about *which side
+   * was written* rather than about which field is senior.
+   *
+   * The list was copied over the requirement unconditionally on every save, so a correction
+   * that touched only `requirement.colour` was undone on the way to the database: the screen
+   * said the colour had changed, the record said it had not, and the audit trail — the one
+   * place somebody would look — had nothing in it either.
+   */
+  const created = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: { customer: customerId, requirement: { modelNumber: 'NPT-600S', colour: 'White' }, ...followUp },
+  });
+  const enquiry = created.json.data;
+
+  const patched = await api(`/api/enquiries/${enquiry._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { requirement: { modelNumber: 'NPT-600S', colour: 'Black' } },
+  });
+
+  assert.equal(patched.status, 200, patched.json.message);
+  assert.equal(patched.json.data.requirement.colour, 'Black', 'the correction stands');
+  assert.equal(patched.json.data.items[0].colour, 'Black', 'and the first row followed it');
+});
+
+test('sending a list replaces the list, so a row can be removed', async () => {
+  /*
+   * Not merged row by row: somebody editing items is adding, removing and reordering them, and
+   * "the third one" is not the same row it was before a deletion. A partial merge cannot
+   * express a removal at all, so the form sends what the enquiry should now say.
+   */
+  const created = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [{ modelNumber: 'NPT-A' }, { modelNumber: 'NPT-B' }, { modelNumber: 'NPT-C' }],
+      ...followUp,
+    },
+  });
+
+  const patched = await api(`/api/enquiries/${created.json.data._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { items: [{ modelNumber: 'NPT-C' }, { modelNumber: 'NPT-A' }] },
+  });
+
+  assert.equal(patched.status, 200, patched.json.message);
+  assert.deepEqual(patched.json.data.items.map((item) => item.modelNumber), ['NPT-C', 'NPT-A']);
+  assert.equal(patched.json.data.requirement.modelNumber, 'NPT-C', 'the new first row leads');
+});
+
+test('an enquiry cannot be emptied of everything it was about', async () => {
+  const created = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: { customer: customerId, items: [{ modelNumber: 'NPT-D' }], ...followUp },
+  });
+
+  const emptied = await api(`/api/enquiries/${created.json.data._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { items: [{}, {}] },
+  });
+
+  assert.equal(emptied.status, 400);
+  assert.match(emptied.json.message, /keep a row|asked about/i);
+});
+
+test('a row somebody tabbed past is dropped, not refused', async () => {
+  /* Empty rows are what a form leaves behind. Refusing a save over one is a refusal about
+     nothing, and the person has to find which of five rows is blank. */
+  const { status, json } = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [{ modelNumber: 'NPT-E' }, {}, { modelNumber: 'NPT-F' }, {}],
+      ...followUp,
+    },
+  });
+
+  assert.equal(status, 201, json.message);
+  assert.deepEqual(json.data.items.map((item) => item.modelNumber), ['NPT-E', 'NPT-F']);
+});
+
+test('a list is capped, because past a dozen it is a price list', async () => {
+  const many = Array.from({ length: 13 }, (_, index) => ({ modelNumber: `NPT-${index}` }));
+  const { status } = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: { customer: customerId, items: many, ...followUp },
+  });
+
+  assert.equal(status, 400);
+});
+
+/* ------------------------------- A lead's list ------------------------------- */
+
+test('a lead can record what they asked about, and it survives conversion', async () => {
+  /*
+   * The point of giving a lead the same shape as an enquiry: conversion is a copy rather than a
+   * re-interview. Whatever was learned on the call arrives pointing at the same register rows,
+   * instead of being retyped by somebody who was not on it.
+   */
+  const lead = await api('/api/leads', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      company: 'Trendline Apparels',
+      assignedTo: nandhiniId,
+      mobile: '9876512345',
+      items: [{ modelNumber: 'NPT-800S', colour: 'Red' }, { modelNumber: 'NPT-900T' }],
+      ...followUp,
+    },
+  });
+  assert.equal(lead.status, 201, lead.json.message);
+  assert.equal(lead.json.data.items.length, 2);
+
+  const converted = await api(`/api/leads/${lead.json.data._id}/convert`, {
+    method: 'POST',
+    token: nandhini,
+    body: { enquiry: { ...followUp } },
+  });
+
+  assert.equal(converted.status, 201, converted.json.message);
+  const enquiry = converted.json.data.enquiry;
+  assert.deepEqual(enquiry.items.map((item) => item.modelNumber), ['NPT-800S', 'NPT-900T']);
+  assert.equal(enquiry.requirement.modelNumber, 'NPT-800S', 'and the first one leads, as always');
+  assert.equal(enquiry.requirement.colour, 'Red');
+});
+
+test('what the conversion form says beats what the lead recorded', async () => {
+  /*
+   * Whoever is converting has the newer information — they are on the call now. The lead's rows
+   * are a fallback for the common case where the conversion form says nothing about models, not
+   * a record that overrides the person doing the work.
+   */
+  const lead = await api('/api/leads', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      company: 'Yorker Knits',
+      assignedTo: nandhiniId,
+      mobile: '9876554321',
+      items: [{ modelNumber: 'NPT-OLD' }],
+      ...followUp,
+    },
+  });
+
+  const converted = await api(`/api/leads/${lead.json.data._id}/convert`, {
+    method: 'POST',
+    token: nandhini,
+    body: { enquiry: { items: [{ modelNumber: 'NPT-NEW' }], ...followUp } },
+  });
+
+  assert.equal(converted.status, 201, converted.json.message);
+  assert.deepEqual(converted.json.data.enquiry.items.map((i) => i.modelNumber), ['NPT-NEW']);
+});
+
+test('an item carries no quantity, on a lead any more than on an enquiry', async () => {
+  /*
+   * The rule that was nearly reopened one row at a time. Nothing before the purchase order
+   * knows how many, and the polite figure a buyer gives on the phone used to travel the whole
+   * chain as though somebody had agreed to it.
+   */
+  const { json } = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [{ modelNumber: 'NPT-Q', quantity: 25000 }],
+      ...followUp,
+    },
+  });
+
+  assert.equal(json.data.items[0].quantity, undefined, 'stripped, not stored');
+  assert.equal(json.data.requirement.quantity, undefined);
+});

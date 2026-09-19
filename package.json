@@ -22,6 +22,7 @@
     "migrate:task-departments": "node scripts/migrate-task-departments.js",
     "migrate:grant-modules": "node scripts/grant-new-modules.js",
     "backfill:addresses": "node scripts/backfill-delivery-addresses.js",
+    "backfill:enquiry-items": "node scripts/backfill-enquiry-items.js",
     "doctor:consistency": "node scripts/doctor-consistency.js"
   },
   "dependencies": {

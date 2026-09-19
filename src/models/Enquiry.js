@@ -5,6 +5,7 @@ import { CUSTOMER_SOURCES } from './Customer.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
 import { withConversationRef } from './conversationRef.js';
 import { ENQUIRY_NEXT_ACTION_TYPES } from '../services/enquiryActions.js';
+import { hasRequirement, requirementSchema as requirementShape } from './requirement.schema.js';
 
 /**
  * The enquiry statuses [BLUEPRINT §3], in the order work moves through them.
@@ -148,49 +149,46 @@ export const LOST_REASONS = [
  * text. Every one of them is optional, because at enquiry stage most of it is genuinely not
  * known yet — that is what an enquiry *is*.
  */
-const requirementSchema = new mongoose.Schema(
-  {
-    modelNumber: { type: String, trim: true },
-    category: { type: String, enum: HANGER_CATEGORIES },
-    sizeMm: { type: Number, min: 0 },
+const requirementSchema = requirementShape({ withId: false });
 
-    materialRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Material' },
-    hookRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
-    clipRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
-    printRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
+/**
+ * `requirement` and `items[0]` are one fact, and this is where that is made true.
+ *
+ * **Whichever side was just written decides.** That is not a detail — the first version of this
+ * copied the list over the requirement unconditionally, and a correction that changed only
+ * `requirement.colour` was silently reverted on save: the screen said the colour had changed,
+ * the record said it had not, and the only sign was an audit trail with nothing in it. Both
+ * kinds of caller exist and both are legitimate, so the rule has to be about what somebody
+ * actually edited rather than about which field is senior.
+ *
+ * Three cases, in the order they are decided:
+ *
+ *   The list was written → it is what the person entered, so the requirement follows it.
+ *   There is no list yet → build one from the requirement, so a record written the old way
+ *   answers both shapes and every screen can read one of them.
+ *   The requirement was corrected on its own → the first row follows it.
+ */
+function keepFirstItemInStep(doc) {
+  const plain = (value) => (value?.toObject ? value.toObject() : value);
+  const rows = doc.items || [];
+  const at = rows.findIndex(hasRequirement);
 
-    material: { type: String, enum: MATERIALS },
-    colour: { type: String, trim: true },
-    /**
-     * Whether that colour is a condition or a preference — see `colourMandatory` on the sample.
-     *
-     * Asked here as well as on the sample because most samples are not raised by hand: moving an
-     * enquiry to `sample_required` raises one automatically [§6], and the only person who knows
-     * whether the buyer said "this white" or "white-ish" is whoever took the call. Asking the
-     * bench later means asking the one person in the building who was not on it.
-     */
-    colourMandatory: { type: Boolean, default: false },
-    printing: { type: String, trim: true },
-    packing: { type: String, trim: true },
+  if (doc.isModified('items') && at >= 0) {
+    /* `_id` belongs to the row, not to `requirement`, whose path is declared without one. */
+    const { _id, ...fields } = plain(rows[at]);
+    doc.requirement = fields;
+    return;
+  }
 
-    /**
-     * Legacy, and no longer asked for.
-     *
-     * An enquiry used to require a quantity, and it was the wrong question at the wrong moment.
-     * Nothing before the purchase order knows how many — the buyer does not know, and the
-     * figure they give to be polite then travels the whole chain as if it were a commitment:
-     * onto a costing that prices a lot size nobody agreed, and into a funnel that reports
-     * pipeline in pieces that were invented in a phone call. What an enquiry can honestly carry
-     * about size is `estimatedValue`, which is already beside it and is marked as an estimate.
-     *
-     * Kept on the schema rather than dropped, exactly as the quotation line's was: the enquiries
-     * already raised do not lose what they recorded, and this is one line to reverse if it ever
-     * earns its place back. Nothing writes it now, and nothing shows it.
-     */
-    quantity: { type: Number, min: 0 },
-  },
-  { _id: false }
-);
+  if (!hasRequirement(doc.requirement)) return;
+
+  if (at < 0) {
+    doc.items = [plain(doc.requirement)];
+    return;
+  }
+
+  if (doc.isModified('requirement')) doc.items.set(at, plain(doc.requirement));
+}
 
 const statusChangeSchema = new mongoose.Schema(
   {
@@ -233,6 +231,27 @@ const enquirySchema = new mongoose.Schema(
 
     requirement: { type: requirementSchema, required: true },
 
+    /**
+     * Everything the buyer asked about, when it is more than one thing.
+     *
+     * A buyer rings about shirt hangers *and* trouser hangers on the same call, and recording
+     * that as two enquiries splits one conversation into two follow-up dates, two next actions
+     * and two places to look for what was said. So an enquiry carries a list.
+     *
+     * **`requirement` above is the first of them, kept in step**, and that is deliberate rather
+     * than tidy. A great deal already reads `requirement` — the sample §6 raises automatically,
+     * the costing, the export, the boards, the customer timeline, the analytics — and every one
+     * of those is correct for the first item and would be a silent guess for the rest. Keeping
+     * the two in step means none of that had to change and none of it can drift: the first row
+     * of `items` and `requirement` are the same thing, enforced below, not by convention.
+     *
+     * Rows two onward are recorded, shown, quoted and costed. What they deliberately do not do
+     * is trigger anything: moving an enquiry to `sample_required` still raises one sample, for
+     * the first item, because raising three samples off one status change is a decision the
+     * bench should make rather than one a dropdown makes for them.
+     */
+    items: { type: [requirementShape()], default: () => [] },
+
     targetPrice: { type: Number, min: 0 },
     requiredDeliveryDate: Date,
     referenceImageUrl: String,
@@ -270,6 +289,13 @@ const enquirySchema = new mongoose.Schema(
 );
 
 enquirySchema.index({ assignedTo: 1, status: 1, nextFollowUpDate: 1 });
+
+/* Before validation rather than before save, because `requirement` is required: an enquiry
+   written with `items` alone has to have its first row copied across before the validator
+   looks, or it is refused for a field the caller did in fact supply. */
+enquirySchema.pre('validate', function alignItems() {
+  keepFirstItemInStep(this);
+});
 
 enquirySchema.virtual('isOpen').get(function isOpen() {
   return !CLOSED_STATUSES.includes(this.status);

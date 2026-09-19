@@ -36,6 +36,7 @@ import { spelledLike } from '../data/places.js';
 import { ENQUIRY_ACTIONS, actionsFrom } from '../services/enquiryActions.js';
 import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { applySpec, buildSpec } from '../services/registers.service.js';
+import { copyRequirement, hasRequirement } from '../models/requirement.schema.js';
 
 /**
  * How many rows an export may take.
@@ -1043,7 +1044,14 @@ export async function convertLeadRecord(lead, user, body = {}) {
    * never be converted at all — so the enquiry is judged before the customer is written.
    */
   if (enquiryInput) {
-    await assertEnquiryValid({ ...enquiryInput, assignedTo: lead.assignedTo });
+    /* Judged with the lead's own items folded in, because that is what will actually be
+       written — checking the form alone refused a conversion whose model was on the lead all
+       along, which is the one case carrying them across exists for. */
+    await assertEnquiryValid({
+      ...enquiryInput,
+      items: enquiryInput.items?.length ? enquiryInput.items : lead.items,
+      assignedTo: lead.assignedTo,
+    });
   }
 
   /* Attaching writes no customer: the record already exists and stays exactly as it is. */
@@ -1095,6 +1103,17 @@ export async function convertLeadRecord(lead, user, body = {}) {
          * reserves to management.
          */
         assignedTo: existing ? existing.assignedTo : lead.assignedTo,
+        /*
+         * Whatever the lead learned about what they want, carried across rather than retyped.
+         *
+         * Only when the conversion form did not say otherwise: somebody filling in the enquiry
+         * at the moment of conversion has the newer information, and overriding them with what
+         * the lead recorded weeks ago would be the older answer winning. The copy is field by
+         * field, so the row's `_id` and mongoose's internals stay on the lead where they belong.
+         */
+        items: enquiryInput.items?.length
+          ? enquiryInput.items
+          : (lead.items || []).map((item) => copyRequirement(item)),
         source: lead.source,
         conversation: lead.conversation,
         lead: lead._id,
@@ -1219,12 +1238,17 @@ async function assertEnquiryValid(input) {
    * could only be entered by lying about it — marking a hanger we buy from a supplier as
    * something we were about to develop, and then leaving it that way.
    */
-  if (!mould && !isNewDevelopment && !input.requirement?.modelNumber) {
+  /* A caller may send either shape, so the model is looked for in both — an enquiry raised as
+     a list of three has its model on the first row and nothing in `requirement` yet. */
+  const named = input.requirement?.modelNumber
+    || (input.items || []).find(hasRequirement)?.modelNumber;
+
+  if (!mould && !isNewDevelopment && !named) {
     throw ApiError.badRequest(
       'Name the mould, or the model the buyer asked for, or mark this as a new development'
     );
   }
-  if (isNewDevelopment && !input.requirement?.modelNumber && !input.remarks) {
+  if (isNewDevelopment && !named && !input.remarks) {
     throw ApiError.badRequest('Describe the new development in the model number or remarks');
   }
   /*
@@ -1264,6 +1288,38 @@ async function requirementSpec(input = {}) {
   return requirement;
 }
 
+/**
+ * Every item on an enquiry, each put through the registers the same way the first one is.
+ *
+ * The first row and `requirement` are one fact — the model keeps them in step — so the list is
+ * built from `items` when the caller sent one and from `requirement` when it did not. That is
+ * what lets a form that knows nothing about lists and a form that does both write to the same
+ * endpoint.
+ *
+ * **The enquiry's mould belongs to the first item only.** One tool is named on the enquiry, and
+ * folding it into every row would say the buyer's second model is made on the first one's mould
+ * — a fact nobody stated and the register would be wrong about. Rows two onward carry a model
+ * number and a spec; the tool is chosen when there is one to choose.
+ *
+ * Empty rows are dropped rather than refused. Somebody tabbing through a form leaves them
+ * behind, and a refusal about a row containing nothing is a refusal about nothing.
+ */
+async function itemSpecs(input = {}) {
+  const given = (input.items || []).filter(hasRequirement);
+  if (!given.length) return undefined;
+
+  return Promise.all(
+    given.map(async (item, index) => {
+      const spec = await buildSpec({
+        ...item,
+        mould: index === 0 ? input.mould || undefined : undefined,
+      });
+      const { mould, ...requirement } = spec;
+      return requirement;
+    })
+  );
+}
+
 /** Shared by the create endpoint and by lead conversion. */
 export async function createEnquiryRecord(input, user) {
   await assertEnquiryValid(input);
@@ -1277,6 +1333,10 @@ export async function createEnquiryRecord(input, user) {
      * against it points at the same rows the whole way down.
      */
     requirement: await requirementSpec(input),
+    /* When a list was sent, it is the truth and the model copies its first row over the
+       requirement above. When it was not, the model seeds the list from that requirement, so
+       both kinds of caller end up with a record of the same shape. */
+    items: await itemSpecs(input),
     number: await nextNumber('ENQ'),
     assignedTo: input.assignedTo || user._id,
     statusHistory: [{ to: input.status || 'new', by: user._id }],
@@ -1552,6 +1612,33 @@ export const updateEnquiry = asyncHandler(async (req, res) => {
       { ...(patch.requirement || {}), ...(patch.mould !== undefined ? { mould: patch.mould } : {}) }
     );
     delete patch.requirement.mould;
+  }
+
+  /*
+   * A list sent on a correction replaces the list. Not merged row by row: a person editing
+   * items is adding, removing and reordering them, and there is no row identity a partial
+   * merge could follow — "the third one" is not the same row it was before a deletion. The
+   * form sends what the enquiry should now say, which is the only reading that can express a
+   * removal at all.
+   *
+   * Each row still goes through the registers, and the model copies the first one over
+   * `requirement`, so a correction cannot leave the two disagreeing.
+   */
+  if (patch.items) {
+    const rows = patch.items.filter(hasRequirement);
+    if (!rows.length) {
+      throw ApiError.badRequest('An enquiry has to say what the buyer asked about — keep a row');
+    }
+    patch.items = await Promise.all(
+      rows.map(async (item, index) => {
+        const spec = await buildSpec({
+          ...item,
+          mould: index === 0 ? (patch.mould !== undefined ? patch.mould : enquiry.mould) : undefined,
+        });
+        const { mould, ...requirement } = spec;
+        return requirement;
+      })
+    );
   }
 
   Object.assign(enquiry, patch);
