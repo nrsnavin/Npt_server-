@@ -483,3 +483,122 @@ test('the picker offers departments and the people in them', async () => {
   assert.ok(despatch, 'departments are offered');
   assert.ok(despatch.people.some((person) => person.name === 'Kavitha D'), 'and the people in them');
 });
+
+/* ------------------------------- Reaching the department ------------------------------- */
+
+test('an unanswered question lands on the asked department’s card', async () => {
+  /*
+   * The whole feature turns on this. A thread addressed to despatch and read by nobody in
+   * despatch is the WhatsApp message it replaces, and it would survive intact if the only way to
+   * find one were to open the Queries screen every morning.
+   */
+  const { json } = await raise({ subject: 'Where did Tuesday’s load go?' });
+
+  const card = await api('/api/workspace/todos/needs-me', { token: kavitha });
+  assert.equal(card.status, 200, card.json.message);
+
+  const row = (card.json.data.asked || []).find((query) => query.number === json.data.number);
+  assert.ok(row, 'despatch is told, on the card they already read at nine o’clock');
+  assert.equal(row.customer.name, 'SCM Garments', 'with the buyer, which is how it is recognised');
+  assert.equal(row.raisedBy.name, 'Nandhini S');
+
+  /* The count the heading prints has to include them, or the card says three and shows four. */
+  assert.equal(
+    card.json.meta.open,
+    card.json.data.handedOver.length + card.json.data.urgent.length + card.json.data.asked.length
+  );
+});
+
+test('a thread you raised is not something you owe', async () => {
+  /*
+   * The difference between what I am waiting on and what I owe. Mixing them makes the card a
+   * list of things that are merely open, which is a list nobody acts on.
+   *
+   * Asked of *marketing*, which is Nandhini's own department, because that is the only shape
+   * where the rule does any work: a question put to despatch never matches her anyway, so a
+   * test using one would pass with the rule deleted and prove nothing. Here she is both the
+   * asker and inside the department that was asked, and being the asker has to win.
+   */
+  const { json } = await raise({
+    subject: 'Waiting on my own department',
+    participants: [{ department: 'marketing' }],
+  });
+
+  const hers = await api('/api/workspace/todos/needs-me', { token: nandhini });
+  assert.ok(
+    !(hers.json.data.asked || []).some((query) => query.number === json.data.number),
+    'the asker is waiting, not answering'
+  );
+
+  /* And it does reach the colleague it was actually for, or the rule has simply hidden it. */
+  const theirs = await api('/api/workspace/todos/needs-me', { token: priya });
+  assert.ok(
+    (theirs.json.data.asked || []).some((query) => query.number === json.data.number),
+    'her marketing colleague owes the answer'
+  );
+});
+
+test('one reply takes the question off the card', async () => {
+  /* The card is what is unanswered, not a second copy of the queue — so it has to empty as the
+     department works, on the same signal the thread screen uses. */
+  const { json } = await raise({ subject: 'Answer me and I should vanish' });
+
+  await api(`/api/queries/${json.data._id}/messages`, {
+    method: 'POST', token: kavitha, body: { body: 'It went on LR-88202' },
+  });
+
+  const after = await api('/api/workspace/todos/needs-me', { token: kavitha });
+  assert.ok(
+    !(after.json.data.asked || []).some((query) => query.number === json.data.number),
+    'answered is not outstanding'
+  );
+});
+
+test('a note does not take it off the card', async () => {
+  /* The same distinction the thread screen draws, held here: "rang them, no answer" is not an
+     answer, and a card that cleared on it would let a question go quiet without being resolved. */
+  const { json } = await raise({ subject: 'A note is not an answer' });
+
+  await api(`/api/queries/${json.data._id}/messages`, {
+    method: 'POST', token: kavitha, body: { kind: 'note', body: 'Rang the transporter' },
+  });
+
+  const after = await api('/api/workspace/todos/needs-me', { token: kavitha });
+  assert.ok(
+    (after.json.data.asked || []).some((query) => query.number === json.data.number),
+    'still owed'
+  );
+});
+
+test('the card does not hand queries to somebody without the grant', async () => {
+  /*
+   * This card sits on the workspace grant, and every query route sits on the queries grant. An
+   * access rule that holds on one route and not on a card quoting the same records is not a
+   * rule — a department that has had queries taken away would still be reading thread subjects
+   * and buyer names off their dashboard every morning.
+   */
+  const { json } = await raise({ subject: 'Not for somebody without the grant' });
+
+  const people = await api('/api/users?search=kavitha@np.com', { token: admin });
+  const kavithaRow = people.json.data[0];
+  const had = kavithaRow.moduleAccess;
+
+  const stripped = await api(`/api/users/${kavithaRow.id}/access`, {
+    method: 'PUT',
+    token: admin,
+    body: { moduleAccess: had.filter((grant) => grant.module !== 'queries') },
+  });
+  assert.equal(stripped.status, 200, stripped.json.message);
+
+  const card = await api('/api/workspace/todos/needs-me', { token: kavitha });
+  assert.deepEqual(card.json.data.asked, [], 'nothing comes through the side door');
+
+  /* And the route itself refuses, which is the rule this was keeping faith with. */
+  const direct = await api(`/api/queries/${json.data._id}`, { token: kavitha });
+  assert.equal(direct.status, 403);
+
+  /* Put it back, so the order these run in cannot change what they mean. */
+  await api(`/api/users/${kavithaRow.id}/access`, {
+    method: 'PUT', token: admin, body: { moduleAccess: had },
+  });
+});

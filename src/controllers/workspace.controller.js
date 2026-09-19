@@ -2,9 +2,10 @@ import Todo from '../models/Todo.js';
 import StickyNote from '../models/StickyNote.js';
 import Announcement from '../models/Announcement.js';
 import Customer from '../models/Customer.js';
+import Query, { askedOfFilter } from '../models/Query.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
-import { canWrite } from '../services/access.service.js';
+import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
 import { suggestRouting, routingModelConfigured } from '../services/taskRouting.llm.js';
 import { DEPARTMENT_KEYS } from '../config/modules.js';
@@ -134,20 +135,29 @@ export const listTodos = asyncHandler(async (req, res) => {
  * **`urgent`** — high priority or past its date, on our own queue. Unclaimed first inside that,
  * since a job nobody holds is the one at risk of being everybody's assumption.
  *
- * Both are *unanswered* work: taking a job removes it from the handover group, and finishing
- * one removes it from either. The card empties as the department works, which is the only thing
- * that keeps it from becoming a second copy of the queue.
+ * **`asked`** [queries] — a question put to this department that nobody has answered. It joins
+ * these two rather than getting a card of its own because it is the same kind of thing: work
+ * sitting on our queue that somebody outside is waiting on. A thread addressed to despatch and
+ * read by nobody in despatch is the exact failure the query module was built to end, and it
+ * would survive intact if the only way to find it were to open the Queries screen.
+ *
+ * Threads this person *raised* are deliberately not here. Those are what they are waiting on,
+ * not what they owe, and mixing the two makes the card a list of things that are merely open.
+ *
+ * All three are *unanswered* work: taking a job removes it from the handover group, finishing
+ * one removes it from either, and one reply removes a query. The card empties as the department
+ * works, which is the only thing that keeps it from becoming a second copy of the queue.
  */
 export const needsMeToday = asyncHandler(async (req, res) => {
   if (!req.user.department) {
-    res.json({ success: true, data: { handedOver: [], urgent: [] }, meta: { open: 0 } });
+    res.json({ success: true, data: { handedOver: [], urgent: [], asked: [] }, meta: { open: 0 } });
     return;
   }
 
   const mine = { department: req.user.department, completed: false };
   const startOfToday = dayBounds().start;
 
-  const [handedOver, urgent] = await Promise.all([
+  const [handedOver, urgent, asked] = await Promise.all([
     Todo.find({
       ...mine,
       'escalation.at': { $exists: true },
@@ -173,15 +183,39 @@ export const needsMeToday = asyncHandler(async (req, res) => {
       /* Unclaimed first, then soonest due. A row nobody holds is the one that goes unnoticed. */
       .sort({ user: 1, dueDate: 1, createdAt: -1 })
       .limit(25),
+
+    /*
+     * `open` is exactly "nobody has replied" — a reply moves a thread to `answered`, so this
+     * needs no arithmetic over the messages and cannot drift from what the thread screen says.
+     * Oldest first: a question that has been sitting three days is the one that has stopped
+     * being asked again and started being worked around.
+     */
+    /*
+     * Gated on the module, not only on membership. This card sits on the workspace grant, and a
+     * department that has had queries taken away should not be handed thread subjects and buyer
+     * names through it — an access rule that holds on one route and not on a card that quotes
+     * the same records is not a rule.
+     */
+    canRead(req.user, 'queries')
+      ? Query.find({ ...askedOfFilter(req.user), status: 'open' })
+        .select('number subject customer raisedBy createdAt participants')
+        .populate([
+          { path: 'customer', select: 'name code' },
+          { path: 'raisedBy', select: 'name department' },
+        ])
+        .sort({ createdAt: 1 })
+        .limit(25)
+      : [],
   ]);
 
   res.json({
     success: true,
-    data: { handedOver, urgent },
+    data: { handedOver, urgent, asked },
     meta: {
-      open: handedOver.length + urgent.length,
+      open: handedOver.length + urgent.length + asked.length,
       handedOver: handedOver.length,
       urgent: urgent.length,
+      asked: asked.length,
       department: req.user.department,
     },
   });

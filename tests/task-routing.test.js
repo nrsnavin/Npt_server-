@@ -414,7 +414,9 @@ test('somebody with no department has no card rather than an error', async () =>
 
   const card = await api('/api/workspace/todos/needs-me', { token: unfiled });
   assert.equal(card.status, 200);
-  assert.deepEqual(card.json.data, { handedOver: [], urgent: [] });
+  /* Every group the card knows about, empty. Asserted as a whole rather than group by group so
+     that a group added later cannot quietly arrive populated on an unfiled account. */
+  assert.deepEqual(card.json.data, { handedOver: [], urgent: [], asked: [] });
 
   /* And the queue tab says what is wrong rather than showing an empty list. */
   const queue = await api('/api/workspace/todos?scope=department', { token: unfiled });

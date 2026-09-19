@@ -323,9 +323,13 @@ test('it shows on the receiving department card until they pick it up', async ()
 
   assert.ok(row, 'highlighted for despatch');
   assert.equal(row.escalation.from, 'production');
+  /* Three groups now — the count the heading prints has to cover all of them, or the card says
+     three and shows four. */
   assert.equal(
     card.json.meta.open,
-    card.json.data.handedOver.length + card.json.data.urgent.length
+    card.json.data.handedOver.length
+      + card.json.data.urgent.length
+      + card.json.data.asked.length
   );
 
   /* Production is not shown their own escalation back — they sent it. */

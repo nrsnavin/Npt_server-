@@ -173,14 +173,38 @@ export const inTheRoom = (query, user) => {
   });
 };
 
+/**
+ * Every way of being a participant, as mongo fragments.
+ *
+ * Kept as one list because the room and "asked of me" differ by exactly one branch — whether
+ * raising counts — and writing them out twice is how the two come to disagree about who a
+ * department-wide row reaches.
+ */
+const askedBranches = (user) => [
+  { participants: { $elemMatch: { user: user._id } } },
+  { participants: { $elemMatch: { department: user.department, user: { $exists: false } } } },
+  { participants: { $elemMatch: { department: user.department, user: null } } },
+];
+
 /** A mongo fragment matching the queries this person is in — the list screen's own filter. */
 export const roomFilter = (user) => ({
-  $or: [
-    { raisedBy: user._id },
-    { participants: { $elemMatch: { user: user._id } } },
-    { participants: { $elemMatch: { department: user.department, user: { $exists: false } } } },
-    { participants: { $elemMatch: { department: user.department, user: null } } },
-  ],
+  $or: [{ raisedBy: user._id }, ...askedBranches(user)],
+});
+
+/**
+ * The queries somebody was *asked*, as opposed to the ones they raised.
+ *
+ * The difference is the whole of "what needs me today": a thread I raised and nobody has
+ * answered is something I am waiting on, and a thread I was asked and nobody has answered is
+ * something I owe. Putting both on the same card would make it a list of things that are merely
+ * open, which is a list nobody acts on.
+ *
+ * `$ne` rather than leaving the raiser out of the branches, because somebody can be both — you
+ * may raise a question and also be named on it, and being the asker is what decides.
+ */
+export const askedOfFilter = (user) => ({
+  raisedBy: { $ne: user._id },
+  $or: askedBranches(user),
 });
 
 protectWrites(querySchema);
