@@ -10,6 +10,8 @@ import { customerScope, isOwnershipScoped, ownsCustomer } from '../services/owne
 import { assertAssignable } from '../services/assignment.service.js';
 import { DEPARTMENT_KEYS, findDepartment } from '../config/modules.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
+import { summarise } from '../services/querySummary.llm.js';
+import { filtersFromPhrase } from '../services/querySearch.llm.js';
 
 /**
  * Queries: a question about a buyer, and everybody pulled in to answer it.
@@ -173,6 +175,19 @@ async function participantRow(asked, addedBy) {
 /* --------------------------------- Reading --------------------------------- */
 
 export const listQueries = asyncHandler(async (req, res) => {
+  /*
+   * What somebody typed, read for filters before the list is built — "unanswered despatch
+   * queries for SCM last week" is four filters in one phrase, and the alternative is four
+   * dropdowns nobody opens.
+   *
+   * **The plain search still runs on the same words, always.** The model adds filters; it
+   * cannot take the search away. A misread phrase therefore gives a narrower list than expected
+   * with the words still doing their work, rather than a wrong one — and `read` goes back so the
+   * screen can show what was applied and let the reader drop it.
+   */
+  const read = req.query.ai === 'false' ? null : await filtersFromPhrase(req.query.search);
+  if (read) applyRead(req.query, read);
+
   const { page, limit, sort, filter } = listParams(req.query, {
     searchFields: ['number', 'subject', 'question', 'messages.body'],
     defaultSort: '-updatedAt',
@@ -186,8 +201,36 @@ export const listQueries = asyncHandler(async (req, res) => {
     Query.countDocuments(scoped),
   ]);
 
-  paginated(res, data, { page, limit, total });
+  /* `read` travels beside the page rather than inside it: the screen shows what the phrase was
+     taken to mean so the reader can see it and drop it. Fourth argument, not a pagination key. */
+  paginated(res, data, { page, limit, total }, read ? { read } : undefined);
 });
+
+/**
+ * The phrase's filters, folded into the request the list already understands.
+ *
+ * Written onto `req.query` rather than into the mongo filter directly, so there is exactly one
+ * place that turns a request into a query — `queryFilter` below — and a filter the model
+ * proposed is indistinguishable from one a dropdown set. Two paths into the same filter is how
+ * one of them ends up missing the ownership clause.
+ *
+ * **Anything the person set explicitly wins.** They picked a department from the dropdown and
+ * then typed a phrase; the dropdown is the deliberate act and the phrase is the guess.
+ *
+ * Exported for its own test: with no key this never runs, so the precedence rule — the one thing
+ * standing between a guess and somebody's deliberate choice — would otherwise be the only part of
+ * the search with no test at all.
+ */
+export function applyRead(params, read) {
+  if (read.customerName && !params.customerName) params.customerName = read.customerName;
+  if (read.department && !params.department) params.department = read.department;
+  if (read.status && !params.status) params.status = read.status;
+  if (read.days && !params.since) {
+    params.since = new Date(Date.now() - read.days * 86400000).toISOString();
+  }
+  /* The leftover subject, so the text search matches a thread rather than the whole sentence. */
+  if (read.text) params.search = read.text;
+}
 
 /**
  * What the list understands, in one function.
@@ -209,6 +252,12 @@ async function queryFilter(req, filter) {
   if (req.query.open === 'true') filter.status = { $ne: 'closed' };
   if (req.query.department) filter['participants.department'] = req.query.department;
   if (req.query.mine === 'true') filter.raisedBy = req.user._id;
+
+  /* How far back, from a phrase that said so or a control that set it. */
+  if (req.query.since) {
+    const from = new Date(req.query.since);
+    if (!Number.isNaN(from.getTime())) filter.createdAt = { $gte: from };
+  }
 
   if (req.query.customer) {
     if (!mongoose.isValidObjectId(req.query.customer)) throw ApiError.badRequest('That is not a customer');
@@ -239,7 +288,15 @@ async function queryFilter(req, filter) {
 
 export const getQuery = asyncHandler(async (req, res) => {
   const query = await readableQuery(req.params.id, req.user);
-  res.json({ success: true, data: await withRefs(query) });
+  await withRefs(query);
+
+  /*
+   * The summary rides beside the thread rather than on it, and that placement is the whole
+   * safety argument: it is regenerated per read, held in no field, and so cannot be picked up
+   * by a report, a count, an export or a notification. A summary that cannot be persisted
+   * cannot become a record. `writtenBy` says whose sentence it is — see `querySummary.llm.js`.
+   */
+  res.json({ success: true, data: query, gist: await summarise(query) });
 });
 
 /* --------------------------------- Saying something --------------------------------- */
