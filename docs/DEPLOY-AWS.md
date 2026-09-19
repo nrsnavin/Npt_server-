@@ -461,6 +461,38 @@ MongoDB running is exactly what it is there for.
 
 This is the floor, and it keeps working whatever else breaks. Step 11 makes it happen by itself.
 
+### 10.1 Migrations, which a deploy never runs
+
+Nothing above runs a migration and neither does the runner in step 11, deliberately: a script
+that rewrites user records or reshapes documents should be watched by somebody who can read the
+dry run, not fired by a merge at 11pm. **Back the database up first** (step 9), then run what the
+release needs, in this order, each one dry by default:
+
+```bash
+cd /srv/npt/server
+
+npm run migrate:task-departments     # tasks get a department
+npm run migrate:grants               # quotations folded into pricing
+npm run migrate:moulds               # the catalogue becomes moulds
+npm run migrate:grant-modules        # people created before a module existed
+npm run backfill:addresses           # consignments get a delivery address
+
+# each prints what it would do and changes nothing. Then, one at a time:
+npm run migrate:grant-modules -- --confirm
+```
+
+Only then `pm2 reload npt-api`.
+
+**`migrate:grant-modules` is the one to run after any release that adds a module.** A department's
+default access is read once, when a user is created, and never again — which is right, because an
+admin who takes a module away from somebody should not have it handed back on the next deploy. The
+cost is that a new module reaches nobody who already exists: the feature ships, the screens are
+there, and the whole department gets a 403 with nothing explaining why. It only ever adds, only
+what that person's own department already suggests, and it never touches a module somebody already
+holds at any level. Running it twice finds nobody.
+
+It takes module names, so a later release is `npm run migrate:grant-modules -- <module> --confirm`.
+
 ---
 
 ## 11. Deploying by itself: a runner on the box
