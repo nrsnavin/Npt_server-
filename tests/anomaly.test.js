@@ -311,13 +311,39 @@ test('management is told, and not told the same thing twice', async () => {
   );
 });
 
+/**
+ * A `now` for which "tomorrow" is a day the plant works.
+ *
+ * The test below sweeps twice, a day apart, and expects the working-day count to have moved.
+ * Run on the day before the weekly off it has not: the sweep at `now + DAY` steps onto a
+ * Sunday, `workingDaysBetween` does not count it, both sweeps produce the same key, and the
+ * de-duplication correctly raises one task. The rule was right and the clock was wrong — the
+ * suite went red every Saturday, which with deploys gated on it meant nothing shipped one day
+ * in seven.
+ *
+ * Asked of the module's own rule rather than by hardcoding "not Saturday", so it still holds if
+ * `ANOMALY_WEEKLY_OFF` is ever moved to a Friday. And it still fails loudly if the count stops
+ * advancing altogether, which is the regression the test exists for: no clock in a whole week
+ * satisfies it, and the assertion below reports that rather than looping.
+ */
+const whenTomorrowCounts = (from = Date.now()) => {
+  for (let step = 0; step < 7; step += 1) {
+    const when = from + step * DAY;
+    const today = anomaly.workingDaysBetween(when - 3 * DAY, when);
+    const tomorrow = anomaly.workingDaysBetween(when - 3 * DAY, when + DAY);
+    if (today !== tomorrow) return when;
+  }
+  return null;
+};
+
 test('a sample still stalled tomorrow says so again', async () => {
   /*
    * Keyed on the sample and the day count. Keyed on the sample alone it would be raised once
    * and go quiet while the sample sat for another week — which is the failure the sweep is
    * there to prevent, reintroduced by the de-duplication meant to make it bearable.
    */
-  const now = Date.now();
+  const now = whenTomorrowCounts();
+  assert.ok(now, 'no clock in a week makes the working-day count advance — the rule is broken');
   await sampleLastTouched(new Date(now - 3 * DAY));
 
   await anomaly.runStallSweep({ now });
