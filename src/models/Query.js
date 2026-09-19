@@ -174,6 +174,18 @@ export const inTheRoom = (query, user) => {
 };
 
 /**
+ * Who reads every thread regardless of the room.
+ *
+ * Admins and management, as everywhere else in this app. It lives here rather than in the
+ * controller that first needed it because it is now asked in two places — the query screens and
+ * the customer map — and an access rule with two copies is one that will answer differently on
+ * one of them. It already did: the map showed an admin no queries at all while the list showed
+ * them every one.
+ */
+export const seesEveryQuery = (user) =>
+  user?.role === 'admin' || user?.department === 'management';
+
+/**
  * Every way of being a participant, as mongo fragments.
  *
  * Kept as one list because the room and "asked of me" differ by exactly one branch — whether

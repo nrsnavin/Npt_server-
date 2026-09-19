@@ -1,4 +1,5 @@
 import { customerSummaries } from '../services/customerSummary.service.js';
+import { customerMap } from '../services/customerMap.service.js';
 import mongoose from 'mongoose';
 import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import Customer from '../models/Customer.js';
@@ -376,6 +377,22 @@ export const listCustomers = asyncHandler(async (req, res) => {
   ]);
 
   paginated(res, await customerSummaries(data), { page, limit, total });
+});
+
+/**
+ * One buyer's whole relationship, for the map view [§2].
+ *
+ * Its own endpoint rather than more of `getCustomer`, and that is a decision about the screen
+ * everybody opens: this reaches eight collections and runs six counts, and most visits to a
+ * customer never switch to the map. Paying for it on every open would slow the common case to
+ * serve the rare one.
+ */
+export const getCustomerMap = asyncHandler(async (req, res) => {
+  const customer = await Customer.findById(req.params.id).select('_id name code assignedTo status');
+  if (!customer) throw ApiError.notFound('Customer not found');
+  if (!ownsCustomer(req.user, customer)) throw ApiError.notFound('Customer not found');
+
+  res.json({ success: true, data: await customerMap(customer, req.user) });
 });
 
 export const getCustomer = asyncHandler(async (req, res) => {

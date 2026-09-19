@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import Query, { inTheRoom, roomFilter } from '../models/Query.js';
+import Query, { inTheRoom, roomFilter, seesEveryQuery } from '../models/Query.js';
 import Customer from '../models/Customer.js';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
@@ -69,14 +69,12 @@ async function askableCustomer(id, user) {
   return customer;
 }
 
-/** Admins and management read the lot, as they do everywhere else. */
-const seesEverything = (user) => user.role === 'admin' || user.department === 'management';
 
 /** The thread, if this person is in it. One refusal, so a probe learns nothing from the wording. */
 async function readableQuery(id, user) {
   const query = await Query.findById(id);
   if (!query) throw ApiError.notFound('Query not found');
-  if (!seesEverything(user) && !inTheRoom(query, user)) throw ApiError.notFound('Query not found');
+  if (!seesEveryQuery(user) && !inTheRoom(query, user)) throw ApiError.notFound('Query not found');
   return query;
 }
 
@@ -242,7 +240,7 @@ export function applyRead(params, read) {
 async function queryFilter(req, filter) {
   const clauses = [];
 
-  if (!seesEverything(req.user)) clauses.push(roomFilter(req.user));
+  if (!seesEveryQuery(req.user)) clauses.push(roomFilter(req.user));
   if (filter.$or) {
     clauses.push({ $or: filter.$or });
     delete filter.$or;

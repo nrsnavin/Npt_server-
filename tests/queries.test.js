@@ -602,3 +602,92 @@ test('the card does not hand queries to somebody without the grant', async () =>
     method: 'PUT', token: admin, body: { moduleAccess: had },
   });
 });
+
+/* ------------------------------- The customer map ------------------------------- */
+
+test('the map gathers a buyer’s strands, and only the ones this reader may have', async () => {
+  /*
+   * The map reaches eight collections at once, which makes it the easiest place in the app to
+   * hand somebody a record their grants do not cover. Opening a customer is one permission;
+   * knowing what they owe is another, and a picture is not a way round the second.
+   *
+   * Kavitha is despatch: consignments and orders yes, enquiries, samples, costings and money
+   * no. What must not appear is as much the point as what must.
+   */
+  const { json } = await raise({ subject: 'One for the map' });
+
+  /*
+   * Something for the gate to actually withhold. Without this the assertions below are true of
+   * an empty database as readily as of a working rule — which is exactly how the first version
+   * of this test passed with the gate deleted.
+   */
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      requirement: { modelNumber: 'NPT-400S' },
+      nextAction: 'Send the quote',
+    },
+  });
+  assert.equal(enquiry.status, 201, enquiry.json.message);
+
+  const theirsFirst = await api(`/api/customers/${customerId}/map`, { token: nandhini });
+  assert.ok(
+    theirsFirst.json.data.enquiries.some((row) => row.label === enquiry.json.data.number),
+    'marketing, who holds the grant, has it on their map'
+  );
+  assert.ok(theirsFirst.json.data.totals.enquiries > 0);
+
+  const hers = await api(`/api/customers/${customerId}/map`, { token: kavitha });
+  assert.equal(hers.status, 200, hers.json.message);
+
+  assert.ok(
+    hers.json.data.queries.some((row) => row.label === json.data.number),
+    'a thread she is in is on it'
+  );
+  assert.deepEqual(hers.json.data.enquiries, [], 'no enquiries — despatch has no such grant');
+  assert.deepEqual(hers.json.data.samples, [], 'and no samples');
+  assert.deepEqual(hers.json.data.receivables, [], 'and nothing about money');
+
+  /*
+   * The counts too. A branch that said "11 receivables" while listing none would hand over the
+   * eleven, which is the fact being withheld.
+   */
+  assert.equal(hers.json.data.totals.receivables, 0);
+  assert.equal(hers.json.data.totals.enquiries, 0);
+
+});
+
+test('the map does not show a thread the reader was never in', async () => {
+  /*
+   * Narrowed twice: by the grant, and then by the room. Priya is marketing and may open plenty
+   * of buyers, but a query is private to whoever was asked — and a map must not be the place
+   * somebody learns that a conversation about a buyer is going on without them.
+   */
+  await raise({ subject: 'Not for Priya' });
+
+  /* She has to be able to see the customer at all for the refusal to be about the thread. */
+  await api(`/api/customers/${customerId}`, {
+    method: 'PATCH', token: admin, body: { assignedTo: await whoIs(priya) },
+  });
+
+  const hers = await api(`/api/customers/${customerId}/map`, { token: priya });
+  assert.equal(hers.status, 200, hers.json.message);
+  assert.ok(
+    !hers.json.data.queries.some((row) => row.sublabel === 'Not for Priya'),
+    'the thread is not on her map'
+  );
+
+  /* Put the buyer back, so the tests after this one mean what they say. */
+  await api(`/api/customers/${customerId}`, {
+    method: 'PATCH', token: admin, body: { assignedTo: nandhiniId },
+  });
+});
+
+test('a buyer you cannot see has no map either', async () => {
+  /* The same refusal the detail gives, and for the same reason: a map keyed on an id anybody
+     can guess would be a way to enumerate the customer master one picture at a time. */
+  const theirs = await api('/api/customers/507f1f77bcf86cd799439011/map', { token: kavitha });
+  assert.equal(theirs.status, 404);
+});

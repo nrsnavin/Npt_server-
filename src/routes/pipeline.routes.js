@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  listCustomers, getCustomer, createCustomer, updateCustomer, checkDuplicateCustomer,
+  listCustomers, getCustomer, getCustomerMap, createCustomer, updateCustomer, checkDuplicateCustomer,
   listLeads, leadBoard, getLead, createLead, updateLead, addLeadActivity, convertLead,
   suggestLeadNextStep, leadLogAnalytics, leadFollowUps, leadScoreboard, leadsOverview, leadOwners,
   marketingRoster,
@@ -108,6 +108,8 @@ router.get('/customers/check-duplicate', requireModule('customers'), checkDuplic
 router.get('/customers/team', requireModule('customers'), marketingRoster);
 router.get('/customers', requireModule('customers'), listCustomers);
 router.post('/customers', requireModule('customers', 'write'), validate(customerSchema), createCustomer);
+/* The map view's own request — see `getCustomerMap` for why it is not part of the detail. */
+router.get('/customers/:id/map', requireModule('customers'), getCustomerMap);
 router.get('/customers/:id', requireModule('customers'), getCustomer);
 router.patch('/customers/:id', requireModule('customers', 'write'), validate(customerUpdateSchema), updateCustomer);
 
