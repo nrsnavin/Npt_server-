@@ -214,27 +214,77 @@ test('the roster offers the marketing team, and says whether you are on it', asy
    * that offered a marketing person only themselves would be a label, not a choice, and the
    * reason the form asks at all is that somebody has to decide which of them chases this buyer.
    */
-  const asAdmin = await api('/api/leads/team', { token: admin });
-  assert.equal(asAdmin.status, 200);
-  const names = asAdmin.json.data.map((person) => person.name);
-  assert.ok(names.length >= 2, `the team is there: ${names.join(', ')}`);
-  assert.equal(asAdmin.json.meta.you, null, 'management is not on the marketing rota');
-
   const asMarketing = await api('/api/leads/team', { token: nandhini });
   assert.equal(asMarketing.status, 200);
-  assert.equal(
-    asMarketing.json.data.length,
-    asAdmin.json.data.length,
-    'a marketing person is offered the whole team, not just themselves'
-  );
-  assert.equal(String(asMarketing.json.meta.you), String(nandhiniId), 'and is told which one is them');
+  const team = asMarketing.json.data;
+  assert.ok(team.length >= 2, `the team is there: ${team.map((p) => p.name).join(', ')}`);
+  assert.ok(team.every((person) => !person.self), 'and none of it is flagged as a self-allocation');
+  assert.equal(String(asMarketing.json.meta.you), String(nandhiniId), 'and they are told which one is them');
 
   /* Customers ask the same question behind their own grant. */
   const forCustomers = await api('/api/customers/team', { token: nandhini });
   assert.equal(forCustomers.status, 200);
   assert.deepEqual(
     forCustomers.json.data.map((person) => String(person._id)).sort(),
-    asMarketing.json.data.map((person) => String(person._id)).sort()
+    team.map((person) => String(person._id)).sort()
+  );
+});
+
+test('an administrator is offered themselves, flagged as the other kind of answer', async () => {
+  /*
+   * `assertCanOwnBuyer` has always accepted an administrator or a manager: they hold every
+   * module, `ownsRecord` never scopes them, and the seeded administrator owns records today. The
+   * form could not express it — the field is required and the list was marketing only — so the
+   * one person allowed to keep a buyer themselves was the one who could not say so. A screen
+   * contradicting its own server.
+   */
+  const asMarketing = await api('/api/leads/team', { token: nandhini });
+  const asAdmin = await api('/api/leads/team', { token: admin });
+  assert.equal(asAdmin.status, 200);
+
+  const self = asAdmin.json.data.filter((person) => person.self);
+  assert.equal(self.length, 1, 'themselves, once');
+  assert.equal(self[0].name, 'Navin R');
+  assert.equal(String(asAdmin.json.meta.you), String(self[0]._id), 'and told which entry is them');
+
+  /* The whole marketing team is still there beside it — this adds an answer, it does not
+     replace the question. */
+  assert.equal(
+    asAdmin.json.data.length,
+    asMarketing.json.data.length + 1,
+    'the team, plus themselves'
+  );
+
+  /* And the server accepts what the form now offers, which is the point of the whole change. */
+  const kept = await api('/api/leads', {
+    method: 'POST',
+    token: admin,
+    body: {
+      company: 'Kept By The Admin Mills',
+      mobile: '9898004455',
+      assignedTo: self[0]._id,
+      nextAction: 'Ring them myself',
+      nextFollowUpDate: new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10),
+    },
+  });
+  assert.equal(kept.status, 201, kept.json.message);
+  assert.equal(String(kept.json.data.assignedTo?._id || kept.json.data.assignedTo), String(self[0]._id));
+});
+
+test('only ever themselves — an administrator is not put in everybody else\'s dropdown', async () => {
+  /*
+   * The line that keeps this from undoing the check it sits inside. Offering every
+   * administrator to every marketing person would invite handing a buyer to somebody who is
+   * not working it, which is the stranding `assertCanOwnBuyer` exists to prevent. Self-
+   * allocation is a different act from assignment.
+   */
+  const asMarketing = await api('/api/leads/team', { token: nandhini });
+  const names = asMarketing.json.data.map((person) => person.name);
+
+  assert.ok(!names.includes('Navin R'), `the admin is not on marketing's list: ${names.join(', ')}`);
+  assert.ok(
+    asMarketing.json.data.every((person) => !person.self),
+    'and nothing on it is flagged as theirs to keep'
   );
 });
 

@@ -62,6 +62,25 @@ export async function marketingTeam() {
 }
 
 /**
+ * Whether somebody may hold a buyer — the same question `assertCanOwnBuyer` refuses on, asked
+ * without throwing.
+ *
+ * The roster needs it as a question rather than as a refusal: it is deciding whether to offer
+ * the reader their own name, and wrapping an assertion in a try/catch to answer "may I?" is a
+ * refusal used as a lookup — which reads as an error path every time somebody opens a form.
+ *
+ * `team` is passed in where the caller already has the roster, so asking about one person does
+ * not fetch it twice.
+ */
+export async function canOwnBuyer(person, team) {
+  if (!person || person.isActive === false) return false;
+  if (person.role === 'admin' || person.department === 'management') return true;
+
+  const roster = team ?? (await marketingTeam());
+  return roster.some((member) => String(member._id) === String(person._id));
+}
+
+/**
  * Refuses an owner who could not chase a buyer.
  *
  * Stricter than `assertAssignable`, and used where a *person is choosing* an owner rather than
@@ -82,10 +101,7 @@ export async function marketingTeam() {
  */
 export async function assertCanOwnBuyer(assignTo) {
   const chosen = await assertAssignable(assignTo);
-  if (chosen.role === 'admin' || chosen.department === 'management') return chosen;
-
-  const team = await marketingTeam();
-  if (team.some((person) => String(person._id) === String(chosen._id))) return chosen;
+  if (await canOwnBuyer(chosen)) return chosen;
 
   throw ApiError.badRequest(
     `${chosen.name} could not chase a buyer from ${chosen.department || 'no department'}, so the ` +

@@ -15,6 +15,7 @@ import { narrowToOwner, ownershipFilter, ownsRecord } from '../services/ownershi
 import {
   assertAssignable,
   assertCanOwnBuyer,
+  canOwnBuyer,
   marketingTeam,
   ownerForNewLead,
 } from '../services/assignment.service.js';
@@ -851,16 +852,37 @@ export const enquiryOwners = asyncHandler((req, res) => ownersOf(Enquiry, req, r
  * The consequence is worth being plain about: under §29, choosing a colleague hands the record
  * away, and a marketing person who does that will not see it on their own list afterwards. The
  * screen says so rather than hiding it.
+ *
+ * **And the reader's own name, when they may hold a buyer without being on that team.** An
+ * administrator or a manager already passes `assertCanOwnBuyer` — they hold every module,
+ * `ownsRecord` never scopes them, and the seeded administrator owns records today — so the
+ * server would have accepted them as the owner all along. The form could not express it: the
+ * field is required and the list was marketing only, so the one person allowed to keep a buyer
+ * themselves was the one who could not say so. That is a screen contradicting its own server,
+ * and the answer is not to widen the rule but to offer the answer the rule already permits.
+ *
+ * Only *themselves*, never every administrator. Putting the admins into every marketing
+ * person's dropdown would invite handing a buyer to somebody who is not working it, which is
+ * the stranding this whole check exists to prevent. Self-allocation is a different act from
+ * assignment, and the flag says which one an entry is.
  */
 export const marketingRoster = asyncHandler(async (req, res) => {
   const team = await marketingTeam();
+  const onTeam = team.some((person) => String(person._id) === String(req.user._id));
+
+  /* Asked as a question rather than caught as a refusal — see `canOwnBuyer`. The roster is
+     passed in because it is already loaded. */
+  const mayKeepIt = !onTeam && (await canOwnBuyer(req.user, team));
 
   res.json({
     success: true,
-    data: team.map((person) => ({ _id: person._id, name: person.name })),
+    data: [
+      ...team.map((person) => ({ _id: person._id, name: person.name })),
+      ...(mayKeepIt ? [{ _id: req.user._id, name: req.user.name, self: true }] : []),
+    ],
     meta: {
       /* So the form can say who it would be, and mark the reader's own name in the list. */
-      you: team.some((person) => String(person._id) === String(req.user._id)) ? req.user._id : null,
+      you: onTeam || mayKeepIt ? req.user._id : null,
     },
   });
 });
