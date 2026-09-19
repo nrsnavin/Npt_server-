@@ -389,6 +389,43 @@ test('a closed thread takes no more replies until somebody re-opens it', async (
   assert.equal(now.status, 201, now.json.message);
 });
 
+test('a closed thread cannot be used to grant somebody the customer', async () => {
+  /*
+   * The same door as the reply rule, and the one that matters more: adding a participant is not
+   * only a message, it is an access grant — it opens the buyer's record to them. On a finished
+   * question that is a door opened for no live reason, which is the kind nobody notices.
+   *
+   * Checked against the *customer* rather than the refusal, because the refusal is only the
+   * mechanism: what must not happen is somebody gaining sight of a buyer through a thread
+   * nobody is working.
+   */
+  const { json } = await raise();
+  await api(`/api/queries/${json.data._id}/close`, { method: 'POST', token: nandhini });
+
+  const Customer = mongoose.model('Customer');
+  const before = await Customer.findById(json.data.customer._id).lean();
+  const refused = await api(`/api/queries/${json.data._id}/participants`, {
+    method: 'POST', token: nandhini, body: { department: 'accounts' },
+  });
+
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.message, /closed/i);
+
+  const after = await Customer.findById(json.data.customer._id).lean();
+  assert.equal(
+    (after.sharedWith || []).length,
+    (before.sharedWith || []).length,
+    'and nobody gained sight of the buyer on the way to that refusal'
+  );
+
+  /* Re-opening is the way in: then somebody has decided the thread is live again. */
+  await api(`/api/queries/${json.data._id}/reopen`, { method: 'POST', token: nandhini });
+  const allowed = await api(`/api/queries/${json.data._id}/participants`, {
+    method: 'POST', token: nandhini, body: { department: 'accounts' },
+  });
+  assert.equal(allowed.status, 201, allowed.json.message);
+});
+
 /* ------------------------------- Finding one again ------------------------------- */
 
 test('the list finds a thread by the buyer’s name', async () => {

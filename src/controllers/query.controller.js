@@ -344,6 +344,23 @@ export const addMessage = asyncHandler(async (req, res) => {
  */
 export const addParticipant = asyncHandler(async (req, res) => {
   const query = await readableQuery(req.params.id, req.user);
+
+  /*
+   * A closed thread takes nobody new, for the same reason it takes no replies — and here it
+   * matters more, because this is not only a message, it is a grant. Adding somebody to a
+   * finished question would open a buyer's record to them for a conversation nobody is working,
+   * and a door opened for no live reason is the kind that never gets noticed.
+   *
+   * Re-opening is the way in, exactly as it is for a reply: then somebody has decided the thread
+   * is live again, and the grant has a reason anybody can see.
+   */
+  if (query.status === 'closed') {
+    throw ApiError.badRequest(
+      `${query.number} is closed. Re-open it before pulling somebody in — being added to a query `
+      + 'also opens this customer’s record to them.'
+    );
+  }
+
   const row = await participantRow(req.body, req.user);
 
   /*
