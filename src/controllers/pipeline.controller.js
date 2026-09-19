@@ -11,7 +11,9 @@ import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
-import { narrowToOwner, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
+import {
+  customerScope, narrowToOwner, ownershipFilter, ownsCustomer, ownsRecord,
+} from '../services/ownership.service.js';
 import {
   assertAssignable,
   assertCanOwnBuyer,
@@ -211,13 +213,31 @@ export const bulkReassign = asyncHandler(async (req, res) => {
  *
  * Ownership and grants apply exactly as they do on screen. An export is a read.
  */
+/**
+ * The customer scope, folded into a filter that may already carry a search.
+ *
+ * Both halves are an `$or`: the scope is "mine, or shared with me by a query", and the text
+ * search `listParams` builds is "name or code or GSTIN or…". Assigning one over the other is
+ * one `$or` with the second winning — which would drop the search and hand back every buyer
+ * the reader can see, a list that looks like a broken search box and is actually a wrong answer.
+ *
+ * Shared by the list and the export, because the export's own note promises it shows what the
+ * screen shows, and two copies of this is where that stops being true.
+ */
+function scopeCustomers(filter, user) {
+  const scope = customerScope(user);
+  if (scope.$or) filter.$and = [...(filter.$and || []), { $or: scope.$or }];
+  else Object.assign(filter, scope);
+  return filter;
+}
+
 export const exportCustomers = asyncHandler(async (req, res) => {
   const { sort, filter } = listParams(req.query, {
     searchFields: ['name', 'code', 'gstin', 'mobile', 'whatsapp', 'email'],
     defaultSort: 'name',
   });
 
-  Object.assign(filter, ownershipFilter(req.user));
+  scopeCustomers(filter, req.user);
   if (req.query.customerType) filter.customerType = req.query.customerType;
   if (req.query.rating) filter.rating = req.query.rating;
   if (req.query.status) filter.status = req.query.status;
@@ -345,7 +365,7 @@ export const listCustomers = asyncHandler(async (req, res) => {
     sortable: CUSTOMER_SORTABLE,
   });
 
-  Object.assign(filter, ownershipFilter(req.user));
+  scopeCustomers(filter, req.user);
   if (req.query.customerType) filter.customerType = req.query.customerType;
   if (req.query.rating) filter.rating = req.query.rating;
   if (req.query.status) filter.status = req.query.status;
@@ -361,7 +381,8 @@ export const listCustomers = asyncHandler(async (req, res) => {
 export const getCustomer = asyncHandler(async (req, res) => {
   const customer = await Customer.findById(req.params.id).populate('assignedTo', 'name email');
   if (!customer) throw ApiError.notFound('Customer not found');
-  if (!ownsRecord(req.user, customer)) throw ApiError.notFound('Customer not found');
+  /* Theirs, or shared with them by a query they are a participant on — see `sharedWith`. */
+  if (!ownsCustomer(req.user, customer)) throw ApiError.notFound('Customer not found');
 
   /*
    * The timeline the blueprint asks for [§2]. It grows as later modules land.
@@ -447,6 +468,12 @@ export const createCustomer = asyncHandler(async (req, res) => {
 export const updateCustomer = asyncHandler(async (req, res) => {
   const customer = await Customer.findById(req.params.id);
   if (!customer) throw ApiError.notFound('Customer not found');
+  /*
+   * `ownsRecord`, not `ownsCustomer`, and the difference is the shape of the grant. A query
+   * shares the buyer so a participant can *read* them — the delivery address, the contact, the
+   * history behind the question. Editing is still the account owner's: despatch being asked
+   * where a load went is not a reason for despatch to change the credit terms.
+   */
   if (!ownsRecord(req.user, customer)) throw ApiError.notFound('Customer not found');
 
   /*

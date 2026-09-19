@@ -39,6 +39,33 @@ export const ownsRecord = (user, record, field = 'assignedTo') => {
 };
 
 /**
+ * Customers, which have a second way in: a query about them put you in the room.
+ *
+ * Its own pair of helpers rather than a widening of the two above, and the split is the point.
+ * `ownershipFilter` answers for leads, enquiries, samples, orders and consignments, none of
+ * which carry `sharedWith` — folding the grant into it would either query a field that does not
+ * exist on five collections or quietly widen all of them. A customer is the one record a query
+ * shares, so a customer is the one record with a different rule.
+ *
+ * What it grants is the customer record. §8's price visibility and §29's hold on enquiries are
+ * separate judgements and are not shared by this — see `sharedWith` on the model.
+ */
+export const customerScope = (user) =>
+  isOwnershipScoped(user)
+    ? { $or: [{ assignedTo: user._id }, { sharedWith: user._id }] }
+    : {};
+
+/** True when this user may open this particular buyer — theirs, or shared with them. */
+export const ownsCustomer = (user, customer) => {
+  if (!isOwnershipScoped(user)) return true;
+  if (ownerId(customer?.assignedTo) === ownerId(user._id)) return true;
+
+  return (customer?.sharedWith || []).some(
+    (shared) => ownerId(shared) === ownerId(user._id)
+  );
+};
+
+/**
  * Narrowing a list to one colleague's records, which may only ever narrow.
  *
  * Ownership has already pinned the owner for a marketing person. A filter that assigned over

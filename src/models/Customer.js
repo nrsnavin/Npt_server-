@@ -73,6 +73,33 @@ const customerSchema = new mongoose.Schema(
     /** The one marketing person who owns this relationship [§29]. */
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
+    /**
+     * Colleagues who may open this buyer because a query about them put them in the room.
+     *
+     * §29 gives a customer one owner, and that is still true: `assignedTo` is who chases the
+     * relationship, who the follow-ups go to, and whose scoreboard it counts on. This is a
+     * narrower thing — being *able to look* — and it exists because a query naming a buyer is
+     * useless to a participant who cannot open the record it is about. Despatch asked where a
+     * load went; they need the delivery address.
+     *
+     * **A list rather than a rule**, deliberately. "Anybody on a query about this customer" is
+     * the same grant expressed as a join, and it would mean a second collection read on every
+     * customer list in the app — so the grant is written down here when it is made, and
+     * ownership stays one cheap filter. It also makes the question a person actually asks —
+     * *who else can see this buyer, and why?* — answerable off the record itself, which a join
+     * would not.
+     *
+     * **It grants the customer record and nothing else.** Enquiries, prices and orders keep
+     * their own rules — §8's price visibility in particular is a separate judgement and is not
+     * this field's to widen. Somebody added to a query can open the buyer; they do not thereby
+     * see what that buyer is quoted.
+     *
+     * Never narrows: leaving a thread does not remove the grant, because it was true that they
+     * saw the record and pretending otherwise would be a false trail. An administrator takes it
+     * away deliberately, the same as any other access.
+     */
+    sharedWith: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true }],
+
     creditTermsDays: { type: Number, min: 0, default: 0 },
     paymentTerms: { type: String, trim: true },
     rating: { type: String, enum: RATINGS, default: 'B' },

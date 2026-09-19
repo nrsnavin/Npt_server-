@@ -8,6 +8,7 @@ import pricingRoutes from './pricing.routes.js';
 import orderRoutes from './order.routes.js';
 import sampleRoutes from './sample.routes.js';
 import whatsappRoutes from './whatsapp.routes.js';
+import queryRoutes from './query.routes.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
 import { globalSearch } from '../controllers/search.controller.js';
 import { recordHistory } from '../controllers/audit.controller.js';
@@ -76,6 +77,7 @@ router.use('/', pricingRoutes);
  * order`, is a literal that cannot collide with the quotation routes' own `/:id`.
  */
 router.use('/', orderRoutes);
+router.use('/', queryRoutes);
 router.use('/', pipelineRoutes);
 
 export default router;

@@ -250,6 +250,25 @@ export const MODULES = [
     available: true,
   },
   {
+    key: 'queries',
+    label: 'Queries',
+    description:
+      'A question about a buyer, threaded, that pulls in whichever departments and people can '
+      + 'answer it. Distinct from the queries raised against a sales order, which go to one '
+      + 'department with a clock on them.',
+    group: 'Workspace',
+    stage: null,
+    /*
+     * Nobody's, deliberately. Every other module has a department that owns it; a query is
+     * asked *across* departments and the whole point is that despatch, accounts and marketing
+     * are in the same thread. Naming an owner here would put one of them in charge of a
+     * conversation none of them convenes.
+     */
+    ownerDepartment: null,
+    blueprint: null,
+    available: true,
+  },
+  {
     key: 'tasks',
     label: 'Tasks & follow-ups',
     description: 'Departmental tasks created automatically as stages complete, plus the next-action discipline on every open record.',
@@ -305,6 +324,17 @@ export const DEPARTMENTS = [
     key: 'marketing',
     label: 'Marketing',
     defaultAccess: {
+      queries: 'write',
+      /*
+       * Everybody, at write. A query is a conversation the plant has across its departments —
+       * the whole point is that despatch, accounts and marketing are in the same thread — so a
+       * department without the grant is one that cannot be asked anything, and read-only is a
+       * department that can watch a question about them and not answer it.
+       *
+       * What protects a thread is membership, not the grant: the participant list decides who
+       * sees which query. See `query.routes.js`.
+       */
+      queries: 'write',
       enquiries: 'write',
       customers: 'write',
       customer_comms: 'write',
@@ -337,6 +367,7 @@ export const DEPARTMENTS = [
     key: 'sampling',
     label: 'Sample team',
     defaultAccess: {
+      queries: 'write',
       samples: 'write',
       /* New models are developed here, and a new model is a new tool before it is anything. */
       moulds: 'write',
@@ -351,6 +382,7 @@ export const DEPARTMENTS = [
     key: 'order_confirmation',
     label: 'Order confirmation team',
     defaultAccess: {
+      queries: 'write',
       orders: 'write',
       customers: 'write',
       tasks: 'write',
@@ -369,6 +401,7 @@ export const DEPARTMENTS = [
     key: 'production',
     label: 'Production department',
     defaultAccess: {
+      queries: 'write',
       production: 'write',
       /* The register's home: cavities, cycles and weights are measured at the press. */
       moulds: 'write',
@@ -384,6 +417,7 @@ export const DEPARTMENTS = [
     key: 'quality',
     label: 'Quality team',
     defaultAccess: {
+      queries: 'write',
       quality: 'write',
       tasks: 'write',
       production: 'read',
@@ -398,6 +432,7 @@ export const DEPARTMENTS = [
     key: 'despatch',
     label: 'Despatch team',
     defaultAccess: {
+      queries: 'write',
       dispatch: 'write',
       tasks: 'write',
       orders: 'read',
@@ -411,6 +446,7 @@ export const DEPARTMENTS = [
     key: 'accounts',
     label: 'Accounts department',
     defaultAccess: {
+      queries: 'write',
       payments: 'write',
       tasks: 'write',
       orders: 'read',

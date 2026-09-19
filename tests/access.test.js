@@ -279,9 +279,20 @@ test('the catalogue exposes modules and department templates', async () => {
   assert.ok(json.data.modules.some((module) => module.key === 'dispatch'));
   assert.equal(json.data.departments.length, 8);
 
-  // Every module must be owned by a department that still exists.
+  /*
+   * Every module must be owned by a department that still exists — or by none at all.
+   *
+   * `null` is a real answer, not a missing one, and the two are worth telling apart: this
+   * assertion exists to catch a module left pointing at a department somebody deleted, which is
+   * a dangling reference. A module that deliberately has no owner is not that. `queries` is the
+   * first: a query is asked *across* departments and the whole point is that despatch, accounts
+   * and marketing are in one thread, so naming an owner would put one of them in charge of a
+   * conversation none of them convenes.
+   */
   const departmentKeys = json.data.departments.map((d) => d.key);
-  const orphans = json.data.modules.filter((m) => !departmentKeys.includes(m.ownerDepartment));
+  const orphans = json.data.modules.filter(
+    (m) => m.ownerDepartment != null && !departmentKeys.includes(m.ownerDepartment)
+  );
   assert.deepEqual(orphans, [], 'no module may point at a removed department');
 
   const sampling = json.data.departments.find((d) => d.key === 'sampling');
