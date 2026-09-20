@@ -64,6 +64,15 @@ const lineSchema = new mongoose.Schema(
      * it in both places is what Mongoose warns about at boot.
      */
     pricing: { type: mongoose.Schema.Types.ObjectId, ref: 'Pricing' },
+    /**
+     * Which line of that sheet, now that a sheet prices several models [§7].
+     *
+     * Not a `ref` — it points at a sub-document, and mongoose has no populate for one. The sheet
+     * is fetched through `pricing` and the line found inside it, which is the only way to read a
+     * sub-document anyway. Empty on the quotes raised before a sheet had lines, and on those the
+     * first line is the whole sheet, so nothing has to be backfilled for them to read correctly.
+     */
+    pricingLine: { type: mongoose.Schema.Types.ObjectId },
 
     modelNumber: { type: String, trim: true },
     /**

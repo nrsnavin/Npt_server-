@@ -2,6 +2,7 @@ import Material from '../models/Material.js';
 import Component from '../models/Component.js';
 import Mould, { MATERIALS } from '../models/Mould.js';
 import ApiError from '../utils/ApiError.js';
+import { costingLine } from './pricing.service.js';
 
 /**
  * Turning register picks into a specification [BLUEPRINT §28].
@@ -120,12 +121,17 @@ export async function resolveLineRegisters(line = {}) {
  * A pick already on the request wins, because a PO that specifies a different colour from the
  * quote is a real thing that happens and the buyer's paperwork is the one that governs.
  */
-export const registersFromPricing = (pricing, asked = {}) => ({
-  materialRef: asked.materialRef ?? pricing?.materialRef ?? undefined,
-  hookRef: asked.hookRef ?? pricing?.hookRef ?? undefined,
-  clipRef: asked.clipRef ?? pricing?.clipRef ?? undefined,
-  printRef: asked.printRef ?? pricing?.printRef ?? undefined,
-});
+export const registersFromPricing = (pricing, asked = {}, quoted = {}) => {
+  /* The line of that sheet the quote was built from, now that one sheet prices several [§7]. */
+  const costed = costingLine(pricing, quoted) || {};
+
+  return {
+    materialRef: asked.materialRef ?? costed.materialRef ?? undefined,
+    hookRef: asked.hookRef ?? costed.hookRef ?? undefined,
+    clipRef: asked.clipRef ?? costed.clipRef ?? undefined,
+    printRef: asked.printRef ?? costed.printRef ?? undefined,
+  };
+};
 
 /**
  * What the tool itself says about a line, for the fields nobody should have to look up.

@@ -1,5 +1,6 @@
 import User from '../models/User.js';
 import Pricing from '../models/Pricing.js';
+import { hasRequirement } from '../models/requirement.schema.js';
 import { EVENTS, publish, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { raiseTask, resolveTasks } from '../services/task.service.js';
@@ -46,6 +47,41 @@ async function costingTeam() {
   return User.find({ isActive: { $ne: false }, role: 'admin' }).select('_id');
 }
 
+/**
+ * The models the costing has to price, one line each [§7].
+ *
+ * An enquiry carries a list of items now, and a sheet carries a line per model, so the handover
+ * is row for row: five models asked about become five lines with five floors, rather than one
+ * line and four models somebody has to remember. The registers the buyer's requirement already
+ * names come across with them, so the sheet is costed against the same resin and parts the
+ * enquiry asked for [§28].
+ *
+ * Nothing here computes a cost. This raises the sheet; building it is `/cost`, and a line with
+ * no cost on it is exactly what "somebody still has to price this" looks like.
+ *
+ * The mould is the enquiry's, and there is only one of it, so it lands on the first line. A
+ * second model on the same enquiry is a different mould that nobody has named yet.
+ */
+function lineFor(item = {}, { mould } = {}) {
+  return {
+    mould,
+    modelNumber: item.modelNumber,
+    materialRef: item.materialRef,
+    hookRef: item.hookRef,
+    clipRef: item.clipRef,
+    printRef: item.printRef,
+    material: item.material,
+    quantity: item.quantity,
+    status: 'requested',
+  };
+}
+
+function linesFor(enquiry) {
+  const items = (enquiry.items || []).filter(hasRequirement);
+  const rows = items.length ? items : [enquiry.requirement || {}];
+  return rows.map((item, index) => lineFor(item, { mould: index === 0 ? enquiry.mould : undefined }));
+}
+
 let registered = [];
 
 export function registerPricingSubscribers() {
@@ -83,15 +119,7 @@ export function registerPricingSubscribers() {
           number: await nextNumber('PRC'),
           enquiry: enquiry._id,
           customer: enquiry.customer,
-          mould: enquiry.mould,
-          modelNumber: requirement.modelNumber,
-          /* The registers the buyer's requirement already names, so the sheet is costed against
-             the same resin and parts the enquiry asked for [§28]. */
-          materialRef: requirement.materialRef,
-          hookRef: requirement.hookRef,
-          clipRef: requirement.clipRef,
-          printRef: requirement.printRef,
-          material: requirement.material,
+          lines: linesFor(enquiry),
           targetPrice: enquiry.targetPrice,
           requestedBy: enquiry.assignedTo,
           statusHistory: [{ to: 'requested', by: enquiry.assignedTo }],

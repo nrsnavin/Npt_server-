@@ -139,47 +139,59 @@ export async function seedPricing({ admin, nandhini }) {
     const spec = sheetModels[row.model];
     const at = sheetDate(row.date);
 
+    /*
+     * One line, because one row of the spreadsheet prices one model. A sheet holds as many as it
+     * needs to [§7]; what the 26-27 sheet actually recorded is a model at a time, and inventing
+     * groupings it did not have would be putting a shape on somebody else's document.
+     */
     const pricing = new Pricing({
       number: await nextNumber('PRC'),
       customer: customer._id,
-      modelNumber: row.model,
-      material: spec?.material,
-      procurement: row.procurement || 'manufacture',
-      printing: row.printing || undefined,
-      /* The sheet prices per piece and carries no lot size at all — see the model's note. */
-      cost: {
-        gramWeight: row.gram,
-        rawMaterialRate: row.rate,
-        jobWorkCost: row.jobWork || 0,
-        hookCost: row.hook || 0,
-        metalClipsCost: row.clips || 0,
-        printingCost: row.printPrice || 0,
-        packingCost: row.packing || 0,
-      },
-      markupPercent: 10,
+      lines: [
+        {
+          modelNumber: row.model,
+          material: spec?.material,
+          procurement: row.procurement || 'manufacture',
+          printing: row.printing || undefined,
+          /* The sheet prices per piece and carries no lot size at all — see the model's note. */
+          cost: {
+            gramWeight: row.gram,
+            rawMaterialRate: row.rate,
+            jobWorkCost: row.jobWork || 0,
+            hookCost: row.hook || 0,
+            metalClipsCost: row.clips || 0,
+            printingCost: row.printPrice || 0,
+            packingCost: row.packing || 0,
+          },
+          markupPercent: 10,
+        },
+      ],
       requestedBy: nandhini._id,
       requestedAt: at,
       costedBy: admin._id,
     });
+
+    const line = pricing.lines[0];
 
     /*
      * The approved price is what was actually quoted, where the sheet quoted one. That is what
      * puts three genuinely below-floor costings into the database — and those are the rows §9
      * exists for, so seeding only the comfortable ones would leave its whole route unexercised.
      */
-    pricing.calculatedSellingPrice = pricing.tiers[10];
-    pricing.approvedSellingPrice = row.quoted ?? pricing.tiers[10];
+    line.calculatedSellingPrice = line.tiers[10];
+    line.approvedSellingPrice = row.quoted ?? line.tiers[10];
 
-    const settled = pricing.belowMinimum ? 'approval_pending' : 'approved';
-    pricing.status = settled;
+    /* The decision sits on the line that was decided; the sheet's own status follows from it. */
+    const settled = line.belowMinimum ? 'approval_pending' : 'approved';
+    line.status = settled;
     pricing.statusHistory = [
       { to: 'requested', at, by: nandhini._id },
       { from: 'requested', to: 'costed', at, by: admin._id },
       { from: 'costed', to: settled, at, by: admin._id },
     ];
     if (settled === 'approved') {
-      pricing.approvedBy = admin._id;
-      pricing.approvedAt = at;
+      line.approvedBy = admin._id;
+      line.approvedAt = at;
     }
 
     await pricing.save();
@@ -220,6 +232,8 @@ export async function seedPricing({ admin, nandhini }) {
       assignedTo: nandhini._id,
       lines: entries.map((entry) => ({
         pricing: entry.pricing._id,
+        /* Which line of that sheet was quoted — one model each here, and named all the same. */
+        pricingLine: entry.pricing.lines[0]._id,
         modelNumber: entry.row.model,
         /* No quantity: a quotation quotes a rate against a minimum, and the sheet this is
            transcribed from carries exactly that — a model and what it was quoted at. */

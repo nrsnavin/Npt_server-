@@ -133,3 +133,36 @@ export function minimumFor(pricing) {
   if (pricing.minimumOverride != null) return pricing.minimumOverride;
   return priceAt(pricing.totalCost, MINIMUM_TIER);
 }
+
+/**
+ * Which line of a sheet a downstream record was built from [§7].
+ *
+ * A costing prices several models now, each with its own cost, its own price and its own floor,
+ * so "the costing behind this quotation line" is no longer a whole sheet — it is one line of
+ * one. Everything downstream that reads a price or a floor has to ask this rather than take the
+ * sheet's first line, because taking the first line means a model quoted against another
+ * model's floor, which is §9 checking the wrong number and saying yes.
+ *
+ * Three ways of naming it, in order of how much they can be trusted:
+ *
+ *   `pricingLine`   the id the quotation line recorded when it was raised off the sheet.
+ *   `modelNumber`   for a line typed by hand, which names a model and not an id. The codes on a
+ *                   sheet are distinct in practice, and a wrong match here is no worse than the
+ *                   fallback below — but a right one is much better.
+ *   the first line  everything raised before a sheet had lines. Those sheets have exactly one,
+ *                   so it is the whole of them and nothing needs rewriting for this to be true.
+ */
+export function costingLine(pricing, { pricingLine, modelNumber } = {}) {
+  const lines = pricing?.lines || [];
+  if (!lines.length) return undefined;
+
+  if (pricingLine) {
+    const named = lines.find((line) => String(line._id) === String(pricingLine));
+    if (named) return named;
+  }
+  if (modelNumber) {
+    const matched = lines.filter((line) => line.modelNumber === modelNumber);
+    if (matched.length === 1) return matched[0];
+  }
+  return lines[0];
+}

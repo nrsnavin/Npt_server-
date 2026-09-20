@@ -35,6 +35,9 @@ import { priceFrom } from '../services/pricing.service.js';
  */
 
 /** Marketing can see whose enquiry it is; the ownership rule lives on the enquiry, not here. */
+/** How many models one sheet may price. Past this it is a price list, not a costing. */
+export const MAX_LINES = 12;
+
 const POPULATE = [
   { path: 'enquiry', select: 'number status requirement targetPrice' },
   /*
@@ -61,18 +64,19 @@ const POPULATE = [
    * on the register" placeholder and every costing looks like a model nobody photographed.
    */
   mouldWithPhoto(
-    'mould',
+    'lines.mould',
     'mouldCode name category sizeMm hookType moq packingQty ' +
       'cavities activeCavities partWeightGrams runnerWeightGrams ' +
       'regrindRecoveryPercent cycleTimeSeconds efficiencyPercent status material machine'
   ),
-  { path: 'materialRef', select: 'name code type colour ratePerKg grammageFactorPercent' },
-  { path: 'hookRef', select: 'name code colour ratePerPiece kind' },
-  { path: 'clipRef', select: 'name code colour ratePerPiece kind' },
-  { path: 'printRef', select: 'name code colour ratePerPiece kind' },
+  { path: 'lines.materialRef', select: 'name code type colour ratePerKg grammageFactorPercent' },
+  { path: 'lines.hookRef', select: 'name code colour ratePerPiece kind' },
+  { path: 'lines.clipRef', select: 'name code colour ratePerPiece kind' },
+  { path: 'lines.printRef', select: 'name code colour ratePerPiece kind' },
   { path: 'requestedBy', select: 'name' },
   { path: 'costedBy', select: 'name' },
-  { path: 'approvedBy', select: 'name' },
+  /* Who signed a price off sits on the line they signed, now that §9 is decided per model. */
+  { path: 'lines.approvedBy', select: 'name' },
 ];
 
 /**
@@ -185,9 +189,105 @@ const PRICING_SORTABLE = [
 ];
 const PRICING_COSTING_SORTABLE = ['markupPercent', 'minimumOverride'];
 
+/**
+ * The sort keys that used to be fields on the sheet and are now fields on a line.
+ *
+ * The request still asks for `approvedSellingPrice`, because that is the column the screen
+ * shows and renaming it would break every saved view — but the sheet no longer has such a path,
+ * and mongo asked to sort on one that does not exist returns the rows in whatever order it
+ * likes. That is precisely what a sort control must never do: a table that ignores the header
+ * somebody clicked is worse than one that has no header at all.
+ *
+ * Mongo sorts an array field by its smallest element ascending and its largest descending,
+ * which on a one-model sheet is that model, and on a sheet of four is the cheapest or dearest
+ * of them. Both are honest readings of "order these sheets by price".
+ */
+const ON_A_LINE = new Set([
+  'quantity', 'modelNumber', 'approvedSellingPrice', 'calculatedSellingPrice',
+  'markupPercent', 'minimumOverride',
+]);
+
+const sortOnLines = (sort) => {
+  /* `listParams` hands back mongoose's string form — "-requestedAt", or several separated by
+     spaces — so this reads that rather than an object. Written for the object form first, which
+     turned the string into its characters and asked mongo to sort on a field called "0". */
+  if (typeof sort !== 'string') return sort;
+
+  return sort
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((token) => {
+      const descending = token.startsWith('-');
+      const field = descending ? token.slice(1) : token;
+      return `${descending ? '-' : ''}${ON_A_LINE.has(field) ? `lines.${field}` : field}`;
+    })
+    .join(' ');
+};
+
+/**
+ * Which line an action is about.
+ *
+ * Named by `:lineId` on the route, or by `line` in the body, or — when neither says — the first
+ * one. That default is what let every caller written before the sheet had lines go on working
+ * unchanged: a one-model sheet has one line, and "the costing" and "the first line of the
+ * costing" are the same thing there. It is not a guess on a sheet with four models, because a
+ * screen that can show four lines is a screen that names the one it is acting on.
+ */
+function lineOf(pricing, req) {
+  const id = req.params.lineId || req.body?.line;
+
+  if (id) {
+    const named = pricing.lines.id(id);
+    if (!named) throw ApiError.notFound('That line is not on this costing');
+    return named;
+  }
+
+  const [only] = pricing.lines;
+  if (!only) throw ApiError.badRequest('This costing has no lines to work on');
+  return only;
+}
+
+/**
+ * One line's worth of a request, with the registers already resolved.
+ *
+ * Shared by the raise door and the line-adding door so a line entered either way goes through
+ * the same register checks — a clip named as a hook is refused in both, or the two doors
+ * disagree about what a valid line is.
+ */
+async function lineFrom(input, { enquiry, fallbackModel } = {}) {
+  const mouldId = input.mould || undefined;
+  const mould = mouldId ? await Mould.findById(mouldId) : null;
+  if (mouldId && !mould) throw ApiError.badRequest('That mould is not on the register');
+
+  const material = input.materialRef ? await Material.findById(input.materialRef) : null;
+  if (input.materialRef && !material) throw ApiError.badRequest('That material is not on the register');
+
+  const parts = await partsFrom(input);
+
+  return {
+    mould: mould?._id,
+    materialRef: material?._id,
+    hookRef: parts.hook?._id,
+    clipRef: parts.clip?._id,
+    printRef: parts.print?._id,
+    modelNumber: input.modelNumber || fallbackModel || mould?.mouldCode,
+    material: input.material || material?.type || mould?.material,
+    procurement: input.procurement,
+    printing: input.printing,
+    markupPercent: input.markupPercent,
+    /*
+     * No cost from this door, and that is not an omission — it is the rule the single-model
+     * raise already held. This route *raises* a costing; building the sheet is `/cost`, which
+     * is where a typed figure may overrule the registers.
+     */
+    cost: costingFrom(mould, material, parts),
+    status: 'requested',
+  };
+}
+
 export const listPricings = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = listParams(req.query, {
-    searchFields: ['number', 'modelNumber'],
+    searchFields: ['number', 'lines.modelNumber'],
     defaultSort: '-requestedAt',
     sortable: seesCosting(req.user)
       ? [...PRICING_SORTABLE, ...PRICING_COSTING_SORTABLE]
@@ -202,7 +302,7 @@ export const listPricings = asyncHandler(async (req, res) => {
   if (req.query.awaitingApproval === 'true') filter.status = 'approval_pending';
 
   const [rows, total, stages] = await Promise.all([
-    Pricing.find(filter).populate(POPULATE).sort(sort).skip((page - 1) * limit).limit(limit),
+    Pricing.find(filter).populate(POPULATE).sort(sortOnLines(sort)).skip((page - 1) * limit).limit(limit),
     Pricing.countDocuments(filter),
     Pricing.aggregate([{ $group: { _id: '$status', leads: { $sum: 1 } } }]),
   ]);
@@ -285,61 +385,51 @@ export const createPricing = asyncHandler(async (req, res) => {
   if (!(await Customer.findById(customerId))) throw ApiError.badRequest('That customer does not exist');
 
   /*
-   * The tool, from the request or from the enquiry that asked for the price.
+   * The models this sheet is to price.
    *
-   * There is no lookup to do beyond this any more. The enquiry names the mould directly, so the
-   * costing takes the same one rather than guessing from a model code — which is what the old
-   * catalogue hop cost: a model with two tools on the register had no single right answer, and
-   * a model with none silently produced a sheet built on nothing. Empty is a real answer here,
-   * and means a traded piece: `procurement` says so on the record.
+   * `lines` when the caller sent them, and the single-model shape otherwise — the request that
+   * names a mould and a model number at the top level is still exactly how most costings are
+   * raised, and it becomes the one line on the sheet. One door, both shapes, because a second
+   * endpoint for "a costing with several models" would be a second place for the register
+   * checks and §9 to be got slightly wrong.
+   *
+   * The tool comes from the enquiry when the request does not name one. There is no lookup
+   * beyond that: the enquiry names the mould directly, so the costing takes the same one rather
+   * than guessing from a model code — which is what the old catalogue hop cost, since a model
+   * with two tools on the register had no single right answer. Empty is a real answer and means
+   * a traded piece; `procurement` says so on the line.
    */
-  const mouldId = req.body.mould || enquiry?.mould;
-  const mould = mouldId ? await Mould.findById(mouldId) : null;
-  if (mouldId && !mould) throw ApiError.badRequest('That mould is not on the register');
+  const asked = req.body.lines?.length
+    ? req.body.lines
+    : [{ ...req.body, mould: req.body.mould || enquiry?.mould }];
 
-  const material = req.body.materialRef ? await Material.findById(req.body.materialRef) : null;
-  if (req.body.materialRef && !material) {
-    throw ApiError.badRequest('That material is not on the register');
+  if (asked.length > MAX_LINES) {
+    throw ApiError.badRequest(
+      `A costing sheet holds ${MAX_LINES} models. Past that it is a price list, and nobody can `
+      + 'check a floor they have to scroll to find.'
+    );
   }
 
-  const parts = await partsFrom(req.body);
-
-  /* Everything the tool, the resin and the parts already know. */
-  const filled = costingFrom(mould, material, parts);
+  /*
+   * The enquiry's own items fill in the model numbers the request left out, row for row. An
+   * enquiry now carries a list too, and a costing raised off one is usually being raised for
+   * exactly those models in exactly that order.
+   */
+  const lines = await Promise.all(
+    asked.map((row, index) =>
+      lineFrom(
+        { ...row, mould: row.mould ?? (index === 0 ? enquiry?.mould : undefined) },
+        { fallbackModel: enquiry?.items?.[index]?.modelNumber ?? enquiry?.requirement?.modelNumber }
+      )
+    )
+  );
 
   const pricing = await Pricing.create({
-    ...req.body,
-    mould: mould?._id,
-    materialRef: material?._id,
-    hookRef: parts.hook?._id,
-    clipRef: parts.clip?._id,
-    printRef: parts.print?._id,
     customer: customerId,
-    modelNumber: req.body.modelNumber || enquiry?.requirement?.modelNumber || mould?.mouldCode,
-    material: req.body.material || material?.type || mould?.material,
-    /*
-     * The gram weight is the one cost line the plant already knows, and re-typing it is how a
-     * costing ends up priced for a piece that weighs something else. The rate is not copied: it
-     * is today's resin price, which no master has any business remembering.
-     *
-     * What the mould gives is what a piece *consumes* — the part weight plus its share of the
-     * runner moulded alongside it — and not what the piece weighs. On a four-cavity tool with a
-     * 12 g runner that gap is 3 g on a 30 g part: a tenth of the resin on every quotation off
-     * that mould, always understated, and never visible on the sheet because the arithmetic
-     * below it is perfectly correct. A costing that starts from a part weight starts wrong.
-     *
-     * The material then converts that PP figure into the resin actually being run, and brings
-     * its own rate and the tool's conversion lines with it. An explicit `cost` in the request
-     * still wins over all of it: somebody who has weighed a bag of finished pieces is not
-     * overruled by two registers.
-     */
-    /*
-     * No `req.body.cost` here, and that is not an omission: `pricingSchema` does not declare
-     * one, so a cost sent to this door is stripped before the controller sees it. This route
-     * *raises* a costing; building the sheet is `/cost`, which is where a typed figure can
-     * overrule the registers. The spread that used to sit here read as though it worked.
-     */
-    cost: filled,
+    enquiry: req.body.enquiry || undefined,
+    targetPrice: req.body.targetPrice,
+    remarks: req.body.remarks,
+    lines,
     number: await nextNumber('PRC'),
     requestedBy: req.user._id,
     statusHistory: [{ to: 'requested', by: req.user._id }],
@@ -380,18 +470,20 @@ export const costPricing = asyncHandler(async (req, res) => {
    * Without this the audit trail would show a sheet approved once and never touched again,
    * while its numbers had changed underneath.
    */
-  const wasSettled = CLOSED_PRICING_STATUSES.includes(pricing.status);
+  const line = lineOf(pricing, req);
+
+  const wasSettled = CLOSED_PRICING_STATUSES.includes(line.status);
   if (wasSettled) {
     pricing.statusHistory.push({
-      from: pricing.status,
+      from: line.status,
       to: 'costed',
       by: req.user._id,
-      note: 'Re-costed after being settled',
+      note: `Re-costed after being settled${line.modelNumber ? ` — ${line.modelNumber}` : ''}`,
     });
-    // Actually moved, not just noted: the §9 route below reads `status` to write its own
-    // history entry, and leaving it settled would record that move as coming from a stage the
-    // sheet had already left.
-    pricing.status = 'costed';
+    // Actually moved, not just noted: the §9 route below reads the line's status to write its
+    // own history entry, and leaving it settled would record that move as coming from a stage
+    // the line had already left.
+    line.status = 'costed';
   }
 
   expectVersion(pricing, req.body);
@@ -409,38 +501,20 @@ export const costPricing = asyncHandler(async (req, res) => {
    * in the same request still wins, so somebody who has weighed a bag of finished pieces is not
    * overruled by the registers.
    */
-  if (mould === null) pricing.mould = undefined;
-  if (materialRef === null) pricing.materialRef = undefined;
+  if (mould === null) line.mould = undefined;
+  if (materialRef === null) line.materialRef = undefined;
   for (const [field, value] of [['hookRef', hookRef], ['clipRef', clipRef], ['printRef', printRef]]) {
-    if (value === null) pricing[field] = undefined;
+    if (value === null) line[field] = undefined;
   }
+  if (mould) line.mould = mould;
+  if (materialRef) line.materialRef = materialRef;
+  if (hookRef) line.hookRef = hookRef;
+  if (clipRef) line.clipRef = clipRef;
+  if (printRef) line.printRef = printRef;
 
-  const parts = await partsFrom({ hookRef, clipRef, printRef });
-  if (parts.hook) pricing.hookRef = parts.hook._id;
-  if (parts.clip) pricing.clipRef = parts.clip._id;
-  if (parts.print) pricing.printRef = parts.print._id;
-
-  if (mould) {
-    const tool = await Mould.findById(mould);
-    if (!tool) throw ApiError.badRequest('That mould is not on the register');
-    pricing.mould = tool._id;
-  }
-  if (materialRef) {
-    const resin = await Material.findById(materialRef);
-    if (!resin) throw ApiError.badRequest('That material is not on the register');
-    pricing.materialRef = resin._id;
-    pricing.material = resin.type;
-  }
-
-  /*
-   * Refilled whenever either reference moves, because the grammage depends on both: switching
-   * a PP job to HIPS changes the weight by 18% without anything else on the sheet moving, and
-   * a person who picked the new resin and saw the old weight would reasonably assume it had
-   * been handled. Any line explicitly sent in the same request still wins.
-   */
   if (mould || materialRef || hookRef || clipRef || printRef) {
     /*
-     * Refilled from what the sheet *holds*, not from what this request happened to mention.
+     * Refilled from what the *line* holds, not from what this request happened to mention.
      *
      * Switching only the resin sent `parts` in empty, so the three parts lines fell back to the
      * mould's own figures and silently discarded rates that had come from the registers — a
@@ -448,26 +522,20 @@ export const costPricing = asyncHandler(async (req, res) => {
      * HIPS. Nothing errored and no line the person touched looked wrong.
      */
     const [tool, resin, held] = await Promise.all([
-      pricing.mould ? Mould.findById(pricing.mould) : null,
-      pricing.materialRef ? Material.findById(pricing.materialRef) : null,
-      partsFrom({
-        hookRef: pricing.hookRef,
-        clipRef: pricing.clipRef,
-        printRef: pricing.printRef,
-      }),
+      line.mould ? Mould.findById(line.mould) : null,
+      line.materialRef ? Material.findById(line.materialRef) : null,
+      partsFrom({ hookRef: line.hookRef, clipRef: line.clipRef, printRef: line.printRef }),
     ]);
 
-    pricing.cost = {
-      ...pricing.cost?.toObject?.(),
-      ...costingFrom(tool, resin, held),
-    };
+    line.cost = { ...line.cost?.toObject?.(), ...costingFrom(tool, resin, held) };
   }
 
-  if (cost) pricing.cost = { ...pricing.cost?.toObject?.(), ...cost };
-  if (markupPercent !== undefined) pricing.markupPercent = markupPercent;
-  if (minimumOverride !== undefined) pricing.minimumOverride = minimumOverride;
-  if (printing !== undefined) pricing.printing = printing;
-  if (procurement !== undefined) pricing.procurement = procurement;
+  if (cost) line.cost = { ...line.cost?.toObject?.(), ...cost };
+  if (markupPercent !== undefined) line.markupPercent = markupPercent;
+  if (minimumOverride !== undefined) line.minimumOverride = minimumOverride;
+  if (printing !== undefined) line.printing = printing;
+  if (procurement !== undefined) line.procurement = procurement;
+  /* Remarks are the sheet's, not the line's — they are about the job, not about one model. */
   if (remarks !== undefined) pricing.remarks = remarks;
 
   /*
@@ -478,53 +546,61 @@ export const costPricing = asyncHandler(async (req, res) => {
    * somewhere the system cannot see. But the override was unbounded, and an override under the
    * cost quietly dismantles the whole gate rather than bending it: `belowMinimum` compares the
    * price against this number, so a floor of one paisa is false for every price there is. The
-   * sheet then approves itself, the quotation gate finds nothing to stop, and a price that
-   * loses money on every piece goes out with nobody's signature on it — which is the one
-   * outcome §9 was written to prevent.
+   * line then approves itself, the quotation gate finds nothing to stop, and a price that loses
+   * money on every piece goes out with nobody's signature on it — which is the one outcome §9
+   * was written to prevent.
    *
    * Refused rather than routed for approval, because the escape already exists and is the
    * better one: put the price you actually want on the sheet and let §9 send *that* for a
    * signature. Somebody then approves a price they can see, rather than approving a floor whose
    * consequence is invisible.
    */
-  if (pricing.minimumOverride != null && pricing.totalCost && pricing.minimumOverride < pricing.totalCost) {
+  if (line.minimumOverride != null && line.totalCost && line.minimumOverride < line.totalCost) {
     throw ApiError.badRequest(
-      `A minimum of ${pricing.minimumOverride.toFixed(2)} is below what the piece costs to make ` +
-        `(${pricing.totalCost.toFixed(2)}), so it would let any price through unchecked. Put the ` +
+      `A minimum of ${line.minimumOverride.toFixed(2)} is below what the piece costs to make ` +
+        `(${line.totalCost.toFixed(2)}), so it would let any price through unchecked. Put the ` +
         'price you want on the sheet instead — anything under the standing minimum goes for ' +
         'approval, which is the decision being made here.'
     );
   }
 
   // Derived, never typed — see the note above.
-  pricing.calculatedSellingPrice = priceFrom(pricing);
-  pricing.approvedSellingPrice =
-    approvedSellingPrice !== undefined ? approvedSellingPrice : pricing.calculatedSellingPrice;
+  line.calculatedSellingPrice = priceFrom(line);
+  line.approvedSellingPrice =
+    approvedSellingPrice !== undefined ? approvedSellingPrice : line.calculatedSellingPrice;
   pricing.costedBy = req.user._id;
 
   /*
-   * §9, and the reason this module exists rather than a price field on the enquiry: a costing
-   * under the floor cannot be quoted until somebody signs it off. Routing it here — at the
-   * moment the number is written — is what makes the block enforceable, rather than a rule
-   * somebody is supposed to remember when they build the quote.
+   * §9, on this line and no other.
+   *
+   * This is the whole reason the sheet has lines: a costing under the floor cannot be quoted
+   * until somebody signs it off, and that is a judgement about one model's price against one
+   * model's cost. Routing it at the moment the number is written is what makes the block
+   * enforceable rather than a rule somebody is supposed to remember when they build the quote —
+   * and routing it *per line* is what stops one signature clearing seven prices nobody read.
    */
-  const to = pricing.belowMinimum ? 'approval_pending' : 'approved';
-  if (pricing.status !== to) {
-    pricing.statusHistory.push({ from: pricing.status, to, by: req.user._id });
-    pricing.status = to;
+  const to = line.belowMinimum ? 'approval_pending' : 'approved';
+  if (line.status !== to) {
+    pricing.statusHistory.push({
+      from: line.status,
+      to,
+      by: req.user._id,
+      note: line.modelNumber || undefined,
+    });
+    line.status = to;
   }
   if (to === 'approved') {
-    pricing.approvedBy = req.user._id;
-    pricing.approvedAt = new Date();
+    line.approvedBy = req.user._id;
+    line.approvedAt = new Date();
   } else {
     /*
-     * A sheet waiting on a signature must not still claim to carry one. Re-costing an approved
+     * A line waiting on a signature must not still claim to carry one. Re-costing an approved
      * price below the floor lands here, and leaving the old approver on it would put "signed
      * off by MD" beside "needs approval" — the screen contradicting itself, and the reader
      * believing whichever half suits them.
      */
-    pricing.approvedBy = undefined;
-    pricing.approvedAt = undefined;
+    line.approvedBy = undefined;
+    line.approvedAt = undefined;
   }
 
   await pricing.save();
@@ -550,8 +626,23 @@ export const decidePricing = asyncHandler(async (req, res) => {
 
   const pricing = await Pricing.findById(req.params.id);
   if (!pricing) throw ApiError.notFound('Costing not found');
-  if (pricing.status !== 'approval_pending') {
-    throw ApiError.badRequest('This costing is not waiting on an approval');
+
+  /*
+   * One line, one decision.
+   *
+   * Without a `:lineId` this settles the first line, which is what every caller written before
+   * the sheet had lines means — and on a one-model sheet it is the only reading there is. On a
+   * sheet with four prices under the floor it is four presses, deliberately: the alternative is
+   * a single signature standing for models whose costs the signer never saw, which is the case
+   * §9 exists to prevent and the reason the floor lives on the line.
+   */
+  const line = lineOf(pricing, req);
+  if (line.status !== 'approval_pending') {
+    throw ApiError.badRequest(
+      line.modelNumber
+        ? `${line.modelNumber} is not waiting on an approval`
+        : 'This costing is not waiting on an approval'
+    );
   }
 
   const { approve, note } = req.body;
@@ -560,14 +651,21 @@ export const decidePricing = asyncHandler(async (req, res) => {
   }
 
   const to = approve ? 'approved' : 'rejected';
-  pricing.statusHistory.push({ from: pricing.status, to, by: req.user._id, note });
-  pricing.status = to;
+  /* The history is the sheet's, and the entry names the model, or a sheet with four decisions
+     on it reads as four moves nobody can tell apart. */
+  pricing.statusHistory.push({
+    from: line.status,
+    to,
+    by: req.user._id,
+    note: line.modelNumber ? `${line.modelNumber}${note ? ` — ${note}` : ''}` : note,
+  });
+  line.status = to;
 
   if (approve) {
-    pricing.approvedBy = req.user._id;
-    pricing.approvedAt = new Date();
+    line.approvedBy = req.user._id;
+    line.approvedAt = new Date();
   } else {
-    pricing.rejectionNote = note;
+    line.rejectionNote = note;
   }
 
   await pricing.save();
@@ -600,30 +698,44 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
   const pricing = await Pricing.findById(req.params.id);
   if (!pricing) throw ApiError.notFound('Costing not found');
 
-  if (pricing.status !== 'approved') {
+  /*
+   * The lines that actually have a price on them.
+   *
+   * **Read per line rather than off the sheet, and that changes who is held up.** A sheet with
+   * five models settled and one still under discussion used to be refused whole, because its
+   * roll-up read `approval_pending` — so one price waiting on a signature stopped the other five
+   * being offered, and the way round it was to raise the five somewhere else. The five are
+   * quoted now and the sixth stays on the sheet, to be added to the same document the day it
+   * clears. Nothing unapproved goes out either way: that is what this filter is.
+   */
+  const quotable = (pricing.lines || []).filter(
+    (line) => line.status === 'approved' && line.approvedSellingPrice
+  );
+
+  if (!quotable.length) {
+    /* Nothing to offer, and the reason is the state of the lines rather than of the sheet. */
     const why = {
       requested: 'This costing has no price on it yet',
       costed: 'This costing has no price on it yet',
       approval_pending: 'This costing is waiting on approval — it cannot be quoted yet',
       rejected: 'This costing was refused — it needs re-costing before it can be quoted',
     }[pricing.status];
-    throw ApiError.badRequest(why || 'Only an approved costing can be quoted');
-  }
-
-  if (!pricing.approvedSellingPrice) {
-    throw ApiError.badRequest('This costing has no approved price to quote');
+    throw ApiError.badRequest(why || 'This costing has no approved price to quote');
   }
 
   /*
-   * The minimum this price will be offered at.
+   * The minimum each price will be offered at.
    *
    * Read from the mould register rather than from the sheet: the MOQ is a term of the offer,
    * not a fact about the cost, so the costing does not carry one. Whoever is quoting may set a
    * different minimum for this buyer — the register is only the starting point, and a traded
    * piece has no tool to ask, so it starts at nothing and the quoter says.
    */
-  const mould = pricing.mould ? await Mould.findById(pricing.mould).select('moq') : null;
-  const moq = req.body.moq ?? mould?.moq ?? 0;
+  const moulds = new Map(
+    (
+      await Mould.find({ _id: { $in: quotable.map((line) => line.mould).filter(Boolean) } }).select('moq')
+    ).map((row) => [String(row._id), row])
+  );
 
   /*
    * There is deliberately no quantity here [§10].
@@ -637,17 +749,26 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
   const { moq: _m, unitPrice: _u, quotation: _q, ...terms } = req.body;
 
   /*
-   * One line, because one costing prices one model. The quotation carries as many as the buyer
-   * is being offered — the plant's own NP/26-27/1 puts eight models under one number — and they
-   * arrive one costing at a time through this door, not by it inventing models nothing priced.
+   * A quotation line per approved costing line, each carrying the line it came from.
+   *
+   * The sheet is the source of the models, not this door: it offers exactly what was priced and
+   * invents nothing. `pricingLine` is what lets the order booked from this quote read back the
+   * resin and the parts *that model* was costed against, rather than the first model on a sheet
+   * that now holds several.
+   *
+   * A rate or a minimum typed on the request applies only when there is one model to apply it
+   * to. On a sheet of five it would mean "offer all five at this price", which is not something
+   * anybody means — those are edited on the quotation, model by model.
    */
-  const line = {
-    moq,
-    unitPrice: req.body.unitPrice ?? pricing.approvedSellingPrice,
+  const only = quotable.length === 1;
+  const lines = quotable.map((costed) => ({
+    moq: (only ? req.body.moq : undefined) ?? moulds.get(String(costed.mould))?.moq ?? 0,
+    unitPrice: (only ? req.body.unitPrice : undefined) ?? costed.approvedSellingPrice,
     pricing: pricing._id,
-    mould: pricing.mould || undefined,
-    modelNumber: pricing.modelNumber,
-  };
+    pricingLine: costed._id,
+    mould: costed.mould || undefined,
+    modelNumber: costed.modelNumber,
+  }));
 
   /*
    * Onto a quotation already being drafted, when one is named.
@@ -676,11 +797,24 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
     if (String(quotation.customer) !== String(pricing.customer)) {
       throw ApiError.badRequest(`${quotation.number} is for a different customer`);
     }
-    if (quotation.lines.some((existing) => String(existing.pricing) === String(pricing._id))) {
+    /*
+     * A model already on that document is not offered twice — but the others on the same sheet
+     * still are. A line quoted before the sheet had lines names no line of it, and on those the
+     * sheet was one model, so it stands for the whole of it.
+     */
+    const already = (row) =>
+      quotation.lines.some(
+        (existing) =>
+          String(existing.pricing) === String(pricing._id)
+          && (!existing.pricingLine || String(existing.pricingLine) === String(row.pricingLine))
+      );
+
+    const fresh = lines.filter((row) => !already(row));
+    if (!fresh.length) {
       throw ApiError.badRequest(`${pricing.number} is already on ${quotation.number}`);
     }
 
-    quotation.lines.push(line);
+    quotation.lines.push(...fresh);
     /* Rev 0 is what will be offered, and nothing has been offered yet — see `updateQuotation`. */
     quotation.revisions[0] = {
       ...quotation.revisions[0].toObject(),
@@ -725,7 +859,7 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
   const quotation = await newQuotation(
     {
       ...terms,
-      lines: [line],
+      lines,
       customer: pricing.customer,
       enquiry: pricing.enquiry || undefined,
     },
@@ -776,12 +910,29 @@ export const updatePricing = asyncHandler(async (req, res) => {
   const before = snapshot(pricing);
   const patch = withoutVersion(req.body);
 
-  if (patch.mould) {
-    const tool = await Mould.findById(patch.mould);
-    if (!tool) throw ApiError.badRequest('That mould is not on the register');
-    // The register fills in what it knows, unless this request says otherwise.
-    patch.modelNumber = patch.modelNumber || tool.mouldCode;
-    patch.material = patch.material || tool.material;
+  /*
+   * A correction splits in two: what is about the *job* stays on the sheet, what is about a
+   * *model* goes to the line this request names. Assigning the lot to the sheet would have
+   * written the model fields onto virtuals, where they would have vanished without a word.
+   */
+  const LINE_FIELDS = ['mould', 'materialRef', 'hookRef', 'clipRef', 'printRef',
+    'modelNumber', 'material', 'procurement', 'printing', 'markupPercent'];
+
+  if (LINE_FIELDS.some((field) => patch[field] !== undefined)) {
+    const line = lineOf(pricing, req);
+
+    if (patch.mould) {
+      const tool = await Mould.findById(patch.mould);
+      if (!tool) throw ApiError.badRequest('That mould is not on the register');
+      // The register fills in what it knows, unless this request says otherwise.
+      patch.modelNumber = patch.modelNumber || tool.mouldCode;
+      patch.material = patch.material || tool.material;
+    }
+
+    for (const field of LINE_FIELDS) {
+      if (patch[field] !== undefined) line[field] = patch[field];
+      delete patch[field];
+    }
   }
 
   /*

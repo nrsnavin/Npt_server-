@@ -17,6 +17,7 @@
     "doctor:indexes": "node scripts/doctor-indexes.js",
     "reset-data": "node scripts/reset-data.js",
     "migrate:quotation-lines": "node scripts/migrate-quotation-lines.js",
+    "migrate:pricing-lines": "node scripts/migrate-pricing-lines.js",
     "migrate:moulds": "node scripts/migrate-catalogue-to-moulds.js",
     "migrate:grants": "node scripts/migrate-module-grants.js",
     "migrate:task-departments": "node scripts/migrate-task-departments.js",

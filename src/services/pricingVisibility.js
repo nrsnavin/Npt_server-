@@ -1,6 +1,7 @@
 import ApiError from '../utils/ApiError.js';
 import { accessLevel } from './access.service.js';
 import { levelSatisfies } from '../config/modules.js';
+import { costingLine } from './pricing.service.js';
 
 /**
  * Who may see what on a costing sheet [BLUEPRINT §8].
@@ -96,6 +97,31 @@ export function visibleTo(pricing, user) {
   for (const field of CONFIDENTIAL) delete plain[field];
 
   /*
+   * And inside every line, which is where the cost base actually lives now.
+   *
+   * The top-level fields above are virtuals reading the first line [models/Pricing.js], so
+   * deleting them redacts one model's figures and leaves the other seven sitting in `lines`
+   * untouched. This is the leak the redesign could most easily have introduced, and it would
+   * have been invisible: the sheet would have looked properly redacted at a glance, and a
+   * marketing reader would have had the full cost of every model but the first.
+   *
+   * The same list, applied the same way, because they are the same fields — a line is what the
+   * sheet used to be.
+   */
+  plain.lines = (plain.lines || []).map((line) => {
+    const seen = { ...line };
+    for (const field of CONFIDENTIAL) delete seen[field];
+
+    /* The tool travels on the line and carries its own money, exactly as it did on the sheet. */
+    if (seen.mould && typeof seen.mould === 'object') seen.mould = mouldVisibleTo(seen.mould, user);
+
+    /* Facts about what happens next, not figures — the same two the sheet keeps below. */
+    seen.belowMinimum = Boolean(line.belowMinimum);
+    seen.needsApproval = line.status === 'approval_pending';
+    return seen;
+  });
+
+  /*
    * The mould travels with the sheet, and it carries its own money. Redacting the cost lines
    * here while the tool populated beside them reports a machine rate and a cost per piece would
    * be the leak arriving through the door this function is standing in front of.
@@ -138,12 +164,20 @@ export const allVisibleTo = (rows, user) => rows.map((row) => visibleTo(row, use
  * distinction `visibleTo` above draws for `belowMinimum`, and it is drawn again here rather than
  * inherited because the comparison is against a different price.
  *
+ * **One line of the sheet, not the sheet.** A costing prices several models now, each with its
+ * own cost and its own floor, so a quotation line has to be read against the line it was priced
+ * from — otherwise the margin shown is one model's price over another model's cost, which is
+ * worse than showing nothing because it looks like an answer.
+ *
  * @param {object} pricing   the populated costing, or null
- * @param {number} unitPrice what this line actually quotes
+ * @param {object} line      the quotation line: what it quotes, and which costing line from
  * @param {object} user
  */
-export function lineCosting(pricing, unitPrice, user) {
+export function lineCosting(pricing, line, user) {
   if (!pricing) return null;
+
+  const unitPrice = line?.unitPrice;
+  const costed = costingLine(pricing, line) || {};
 
   /*
    * An allow-list, never a `select`. The costing's totals are virtuals and are recomputed on the
@@ -153,11 +187,13 @@ export function lineCosting(pricing, unitPrice, user) {
   const seen = {
     _id: pricing._id,
     number: pricing.number,
-    status: pricing.status,
-    approvedSellingPrice: pricing.approvedSellingPrice,
+    /* The line's own state, because §9 is decided per model — the sheet's roll-up says
+       "approved" while the model on this line is still waiting on a signature. */
+    status: costed.status || pricing.status,
+    approvedSellingPrice: costed.approvedSellingPrice,
   };
 
-  const floor = pricing.minimumSellingPrice;
+  const floor = costed.minimumSellingPrice;
   /* Only a real comparison counts: an uncosted sheet has no floor, and `undefined < n` is false
      for the wrong reason. */
   seen.belowFloor =
@@ -165,7 +201,7 @@ export function lineCosting(pricing, unitPrice, user) {
 
   if (!seesCosting(user)) return seen;
 
-  const cost = pricing.totalCost;
+  const cost = costed.totalCost;
   seen.totalCost = cost;
   seen.minimumSellingPrice = floor;
 

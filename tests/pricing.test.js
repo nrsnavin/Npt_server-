@@ -270,25 +270,55 @@ test('every money field on the sheet has been ruled on', async () => {
   const { default: Pricing } = await import('../src/models/Pricing.js');
 
   /*
-   * Every number on the sheet, by its type rather than by its name. Matching on the name
-   * caught `costedBy`, which is a person — and a guard that cries wolf is one somebody
-   * eventually silences.
+   * The money moved down a level when the sheet gained lines, so this walks the line schema as
+   * well — and that is the half that now matters. The top-level fields are virtuals reading the
+   * first line, so a guard that only looked at them would have gone on passing while every cost
+   * on models two through eight sat unredacted in `lines`.
    */
-  const numbers = Object.entries(Pricing.schema.paths)
-    .filter(([name, path]) => path.instance === 'Number' && name !== '__v')
-    .map(([name]) => name);
+  const lineSchema = Pricing.schema.path('lines').schema;
 
-  // Virtuals have no declared type, so they are named — but they are six, and all derived.
-  const derived = Object.keys(Pricing.schema.virtuals).filter(
-    (name) => !['id', 'belowMinimum', 'needsApproval'].includes(name)
-  );
+  /*
+   * Every number, by its type rather than by its name. Matching on the name caught `costedBy`,
+   * which is a person — and a guard that cries wolf is one somebody eventually silences.
+   */
+  const numbersIn = (schema) =>
+    Object.entries(schema.paths)
+      .filter(([name, path]) => path.instance === 'Number' && name !== '__v')
+      .map(([name]) => name);
 
-  const undecided = [...numbers, ...derived].filter((name) => {
+  /*
+   * Facts about what happens next rather than figures, which §8 deliberately keeps: whether a
+   * price is under the floor, whether anything is blocked, and how many prices are waiting.
+   * None of them says what anything costs.
+   */
+  const NOT_FIGURES = ['id', 'belowMinimum', 'needsApproval', 'linesAwaitingApproval'];
+
+  /*
+   * A sheet virtual that also names a line field is ruled by whatever rules that field — it is
+   * the same fact, read through the first line. Anything the sheet invents on its own has to be
+   * ruled on explicitly, so a virtual added later still breaks the build.
+   */
+  const onTheLine = new Set([
+    ...Object.keys(lineSchema.paths),
+    ...Object.keys(lineSchema.virtuals),
+  ]);
+
+  const virtualsOf = (schema) =>
+    Object.keys(schema.virtuals).filter((name) => !NOT_FIGURES.includes(name));
+
+  const ruled = (name) => {
     const root = name.split('.')[0];
-    return !CONFIDENTIAL.includes(root) && !PUBLIC_FIGURES.includes(root);
-  });
+    return CONFIDENTIAL.includes(root) || PUBLIC_FIGURES.includes(root) || onTheLine.has(root);
+  };
 
-  assert.deepEqual(undecided, [], `these have no §8 ruling: ${undecided.join(', ')}`);
+  const undecided = [
+    ...numbersIn(Pricing.schema),
+    ...numbersIn(lineSchema),
+    ...virtualsOf(Pricing.schema),
+    ...virtualsOf(lineSchema),
+  ].filter((name) => !ruled(name));
+
+  assert.deepEqual([...new Set(undecided)], [], `these have no §8 ruling: ${undecided.join(', ')}`);
 });
 
 test('only costing may build a sheet', async () => {

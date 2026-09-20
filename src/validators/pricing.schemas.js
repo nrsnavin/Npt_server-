@@ -26,8 +26,36 @@ export const pricingSchema = z.object({
   /** Made here or bought in — the sheet's TRADE / MANUFACTURE column. */
   procurement: z.enum(['manufacture', 'trade']).optional(),
   printing: z.string().optional(),
+  markupPercent: z.number().min(0).max(500).optional(),
   targetPrice: money.optional(),
   remarks: z.string().optional(),
+  /*
+   * Several models on one sheet.
+   *
+   * The single-model fields above stay, because that is still how most costings are raised and
+   * the door accepts either shape — a request that names a mould and a model number becomes
+   * the one line on the sheet. `lines` is for the conversation that covered four.
+   *
+   * No `cost` on a line here, matching the single-model shape: this route *raises* a costing
+   * and `/cost` builds it. A cost posted to this door would look accepted and be dropped.
+   */
+  lines: z
+    .array(
+      z.object({
+        mould: objectId.optional(),
+        materialRef: objectId.optional(),
+        hookRef: objectId.optional(),
+        clipRef: objectId.optional(),
+        printRef: objectId.optional(),
+        modelNumber: z.string().optional(),
+        material: z.enum(MATERIALS).optional(),
+        procurement: z.enum(['manufacture', 'trade']).optional(),
+        printing: z.string().optional(),
+        markupPercent: z.number().min(0).max(500).optional(),
+      })
+    )
+    .max(12)
+    .optional(),
 });
 
 /**
@@ -43,6 +71,9 @@ export const pricingSchema = z.object({
  */
 export const pricingCostSchema = z
   .strictObject({
+    /** Which line is being costed. Absent means the first, which is the whole sheet when there
+        is only one — see `lineOf` in the controller. */
+    line: objectId.optional(),
     cost: z
       .object({
         gramWeight: money.optional(),
@@ -115,6 +146,8 @@ export const pricingUpdateSchema = z
   .extend(versioned);
 
 export const pricingDecisionSchema = z.object({
+  /** Which price is being signed off. Absent means the first line — see `lineOf`. */
+  line: objectId.optional(),
   approve: z.boolean(),
   note: z.string().optional(),
 });
@@ -171,6 +204,14 @@ const quotationLine = z.object({
   _id: objectId.optional(),
   mould: objectId.optional(),
   pricing: objectId.optional(),
+  /**
+   * Which line of that sheet, now that a sheet prices several models [§7].
+   *
+   * Optional, because a line built by the app's own "raise a quotation" door already carries it
+   * and a line typed by hand usually names a model instead — see `costingLine`, which falls back
+   * to matching on the model number and then to the sheet's first line.
+   */
+  pricingLine: objectId.optional(),
   modelNumber: z.string().optional(),
   /**
    * Legacy and optional — see the note on the model.

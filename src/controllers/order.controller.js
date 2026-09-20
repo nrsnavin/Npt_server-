@@ -448,8 +448,13 @@ export const orderFromQuotation = asyncHandler(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id)
     .populate('lines.mould', '_id')
     /* The costing behind each line, for its register picks — see the note where they are read.
-       Only the four references: this is not the place a price is looked at. */
-    .populate('lines.pricing', '_id materialRef hookRef clipRef printRef');
+       A sheet prices several models, so the picks sit on its lines; the quotation line says
+       which of them it was built from. Only the four references: this is not the place a price
+       is looked at, and `lines` is selected without the cost fields for that reason. */
+    .populate(
+      'lines.pricing',
+      '_id lines._id lines.modelNumber lines.materialRef lines.hookRef lines.clipRef lines.printRef'
+    );
   if (!quotation) throw ApiError.notFound('Quotation not found');
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
 
@@ -506,7 +511,7 @@ export const orderFromQuotation = asyncHandler(async (req, res) => {
            * this way is made of exactly what was priced, and the two stop being able to differ.
            * Anything the PO itself specifies wins, because the buyer's paperwork governs.
            */
-          ...registersFromPricing(line.pricing, asked),
+          ...registersFromPricing(line.pricing, asked, line),
           colour: asked.colour,
           printing: asked.printing,
           packing: asked.packing || quotation.packing,

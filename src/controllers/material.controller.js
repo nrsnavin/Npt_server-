@@ -140,17 +140,29 @@ export const materialPricings = asyncHandler(async (req, res) => {
   const material = await Material.findById(req.params.id);
   if (!material) throw ApiError.notFound('Material not found');
 
-  const rows = await Pricing.find({ materialRef: material._id })
-    .select('number status modelNumber cost.rawMaterialRate approvedSellingPrice createdAt')
+  /*
+   * A sheet prices several models now, and only some of them may be in this resin. The question
+   * is still "which sheets are stale", so the match is on the line and the staleness is judged
+   * on the lines that actually name this material — a sheet whose second model is in HIPS is
+   * not stale because its first is in PP.
+   */
+  const rows = await Pricing.find({ 'lines.materialRef': material._id })
+    .select('number status lines.modelNumber lines.materialRef lines.cost.rawMaterialRate '
+      + 'lines.approvedSellingPrice createdAt customer')
     .populate('customer', 'name')
     .sort('-createdAt')
     .limit(50);
+
+  const onThisResin = (row) =>
+    (row.lines || []).filter((line) => String(line.materialRef) === String(material._id));
 
   res.json({
     success: true,
     data: rows,
     /* The ones built on a rate that has since moved — the actual answer to "what is stale?" */
-    stale: rows.filter((row) => row.cost?.rawMaterialRate !== material.ratePerKg).length,
+    stale: rows.filter((row) =>
+      onThisResin(row).some((line) => line.cost?.rawMaterialRate !== material.ratePerKg)
+    ).length,
   });
 });
 

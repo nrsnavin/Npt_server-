@@ -133,18 +133,27 @@ export const componentPricings = asyncHandler(async (req, res) => {
     component.kind
   ];
 
-  const rows = await Pricing.find({ [field]: component._id })
-    .select(`number status modelNumber ${line} approvedSellingPrice createdAt`)
+  /*
+   * Matched on the line, because a sheet prices several models and only some of them carry this
+   * part. Staleness is judged on the lines that actually name it — a sheet whose second model
+   * uses a different hook is not stale because its first one's rate moved.
+   */
+  const rows = await Pricing.find({ [`lines.${field}`]: component._id })
+    .select(`number status lines.modelNumber lines.${field} lines.${line} `
+      + 'lines.approvedSellingPrice createdAt customer')
     .populate('customer', 'name')
     .sort('-createdAt')
     .limit(50);
 
-  const on = (row) => line.split('.').reduce((value, key) => value?.[key], row);
+  const rateOn = (row) =>
+    (row.lines || [])
+      .filter((entry) => String(entry[field]) === String(component._id))
+      .map((entry) => line.split('.').reduce((value, key) => value?.[key], entry));
 
   res.json({
     success: true,
     data: rows,
-    stale: rows.filter((row) => on(row) !== component.ratePerPiece).length,
+    stale: rows.filter((row) => rateOn(row).some((rate) => rate !== component.ratePerPiece)).length,
   });
 });
 

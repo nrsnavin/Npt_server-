@@ -10,6 +10,7 @@ import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { EVENTS, publish } from '../services/events.service.js';
+import { costingLine } from '../services/pricing.service.js';
 import { narrowToOwner, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { renderQuotationPdf } from '../services/quotationPdf.js';
 import { bufferOf } from '../services/storage.service.js';
@@ -63,10 +64,20 @@ async function lineIsCleared(line) {
   const pricing = await Pricing.findById(line.pricing);
   if (!pricing) return { cleared: true };
 
-  if (pricing.status === 'approval_pending') {
+  /*
+   * The line of that sheet this price came off, not the sheet.
+   *
+   * A sheet prices several models and each carries its own floor and its own §9 decision, so
+   * reading the sheet's roll-up here would check one model's price against another model's
+   * minimum — and a roll-up says "approved" while a model on the same sheet is still waiting.
+   */
+  const costing = costingLine(pricing, line);
+  if (!costing) return { cleared: true };
+
+  if (costing.status === 'approval_pending') {
     return { cleared: false, why: 'waiting', one: 'its costing is still waiting on approval', many: 'their costings are still waiting on approval' };
   }
-  if (pricing.status === 'rejected') {
+  if (costing.status === 'rejected') {
     return { cleared: false, why: 'refused', one: 'its costing was refused and needs re-costing', many: 'their costings were refused and need re-costing' };
   }
   /*
@@ -81,8 +92,8 @@ async function lineIsCleared(line) {
    * discount to it without asking, which is what a minimum is for.
    */
   const floor = Math.min(
-    pricing.minimumSellingPrice ?? Infinity,
-    pricing.approvedSellingPrice ?? Infinity
+    costing.minimumSellingPrice ?? Infinity,
+    costing.approvedSellingPrice ?? Infinity
   );
 
   if (Number.isFinite(floor) && line.unitPrice < floor) {
@@ -255,7 +266,7 @@ export const listQuotations = asyncHandler(async (req, res) => {
   const rows = data.map((quotation) => {
     const row = quotation.toJSON();
     for (const line of row.lines || []) {
-      line.pricing = lineCosting(line.pricing, line.unitPrice, req.user);
+      line.pricing = lineCosting(line.pricing, line, req.user);
     }
     return row;
   });
@@ -310,7 +321,7 @@ export const getQuotation = asyncHandler(async (req, res) => {
    * same quotation — which a projection cannot express.
    */
   for (const line of data.lines || []) {
-    line.pricing = lineCosting(line.pricing, line.unitPrice, req.user);
+    line.pricing = lineCosting(line.pricing, line, req.user);
   }
 
   res.json({ success: true, data });

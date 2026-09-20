@@ -164,27 +164,34 @@ export async function seedRegisterCostings({ admin, nandhini }) {
     const pricing = new Pricing({
       number: await nextNumber('PRC'),
       customer: customer._id,
-      mould: mould._id,
-      materialRef: material._id,
-      hookRef: parts.hook?._id,
-      clipRef: parts.clip?._id,
-      printRef: parts.print?._id,
-      /* The buyer's word for the model. The tool is named above; this is what goes on paper. */
-      modelNumber: job.model,
-      material: material.type,
-      procurement: 'manufacture',
-      printing: job.printing,
-      /* The one line that matters: the registers fill the sheet, exactly as the app does. */
-      cost: costingFrom(mould, material, parts),
-      markupPercent: job.markupPercent,
+      /* One model per sheet here. A sheet holds several [§7]; these seven are seven jobs. */
+      lines: [
+        {
+          mould: mould._id,
+          materialRef: material._id,
+          hookRef: parts.hook?._id,
+          clipRef: parts.clip?._id,
+          printRef: parts.print?._id,
+          /* The buyer's word for the model. The tool is named above; this goes on paper. */
+          modelNumber: job.model,
+          material: material.type,
+          procurement: 'manufacture',
+          printing: job.printing,
+          /* The line that matters: the registers fill the sheet, exactly as the app does. */
+          cost: costingFrom(mould, material, parts),
+          markupPercent: job.markupPercent,
+        },
+      ],
       requestedBy: nandhini._id,
       costedBy: admin._id,
       remarks: job.remarks,
     });
 
+    const line = pricing.lines[0];
+
     /* The app's own tier arithmetic, not a second copy of it — same reasoning as `costingFrom`. */
-    pricing.calculatedSellingPrice = priceFrom(pricing);
-    pricing.approvedSellingPrice = pricing.calculatedSellingPrice;
+    line.calculatedSellingPrice = priceFrom(line);
+    line.approvedSellingPrice = line.calculatedSellingPrice;
 
     /*
      * All of these clear their own floor, because they are priced off the tiers rather than off
@@ -192,9 +199,9 @@ export async function seedRegisterCostings({ admin, nandhini }) {
      * what the seed was missing was the ordinary state — an approved costing somebody can
      * actually raise a quotation from.
      */
-    pricing.status = 'approved';
-    pricing.approvedBy = admin._id;
-    pricing.approvedAt = new Date();
+    line.status = 'approved';
+    line.approvedBy = admin._id;
+    line.approvedAt = new Date();
     pricing.statusHistory = [
       { to: 'requested', by: nandhini._id },
       { from: 'requested', to: 'costed', by: admin._id },
