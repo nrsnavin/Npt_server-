@@ -135,6 +135,8 @@ export const pricingCostSchema = z
  */
 export const pricingUpdateSchema = z
   .strictObject({
+    /** Which model on the sheet is being corrected. Absent means the first — see `lineOf`. */
+    line: objectId.optional(),
     mould: objectId.optional(),
     modelNumber: z.string().optional(),
     material: z.enum(MATERIALS).optional(),

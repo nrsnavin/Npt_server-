@@ -731,9 +731,38 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
    * different minimum for this buyer — the register is only the starting point, and a traded
    * piece has no tool to ask, so it starts at nothing and the quoter says.
    */
+  /*
+   * What is left to offer, which is not the same as what is approved.
+   *
+   * **One live quotation per model**, now that a sheet prices several. Two of five quoted last
+   * week must not stop the other three going out this week — the sheet-wide refusal this
+   * replaces sent whoever hit it off to raise a second costing for models the first one had
+   * already priced. A quotation line raised before the sheet had lines names none, and those
+   * sheets held one model, so it stands for the whole of it.
+   *
+   * A quotation the customer has *answered* is not in the way: they said no to that price, so
+   * re-costing and re-quoting is the ordinary next move and exactly what this door is for.
+   */
+  const live = await Quotation.find({
+    'lines.pricing': pricing._id,
+    status: { $nin: CLOSED_QUOTATION_STATUSES },
+  }).select('number lines');
+
+  const out = new Set(
+    live.flatMap((quote) =>
+      (quote.lines || [])
+        .filter((row) => String(row.pricing) === String(pricing._id))
+        .map((row) => String(row.pricingLine || 'the whole sheet'))
+    )
+  );
+
+  const offerable = out.has('the whole sheet')
+    ? []
+    : quotable.filter((row) => !out.has(String(row._id)));
+
   const moulds = new Map(
     (
-      await Mould.find({ _id: { $in: quotable.map((line) => line.mould).filter(Boolean) } }).select('moq')
+      await Mould.find({ _id: { $in: offerable.map((line) => line.mould).filter(Boolean) } }).select('moq')
     ).map((row) => [String(row._id), row])
   );
 
@@ -760,8 +789,8 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
    * to. On a sheet of five it would mean "offer all five at this price", which is not something
    * anybody means — those are edited on the quotation, model by model.
    */
-  const only = quotable.length === 1;
-  const lines = quotable.map((costed) => ({
+  const only = offerable.length === 1;
+  const lines = offerable.map((costed) => ({
     moq: (only ? req.body.moq : undefined) ?? moulds.get(String(costed.mould))?.moq ?? 0,
     unitPrice: (only ? req.body.unitPrice : undefined) ?? costed.approvedSellingPrice,
     pricing: pricing._id,
@@ -798,23 +827,17 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
       throw ApiError.badRequest(`${quotation.number} is for a different customer`);
     }
     /*
-     * A model already on that document is not offered twice — but the others on the same sheet
-     * still are. A line quoted before the sheet had lines names no line of it, and on those the
-     * sheet was one model, so it stands for the whole of it.
+     * A model already out is not offered twice — but the others on the same sheet still are.
+     * `lines` above has already dropped them, this names the document holding them: the one
+     * being added to when it is that, because "it is already on this quote" is the answer
+     * somebody pressing twice needs.
      */
-    const already = (row) =>
-      quotation.lines.some(
-        (existing) =>
-          String(existing.pricing) === String(pricing._id)
-          && (!existing.pricingLine || String(existing.pricingLine) === String(row.pricingLine))
-      );
-
-    const fresh = lines.filter((row) => !already(row));
-    if (!fresh.length) {
-      throw ApiError.badRequest(`${pricing.number} is already on ${quotation.number}`);
+    if (!lines.length) {
+      const holding = live.find((quote) => String(quote._id) === String(quotation._id)) || live[0];
+      throw ApiError.badRequest(`${pricing.number} is already on ${holding.number}`);
     }
 
-    quotation.lines.push(...fresh);
+    quotation.lines.push(...lines);
     /* Rev 0 is what will be offered, and nothing has been offered yet — see `updateQuotation`. */
     quotation.revisions[0] = {
       ...quotation.revisions[0].toObject(),
@@ -830,28 +853,20 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
   }
 
   /*
-   * One live quotation per sheet.
+   * A new document, for whatever is left to offer.
    *
-   * Adding a sheet to an existing quotation is carefully guarded a few lines above — it refuses
-   * a sheet already on that document. Starting a *new* one was guarded by nothing, and the
-   * button that does it sits on a screen somebody presses on their way past: two presses, and
-   * there are two quotation numbers offering the same model to the same buyer at the same
-   * price. Which of them the buyer holds is then whichever was emailed, and the other sits in
-   * the sent board being chased.
+   * Starting one was guarded by nothing, and the button that does it sits on a screen somebody
+   * presses on their way past: two presses, and there are two quotation numbers offering the
+   * same model to the same buyer at the same price. Which of them the buyer holds is then
+   * whichever was emailed, and the other sits in the sent board being chased.
    *
-   * Refused rather than handed back, because a second press is usually a mistake and the useful
-   * answer names the document that already exists. A quotation the customer has *answered* is
-   * not in the way: they said no to that price, so re-costing and re-quoting is the ordinary
-   * next move and exactly what this door is for.
+   * `lines` above is already only what has not been offered, so nothing is left means nothing
+   * is left — refused by name, because a second press is usually a mistake and the useful
+   * answer is the document that already exists.
    */
-  const live = await Quotation.findOne({
-    'lines.pricing': pricing._id,
-    status: { $nin: CLOSED_QUOTATION_STATUSES },
-  });
-
-  if (live) {
+  if (!lines.length) {
     throw ApiError.conflict(
-      `${pricing.number} is already quoted on ${live.number}. Revise that one, or record what ` +
+      `${pricing.number} is already quoted on ${live[0].number}. Revise that one, or record what ` +
         'the customer said about it first.'
     );
   }

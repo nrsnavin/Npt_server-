@@ -288,6 +288,47 @@ test('a model still waiting on a signature is not quoted, and the rest are', asy
   assert.equal(quote.json.data.lines[0].modelNumber, 'NH-300');
 });
 
+test('quoting two of three does not stop the third going out later', async () => {
+  const sheet = await twoModelSheet();
+  const [small, big] = sheet.lines;
+  await cost(sheet._id, small._id, { markupPercent: 10 });
+  /* The second is held, so the first is quoted on its own. */
+  await cost(sheet._id, big._id, { markupPercent: 10, approvedSellingPrice: 1 });
+
+  const first = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+  assert.equal(first.status, 201, first.json.message);
+  assert.equal(first.json.data.lines.length, 1);
+
+  /* Management signs the second off a week later. */
+  const decided = await api(`/api/pricings/${sheet._id}/decision`, {
+    method: 'POST', token: admin, body: { line: big._id, approve: true },
+  });
+  assert.equal(decided.status, 200, decided.json.message);
+
+  /*
+   * **The refusal this replaces.** One live quotation per *sheet* meant the model just approved
+   * could not be offered at all: the sheet was "already quoted", and the way round it was to
+   * raise a second costing for a model this one had already priced. The block belongs to the
+   * model, so the one that has not been out goes out.
+   */
+  const second = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+  assert.equal(second.status, 201, second.json.message);
+  assert.equal(second.json.data.lines.length, 1);
+  assert.equal(second.json.data.lines[0].modelNumber, 'NH-450');
+  assert.notEqual(second.json.data.number, first.json.data.number);
+
+  /* And a third press has nothing left to offer, which is still refused by name. */
+  const again = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST', token: nandhini, body: {},
+  });
+  assert.equal(again.status, 409);
+  assert.match(again.json.message, /already quoted on/i);
+});
+
 /* ----------------------------- §9 at the send gate ----------------------------- */
 
 test('a line is checked against its own floor, not the first line’s', async () => {
