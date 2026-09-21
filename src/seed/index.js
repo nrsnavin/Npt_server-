@@ -19,6 +19,7 @@ import { seedComponents } from './components.js';
 import { seedPricing } from './pricing.js';
 import { seedRegisterCostings } from './registerCostings.js';
 import { seedOrders } from './orders.js';
+import { seedQueries } from './queries.js';
 import { FULL, few } from './size.js';
 
 /** Dates relative to today, so the reminder feed always has something to show. */
@@ -240,6 +241,22 @@ async function seed() {
     anita: byEmail['despatch@npthangers.com'],
   });
 
+  /*
+   * Last of all, because a query is about a buyer and the grant it writes lands on the customer
+   * record — so every customer has to exist, and `seedPipeline` must already have decided who
+   * owns them. It is also the screen the application opens on, and an empty one there reads as a
+   * module that was never built.
+   */
+  console.log('Adding the questions people are waiting on each other for...');
+  const asked = await seedQueries({
+    nandhini: byEmail['marketing@npthangers.com'],
+    arun: byEmail['marketing2@npthangers.com'],
+    ramesh: byEmail['production@npthangers.com'],
+    anita: byEmail['despatch@npthangers.com'],
+    kiran: byEmail['accounts@npthangers.com'],
+    admin: byEmail['rsnavin1@gmail.com'],
+  });
+
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));
 
   console.log(
@@ -304,6 +321,11 @@ async function seed() {
     `  Phase 5: ${trade.receivables} receivables carrying ` +
       `₹${trade.owed.toLocaleString('en-IN')} still owed — a broken promise, an overdue nobody ` +
       `has rung, a part-paid one due this week, an advance promised ahead, and one in dispute.`
+  );
+  console.log(
+    `  Queries: ${asked.queries} threads about a buyer — ${asked.unanswered} nobody has ` +
+      `answered yet and ${asked.closed} settled and closed — opening those buyers to ` +
+      `${asked.grants} people who do not own them.`
   );
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');
