@@ -603,3 +603,159 @@ test('a re-sample is the same bag, with what the bench changed', async () => {
   /* And the rows are its own, not the previous attempt's. */
   assert.notEqual(String(next.items[0]._id), String(sample.items[0]._id));
 });
+
+/* ------------------------- A row names its own tool ------------------------- */
+
+/*
+ * The thing that made every model after the first a lesser record.
+ *
+ * One mould was named on the enquiry and belonged to item one by convention, so rows two
+ * onward could describe a hanger but never point at the steel that makes it [§28] — which is
+ * what a costing line, a bench instruction and a quotation all key off. A buyer ringing about
+ * three hangers is describing three real models, and each of them either runs on a tool the
+ * plant owns, is bought in, or is a development nobody has cut yet.
+ */
+
+/** A tool on the register, for the rows below to name. */
+const registerMould = async (code, name) => {
+  const { status, json } = await api('/api/moulds', {
+    method: 'POST',
+    token: admin,
+    body: {
+      mouldCode: code,
+      name,
+      category: 'shirt',
+      sizeMm: 380,
+      material: 'pp',
+      cavities: 8,
+      partWeightGrams: 14,
+      cycleTimeSeconds: 24,
+    },
+  });
+  assert.equal(status, 201, json.message);
+  return json.data._id;
+};
+
+test('every item names its own tool, not just the first', async () => {
+  const first = await registerMould('M-380A', 'Top hanger 380mm');
+  const second = await registerMould('M-410A', 'Top hanger 410mm');
+
+  const { status, json } = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [
+        { mould: first, modelNumber: 'NPT-380', colour: 'White' },
+        { mould: second, modelNumber: 'NPT-410', colour: 'Black' },
+      ],
+      ...followUp,
+    },
+  });
+
+  assert.equal(status, 201, json.message);
+  assert.equal(String(json.data.items[0].mould?._id ?? json.data.items[0].mould), first);
+  assert.equal(String(json.data.items[1].mould?._id ?? json.data.items[1].mould), second,
+    'the second model is made on its own steel, not on the first one’s');
+
+  /* And the enquiry's own field follows row one, so everything reading the flat shape is right. */
+  assert.equal(String(json.data.mould?._id ?? json.data.mould), first);
+});
+
+test('an enquiry described only by its rows is not refused for naming no tool', async () => {
+  /*
+   * The check that an enquiry says *what* was asked for runs before the model lifts row one's
+   * tool up onto the document. Judging it on the enquiry's own `mould` alone would refuse a
+   * perfectly well-described enquiry for the crime of naming its tools one row at a time.
+   */
+  const only = await registerMould('M-390A', 'Top hanger 390mm');
+
+  const { status, json } = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    /* No modelNumber anywhere, no new-development tick, no enquiry-level mould: the row is the
+       only thing that says what this is about. */
+    body: { customer: customerId, items: [{ mould: only }], ...followUp },
+  });
+
+  assert.equal(status, 201, json.message);
+  assert.equal(String(json.data.mould?._id ?? json.data.mould), only);
+});
+
+test('a row that says nothing but names a tool is kept, not dropped', async () => {
+  const kept = await registerMould('M-420A', 'Top hanger 420mm');
+
+  const { json } = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [{ modelNumber: 'NPT-400', colour: 'White' }, { mould: kept }],
+      ...followUp,
+    },
+  });
+
+  assert.equal(json.data.items.length, 2, '"the 420, same as last time" is a complete answer');
+  assert.equal(String(json.data.items[1].mould?._id ?? json.data.items[1].mould), kept);
+});
+
+test('editing the list does not quietly clear a tool the row never mentioned', async () => {
+  /*
+   * The failure this guards is silent and expensive. Every enquiry written before a row carried
+   * a tool has one on the enquiry and a first row that does not mention it. The model takes the
+   * list as the truth when somebody edits it — so without a fallback, the first correction made
+   * through the new form would read "row one names no tool" and clear a live record's mould.
+   */
+  const tool = await registerMould('M-430A', 'Top hanger 430mm');
+
+  const raised = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: { customer: customerId, mould: tool, requirement: { colour: 'White' }, ...followUp },
+  });
+  assert.equal(raised.status, 201, raised.json.message);
+
+  /* A correction that says nothing about the tool — exactly what an old record's row looks. */
+  const edited = await api(`/api/enquiries/${raised.json.data._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { items: [{ colour: 'Grey' }] },
+  });
+
+  assert.equal(edited.status, 200, edited.json.message);
+  assert.equal(edited.json.data.items[0].colour, 'Grey');
+  assert.equal(String(edited.json.data.mould?._id ?? edited.json.data.mould), tool,
+    'the tool is still there');
+});
+
+test('a sample raised off the enquiry gets each model’s own tool', async () => {
+  const first = await registerMould('M-440A', 'Top hanger 440mm');
+  const second = await registerMould('M-450A', 'Top hanger 450mm');
+
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [
+        { mould: first, modelNumber: 'NPT-440' },
+        { mould: second, modelNumber: 'NPT-450' },
+      ],
+      ...followUp,
+    },
+  });
+  assert.equal(enquiry.status, 201, enquiry.json.message);
+
+  const sample = await api('/api/samples', {
+    method: 'POST',
+    token: admin,
+    body: { enquiry: enquiry.json.data._id, customer: customerId },
+  });
+  assert.equal(sample.status, 201, sample.json.message);
+
+  const bag = sample.json.data.items;
+  assert.equal(bag.length, 2);
+  assert.equal(String(bag[0].mould?._id ?? bag[0].mould), first);
+  assert.equal(String(bag[1].mould?._id ?? bag[1].mould), second,
+    'the bench is told what makes the second hanger too');
+});

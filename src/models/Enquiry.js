@@ -5,7 +5,9 @@ import { CUSTOMER_SOURCES } from './Customer.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
 import { withConversationRef } from './conversationRef.js';
 import { ENQUIRY_NEXT_ACTION_TYPES } from '../services/enquiryActions.js';
-import { hasRequirement, requirementSchema as requirementShape } from './requirement.schema.js';
+import {
+  hasRequirement, requirementFields, requirementSchema as requirementShape,
+} from './requirement.schema.js';
 
 /**
  * The enquiry statuses [BLUEPRINT §3], in the order work moves through them.
@@ -152,6 +154,41 @@ export const LOST_REASONS = [
 const requirementSchema = requirementShape({ withId: false });
 
 /**
+ * One of the things the buyer asked about — the whole of it, tool included.
+ *
+ * **Why a row carries its own mould, when it did not before.** The list started as "the other
+ * things mentioned on the same call": a few words each, enough not to lose them. That made the
+ * second model a lesser record than the first — the first named a tool off the register [§28]
+ * and could be a new development, the rest could only be described — and it showed everywhere
+ * downstream, because a row that cannot name its tool cannot be costed against one, cannot be
+ * sampled from one, and cannot be quoted as the same piece the buyer approved.
+ *
+ * A buyer ringing about three hangers is describing three real models. Each of them either runs
+ * on a tool the plant owns, is bought in, or is a development nobody has cut yet, and that is a
+ * fact about each model rather than about whichever one was typed first.
+ *
+ * `isNewDevelopment` rides with it for the same reason and is the same either/or: a row naming
+ * a mould is not a development, and a development has no mould yet.
+ */
+const enquiryItemSchema = new mongoose.Schema(
+  {
+    ...requirementFields(),
+    mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould' },
+    isNewDevelopment: { type: Boolean, default: false },
+  },
+  { _id: true }
+);
+
+/**
+ * Whether anybody actually described a model on this row.
+ *
+ * A mould on its own counts. "The 380 top hanger, same as last time" is a complete answer with
+ * no text in it at all, and the old test — which only looked at the described fields — would
+ * have thrown that row away on save as though it were the blank one somebody tabbed past.
+ */
+const hasItem = (row) => Boolean(row && (row.mould || hasRequirement(row)));
+
+/**
  * `requirement` and `items[0]` are one fact, and this is where that is made true.
  *
  * **Whichever side was just written decides.** That is not a detail — the first version of this
@@ -171,23 +208,46 @@ const requirementSchema = requirementShape({ withId: false });
 function keepFirstItemInStep(doc) {
   const plain = (value) => (value?.toObject ? value.toObject() : value);
   const rows = doc.items || [];
-  const at = rows.findIndex(hasRequirement);
+  const at = rows.findIndex(hasItem);
+
+  /* The enquiry's top line, as a row: the requirement plus the two fields that used to live
+     only up here. One place builds it, so the three cases below cannot disagree about it. */
+  const asRow = () => ({
+    ...plain(doc.requirement),
+    mould: doc.mould || undefined,
+    isNewDevelopment: Boolean(doc.isNewDevelopment),
+  });
 
   if (doc.isModified('items') && at >= 0) {
-    /* `_id` belongs to the row, not to `requirement`, whose path is declared without one. */
-    const { _id, ...fields } = plain(rows[at]);
+    /* `_id` belongs to the row, not to `requirement`, whose path is declared without one — and
+       `mould`/`isNewDevelopment` are the enquiry's own paths rather than the requirement's, so
+       they are lifted out of the row and set on the document. */
+    const { _id, mould, isNewDevelopment, ...fields } = plain(rows[at]);
     doc.requirement = fields;
+    doc.mould = mould || undefined;
+    doc.isNewDevelopment = Boolean(isNewDevelopment);
     return;
   }
 
-  if (!hasRequirement(doc.requirement)) return;
+  if (!hasItem(asRow())) return;
 
   if (at < 0) {
-    doc.items = [plain(doc.requirement)];
+    doc.items = [asRow()];
     return;
   }
 
-  if (doc.isModified('requirement')) doc.items.set(at, plain(doc.requirement));
+  /*
+   * A correction made to the top line on its own. The mould and the tick count as corrections
+   * to it: they are as much a part of what the first item *is* as its colour, and leaving them
+   * out would let the enquiry say one tool and its own first row say another.
+   *
+   * The row's `_id` is carried across, because a new one on every save would churn the ids
+   * that the costing lines and the sample rows are matched against.
+   */
+  const corrected = ['requirement', 'mould', 'isNewDevelopment']
+    .some((path) => doc.isModified(path));
+
+  if (corrected) doc.items.set(at, { ...asRow(), _id: rows[at]._id });
 }
 
 const statusChangeSchema = new mongoose.Schema(
@@ -250,7 +310,7 @@ const enquirySchema = new mongoose.Schema(
      * the first item, because raising three samples off one status change is a decision the
      * bench should make rather than one a dropdown makes for them.
      */
-    items: { type: [requirementShape()], default: () => [] },
+    items: { type: [enquiryItemSchema], default: () => [] },
 
     targetPrice: { type: Number, min: 0 },
     requiredDeliveryDate: Date,

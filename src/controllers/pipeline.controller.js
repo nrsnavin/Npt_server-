@@ -1238,12 +1238,22 @@ async function assertEnquiryValid(input) {
    * could only be entered by lying about it — marking a hanger we buy from a supplier as
    * something we were about to develop, and then leaving it that way.
    */
-  /* A caller may send either shape, so the model is looked for in both — an enquiry raised as
-     a list of three has its model on the first row and nothing in `requirement` yet. */
+  /*
+   * A caller may send either shape, so all three are looked for in both — an enquiry raised as
+   * a list of three has its model on the first row and nothing in `requirement` yet.
+   *
+   * And a *row* may now be the thing that answers it. An enquiry whose rows each name their own
+   * tool sends no enquiry-level mould at all: the model lifts the first row's up to the document
+   * on save, but that is after this runs, so judging on `input.mould` alone would refuse a
+   * perfectly well-described enquiry for naming its tools one row at a time.
+   */
+  const rows = (input.items || []).filter(describesItem);
   const named = input.requirement?.modelNumber
-    || (input.items || []).find(hasRequirement)?.modelNumber;
+    || rows.find((row) => row.modelNumber)?.modelNumber;
+  const anyTool = mould || rows.some((row) => row.mould);
+  const anyNew = isNewDevelopment || rows.some((row) => row.isNewDevelopment);
 
-  if (!mould && !isNewDevelopment && !named) {
+  if (!anyTool && !anyNew && !named) {
     throw ApiError.badRequest(
       'Name the mould, or the model the buyer asked for, or mark this as a new development'
     );
@@ -1289,6 +1299,15 @@ async function requirementSpec(input = {}) {
 }
 
 /**
+ * Whether a row describes a model at all.
+ *
+ * A tool on its own is enough. "The 380 top hanger, same as last time" is a complete answer
+ * containing no text, and judging a row only on its described fields would throw it away on
+ * save as though it were the blank one somebody tabbed past.
+ */
+const describesItem = (row) => Boolean(row?.mould || hasRequirement(row));
+
+/**
  * Every item on an enquiry, each put through the registers the same way the first one is.
  *
  * The first row and `requirement` are one fact — the model keeps them in step — so the list is
@@ -1296,26 +1315,34 @@ async function requirementSpec(input = {}) {
  * what lets a form that knows nothing about lists and a form that does both write to the same
  * endpoint.
  *
- * **The enquiry's mould belongs to the first item only.** One tool is named on the enquiry, and
- * folding it into every row would say the buyer's second model is made on the first one's mould
- * — a fact nobody stated and the register would be wrong about. Rows two onward carry a model
- * number and a spec; the tool is chosen when there is one to choose.
+ * **Each row names its own tool.** It did not use to: one mould was named on the enquiry and
+ * belonged to the first item, because folding it into every row would have claimed the buyer's
+ * second model is made on the first one's steel. That was the right rule for a list of
+ * mentions and the wrong one for a list of models — it made every item after the first unable
+ * to point at the register [§28], and so unable to be costed, sampled or quoted as the same
+ * piece. Now the row carries it, and `fallback` is what the enquiry's own flat fields mean: the
+ * first row's, for a caller that sends the old shape.
  *
  * Empty rows are dropped rather than refused. Somebody tabbing through a form leaves them
  * behind, and a refusal about a row containing nothing is a refusal about nothing.
  */
-async function itemSpecs(input = {}) {
-  const given = (input.items || []).filter(hasRequirement);
+async function itemSpecs(rows = [], fallback = {}) {
+  const given = rows.filter(describesItem);
   if (!given.length) return undefined;
 
   return Promise.all(
     given.map(async (item, index) => {
-      const spec = await buildSpec({
-        ...item,
-        mould: index === 0 ? input.mould || undefined : undefined,
-      });
-      const { mould, ...requirement } = spec;
-      return requirement;
+      /* `undefined` means the row did not speak; `null` or '' means it was cleared. Only the
+         first can fall back, or clearing a tool on the first row would silently restore it. */
+      const tool = item.mould !== undefined
+        ? item.mould
+        : (index === 0 ? fallback.mould : undefined);
+      const development = item.isNewDevelopment !== undefined
+        ? item.isNewDevelopment
+        : (index === 0 ? fallback.isNewDevelopment : undefined);
+
+      const spec = await buildSpec({ ...item, mould: tool || undefined });
+      return { ...spec, isNewDevelopment: Boolean(development) };
     })
   );
 }
@@ -1336,7 +1363,7 @@ export async function createEnquiryRecord(input, user) {
     /* When a list was sent, it is the truth and the model copies its first row over the
        requirement above. When it was not, the model seeds the list from that requirement, so
        both kinds of caller end up with a record of the same shape. */
-    items: await itemSpecs(input),
+    items: await itemSpecs(input.items, input),
     number: await nextNumber('ENQ'),
     assignedTo: input.assignedTo || user._id,
     statusHistory: [{ to: input.status || 'new', by: user._id }],
@@ -1625,20 +1652,17 @@ export const updateEnquiry = asyncHandler(async (req, res) => {
    * `requirement`, so a correction cannot leave the two disagreeing.
    */
   if (patch.items) {
-    const rows = patch.items.filter(hasRequirement);
-    if (!rows.length) {
+    if (!patch.items.filter(describesItem).length) {
       throw ApiError.badRequest('An enquiry has to say what the buyer asked about — keep a row');
     }
-    patch.items = await Promise.all(
-      rows.map(async (item, index) => {
-        const spec = await buildSpec({
-          ...item,
-          mould: index === 0 ? (patch.mould !== undefined ? patch.mould : enquiry.mould) : undefined,
-        });
-        const { mould, ...requirement } = spec;
-        return requirement;
-      })
-    );
+    /* The same builder the create door uses, so the two cannot come to disagree about what a
+       row means. What the enquiry already says is the fallback for a row that stays silent. */
+    patch.items = await itemSpecs(patch.items, {
+      mould: patch.mould !== undefined ? patch.mould : enquiry.mould,
+      isNewDevelopment: patch.isNewDevelopment !== undefined
+        ? patch.isNewDevelopment
+        : enquiry.isNewDevelopment,
+    });
   }
 
   Object.assign(enquiry, patch);

@@ -80,9 +80,10 @@ const fromEnquiry = (enquiry) => ({
    * conversation about three, and the other two would be noticed at the bench or, worse, by the
    * buyer opening the envelope.
    *
-   * The mould goes on the first row only. An enquiry names one tool for the whole record, so
-   * that is the one thing known about model one and nothing at all about the others — and
-   * guessing the same tool for all three would tell the bench something nobody said.
+   * Each row brings its own tool, because an enquiry row names one now. It did not use to: one
+   * mould was named for the whole enquiry and belonged to model one, so the bench was told what
+   * made the first hanger and nothing at all about the other two. A bag whose second model says
+   * only "410mm, white" is a bag somebody has to come back and ask about.
    */
   items: (enquiry.items || []).map((item, index) => {
     /*
@@ -93,7 +94,9 @@ const fromEnquiry = (enquiry) => ({
      * meant and the one the bench would have made.
      */
     const { quantity, ...wanted } = copyRequirement(item);
-    return { ...wanted, mould: index === 0 ? idOf(enquiry.mould) : undefined };
+    /* The row's own tool, which it carries now. The enquiry's is the first row's, for a record
+       raised before rows had one — those have the tool up on the enquiry and nowhere else. */
+    return { ...wanted, mould: idOf(item.mould) || (index === 0 ? idOf(enquiry.mould) : undefined) };
   }),
 });
 

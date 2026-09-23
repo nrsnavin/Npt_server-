@@ -89,6 +89,22 @@ const requirementSchema = z.object({
  */
 const requirementListSchema = z.array(requirementSchema).max(12).optional();
 
+/**
+ * The enquiry's list, where each row is a whole model rather than a mention.
+ *
+ * A row carries its own tool and its own new-development tick, which a lead's row does not and
+ * should not: a first call names nothing on the register — that is what makes it a lead — while
+ * an enquiry is the point at which each model either runs on steel the plant owns, is bought
+ * in, or is a development nobody has cut. Asking that question once for the whole enquiry made
+ * every model after the first a lesser record.
+ */
+const enquiryItemSchema = requirementSchema.extend({
+  mould: objectId.optional(),
+  isNewDevelopment: z.boolean().optional(),
+});
+
+const enquiryItemListSchema = z.array(enquiryItemSchema).max(12).optional();
+
 /** §8: the thread a record came out of. Null until the WhatsApp front door lands. */
 const conversationRef = z
   .object({
@@ -205,7 +221,7 @@ export const enquiryCore = {
    * instruction, and "requirement: Required" is a puzzle.
    */
   requirement: requirementSchema.optional(),
-  items: requirementListSchema,
+  items: enquiryItemListSchema,
   targetPrice: z.number().nonnegative().optional(),
   requiredDeliveryDate: z.coerce.date().optional(),
   referenceImageUrl: z.string().optional(),

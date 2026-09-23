@@ -16,6 +16,15 @@
  * the first row is whichever the person put first, and the requirement follows *it*, not the
  * other way round.
  *
+ * **And it lowers the tool onto the first row**, which is the second job and the urgent one. An
+ * enquiry row carries its own `mould` and `isNewDevelopment` now; before, one tool was named on
+ * the enquiry and belonged to model one by convention. Every record written under the old rule
+ * has a tool up on the enquiry and a first row that does not mention it — and the model takes
+ * the list as the truth when somebody edits it, so the first save through the new form would
+ * read "row one names no tool" and quietly clear the enquiry's. That is a mould disappearing
+ * off a live record for no reason anybody could see, which is why this runs before the deploy
+ * rather than after it.
+ *
  * Idempotent, so a half-finished run is simply run again. Dry run by default.
  *
  *   node scripts/backfill-enquiry-items.js            # show me
@@ -49,6 +58,56 @@ const rowFrom = (requirement = {}) => {
   return Object.fromEntries(Object.entries(row).filter(([, value]) => value !== undefined));
 };
 
+/** The tool as it should sit on the first row, where the enquiry has one and the row does not. */
+const toolFor = (enquiry) => {
+  const row = {
+    mould: enquiry.mould,
+    isNewDevelopment: enquiry.isNewDevelopment,
+  };
+  return Object.fromEntries(
+    Object.entries(row).filter(([, value]) => value !== undefined && value !== null)
+  );
+};
+
+/**
+ * Puts the enquiry's tool on its first row, for the records written before a row had one.
+ *
+ * Only where the row is silent about it. A row that already names a tool is a row somebody
+ * entered through the new form, and the enquiry's own field follows *it*.
+ */
+async function lowerTheToolOntoTheFirstRow(enquiries) {
+  const behind = await enquiries
+    .find({
+      'items.0': { $exists: true },
+      $and: [
+        { $or: [{ 'items.0.mould': { $exists: false } }, { 'items.0.mould': null }] },
+        { $or: [{ mould: { $ne: null } }, { isNewDevelopment: true }] },
+      ],
+    })
+    .toArray();
+
+  console.log(`${behind.length} enquiry(ies) name a tool the first row does not.\n`);
+
+  let written = 0;
+  for (const enquiry of behind) {
+    const tool = toolFor(enquiry);
+    if (!Object.keys(tool).length) continue;
+
+    const said = enquiry.mould ? String(enquiry.mould) : 'new development';
+    console.log(`  ${enquiry.number}  →  row 1 gets ${said}`);
+
+    if (confirm) {
+      await enquiries.updateOne(
+        { _id: enquiry._id },
+        { $set: Object.fromEntries(Object.entries(tool).map(([key, value]) => [`items.0.${key}`, value])) }
+      );
+      written += 1;
+    }
+  }
+
+  return { found: behind.length, written };
+}
+
 async function backfill() {
   await connectDatabase();
   const enquiries = mongoose.connection.collection('enquiries');
@@ -73,7 +132,9 @@ async function backfill() {
       continue;
     }
 
-    const row = rowFrom(enquiry.requirement);
+    /* The tool goes on with the rest of it, so a record seeded here does not then need the
+       second pass below. */
+    const row = { ...rowFrom(enquiry.requirement), ...toolFor(enquiry) };
     console.log(`  ${enquiry.number}  →  ${row.modelNumber || '(no model)'}${row.colour ? `, ${row.colour}` : ''}`);
 
     if (confirm) {
@@ -89,6 +150,14 @@ async function backfill() {
     console.log(`Gave ${written} enquiry(ies) their first row.`);
   } else {
     console.log(`Dry run — nothing was changed. Re-run with --confirm to fill ${behind.length - skipped}.`);
+  }
+
+  console.log('');
+  const tools = await lowerTheToolOntoTheFirstRow(enquiries);
+  if (confirm) {
+    console.log(`Put the tool on ${tools.written} first row(s).`);
+  } else if (tools.found) {
+    console.log(`Dry run — re-run with --confirm to put the tool on ${tools.found} first row(s).`);
   }
 
   await disconnectDatabase();
