@@ -21,8 +21,14 @@
  * looks broken for eight seconds.
  */
 
+import { plural } from '../utils/phrases.js';
+
 /** The same three words the rest of the app uses for priority [Todo.js]. */
 export const URGENCIES = ['low', 'normal', 'high'];
+
+/** How long it has sat, said the way somebody would say it rather than as "1 hour(s)". */
+const waited = (hours) =>
+  (hours >= 24 ? plural(Math.floor(hours / 24), 'day', 'days') : plural(hours, 'hour', 'hours'));
 
 /** Hours a thread has been sitting, from whenever it last moved. */
 const waitingHours = (query) => {
@@ -54,49 +60,44 @@ const owes = (query, user) => {
 export function urgencyByRules(query, user) {
   const hours = waitingHours(query);
   const answered = (query.messages || []).some((message) => message.kind === 'reply');
+  /*
+   * Whether the reader is one of the people who owe an answer, carried out on the reading
+   * itself rather than left to be inferred from the sentence. The model's prompt needs this
+   * fact, and reading it back out of the English — `why.startsWith('Asked of you')` — made the
+   * wording load-bearing: rephrasing a sentence for a plural would quietly have told the model
+   * that nobody owed anything.
+   */
+  const owed = owes(query, user);
+  const reading = (level, why) => ({ level, why, readBy: 'rules', hours, owed });
 
-  if (query.status === 'closed') {
-    return { level: 'low', why: 'Closed — nothing is owed on it', readBy: 'rules', hours };
-  }
+  if (query.status === 'closed') return reading('low', 'Closed — nothing is owed on it');
 
-  if (owes(query, user)) {
+  if (owed) {
     if (!answered) {
       if (hours >= 24) {
-        return {
-          level: 'high',
-          why: `Asked of you ${Math.floor(hours / 24)} day(s) ago and nobody has answered`,
-          readBy: 'rules',
-          hours,
-        };
+        return reading('high', `Asked of you ${waited(hours)} ago and nobody has answered`);
       }
-      return {
-        level: hours >= 4 ? 'high' : 'normal',
-        why: `Asked of you ${hours} hour(s) ago and nobody has answered`,
-        readBy: 'rules',
-        hours,
-      };
+      return reading(
+        hours >= 4 ? 'high' : 'normal',
+        hours < 1
+          ? 'Asked of you just now, and nobody has answered'
+          : `Asked of you ${waited(hours)} ago and nobody has answered`
+      );
     }
 
     /* Somebody has answered and it is still open, so it is the asker's move rather than yours. */
-    return { level: 'low', why: 'Answered — waiting on whoever asked', readBy: 'rules', hours };
+    return reading('low', 'Answered — waiting on whoever asked');
   }
 
   /* The asker's side of the same thread. */
   if (!answered) {
-    return {
-      level: hours >= 24 ? 'high' : 'normal',
-      why: hours >= 24
-        ? `You asked ${Math.floor(hours / 24)} day(s) ago and nobody has answered — worth chasing`
-        : 'You asked and nobody has answered yet',
-      readBy: 'rules',
-      hours,
-    };
+    return reading(
+      hours >= 24 ? 'high' : 'normal',
+      hours >= 24
+        ? `You asked ${waited(hours)} ago and nobody has answered — worth chasing`
+        : 'You asked and nobody has answered yet'
+    );
   }
 
-  return {
-    level: 'normal',
-    why: 'Answered — read it and close it if that settles it',
-    readBy: 'rules',
-    hours,
-  };
+  return reading('normal', 'Answered — read it and close it if that settles it');
 }

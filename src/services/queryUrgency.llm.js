@@ -39,6 +39,15 @@ import { URGENCIES, urgencyByRules } from './queryUrgency.rules.js';
 
 const MODEL = process.env.QUERY_URGENCY_MODEL || 'claude-haiku-4-5-20251001';
 
+/**
+ * Whether asking is worth a round trip.
+ *
+ * With no key this door still answers — it hands back the rules readings the list already drew —
+ * so calling it is harmless rather than wrong. It is simply a request that can only return what
+ * the screen has, on every page, for every reader; the screen asks this first and skips it.
+ */
+export const canRead = () => llmConfigured();
+
 const FORMAT = {
   type: 'json_schema',
   schema: {
@@ -128,7 +137,7 @@ const asLine = (query, floor) => {
     `asked: ${String(query.question).slice(0, ROOM)}`,
     last ? `last (${last.kind}): ${String(last.body).slice(0, ROOM)}` : 'nobody has replied',
     `waiting: ${floor.hours} hour(s)`,
-    `owed by the reader: ${floor.why.startsWith('Asked of you') ? 'yes' : 'no'}`,
+    `owed by the reader: ${floor.owed ? 'yes' : 'no'}`,
   ].join('\n');
 };
 

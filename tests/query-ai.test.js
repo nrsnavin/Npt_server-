@@ -325,6 +325,40 @@ test('the same thread is read differently for the two people in it', async () =>
      plant's own judgement. */
   assert.equal(asker.urgency.readBy, 'rules');
   assert.equal(answerer.urgency.readBy, 'rules');
+
+  /*
+   * Who owes an answer is carried as a field, not inferred from the sentence.
+   *
+   * It is the one fact the model's prompt is handed about the reader, and it used to be read
+   * back out of the English with `why.startsWith('Asked of you')` — which made the wording
+   * load-bearing: rephrasing "1 hour(s)" into "an hour" would have told the model, silently and
+   * for every row, that nobody owed anything.
+   */
+  assert.equal(asker.urgency.owed, false, 'the asker owes nothing on their own question');
+  assert.equal(answerer.urgency.owed, true, 'the department asked does');
+
+  /* And it is a sentence, not a template: "Asked of you 1 hour(s) ago" is on a screen people
+     read all day. */
+  assert.ok(!answerer.urgency.why.includes('(s)'), answerer.urgency.why);
+});
+
+test('the waiting is said in words, singular and plural', async () => {
+  const { urgencyByRules } = await import('../src/services/queryUrgency.rules.js');
+  const asked = { _id: 'x', participants: [{ department: 'despatch' }], messages: [] };
+  const reader = { _id: 'y', department: 'despatch' };
+  const hoursAgo = (hours) => new Date(Date.now() - hours * 3600000);
+
+  const one = urgencyByRules({ ...asked, createdAt: hoursAgo(1) }, reader);
+  const some = urgencyByRules({ ...asked, createdAt: hoursAgo(6) }, reader);
+  const day = urgencyByRules({ ...asked, createdAt: hoursAgo(26) }, reader);
+  const days = urgencyByRules({ ...asked, createdAt: hoursAgo(24 * 3) }, reader);
+
+  assert.match(one.why, /1 hour ago/);
+  assert.match(some.why, /6 hours ago/);
+  assert.match(day.why, /1 day ago/);
+  assert.match(days.why, /3 days ago/);
+  /* Nothing has sat for zero hours in anybody's reading of it. */
+  assert.match(urgencyByRules({ ...asked, createdAt: new Date() }, reader).why, /just now/);
 });
 
 test('an answered thread stops being the answerer’s problem', async () => {

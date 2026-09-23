@@ -13,7 +13,7 @@ import { recordChange, snapshot } from '../services/audit.service.js';
 import { summarise } from '../services/querySummary.llm.js';
 import { filtersFromPhrase } from '../services/querySearch.llm.js';
 import { urgencyByRules } from '../services/queryUrgency.rules.js';
-import { urgencyFor } from '../services/queryUrgency.llm.js';
+import { canRead, urgencyFor } from '../services/queryUrgency.llm.js';
 import { canDraft, draftReply } from '../services/queryReply.llm.js';
 
 /**
@@ -567,6 +567,6 @@ export const participantOptions = asyncHandler(async (req, res) => {
      * resolves to nothing teaches people the feature is broken rather than absent. Asked once
      * with the pickers rather than per thread, because it is a fact about the deployment.
      */
-    can: { draftReply: canDraft() },
+    can: { draftReply: canDraft(), readUrgency: canRead() },
   });
 });
