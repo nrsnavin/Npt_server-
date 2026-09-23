@@ -267,8 +267,30 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
-    # Hashed filenames, so they can be cached hard. index.html must not be.
+    # index.html is the list of which hashed files this release uses, so it must never be held
+    # by a browser. A cached copy asks for chunks the last deploy deleted, and the person gets
+    # "This screen's code could not be fetched" on whichever screen they open next.
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
+    # Hashed filenames, so they can be cached hard.
     location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+
+        # A tab that was already open when a deploy landed is holding the *previous*
+        # index.html, and asks for chunk names this build renamed. `on-box.sh` keeps the
+        # previous build as dist.old, so serve it from there rather than 404.
+        #
+        # This is what makes a deploy invisible to somebody mid-shift. Without it the app
+        # recovers by reloading the tab (see src/utils/lazyPage.js in the web repo), which
+        # works but costs them the screen they were on.
+        try_files $uri @previous;
+    }
+
+    location @previous {
+        root /srv/npt/web/dist.old;
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
@@ -662,6 +684,7 @@ df -h && free -m
 | Every API call fails, console says CORS | `CORS_ORIGIN` does not match the browser's origin exactly. No trailing slash, `https://` not `http://` |
 | App loads, all requests 404 | `VITE_API_URL` was wrong at build time. Fix `.env.production` and **rebuild** — it is baked in |
 | Reloading `/leads/123` gives Nginx's 404 | The `try_files` line is missing from the app's server block |
+| "This screen's code could not be fetched", naming a file under `/assets/` | A tab was open across a deploy and is asking for a chunk this release renamed. The app reloads itself once to recover, so this message means that did not help: check `dist.old` exists and that the `@previous` fallback is in the server block |
 | Uploads fail around 1 MB | `client_max_body_size` missing from the API block |
 | API restarts in a loop | `pm2 logs npt-api` — usually `MONGO_URI` auth, or a missing `.env` |
 | Whole box unresponsive after a deploy | Out of memory. Confirm swap is on with `free -m` |
