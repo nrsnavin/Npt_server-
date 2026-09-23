@@ -299,3 +299,234 @@ test('a date window narrows, and a bad one is ignored rather than emptying the l
   const rubbish = await api('/api/queries?since=not-a-date', { token: nandhini });
   assert.ok(rubbish.json.data.length, 'an unparseable date is ignored, not applied');
 });
+
+/* ------------------------------- The urgency ------------------------------- */
+
+/*
+ * Read for the person looking, which is the whole of why nothing is stored: one thread is
+ * something the asker is waiting on and something the answerer owes, at the same moment. With
+ * no key here it is the rules that answer, which is also what every deployment without a model
+ * runs on — and what the list draws with while a model is still reading.
+ */
+
+test('the same thread is read differently for the two people in it', async () => {
+  const query = await raise();
+
+  const forHer = await api('/api/queries?limit=20', { token: nandhini });
+  const forHim = await api('/api/queries?limit=20', { token: kavitha });
+
+  const asker = forHer.json.data.find((row) => row._id === query._id);
+  const answerer = forHim.json.data.find((row) => row._id === query._id);
+
+  assert.ok(asker.urgency, 'every row carries one');
+  assert.match(asker.urgency.why, /You asked/);
+  assert.match(answerer.urgency.why, /Asked of you/);
+  /* And both say whose reading it is, because a priority with no attribution reads as the
+     plant's own judgement. */
+  assert.equal(asker.urgency.readBy, 'rules');
+  assert.equal(answerer.urgency.readBy, 'rules');
+});
+
+test('an answered thread stops being the answerer’s problem', async () => {
+  const query = await raise();
+  await say(query._id, 'Full count went out, signed for at their gate.');
+
+  const { json } = await api('/api/queries?limit=20', { token: kavitha });
+  const row = json.data.find((entry) => entry._id === query._id);
+
+  assert.equal(row.urgency.level, 'low');
+  assert.match(row.urgency.why, /waiting on whoever asked/i);
+});
+
+test('a closed thread is urgent to nobody', async () => {
+  const query = await raise();
+  await api(`/api/queries/${query._id}/close`, { method: 'POST', token: nandhini });
+
+  for (const token of [nandhini, kavitha]) {
+    const { json } = await api('/api/queries?limit=20&status=closed', { token });
+    const row = json.data.find((entry) => entry._id === query._id);
+    assert.equal(row.urgency.level, 'low');
+    assert.match(row.urgency.why, /Closed/);
+  }
+});
+
+test('the urgency is nowhere on the saved record', async () => {
+  /*
+   * The same assertion the summary gets, and for the same reason: a level that could be stored
+   * is a level a report, an escalation or a notification can pick up — and this one is a guess
+   * about a person, not a fact about a thread.
+   */
+  const query = await raise();
+  await api('/api/queries?limit=20', { token: kavitha });
+
+  const { default: Query } = await import('../src/models/Query.js');
+  const saved = await Query.findById(query._id).lean();
+
+  assert.equal(saved.urgency, undefined);
+  assert.ok(!JSON.stringify(saved).includes('readBy'));
+});
+
+test('the model’s door answers with the rules when there is no model', async () => {
+  const query = await raise();
+
+  const { status, json } = await api('/api/queries/urgency', {
+    method: 'POST',
+    token: kavitha,
+    body: { ids: [query._id] },
+  });
+
+  assert.equal(status, 200, json.message);
+  assert.equal(json.data[query._id].readBy, 'rules', 'never silently attributed to a model');
+  assert.match(json.data[query._id].why, /Asked of you/);
+});
+
+test('asking after a thread you are not in tells you nothing about it', async () => {
+  /*
+   * The ids are re-fetched through the list's own scope rather than trusted. Without that, this
+   * door would answer "there is no such thread" for an id that does not exist and a reading for
+   * one that does, which is a way to find out what exists.
+   */
+  const hidden = await api('/api/queries', {
+    method: 'POST',
+    token: kavitha,
+    body: {
+      customer: customerId,
+      subject: 'Between despatch and accounts',
+      question: 'Which PO does the 12 September load belong to?',
+      participants: [{ department: 'accounts' }],
+    },
+  });
+  assert.equal(hidden.status, 201, hidden.json.message);
+
+  const outsider = await api('/api/users', {
+    method: 'POST',
+    token: admin,
+    body: { name: 'Meera S', email: 'meera@np.com', password: 'Pass@123456', department: 'sampling' },
+  });
+  assert.equal(outsider.status, 201, outsider.json.message);
+  const meera = await signIn('meera@np.com', 'Pass@123456');
+
+  const { status, json } = await api('/api/queries/urgency', {
+    method: 'POST',
+    token: meera,
+    body: { ids: [hidden.json.data._id] },
+  });
+
+  assert.equal(status, 200);
+  assert.deepEqual(json.data, {}, 'no reading, and no hint that the thread exists');
+});
+
+/* ----------------------------- Filtering by person ----------------------------- */
+
+test('a list can be narrowed to what one person is carrying', async () => {
+  const mine = await raise();
+  const hers = await api('/api/queries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      subject: 'Asked of production only',
+      question: 'Can line 2 take 200 ahead of the rest?',
+      participants: [{ department: 'production' }],
+    },
+  });
+  assert.equal(hers.status, 201, hers.json.message);
+
+  const kavithaId = await whoIs(kavitha);
+  const { status, json } = await api(`/api/queries?person=${kavithaId}&limit=20`, { token: admin });
+
+  assert.equal(status, 200, json.message);
+  const numbers = json.data.map((row) => row.number);
+  assert.ok(numbers.includes(mine.number), 'the thread asked of her department');
+  assert.ok(!numbers.includes(hers.json.data.number), 'and not the one asked of production');
+});
+
+test('the person filter narrows what you may see, never widens it', async () => {
+  /*
+   * A despatch thread nobody in marketing is in. Asking after the despatch person by name must
+   * not produce it for a marketing reader — the filter runs inside the room, as a further
+   * `$and`, so it can only ever take rows away.
+   */
+  const theirs = await api('/api/queries', {
+    method: 'POST',
+    token: kavitha,
+    body: {
+      customer: customerId,
+      subject: 'Despatch and accounts only',
+      question: 'Whose gate signed for the 12 September load?',
+      participants: [{ department: 'accounts' }],
+    },
+  });
+  assert.equal(theirs.status, 201, theirs.json.message);
+
+  const kavithaId = await whoIs(kavitha);
+  const { json } = await api(`/api/queries?person=${kavithaId}&limit=20`, { token: nandhini });
+
+  assert.ok(
+    !json.data.some((row) => row.number === theirs.json.data.number),
+    'a thread she is not in stays invisible, however she filters'
+  );
+});
+
+test('a person who is not here is refused rather than answered emptily', async () => {
+  const { status } = await api('/api/queries?person=000000000000000000000000', { token: admin });
+  assert.equal(status, 400);
+});
+
+/* ------------------------------ The draft reply ------------------------------ */
+
+test('with no model there is no draft, and the screen is told so', async () => {
+  const query = await raise();
+
+  const { status, json } = await api(`/api/queries/${query._id}/draft-reply`, {
+    method: 'POST',
+    token: kavitha,
+  });
+
+  /*
+   * Null rather than a canned sentence. Everywhere else the rules answer when the model cannot,
+   * because a worse answer beats none — not here: "Thank you for your query, we are looking
+   * into it" put into a colleague's mouth is worse than an empty box.
+   */
+  assert.equal(status, 200, json.message);
+  assert.equal(json.data, null);
+});
+
+test('the options say whether a draft can be offered at all', async () => {
+  const { json } = await api('/api/queries/options', { token: kavitha });
+  assert.equal(json.can.draftReply, false, 'no key here, so the button is not drawn');
+});
+
+test('drafting says nothing in the thread', async () => {
+  const query = await raise();
+  await api(`/api/queries/${query._id}/draft-reply`, { method: 'POST', token: kavitha });
+
+  const read = await api(`/api/queries/${query._id}`, { token: kavitha });
+  assert.equal(read.json.data.messages.length, 0, 'a draft is not a reply until somebody sends it');
+  assert.equal(read.json.data.status, 'open');
+});
+
+test('a closed thread cannot be drafted into', async () => {
+  const query = await raise();
+  await api(`/api/queries/${query._id}/close`, { method: 'POST', token: nandhini });
+
+  const { status, json } = await api(`/api/queries/${query._id}/draft-reply`, {
+    method: 'POST',
+    token: kavitha,
+  });
+
+  assert.equal(status, 400);
+  assert.match(json.message, /closed/i);
+});
+
+test('somebody outside the room gets no draft off it', async () => {
+  const query = await raise();
+  const outsider = await signIn('meera@np.com', 'Pass@123456');
+
+  const { status } = await api(`/api/queries/${query._id}/draft-reply`, {
+    method: 'POST',
+    token: outsider,
+  });
+
+  assert.equal(status, 404, 'the same answer reading it gives — not a different one');
+});

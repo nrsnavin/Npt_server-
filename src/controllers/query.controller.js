@@ -12,6 +12,9 @@ import { DEPARTMENT_KEYS, findDepartment } from '../config/modules.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { summarise } from '../services/querySummary.llm.js';
 import { filtersFromPhrase } from '../services/querySearch.llm.js';
+import { urgencyByRules } from '../services/queryUrgency.rules.js';
+import { urgencyFor } from '../services/queryUrgency.llm.js';
+import { canDraft, draftReply } from '../services/queryReply.llm.js';
 
 /**
  * Queries: a question about a buyer, and everybody pulled in to answer it.
@@ -199,9 +202,71 @@ export const listQueries = asyncHandler(async (req, res) => {
     Query.countDocuments(scoped),
   ]);
 
+  /*
+   * How pressing each of these is *for this reader*, from the record alone.
+   *
+   * On the list rather than beside it, and by the rules rather than the model, because it has
+   * to be there the moment the rows are: a chip that arrives eight seconds later is a list that
+   * looks broken while somebody is reading it. The model's reading is a separate door the
+   * screen asks for afterwards — see `readUrgency` — and it refines these rather than replacing
+   * them, so a page is never partly uncoloured.
+   *
+   * Attached to the plain object rather than to the document: this is computed per reader and
+   * must never be mistaken for something stored on the query.
+   */
+  const rows = data.map((query) => ({
+    ...query.toJSON(),
+    urgency: urgencyByRules(query, req.user),
+  }));
+
   /* `read` travels beside the page rather than inside it: the screen shows what the phrase was
      taken to mean so the reader can see it and drop it. Fourth argument, not a pagination key. */
-  paginated(res, data, { page, limit, total }, read ? { read } : undefined);
+  paginated(res, rows, { page, limit, total }, read ? { read } : undefined);
+});
+
+/**
+ * The model's reading of the page somebody is looking at [queries].
+ *
+ * Its own door rather than part of the list, because the two have different costs and different
+ * failure modes. The list must answer instantly and always; this may take a few seconds and may
+ * answer nothing at all. Folding them together would make every list load wait for a model call
+ * that is allowed to fail.
+ *
+ * The ids are the rows already on the reader's screen, and they are re-fetched *through the same
+ * scope the list uses* rather than trusted: an id posted here is otherwise an id anybody could
+ * post, and the reply would say which threads exist.
+ */
+export const readUrgency = asyncHandler(async (req, res) => {
+  const ids = (req.body.ids || []).filter((id) => mongoose.isValidObjectId(id));
+  if (!ids.length) return res.json({ success: true, data: {} });
+
+  const scoped = await queryFilter(req, { _id: { $in: ids } });
+  const queries = await Query.find(scoped).populate(POPULATE);
+
+  const readings = await urgencyFor(queries, req.user);
+  res.json({ success: true, data: Object.fromEntries(readings) });
+});
+
+/**
+ * A draft reply, for the person to edit and send [queries].
+ *
+ * Returns the draft and nothing else: no message is written, no status moves, and the thread is
+ * untouched. What gets recorded is whatever the person sends afterwards through the ordinary
+ * door, under their own name — see `queryReply.llm.js` for why that separation is the whole of
+ * the safety argument here.
+ */
+export const suggestReply = asyncHandler(async (req, res) => {
+  const query = await readableQuery(req.params.id, req.user);
+  await withRefs(query);
+
+  if (query.status === 'closed') {
+    throw ApiError.badRequest(`${query.number} is closed. Re-open it if there is more to say.`);
+  }
+
+  const drafted = await draftReply(query, req.user);
+  /* Nothing is not a failure: no key, a timeout, a refusal. The screen says so and the person
+     writes their own, which is what they were doing anyway. */
+  res.json({ success: true, data: drafted || null });
 });
 
 /**
@@ -250,6 +315,37 @@ async function queryFilter(req, filter) {
   if (req.query.open === 'true') filter.status = { $ne: 'closed' };
   if (req.query.department) filter['participants.department'] = req.query.department;
   if (req.query.mine === 'true') filter.raisedBy = req.user._id;
+
+  /*
+   * Threads one person is in — "what is Anita carrying", which is the question a department
+   * head asks on a Monday and the one the map answers by picture.
+   *
+   * Both ways of being in a thread count: named on a row, or in a department whose row names
+   * nobody in particular. Leaving the second out would make the filter quietly wrong for the
+   * ordinary case — most rows name a department — and a colleague would look unoccupied.
+   *
+   * Raising one counts too. Somebody who asked a question is waiting on an answer, and a list
+   * of what they are involved in that omits the thread they started is not that list.
+   *
+   * It narrows what the reader may already see: `roomFilter` is applied above and this is a
+   * further `$and`, so it can never widen a list, and asking after somebody whose threads you
+   * are not in comes back empty rather than saying whether they exist.
+   */
+  if (req.query.person) {
+    if (!mongoose.isValidObjectId(req.query.person)) throw ApiError.badRequest('That is not a person');
+
+    const person = await User.findById(req.query.person).select('department');
+    if (!person) throw ApiError.badRequest('That person is not here');
+
+    clauses.push({
+      $or: [
+        { raisedBy: person._id },
+        { participants: { $elemMatch: { user: person._id } } },
+        { participants: { $elemMatch: { department: person.department, user: { $exists: false } } } },
+        { participants: { $elemMatch: { department: person.department, user: null } } },
+      ],
+    });
+  }
 
   /* How far back, from a phrase that said so or a control that set it. */
   if (req.query.since) {
@@ -464,5 +560,13 @@ export const participantOptions = asyncHandler(async (req, res) => {
         .filter((person) => person.department === key)
         .map((person) => ({ _id: person._id, name: person.name })),
     })).filter((department) => department.people.length || !isOwnershipScoped(req.user)),
+    /*
+     * What the model can do here, so the screen offers only what exists.
+     *
+     * A "draft a reply" button with no key behind it is a button that fails, and a spinner that
+     * resolves to nothing teaches people the feature is broken rather than absent. Asked once
+     * with the pickers rather than per thread, because it is a fact about the deployment.
+     */
+    can: { draftReply: canDraft() },
   });
 });

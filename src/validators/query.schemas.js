@@ -53,3 +53,13 @@ export const messageSchema = z.object({
   kind: z.enum(['reply', 'note']).default('reply'),
   body: z.string().trim().min(1).max(4000),
 });
+
+/**
+ * The ids on the reader's screen, for the model to read.
+ *
+ * Capped, because this is a page of a list rather than a database: a caller asking about five
+ * hundred threads is asking for a model call nobody is waiting on the answer to.
+ */
+export const urgencySchema = z.object({
+  ids: z.array(objectId).max(40),
+});

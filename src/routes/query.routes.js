@@ -2,10 +2,13 @@ import { Router } from 'express';
 import {
   listQueries, getQuery, createQuery, addMessage,
   addParticipant, closeQuery, reopenQuery, participantOptions,
+  readUrgency, suggestReply,
 } from '../controllers/query.controller.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { querySchema, messageSchema, participantSchema } from '../validators/query.schemas.js';
+import {
+  querySchema, messageSchema, participantSchema, urgencySchema,
+} from '../validators/query.schemas.js';
 
 /**
  * Queries: a threaded question about a buyer [queries].
@@ -31,6 +34,15 @@ router.use(authenticate);
 router.get('/queries/options', requireModule('queries'), participantOptions);
 
 router.get('/queries', requireModule('queries'), listQueries);
+/*
+ * How pressing the page in view is, read by the model [queries].
+ *
+ * A POST because it carries the ids on screen and a list of forty would not fit comfortably in
+ * a query string — it reads rather than writes, and writes nothing anywhere. The ids are
+ * re-fetched through the list's own scope inside, so posting somebody else's id answers
+ * nothing about it.
+ */
+router.post('/queries/urgency', requireModule('queries'), validate(urgencySchema), readUrgency);
 router.post('/queries', requireModule('queries'), validate(querySchema), createQuery);
 router.get('/queries/:id', requireModule('queries'), getQuery);
 
@@ -41,6 +53,9 @@ router.post(
   validate(participantSchema),
   addParticipant
 );
+
+/* A draft for the composer. Nothing is said in the thread until the person presses send. */
+router.post('/queries/:id/draft-reply', requireModule('queries'), suggestReply);
 
 router.post('/queries/:id/close', requireModule('queries'), closeQuery);
 router.post('/queries/:id/reopen', requireModule('queries'), reopenQuery);
