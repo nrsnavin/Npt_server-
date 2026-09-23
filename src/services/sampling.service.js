@@ -1,5 +1,6 @@
 import Sample, { ANSWERED_SAMPLE_STATUSES } from '../models/Sample.js';
 import Mould from '../models/Mould.js';
+import { copyRequirement } from '../models/requirement.schema.js';
 import { nextNumber } from './numbering.service.js';
 import { EVENTS, publish } from './events.service.js';
 
@@ -71,6 +72,29 @@ const fromEnquiry = (enquiry) => ({
   colourMandatory: enquiry.requirement?.colourMandatory,
   printing: enquiry.requirement?.printing,
   referenceImageUrl: enquiry.referenceImageUrl,
+  /*
+   * And every model the enquiry asked about, row for row.
+   *
+   * An enquiry carries a list now, and the sample it raises is one bag holding all of them —
+   * which is what the buyer asked for. Taking only the first would send one hanger against a
+   * conversation about three, and the other two would be noticed at the bench or, worse, by the
+   * buyer opening the envelope.
+   *
+   * The mould goes on the first row only. An enquiry names one tool for the whole record, so
+   * that is the one thing known about model one and nothing at all about the others — and
+   * guessing the same tool for all three would tell the bench something nobody said.
+   */
+  items: (enquiry.items || []).map((item, index) => {
+    /*
+     * Everything except the quantity, which means opposite things on the two records. On an
+     * enquiry it is a legacy guess at how big the order might be — 20,000 pieces — and on a
+     * sample it is how many go in the courier bag. Carried across, it would put a buyer's
+     * speculative annual volume on a bench instruction, which is exactly the number nobody
+     * meant and the one the bench would have made.
+     */
+    const { quantity, ...wanted } = copyRequirement(item);
+    return { ...wanted, mould: index === 0 ? idOf(enquiry.mould) : undefined };
+  }),
 });
 
 /**
@@ -114,6 +138,41 @@ async function fromMould(mouldId, alreadyKnown = {}) {
  */
 const stated = (input) =>
   Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
+
+/** The fields that live on a row as well as on the request's top line — see the model. */
+const ROW_FIELDS = [
+  'mould', 'modelNumber', 'category', 'sizeMm',
+  'materialRef', 'hookRef', 'clipRef', 'printRef',
+  'material', 'colour', 'colourMandatory', 'printing', 'packing', 'quantity',
+];
+
+/**
+ * What the caller actually said, written onto the first row as well as the top line.
+ *
+ * The model keeps the top line and `items[0]` in step, and where the two disagree the *list*
+ * wins — because the list is what somebody filled in on a form. That is right for an edit and
+ * wrong here, where the two halves come from different places: the rows are inherited from an
+ * enquiry or a previous attempt, and the top-line fields are the override the caller just
+ * typed. Left alone, the inherited row quietly won: a re-sample asked for three pieces and the
+ * bench was told to make one, which is the attempt being made wrong rather than merely
+ * recorded wrong.
+ *
+ * Only the first row, because that is the one the top line *is*. An override naming a colour
+ * says nothing about the second model in the bag, and spreading it across all of them would
+ * invent an instruction nobody gave.
+ */
+function statedOnTheFirstRow(payload, said) {
+  const rows = payload.items;
+  if (!rows?.length) return payload;
+
+  const overrides = Object.fromEntries(
+    ROW_FIELDS.filter((field) => said[field] !== undefined).map((field) => [field, said[field]])
+  );
+  if (!Object.keys(overrides).length) return payload;
+
+  const first = rows[0]?.toObject?.() ?? rows[0];
+  return { ...payload, items: [{ ...first, ...overrides }, ...rows.slice(1)] };
+}
 
 /**
  * A sample raised without one already open against the same enquiry.
@@ -163,9 +222,9 @@ export async function createSampleRequest(
   const purpose =
     input.purpose || (enquiry?.isNewDevelopment ? 'new_development' : 'existing_model');
 
+  const said = stated(input);
   const sample = await Sample.create({
-    ...inherited,
-    ...stated(input),
+    ...statedOnTheFirstRow({ ...inherited, ...said }, said),
     purpose,
     number: await nextNumber('SMP'),
     requiredDate: input.requiredDate || defaultRequiredDate(enquiry),

@@ -2,6 +2,7 @@ import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from './Mould.js';
+import { hasRequirement, requirementFields } from './requirement.schema.js';
 
 /**
  * The sample statuses [BLUEPRINT §4], in the order work moves through them.
@@ -116,6 +117,80 @@ const statusChangeSchema = new mongoose.Schema(
 );
 
 /**
+ * One model in the bag.
+ *
+ * The shared requirement shape [requirement.schema.js], so a lead's item, an enquiry's, a
+ * costing's line and this are the same description of the same thing — which is what lets a
+ * buyer's requirement travel the whole chain without being retyped at each step.
+ *
+ * Two fields differ here, and both differ for the same reason: a sample is a physical bag of
+ * pieces rather than a description of a job.
+ *
+ *   `mould`     the tool this model runs on. A lead or an enquiry carries one mould for the
+ *               whole record, because it is about one job; a bag with three models in it is
+ *               three tools, and the bench needs to know which.
+ *   `quantity`  how many pieces of *this* model to make. On an enquiry the quantity was a guess
+ *               at the size of an order and is no longer even asked for; here it is an
+ *               instruction somebody at a bench acts on, so it is defaulted and floored at one.
+ */
+const itemSchema = new mongoose.Schema(
+  {
+    ...requirementFields(),
+    mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould' },
+    quantity: { type: Number, min: 1, default: 1 },
+  },
+  { _id: true }
+);
+
+/** The fields one item row and the request's own top line both carry, in one list. */
+const ITEM_FIELDS = [
+  'mould', 'modelNumber', 'category', 'sizeMm',
+  'materialRef', 'hookRef', 'clipRef', 'printRef',
+  'material', 'colour', 'colourMandatory', 'printing', 'packing', 'quantity',
+];
+
+/** Whether anybody actually described a model on this row — a blank one is not an item. */
+const hasItem = (row) => Boolean(row && (row.mould || hasRequirement(row)));
+
+/**
+ * The top line and `items[0]` are one fact, and this is where that is made true.
+ *
+ * The same rule the enquiry keeps, and it has to be kept for the same reason: a great deal
+ * already reads the flat fields — §13 checks an order against the approved sample's model and
+ * colour, the bench screens read `colourRule`, the dispatch gate reads `quantity` — and all of
+ * it would have to learn about a list on the day one appeared. So the list is the record and
+ * the top line is its first row, kept in step on every save.
+ *
+ * **Whichever side was just written decides.** Copying one over the other unconditionally is
+ * what silently reverted an edit on the enquiry: the screen said the colour had changed, the
+ * record said it had not, and the only sign was an audit trail with nothing in it.
+ *
+ *   The list was written → it is what the person entered, so the top line follows it.
+ *   There is no list yet → build one from the top line, so a request written the old way
+ *   answers both shapes and every screen can read one of them.
+ *   The top line was corrected on its own → the first row follows it.
+ */
+function keepFirstItemInStep(doc) {
+  const rows = doc.items || [];
+  const at = rows.findIndex(hasItem);
+
+  if (doc.isModified('items') && at >= 0) {
+    for (const field of ITEM_FIELDS) doc[field] = rows[at][field];
+    return;
+  }
+
+  const top = Object.fromEntries(ITEM_FIELDS.map((field) => [field, doc[field]]));
+  if (!hasItem(top)) return;
+
+  if (at < 0) {
+    doc.items = [top];
+    return;
+  }
+
+  if (ITEM_FIELDS.some((field) => doc.isModified(field))) doc.items.set(at, top);
+}
+
+/**
  * A sample request [BLUEPRINT §4-6].
  *
  * Usually created for you: moving an enquiry to `sample_required` raises one automatically
@@ -225,6 +300,21 @@ const sampleSchema = new mongoose.Schema(
      */
     quantity: { type: Number, min: 1, default: 1 },
 
+    /**
+     * Every model going in the bag, one row each.
+     *
+     * A buyer asks for samples of the three hangers they are considering, not of one — and
+     * before this the plant's answer was three requests with three numbers, three required
+     * dates and three couriers for one padded envelope. The bench then made them together
+     * anyway, so the register said three jobs where there was one.
+     *
+     * **The fields above are the first of them, kept in step** — see `keepFirstItemInStep`.
+     * That is deliberate rather than tidy: §13's approved-sample check, the bench's colour
+     * rule and the dispatch gate all read the top line, and a list bolted on beside them would
+     * mean two descriptions of one bag that can disagree.
+     */
+    items: { type: [itemSchema], default: () => [] },
+
     purpose: { type: String, enum: SAMPLE_PURPOSES, default: 'existing_model' },
     requiredDate: { type: Date, index: true },
     /** A link, when the buyer sent one. Kept for what the enquiry carries over. */
@@ -285,8 +375,19 @@ const sampleSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+sampleSchema.pre('validate', function keepInStep() {
+  keepFirstItemInStep(this);
+});
+
 sampleSchema.index({ status: 1, requiredDate: 1 });
 sampleSchema.index({ number: 'text', modelNumber: 'text' });
+
+/** How many pieces the bag holds in total, which is what the bench and the courier care about. */
+sampleSchema.virtual('piecesToMake').get(function piecesToMake() {
+  const rows = this.items || [];
+  if (!rows.length) return this.quantity ?? 0;
+  return rows.reduce((sum, row) => sum + (row.quantity || 0), 0);
+});
 
 /** True for a request that is not attached to an enquiry. */
 sampleSchema.virtual('isStandalone').get(function isStandalone() {

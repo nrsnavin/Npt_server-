@@ -342,3 +342,264 @@ test('an item carries no quantity, on a lead any more than on an enquiry', async
   assert.equal(json.data.items[0].quantity, undefined, 'stripped, not stored');
   assert.equal(json.data.requirement.quantity, undefined);
 });
+
+/**
+ * The sample §6 raises, once it exists.
+ *
+ * The enquiry's status door publishes and returns; the subscriber writes the request a tick
+ * later. Reading the list straight afterwards passes on a slow machine and fails on a fast one,
+ * which is the worst kind of test — so this waits for the record rather than assuming it.
+ */
+const sampleFor = async (enquiryId) => {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const { json } = await api(`/api/samples?enquiry=${enquiryId}`, { token: nandhini });
+    if (json.data?.length) return json.data[0];
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return undefined;
+};
+
+/* -------------------------------- A sample's bag -------------------------------- */
+
+/*
+ * A sample is the same list one step further on, and the one place the shape genuinely
+ * differs: a bag of pieces rather than a description of a job. So each row carries the tool it
+ * runs on — three models is three tools — and a quantity that is a real instruction rather than
+ * a guess at an order.
+ */
+
+test('a sample can be raised for several models at once', async () => {
+  const { status, json } = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [
+        { modelNumber: 'NPT-400S', colour: 'White', quantity: 5 },
+        { modelNumber: 'NPT-700T', colour: 'Black', quantity: 3 },
+        { modelNumber: 'NPT-250K', quantity: 2 },
+      ],
+      requiredDate: inDays(5),
+    },
+  });
+
+  assert.equal(status, 201, json.message);
+  assert.equal(json.data.items.length, 3);
+  assert.deepEqual(json.data.items.map((item) => item.modelNumber),
+    ['NPT-400S', 'NPT-700T', 'NPT-250K']);
+  /* What the bench actually has to make, which is not any one row. */
+  assert.equal(json.data.piecesToMake, 10);
+});
+
+test('the sample’s top line and its first row are one fact', async () => {
+  /*
+   * The same rule the enquiry keeps, and it matters more here: §13 checks an order against the
+   * *approved sample's* model and colour, the bench reads `colourRule`, and the dispatch gate
+   * reads the quantity. All of them read the top line, so a list that could drift from it
+   * would be two descriptions of one bag.
+   */
+  const { json } = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [{ modelNumber: 'NPT-400S', colour: 'Ivory', colourMandatory: true, quantity: 4 }],
+      requiredDate: inDays(5),
+    },
+  });
+
+  assert.equal(json.data.modelNumber, 'NPT-400S');
+  assert.equal(json.data.colour, 'Ivory');
+  assert.equal(json.data.quantity, 4);
+  assert.match(json.data.colourRule, /Must be Ivory/);
+});
+
+test('a sample raised the old way still answers as a list', async () => {
+  const { json } = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      modelNumber: 'NPT-380S',
+      colour: 'White',
+      quantity: 6,
+      requiredDate: inDays(5),
+    },
+  });
+
+  assert.equal(json.data.items.length, 1, 'the top line became the first row');
+  assert.equal(json.data.items[0].modelNumber, 'NPT-380S');
+  assert.equal(json.data.items[0].quantity, 6);
+});
+
+test('correcting the sample’s top line alone is not reverted', async () => {
+  /*
+   * Proved by revert on the enquiry and worth proving again here, because it is the failure
+   * that leaves no trace: the screen says the colour changed, the record says it did not, and
+   * the audit trail is empty.
+   */
+  const raised = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [{ modelNumber: 'NPT-400S', colour: 'White', quantity: 5 }],
+      requiredDate: inDays(5),
+    },
+  });
+
+  /* Corrected by somebody who may: `samples: write` is the bench's, not marketing's. */
+  const fixed = await api(`/api/samples/${raised.json.data._id}`, {
+    method: 'PATCH',
+    token: admin,
+    body: { colour: 'Ivory' },
+  });
+
+  assert.equal(fixed.status, 200, fixed.json.message);
+  assert.equal(fixed.json.data.colour, 'Ivory');
+  assert.equal(fixed.json.data.items[0].colour, 'Ivory', 'the row followed the correction');
+  assert.equal(fixed.json.data.items[0].quantity, 5, 'and nothing else on the row moved');
+});
+
+test('a sample raised off an enquiry carries every model it asked about', async () => {
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [
+        { modelNumber: 'NPT-400S', colour: 'White' },
+        { modelNumber: 'NPT-700T', colour: 'Black' },
+      ],
+      ...followUp,
+    },
+  });
+  assert.equal(enquiry.status, 201, enquiry.json.message);
+
+  /* §6: moving the enquiry to sample required raises the request by itself. */
+  const moved = await api(`/api/enquiries/${enquiry.json.data._id}/status`, {
+    method: 'POST',
+    token: nandhini,
+    body: { status: 'sample_required' },
+  });
+  assert.equal(moved.status, 200, moved.json.message);
+
+  const sample = await sampleFor(enquiry.json.data._id);
+  assert.ok(sample, 'the enquiry raised one');
+
+  /*
+   * Both models, not just the first. Taking only the first would send one hanger against a
+   * conversation about two, and the second would be noticed by the buyer opening the envelope.
+   */
+  assert.equal(sample.items.length, 2);
+  assert.deepEqual(sample.items.map((item) => item.modelNumber), ['NPT-400S', 'NPT-700T']);
+});
+
+test('an enquiry’s quantity does not become a bench instruction', async () => {
+  /*
+   * The two records mean opposite things by the word. On an enquiry it is a guess at how big
+   * the order might be; on a sample it is how many pieces go in the courier bag. Carried
+   * across, a buyer's speculative 25,000 would be what the bench made.
+   *
+   * **Written straight into the database, because the enquiry door will not accept one.** The
+   * quantity was taken off that form deliberately — and the field is still on the shape, so
+   * every enquiry raised before that day still carries whatever was typed then. Those are the
+   * records this guard exists for, and a test that went through the door would be testing the
+   * door's strip rather than this: it passed with this fix reverted, which is how it was found.
+   */
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: { customer: customerId, items: [{ modelNumber: 'NPT-VOL' }], ...followUp },
+  });
+  assert.equal(enquiry.status, 201, enquiry.json.message);
+
+  const { default: Enquiry } = await import('../src/models/Enquiry.js');
+  await Enquiry.updateOne(
+    { _id: enquiry.json.data._id },
+    { $set: { 'items.0.quantity': 25000, 'requirement.quantity': 25000 } }
+  );
+
+  await api(`/api/enquiries/${enquiry.json.data._id}/status`, {
+    method: 'POST',
+    token: nandhini,
+    body: { status: 'sample_required' },
+  });
+
+  const sample = await sampleFor(enquiry.json.data._id);
+  assert.ok(sample, 'the enquiry raised one');
+
+  assert.equal(sample.items[0].quantity, 1, 'one piece until somebody says otherwise');
+  assert.equal(sample.quantity, 1);
+});
+
+test('a bag is capped at a dozen models, like the costing sheet', async () => {
+  const { status, json } = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: Array.from({ length: 13 }, (_, index) => ({ modelNumber: `NPT-${index}` })),
+      requiredDate: inDays(5),
+    },
+  });
+
+  assert.equal(status, 400, json.message);
+});
+
+test('a re-sample is the same bag, with what the bench changed', async () => {
+  /*
+   * "Change one part and send it again" is about the envelope that went out. A three-model
+   * attempt re-sampled as one model is two hangers the buyer was looking at and will not get
+   * back — and the override the bench typed has to reach the row as well as the top line, or
+   * the request says three pieces and the bench is told to make one.
+   */
+  const raised = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [
+        { modelNumber: 'NPT-400S', colour: 'White', quantity: 5 },
+        { modelNumber: 'NPT-700T', colour: 'Black', quantity: 2 },
+      ],
+      requiredDate: inDays(5),
+    },
+  });
+  const sample = raised.json.data;
+
+  for (const status of ['sample_ready', 'dispatched']) {
+    const moved = await api(`/api/samples/${sample._id}/status`, {
+      method: 'POST',
+      token: admin,
+      body: status === 'dispatched'
+        ? { status, courier: 'Professional', awbNumber: 'PC-778', dispatchedQuantity: 7 }
+        : { status },
+    });
+    assert.equal(moved.status, 200, moved.json.message);
+  }
+
+  const said = await api(`/api/samples/${sample._id}/feedback`, {
+    method: 'POST',
+    token: nandhini,
+    body: { outcome: 'modification_required', note: 'Shoulder 5mm wider on the 400' },
+  });
+  assert.equal(said.status, 200, said.json.message);
+
+  const again = await api(`/api/samples/${sample._id}/resample`, {
+    method: 'POST',
+    token: admin,
+    body: { quantity: 3 },
+  });
+  assert.equal(again.status, 201, again.json.message);
+
+  const next = again.json.data.sample;
+  assert.equal(next.items.length, 2, 'both models go again');
+  assert.deepEqual(next.items.map((item) => item.modelNumber), ['NPT-400S', 'NPT-700T']);
+  /* The override lands on the row it belongs to, and nowhere else. */
+  assert.equal(next.quantity, 3);
+  assert.equal(next.items[0].quantity, 3);
+  assert.equal(next.items[1].quantity, 2, 'the second model keeps what it had');
+  /* And the rows are its own, not the previous attempt's. */
+  assert.notEqual(String(next.items[0]._id), String(sample.items[0]._id));
+});

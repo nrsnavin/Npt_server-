@@ -582,6 +582,16 @@ export async function seedPipeline({ nandhini, arun, meera }) {
         sizeMm: enquiry.requirement.sizeMm,
         material: enquiry.requirement.material,
         printing: enquiry.requirement.printing,
+        /*
+         * Every model the enquiry asked about, the way the §6 automation carries them — so a
+         * seeded database shows a bag with more than one hanger in it, which is what a buyer
+         * comparing three actually asks for. The quantity is not carried: on an enquiry it is a
+         * guess at the order and here it is what goes in the courier bag.
+         */
+        items: (enquiry.items || []).map((item, index) => {
+          const { _id, quantity, ...wanted } = item.toObject?.() ?? item;
+          return { ...wanted, mould: index === 0 ? enquiry.mould : undefined, quantity: rest.quantity };
+        }),
         // Inherited from the tool, the way a request raised through the API inherits it.
         hookType: tool?.hookType,
         statusHistory: walk(rest.requestedAt, history),

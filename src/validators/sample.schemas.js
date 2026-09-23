@@ -31,6 +31,36 @@ const sampleCore = {
   printing: z.string().optional(),
   /** Pieces to make. Unlike an enquiry's, this is a figure the requester actually knows. */
   quantity: z.number().int().positive().optional(),
+  /*
+   * Every model going in the bag, one row each — see the model's own note. The fields above are
+   * the first row kept in step, so a caller written before the list existed still works and one
+   * sending both is not saying two different things: the list wins, because it is what the
+   * person filled in.
+   *
+   * Capped, for the reason the costing sheet is: past a dozen it is a price list rather than a
+   * padded envelope, and nobody can check a bag they have to scroll.
+   */
+  items: z
+    .array(
+      z.object({
+        mould: objectId.optional(),
+        modelNumber: z.string().optional(),
+        category: z.enum(HANGER_CATEGORIES).optional(),
+        sizeMm: z.number().nonnegative().optional(),
+        materialRef: objectId.optional(),
+        hookRef: objectId.optional(),
+        clipRef: objectId.optional(),
+        printRef: objectId.optional(),
+        material: z.enum(MATERIALS).optional(),
+        colour: z.string().optional(),
+        colourMandatory: z.boolean().optional(),
+        printing: z.string().optional(),
+        packing: z.string().optional(),
+        quantity: z.number().int().positive().optional(),
+      })
+    )
+    .max(12)
+    .optional(),
   purpose: z.enum(SAMPLE_PURPOSES).optional(),
   requiredDate: z.coerce.date().optional(),
   referenceImageUrl: z.string().optional(),

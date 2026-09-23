@@ -55,6 +55,17 @@ const POPULATE = [
   { path: 'hookRef', select: 'name code colour kind' },
   { path: 'clipRef', select: 'name code colour kind' },
   { path: 'printRef', select: 'name code kind' },
+  /*
+   * And the same again for every other model in the bag, so a request for three hangers names
+   * three resins rather than one resin and two ids. The first row is the four above — it is
+   * the top line kept in step — but populating it twice costs nothing and leaving it out would
+   * make row one the odd one that renders as a reference.
+   */
+  mouldWithPhoto('items.mould', 'mouldCode name category sizeMm'),
+  { path: 'items.materialRef', select: 'name code type colour' },
+  { path: 'items.hookRef', select: 'name code colour kind' },
+  { path: 'items.clipRef', select: 'name code colour kind' },
+  { path: 'items.printRef', select: 'name code kind' },
   { path: 'referencePhoto', select: 'key filename mimeType size' },
 ];
 
@@ -357,6 +368,26 @@ async function enquiryForLead(lead, spec, user) {
 }
 
 /**
+ * Whether a list of rows actually names something to make.
+ *
+ * A row somebody added and left blank is not a model, so a request carrying three of them is
+ * still a request that says nothing — and the bench would get a job it cannot start with a
+ * list on it that looks like it should be able to.
+ */
+const namesAModel = (rows = []) => rows.some((row) => row?.mould || row?.modelNumber);
+
+/**
+ * Every row through the registers, the same way the top line goes [§28].
+ *
+ * Done per row rather than once for the request, because each row is its own specification: a
+ * clip booked into row two's hook field is exactly as wrong as one in row one's, and a resin
+ * fills the colour and the family of the model it was picked for. Running this only on the
+ * first row would make the registers a rule that applies to the model you happened to type
+ * first.
+ */
+const specRows = (rows) => Promise.all(rows.map((row) => buildSpec(row)));
+
+/**
  * Raises a request by hand.
  *
  * The usual path is the automation: moving an enquiry to `sample_required` raises one [§6].
@@ -441,7 +472,7 @@ export const createSample = asyncHandler(async (req, res) => {
    * sample nobody can identify is a job the bench cannot start, so this is refused here
    * rather than discovered at the bench.
    */
-  if (!enquiry && !input.mould && !input.modelNumber) {
+  if (!enquiry && !input.mould && !input.modelNumber && !namesAModel(input.items)) {
     throw ApiError.badRequest(
       'Pick a mould, or describe what to make, when there is no enquiry to take it from'
     );
@@ -465,6 +496,8 @@ export const createSample = asyncHandler(async (req, res) => {
    * a question the register has already answered. See `registers.service.js`.
    */
   const spec = await buildSpec(input);
+  /* And every other model in the bag through the same registers — see `specRows`. */
+  if (input.items) spec.items = await specRows(input.items);
 
   /*
    * A lead's request raises the lead's first enquiry, which converts the lead [§5]. See
@@ -619,7 +652,10 @@ export const updateSample = asyncHandler(async (req, res) => {
    * has typed a colour is a question about the merged record, not about the two fields in
    * front of us.
    */
-  Object.assign(sample, await applySpec(sample, withoutVersion(req.body)));
+  const patch = withoutVersion(req.body);
+  /* The rows get the same resolution the top line does, on this door as on the create one. */
+  if (patch.items) patch.items = await specRows(patch.items);
+  Object.assign(sample, await applySpec(sample, patch));
   await sample.save();
   await recordChange({ model: 'Sample', doc: sample, before, by: req.user });
 
@@ -952,6 +988,19 @@ export const resample = asyncHandler(async (req, res) => {
     printing: previous.printing,
     hookType: previous.hookType,
     quantity: previous.quantity,
+    /*
+     * The whole bag, not only its first model. "Change one part and send it again" is about
+     * the envelope that went out — a three-model attempt re-sampled as one model is two
+     * hangers the buyer was looking at and will not get back.
+     *
+     * Rebuilt rather than handed over, because these rows belong to the previous attempt: a
+     * sub-document carries its own `_id`, and reusing it would give two requests rows that
+     * claim to be the same row.
+     */
+    items: (previous.items || []).map((row) => {
+      const { _id, ...fields } = row.toObject?.() ?? row;
+      return fields;
+    }),
     purpose: previous.purpose,
     remarks: previous.feedbackNote,
     ...req.body,
