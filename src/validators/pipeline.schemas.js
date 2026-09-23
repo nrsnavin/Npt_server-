@@ -99,7 +99,14 @@ const requirementListSchema = z.array(requirementSchema).max(12).optional();
  * every model after the first a lesser record.
  */
 const enquiryItemSchema = requirementSchema.extend({
-  mould: objectId.optional(),
+  /*
+   * Nullable, and that is the difference between "this row said nothing about a tool" and "this
+   * row has no tool". Both are ordinary: a form sending the whole list back says `null` for a
+   * traded item, and an older caller sending a partial row says nothing at all. Only the second
+   * may inherit the enquiry's own mould — treating them alike would restore a tool the person
+   * had just cleared, on the row where it matters most.
+   */
+  mould: objectId.nullable().optional(),
   isNewDevelopment: z.boolean().optional(),
 });
 

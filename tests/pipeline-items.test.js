@@ -759,3 +759,31 @@ test('a sample raised off the enquiry gets each model’s own tool', async () =>
   assert.equal(String(bag[1].mould?._id ?? bag[1].mould), second,
     'the bench is told what makes the second hanger too');
 });
+
+test('a row that says it has no tool is accepted, and clears the tool', async () => {
+  /*
+   * What the item editor sends for a bought-in model: `mould: null`, meaning "no tool of ours",
+   * as distinct from a row that says nothing about a tool at all. The schema used to accept
+   * only an id or nothing, so every save from the form with a traded item on it was refused —
+   * and the one that got through would have let the enquiry's old tool fall back onto row one,
+   * restoring what the person had just cleared.
+   */
+  const tool = await registerMould('M-460A', 'Top hanger 460mm');
+
+  const raised = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: { customer: customerId, items: [{ mould: tool, modelNumber: 'NPT-460' }], ...followUp },
+  });
+  assert.equal(raised.status, 201, raised.json.message);
+
+  const cleared = await api(`/api/enquiries/${raised.json.data._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { items: [{ mould: null, modelNumber: 'NPT-460 (bought in)' }] },
+  });
+
+  assert.equal(cleared.status, 200, cleared.json.message);
+  assert.equal(cleared.json.data.items[0].mould ?? null, null, 'the row has no tool');
+  assert.equal(cleared.json.data.mould ?? null, null, 'and neither does the enquiry');
+});
