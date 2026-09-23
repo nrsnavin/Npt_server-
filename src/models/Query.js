@@ -76,15 +76,70 @@ const participantSchema = new mongoose.Schema(
  * the order they happened, and two arrays would have to be merged on every read and would
  * disagree about ordering the moment two landed in the same second.
  */
+/**
+ * Where somebody was when they said it — because they chose to say so.
+ *
+ * Never captured in the background, never on a timer: a location exists only on a message a
+ * person decided to send, having seen what would be shared. See docs/QUERIES-CHAT-DESIGN.md §6.
+ *
+ * It is what the phone reported, and nothing stronger. A browser cannot prove where a device is,
+ * so this is a record of a claim — "shared from Nandhini's phone" — and must never be used as
+ * proof of a visit or as attendance without a different design.
+ *
+ * `place` is the nearest of the bundled towns, worked out on the server with no third party
+ * involved; absent when nothing bundled is within 50 km, which is the honest answer.
+ */
+const locationSchema = new mongoose.Schema(
+  {
+    lat: { type: Number, required: true, min: -90, max: 90 },
+    lng: { type: Number, required: true, min: -180, max: 180 },
+    accuracyM: { type: Number, min: 0 },
+    capturedAt: Date,
+    place: {
+      name: String,
+      state: String,
+      distanceKm: Number,
+    },
+  },
+  { _id: false }
+);
+
 const messageSchema = new mongoose.Schema(
   {
     kind: { type: String, enum: ['reply', 'note'], default: 'reply' },
-    body: { type: String, required: true, trim: true, maxlength: 4000 },
+    /* Optional when a location rides with it: "📍" alone is a complete thing to have said. */
+    body: {
+      type: String,
+      trim: true,
+      maxlength: 4000,
+      required() {
+        return !this.location || this.location.lat == null;
+      },
+    },
+    location: { type: locationSchema, default: undefined },
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     at: { type: Date, default: Date.now },
   },
   { _id: true }
 );
+
+/**
+ * A message as words, for everything that reads a thread as text.
+ *
+ * The model's summary and draft, the rules gist, the urgency reading and the list preview all
+ * used `message.body` directly — and a location shared with no caption has none, so each of them
+ * would have printed "Anita replied: " followed by nothing. One function says what such a message
+ * *was*, so they all say the same thing.
+ */
+export const messageText = (message) => {
+  const words = String(message?.body || '').trim();
+  const where = message?.location?.lat == null
+    ? ''
+    : `📍 shared a location${message.location.place?.name ? ` near ${message.location.place.name}` : ''}`;
+
+  if (words && where) return `${words} (${where})`;
+  return words || where;
+};
 
 const querySchema = new mongoose.Schema(
   {

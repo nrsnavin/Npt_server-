@@ -1,5 +1,7 @@
 import mongoose from 'mongoose';
-import Query, { inTheRoom, roomFilter, seesEveryQuery } from '../models/Query.js';
+import Query, { inTheRoom, messageText, roomFilter, seesEveryQuery } from '../models/Query.js';
+import QueryRead from '../models/QueryRead.js';
+import { nearestTown } from '../data/places.js';
 import Customer from '../models/Customer.js';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
@@ -117,7 +119,8 @@ async function peopleBehind(participant) {
 /* --------------------------------- Raising --------------------------------- */
 
 export const createQuery = asyncHandler(async (req, res) => {
-  const { customer: customerId, subject, question, participants = [] } = req.body;
+  const { customer: customerId, question, participants = [] } = req.body;
+  const subject = req.body.subject || subjectFrom(question);
 
   const customer = await askableCustomer(customerId, req.user);
 
@@ -143,6 +146,9 @@ export const createQuery = asyncHandler(async (req, res) => {
     raisedBy: req.user._id,
     participants: rows,
   });
+
+  /* The asker has read their own question, so "seen by" starts out right. */
+  await QueryRead.advance(query._id, req.user._id, query.createdAt);
 
   /* The buyer is shared with everybody the rows stand for, and with the asker, who may have
      raised this about a customer that was itself shared with them. */
@@ -172,6 +178,100 @@ async function participantRow(asked, addedBy) {
   }
   return { department, addedBy: addedBy._id };
 }
+
+/**
+ * A subject for a question that was asked without one.
+ *
+ * The question's first line, cut at a word near 80 characters. A chat does not ask for a title
+ * before you may speak — the subject field was the one people stalled on — but a list still
+ * needs something to scan, and the first line of what was asked is what the asker would have
+ * typed there anyway.
+ */
+export function subjectFrom(question = '') {
+  const line = String(question).trim().split(/\n/)[0].trim();
+  if (line.length <= 80) return line;
+  const cut = line.slice(0, 80);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > 40 ? cut.slice(0, space) : cut).trim()}…`;
+}
+
+/* --------------------------------- Read state --------------------------------- */
+
+/** Everything said on a thread, question first — what "unread" and "last" are measured over. */
+const said = (query) => [
+  { by: query.raisedBy, at: query.createdAt, text: query.question, kind: 'question' },
+  ...(query.messages || []).map((message) => ({
+    by: message.by,
+    at: message.at,
+    text: messageText(message),
+    kind: message.kind,
+    located: message.location?.lat != null,
+  })),
+];
+
+const idOf = (value) => String(value?._id ?? value);
+
+/**
+ * How many things on this thread I have not seen.
+ *
+ * Anything said after my cursor by somebody other than me. Computed rather than stored: a stored
+ * counter has to be incremented for every other reader on every message and reset on every read,
+ * under concurrency, and it drifts; this is always right and costs a pass over messages the list
+ * has already loaded.
+ */
+export function unreadFor(query, cursorAt, me) {
+  const since = cursorAt ? new Date(cursorAt).getTime() : null;
+  return said(query).filter(
+    (entry) => idOf(entry.by) !== String(me) && (since === null || new Date(entry.at).getTime() > since)
+  ).length;
+}
+
+/** The last thing said, as a list row previews it. */
+export function lastSaid(query) {
+  const entries = said(query);
+  const last = entries[entries.length - 1];
+  return {
+    by: last.by?.name ? { _id: last.by._id, name: last.by.name } : idOf(last.by),
+    at: last.at,
+    kind: last.kind,
+    located: Boolean(last.located),
+    text: String(last.text || '').slice(0, 140),
+  };
+}
+
+/**
+ * Who has seen the last thing said — "Seen by Anita, Kiran".
+ *
+ * Accounts' real question about a thread is not "has anybody answered" but "has despatch even
+ * seen it", and nothing answered that. The author of the last message is left out: that they
+ * have seen what they wrote is not news.
+ */
+async function seenBy(query) {
+  const last = lastSaid(query);
+  const author = idOf(last.by);
+  const reads = await QueryRead.find({ query: query._id, at: { $gte: new Date(last.at) } })
+    .populate('user', 'name department')
+    .lean();
+
+  return reads
+    .filter((read) => read.user && String(read.user._id) !== author)
+    .map((read) => ({ _id: read.user._id, name: read.user.name, at: read.at }));
+}
+
+/**
+ * Marking a thread read — upserting my cursor, and nothing else.
+ *
+ * It never touches the query document. See `QueryRead` for why: a cursor on the query would make
+ * opening a thread advance its version, and somebody else's reply would then fail as a conflict.
+ *
+ * A POST rather than a side effect of GET, so a prefetch, a link preview or a list that loads a
+ * thread in the background cannot mark it read on somebody's behalf.
+ */
+export const markRead = asyncHandler(async (req, res) => {
+  const query = await readableQuery(req.params.id, req.user);
+  await QueryRead.advance(query._id, req.user._id);
+  res.json({ success: true, data: { unread: 0 } });
+});
 
 /* --------------------------------- Reading --------------------------------- */
 
@@ -214,9 +314,20 @@ export const listQueries = asyncHandler(async (req, res) => {
    * Attached to the plain object rather than to the document: this is computed per reader and
    * must never be mistaken for something stored on the query.
    */
+  /* My cursors for this page, in one query rather than one per row. */
+  const cursors = new Map(
+    (await QueryRead.find({ user: req.user._id, query: { $in: data.map((query) => query._id) } })
+      .select('query at')
+      .lean())
+      .map((read) => [String(read.query), read.at])
+  );
+
   const rows = data.map((query) => ({
     ...query.toJSON(),
     urgency: urgencyByRules(query, req.user),
+    /* Per reader, like the urgency, and for the same reason never stored on the thread. */
+    unread: unreadFor(query, cursors.get(String(query._id)), req.user._id),
+    last: lastSaid(query),
   }));
 
   /* `read` travels beside the page rather than inside it: the screen shows what the phrase was
@@ -390,7 +501,13 @@ export const getQuery = asyncHandler(async (req, res) => {
    * by a report, a count, an export or a notification. A summary that cannot be persisted
    * cannot become a record. `writtenBy` says whose sentence it is — see `querySummary.llm.js`.
    */
-  res.json({ success: true, data: query, gist: await summarise(query) });
+  res.json({
+    success: true,
+    data: query,
+    gist: await summarise(query),
+    /* Beside the thread, like the gist: per reader and changing by the minute. */
+    seenBy: await seenBy(query),
+  });
 });
 
 /* --------------------------------- Saying something --------------------------------- */
@@ -409,7 +526,7 @@ export const getQuery = asyncHandler(async (req, res) => {
  */
 export const addMessage = asyncHandler(async (req, res) => {
   const query = await readableQuery(req.params.id, req.user);
-  const { kind = 'reply', body } = req.body;
+  const { kind = 'reply', body, location } = req.body;
 
   if (query.status === 'closed') {
     throw ApiError.badRequest(
@@ -417,14 +534,64 @@ export const addMessage = asyncHandler(async (req, res) => {
     );
   }
 
-  query.messages.push({ kind, body, by: req.user._id });
+  query.messages.push({
+    kind,
+    body: body || undefined,
+    location: location ? placed(location) : undefined,
+    by: req.user._id,
+  });
 
   /* Only a reply advances it. Answering is the plant's part; closing is the asker's. */
   if (kind === 'reply' && query.status === 'open') query.status = 'answered';
 
   await query.save();
+  /* Whoever just spoke has read everything up to what they said. */
+  await QueryRead.advance(query._id, req.user._id);
   res.status(201).json({ success: true, data: await withRefs(query) });
 });
+
+/** How stale a fix may be, and how far in the future a phone's clock may run. */
+const FRESH_MS = 15 * 60 * 1000;
+const SKEW_MS = 2 * 60 * 1000;
+
+/**
+ * A location, checked against the clock and named — or refused with what to do about it.
+ *
+ * **Fresh, or refused.** "Where I am" is a claim about now. A fix taken an hour ago, or one
+ * replayed from a saved request, is where somebody *was*, and a thread that shows it as a
+ * check-in is telling the reader something false. Fifteen minutes allows for a slow network and a
+ * person who typed a caption; two minutes of future allows for a phone whose clock is ahead.
+ *
+ * **Rounded to six places** — about ten centimetres. The fix itself is good to metres at best;
+ * storing the phone's full floating-point noise would print precision nobody has.
+ *
+ * **Named offline**, from the bundled towns — see `nearestTown` for why not Google.
+ */
+function placed({ lat, lng, accuracyM, capturedAt }) {
+  const taken = new Date(capturedAt).getTime();
+  const now = Date.now();
+
+  if (Number.isNaN(taken) || taken < now - FRESH_MS) {
+    throw ApiError.badRequest(
+      'That location is too old to share as where you are now — share it again from here.'
+    );
+  }
+  if (taken > now + SKEW_MS) {
+    throw ApiError.badRequest(
+      'Your phone’s clock is ahead of the server’s — check its date and time, then share again.'
+    );
+  }
+
+  const round = (value) => Math.round(value * 1e6) / 1e6;
+  const point = { lat: round(lat), lng: round(lng) };
+
+  return {
+    ...point,
+    accuracyM: Math.round(accuracyM),
+    capturedAt: new Date(taken),
+    place: nearestTown(point) || undefined,
+  };
+}
 
 /* --------------------------------- Widening the room --------------------------------- */
 

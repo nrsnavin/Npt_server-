@@ -31,7 +31,11 @@ const participant = z.union([
 export const querySchema = z.object({
   customer: objectId,
   /* Short, because it is what a list shows and what somebody scans forty of. */
-  subject: z.string().trim().min(3).max(200),
+  /*
+   * Optional. A chat does not ask for a title before you may speak, and this was the one field
+   * people stalled on. Left out, the question's own first line is used — see `subjectFrom`.
+   */
+  subject: z.string().trim().min(3).max(200).optional(),
   question: z.string().trim().min(3).max(4000),
   /*
    * At least one, enforced here as well as in the controller. A query addressed to nobody is a
@@ -49,10 +53,36 @@ export const participantSchema = participant;
  * observation that does not. Defaulted to `reply` because that is what somebody typing into the
  * box usually means, and a note is the deliberate choice.
  */
-export const messageSchema = z.object({
-  kind: z.enum(['reply', 'note']).default('reply'),
-  body: z.string().trim().min(1).max(4000),
+/**
+ * A location, as the phone reported it.
+ *
+ * Accuracy is capped at 5 km: past that it is a cell-tower guess, not a place, and storing it
+ * would let a card say "near Tiruppur" about a phone that could have been anywhere in the
+ * district. Freshness depends on the clock at the moment of receipt, so it is checked in the
+ * controller rather than here.
+ */
+export const locationSchema = z.object({
+  lat: z.number().finite().min(-90).max(90),
+  lng: z.number().finite().min(-180).max(180),
+  accuracyM: z
+    .number()
+    .finite()
+    .positive()
+    .max(5000, 'Your phone could only place you within several kilometres — turn on GPS or move near a window, then share again'),
+  capturedAt: z.coerce.date(),
 });
+
+export const messageSchema = z
+  .object({
+    kind: z.enum(['reply', 'note']).default('reply'),
+    body: z.string().trim().max(4000).default(''),
+    location: locationSchema.optional(),
+  })
+  /* Words, a place, or both — "📍" alone is a complete thing to have said. */
+  .refine((message) => message.body.length > 0 || message.location, {
+    message: 'Say something, or share where you are',
+    path: ['body'],
+  });
 
 /**
  * The ids on the reader's screen, for the model to read.

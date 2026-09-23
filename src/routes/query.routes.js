@@ -3,6 +3,7 @@ import {
   listQueries, getQuery, createQuery, addMessage,
   addParticipant, closeQuery, reopenQuery, participantOptions,
   readUrgency, suggestReply,
+  markRead,
 } from '../controllers/query.controller.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -56,6 +57,8 @@ router.post(
 
 /* A draft for the composer. Nothing is said in the thread until the person presses send. */
 router.post('/queries/:id/draft-reply', requireModule('queries'), suggestReply);
+/* Moves the reader's own cursor. A POST, so no prefetch can mark a thread read on their behalf. */
+router.post('/queries/:id/read', requireModule('queries'), markRead);
 
 router.post('/queries/:id/close', requireModule('queries'), closeQuery);
 router.post('/queries/:id/reopen', requireModule('queries'), reopenQuery);

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { clearSite, pinSite } from '../controllers/customerSite.controller.js';
 import {
   listCustomers, getCustomer, getCustomerMap, createCustomer, updateCustomer, checkDuplicateCustomer,
   listLeads, leadBoard, getLead, createLead, updateLead, addLeadActivity, convertLead,
@@ -112,6 +113,9 @@ router.post('/customers', requireModule('customers', 'write'), validate(customer
 router.get('/customers/:id/map', requireModule('customers'), getCustomerMap);
 router.get('/customers/:id', requireModule('customers'), getCustomer);
 router.patch('/customers/:id', requireModule('customers', 'write'), validate(customerUpdateSchema), updateCustomer);
+/* The buyer's gate, pinned from a location somebody shared in a thread — never typed. */
+router.post('/customers/:id/site', requireModule('customers', 'write'), pinSite);
+router.delete('/customers/:id/site', requireModule('customers', 'write'), clearSite);
 
 // Leads
 router.get('/leads/export', requireModule('enquiries'), exportLeads);

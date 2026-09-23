@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { askForJson, llmConfigured, BUDGETS } from './llm.client.js';
+import { messageText } from '../models/Query.js';
 
 /**
  * A first draft of a reply, for somebody to change and send [queries].
@@ -94,7 +95,7 @@ function transcript(query, user) {
   for (const message of query.messages || []) {
     lines.push(
       `${message.by?.name || 'Somebody'} (${message.kind === 'note' ? 'note' : 'reply'}): `
-      + String(message.body).slice(0, ROOM)
+      + messageText(message).slice(0, ROOM)
     );
   }
 

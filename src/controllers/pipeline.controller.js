@@ -397,7 +397,10 @@ export const getCustomerMap = asyncHandler(async (req, res) => {
 });
 
 export const getCustomer = asyncHandler(async (req, res) => {
-  const customer = await Customer.findById(req.params.id).populate('assignedTo', 'name email');
+  const customer = await Customer.findById(req.params.id)
+    .populate('assignedTo', 'name email')
+    /* Who stood at the gate — the pin's whole claim to being right. */
+    .populate('site.setBy', 'name');
   if (!customer) throw ApiError.notFound('Customer not found');
   /* Theirs, or shared with them by a query they are a participant on — see `sharedWith`. */
   if (!ownsCustomer(req.user, customer)) throw ApiError.notFound('Customer not found');

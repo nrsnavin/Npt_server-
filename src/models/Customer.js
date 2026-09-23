@@ -100,6 +100,35 @@ const customerSchema = new mongoose.Schema(
      */
     sharedWith: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true }],
 
+    /**
+     * Where the buyer's gate actually is — pinned from somebody standing at it.
+     *
+     * The address says "Tiruppur"; a lorry driver or the next marketing visit needs the gate.
+     * So this is set only from a location somebody *shared in a query thread*, never typed:
+     * `fromQuery` and `fromMessage` say which check-in it came from, so the pin can always be
+     * traced back to who was there and when. A typed coordinate has no such trail, and a wrong
+     * one sends somebody forty minutes the wrong way with nothing to check it against.
+     *
+     * Set by the account owner or an administrator, and audited, the same as any other edit to
+     * the buyer. See docs/QUERIES-CHAT-DESIGN.md §6.
+     */
+    site: {
+      type: new mongoose.Schema(
+        {
+          lat: { type: Number, required: true, min: -90, max: 90 },
+          lng: { type: Number, required: true, min: -180, max: 180 },
+          accuracyM: Number,
+          place: { name: String, state: String, distanceKm: Number },
+          setBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+          setAt: { type: Date, required: true },
+          fromQuery: { type: mongoose.Schema.Types.ObjectId, ref: 'Query', required: true },
+          fromMessage: { type: mongoose.Schema.Types.ObjectId, required: true },
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+
     creditTermsDays: { type: Number, min: 0, default: 0 },
     paymentTerms: { type: String, trim: true },
     rating: { type: String, enum: RATINGS, default: 'B' },

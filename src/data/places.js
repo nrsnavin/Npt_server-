@@ -413,3 +413,41 @@ export function locate({ city, state } = {}) {
 
   return null;
 }
+
+/** Kilometres between two points on the earth, by haversine. Good to metres at these ranges. */
+export function distanceKm(from, to) {
+  const rad = (degrees) => (degrees * Math.PI) / 180;
+  const dLat = rad(to.lat - from.lat);
+  const dLng = rad(to.lng - from.lng);
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(rad(from.lat)) * Math.cos(rad(to.lat)) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * The town nearest a point, from the towns this business actually goes to.
+ *
+ * **Offline, deliberately.** A shared location is named "near Tiruppur, Tamil Nadu · 3 km" from
+ * the bundled list rather than by Google's geocoder: that needs a billed key, and it would send a
+ * member of staff's coordinates to a third party on every message. The bundled towns are the
+ * garment centres this plant sells into, which is exactly the vocabulary somebody reading the
+ * thread uses.
+ *
+ * Nothing is returned beyond `withinKm`. "Near Tiruppur, 180 km" is not near anything, and a
+ * card that says only the coordinates is more honest than one that names the wrong town.
+ */
+export function nearestTown({ lat, lng }, withinKm = 50) {
+  let best = null;
+
+  for (const [name, point] of Object.entries(CITY_COORDS)) {
+    const away = distanceKm({ lat, lng }, { lat: point[0], lng: point[1] });
+    if (!best || away < best.distanceKm) best = { name, distanceKm: away };
+  }
+
+  if (!best || best.distanceKm > withinKm) return null;
+  return {
+    name: best.name,
+    state: CITIES[best.name] || null,
+    distanceKm: Math.round(best.distanceKm * 10) / 10,
+  };
+}

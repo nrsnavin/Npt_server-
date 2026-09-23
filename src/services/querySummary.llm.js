@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { askForJson, llmConfigured, BUDGETS } from './llm.client.js';
 import { gistByRules } from './querySummary.rules.js';
+import { messageText } from '../models/Query.js';
 
 /**
  * Reading a long thread back in a sentence — with a language model [queries].
@@ -106,7 +107,7 @@ function transcript(query) {
   for (const message of query.messages || []) {
     const who = message.by?.name || 'Somebody';
     const kind = message.kind === 'note' ? 'note' : 'reply';
-    lines.push(`${who} (${kind}): ${String(message.body).slice(0, ROOM)}`);
+    lines.push(`${who} (${kind}): ${messageText(message).slice(0, ROOM)}`);
   }
 
   if (query.status === 'closed') lines.push('', 'This query has been closed by whoever asked it.');

@@ -1,3 +1,5 @@
+import { messageText } from '../models/Query.js';
+
 /**
  * A thread's gist, without a model.
  *
@@ -38,7 +40,7 @@ export function gistByRules(query) {
 
   if (latest) {
     const who = latest.by?.name ? `${latest.by.name} replied` : 'Replied';
-    parts.push(`${who}: ${clip(latest.body, 180)}`);
+    parts.push(`${who}: ${clip(messageText(latest), 180)}`);
   } else {
     parts.push('Nobody has replied yet.');
   }

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { askForJson, llmConfigured, BUDGETS } from './llm.client.js';
 import { URGENCIES, urgencyByRules } from './queryUrgency.rules.js';
+import { messageText } from '../models/Query.js';
 
 /**
  * Which of these threads actually needs this person today — read by a model [queries].
@@ -135,7 +136,7 @@ const asLine = (query, floor) => {
     `about: ${query.customer?.name || 'a customer'}`,
     `subject: ${query.subject}`,
     `asked: ${String(query.question).slice(0, ROOM)}`,
-    last ? `last (${last.kind}): ${String(last.body).slice(0, ROOM)}` : 'nobody has replied',
+    last ? `last (${last.kind}): ${messageText(last).slice(0, ROOM)}` : 'nobody has replied',
     `waiting: ${floor.hours} hour(s)`,
     `owed by the reader: ${floor.owed ? 'yes' : 'no'}`,
   ].join('\n');
