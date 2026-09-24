@@ -574,13 +574,22 @@ export const addMessage = asyncHandler(async (req, res) => {
   const message = query.messages[query.messages.length - 1];
 
   /*
-   * Tagging somebody not yet in the thread brings them in, as adding them would — the same row,
-   * recording who did it. A tag that pointed at a person who then could not open the thread
-   * would be a tag that did nothing.
+   * A tagged person is added to the thread by name, as "Pull somebody in" would — the same row,
+   * recording who did it — unless they asked it or are already named. Being in only through
+   * their department is not enough: the person was singled out, and "Who is in this" should say
+   * so. An administrator with no department is recorded under management.
    */
-  const joined = tagged.filter((person) => !inTheRoom(query, person));
+  const named = (person) =>
+    idOf(query.raisedBy) === String(person._id)
+    || query.participants.some((row) => row.user && idOf(row.user) === String(person._id));
+  const joined = tagged.filter((person) => !named(person));
+  const couldNotSeeIt = joined.filter((person) => !inTheRoom(query, person));
   for (const person of joined) {
-    query.participants.push({ department: person.department, user: person._id, addedBy: req.user._id });
+    query.participants.push({
+      department: person.department || 'management',
+      user: person._id,
+      addedBy: req.user._id,
+    });
   }
 
   /* Only a reply advances it. Answering is the plant's part; closing is the asker's. */
@@ -589,7 +598,8 @@ export const addMessage = asyncHandler(async (req, res) => {
   await query.save();
   /* Whoever just spoke has read everything up to what they said. */
   await QueryRead.advance(query._id, req.user._id);
-  if (joined.length) await shareCustomerWith(query.customer, joined.map((person) => person._id));
+  /* Only those who could not already see the thread are newly granted the buyer. */
+  if (couldNotSeeIt.length) await shareCustomerWith(query.customer, couldNotSeeIt.map((person) => person._id));
 
   /*
    * Each person tagged gets it on their list, so a tag reaches somebody who is not looking at
@@ -798,7 +808,7 @@ export const reopenQuery = asyncHandler(async (req, res) => {
  */
 export const participantOptions = asyncHandler(async (req, res) => {
   const people = await User.find({ isActive: { $ne: false } })
-    .select('_id name department')
+    .select('_id name department role')
     .sort({ department: 1, name: 1 });
 
   res.json({
@@ -818,5 +828,13 @@ export const participantOptions = asyncHandler(async (req, res) => {
      * with the pickers rather than per thread, because it is a fact about the deployment.
      */
     can: { draftReply: canDraft(), readUrgency: canRead() },
+    /*
+     * Every active administrator, whether or not they have a department — so they can be tagged.
+     * The bootstrap account often has none, and the lists above are built from departments, so
+     * the person most often asked to decide something was the one nobody could tag.
+     */
+    admins: people
+      .filter((person) => person.role === 'admin')
+      .map((person) => ({ _id: person._id, name: person.name, department: person.department || null })),
   });
 });

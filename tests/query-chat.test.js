@@ -472,14 +472,35 @@ test('tagging somebody outside the thread brings them in, grants the buyer, and 
   assert.equal((await rowFor(arun, query._id)).taggedMe, 0, 'until they have read it');
 });
 
-test('tagging somebody already in the thread tells them without adding them twice', async () => {
+test('a tagged person is added by name even when their department is already in it — once', async () => {
   const query = await raise();
+  const anitaId = await whoIs(anita);
   const before = query.participants.length;
-  const tagged = await tag(query._id, '@Anita P this one is yours', [await whoIs(anita)]);
+
+  const tagged = await tag(query._id, '@Anita P this one is yours', [anitaId]);
   assert.equal(tagged.status, 201, tagged.json.message);
-  assert.deepEqual(tagged.json.tagged.joined, [], 'despatch was already asked');
-  assert.equal(tagged.json.data.participants.length, before);
+  assert.deepEqual(tagged.json.tagged.joined, ['Anita P'], 'named, not only reached through despatch');
+  assert.equal(tagged.json.data.participants.length, before + 1);
   assert.equal((await rowFor(anita, query._id)).taggedMe, 1);
+
+  const again = await tag(query._id, '@Anita P and again', [anitaId]);
+  assert.deepEqual(again.json.tagged.joined, [], 'already named, so not added twice');
+  assert.equal(again.json.data.participants.length, before + 1);
+});
+
+test('an administrator can be tagged, even one with no department', async () => {
+  const { default: User } = await import('../src/models/User.js');
+  const boss = await User.create({ name: 'Owner Admin', email: 'owner.admin@np.com', password: 'Pass@123456', role: 'admin' });
+
+  const options = await api('/api/queries/options', { token: kavitha });
+  assert.ok(options.json.admins.some((person) => person._id === String(boss._id)), 'offered to tag');
+
+  const query = await raise();
+  const tagged = await tag(query._id, '@Owner Admin can we accept this?', [String(boss._id)]);
+  assert.equal(tagged.status, 201, tagged.json.message);
+  assert.deepEqual(tagged.json.tagged.joined, ['Owner Admin']);
+  const row = tagged.json.data.participants.find((entry) => (entry.user?._id || entry.user) === String(boss._id));
+  assert.equal(row.department, 'management', 'recorded under management, having no department of their own');
 });
 
 test('a tag that could never be seen is refused by name, and tagging yourself does nothing', async () => {
