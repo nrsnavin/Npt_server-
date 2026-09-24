@@ -10,6 +10,7 @@ import { env, isProduction } from './config/env.js';
 import routes from './routes/index.js';
 import healthRoutes from './routes/health.routes.js';
 import { notFoundHandler, errorHandler } from './middleware/error.js';
+import ApiError from './utils/ApiError.js';
 import { registerSamplingSubscribers } from './subscribers/sampling.subscriber.js';
 import { registerPricingSubscribers } from './subscribers/pricing.subscriber.js';
 import { registerOrderSubscribers } from './subscribers/orders.subscriber.js';
@@ -113,6 +114,25 @@ app.use('/api', rateLimit({
 
 // Outside /api, so the rate limiters above do not apply — probes must never be throttled.
 app.use('/health', healthRoutes);
+
+/*
+ * A query string carries plain values, never objects.
+ *
+ * Express parses `?customer[$ne]=x` into `{ customer: { $ne: 'x' } }`, and most list filters
+ * copy a parameter straight into the Mongo filter — so a hand-typed address could put an
+ * operator there. Scope is enforced separately and held under every operator the audit tried,
+ * but `$regex` against an id field made Mongoose throw, and nine lists answered with a 500.
+ * The screens only ever send flat values (repeated keys for a list are still fine), so anything
+ * shaped like an object is refused here, once, instead of in every controller.
+ */
+const holdsObject = (value) =>
+  Array.isArray(value) ? value.some(holdsObject) : value !== null && typeof value === 'object';
+
+app.use('/api', (req, _res, next) => {
+  const bad = Object.keys(req.query).find((key) => holdsObject(req.query[key]));
+  if (bad) return next(ApiError.badRequest(`The filter "${bad}" must be a plain value`));
+  return next();
+});
 
 app.use('/api', routes);
 
