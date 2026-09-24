@@ -1,5 +1,16 @@
 import Receivable from '../models/Receivable.js';
 const cents = value => Math.round((value || 0) * 100);
+
+/**
+ * Could this receivable still be owed? Asked of the database, so paid history is never loaded.
+ *
+ * `balance` is worked out in code — the invoice, less its receipts, less any advance netted in
+ * from the rest of the order — so "still owed" cannot be a query. But the netting only ever
+ * lowers it: anything whose own receipts already cover its invoice cannot be owed. That the
+ * database can answer, and it is most of a ledger. The exact rule still runs in code, on what
+ * is left.
+ */
+export const MAYBE_OWING = { $expr: { $lt: [{ $sum: '$receipts.amount' }, '$invoice.value'] } };
 const id = value => String(value?._id || value);
 
 /** Allocate actual advances once, oldest invoice first, in integer paise. */

@@ -244,7 +244,7 @@ export async function sampleAnalytics({ scope = {}, from, to }) {
   const raw = await Sample.find(scope).select(
     'status purpose category material hookType printing quantity requiredDate requestedAt ' +
       'createdAt statusHistory dispatchedAt deliveredAt'
-  );
+  ).lean(); // Read-only arithmetic over every sample; a full document each was the cost.
 
   // Decorate once: every figure below is derived from these two spans.
   const all = raw.map((sample) => {

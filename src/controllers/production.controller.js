@@ -1,6 +1,6 @@
 import { stockFor } from '../services/dispatchStock.service.js';
 import { withOrderLock } from '../services/operationLock.service.js';
-import SalesOrder, { PRODUCTION_STATUSES, PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
+import SalesOrder, { CLOSED_ORDER_STATUSES, PRODUCTION_STATUSES, PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { listParams, paginated, sortRows } from '../utils/query.js';
@@ -42,6 +42,8 @@ const LINE_POPULATE = [
 ];
 
 const EXPORT_LIMIT = 5000;
+/** How many pressing lines the day screen lists; the rest are counted and a page away. */
+const PRESSING_ROWS = 60;
 
 /**
  * Every order that has passed the §13 gate.
@@ -436,7 +438,16 @@ export const updateProductionLine = asyncHandler(withOrderLock(req => req.params
 export const productionDay = asyncHandler(async (req, res) => {
   const now = new Date();
 
-  const orders = await SalesOrder.find({ ...RELEASED, ...ownershipFilter(req.user) })
+  /*
+   * Orders still being worked — released and not yet closed. `RELEASED` alone admits closed
+   * orders, which is right for the register's history and wrong for a day's work: every order
+   * the plant ever finished was loaded to be filtered out line by line, and a closed order with
+   * a line short-closed at 95% read as pressing.
+   */
+  const orders = await SalesOrder.find({
+    status: { $nin: [...PRE_RELEASE_STATUSES, ...CLOSED_ORDER_STATUSES] },
+    ...ownershipFilter(req.user),
+  })
     .populate(LINE_POPULATE)
     .populate({ path: 'priorityBy', select: 'name' })
     .limit(EXPORT_LIMIT);
@@ -477,7 +488,9 @@ export const productionDay = asyncHandler(async (req, res) => {
   );
 
   const running = rows.filter((row) => row.production?.status !== 'completed');
-  const pressing = running.filter((row) => PRESSING_BANDS.includes(row.urgency.band)).sort(byUrgency);
+  /* The most urgent PRESSING_ROWS; the bands below still count every one. */
+  const pressingAll = running.filter((row) => PRESSING_BANDS.includes(row.urgency.band)).sort(byUrgency);
+  const pressing = pressingAll.slice(0, PRESSING_ROWS);
   const next = running
     .filter((row) => !PRESSING_BANDS.includes(row.urgency.band))
     .sort(byUrgency)
@@ -533,6 +546,7 @@ export const productionDay = asyncHandler(async (req, res) => {
       late: running.filter((row) => row.urgency.band === 'late').length,
       atRisk: running.filter((row) => row.urgency.band === 'at_risk').length,
       running: running.length,
+      pressing: pressingAll.length,
       /* What the plant owes an answer on, and how much of it is already past its promise. */
       questions: queries.filter((query) => query.status === 'open').length,
       questionsOverdue: queries.filter((query) => query.isOverdue).length,

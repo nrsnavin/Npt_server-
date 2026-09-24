@@ -45,7 +45,10 @@ export const sampleDashboard = asyncHandler(async (req, res) => {
         'statusHistory requestedBy assignedTo customer escalationLevel dispatchedAt'
     )
     .populate('requestedBy', 'name')
-    .populate('customer', 'name');
+    .populate('customer', 'name')
+    /* Plain objects: this screen reads fields and never saves, and building a full document for
+       every sample the bench has ever made was most of what it cost. */
+    .lean();
 
   const open = samples.filter((sample) => !CLOSED_SAMPLE_STATUSES.includes(sample.status));
 

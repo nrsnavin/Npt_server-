@@ -1,4 +1,4 @@
-import { applyPaymentPositions } from '../services/paymentPosition.service.js';
+import { MAYBE_OWING, applyPaymentPositions } from '../services/paymentPosition.service.js';
 import { withOrderLock } from '../services/operationLock.service.js';
 import Receivable, { JUDGED_STATUSES } from '../models/Receivable.js';
 import SalesOrder from '../models/SalesOrder.js';
@@ -64,6 +64,12 @@ const RECEIVABLE_SORTABLE = [
 
 /* --------------------------------- Reading --------------------------------- */
 
+/* `MAYBE_OWING` (from the payment-position service) keeps paid history out of both screens below:
+   they used to load every receivable ever raised, populated, and the chase screen sent 4.5 MB. */
+
+/** The most cards one group of the chase screen carries; the rest are counted, and a page away. */
+const DAY_GROUP_LIMIT = 50;
+
 export const listReceivables = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = listParams(req.query, {
     searchFields: ['number', 'invoice.number'],
@@ -105,7 +111,7 @@ export const listReceivables = asyncHandler(async (req, res) => {
    * cannot be a database filter — and a headline computed over one page would change when
    * somebody turned it, which reads as the debt changing.
    */
-  const open = await Receivable.find(filter).sort(sort);
+  const open = await Receivable.find({ ...filter, ...MAYBE_OWING }).sort(sort);
   await applyPaymentPositions(open);
   const owing = open.filter((row) => row.balance > 0);
 
@@ -172,13 +178,9 @@ export const getReceivable = asyncHandler(async (req, res) => {
  *   **Promised, still ahead** — nothing to do, shown so nobody rings them by mistake.
  */
 export const paymentDay = asyncHandler(async (req, res) => {
-  const rows = await Receivable.find(ownershipFilter(req.user))
-    .populate([
-      { path: 'customer', select: 'code name mobile' },
-      { path: 'order', select: 'number' },
-      { path: 'assignedTo', select: 'name' },
-      { path: 'followUps.by', select: 'name' },
-    ]);
+  /* Unpopulated: every open row is needed for the totals, but only the cards that go out are
+     worth joining — see `shown` below. */
+  const rows = await Receivable.find({ ...ownershipFilter(req.user), ...MAYBE_OWING, judgement: null });
   await applyPaymentPositions(rows);
 
   const owing = rows.filter((row) => row.balance > 0 && !row.judgement);
@@ -265,14 +267,33 @@ export const paymentDay = asyncHandler(async (req, res) => {
     .filter((row) => !settled.has(String(row._id)) && row.promise)
     .sort(oldest);
 
+  /*
+   * The oldest fifty of each group go out as cards; the totals below still count every row.
+   * A chase list of three hundred cards is not worked from the phone it is read on, and sending
+   * them all was most of this screen's weight. `more` says how many were held back, so the
+   * screen can say so and link to the full, paged list.
+   */
+  const shown = async (group) => {
+    const head = group.slice(0, DAY_GROUP_LIMIT);
+    await Receivable.populate(head, [
+      { path: 'customer', select: 'code name mobile' },
+      { path: 'order', select: 'number' },
+      { path: 'assignedTo', select: 'name' },
+      { path: 'followUps.by', select: 'name' },
+    ]);
+    return head.map(card);
+  };
+  const more = (group) => Math.max(0, group.length - DAY_GROUP_LIMIT);
+
   res.json({
     success: true,
     data: {
-      broken: broken.map(card),
-      overdue: overdue.map(card),
-      soon: soon.map(card),
-      promised: promised.map(card),
+      broken: await shown(broken),
+      overdue: await shown(overdue),
+      soon: await shown(soon),
+      promised: await shown(promised),
     },
+    more: { broken: more(broken), overdue: more(overdue), soon: more(soon), promised: more(promised) },
     meta: {
       open: owing.length,
       outstanding: Math.round(owing.reduce((sum, row) => sum + row.balance, 0)),

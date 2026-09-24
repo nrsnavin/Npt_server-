@@ -84,9 +84,17 @@ export async function scoreFor(user, { now = Date.now() } = {}) {
   const from = thisMonth(now);
   const mine = { assignedTo: user._id };
 
+  /*
+   * Only the fields the figures are made of, as plain objects. Of each activity just its date,
+   * and of enquiries only the ones won this month — asked of the database rather than found by
+   * reading every enquiry this person has ever held. For a team of ten this ran once per
+   * person, and was two seconds on a three-year book.
+   */
   const [leads, enquiries] = await Promise.all([
-    Lead.find(mine).select('status activities convertedAt nextFollowUpDate createdAt updatedAt'),
-    Enquiry.find(mine).select('status statusHistory estimatedValue'),
+    Lead.find(mine).select('status activities.occurredAt convertedAt nextFollowUpDate').lean(),
+    Enquiry.find({ ...mine, statusHistory: { $elemMatch: { to: 'won', at: { $gte: from } } } })
+      .select('statusHistory.to statusHistory.at estimatedValue')
+      .lean(),
   ]);
 
   /*

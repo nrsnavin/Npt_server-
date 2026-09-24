@@ -115,13 +115,19 @@ const OPEN = { $nin: ['converted', 'disqualified'] };
  * nobody has decided what happens next, so nothing will. And a lead that has gone quiet
  * against its own rhythm is neither, and is where most of them are actually lost.
  */
-export async function followUpQueue(filter = {}, now = Date.now()) {
+export async function followUpQueue(filter = {}, now = Date.now(), { perGroup = 50 } = {}) {
   const endOfToday = new Date(now);
   endOfToday.setHours(23, 59, 59, 999);
 
+  /*
+   * Of each activity, only what the rhythm is read from — when, and what kind. A lead's log is
+   * notes, call summaries and outcomes, and loading all of it for every open lead to read two
+   * fields each was most of what this cost. Lean, because nothing here saves.
+   */
   const leads = await Lead.find({ ...filter, status: OPEN })
     .populate('assignedTo', 'name')
-    .select('number company contactName city status nextAction nextActionType nextFollowUpDate activities assignedTo createdAt');
+    .select('number company contactName city status nextAction nextActionType nextFollowUpDate activities.occurredAt activities.type assignedTo createdAt')
+    .lean();
 
   const card = (lead) => ({
     _id: lead._id,
@@ -163,15 +169,50 @@ export async function followUpQueue(filter = {}, now = Date.now()) {
 
   const worstFirst = (a, b) => b.daysSinceContact - a.daysSinceContact;
 
+  /*
+   * The worst `perGroup` of each; every group is still counted in full. An open book fed by
+   * IndiaMART runs to thousands of leads, and this sent every one of them as a card — 4 MB on
+   * a three-year book, for a list nobody reads past the first screen.
+   */
+  const head = (rows) => rows.slice(0, perGroup);
   return {
-    overdue: overdue.sort((a, b) => b.overdueByDays - a.overdueByDays),
-    dueToday: dueToday.sort(worstFirst),
-    noNextAction: noNextAction.sort(worstFirst),
-    goneQuiet: goneQuiet.sort(worstFirst),
+    overdue: head(overdue.sort((a, b) => b.overdueByDays - a.overdueByDays)),
+    dueToday: head(dueToday.sort(worstFirst)),
+    noNextAction: head(noNextAction.sort(worstFirst)),
+    goneQuiet: head(goneQuiet.sort(worstFirst)),
+    counts: {
+      overdue: overdue.length,
+      dueToday: dueToday.length,
+      noNextAction: noNextAction.length,
+      goneQuiet: goneQuiet.length,
+    },
   };
 }
 
 /* ------------------------------- Analytics ------------------------------- */
+
+/**
+ * Leads with each log reduced, in the database, to the two things the book-wide views read: when
+ * the last contact was, and how many there have been.
+ *
+ * `daysSinceContact` only ever looks at the latest `occurredAt`, so shipping every note and call
+ * summary of every lead ever raised to find one date each was the whole cost of the overview —
+ * three seconds on a three-year book. The rows come back shaped so the helpers above still
+ * work: `activities` holds just the latest entry.
+ */
+async function leadsWithLastContact(match, fields) {
+  const rows = await Lead.aggregate([
+    { $match: match },
+    {
+      $project: {
+        ...Object.fromEntries(fields.map((field) => [field, 1])),
+        contactCount: { $size: { $ifNull: ['$activities', []] } },
+        lastContactAt: { $max: '$activities.occurredAt' },
+      },
+    },
+  ]);
+  return rows.map((row) => ({ ...row, activities: row.lastContactAt ? [{ occurredAt: row.lastContactAt }] : [] }));
+}
 
 /** Ageing bands. Open-ended at the top, because "90+" is one answer and 400 days is not. */
 const AGE_BANDS = [
@@ -196,9 +237,9 @@ const bandFor = (days) => AGE_BANDS.find((band) => days <= band.max).label;
  * it is the commonest way a dashboard misleads without saying anything false.
  */
 export async function leadAnalytics(filter = {}, now = Date.now()) {
-  const leads = await Lead.find(filter).select(
-    'status source city state createdAt convertedAt activities nextFollowUpDate assignedTo estimatedValue'
-  );
+  const leads = await leadsWithLastContact(filter, [
+    'status', 'source', 'city', 'state', 'createdAt', 'convertedAt', 'nextFollowUpDate', 'assignedTo', 'estimatedValue',
+  ]);
 
   const open = leads.filter((lead) => !['converted', 'disqualified'].includes(lead.status));
 
@@ -344,15 +385,19 @@ export const STALE_AFTER_DAYS = Number(process.env.LEAD_STALE_DAYS) || 14;
  * becomes a book of forty and a hundred and sixty ghosts.
  */
 export async function untouchedLeads(filter = {}, now = Date.now(), limit = 50) {
-  const leads = await Lead.find({ ...filter, status: OPEN })
-    .populate('assignedTo', 'name')
-    .select('number company contactName status assignedTo activities createdAt nextFollowUpDate');
+  const leads = await leadsWithLastContact({ ...filter, status: OPEN }, [
+    'number', 'company', 'contactName', 'status', 'assignedTo', 'createdAt', 'nextFollowUpDate',
+  ]);
 
-  return leads
+  const worst = leads
     .map((lead) => ({ lead, idleDays: daysSinceContact(lead, now) }))
     .filter((row) => row.idleDays >= STALE_AFTER_DAYS)
     .sort((a, b) => b.idleDays - a.idleDays)
-    .slice(0, limit)
+    .slice(0, limit);
+  /* Owners joined for the rows that go out, not for the whole book. */
+  await Lead.populate(worst.map((row) => row.lead), { path: 'assignedTo', select: 'name' });
+
+  return worst
     .map(({ lead, idleDays }) => ({
       _id: lead._id,
       number: lead.number,
@@ -361,8 +406,8 @@ export async function untouchedLeads(filter = {}, now = Date.now(), limit = 50) 
       owner: lead.assignedTo?.name || null,
       ownerId: lead.assignedTo?._id || lead.assignedTo,
       idleDays,
-      contacts: (lead.activities || []).length,
-      reason: (lead.activities || []).length
+      contacts: lead.contactCount,
+      reason: lead.contactCount
         ? `No contact for ${idleDays} days`
         : `Never contacted — raised ${idleDays} days ago`,
       link: `/leads/${lead._id}`,

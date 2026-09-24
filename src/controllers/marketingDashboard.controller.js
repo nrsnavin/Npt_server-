@@ -69,14 +69,20 @@ export const marketingDashboard = asyncHandler(async (req, res) => {
   const startOfMonth = new Date(startOfToday.getFullYear(), startOfToday.getMonth(), 1);
   const dormantBefore = new Date(now - DORMANT_DAYS * DAY);
 
+  /*
+   * The whole book is read, because the performance figures are all-time — but as plain objects
+   * with only the fields used, and with no customer names joined. Names are joined afterwards
+   * for the dozen rows that are shown (see `named`). Joining a name onto every enquiry ever
+   * raised, to print five of them, was most of the two seconds this screen took.
+   */
   const [enquiries, samples, customers, questions] = await Promise.all([
     Enquiry.find(scope)
-      .select('number status enquiryDate requirement estimatedValue nextAction nextFollowUpDate customer lostReason source')
-      .populate('customer', 'name'),
+      .select('number status enquiryDate createdAt requirement.modelNumber estimatedValue nextAction nextFollowUpDate customer lostReason source')
+      .lean(),
     Sample.find(ownershipFilter(req.user, 'requestedBy'))
-      .select('number status requestedAt requiredDate modelNumber customer dispatchedAt statusHistory')
-      .populate('customer', 'name'),
-    Customer.find(scope).select('code name'),
+      .select('number status requestedAt requiredDate modelNumber customer dispatchedAt')
+      .lean(),
+    Customer.find(scope).select('code name').lean(),
     /*
      * The questions this person has asked and not had answered.
      *
@@ -120,6 +126,13 @@ export const marketingDashboard = asyncHandler(async (req, res) => {
 
   const openEnquiries = enquiries.filter((entry) => !CLOSED_STATUSES.includes(entry.status));
 
+  /** Customer names for the rows that will actually be shown, joined once each. */
+  const named = async (Model, rows) => {
+    const fresh = [...new Set(rows)].filter((row) => row.customer && !row.customer.name);
+    if (fresh.length) await Model.populate(fresh, { path: 'customer', select: 'name' });
+    return rows;
+  };
+
   /* --------------------------------- Today --------------------------------- */
 
   const overdue = openEnquiries
@@ -144,8 +157,11 @@ export const marketingDashboard = asyncHandler(async (req, res) => {
   );
 
   // The commonest silent stall [DASHBOARDS §3]: it reached them, and then nothing.
-  const awaitingFeedback = samples
+  const waiting = samples
     .filter((sample) => WITH_CUSTOMER_STATUSES.includes(sample.status))
+    .sort((a, b) => ageInDays(b.dispatchedAt || b.requestedAt, now) - ageInDays(a.dispatchedAt || a.requestedAt, now));
+  await named(Sample, waiting.slice(0, TOP));
+  const awaitingFeedback = waiting
     .map((sample) => ({
       _id: sample._id,
       number: sample.number,
@@ -156,7 +172,7 @@ export const marketingDashboard = asyncHandler(async (req, res) => {
     }))
     .sort((a, b) => b.ageDays - a.ageDays);
 
-  const samplesOverdue = samples
+  const late = samples
     .filter(
       (sample) =>
         sample.requiredDate &&
@@ -164,6 +180,9 @@ export const marketingDashboard = asyncHandler(async (req, res) => {
         !CLOSED_SAMPLE_STATUSES.includes(sample.status) &&
         !WITH_CUSTOMER_STATUSES.includes(sample.status)
     )
+    .sort((a, b) => new Date(a.requiredDate) - new Date(b.requiredDate));
+  await named(Sample, late.slice(0, TOP));
+  const samplesOverdue = late
     .map((sample) => ({
       _id: sample._id,
       number: sample.number,
@@ -223,6 +242,8 @@ export const marketingDashboard = asyncHandler(async (req, res) => {
 
   /* Past the time it was promised, which is the half worth colouring red. */
   const questionsOverdue = questions.filter((row) => row.dueBy && new Date(row.dueBy) < new Date(now));
+
+  await named(Enquiry, [...overdue.slice(0, TOP), ...dueToday.slice(0, TOP), ...noNextAction.slice(0, TOP)]);
 
   res.json({
     success: true,

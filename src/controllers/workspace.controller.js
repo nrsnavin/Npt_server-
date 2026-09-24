@@ -473,20 +473,31 @@ export const deleteTodo = asyncHandler(async (req, res) => {
  * The daily reminder: what is overdue, what is due today, and what lands tomorrow.
  * Undated tasks are deliberately excluded — a reminder needs a date to be about.
  */
+const REMINDER_ROWS = 20;
+
 export const reminders = asyncHandler(async (req, res) => {
   const { start, end } = dayBounds();
   const tomorrowEnd = new Date(end);
   tomorrowEnd.setDate(tomorrowEnd.getDate() + 1);
 
-  const open = await Todo.find({
-    user: req.user._id,
-    completed: false,
-    dueDate: { $lt: tomorrowEnd },
-  }).sort({ dueDate: 1 });
-
-  const overdue = open.filter((todo) => todo.dueDate < start);
-  const today = open.filter((todo) => todo.dueDate >= start && todo.dueDate < end);
-  const tomorrow = open.filter((todo) => todo.dueDate >= end);
+  /*
+   * Counted in the database, and at most REMINDER_ROWS of each listed. The dock asks for this on
+   * every screen, and it used to load every open dated task — on a long-running account, hundreds
+   * of rows on each page change, to draw a badge and three short lists.
+   */
+  const mine = { user: req.user._id, completed: false };
+  const bands = {
+    overdue: { ...mine, dueDate: { $lt: start } },
+    today: { ...mine, dueDate: { $gte: start, $lt: end } },
+    tomorrow: { ...mine, dueDate: { $gte: end, $lt: tomorrowEnd } },
+  };
+  const [overdue, today, tomorrow, counted] = await Promise.all([
+    Todo.find(bands.overdue).sort({ dueDate: 1 }).limit(REMINDER_ROWS),
+    Todo.find(bands.today).sort({ dueDate: 1 }).limit(REMINDER_ROWS),
+    Todo.find(bands.tomorrow).sort({ dueDate: 1 }).limit(REMINDER_ROWS),
+    Promise.all(Object.values(bands).map((filter) => Todo.countDocuments(filter))),
+  ]);
+  const [overdueCount, todayCount, tomorrowCount] = counted;
 
   res.json({
     success: true,
@@ -495,11 +506,11 @@ export const reminders = asyncHandler(async (req, res) => {
       today,
       tomorrow,
       counts: {
-        overdue: overdue.length,
-        today: today.length,
-        tomorrow: tomorrow.length,
+        overdue: overdueCount,
+        today: todayCount,
+        tomorrow: tomorrowCount,
         /** What the dock badge shows: everything needing attention now. */
-        actionable: overdue.length + today.length,
+        actionable: overdueCount + todayCount,
       },
     },
   });
