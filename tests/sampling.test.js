@@ -1484,6 +1484,53 @@ test('a sample with the customer cannot be dragged back onto the bench', async (
 });
 
 /**
+ * A step back along the run needs a reason; a step on, or sideways, does not.
+ *
+ * Going back is allowed on purpose — a piece that cracks goes back to production — but it is
+ * the move somebody asks about a fortnight later, and without a reason on it the history only
+ * says that it happened.
+ */
+test('a sample goes back a stage only with a reason, which lands in the history', async () => {
+  const enquiry = await raiseEnquiry();
+  const sample = await requestSample(enquiry._id);
+  const move = (body) =>
+    api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body });
+
+  for (const status of ['checking_stock', 'production_required', 'sample_ready']) {
+    const forward = await move({ status });
+    assert.equal(forward.status, 200, `going on to ${status}: ${forward.json.message}`);
+  }
+
+  for (const note of [undefined, '', '   ', 'no']) {
+    const bare = await move({ status: 'production_required', note });
+    assert.equal(bare.status, 400, `a step back went through with the note ${JSON.stringify(note)}`);
+    assert.match(bare.json.message, /back from sample ready to production required needs a reason/i);
+  }
+  const still = await api(`/api/samples/${sample._id}`, { token: meera });
+  assert.equal(still.json.data.status, 'sample_ready', 'a refused step back moved it anyway');
+
+  const back = await move({ status: 'production_required', note: '  Handle cracked in the drop test  ' });
+  assert.equal(back.status, 200, back.json.message);
+  const last = back.json.data.statusHistory.at(-1);
+  assert.equal(last.from, 'sample_ready');
+  assert.equal(last.to, 'production_required');
+  assert.equal(last.note, 'Handle cracked in the drop test', 'the reason was not kept, or kept untrimmed');
+
+  /* Stock found after all: the two answers to "is there stock?" are a correction, not a fall. */
+  const sideways = await move({ status: 'sample_available' });
+  assert.equal(sideways.status, 200, sideways.json.message);
+
+  /* Once it has gone, stepping back inside the customer's stages is still a step back. */
+  await move({ status: 'sample_ready' });
+  await dispatchSample(sample._id);
+  assert.equal((await move({ status: 'delivered' })).status, 200);
+  const undelivered = await move({ status: 'dispatched' });
+  assert.equal(undelivered.status, 400, 'delivered went back to dispatched without a reason');
+  const explained = await move({ status: 'dispatched', note: 'Courier delivered to the wrong unit' });
+  assert.equal(explained.status, 200, explained.json.message);
+});
+
+/**
  * A cancelled request must not stand in the way of the next one.
  *
  * `CLOSED_SAMPLE_STATUSES` has always counted `cancelled` as finished, and the dedupe that

@@ -95,6 +95,33 @@ export const IN_WORK_STATUSES = Object.keys(SAMPLE_NEXT_STEP);
  */
 export const ON_THE_BENCH_STATUSES = ['request_received', ...IN_WORK_STATUSES];
 
+/**
+ * How far along the run each working stage is, for telling a step back from a step on.
+ *
+ * `sample_available` and `production_required` share a rank: they are the two answers to
+ * "is there stock?", and swapping one for the other is a correction, not a retreat. The
+ * customer's answers and `cancelled` are not on the run at all — a request sent back for
+ * modification starts the bench again, and that is the point of it, not a fall.
+ */
+export const SAMPLE_STAGE_RANK = {
+  request_received: 0,
+  checking_stock: 1,
+  sample_available: 2,
+  production_required: 2,
+  printing_required: 3,
+  sample_ready: 4,
+  dispatched: 5,
+  delivered: 6,
+  customer_feedback_pending: 7,
+};
+
+/** Whether moving from one stage to the other goes back along the run. */
+export const isBackwardSampleMove = (from, to) =>
+  from in SAMPLE_STAGE_RANK && to in SAMPLE_STAGE_RANK && SAMPLE_STAGE_RANK[to] < SAMPLE_STAGE_RANK[from];
+
+/** The shortest reason a step back will take — enough for a few words, not a single letter. */
+export const BACKWARD_REASON_MIN = 5;
+
 /** Why the sample is being made [§4]. Drives what "approved" actually settles. */
 export const SAMPLE_PURPOSES = [
   'existing_model',

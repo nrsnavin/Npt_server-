@@ -123,7 +123,7 @@ export const sampleStatusSchema = z.object({
   status: z.enum(SAMPLE_STATUSES).refine((status) => !FEEDBACK_STATUSES.includes(status), {
     message: 'Record customer feedback through the feedback action',
   }),
-  note: z.string().optional(),
+  note: z.string().max(500).optional(),
   courier: z.string().optional(),
   awbNumber: z.string().optional(),
   dispatchedAt: z.coerce.date().optional(),

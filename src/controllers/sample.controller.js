@@ -1,6 +1,6 @@
 import Sample, {
-  CLOSED_SAMPLE_STATUSES, FEEDBACK_STATUSES, NOT_ESCALATED_STATUSES,
-  ON_THE_BENCH_STATUSES, SAMPLE_STATUSES, WITH_CUSTOMER_STATUSES,
+  BACKWARD_REASON_MIN, CLOSED_SAMPLE_STATUSES, FEEDBACK_STATUSES, NOT_ESCALATED_STATUSES,
+  ON_THE_BENCH_STATUSES, isBackwardSampleMove, SAMPLE_STATUSES, WITH_CUSTOMER_STATUSES,
 } from '../models/Sample.js';
 import Enquiry from '../models/Enquiry.js';
 import Lead from '../models/Lead.js';
@@ -72,6 +72,9 @@ const POPULATE = [
 const LINKED = [
   { path: 'previousSample', select: 'number status' },
   { path: 'supersededBy', select: 'number status' },
+  /* Who made each move — a step back carries a reason, and a reason with no name on it is
+     half an answer. Here rather than in POPULATE so the list does not carry every history. */
+  { path: 'statusHistory.by', select: 'name' },
 ];
 
 /**
@@ -740,6 +743,9 @@ export const setDispatchDetails = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await withRefs(sample) });
 });
 
+/** A stage as a person says it: "sample ready", not `sample_ready`. */
+const stageWords = (status) => status.replace(/_/g, ' ');
+
 /**
  * Moves a sample to a new stage.
  *
@@ -817,6 +823,19 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
     );
   }
 
+  /*
+   * **A step back needs a reason.** Going back is allowed — see above — but it is the one move
+   * somebody will ask about later ("why did this sit in production for a second week?"), and
+   * the answer is only ever in the head of whoever clicked. So the move is refused until it
+   * says why, and the reason goes into the history beside it.
+   */
+  if (isBackwardSampleMove(sample.status, status) && (note || '').trim().length < BACKWARD_REASON_MIN) {
+    throw ApiError.badRequest(
+      `Moving ${sample.number} back from ${stageWords(sample.status)} to ${stageWords(status)} ` +
+        'needs a reason. Say what went wrong, so the history explains it.'
+    );
+  }
+
   if (status === 'dispatched') {
     // Whatever was arranged earlier stands unless this call overrides it, so details entered
     // in advance do not have to be typed a second time to get the sample out of the door.
@@ -851,7 +870,7 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
 
   const from = sample.status;
   sample.status = status;
-  sample.statusHistory.push({ from, to: status, by: req.user._id, note });
+  sample.statusHistory.push({ from, to: status, by: req.user._id, note: note?.trim() || undefined });
   await sample.save();
 
   /*
