@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import compression from 'compression';
 import rateLimit from 'express-rate-limit';
+import jwt from 'jsonwebtoken';
 
 import { env, isProduction } from './config/env.js';
 import routes from './routes/index.js';
@@ -71,8 +72,43 @@ app.use('/api/auth/otp', credentialLimiter);
  * behaves the same way — only the number moves, and only where somebody has said so.
  */
 const requestsPerMinute = Number(process.env.RATE_LIMIT_MAX) || 300;
+
+/**
+ * Who a request is, for the purpose of counting it: a signed-in person, or else an address.
+ *
+ * The limit used to be per IP address, which is the wrong unit for this app. The plant office
+ * reaches the server through one public address, so every person in the building shared one
+ * budget of 300 a minute — and a screen costs eight to ten calls. A dozen people working
+ * normally, or one person moving quickly, spent it for everybody, and the whole office then
+ * saw failed screens at once with nothing to connect it to a limit. The credential limiter
+ * above already learned this lesson about NAT; this one had not.
+ *
+ * So a request carrying a valid session is counted against that person. The token is
+ * *verified*, not just read: keying on the raw header would let anybody mint a fresh bucket per
+ * request by sending random tokens, which is a way around the limit rather than a fairer one.
+ * Anything without a valid session — the login page, a scanner, an expired tab — is still
+ * counted by address, exactly as before.
+ */
+const callerKey = (req) => {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  if (token) {
+    try {
+      const { sub } = jwt.verify(token, env.jwtSecret);
+      if (sub) return `user:${sub}`;
+    } catch {
+      /* An invalid or expired token is counted like no token at all. */
+    }
+  }
+  return `ip:${req.ip}`;
+};
+
 app.use('/api', rateLimit({
-  windowMs: 60 * 1000, max: requestsPerMinute, standardHeaders: true, legacyHeaders: false,
+  windowMs: 60 * 1000,
+  max: requestsPerMinute,
+  keyGenerator: callerKey,
+  standardHeaders: true,
+  legacyHeaders: false,
 }));
 
 // Outside /api, so the rate limiters above do not apply — probes must never be throttled.
