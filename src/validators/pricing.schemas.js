@@ -182,6 +182,16 @@ export const pricingQuoteSchema = z.object({
   quotation: objectId.optional(),
   moq: money.optional(),
   unitPrice: money.optional(),
+  /**
+   * The rate and minimum for each model, when the quoter changes them from the approved price.
+   *
+   * Keyed by the costing line it offers. A price below that line's floor is allowed here — it is
+   * a draft — and the quotation goes to approval when it is sent, exactly as an edited draft does.
+   */
+  lines: z
+    .array(z.object({ pricingLine: objectId, unitPrice: money.positive().optional(), moq: money.optional() }))
+    .max(50)
+    .optional(),
   gstPercent: z.number().min(0).max(100).optional(),
   isExport: z.boolean().optional(),
   paymentTerms: z.string().optional(),

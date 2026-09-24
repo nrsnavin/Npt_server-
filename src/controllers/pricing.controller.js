@@ -782,7 +782,9 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
    * costing — a figure nobody had agreed to — and then sat on the quote looking like one that
    * had. The minimum above is the only quantity the offer is actually conditional on.
    */
-  const { moq: _m, unitPrice: _u, quotation: _q, ...terms } = req.body;
+  const { moq: _m, unitPrice: _u, quotation: _q, lines: asked = [], ...terms } = req.body;
+  /* What the quoter typed for each model, when they changed the approved rate or the minimum. */
+  const typed = new Map(asked.map((row) => [String(row.pricingLine), row]));
 
   /*
    * A quotation line per approved costing line, each carrying the line it came from.
@@ -798,8 +800,9 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
    */
   const only = offerable.length === 1;
   const lines = offerable.map((costed) => ({
-    moq: (only ? req.body.moq : undefined) ?? moulds.get(String(costed.mould))?.moq ?? 0,
-    unitPrice: (only ? req.body.unitPrice : undefined) ?? costed.approvedSellingPrice,
+    moq: typed.get(String(costed._id))?.moq ?? (only ? req.body.moq : undefined) ?? moulds.get(String(costed.mould))?.moq ?? 0,
+    unitPrice:
+      typed.get(String(costed._id))?.unitPrice ?? (only ? req.body.unitPrice : undefined) ?? costed.approvedSellingPrice,
     pricing: pricing._id,
     pricingLine: costed._id,
     mould: costed.mould || undefined,

@@ -269,6 +269,40 @@ test('the quotation takes a line per approved model, each naming what priced it'
   assert.equal(lines[1].moq, 2000);
 });
 
+test('the quoter may change each model\u2019s rate and minimum as the quotation is raised', async () => {
+  /*
+   * Asked for by the plant: the approved price is where a quote starts, not where it must stay.
+   * Each model's rate and minimum can be set in the raising dialog. One under the floor is a
+   * perfectly good draft; it cannot be sent until management signs it, as with any edit.
+   */
+  const sheet = await twoModelSheet();
+  const [small, big] = sheet.lines;
+  await cost(sheet._id, small._id, { markupPercent: 10 });
+  await cost(sheet._id, big._id, { markupPercent: 10 });
+
+  const quote = await api(`/api/pricings/${sheet._id}/quotation`, {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      lines: [
+        { pricingLine: small._id, unitPrice: 0.01, moq: 7500 },
+        { pricingLine: big._id, moq: 3000 },
+      ],
+    },
+  });
+  assert.equal(quote.status, 201, quote.json.message);
+
+  const [first, second] = quote.json.data.lines;
+  assert.equal(first.unitPrice, 0.01, 'the rate typed for the first model');
+  assert.equal(first.moq, 7500);
+  assert.ok(second.unitPrice > 0.01, 'the second keeps its approved rate');
+  assert.equal(second.moq, 3000, 'with the minimum typed for it');
+
+  const sent = await api(`/api/quotations/${quote.json.data._id}/send`, { method: 'POST', token: nandhini, body: {} });
+  assert.equal(sent.status, 400, 'under the floor, so it cannot go out without a signature');
+  assert.match(sent.json.message, /below the approved minimum/);
+});
+
 test('a model still waiting on a signature is not quoted, and the rest are', async () => {
   const sheet = await twoModelSheet();
   const [small, big] = sheet.lines;
