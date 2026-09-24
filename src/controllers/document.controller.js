@@ -4,6 +4,7 @@ import Enquiry from '../models/Enquiry.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownsRecord } from '../services/ownership.service.js';
+import { canRead, canWrite } from '../services/access.service.js';
 import { put, remove } from '../services/storage.service.js';
 import { recordChange } from '../services/audit.service.js';
 
@@ -27,10 +28,20 @@ const OWNERS = {
   enquiries: { model: Enquiry, field: 'enquiry', module: 'enquiries', ownership: 'assignedTo', label: 'Enquiry' },
 };
 
-/** Resolves the record a document hangs off, and refuses anyone who may not open it. */
-async function reachableRecord(req) {
+/**
+ * Resolves the record a document hangs off, and refuses anyone who may not open it.
+ *
+ * The module first, then the owner. `OWNERS` always named the module and nothing read it, so
+ * the check was ownership alone — and ownership only narrows marketing. Production, accounts,
+ * or an account nobody had granted anything could list, upload to and read every customer's
+ * and every enquiry's documents: the drawing, the PO, the price sheet. Found by the backend
+ * audit; the record's own screens were gated all along, only this side door was not.
+ */
+async function reachableRecord(req, needed = 'read') {
   const owner = OWNERS[req.params.collection];
   if (!owner) throw ApiError.notFound('Nothing of that kind carries documents');
+  const allowed = needed === 'write' ? canWrite(req.user, owner.module) : canRead(req.user, owner.module);
+  if (!allowed) throw ApiError.notFound('Record not found');
 
   const record = await owner.model.findById(req.params.id);
   if (!record) throw ApiError.notFound('Record not found');
@@ -50,7 +61,7 @@ export const listDocuments = asyncHandler(async (req, res) => {
 });
 
 export const addDocument = asyncHandler(async (req, res) => {
-  const { owner, record } = await reachableRecord(req);
+  const { owner, record } = await reachableRecord(req, 'write');
   if (!req.file) throw ApiError.badRequest('Attach a file');
 
   const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
@@ -84,7 +95,7 @@ export const addDocument = asyncHandler(async (req, res) => {
 });
 
 export const removeDocument = asyncHandler(async (req, res) => {
-  const { owner, record } = await reachableRecord(req);
+  const { owner, record } = await reachableRecord(req, 'write');
 
   const attachment = await Attachment.findOne({
     _id: req.params.documentId,

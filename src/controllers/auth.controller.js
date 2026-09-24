@@ -44,7 +44,7 @@ async function completeSignIn(user, method) {
 }
 
 export const register = asyncHandler(async (req, res) => {
-  const { name, email, password, phone, department } = req.body;
+  const { name, email, password, phone } = req.body;
 
   const existing = await User.findOne({ email });
   if (existing) throw ApiError.conflict('An account with this email already exists');
@@ -60,6 +60,11 @@ export const register = asyncHandler(async (req, res) => {
    * The very first account bootstraps the system as an admin. Everyone after that is a
    * member with no grants at all — an admin allocates them a department and access.
    * Self-registration must never be a way to award yourself permissions.
+   *
+   * That includes the department, which is not a label: tasks, the plant review and the
+   * escalation queue are scoped by it, and `management` reads the whole plant. The form sent
+   * one and it was stored, so anybody who could reach this page could register as management
+   * and read every department's queue. Only the bootstrap admin keeps what they chose.
    */
   const isFirstUser = (await User.estimatedDocumentCount()) === 0;
   const user = await User.create({
@@ -67,7 +72,7 @@ export const register = asyncHandler(async (req, res) => {
     email,
     password,
     phone,
-    department,
+    department: isFirstUser ? req.body.department : undefined,
     role: isFirstUser ? 'admin' : 'member',
     moduleAccess: [],
   });

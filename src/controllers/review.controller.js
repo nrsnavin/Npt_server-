@@ -28,7 +28,12 @@ import { DEPARTMENT_KEYS } from '../config/modules.js';
  */
 function scopeFor(req) {
   const wide = req.user.role === 'admin' || req.user.department === 'management';
-  if (req.query.scope === 'plant') return { department: undefined, wide: true };
+  /* Asking for the whole plant is for somebody an administrator has placed. An account with no
+     department has no screens that show these figures, which is what the argument below rests
+     on — it read the whole plant here all the same. */
+  if (req.query.scope === 'plant' && (wide || req.user.department)) {
+    return { department: undefined, wide: true };
+  }
   if (wide) return { department: undefined, wide: true };
   return { department: req.user.department, wide: false };
 }

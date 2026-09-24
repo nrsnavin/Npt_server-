@@ -172,15 +172,15 @@ export const removeLogComment = asyncHandler(async (req, res) => {
 async function ownerOf(attachment) {
   if (attachment.sample) {
     const record = await Sample.findById(attachment.sample);
-    return record && { record, ownership: 'requestedBy' };
+    return record && { record, ownership: 'requestedBy', module: 'samples' };
   }
   if (attachment.customer) {
     const record = await Customer.findById(attachment.customer);
-    return record && { record, ownership: 'assignedTo' };
+    return record && { record, ownership: 'assignedTo', module: 'customers' };
   }
   if (attachment.enquiry) {
     const record = await Enquiry.findById(attachment.enquiry);
-    return record && { record, ownership: 'assignedTo' };
+    return record && { record, ownership: 'assignedTo', module: 'enquiries' };
   }
   return null;
 }
@@ -219,7 +219,9 @@ export const downloadAttachment = asyncHandler(async (req, res) => {
   } else {
     const owner = await ownerOf(attachment);
     if (!owner) throw ApiError.notFound('File not found');
-    if (!ownsRecord(req.user, owner.record, owner.ownership)) {
+    /* The record's module as well as its owner — ownership alone narrows only marketing, so
+       every account without the grant was served the file. */
+    if (!canRead(req.user, owner.module) || !ownsRecord(req.user, owner.record, owner.ownership)) {
       throw ApiError.notFound('File not found');
     }
   }
