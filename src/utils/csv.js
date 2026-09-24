@@ -25,8 +25,12 @@ export function cell(value) {
 
   let text = value instanceof Date ? value.toISOString().slice(0, 10) : String(value);
 
-  // Neutralise a leading formula character before quoting, not after.
-  if (DANGEROUS.test(text)) text = `'${text}`;
+  /*
+   * Neutralise a leading formula character before quoting, not after — on text only. A number
+   * cannot be a formula, and prefixing one turned every negative balance and margin into the
+   * text "'-5000", which no column total will add.
+   */
+  if (typeof value !== 'number' && DANGEROUS.test(text)) text = `'${text}`;
 
   if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
   return text;

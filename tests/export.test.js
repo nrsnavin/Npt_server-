@@ -131,6 +131,15 @@ test('a field that starts like a formula is kept as text', () => {
   }
 });
 
+test('a negative number stays a number', () => {
+  /* Found by the backend audit: the formula guard caught `-` on numbers too, so a negative
+     balance exported as the text "'-5000" and dropped out of any column total. Text that
+     starts with a minus is still guarded — only a number cannot be a formula. */
+  assert.equal(cell(-5000), '-5000');
+  assert.equal(cell(-0.5), '-0.5');
+  assert.equal(cell('-5000'), "'-5000");
+});
+
 test('it arrives as a download Excel can read', async () => {
   const file = await download('/api/customers/export', nandhini);
 

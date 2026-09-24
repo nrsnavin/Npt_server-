@@ -46,7 +46,19 @@ export function errorHandler(err, _req, res, _next) {
       error = ApiError.conflict(`A record with this ${fields.join(', ') || 'value'} already exists`);
     }
   } else if (!(err instanceof ApiError)) {
-    error = new ApiError(err.statusCode || 500, err.message || 'Internal server error');
+    const status = err.statusCode || err.status || 500;
+    /*
+     * An error nobody wrote for a reader. In production its text is the server's own —
+     * "Cannot read properties of undefined (reading 'lines')", a driver message naming a
+     * collection — and says more about the code than it tells the person. Logged in full below;
+     * the reader gets a sentence. Errors that carry their own status (body-parser's 413, a
+     * malformed JSON 400) were written to be read and keep their message.
+     */
+    const unexpected = status >= 500 && isProduction;
+    error = new ApiError(
+      status,
+      unexpected ? 'Something went wrong on the server. It has been logged.' : err.message || 'Internal server error'
+    );
   }
 
   if (error.statusCode >= 500) {
