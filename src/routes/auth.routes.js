@@ -10,6 +10,9 @@ import {
   verifyLoginOtp,
   requestVerificationOtp,
   confirmVerificationOtp,
+  forgotPassword,
+  checkPasswordLink,
+  resetPassword,
 } from '../controllers/auth.controller.js';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -22,6 +25,8 @@ import {
   requestVerificationSchema,
   confirmVerificationSchema,
   updateProfileSchema,
+  forgotPasswordSchema,
+  resetPasswordSchema,
 } from '../validators/schemas.js';
 
 const router = Router();
@@ -51,6 +56,12 @@ router.post('/login', validate(loginSchema), login);
 
 router.post('/otp/request', otpRequestLimiter, validate(requestOtpSchema), requestLoginOtp);
 router.post('/otp/verify', otpVerifyLimiter, validate(verifyOtpSchema), verifyLoginOtp);
+
+/* Password links — the welcome invitation and a forgotten password. No session needed; the
+   credential limiter in app.js covers /password, and the controller adds a per-account cooldown. */
+router.post('/password/forgot', validate(forgotPasswordSchema), forgotPassword);
+router.get('/password/reset/:token', checkPasswordLink);
+router.post('/password/reset', validate(resetPasswordSchema), resetPassword);
 
 router.get('/me', authenticate, me);
 router.patch('/me', authenticate, validate(updateProfileSchema), updateProfile);

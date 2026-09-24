@@ -60,6 +60,7 @@ const credentialLimiter = rateLimit({
 app.use('/api/auth/login', credentialLimiter);
 app.use('/api/auth/register', credentialLimiter);
 app.use('/api/auth/otp', credentialLimiter);
+app.use('/api/auth/password', credentialLimiter);
 /*
  * The general ceiling, and the one knob on it.
  *

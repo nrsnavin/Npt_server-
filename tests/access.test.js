@@ -71,17 +71,17 @@ test('the first account becomes admin and holds write on every module', async ()
   assert.deepEqual(json.data.moduleAccess ?? [], []);
 });
 
-test('later self-registration gets member with no access at all', async () => {
-  await api('/api/auth/register', {
+test('after the first account, nobody can sign themselves up', async () => {
+  /* Accounts are made by an administrator, who sends a welcome email. An open sign-up let
+     anyone who found the API make themselves an account. */
+  const { status, json } = await api('/api/auth/register', {
     method: 'POST',
     body: { name: 'Walk In', email: 'walkin@npthangers.com', password: 'Walk@123456' },
   });
 
-  const token = await signIn('walkin@npthangers.com', 'Walk@123456');
-  const { json } = await api('/api/auth/me', { token });
-
-  assert.equal(json.data.role, 'member');
-  assert.ok(json.data.modules.every((module) => !module.canRead));
+  assert.equal(status, 403);
+  assert.match(json.message, /created by an administrator/);
+  assert.equal(await signIn('walkin@npthangers.com', 'Walk@123456'), undefined);
 });
 
 test('creating a user applies the department template', async () => {
@@ -333,7 +333,10 @@ test('the catalogue exposes modules and department templates', async () => {
 });
 
 test('a member cannot reach user administration at all', async () => {
-  const token = await signIn('walkin@npthangers.com', 'Walk@123456');
+  /* A member with no grants, made directly now that nobody can sign themselves up. */
+  const { default: User } = await import('../src/models/User.js');
+  await User.create({ name: 'Walk In', email: 'walkin2@npthangers.com', password: 'Walk@123456' });
+  const token = await signIn('walkin2@npthangers.com', 'Walk@123456');
 
   for (const path of ['/api/users', '/api/users/catalogue']) {
     const { status } = await api(path, { token });

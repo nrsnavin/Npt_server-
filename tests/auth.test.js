@@ -372,13 +372,15 @@ test('blocks a duplicate phone number across accounts', async () => {
     body: { email: 'admin@npthangers.com', password: 'Admin@12345' },
   });
 
-  const { status, json } = await api('/api/auth/register', {
+  const { status, json } = await api('/api/users', {
     method: 'POST',
+    token: session.data.token,
     body: {
       name: 'Copycat',
       email: 'copycat@npthangers.com',
       password: 'Copy@123456',
       phone: '+919000011111',
+      department: 'marketing',
     },
   });
 
@@ -394,10 +396,8 @@ test('changing a password ends every other session, and keeps the one that chang
    * People change a password because they think somebody else has it. A token taken before
    * the change kept working for its full seven days after it.
    */
-  await api('/api/auth/register', {
-    method: 'POST',
-    body: { name: 'Priya K', email: 'priya.sessions@npthangers.com', password: 'First@12345' },
-  });
+  const { default: User } = await import('../src/models/User.js');
+  await User.create({ name: 'Priya K', email: 'priya.sessions@npthangers.com', password: 'First@12345' });
   const signIn = (password) =>
     api('/api/auth/login', { method: 'POST', body: { email: 'priya.sessions@npthangers.com', password } });
 

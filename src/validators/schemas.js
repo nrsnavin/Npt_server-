@@ -47,7 +47,8 @@ export const updateProfileSchema = z.object({
 export const createUserSchema = z.object({
   name: z.string().min(2),
   email: z.string().trim().email(),
-  password: z.string().min(8, 'Password must be at least 8 characters'),
+  /* Optional: without one the person sets their own from the welcome email's link. */
+  password: z.string().min(8, 'Password must be at least 8 characters').optional(),
   role: z.enum(ROLE_VALUES).optional(),
   department: z.enum(DEPARTMENT_KEYS),
   phone: z.string().optional(),
@@ -153,6 +154,13 @@ export const announcementSchema = z.object({
 export const loginSchema = z.object({
   email: z.string().trim().email(),
   password: z.string().min(1),
+});
+
+export const forgotPasswordSchema = z.object({ email: z.string().trim().email() });
+
+export const resetPasswordSchema = z.object({
+  token: z.string().min(20).max(200),
+  password: z.string().min(8, 'Password must be at least 8 characters').max(200),
 });
 
 export const changePasswordSchema = z.object({

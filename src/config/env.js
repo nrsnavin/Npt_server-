@@ -21,6 +21,20 @@ export const env = {
     .map((origin) => origin.trim())
     .filter(Boolean),
 
+  /**
+   * Where the web app lives, for links sent by email — the welcome invitation and the password
+   * reset. Falls back to the first CORS origin, which is the web app in every deployment so far.
+   */
+  appUrl: (process.env.APP_URL || (process.env.CORS_ORIGIN || 'http://localhost:5173').split(',')[0])
+    .trim()
+    .replace(/\/+$/, ''),
+
+  /** How long an emailed password link works: an invitation waits days, a reset an hour. */
+  passwordLinks: {
+    inviteHours: Number(process.env.INVITE_LINK_HOURS || 72),
+    resetMinutes: Number(process.env.RESET_LINK_MINUTES || 60),
+  },
+
   /** Bare local phone numbers are assumed to belong to this country. */
   defaultCountryCode: process.env.DEFAULT_COUNTRY_CODE || '+91',
 

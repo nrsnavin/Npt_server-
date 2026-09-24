@@ -101,12 +101,9 @@ test('an invalid recipient number is reported as a 400, not a server error', asy
   failTwilio(400, { code: 21211, message: 'Invalid To number' });
 
   // A different identifier, to sidestep the cooldown from the previous test.
-  await api('/api/auth/register', {
-    name: 'Second Staff',
-    email: 'second@npthangers.com',
-    password: 'Second@12345',
-    phone: '9876500002',
-  });
+  /* Made directly: sign-up is closed after the first account, and this test is about SMS. */
+  const { default: User } = await import('../src/models/User.js');
+  await User.create({ name: 'Second Staff', email: 'second@npthangers.com', password: 'Second@12345', phone: '9876500002' });
 
   const { status, json } = await api('/api/auth/otp/request', { identifier: '9876500002' });
 

@@ -87,14 +87,20 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-test('registering cannot choose a department, so it cannot choose a view of the plant', async () => {
+test('nobody can register once the first account exists, whatever department they name', async () => {
   const registered = await api('/api/auth/register', {
     method: 'POST',
     body: { name: 'Mallory', email: 'mallory@elsewhere.test', password: 'Stranger@123', department: 'management' },
   });
-  assert.equal(registered.status, 201);
-  assert.equal(registered.json.data.user.department, undefined, 'the department sent is not kept');
-  const stranger = registered.json.data.token;
+  assert.equal(registered.status, 403);
+  assert.equal(registered.json.data, undefined, 'and no session is handed out');
+});
+
+test('an account nobody has placed in a department reads nothing of the plant', async () => {
+  /* One made before sign-up closed, say, or imported: no department, no grants. */
+  const { default: User } = await import('../src/models/User.js');
+  const { signToken } = await import('../src/middleware/auth.js');
+  const stranger = signToken(await User.create({ name: 'Mallory', email: 'mallory@np.com', password: 'Stranger@123' }));
 
   assert.equal((await api('/api/workspace/todos?scope=department', { token: stranger })).status, 400);
 

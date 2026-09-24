@@ -7,6 +7,8 @@ import { issueOtp, resolveIdentifier, verifyOtp } from '../services/otp.service.
 import { env } from '../config/env.js';
 import { maskIdentifier } from '../utils/phone.js';
 import { moduleAccessFor } from '../services/access.service.js';
+import { inspectLink, redeemLink, sendReset } from '../services/passwordLink.service.js';
+import PasswordToken from '../models/PasswordToken.js';
 
 const publicUser = (user) => ({
   id: user._id,
@@ -45,6 +47,16 @@ async function completeSignIn(user, method) {
 
 export const register = asyncHandler(async (req, res) => {
   const { name, email, password, phone } = req.body;
+
+  /*
+   * Registration exists to create the first account and nothing else. After that, accounts are
+   * made by an administrator, who is sent nothing and types no password — the new person gets
+   * a welcome email with their access and a link to choose their own. An open sign-up was a way
+   * for anyone who found the API to make themselves an account.
+   */
+  if ((await User.estimatedDocumentCount()) > 0) {
+    throw ApiError.forbidden('Accounts are created by an administrator. Ask yours to invite you.');
+  }
 
   const existing = await User.findOne({ email });
   if (existing) throw ApiError.conflict('An account with this email already exists');
@@ -257,4 +269,46 @@ export const changePassword = asyncHandler(async (req, res) => {
     message: 'Password updated. Every other device has been signed out.',
     data: { user: publicUser(user), token: signToken(user) },
   });
+});
+
+/* ------------------------------ Password links ------------------------------ */
+
+/** How soon the same account may be sent another reset email. */
+const RESET_COOLDOWN_MS = 60 * 1000;
+
+/**
+ * "Forgot password": a link to the address on the account.
+ *
+ * The answer is the same whether or not the address has an account, so this cannot be used to
+ * learn who works here. And the link only ever travels by email — if the email cannot be sent,
+ * the person asking is told nothing more, because returning the link here would let anybody
+ * reset anybody's password by typing their address.
+ */
+export const forgotPassword = asyncHandler(async (req, res) => {
+  const user = await User.findOne({ email: req.body.email });
+
+  if (user?.isActive) {
+    const recent = await PasswordToken.exists({
+      user: user._id,
+      purpose: 'reset',
+      createdAt: { $gt: new Date(Date.now() - RESET_COOLDOWN_MS) },
+    });
+    if (!recent) await sendReset(user);
+  }
+
+  res.json({
+    success: true,
+    message: 'If that address has an account, a link to reset the password is on its way. It works for an hour.',
+  });
+});
+
+/** Whether a link still works, and whose it is, so the page can greet them or say it has expired. */
+export const checkPasswordLink = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await inspectLink(req.params.token) });
+});
+
+/** Sets the password from a link and signs the person in. Every earlier session ends. */
+export const resetPassword = asyncHandler(async (req, res) => {
+  const user = await redeemLink(req.body.token, req.body.password);
+  res.json({ success: true, data: await completeSignIn(user, 'password') });
 });

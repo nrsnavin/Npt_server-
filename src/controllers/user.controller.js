@@ -12,6 +12,7 @@ import { resolveIdentifier } from '../services/otp.service.js';
 import { transferBook, workloadOf } from '../services/offboarding.service.js';
 import { recordChange } from '../services/audit.service.js';
 import { listParams } from '../utils/query.js';
+import { sendWelcome } from '../services/passwordLink.service.js';
 
 const publicUser = (user) => ({
   id: user._id,
@@ -28,6 +29,10 @@ const publicUser = (user) => ({
   createdAt: user.createdAt,
   moduleAccess: user.moduleAccess,
   modules: moduleAccessFor(user),
+  /* Read off a document loaded with the hash selected; the hash itself never leaves here. */
+  hasPassword: Boolean(user.password),
+  /** Invited and not yet in: no password chosen and never signed in. */
+  invitationPending: !user.password && !user.lastLoginAt,
 });
 
 /** The module and department catalogue an admin screen needs to build its form. */
@@ -73,6 +78,7 @@ export const list = asyncHandler(async (req, res) => {
 
   const [users, total] = await Promise.all([
     User.find(filter)
+      .select('+password')
       .sort(sort)
       .skip((page - 1) * limit)
       .limit(limit),
@@ -87,7 +93,7 @@ export const list = asyncHandler(async (req, res) => {
 });
 
 export const getOne = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id);
+  const user = await User.findById(req.params.id).select('+password');
   if (!user) throw ApiError.notFound('User not found');
   res.json({ success: true, data: publicUser(user) });
 });
@@ -126,11 +132,31 @@ export const create = asyncHandler(async (req, res) => {
     moduleAccess: role === 'admin' ? [] : grants,
   });
 
-  res.status(201).json({ success: true, data: publicUser(user) });
+  /*
+   * The welcome email: what they have been given, and a link to choose their own password.
+   * Sent whether or not a password was typed here — the email is also how they learn their
+   * access. If it could not go, the link comes back so the administrator can pass it on.
+   */
+  const invitation = await sendWelcome(user, { by: req.user });
+
+  res.status(201).json({ success: true, data: publicUser(user), invitation });
+});
+
+/**
+ * Sending the welcome email again — it expired, went to spam, or the address was corrected.
+ * A new link replaces the old one, so only the latest email works.
+ */
+export const resendInvitation = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.params.id).select('+password');
+  if (!user) throw ApiError.notFound('User not found');
+  if (!user.isActive) throw ApiError.badRequest('This account is deactivated — reactivate it first');
+
+  const invitation = await sendWelcome(user, { by: req.user });
+  res.json({ success: true, data: publicUser(user), invitation });
 });
 
 export const update = asyncHandler(async (req, res) => withOwnerLocks([req.params.id, req.query.transferTo || req.body?.transferTo], async () => {
-  const user = await User.findById(req.params.id);
+  const user = await User.findById(req.params.id).select('+password');
   if (!user) throw ApiError.notFound('User not found');
 
   const { name, department, role, isActive, phone } = req.body;
@@ -174,7 +200,7 @@ export const update = asyncHandler(async (req, res) => withOwnerLocks([req.param
 
 /** Replaces a user's grants wholesale, so the request is the complete intended state. */
 export const setAccess = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id);
+  const user = await User.findById(req.params.id).select('+password');
   if (!user) throw ApiError.notFound('User not found');
 
   if (user.role === 'admin') {
@@ -189,7 +215,7 @@ export const setAccess = asyncHandler(async (req, res) => {
 
 /** Re-applies the department template, discarding any manual adjustments. */
 export const resetAccessToDepartment = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id);
+  const user = await User.findById(req.params.id).select('+password');
   if (!user) throw ApiError.notFound('User not found');
 
   if (user.role === 'admin') {
@@ -207,7 +233,7 @@ export const resetAccessToDepartment = asyncHandler(async (req, res) => {
 
 /** What this person is holding, so an offboarding warning is a sentence with numbers in it. */
 export const workload = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id);
+  const user = await User.findById(req.params.id).select('+password');
   if (!user) throw ApiError.notFound('User not found');
 
   res.json({ success: true, data: await workloadOf(user._id) });
@@ -225,7 +251,7 @@ export const workload = asyncHandler(async (req, res) => {
  * nothing open can be deactivated on the spot.
  */
 export const remove = asyncHandler(async (req, res) => withOwnerLocks([req.params.id, req.query.transferTo || req.body?.transferTo], async () => {
-  const user = await User.findById(req.params.id);
+  const user = await User.findById(req.params.id).select('+password');
   if (!user) throw ApiError.notFound('User not found');
 
   if (String(user._id) === String(req.user._id)) {
