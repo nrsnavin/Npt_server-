@@ -107,7 +107,7 @@ export const dispatchDetailsSchema = z.object({
   courier: z.string().max(80).nullable().optional(),
   awbNumber: z.string().max(60).nullable().optional(),
   dispatchedAt: z.coerce.date().nullable().optional(),
-  dispatchedQuantity: z.number().nonnegative().nullable().optional(),
+  dispatchedQuantity: z.number().int().positive('A dispatch sends at least one piece').nullable().optional(),
   dispatchedColour: z.string().max(60).nullable().optional(),
 });
 
@@ -127,7 +127,7 @@ export const sampleStatusSchema = z.object({
   courier: z.string().optional(),
   awbNumber: z.string().optional(),
   dispatchedAt: z.coerce.date().optional(),
-  dispatchedQuantity: z.number().nonnegative().optional(),
+  dispatchedQuantity: z.number().int().positive('A dispatch sends at least one piece').optional(),
   dispatchedColour: z.string().max(60).optional(),
 });
 

@@ -431,6 +431,15 @@ export const createPricing = asyncHandler(async (req, res) => {
     )
   );
 
+  /*
+   * Every line has to name what it costs — a mould from the register or a model number. A row
+   * with neither is somebody who pressed "add another" and changed their mind; saved, it is a
+   * costing of nothing that sits in the queue waiting for a floor price nobody can work out.
+   */
+  if (lines.some((line) => !line.mould && !String(line.modelNumber || '').trim())) {
+    throw ApiError.badRequest('Name the model to cost on every line — a mould or a model number');
+  }
+
   const pricing = await Pricing.create({
     customer: customerId,
     enquiry: req.body.enquiry || undefined,

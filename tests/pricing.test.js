@@ -1780,3 +1780,26 @@ test('a validity date already gone is refused wherever it is typed', async () =>
   });
   assert.equal(today.status, 200, today.json.message);
 });
+
+/**
+ * A costing of nothing. The screen refuses to raise one until a model is named; the server has
+ * to as well, or a blank row from any other caller sits in the queue waiting for a floor price
+ * nobody can work out.
+ */
+test('every costing line has to name a mould or a model number', async () => {
+  const blank = await api('/api/pricings', { method: 'POST', token: admin, body: { customer } });
+  assert.equal(blank.status, 400, 'a costing naming no model was raised');
+  assert.match(blank.json.message, /name the model to cost/i);
+
+  const oneBlank = await api('/api/pricings', {
+    method: 'POST',
+    token: admin,
+    body: { customer, lines: [{ modelNumber: 'NH-400' }, { modelNumber: '   ' }] },
+  });
+  assert.equal(oneBlank.status, 400, 'a blank second line was saved');
+
+  const named = await api('/api/pricings', {
+    method: 'POST', token: admin, body: { customer, lines: [{ modelNumber: 'NH-400' }, { mould }] },
+  });
+  assert.equal(named.status, 201, named.json.message);
+});

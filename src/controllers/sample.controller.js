@@ -503,6 +503,24 @@ export const createSample = asyncHandler(async (req, res) => {
   if (input.items) spec.items = await specRows(input.items);
 
   /*
+   * How many pieces go in the bag, said by whoever asked. The screen has always required it;
+   * the model's default of one filled the gap for any other caller, so a request the bench
+   * reads as "make one" was sometimes nobody's answer at all. Asked after the checks on who
+   * and what, so a request that should not exist is refused for that, and before a lead is
+   * converted, so a refusal here leaves nothing half-made behind.
+   */
+  const counted = input.items?.length
+    ? input.items.every((item) => item.quantity != null)
+    : input.quantity != null;
+  if (!counted) {
+    throw ApiError.badRequest(
+      input.items?.length
+        ? 'Say how many pieces of each model go in the bag'
+        : 'Say how many pieces to make'
+    );
+  }
+
+  /*
    * A lead's request raises the lead's first enquiry, which converts the lead [§5]. See
    * `enquiryForLead`.
    *
@@ -829,6 +847,17 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
    * the answer is only ever in the head of whoever clicked. So the move is refused until it
    * says why, and the reason goes into the history beside it.
    */
+  /*
+   * **Cancelling says why, too.** It ends somebody's request, and whoever raised it will ask.
+   * Only here, where a person cancels by hand: losing the enquiry cancels its sample through
+   * the automation, and that carries its own reason.
+   */
+  if (status === 'cancelled' && (note || '').trim().length < BACKWARD_REASON_MIN) {
+    throw ApiError.badRequest(
+      `Cancelling ${sample.number} needs a reason, so whoever asked for it knows why it stopped.`
+    );
+  }
+
   if (isBackwardSampleMove(sample.status, status) && (note || '').trim().length < BACKWARD_REASON_MIN) {
     throw ApiError.badRequest(
       `Moving ${sample.number} back from ${stageWords(sample.status)} to ${stageWords(status)} ` +
@@ -851,7 +880,7 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
     const missing = [
       !details.courier && 'courier',
       !details.awbNumber && 'AWB number',
-      details.dispatchedQuantity == null && 'dispatched quantity',
+      !(details.dispatchedQuantity > 0) && 'dispatched quantity',
       /* Only where a colour was named. A request that never asked for one has no answer to
          give, and demanding it would be inventing a field for the bench to make up. */
       sample.colour && !details.dispatchedColour && 'colour it was sent in',

@@ -1531,6 +1531,53 @@ test('a sample goes back a stage only with a reason, which lands in the history'
 });
 
 /**
+ * The rules the sample screens hold, held by the server as well — so a script, an old tab or
+ * the next screen somebody writes cannot save what the form would have refused.
+ */
+test('the server refuses what the sample screens refuse', async () => {
+  const bag = { customer: customerId, mould: mouldId, requiredDate: soon(7), standaloneReason: 'Counter request' };
+
+  const uncounted = await api('/api/samples', { method: 'POST', token: nandhini, body: bag });
+  assert.equal(uncounted.status, 400, 'a request with no piece count was saved');
+  assert.match(uncounted.json.message, /how many pieces/i);
+
+  const partly = await api('/api/samples', {
+    method: 'POST',
+    token: nandhini,
+    body: { ...bag, items: [{ mould: mouldId, quantity: 2 }, { modelNumber: 'NPT-2' }] },
+  });
+  assert.equal(partly.status, 400, 'a bag with an uncounted model was saved');
+  assert.match(partly.json.message, /each model/i);
+
+  const made = await api('/api/samples', { method: 'POST', token: nandhini, body: { ...bag, quantity: 4 } });
+  assert.equal(made.status, 201, made.json.message);
+  const id = made.json.data._id;
+  const move = (body) => api(`/api/samples/${id}/status`, { method: 'POST', token: meera, body });
+
+  for (const note of [undefined, '  ', 'no']) {
+    const bare = await move({ status: 'cancelled', note });
+    assert.equal(bare.status, 400, `cancelled with the note ${JSON.stringify(note)}`);
+    assert.match(bare.json.message, /needs a reason/i);
+  }
+
+  for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
+    assert.equal((await move({ status })).status, 200);
+  }
+
+  /* Nothing in the bag is not a dispatch — neither sent directly nor arranged in advance. */
+  const empty = await move({ status: 'dispatched', courier: 'Blue Dart', awbNumber: '1', dispatchedQuantity: 0 });
+  assert.equal(empty.status, 400, 'a dispatch of no pieces went out');
+  const arranged = await api(`/api/samples/${id}/dispatch-details`, {
+    method: 'PATCH', token: meera, body: { courier: 'Blue Dart', awbNumber: '1', dispatchedQuantity: 0 },
+  });
+  assert.equal(arranged.status, 400, 'no pieces was arranged in advance');
+
+  const cancelled = await move({ status: 'cancelled', note: 'Buyer changed the model' });
+  assert.equal(cancelled.status, 200, cancelled.json.message);
+  assert.equal(cancelled.json.data.statusHistory.at(-1).note, 'Buyer changed the model');
+});
+
+/**
  * A cancelled request must not stand in the way of the next one.
  *
  * `CLOSED_SAMPLE_STATUSES` has always counted `cancelled` as finished, and the dedupe that

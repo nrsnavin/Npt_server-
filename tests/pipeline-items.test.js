@@ -749,7 +749,7 @@ test('a sample raised off the enquiry gets each model’s own tool', async () =>
   const sample = await api('/api/samples', {
     method: 'POST',
     token: admin,
-    body: { enquiry: enquiry.json.data._id, customer: customerId },
+    body: { enquiry: enquiry.json.data._id, customer: customerId, quantity: 3 },
   });
   assert.equal(sample.status, 201, sample.json.message);
 

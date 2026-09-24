@@ -218,7 +218,7 @@ test('a closed sample stops escalating', async () => {
   await api(`/api/samples/${sample._id}/status`, {
     method: 'POST',
     token: meera,
-    body: { status: 'cancelled' },
+    body: { status: 'cancelled', note: 'Buyer no longer needs it' },
   });
 
   const raised = await runSamplingEscalations({ now: Date.now() });
