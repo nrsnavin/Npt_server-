@@ -3,12 +3,13 @@ import {
   listQueries, getQuery, createQuery, addMessage,
   addParticipant, closeQuery, reopenQuery, participantOptions,
   readUrgency, suggestReply,
-  markRead,
+  markRead, addFile, setUrgent,
 } from '../controllers/query.controller.js';
+import { singleDocument } from '../middleware/upload.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
-  querySchema, messageSchema, participantSchema, urgencySchema,
+  querySchema, messageSchema, participantSchema, urgencySchema, urgentSchema,
 } from '../validators/query.schemas.js';
 
 /**
@@ -48,6 +49,10 @@ router.post('/queries', requireModule('queries'), validate(querySchema), createQ
 router.get('/queries/:id', requireModule('queries'), getQuery);
 
 router.post('/queries/:id/messages', requireModule('queries'), validate(messageSchema), addMessage);
+/* A photo or document into the thread, with an optional caption and tags. */
+router.post('/queries/:id/files', requireModule('queries'), singleDocument('file'), addFile);
+/* Flagging urgent — the controller holds that only an administrator may. */
+router.post('/queries/:id/urgent', requireModule('queries'), validate(urgentSchema), setUrgent);
 router.post(
   '/queries/:id/participants',
   requireModule('queries'),

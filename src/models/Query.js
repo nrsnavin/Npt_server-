@@ -113,10 +113,12 @@ const messageSchema = new mongoose.Schema(
       trim: true,
       maxlength: 4000,
       required() {
-        return !this.location || this.location.lat == null;
+        return (!this.location || this.location.lat == null) && !(this.attachments || []).length;
       },
     },
     location: { type: locationSchema, default: undefined },
+    /* Photos and documents posted with this message — a file needs no caption, like a location. */
+    attachments: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' }], default: undefined },
     /* People tagged in this message with @ — each is brought into the thread and told. */
     mentions: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], default: undefined },
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
@@ -139,8 +141,11 @@ export const messageText = (message) => {
     ? ''
     : `📍 shared a location${message.location.place?.name ? ` near ${message.location.place.name}` : ''}`;
 
-  if (words && where) return `${words} (${where})`;
-  return words || where;
+  const files = (message?.attachments || []).length
+    ? `📎 ${(message.attachments || []).map((file) => file?.filename || 'a file').join(', ')}`
+    : '';
+
+  return [words, where && (words ? `(${where})` : where), files].filter(Boolean).join(' ');
 };
 
 const querySchema = new mongoose.Schema(
@@ -170,6 +175,18 @@ const querySchema = new mongoose.Schema(
     /** The asker's verdict, which is a different judgement from the answerer's. */
     closedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     closedAt: Date,
+
+    /*
+     * Flagged urgent by an administrator. Urgent threads sort above everything else on every
+     * list, for everybody, and a person tagged on one is sent WhatsApp as well as email.
+     * `isUrgent` is kept beside the details so the list can sort on it with an index.
+     */
+    isUrgent: { type: Boolean, default: false, index: true },
+    urgent: {
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      reason: { type: String, trim: true, maxlength: 200 },
+    },
   },
   { timestamps: true }
 );

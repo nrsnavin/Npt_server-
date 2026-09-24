@@ -47,7 +47,7 @@ const documents = multer({
   limits: { fileSize: MAX_BYTES, files: 1 },
   fileFilter: (_req, file, callback) => {
     if (isAllowedDocument(file.mimetype)) return callback(null, true);
-    callback(ApiError.badRequest('Attach a PDF or an image'));
+    callback(ApiError.badRequest('Attach a photo, a PDF, or a Word or Excel file'));
   },
 });
 

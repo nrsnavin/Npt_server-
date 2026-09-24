@@ -12,6 +12,11 @@ import { customerScope, isOwnershipScoped, ownsCustomer } from '../services/owne
 import { assertAssignable } from '../services/assignment.service.js';
 import { canRead as mayOpen } from '../services/access.service.js';
 import { raiseTask } from '../services/task.service.js';
+import Attachment from '../models/Attachment.js';
+import { put, remove } from '../services/storage.service.js';
+import { sendEmail } from '../services/notification.service.js';
+import { isWhatsAppConfigured, sendWhatsApp } from '../providers/twilio.js';
+import { env } from '../config/env.js';
 import { DEPARTMENT_KEYS, findDepartment } from '../config/modules.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { summarise } from '../services/querySummary.llm.js';
@@ -55,6 +60,8 @@ const POPULATE = [
   { path: 'participants.addedBy', select: 'name' },
   { path: 'messages.by', select: 'name department' },
   { path: 'messages.mentions', select: 'name department' },
+  { path: 'messages.attachments', select: 'key filename mimeType size' },
+  { path: 'urgent.by', select: 'name' },
   { path: 'closedBy', select: 'name' },
 ];
 
@@ -296,6 +303,18 @@ export const markRead = asyncHandler(async (req, res) => {
 
 /* --------------------------------- Reading --------------------------------- */
 
+/**
+ * Whatever order was asked for, with urgent threads above all of it — for everybody, on every
+ * page. An administrator flagging a thread urgent is saying "this before anything else".
+ */
+export function urgentFirst(sort = '-updatedAt') {
+  const rest = typeof sort === 'string'
+    ? Object.fromEntries(String(sort).split(/\s+/).filter(Boolean)
+      .map((field) => (field.startsWith('-') ? [field.slice(1), -1] : [field, 1])))
+    : sort;
+  return { isUrgent: -1, ...rest };
+}
+
 export const listQueries = asyncHandler(async (req, res) => {
   /*
    * What somebody typed, read for filters before the list is built — "unanswered despatch
@@ -319,7 +338,7 @@ export const listQueries = asyncHandler(async (req, res) => {
   const scoped = await queryFilter(req, filter);
 
   const [data, total, taggedOpen] = await Promise.all([
-    Query.find(scoped).populate(POPULATE).sort(sort).skip((page - 1) * limit).limit(limit),
+    Query.find(scoped).populate(POPULATE).sort(urgentFirst(sort)).skip((page - 1) * limit).limit(limit),
     Query.countDocuments(scoped),
     /* For the "Tagged me" toggle: live threads naming me, whatever the other filters say.
        Being tagged puts a person in the room, so no room scope is needed to keep this honest. */
@@ -552,23 +571,26 @@ export const getQuery = asyncHandler(async (req, res) => {
  * a thread somebody had finished with is how a closed queue fills back up without anybody
  * choosing.
  */
-export const addMessage = asyncHandler(async (req, res) => {
-  const query = await readableQuery(req.params.id, req.user);
-  const { kind = 'reply', body, location } = req.body;
-
+/**
+ * Saying something on a thread — words, a place, files, tags — shared by the message door and the
+ * file door so both keep every rule: closed threads take nothing, tagged people are brought in by
+ * name and told, a reply moves the thread to answered.
+ */
+async function postMessage(req, query, { kind = 'reply', body, location, mentions, attachments = [] }) {
   if (query.status === 'closed') {
     throw ApiError.badRequest(
       `${query.number} is closed. Re-open it if there is more to say, so somebody has decided to.`
     );
   }
 
-  const tagged = await taggable(req.body.mentions, req.user);
+  const tagged = await taggable(mentions, req.user);
 
   query.messages.push({
     kind,
     body: body || undefined,
     location: location ? placed(location) : undefined,
     mentions: tagged.length ? tagged.map((person) => person._id) : undefined,
+    attachments: attachments.length ? attachments.map((file) => file._id) : undefined,
     by: req.user._id,
   });
   const message = query.messages[query.messages.length - 1];
@@ -605,20 +627,136 @@ export const addMessage = asyncHandler(async (req, res) => {
    * Each person tagged gets it on their list, so a tag reaches somebody who is not looking at
    * the thread. One task per message they were tagged in; the note carries what was said.
    */
+  const said = messageText({ ...message.toObject(), attachments }).slice(0, 300);
   await Promise.all(tagged.map((person) => raiseTask({
     user: person._id,
     title: `${req.user.name} tagged you in ${query.number}`,
-    notes: messageText(message).slice(0, 300),
+    notes: said,
     dueDate: new Date(),
     link: `/queries/${query._id}`,
     originKey: `query-mention:${message._id}:${person._id}`,
   }).catch(() => null)));
 
-  res.status(201).json({
+  /* And by email — plus WhatsApp when the thread is urgent. Sent after the answer, never
+     holding it up: a slow mail server must not make the message look like it failed. */
+  if (tagged.length) setImmediate(() => notifyTagged(query, tagged, req.user, said));
+
+  return {
     success: true,
     data: await withRefs(query),
     tagged: { people: tagged.map((person) => person.name), joined: joined.map((person) => person.name) },
+  };
+}
+
+export const addMessage = asyncHandler(async (req, res) => {
+  const query = await readableQuery(req.params.id, req.user);
+  const { kind = 'reply', body, location, mentions } = req.body;
+  res.status(201).json(await postMessage(req, query, { kind, body, location, mentions }));
+});
+
+/**
+ * A photo or a document, posted into the thread as a message — with a caption and tags if the
+ * sender gave them. The file is readable by whoever can read the thread, and nobody else.
+ */
+export const addFile = asyncHandler(async (req, res) => {
+  const query = await readableQuery(req.params.id, req.user);
+  if (!req.file) throw ApiError.badRequest('Attach a photo or a document');
+  if (query.status === 'closed') {
+    throw ApiError.badRequest(`${query.number} is closed. Re-open it to add anything to it.`);
+  }
+
+  /* Multipart carries text only: tags arrive as a comma list or a JSON array of ids. */
+  const raw = req.body.mentions;
+  let mentions = [];
+  if (raw) {
+    try { mentions = Array.isArray(raw) ? raw : JSON.parse(raw); } catch { mentions = String(raw).split(','); }
+  }
+  mentions = mentions.map(String).filter((id) => mongoose.isValidObjectId(id)).slice(0, 10);
+  const body = String(req.body.body || '').trim().slice(0, 4000);
+  const kind = req.body.kind === 'note' ? 'note' : 'reply';
+
+  const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+  let file;
+  try {
+    file = await Attachment.create({
+      key,
+      filename: req.file.originalname,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      uploadedBy: req.user._id,
+      query: query._id,
+    });
+    res.status(201).json(await postMessage(req, query, { kind, body, mentions, attachments: [file] }));
+  } catch (error) {
+    /* A stored file no message points at is one nobody can find or delete. */
+    if (file) await file.deleteOne().catch(() => null);
+    await remove(key).catch(() => null);
+    throw error;
+  }
+});
+
+/**
+ * Email every tagged person, and WhatsApp them too when the thread is urgent.
+ *
+ * Best effort and logged: the task on their list is the record, these are how it reaches them.
+ * WhatsApp to a person who has not messaged the plant's number in 24 hours needs an approved
+ * template — set TWILIO_WHATSAPP_TAG_TEMPLATE_SID (variables 1 tagger, 2 query, 3 link) and it
+ * is used; without one the plain text is sent, which works inside that window and in the sandbox.
+ */
+async function notifyTagged(query, people, tagger, said) {
+  const link = `${env.appUrl}/queries/${query._id}`;
+  const urgent = query.isUrgent ? 'URGENT: ' : '';
+  for (const person of people) {
+    if (person.email) {
+      await sendEmail({
+        to: person.email,
+        subject: `${urgent}${tagger.name} tagged you in ${query.number}`,
+        text: `${tagger.name} tagged you in ${query.number} — ${query.subject}\n\n"${said}"\n\nOpen the thread: ${link}`,
+        html: `<p><strong>${escapeHtml(tagger.name)}</strong> tagged you in <strong>${escapeHtml(query.number)}</strong> — ${escapeHtml(query.subject)}</p>`
+          + `<blockquote style="border-left:3px solid #ccc;margin:8px 0;padding:4px 10px;color:#333">${escapeHtml(said)}</blockquote>`
+          + `<p><a href="${escapeHtml(link)}">Open the thread</a></p>`,
+      }).catch((error) => console.error(`[query-tag] email to ${person.email} not sent: ${error.message}`));
+    }
+    if (query.isUrgent && person.phone) {
+      if (!isWhatsAppConfigured()) {
+        console.log(`\n[whatsapp] to ${person.phone}\n${urgent}${tagger.name} tagged you in ${query.number}: ${link}\n`);
+        continue;
+      }
+      const template = process.env.TWILIO_WHATSAPP_TAG_TEMPLATE_SID;
+      await sendWhatsApp({
+        to: person.phone,
+        body: `${urgent}${tagger.name} tagged you in ${query.number} (${query.subject}): "${said.slice(0, 200)}" ${link}`,
+        ...(template ? { contentSid: template, contentVariables: { 1: tagger.name, 2: query.number, 3: link } } : {}),
+      }).catch((error) => console.error(`[query-tag] WhatsApp to ${person.phone} not sent: ${error.message}`));
+    }
+  }
+}
+
+const escapeHtml = (text) =>
+  String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+/**
+ * Flagging a thread urgent, or taking the flag off. Administrators only: an urgent thread goes
+ * to the top of every list in the plant, and that is a call for whoever runs it.
+ */
+export const setUrgent = asyncHandler(async (req, res) => {
+  if (req.user.role !== 'admin') throw ApiError.forbidden('Only an administrator can flag a query urgent');
+  const query = await readableQuery(req.params.id, req.user);
+  const before = snapshot(query);
+
+  if (req.body.urgent) {
+    query.isUrgent = true;
+    query.urgent = { by: req.user._id, at: new Date(), reason: req.body.reason || undefined };
+  } else {
+    query.isUrgent = false;
+    query.urgent = undefined;
+  }
+  /* Not activity: a flag is not something said, so it must not move the thread up "latest". */
+  await query.save({ timestamps: false });
+  await recordChange({
+    model: 'Query', doc: query, before, by: req.user, note: query.isUrgent ? 'Flagged urgent' : 'Urgent flag removed',
   });
+  res.json({ success: true, data: await withRefs(query) });
 });
 
 /**
@@ -631,7 +769,7 @@ async function taggable(ids = [], speaker) {
   const wanted = [...new Set((ids || []).map(String))].filter((id) => id !== String(speaker._id));
   if (!wanted.length) return [];
 
-  const people = await User.find({ _id: { $in: wanted } }).select('name department role isActive moduleAccess');
+  const people = await User.find({ _id: { $in: wanted } }).select('name email phone department role isActive moduleAccess');
   if (people.length !== wanted.length) throw ApiError.badRequest('Somebody tagged is not a person here');
 
   for (const person of people) {

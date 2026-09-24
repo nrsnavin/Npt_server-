@@ -3,6 +3,7 @@ import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
 import SampleLog from '../models/SampleLog.js';
 import Attachment from '../models/Attachment.js';
+import Query, { inTheRoom, seesEveryQuery } from '../models/Query.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownsRecord } from '../services/ownership.service.js';
@@ -216,6 +217,11 @@ export const downloadAttachment = asyncHandler(async (req, res) => {
    */
   if (attachment.mould) {
     if (!canRead(req.user, 'moulds')) throw ApiError.notFound('File not found');
+  } else if (attachment.query) {
+    /* A file posted in a query thread is exactly as readable as the thread. */
+    const query = await Query.findById(attachment.query).select('raisedBy participants');
+    const mayRead = query && canRead(req.user, 'queries') && (seesEveryQuery(req.user) || inTheRoom(query, req.user));
+    if (!mayRead) throw ApiError.notFound('File not found');
   } else {
     const owner = await ownerOf(attachment);
     if (!owner) throw ApiError.notFound('File not found');

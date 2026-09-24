@@ -534,3 +534,101 @@ test('a thread I was tagged in stays marked as mine, and can be listed on its ow
   assert.ok(json.data.some((listed) => listed._id === query._id));
   assert.ok(json.taggedOpen >= 1, 'and the count the toggle shows');
 });
+
+/* ------------------------- Urgent, tag notices, files ------------------------- */
+
+/** Console lines printed while `work` runs and shortly after — where emails go without SMTP. */
+const printed = async (work, settleMs = 400) => {
+  const lines = [];
+  const real = console.log;
+  console.log = (...args) => { lines.push(args.join(' ')); };
+  try {
+    const result = await work();
+    await new Promise((resolve) => setTimeout(resolve, settleMs));
+    return { result, lines };
+  } finally {
+    console.log = real;
+  }
+};
+
+test('only an administrator can flag a query urgent, and urgent ones come first for everyone', async () => {
+  const older = await raise();
+  await raise(); // newer, so it would otherwise lead the list
+
+  const refused = await api(`/api/queries/${older._id}/urgent`, { method: 'POST', token: kavitha, body: { urgent: true } });
+  assert.equal(refused.status, 403);
+
+  const flagged = await api(`/api/queries/${older._id}/urgent`, {
+    method: 'POST', token: admin, body: { urgent: true, reason: 'Buyer is holding payment' },
+  });
+  assert.equal(flagged.status, 200, flagged.json.message);
+  assert.equal(flagged.json.data.isUrgent, true);
+  assert.equal(flagged.json.data.urgent.by.name, 'Navin R');
+
+  for (const token of [nandhini, kavitha]) {
+    const { json } = await api('/api/queries?limit=50', { token });
+    assert.equal(json.data[0]._id, older._id, 'the urgent thread leads the list');
+  }
+
+  await api(`/api/queries/${older._id}/urgent`, { method: 'POST', token: admin, body: { urgent: false } });
+  const { json } = await api('/api/queries?limit=50', { token: nandhini });
+  assert.notEqual(json.data[0]._id, older._id, 'and drops back once the flag is off');
+});
+
+test('a tagged person is emailed, and sent WhatsApp as well when the thread is urgent', async () => {
+  const made = await api('/api/users', {
+    method: 'POST',
+    token: admin,
+    body: { name: 'Priya Accounts', email: 'priya.acc@np.com', password: 'Pass@123456', department: 'accounts', phone: '9876500077' },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  const priya = made.json.data.id;
+
+  const calm = await raise();
+  const { lines: quiet } = await printed(() => tag(calm._id, '@Priya Accounts the invoice', [priya]));
+  assert.ok(quiet.some((line) => line.includes('[email] to priya.acc@np.com') && line.includes(`tagged you in ${calm.number}`)));
+  assert.ok(!quiet.some((line) => line.includes('[whatsapp] to')), 'no WhatsApp on an ordinary thread');
+
+  const hot = await raise();
+  await api(`/api/queries/${hot._id}/urgent`, { method: 'POST', token: admin, body: { urgent: true } });
+  const { lines: loud } = await printed(() => tag(hot._id, '@Priya Accounts now please', [priya]));
+  assert.ok(loud.some((line) => line.includes('[email] to priya.acc@np.com') && line.includes('URGENT')));
+  assert.ok(loud.some((line) => line.includes('[whatsapp] to +919876500077')), 'WhatsApp on an urgent one');
+});
+
+test('a photo or document goes into the thread, readable only by those who can read it', async () => {
+  const query = await raise();
+  const form = new FormData();
+  form.append('file', new Blob(['%PDF-1.4 the PO'], { type: 'application/pdf' }), 'buyer-po.pdf');
+  form.append('body', 'Their PO, for the record');
+  form.append('mentions', JSON.stringify([await whoIs(anita)]));
+
+  const posted = await fetch(`${baseUrl}/api/queries/${query._id}/files`, {
+    method: 'POST', headers: { Authorization: `Bearer ${kavitha}` }, body: form,
+  });
+  const json = await posted.json();
+  assert.equal(posted.status, 201, json.message);
+  const last = json.data.messages.at(-1);
+  assert.equal(last.body, 'Their PO, for the record');
+  assert.equal(last.attachments[0].filename, 'buyer-po.pdf');
+  assert.equal(last.mentions[0].name, 'Anita P', 'tags ride along with a file');
+
+  const key = encodeURIComponent(last.attachments[0].key);
+  const asParticipant = await fetch(`${baseUrl}/api/files/${key}`, { headers: { Authorization: `Bearer ${anita}` } });
+  assert.equal(asParticipant.status, 200);
+
+  const outsiderMade = await api('/api/users', {
+    method: 'POST', token: admin, body: { name: 'Ravi Q', email: 'ravi.q@np.com', password: 'Pass@123456', department: 'quality' },
+  });
+  const outsider = await signIn('ravi.q@np.com', 'Pass@123456');
+  assert.equal(outsiderMade.status, 201);
+  const asOutsider = await fetch(`${baseUrl}/api/files/${key}`, { headers: { Authorization: `Bearer ${outsider}` } });
+  assert.equal(asOutsider.status, 404, 'somebody not in the thread cannot fetch its files');
+
+  const text = new FormData();
+  text.append('file', new Blob(['hello'], { type: 'text/plain' }), 'note.txt');
+  const refused = await fetch(`${baseUrl}/api/queries/${query._id}/files`, {
+    method: 'POST', headers: { Authorization: `Bearer ${kavitha}` }, body: text,
+  });
+  assert.equal(refused.status, 400);
+});

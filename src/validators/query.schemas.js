@@ -72,6 +72,12 @@ export const locationSchema = z.object({
   capturedAt: z.coerce.date(),
 });
 
+/** An administrator flagging a thread urgent, or taking the flag off. */
+export const urgentSchema = z.object({
+  urgent: z.boolean(),
+  reason: z.string().trim().max(200).optional(),
+});
+
 export const messageSchema = z
   .object({
     kind: z.enum(['reply', 'note']).default('reply'),

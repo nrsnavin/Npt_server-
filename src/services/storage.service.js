@@ -29,7 +29,15 @@ export const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/he
  * shot: a buyer's drawing, print artwork, a signed approval. They arrive as PDFs at least as
  * often as images, and refusing one means it goes back to living in somebody's email.
  */
-export const ALLOWED_DOCUMENT_TYPES = [...ALLOWED_TYPES, 'application/pdf'];
+export const ALLOWED_DOCUMENT_TYPES = [
+  ...ALLOWED_TYPES,
+  'application/pdf',
+  /* Word and Excel: a buyer's PO or a price list arrives as one of these as often as a PDF. */
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+];
 
 export const isAllowedDocument = (mimeType) => ALLOWED_DOCUMENT_TYPES.includes(mimeType);
 
@@ -41,6 +49,11 @@ const EXTENSIONS = {
   'image/webp': '.webp',
   'image/heic': '.heic',
   'image/heif': '.heif',
+  'application/pdf': '.pdf',
+  'application/msword': '.doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+  'application/vnd.ms-excel': '.xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
 };
 
 /** True for a file this store will accept, by type and size. */
