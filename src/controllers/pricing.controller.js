@@ -452,6 +452,8 @@ export const createPricing = asyncHandler(async (req, res) => {
   });
 
   publish(EVENTS.PRICING_REQUESTED, { pricing, by: req.user });
+  /* Replied with names, as the detail read is — see `costPricing`. */
+  await pricing.populate(POPULATE);
   res.status(201).json({ success: true, data: visibleTo(pricing, req.user) });
 });
 
@@ -627,6 +629,12 @@ export const costPricing = asyncHandler(async (req, res) => {
     by: req.user,
   });
 
+  /*
+   * The reply carries names, as the detail read does. It used to hand back bare ids, so the page
+   * that took it — the sheet, the review step, the quote — had a resin, a hook and a print job to
+   * name and only an id to name them with, and showed nothing until somebody reloaded.
+   */
+  await pricing.populate(POPULATE);
   res.json({ success: true, data: visibleTo(pricing, req.user) });
 });
 
@@ -687,6 +695,7 @@ export const decidePricing = asyncHandler(async (req, res) => {
   await pricing.save();
   publish(approve ? EVENTS.PRICING_APPROVED : EVENTS.PRICING_REJECTED, { pricing, by: req.user });
 
+  await pricing.populate(POPULATE);
   res.json({ success: true, data: visibleTo(pricing, req.user) });
 });
 
@@ -980,5 +989,6 @@ export const updatePricing = asyncHandler(async (req, res) => {
   await pricing.save();
   await recordChange({ model: 'Pricing', doc: pricing, before, by: req.user });
 
+  await pricing.populate(POPULATE);
   res.json({ success: true, data: visibleTo(pricing, req.user) });
 });

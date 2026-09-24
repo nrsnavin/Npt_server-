@@ -474,3 +474,53 @@ test('an order booked from the quote is made of each model’s own registers', a
   assert.equal(made450.clipRef.name, 'Wooden clip 25mm');
   assert.equal(made450.printRef.name, '2 colour screen');
 });
+
+/**
+ * The costing door keeps what the sheet was built from — the screen's "Re-cost" save.
+ *
+ * The sheet picks a resin, a hook, clips and a print job and saves through `/cost`. Each part
+ * must land on the line by name and bring its register rate to its own cost line; packing is
+ * typed, and must survive; and a later save that mentions none of them must leave them alone.
+ */
+test('re-costing a model keeps its resin, hook, clips, print and packing', async () => {
+  const { status, json } = await api('/api/pricings', {
+    method: 'POST', token: admin, body: { customer, lines: [{ modelNumber: 'NH-RC' }] },
+  });
+  assert.equal(status, 201, json.message);
+  const sheet = json.data;
+  const line = sheet.lines[0]._id;
+
+  const costed = await cost(sheet._id, line, {
+    expectedUpdatedAt: sheet.updatedAt,
+    mould: light,
+    materialRef: hips._id,
+    hookRef: hook._id,
+    clipRef: clip._id,
+    printRef: print._id,
+    cost: { packingCost: 0.35 },
+  });
+  assert.equal(costed.status, 200, costed.json.message);
+  const saved = costed.json.data.lines.find((row) => row._id === line);
+  assert.equal(saved.materialRef?.name, hips.name, 'the resin was not kept');
+  assert.equal(saved.hookRef?.name, 'Swivel metal hook');
+  assert.equal(saved.clipRef?.name, 'Wooden clip 25mm');
+  assert.equal(saved.printRef?.name, '2 colour screen');
+  assert.equal(saved.cost.hookCost, 1.4, 'the hook rate did not land on the hook line');
+  assert.equal(saved.cost.metalClipsCost, 0.9, 'the clip rate did not land on the clips line');
+  assert.equal(saved.cost.printingCost, 0.35, 'the print rate did not land on the print line');
+  assert.equal(saved.cost.packingCost, 0.35, 'the typed packing was lost');
+
+  /* A later save that only moves the markup leaves every choice where it was. */
+  const again = await cost(sheet._id, line, { expectedUpdatedAt: costed.json.data.updatedAt, markupPercent: 15 });
+  assert.equal(again.status, 200, again.json.message);
+  const kept = again.json.data.lines.find((row) => row._id === line);
+  assert.equal(kept.materialRef?.name, hips.name);
+  assert.equal(kept.hookRef?.name, 'Swivel metal hook');
+  assert.equal(kept.cost.packingCost, 0.35);
+
+  /* And clearing one picker detaches just that part. */
+  const cleared = await cost(sheet._id, line, { expectedUpdatedAt: again.json.data.updatedAt, clipRef: null });
+  const without = cleared.json.data.lines.find((row) => row._id === line);
+  assert.equal(without.clipRef, undefined, 'the cleared clips stayed on the line');
+  assert.equal(without.hookRef?.name, 'Swivel metal hook');
+});

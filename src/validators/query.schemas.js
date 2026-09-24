@@ -97,7 +97,7 @@ export const labelsSchema = z.object({
             .string()
             .min(2, 'A label needs at least two characters')
             .max(LABEL_MAX_LENGTH, `Keep a label to ${LABEL_MAX_LENGTH} characters`)
-            .regex(/^[\p{L}\p{N}][\p{L}\p{N} &/+-]*$/u, 'Use letters, numbers and spaces in a label')
+            .regex(/^[\p{L}\p{N}][\p{L}\p{M}\p{N} &/+-]*$/u, 'Use letters, numbers and spaces in a label')
         )
     )
     .max(MAX_LABELS, `A query carries at most ${MAX_LABELS} labels`)

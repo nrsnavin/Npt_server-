@@ -156,9 +156,9 @@ test.beforeEach(() => {
 
 test('labels are kept normalised, so one group stays one group', async () => {
   const query = await raise();
-  const saved = await label(query._id, ['  Quality ', 'Payment   follow-up']);
+  const saved = await label(query._id, ['  Quality ', 'Payment   follow-up', 'கூடுதல்']);
   assert.equal(saved.status, 200, saved.json.message);
-  assert.deepEqual(saved.json.data.labels, ['quality', 'payment follow-up']);
+  assert.deepEqual(saved.json.data.labels, ['quality', 'payment follow-up', 'கூடுதல்']);
 
   /* Somebody else in the room files it too, and finds it under the same word however typed. */
   assert.equal((await label(query._id, ['quality', 'lorry'], kavitha)).status, 200);
