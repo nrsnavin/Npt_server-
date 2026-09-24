@@ -572,6 +572,22 @@ function applyPaperwork(dispatch, patch) {
   Object.assign(dispatch, patch);
 }
 
+/** Refuses a delivery date for goods that have not left, or one before they left or after today. */
+function assertDeliveryDate(dispatch, value) {
+  const at = new Date(value);
+  if (!GONE_DISPATCH_STATUSES.includes(dispatch.status)) {
+    throw ApiError.badRequest('This consignment has not left yet, so it cannot have a delivery date');
+  }
+  const left = dispatch.dispatchDate ? new Date(dispatch.dispatchDate) : null;
+  if (left) left.setHours(0, 0, 0, 0);
+  if (left && at < left) {
+    throw ApiError.badRequest('A delivery date cannot be before the consignment was dispatched');
+  }
+  const endOfToday = new Date();
+  endOfToday.setHours(23, 59, 59, 999);
+  if (at > endOfToday) throw ApiError.badRequest('A delivery date cannot be in the future');
+}
+
 export const updateDispatch = asyncHandler(withOrderLock(async req => (await Dispatch.findById(req.params.id).select('order'))?.order || req.params.id, async (req, res) => {
   const dispatch = await Dispatch.findById(req.params.id);
   if (!dispatch) throw ApiError.notFound('Consignment not found');
@@ -612,19 +628,38 @@ export const updateDispatch = asyncHandler(withOrderLock(async req => (await Dis
     });
   }
 
+  /*
+   * A delivery date is a correction to something that happened, so it has to be possible.
+   *
+   * Typing it before pressing "Delivered" is fine — the action keeps a date already set, which
+   * is how "it arrived yesterday" gets recorded today. But the edit took any date on any
+   * consignment: one still on the road took a delivery in 2001, before it had left, and the
+   * reports that age deliveries from this date read it as delivered decades ago.
+   */
+  if (patch.deliveredAt) assertDeliveryDate(dispatch, patch.deliveredAt);
+
   applyPaperwork(dispatch, patch);
   dispatch.orderSyncPending = true;
   await dispatch.save();
   await recordChange({ model: 'Dispatch', doc: dispatch, before, by: req.user });
 
-  /* A changed load changes what the order can still send, so its status is recomputed. */
-  await completeDispatchEffects(dispatch, req.user);
+  /*
+   * A changed load changes what the order can still send, so its status is recomputed.
+   *
+   * After the save, so a failure here must not be reported as the edit failing — it landed.
+   * The same answer the action door gives: saved, with the books still to settle.
+   */
+  let pending = false;
+  try { await completeDispatchEffects(dispatch, req.user); }
+  catch (error) { pending = true; console.error('Dispatch completion pending:', dispatch.number, error.message); }
 
   await dispatch.populate(POPULATE);
-  res.json({
+  res.status(pending ? 202 : 200).json({
     success: true,
     data: dispatchVisibleTo(dispatch, req.user),
     outstanding: dispatch.outstandingPaperwork,
+    pending,
+    message: pending ? 'Saved. Accounting for this consignment is still pending and will be retried.' : undefined,
   });
 }));
 

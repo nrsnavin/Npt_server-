@@ -599,8 +599,10 @@ export async function seedOrders({ priya, nandhini, arun, ramesh, anita }) {
       order: order._id,
       dispatch: dispatch?._id,
       assignedTo: owner._id,
+      /* The consignment's own invoice, value included: a receivable that disagrees with it is
+         what the accounting check refuses, and every later action on that load failed. */
       invoice: dispatch
-        ? { number: dispatch.invoice?.number, date: dispatch.invoice?.date, value }
+        ? { number: dispatch.invoice?.number, date: dispatch.invoice?.date, value: dispatch.invoice?.value ?? value }
         : { value, date: days(-2, 11) },
       dueBy,
       receipts: receipts || [],
@@ -615,7 +617,7 @@ export async function seedOrders({ priya, nandhini, arun, ramesh, anita }) {
     /* The broken promise. Said Friday, Friday has gone, and the note is what the next caller
        opens with — the whole argument for recording who was spoken to. */
     receivables.push(await owe({
-      order: orders[0], dispatch: dispatches[0], value: 215000,
+      order: orders[0], dispatch: dispatches[0], value: 195000,
       dueBy: days(-24, 23), owner: nandhini,
       followUps: [
         {
@@ -625,7 +627,7 @@ export async function seedOrders({ priya, nandhini, arun, ramesh, anita }) {
         {
           at: days(-5, 16), by: nandhini._id, spokeTo: 'Mr Ravi, accounts',
           note: 'Promised the full amount by Friday. Says the cheque is signed.',
-          promisedDate: days(-2, 17), promisedAmount: 215000,
+          promisedDate: days(-2, 17), promisedAmount: 195000,
         },
       ],
     }));

@@ -352,3 +352,18 @@ test('the summary counts what is actually there', async () => {
   assert.equal(result.receivables, await Receivable.countDocuments({}));
   assert.equal(result.inspections, await Inspection.countDocuments({}));
 });
+
+test('every receivable raised off a consignment agrees with its invoice', async () => {
+  /*
+   * Found by the backend audit: the fixture gave one load an invoice of ₹1,95,000 and its
+   * receivable ₹2,15,000. The accounting check refuses a load whose books disagree, so every
+   * later action on it — delivered, closed — failed, on the demo data people try first.
+   */
+  const rows = await Receivable.find({ dispatch: { $exists: true, $ne: null } }).populate('dispatch', 'number invoice');
+  assert.ok(rows.length > 0);
+  for (const row of rows) {
+    if (!row.dispatch?.invoice?.value) continue;
+    assert.equal(row.invoice.value, row.dispatch.invoice.value, `${row.number} against ${row.dispatch.number}`);
+    assert.equal(row.invoice.number, row.dispatch.invoice.number, `${row.number} against ${row.dispatch.number}`);
+  }
+});

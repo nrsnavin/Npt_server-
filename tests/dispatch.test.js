@@ -1290,3 +1290,57 @@ test('reading a consignment history is gated exactly as reading the consignment 
   const refused = await api(`/api/history/Dispatch/${made.json.data._id}`, { token: theirs });
   assert.equal(refused.status, 404, 'and somebody else’s reads as missing, not as forbidden');
 });
+
+test('a delivery date has to be one the goods could have arrived on', async () => {
+  /*
+   * Found by the backend audit: the correction door took any date on any consignment. One on
+   * the road took a delivery in 2001, before it left, and the plant review ages deliveries from
+   * this date. Recording yesterday's arrival before pressing "Delivered" still works.
+   */
+  const line = await readyLine({ readyQty: 20000 });
+  const made = (await raise(shared, [{ orderLine: line._id, quantity: 20000 }], PAPERS)).json.data;
+  const edit = (dispatch, deliveredAt) => api(`/api/dispatches/${dispatch._id}`, {
+    method: 'PATCH', token: kavitha, body: { deliveredAt, expectedUpdatedAt: dispatch.updatedAt },
+  });
+
+  const early = await edit(made, inDays(0));
+  assert.equal(early.status, 400, 'not before it has left');
+  assert.match(early.json.message, /has not left/);
+
+  const gone = (await act(made, { action: 'dispatch' })).json.data;
+  assert.equal((await edit(gone, '2001-01-01')).status, 400, 'not before it was dispatched');
+  assert.equal((await edit(gone, inDays(2))).status, 400, 'not in the future');
+
+  const today = await edit(gone, inDays(0));
+  assert.equal(today.status, 200, today.json.message);
+});
+
+test('a load whose books disagree is refused with the reason, not a server error', async () => {
+  /*
+   * The accounting check threw a plain Error, so a consignment whose receivable disagreed with
+   * its invoice — one recorded before the paperwork gate, or imported — answered every action
+   * with a 500 and nothing a person could act on.
+   */
+  const line = await readyLine({ readyQty: 20000 });
+  const made = (await raise(shared, [{ orderLine: line._id, quantity: 20000 }], PAPERS)).json.data;
+  const gone = (await act(made, { action: 'dispatch' })).json.data;
+
+  const { default: Receivable } = await import('../src/models/Receivable.js');
+  const { default: Dispatch } = await import('../src/models/Dispatch.js');
+  await Receivable.updateOne({ dispatch: gone._id }, { $set: { 'invoice.value': 999 } });
+  await Dispatch.updateOne({ _id: gone._id }, { $unset: { accountingCompletedAt: 1 } });
+
+  /* Pressing Dispatched again is how the books are retried; it says why they will not settle. */
+  const current = (await api(`/api/dispatches/${gone._id}`, { token: kavitha })).json.data;
+  const retried = await act(current, { action: 'dispatch' });
+  assert.equal(retried.status, 422, retried.json.message);
+  assert.match(retried.json.message, /does not match its receivable/);
+
+  /* An edit that saved is not reported as one that failed. */
+  const edited = await api(`/api/dispatches/${gone._id}`, {
+    method: 'PATCH', token: kavitha, body: { deliveredAt: inDays(0), expectedUpdatedAt: current.updatedAt },
+  });
+  assert.equal(edited.status, 202, edited.json.message);
+  assert.equal(edited.json.pending, true);
+  assert.ok(edited.json.data.deliveredAt, 'and the change is there');
+});

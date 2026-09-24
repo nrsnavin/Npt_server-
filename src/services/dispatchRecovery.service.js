@@ -3,15 +3,22 @@ import SalesOrder from '../models/SalesOrder.js';
 import { raiseForDispatch } from './receivable.service.js';
 import { rollUpDispatchStatus, stockFor } from './dispatchStock.service.js';
 import { withOperationLock } from './operationLock.service.js';
+import ApiError from '../utils/ApiError.js';
 
 /** Called with the order lock held. The dispatch is the durable retry record. */
 export async function completeDispatchEffects(dispatch, user) {
   if (GONE_DISPATCH_STATUSES.includes(dispatch.status) && !dispatch.accountingCompletedAt) {
     const receivable = await raiseForDispatch(dispatch, { by: user });
-    if (!receivable) throw new Error(`Dispatch ${dispatch.number} needs a valid invoice before accounting can complete`);
+    /*
+     * Refusals, not crashes: 422 with the reason, so the person pressing the button reads what is
+     * wrong instead of a server error. Not 409 — the sweep below skips those as lock contention,
+     * and a load whose books disagree has to stay loud there until accounts clears it.
+     */
+    if (!receivable) throw new ApiError(422, `Dispatch ${dispatch.number} needs a valid invoice before accounting can complete`);
     if (receivable.invoice.value !== dispatch.invoice.value || receivable.invoice.number !== dispatch.invoice.number ||
         +new Date(receivable.invoice.date) !== +new Date(dispatch.invoice.date)) {
-      throw new Error(`Dispatch ${dispatch.number} has an invoice mismatch requiring accounts review`);
+      throw new ApiError(422, `Dispatch ${dispatch.number} has an invoice that does not match its receivable ` +
+        `${receivable.number}. Ask accounts to review it before this consignment can move on.`);
     }
     dispatch.accountingPending = false;
     dispatch.accountingCompletedAt = new Date();
