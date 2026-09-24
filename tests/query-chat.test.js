@@ -435,3 +435,63 @@ test('a marketing colleague in the thread still cannot pin a buyer they do not o
   });
   assert.equal(status, 404, 'refused, and without saying whether the buyer exists');
 });
+
+/* ------------------------------- Tagging people ------------------------------- */
+
+const tag = (id, body, mentions, token = kavitha) =>
+  api(`/api/queries/${id}/messages`, { method: 'POST', token, body: { body, mentions } });
+
+test('tagging somebody outside the thread brings them in, grants the buyer, and tells them', async () => {
+  const query = await raise();
+  const arunId = await whoIs(arun);
+
+  assert.equal((await api(`/api/queries/${query._id}`, { token: arun })).status, 404, 'not in it yet');
+
+  const tagged = await tag(query._id, '@Arun K can you confirm the carton count with the buyer?', [arunId]);
+  assert.equal(tagged.status, 201, tagged.json.message);
+  assert.deepEqual(tagged.json.tagged, { people: ['Arun K'], joined: ['Arun K'] });
+
+  const last = tagged.json.data.messages.at(-1);
+  assert.equal(last.mentions[0].name, 'Arun K', 'the message names who it tagged');
+  assert.ok(
+    tagged.json.data.participants.some((row) => (row.user?._id || row.user) === arunId),
+    'added as a participant, like adding them would'
+  );
+
+  assert.equal((await api(`/api/queries/${query._id}`, { token: arun })).status, 200, 'and can open it');
+  assert.equal((await api(`/api/customers/${customerId}`, { token: arun })).status, 200, 'and the buyer');
+
+  const todos = (await api('/api/workspace/todos', { token: arun })).json.data;
+  const task = todos.find((row) => row.title === `Kavitha D tagged you in ${query.number}`);
+  assert.ok(task, 'a task on their own list');
+  assert.equal(task.link, `/queries/${query._id}`);
+
+  const row = await rowFor(arun, query._id);
+  assert.equal(row.taggedMe, 1, 'their inbox shows the tag');
+  await api(`/api/queries/${query._id}/read`, { method: 'POST', token: arun, body: {} });
+  assert.equal((await rowFor(arun, query._id)).taggedMe, 0, 'until they have read it');
+});
+
+test('tagging somebody already in the thread tells them without adding them twice', async () => {
+  const query = await raise();
+  const before = query.participants.length;
+  const tagged = await tag(query._id, '@Anita P this one is yours', [await whoIs(anita)]);
+  assert.equal(tagged.status, 201, tagged.json.message);
+  assert.deepEqual(tagged.json.tagged.joined, [], 'despatch was already asked');
+  assert.equal(tagged.json.data.participants.length, before);
+  assert.equal((await rowFor(anita, query._id)).taggedMe, 1);
+});
+
+test('a tag that could never be seen is refused by name, and tagging yourself does nothing', async () => {
+  const query = await raise();
+  const { default: User } = await import('../src/models/User.js');
+  const outsider = await User.create({ name: 'Ravi Press', email: 'ravi.press@np.com', password: 'Pass@123456', department: 'production' });
+
+  const refused = await tag(query._id, '@Ravi Press', [String(outsider._id)]);
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.message, /Ravi Press cannot open queries/);
+
+  const self = await tag(query._id, 'Noting this for myself', [await whoIs(kavitha)]);
+  assert.equal(self.status, 201);
+  assert.deepEqual(self.json.tagged.people, []);
+});

@@ -77,6 +77,8 @@ export const messageSchema = z
     kind: z.enum(['reply', 'note']).default('reply'),
     body: z.string().trim().max(4000).default(''),
     location: locationSchema.optional(),
+    /* People tagged with @ in this message. A handful at most — a tag is a person, not a list. */
+    mentions: z.array(objectId).max(10).optional(),
   })
   /* Words, a place, or both — "📍" alone is a complete thing to have said. */
   .refine((message) => message.body.length > 0 || message.location, {

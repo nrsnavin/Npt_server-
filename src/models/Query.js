@@ -117,6 +117,8 @@ const messageSchema = new mongoose.Schema(
       },
     },
     location: { type: locationSchema, default: undefined },
+    /* People tagged in this message with @ — each is brought into the thread and told. */
+    mentions: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], default: undefined },
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     at: { type: Date, default: Date.now },
   },

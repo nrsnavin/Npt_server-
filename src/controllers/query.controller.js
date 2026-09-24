@@ -10,6 +10,8 @@ import { nextNumber } from '../services/numbering.service.js';
 import { listParams, paginated } from '../utils/query.js';
 import { customerScope, isOwnershipScoped, ownsCustomer } from '../services/ownership.service.js';
 import { assertAssignable } from '../services/assignment.service.js';
+import { canRead as mayOpen } from '../services/access.service.js';
+import { raiseTask } from '../services/task.service.js';
 import { DEPARTMENT_KEYS, findDepartment } from '../config/modules.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { summarise } from '../services/querySummary.llm.js';
@@ -52,6 +54,7 @@ const POPULATE = [
   { path: 'participants.user', select: 'name department' },
   { path: 'participants.addedBy', select: 'name' },
   { path: 'messages.by', select: 'name department' },
+  { path: 'messages.mentions', select: 'name department' },
   { path: 'closedBy', select: 'name' },
 ];
 
@@ -206,6 +209,7 @@ const said = (query) => [
     text: messageText(message),
     kind: message.kind,
     located: message.location?.lat != null,
+    mentions: message.mentions || [],
   })),
 ];
 
@@ -223,6 +227,17 @@ export function unreadFor(query, cursorAt, me) {
   const since = cursorAt ? new Date(cursorAt).getTime() : null;
   return said(query).filter(
     (entry) => idOf(entry.by) !== String(me) && (since === null || new Date(entry.at).getTime() > since)
+  ).length;
+}
+
+/** How many of those unread messages tag me — the "@ you" on an inbox row. */
+export function taggedUnreadFor(query, cursorAt, me) {
+  const since = cursorAt ? new Date(cursorAt).getTime() : null;
+  return said(query).filter(
+    (entry) =>
+      idOf(entry.by) !== String(me)
+      && (since === null || new Date(entry.at).getTime() > since)
+      && (entry.mentions || []).some((person) => idOf(person) === String(me))
   ).length;
 }
 
@@ -327,6 +342,7 @@ export const listQueries = asyncHandler(async (req, res) => {
     urgency: urgencyByRules(query, req.user),
     /* Per reader, like the urgency, and for the same reason never stored on the thread. */
     unread: unreadFor(query, cursors.get(String(query._id)), req.user._id),
+    taggedMe: taggedUnreadFor(query, cursors.get(String(query._id)), req.user._id),
     last: lastSaid(query),
   }));
 
@@ -534,12 +550,26 @@ export const addMessage = asyncHandler(async (req, res) => {
     );
   }
 
+  const tagged = await taggable(req.body.mentions, req.user);
+
   query.messages.push({
     kind,
     body: body || undefined,
     location: location ? placed(location) : undefined,
+    mentions: tagged.length ? tagged.map((person) => person._id) : undefined,
     by: req.user._id,
   });
+  const message = query.messages[query.messages.length - 1];
+
+  /*
+   * Tagging somebody not yet in the thread brings them in, as adding them would — the same row,
+   * recording who did it. A tag that pointed at a person who then could not open the thread
+   * would be a tag that did nothing.
+   */
+  const joined = tagged.filter((person) => !inTheRoom(query, person));
+  for (const person of joined) {
+    query.participants.push({ department: person.department, user: person._id, addedBy: req.user._id });
+  }
 
   /* Only a reply advances it. Answering is the plant's part; closing is the asker's. */
   if (kind === 'reply' && query.status === 'open') query.status = 'answered';
@@ -547,8 +577,49 @@ export const addMessage = asyncHandler(async (req, res) => {
   await query.save();
   /* Whoever just spoke has read everything up to what they said. */
   await QueryRead.advance(query._id, req.user._id);
-  res.status(201).json({ success: true, data: await withRefs(query) });
+  if (joined.length) await shareCustomerWith(query.customer, joined.map((person) => person._id));
+
+  /*
+   * Each person tagged gets it on their list, so a tag reaches somebody who is not looking at
+   * the thread. One task per message they were tagged in; the note carries what was said.
+   */
+  await Promise.all(tagged.map((person) => raiseTask({
+    user: person._id,
+    title: `${req.user.name} tagged you in ${query.number}`,
+    notes: messageText(message).slice(0, 300),
+    dueDate: new Date(),
+    link: `/queries/${query._id}`,
+    originKey: `query-mention:${message._id}:${person._id}`,
+  }).catch(() => null)));
+
+  res.status(201).json({
+    success: true,
+    data: await withRefs(query),
+    tagged: { people: tagged.map((person) => person.name), joined: joined.map((person) => person.name) },
+  });
 });
+
+/**
+ * The people a message may tag: real, active, not the speaker, and able to open queries at all.
+ *
+ * Refused by name rather than dropped, so the person typing learns that the one they tagged
+ * would never see it — somebody without the Queries grant cannot open a thread whoever tags them.
+ */
+async function taggable(ids = [], speaker) {
+  const wanted = [...new Set((ids || []).map(String))].filter((id) => id !== String(speaker._id));
+  if (!wanted.length) return [];
+
+  const people = await User.find({ _id: { $in: wanted } }).select('name department role isActive moduleAccess');
+  if (people.length !== wanted.length) throw ApiError.badRequest('Somebody tagged is not a person here');
+
+  for (const person of people) {
+    if (person.isActive === false) throw ApiError.badRequest(`${person.name} has left, so a tag would reach nobody`);
+    if (!mayOpen(person, 'queries')) {
+      throw ApiError.badRequest(`${person.name} cannot open queries, so they would never see the tag. Ask an administrator for access.`);
+    }
+  }
+  return people;
+}
 
 /** How stale a fix may be, and how far in the future a phone's clock may run. */
 const FRESH_MS = 15 * 60 * 1000;
