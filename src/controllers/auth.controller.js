@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -24,6 +25,14 @@ const publicUser = (user) => ({
   /** Every response carrying a user carries their access, so the client is never guessing. */
   modules: moduleAccessFor(user),
 });
+
+/*
+ * Loaded with the hash selected, only so `hasPassword` is true when it is true: the field is
+ * excluded by default, and `publicUser` read it off documents that never carried it — every
+ * account looked password-less except in the one response a password sign-in returns, and the
+ * profile offered "Set a password" to people who had one. The hash never leaves `publicUser`.
+ */
+const withPassword = (query) => query.select('+password');
 
 /** Records the sign-in and returns the standard auth payload. */
 async function completeSignIn(user, method) {
@@ -66,11 +75,21 @@ export const register = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: { user: publicUser(user), token: signToken(user) } });
 });
 
+/*
+ * A hash of nothing, compared against when there is no account, so a wrong email costs the same
+ * as a wrong password. Without it an unknown address answered in 3 ms and a known one in 70 —
+ * the same message, but a stopwatch could still tell who works here.
+ */
+const NO_ACCOUNT_HASH = bcrypt.hashSync('no-account-has-this-password', 10);
+
 export const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
 
   const user = await User.findOne({ email }).select('+password');
-  if (!user || !(await user.comparePassword(password))) {
+  const matches = user?.password
+    ? await user.comparePassword(password)
+    : await bcrypt.compare(password, NO_ACCOUNT_HASH).then(() => false);
+  if (!user || !matches) {
     throw ApiError.unauthorized('Invalid email or password');
   }
   if (!user.isActive) throw ApiError.forbidden('This account has been deactivated');
@@ -120,7 +139,7 @@ export const verifyLoginOtp = asyncHandler(async (req, res) => {
 
   await verifyOtp({ identifier, code: req.body.code, purpose: 'login' });
 
-  const user = await User.findOne({ [field]: identifier });
+  const user = await withPassword(User.findOne({ [field]: identifier }));
   if (!user || !user.isActive) {
     throw ApiError.unauthorized('This account is no longer active');
   }
@@ -136,12 +155,12 @@ export const verifyLoginOtp = asyncHandler(async (req, res) => {
 });
 
 export const me = asyncHandler(async (req, res) => {
-  res.json({ success: true, data: publicUser(req.user) });
+  res.json({ success: true, data: publicUser(await withPassword(User.findById(req.user._id))) });
 });
 
 export const updateProfile = asyncHandler(async (req, res) => {
   const { name, phone } = req.body;
-  const user = await User.findById(req.user._id);
+  const user = await withPassword(User.findById(req.user._id));
 
   if (name) user.name = name;
 
@@ -201,7 +220,7 @@ export const confirmVerificationOtp = asyncHandler(async (req, res) => {
     purpose: target === 'email' ? 'verify_email' : 'verify_phone',
   });
 
-  const user = await User.findById(req.user._id);
+  const user = await withPassword(User.findById(req.user._id));
   if (target === 'email') user.emailVerified = true;
   else user.phoneVerified = true;
   await user.save({ validateBeforeSave: false });
@@ -224,5 +243,13 @@ export const changePassword = asyncHandler(async (req, res) => {
   user.password = newPassword;
   await user.save();
 
-  res.json({ success: true, message: 'Password updated' });
+  /*
+   * The change ends every earlier session, this one included — so the person who made it gets
+   * a fresh one back and stays signed in here, while a copy of the old token anywhere else stops.
+   */
+  res.json({
+    success: true,
+    message: 'Password updated. Every other device has been signed out.',
+    data: { user: publicUser(user), token: signToken(user) },
+  });
 });

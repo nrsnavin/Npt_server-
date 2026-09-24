@@ -25,6 +25,9 @@ export const authenticate = asyncHandler(async (req, _res, next) => {
 
   const user = await User.findById(payload.sub);
   if (!user || !user.isActive) throw ApiError.unauthorized('Account is no longer active');
+  if (user.issuedBeforePasswordChange(payload.iat)) {
+    throw ApiError.unauthorized('Your password was changed. Sign in again.');
+  }
 
   req.user = user;
   return next();

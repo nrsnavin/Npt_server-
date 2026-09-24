@@ -51,6 +51,8 @@ const userSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true },
     lastLoginAt: { type: Date },
     lastLoginMethod: { type: String, enum: ['password', 'email_otp', 'sms_otp'] },
+    /** Sessions issued before this are refused; see the save hook. */
+    passwordChangedAt: { type: Date },
   },
   { timestamps: true }
 );
@@ -58,8 +60,20 @@ const userSchema = new mongoose.Schema(
 userSchema.pre('save', async function hashPassword(next) {
   if (!this.isModified('password') || !this.password) return next();
   this.password = await bcrypt.hash(this.password, 10);
+  /*
+   * Every session issued before this moment ends. People change a password because they think
+   * somebody else has it, and a seven-day token taken before the change kept working after it.
+   * Whole seconds, because that is what a token's `iat` is — a session issued in the same
+   * second as the change, which is the one handed back to the person making it, still passes.
+   */
+  if (!this.isNew) this.passwordChangedAt = new Date(Math.floor(Date.now() / 1000) * 1000);
   return next();
 });
+
+/** True for a token issued before the password last changed. */
+userSchema.methods.issuedBeforePasswordChange = function issuedBeforePasswordChange(issuedAt) {
+  return Boolean(this.passwordChangedAt) && issuedAt * 1000 < this.passwordChangedAt.getTime();
+};
 
 userSchema.methods.comparePassword = function comparePassword(candidate) {
   if (!this.password) return false;

@@ -386,3 +386,76 @@ test('blocks a duplicate phone number across accounts', async () => {
   assert.match(json.message, /phone number already exists/);
   assert.ok(session.data.token);
 });
+
+/* ---------------- Found by the backend audit of 24 Sept 2026 ---------------- */
+
+test('changing a password ends every other session, and keeps the one that changed it', async () => {
+  /*
+   * People change a password because they think somebody else has it. A token taken before
+   * the change kept working for its full seven days after it.
+   */
+  await api('/api/auth/register', {
+    method: 'POST',
+    body: { name: 'Priya K', email: 'priya.sessions@npthangers.com', password: 'First@12345' },
+  });
+  const signIn = (password) =>
+    api('/api/auth/login', { method: 'POST', body: { email: 'priya.sessions@npthangers.com', password } });
+
+  const stolen = (await signIn('First@12345')).json.data.token;
+  const mine = (await signIn('First@12345')).json.data.token;
+  /* Tokens carry whole seconds; step past the second they were issued in. */
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+
+  const changed = await api('/api/auth/change-password', {
+    method: 'POST', token: mine, body: { currentPassword: 'First@12345', newPassword: 'Second@12345' },
+  });
+  assert.equal(changed.status, 200);
+  assert.ok(changed.json.data.token, 'the person who changed it gets a fresh session');
+
+  const refused = await api('/api/auth/me', { token: stolen });
+  assert.equal(refused.status, 401);
+  assert.match(refused.json.message, /password was changed/);
+  assert.equal((await api('/api/auth/me', { token: mine })).status, 401, 'the old copy here ends too');
+  assert.equal((await api('/api/auth/me', { token: changed.json.data.token })).status, 200);
+  assert.equal((await signIn('Second@12345')).status, 200);
+});
+
+test('a wrong email costs as long as a wrong password', async () => {
+  /*
+   * Same message either way, but an unknown address answered in 3 ms and a known one in 70 —
+   * the difference named who has an account. Timed as a ratio over several tries, so a slow
+   * machine does not make it flaky.
+   */
+  const time = async (email) => {
+    const started = performance.now();
+    for (let i = 0; i < 4; i += 1) {
+      await api('/api/auth/login', { method: 'POST', body: { email, password: 'Wrong@12345' } });
+    }
+    return performance.now() - started;
+  };
+  const known = await time('admin@npthangers.com');
+  const unknown = await time('nobody-here@npthangers.com');
+  assert.ok(unknown > known / 3, `unknown ${unknown.toFixed(0)} ms vs known ${known.toFixed(0)} ms`);
+});
+
+test('an email with a stray space still signs in', async () => {
+  /* Phone keyboards add a space after an autocompleted address; it was refused as invalid. */
+  const response = await api('/api/auth/login', {
+    method: 'POST', body: { email: ' Admin@NPThangers.com ', password: 'Admin@12345' },
+  });
+  assert.equal(response.status, 200);
+});
+
+test('the profile says whether the account has a password', async () => {
+  /*
+   * The hash is not selected by default, and the flag was read off documents that never
+   * carried it: every account reported no password, and the profile offered "Set a password"
+   * to people who had one — a form that then failed for want of the current one.
+   */
+  const { json } = await api('/api/auth/login', {
+    method: 'POST', body: { email: 'admin@npthangers.com', password: 'Admin@12345' },
+  });
+  const me = await api('/api/auth/me', { token: json.data.token });
+  assert.equal(me.json.data.hasPassword, true);
+  assert.equal(me.json.data.password, undefined, 'and the hash itself never leaves');
+});

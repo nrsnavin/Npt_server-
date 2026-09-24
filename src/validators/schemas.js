@@ -32,7 +32,7 @@ const moduleGrant = z.object({
 
 export const registerSchema = z.object({
   name: z.string().min(2),
-  email: z.string().email(),
+  email: z.string().trim().email(),
   password: z.string().min(8, 'Password must be at least 8 characters'),
   department: z.enum(DEPARTMENT_KEYS).optional(),
   phone: z.string().optional(),
@@ -46,7 +46,7 @@ export const updateProfileSchema = z.object({
 
 export const createUserSchema = z.object({
   name: z.string().min(2),
-  email: z.string().email(),
+  email: z.string().trim().email(),
   password: z.string().min(8, 'Password must be at least 8 characters'),
   role: z.enum(ROLE_VALUES).optional(),
   department: z.enum(DEPARTMENT_KEYS),
@@ -151,7 +151,7 @@ export const announcementSchema = z.object({
 });
 
 export const loginSchema = z.object({
-  email: z.string().email(),
+  email: z.string().trim().email(),
   password: z.string().min(1),
 });
 

@@ -37,7 +37,7 @@ const contactSchema = z.object({
   designation: z.string().optional(),
   mobile: z.string().optional(),
   whatsapp: z.string().optional(),
-  email: z.string().email().optional(),
+  email: z.string().trim().email().optional(),
   isPrimary: z.boolean().optional(),
 });
 
@@ -132,7 +132,7 @@ export const customerSchema = z.object({
   country: z.string().optional(),
   mobile: z.string().optional(),
   whatsapp: z.string().optional(),
-  email: z.string().email().optional(),
+  email: z.string().trim().email().optional(),
   gstin: z.string().optional(),
   contacts: z.array(contactSchema).optional(),
   /*
@@ -166,7 +166,7 @@ export const leadSchema = z.object({
   designation: z.string().optional(),
   mobile: z.string().optional(),
   whatsapp: z.string().optional(),
-  email: z.string().email().optional(),
+  email: z.string().trim().email().optional(),
   city: z.string().optional(),
   state: z.string().optional(),
   source: z.enum(CUSTOMER_SOURCES).optional(),
