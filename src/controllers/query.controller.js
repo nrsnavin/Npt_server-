@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import Query, { inTheRoom, messageText, roomFilter, seesEveryQuery } from '../models/Query.js';
+import Query, { inTheRoom, messageText, normaliseLabel, roomFilter, seesEveryQuery } from '../models/Query.js';
 import QueryRead from '../models/QueryRead.js';
 import { nearestTown } from '../data/places.js';
 import Customer from '../models/Customer.js';
@@ -19,7 +19,8 @@ import { isWhatsAppConfigured, sendWhatsApp } from '../providers/twilio.js';
 import { env } from '../config/env.js';
 import { DEPARTMENT_KEYS, findDepartment } from '../config/modules.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
-import { summarise } from '../services/querySummary.llm.js';
+import { summarise, summariesForList } from '../services/querySummary.llm.js';
+import { gistByRules } from '../services/querySummary.rules.js';
 import { filtersFromPhrase } from '../services/querySearch.llm.js';
 import { urgencyByRules } from '../services/queryUrgency.rules.js';
 import { canRead, urgencyFor } from '../services/queryUrgency.llm.js';
@@ -337,12 +338,13 @@ export const listQueries = asyncHandler(async (req, res) => {
 
   const scoped = await queryFilter(req, filter);
 
-  const [data, total, taggedOpen] = await Promise.all([
+  const [data, total, taggedOpen, labels] = await Promise.all([
     Query.find(scoped).populate(POPULATE).sort(urgentFirst(sort)).skip((page - 1) * limit).limit(limit),
     Query.countDocuments(scoped),
     /* For the "Tagged me" toggle: live threads naming me, whatever the other filters say.
        Being tagged puts a person in the room, so no room scope is needed to keep this honest. */
     Query.countDocuments({ 'messages.mentions': req.user._id, status: { $ne: 'closed' } }),
+    labelCounts(req.user),
   ]);
 
   /*
@@ -373,11 +375,14 @@ export const listQueries = asyncHandler(async (req, res) => {
     taggedMe: taggedUnreadFor(query, cursors.get(String(query._id)), req.user._id),
     tagged: taggedFor(query, req.user._id),
     last: lastSaid(query),
+    /* The thread in its own words, free and instant; the model's line replaces it afterwards
+       through `readSummaries`, so no row is ever waiting on a model to have something to say. */
+    gist: gistByRules(query),
   }));
 
   /* `read` travels beside the page rather than inside it: the screen shows what the phrase was
      taken to mean so the reader can see it and drop it. Fourth argument, not a pagination key. */
-  paginated(res, rows, { page, limit, total }, { taggedOpen, ...(read ? { read } : {}) });
+  paginated(res, rows, { page, limit, total }, { taggedOpen, labels, ...(read ? { read } : {}) });
 });
 
 /**
@@ -401,6 +406,60 @@ export const readUrgency = asyncHandler(async (req, res) => {
 
   const readings = await urgencyFor(queries, req.user);
   res.json({ success: true, data: Object.fromEntries(readings) });
+});
+
+/**
+ * The groups this reader can see, and how many live threads are in each — the chip bar.
+ *
+ * Over everything the reader may see rather than the page or the current filters, so the bar
+ * stays put while somebody clicks through it: a chip that vanishes when another is chosen is a
+ * bar nobody can navigate. Open threads only, because a group is a way into what still needs
+ * doing; a closed thread keeps its labels and is found with the label filter plus "closed".
+ */
+async function labelCounts(user) {
+  const rows = await Query.aggregate([
+    { $match: { ...(seesEveryQuery(user) ? {} : roomFilter(user)), status: { $ne: 'closed' }, labels: { $ne: [] } } },
+    { $unwind: '$labels' },
+    { $group: { _id: '$labels', count: { $sum: 1 } } },
+    { $sort: { count: -1, _id: 1 } },
+    { $limit: 30 },
+  ]);
+  return rows.map((row) => ({ label: row._id, count: row.count }));
+}
+
+/**
+ * Filing a thread under labels [queries].
+ *
+ * Anybody who can open the thread may file it, because a label is a way of finding it again and
+ * everybody in the room has to find it. The whole set is replaced, which is what the editor on
+ * the screen sends and makes a removal as plain as an addition. Not activity — a label is not
+ * something said — so the thread does not jump to the top of "latest".
+ */
+export const setLabels = asyncHandler(async (req, res) => {
+  const query = await readableQuery(req.params.id, req.user);
+  const before = snapshot(query);
+
+  query.labels = req.body.labels;
+  await query.save({ timestamps: false });
+  await recordChange({ model: 'Query', doc: query, before, by: req.user, note: 'Labels changed' });
+  res.json({ success: true, data: await withRefs(query) });
+});
+
+/**
+ * A line on each row of the page somebody is looking at, saying what the thread is about now.
+ *
+ * Its own door, like `readUrgency`, so the list never waits on a model: the rows draw at once
+ * and the lines fill in. The ids are re-fetched through the list's own scope rather than trusted.
+ * What comes back is never written anywhere — see `querySummary.llm.js`.
+ */
+export const readSummaries = asyncHandler(async (req, res) => {
+  const ids = (req.body.ids || []).filter((id) => mongoose.isValidObjectId(id));
+  if (!ids.length) return res.json({ success: true, data: {} });
+
+  const scoped = await queryFilter({ ...req, query: {} }, { _id: { $in: ids } });
+  const queries = await Query.find(scoped).populate(POPULATE);
+
+  res.json({ success: true, data: Object.fromEntries(await summariesForList(queries)) });
 });
 
 /**
@@ -473,6 +532,8 @@ async function queryFilter(req, filter) {
   if (req.query.mine === 'true') filter.raisedBy = req.user._id;
   /* Threads I have been tagged in, read or not — the list that answers "who needs me". */
   if (req.query.tagged === 'me') filter['messages.mentions'] = req.user._id;
+  /* One label's group. Normalised the way labels are stored, so "Quality" finds "quality". */
+  if (req.query.label) filter.labels = normaliseLabel(req.query.label);
 
   /*
    * Threads one person is in — "what is Anita carrying", which is the question a department

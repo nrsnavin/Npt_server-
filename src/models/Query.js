@@ -40,6 +40,13 @@ import { protectWrites } from '../utils/concurrency.js';
 
 export const QUERY_STATUSES = ['open', 'answered', 'closed'];
 
+/** How many labels one thread may carry, and how long one may be. Past five it is not filing. */
+export const MAX_LABELS = 5;
+export const LABEL_MAX_LENGTH = 30;
+
+/** One label as it is stored: trimmed, single-spaced, lower case. */
+export const normaliseLabel = (label) => String(label || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
 /**
  * One person or one department, and who put them in the room.
  *
@@ -187,6 +194,22 @@ const querySchema = new mongoose.Schema(
       at: Date,
       reason: { type: String, trim: true, maxlength: 200 },
     },
+
+    /*
+     * Labels anybody in the room can put on the thread to file it with others like it —
+     * "quality", "payment follow-up", "diwali rush". Shared, not per person: a thread filed under
+     * "quality" is filed there for everybody who can see it, which is what makes a label a group
+     * rather than a private bookmark. Kept normalised (see `normaliseLabel`) so "Quality" and
+     * "quality " are one group, not two.
+     */
+    labels: {
+      type: [{ type: String, trim: true, lowercase: true, minlength: 2, maxlength: LABEL_MAX_LENGTH }],
+      validate: {
+        validator: (labels) => labels.length <= MAX_LABELS,
+        message: `A query carries at most ${MAX_LABELS} labels`,
+      },
+      default: [],
+    },
   },
   { timestamps: true }
 );
@@ -197,6 +220,8 @@ querySchema.index({ 'participants.department': 1, status: 1, updatedAt: -1 });
 querySchema.index({ 'participants.user': 1, status: 1, updatedAt: -1 });
 /* "Tagged me" — the threads a person was named in, which is a filter and a count on every inbox. */
 querySchema.index({ 'messages.mentions': 1 });
+/* A label is a filter on the list and a count on its chip bar. */
+querySchema.index({ labels: 1 });
 
 /**
  * The text a plain search matches, kept as one index rather than three `$regex` scans.

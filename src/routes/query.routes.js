@@ -3,13 +3,13 @@ import {
   listQueries, getQuery, createQuery, addMessage,
   addParticipant, closeQuery, reopenQuery, participantOptions,
   readUrgency, suggestReply,
-  markRead, addFile, setUrgent,
+  markRead, addFile, setUrgent, setLabels, readSummaries,
 } from '../controllers/query.controller.js';
 import { singleDocument } from '../middleware/upload.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
-  querySchema, messageSchema, participantSchema, urgencySchema, urgentSchema,
+  querySchema, messageSchema, participantSchema, urgencySchema, urgentSchema, labelsSchema,
 } from '../validators/query.schemas.js';
 
 /**
@@ -45,6 +45,8 @@ router.get('/queries', requireModule('queries'), listQueries);
  * nothing about it.
  */
 router.post('/queries/urgency', requireModule('queries'), validate(urgencySchema), readUrgency);
+/* A line per row, read after the list has drawn. Same ids shape as the urgency reading. */
+router.post('/queries/summaries', requireModule('queries'), validate(urgencySchema), readSummaries);
 router.post('/queries', requireModule('queries'), validate(querySchema), createQuery);
 router.get('/queries/:id', requireModule('queries'), getQuery);
 
@@ -53,6 +55,8 @@ router.post('/queries/:id/messages', requireModule('queries'), validate(messageS
 router.post('/queries/:id/files', requireModule('queries'), singleDocument('file'), addFile);
 /* Flagging urgent — the controller holds that only an administrator may. */
 router.post('/queries/:id/urgent', requireModule('queries'), validate(urgentSchema), setUrgent);
+/* Filing under labels — anybody who can open the thread. */
+router.put('/queries/:id/labels', requireModule('queries'), validate(labelsSchema), setLabels);
 router.post(
   '/queries/:id/participants',
   requireModule('queries'),

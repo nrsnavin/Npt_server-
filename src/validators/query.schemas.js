@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { DEPARTMENT_KEYS } from '../config/modules.js';
 import { objectId } from './schemas.js';
+import { LABEL_MAX_LENGTH, MAX_LABELS, normaliseLabel } from '../models/Query.js';
 
 /**
  * What a query will accept at the door [queries].
@@ -76,6 +77,31 @@ export const locationSchema = z.object({
 export const urgentSchema = z.object({
   urgent: z.boolean(),
   reason: z.string().trim().max(200).optional(),
+});
+
+/**
+ * The labels on a thread, replaced as a set.
+ *
+ * Normalised here as well as on the model, so the duplicate check sees "Quality" and "quality"
+ * as the same label and refuses the pair rather than silently storing one. Letters, digits,
+ * spaces and a little punctuation — a label is a word to group by, not a sentence.
+ */
+export const labelsSchema = z.object({
+  labels: z
+    .array(
+      z
+        .string()
+        .transform(normaliseLabel)
+        .pipe(
+          z
+            .string()
+            .min(2, 'A label needs at least two characters')
+            .max(LABEL_MAX_LENGTH, `Keep a label to ${LABEL_MAX_LENGTH} characters`)
+            .regex(/^[\p{L}\p{N}][\p{L}\p{N} &/+-]*$/u, 'Use letters, numbers and spaces in a label')
+        )
+    )
+    .max(MAX_LABELS, `A query carries at most ${MAX_LABELS} labels`)
+    .refine((labels) => new Set(labels).size === labels.length, 'That label is on the query twice'),
 });
 
 export const messageSchema = z

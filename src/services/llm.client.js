@@ -43,6 +43,16 @@ export const BUDGETS = {
 
 export const llmConfigured = () => Boolean(process.env.ANTHROPIC_API_KEY);
 
+/**
+ * Whether a model takes the `effort` setting.
+ *
+ * Haiku 4.5 takes structured output but answers `effort` with a 400. Every call through here
+ * sent it, so the four query features that default to Haiku — the summary, the reply draft, the
+ * phrase search and the urgency reading — were refused on every request and quietly fell back
+ * to the rules. The fallback was so good at its job that nothing looked broken.
+ */
+export const takesEffort = (model) => !/haiku/i.test(String(model || ''));
+
 let client;
 /**
  * Built once, and only when a key exists.
@@ -97,7 +107,7 @@ export async function askForJson({
          * disabling thinking on these models brings its own failure modes, and low effort is the
          * cheaper, better-behaved route to the same wait.
          */
-        output_config: { effort, format },
+        output_config: { ...(takesEffort(model) ? { effort } : {}), format },
         messages: [{ role: 'user', content: user }],
       },
       /* The budget the caller named. Without this the SDK waits ten minutes, twice. */
