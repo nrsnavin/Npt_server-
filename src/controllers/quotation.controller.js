@@ -848,6 +848,34 @@ export const respondToQuotation = asyncHandler(async (req, res) => {
  * `inline` so a browser shows it rather than dropping it in the downloads folder; the filename
  * is still set, so "save as" produces something recognisable rather than `123abc.pdf`.
  */
+/**
+ * The material each line was costed in, by line id — what the document prints as its resin.
+ *
+ * Read off the costing line the quotation line was raised from (by its recorded line, else its
+ * model number, else the sheet's only line — see `costingLine`): the resin picked from the
+ * register by name, or the material the line records. One query for every sheet the document
+ * draws on. A line with no costing behind it has no entry, and prints the tool's own resin.
+ */
+async function costedResins(quotation) {
+  const lines = quotation.lines || [];
+  const ids = [...new Set(lines.map((line) => line.pricing?._id ?? line.pricing).filter(Boolean).map(String))];
+  if (!ids.length) return new Map();
+
+  const sheets = new Map(
+    (await Pricing.find({ _id: { $in: ids } }).select('lines').populate('lines.materialRef', 'name type'))
+      .map((sheet) => [String(sheet._id), sheet])
+  );
+
+  const resins = new Map();
+  for (const line of lines) {
+    const sheet = sheets.get(String(line.pricing?._id ?? line.pricing));
+    const costed = costingLine(sheet, { pricingLine: line.pricingLine, modelNumber: line.modelNumber });
+    const resin = costed?.materialRef?.name || costed?.material;
+    if (resin) resins.set(String(line._id), resin);
+  }
+  return resins;
+}
+
 export const quotationPdf = asyncHandler(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id)
     .populate('customer', 'code name address city state gstin mobile email')
@@ -885,7 +913,7 @@ export const quotationPdf = asyncHandler(async (req, res) => {
       .filter(([, bytes]) => bytes)
   );
 
-  const pdf = await renderQuotationPdf(quotation, photos);
+  const pdf = await renderQuotationPdf(quotation, photos, await costedResins(quotation));
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Length', pdf.length);

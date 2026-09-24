@@ -1,7 +1,7 @@
 import Pricing, { CLOSED_PRICING_STATUSES } from '../models/Pricing.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
-import Mould, { mouldWithPhoto } from '../models/Mould.js';
+import Mould, { MATERIALS, mouldWithPhoto } from '../models/Mould.js';
 import Material, { grammageFrom } from '../models/Material.js';
 import Component from '../models/Component.js';
 import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
@@ -271,7 +271,8 @@ async function lineFrom(input, { enquiry, fallbackModel } = {}) {
     clipRef: parts.clip?._id,
     printRef: parts.print?._id,
     modelNumber: input.modelNumber || fallbackModel || mould?.mouldCode,
-    material: input.material || material?.type || mould?.material,
+    /* The resin picked, when the line's list names its type; the tool's otherwise. */
+    material: input.material || (MATERIALS.includes(material?.type) ? material.type : undefined) || mould?.material,
     procurement: input.procurement,
     printing: input.printing,
     markupPercent: input.markupPercent,
@@ -546,6 +547,11 @@ export const costPricing = asyncHandler(async (req, res) => {
     ]);
 
     line.cost = { ...line.cost?.toObject?.(), ...costingFrom(tool, resin, held) };
+
+    /* The material the line records follows the resin picked, or it goes on saying what the
+       mould runs — which is how a model costed in HIPS came to be quoted as PP. A register type
+       the line's list does not name (ABS, LD) leaves it alone; the pick itself is on `materialRef`. */
+    if (materialRef && resin && MATERIALS.includes(resin.type)) line.material = resin.type;
   }
 
   if (cost) line.cost = { ...line.cost?.toObject?.(), ...cost };

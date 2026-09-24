@@ -333,7 +333,7 @@ function rowRules(doc, y, height) {
  * The photograph is fitted rather than filled. A hanger is a thin outline on a plain ground, and
  * cropping one to fill a cell cuts the hook off — which is the half a buyer recognises.
  */
-function itemRow(doc, line, index, y, photos) {
+function itemRow(doc, line, index, y, photos, resins) {
   const height = ROW_HEIGHT;
   rowRules(doc, y, height);
   doc.moveTo(LEFT, y + height).lineTo(RIGHT, y + height).stroke();
@@ -343,10 +343,14 @@ function itemRow(doc, line, index, y, photos) {
   value(doc, String(index + 1), COL.sl.x, middle, COL.sl.width, { align: 'center' });
   value(doc, line.modelNumber || line.mould?.mouldCode || '', COL.model.x, middle, COL.model.width);
 
-  /* "PP : WHITE" — the resin the tool runs and the shade the rate is offered in. The resin
-     comes off the register, so a line quoting a model always says what it is made of even when
-     nobody typed it here. */
-  const resin = (line.mould?.material || '').toUpperCase();
+  /* "HIPS NATURAL : WHITE" — the resin and the shade the rate is offered in.
+
+     The resin is the one the model was *costed* in, which is the one the price was built on.
+     It used to be the mould's own resin, so a tool set up for PP printed "PP" on every quote
+     raised off it — including one costed and priced in HIPS, which is a quote promising the
+     cheaper material at the dearer material's price. The tool's resin is the fallback only for
+     a line typed by hand, with no costing behind it. */
+  const resin = (resins.get(String(line._id)) || line.mould?.material || '').replace(/_/g, ' ').toUpperCase();
   const shade = (line.colour || '').toUpperCase();
   const spec = [resin, shade].filter(Boolean).join(' : ');
   value(doc, spec, COL.spec.x, middle, COL.spec.width, { align: 'center' });
@@ -380,7 +384,7 @@ function itemRow(doc, line, index, y, photos) {
  * down the page with an open bottom edge looks truncated — as though a second page went
  * missing. Ruling it to the foot is what makes the document look complete.
  */
-function table(doc, quotation, y, photos) {
+function table(doc, quotation, y, photos, resins) {
   let cursor = tableHead(doc, y);
 
   const lines = quotation.lines || [];
@@ -393,7 +397,7 @@ function table(doc, quotation, y, photos) {
       doc.addPage();
       cursor = tableHead(doc, PAGE.margin);
     }
-    cursor = itemRow(doc, line, index, cursor, photos);
+    cursor = itemRow(doc, line, index, cursor, photos, resins);
   }
 
   /* The blank remainder, ruled the same way. */
@@ -480,7 +484,11 @@ function foot(doc, quotation, y) {
  * `photos` is a Map of attachment key to image bytes, loaded by the caller. See the note at the
  * top of the file for why the images cannot be fetched from in here.
  */
-export function renderQuotationPdf(quotation, photos = new Map()) {
+/**
+ * `resins` maps a line's id to the material its costing was built in — see `costedResins` in the
+ * quotation controller. Absent for a line with no costing, which prints the tool's own resin.
+ */
+export function renderQuotationPdf(quotation, photos = new Map(), resins = new Map()) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       ...PAGE,
@@ -500,7 +508,7 @@ export function renderQuotationPdf(quotation, photos = new Map()) {
     try {
       let y = banner(doc, PAGE.margin);
       y = parties(doc, quotation, y);
-      y = table(doc, quotation, y, photos);
+      y = table(doc, quotation, y, photos, resins);
       foot(doc, quotation, y);
       doc.end();
     } catch (error) {

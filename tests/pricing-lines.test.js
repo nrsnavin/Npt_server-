@@ -524,3 +524,79 @@ test('re-costing a model keeps its resin, hook, clips, print and packing', async
   assert.equal(without.clipRef, undefined, 'the cleared clips stayed on the line');
   assert.equal(without.hookRef?.name, 'Swivel metal hook');
 });
+
+/** The words a PDF prints: its deflated content streams, with the hex text runs decoded. */
+const printedText = async (bytes) => {
+  const { inflateSync } = await import('node:zlib');
+  const raw = bytes.toString('latin1');
+  const streams = [];
+  for (const match of raw.matchAll(/stream\r?\n/g)) {
+    const from = match.index + match[0].length;
+    const to = raw.indexOf('endstream', from);
+    if (to < 0) continue;
+    try {
+      streams.push(inflateSync(Buffer.from(raw.slice(from, to), 'latin1')).toString('latin1'));
+    } catch {
+      /* An image. */
+    }
+  }
+  const fromHex = (hex) => Buffer.from(hex.length % 2 ? `${hex}0` : hex, 'hex').toString('latin1');
+  return streams
+    .join('\n')
+    .replace(/\[((?:\s*<[0-9a-fA-F]*>|\s*-?\d+(?:\.\d+)?)*)\]\s*TJ/g, (whole, inner) =>
+      ` ${(inner.match(/<([0-9a-fA-F]*)>/g) || []).map((run) => fromHex(run.slice(1, -1))).join('')} `)
+    .replace(/\s+/g, ' ');
+};
+
+/**
+ * The quote prints the material each model was costed in.
+ *
+ * It printed the mould's own resin, so a tool set up for PP said "PP" on every quote raised off
+ * it — including a model costed and priced in HIPS. Here each tool is costed in the *other*
+ * resin, so the old document gets both wrong and the right one gets both right.
+ */
+test('the quote document names the material each model was costed in, not the tool’s', async () => {
+  const { status, json } = await api('/api/pricings', {
+    method: 'POST',
+    token: admin,
+    body: {
+      customer,
+      lines: [
+        { mould: light, materialRef: pp._id, modelNumber: 'NH-300' },
+        { mould: heavy, materialRef: hips._id, modelNumber: 'NH-450' },
+      ],
+    },
+  });
+  assert.equal(status, 201, json.message);
+  const [small, big] = json.data.lines;
+
+  /* The PP tool costed in HIPS, the HIPS tool in PP — through the sheet's own save. */
+  let sheet = json.data;
+  for (const [line, resin] of [[small, hips], [big, pp]]) {
+    const costed = await cost(sheet._id, line._id, {
+      expectedUpdatedAt: sheet.updatedAt, materialRef: resin._id, markupPercent: 10,
+    });
+    assert.equal(costed.status, 200, costed.json.message);
+    sheet = costed.json.data;
+  }
+  assert.equal(sheet.lines[0].material, 'hips', 'the line still records the tool’s resin');
+  assert.equal(sheet.lines[1].material, 'pp');
+
+  const quote = await api(`/api/pricings/${sheet._id}/quotation`, { method: 'POST', token: nandhini, body: {} });
+  assert.equal(quote.status, 201, quote.json.message);
+
+  const response = await fetch(`${baseUrl}/api/quotations/${quote.json.data._id}/pdf`, {
+    headers: { Authorization: `Bearer ${nandhini}` },
+  });
+  assert.equal(response.status, 200);
+  const printed = await printedText(Buffer.from(await response.arrayBuffer()));
+
+  /* A row runs from its model number to the next one (or 400 characters of drawing operators). */
+  const rowOf = (model) => {
+    const from = printed.indexOf(model);
+    const next = printed.indexOf('NH-', from + model.length);
+    return printed.slice(from, next > from ? next : from + 400);
+  };
+  assert.match(rowOf('NH-300'), /HIPS WHITE/, 'NH-300 was costed in HIPS and printed as something else');
+  assert.match(rowOf('NH-450'), /PP NATURAL/, 'NH-450 was costed in PP and printed as something else');
+});
