@@ -12,6 +12,7 @@ import { recordChange, snapshot } from '../services/audit.service.js';
 import { EVENTS, publish } from '../services/events.service.js';
 import { costingLine } from '../services/pricing.service.js';
 import { narrowToOwner, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
+import { assertCanOwnBuyer } from '../services/assignment.service.js';
 import { renderQuotationPdf } from '../services/quotationPdf.js';
 import { bufferOf } from '../services/storage.service.js';
 import { lineCosting } from '../services/pricingVisibility.js';
@@ -479,8 +480,9 @@ async function assertQuotationLinks(user, { customerId, enquiryId, assignedTo, o
       throw ApiError.badRequest('That enquiry is for a different customer');
     }
   }
-  if (assignedTo && String(assignedTo) !== String(owner) && user.role !== 'admin') {
-    throw ApiError.forbidden('Only an administrator can change who a record belongs to');
+  if (assignedTo && String(assignedTo) !== String(owner)) {
+    if (user.role !== 'admin') throw ApiError.forbidden('Only an administrator can change who a record belongs to');
+    await assertCanOwnBuyer(assignedTo);
   }
 }
 

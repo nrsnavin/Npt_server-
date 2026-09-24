@@ -69,15 +69,15 @@ export async function marketingTeam() {
  * the reader their own name, and wrapping an assertion in a try/catch to answer "may I?" is a
  * refusal used as a lookup — which reads as an error path every time somebody opens a form.
  *
- * `team` is passed in where the caller already has the roster, so asking about one person does
- * not fetch it twice.
+ * The department, not the rotation's roster: the rule is "somebody in marketing", and the
+ * roster additionally needs the enquiries grant, which is about who gets *new* leads.
  */
 export async function canOwnBuyer(person, team) {
   if (!person || person.isActive === false) return false;
-  if (person.role === 'admin' || person.department === 'management') return true;
-
-  const roster = team ?? (await marketingTeam());
-  return roster.some((member) => String(member._id) === String(person._id));
+  /* The owner's rule: marketing, or an administrator — not management as a department. A
+     manager who is not an admin chases no buyers and should not be handed any. */
+  if (person.role === 'admin') return true;
+  return person.department === 'marketing';
 }
 
 /**
@@ -88,10 +88,13 @@ export async function canOwnBuyer(person, team) {
  * person [§29], so a record handed to despatch is owned — and therefore on nobody's queue — by
  * somebody whose screens do not show it.
  *
- * **Admins and management pass as well**, and that is deliberate rather than a loophole. They
- * hold every module already, `ownsRecord` never scopes them, and the seeded administrator owns
- * records today. Excluding them would be a new rule the blueprint does not ask for, and it would
- * leave a plant that has not hired its marketing team yet unable to register a buyer at all.
+ * **Administrators pass as well**, deliberately. They hold every module, `ownsRecord` never
+ * scopes them, and the seeded administrator owns records today — a plant that has not hired its
+ * marketing team yet must still be able to register a buyer. The management department does not,
+ * on the owner's instruction: a buyer is held by marketing or by an administrator, nobody else.
+ *
+ * Every door that sets or moves an owner asks this — creating, editing, bulk reassignment,
+ * offboarding a book, a WhatsApp thread, a quotation, an order.
  *
  * So the picker and this check are deliberately not the same list. The form offers marketing,
  * because choosing which of them will chase the buyer is the decision being asked for; the
@@ -104,8 +107,8 @@ export async function assertCanOwnBuyer(assignTo) {
   if (await canOwnBuyer(chosen)) return chosen;
 
   throw ApiError.badRequest(
-    `${chosen.name} could not chase a buyer from ${chosen.department || 'no department'}, so the ` +
-      'record would belong to nobody who can work it. Choose somebody in marketing.'
+    `${chosen.name} is not in marketing, so the record would belong to nobody who can work it. ` +
+      'Choose somebody in marketing, or an administrator.'
   );
 }
 

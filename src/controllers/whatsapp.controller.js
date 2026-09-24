@@ -3,7 +3,7 @@ import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import { receiveMessage } from '../services/whatsapp.inbox.js';
 import { createEnquiryRecord } from './pipeline.controller.js';
-import { assertAssignable, marketingTeam } from '../services/assignment.service.js';
+import { assertAssignable, assertCanOwnBuyer, marketingTeam } from '../services/assignment.service.js';
 import {
   isOwnershipScoped, narrowToOwner, ownershipFilter, ownsRecord,
 } from '../services/ownership.service.js';
@@ -236,7 +236,8 @@ export const updateThread = asyncHandler(async (req, res) => {
   const { assignedTo, status, notes, customer, lead } = req.body;
 
   if (assignedTo !== undefined) {
-    await assertAssignable(assignedTo);
+    /* The thread's owner is who the lead it becomes will belong to. */
+    if (assignedTo) await assertCanOwnBuyer(assignedTo);
     thread.assignedTo = assignedTo;
     /* No longer the rotation's doing once a person has chosen. */
     thread.assignedByRotation = false;

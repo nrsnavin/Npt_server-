@@ -21,7 +21,7 @@ import { narrowToOwner, ownershipFilter, ownsRecord } from '../services/ownershi
 import { allOrdersVisibleTo, orderVisibleTo } from '../services/pricingVisibility.js';
 import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { ORDER_ACTIONS, orderActionsFrom } from '../services/orderActions.js';
-import { assertAssignable } from '../services/assignment.service.js';
+import { assertCanOwnBuyer } from '../services/assignment.service.js';
 import { buildSpec, registersFromPricing } from '../services/registers.service.js';
 import { put, remove } from '../services/storage.service.js';
 import { sendCsv } from '../utils/csv.js';
@@ -410,7 +410,7 @@ export const createOrder = asyncHandler(async (req, res) => {
   const customer = await Customer.findById(req.body.customer);
   if (!customer) throw ApiError.badRequest('That customer does not exist');
 
-  if (req.body.assignedTo) await assertAssignable(req.body.assignedTo);
+  if (req.body.assignedTo) await assertCanOwnBuyer(req.body.assignedTo);
   await assertPoIsNew(customer._id, req.body.customerPo);
   await assertRefIsNew(req.body.externalRef);
 
@@ -594,7 +594,7 @@ export const updateOrder = asyncHandler(withOrderLock(req => req.params.id, asyn
     );
   }
   if (patch.lines) patch.lines = await linesFrom(patch.lines);
-  if (patch.assignedTo) await assertAssignable(patch.assignedTo);
+  if (patch.assignedTo) await assertCanOwnBuyer(patch.assignedTo);
   /* Correcting a PO number onto one another live order already carries is the same duplicate,
      reached by a different door — and this is the door a mistyped number is fixed through. */
   if (patch.customerPo) {

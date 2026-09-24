@@ -16,7 +16,6 @@ import {
   customerScope, narrowToOwner, ownershipFilter, ownsCustomer, ownsRecord,
 } from '../services/ownership.service.js';
 import {
-  assertAssignable,
   assertCanOwnBuyer,
   canOwnBuyer,
   marketingTeam,
@@ -135,7 +134,7 @@ async function assertReassignment(current, incoming, user) {
   if (user.role !== 'admin') {
     throw ApiError.forbidden('Only an administrator can change who a record belongs to');
   }
-  await assertAssignable(incoming);
+  await assertCanOwnBuyer(incoming);
 }
 
 /** How much of a customer's enquiry history the detail screen carries inline. */
@@ -170,7 +169,8 @@ export const bulkReassign = asyncHandler(async (req, res) => {
   }
 
   const { ids, assignTo } = req.body;
-  const successor = await assertAssignable(assignTo);
+  /* Every record this door moves is a buyer's, so the new owner must be able to hold one. */
+  const successor = await assertCanOwnBuyer(assignTo);
 
   /*
    * Read them first. The update itself is one statement, but the trail is per record — an
@@ -1284,7 +1284,7 @@ async function assertEnquiryValid(input) {
     const exists = await Mould.findById(mould);
     if (!exists) throw ApiError.badRequest('That mould is not on the register');
   }
-  if (input.assignedTo) await assertAssignable(input.assignedTo);
+  if (input.assignedTo) await assertCanOwnBuyer(input.assignedTo);
 }
 
 /**

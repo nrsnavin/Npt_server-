@@ -13,6 +13,7 @@ import { transferBook, workloadOf } from '../services/offboarding.service.js';
 import { recordChange } from '../services/audit.service.js';
 import { listParams } from '../utils/query.js';
 import { sendWelcome } from '../services/passwordLink.service.js';
+import { canOwnBuyer } from '../services/assignment.service.js';
 
 const publicUser = (user) => ({
   id: user._id,
@@ -286,6 +287,15 @@ export const remove = asyncHandler(async (req, res) => withOwnerLocks([req.param
     if (!successor) throw ApiError.badRequest('That colleague does not exist');
     if (successor.isActive === false) {
       throw ApiError.badRequest(`${successor.name} is not active, so the work would go nowhere`);
+    }
+    /* A book with buyers in it goes to somebody who may hold buyers; bench work alone may go to
+       a bench colleague. */
+    const held = await workloadOf(user._id);
+    const buyers = ['customers', 'leads', 'enquiries', 'quotations', 'orders'].some((key) => held[key] > 0);
+    if (buyers && !(await canOwnBuyer(successor))) {
+      throw ApiError.badRequest(
+        `${successor.name} is not in marketing, and this book holds buyers. Choose somebody in marketing, or an administrator.`
+      );
     }
 
     user.isActive = false;

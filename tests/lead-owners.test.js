@@ -335,22 +335,64 @@ test('an owner who could not chase a buyer is refused, and told why', async () =
     },
   });
   assert.equal(refused.status, 400);
-  assert.match(refused.json.message, /chase a buyer/i);
-  assert.match(refused.json.message, /marketing/i, 'and says where to look instead');
+  assert.match(refused.json.message, /not in marketing/i);
+  assert.match(refused.json.message, /administrator/i, 'and says who may hold it instead');
 });
 
-test('management may own a buyer, so a plant with no marketing team is not stuck', async () => {
+test('a buyer is held by marketing or an administrator, and nobody else', async () => {
   /*
-   * Deliberately wider than the picker. Admins and management hold every module already and
-   * `ownsRecord` never scopes them; excluding them would be a new rule the blueprint does not
-   * ask for, and it would leave a plant that has not hired its marketing team unable to register
-   * a buyer at all.
+   * The owner's rule: an administrator may hold a buyer — a plant with no marketing team yet
+   * can still register one — but management as a department may not, nor anyone else.
    */
   const { json: me } = await api('/api/auth/me', { token: admin });
-  const byManagement = await api('/api/customers', {
+  const byAdmin = await api('/api/customers', {
     method: 'POST',
     token: admin,
     body: { name: 'Directors Own Mills', mobile: '9898001155', assignedTo: me.data.id },
   });
-  assert.equal(byManagement.status, 201, byManagement.json.message);
+  assert.equal(byAdmin.status, 201, byAdmin.json.message);
+
+  const person = async (name, department, extra = {}) => {
+    const made = await api('/api/users', {
+      method: 'POST',
+      token: admin,
+      body: { name, email: `${name.split(' ')[0].toLowerCase()}${Date.now()}@np.com`, password: 'Passw0rd@123', department, ...extra },
+    });
+    assert.equal(made.status, 201, made.json.message);
+    return made.json.data.id;
+  };
+  const manager = await person('Suresh Manager', 'management');
+  const producer = await person('Ravi Press', 'production');
+  const salesperson = await person('Deepa Sales', 'marketing');
+
+  const customer = byAdmin.json.data;
+  const reassign = (to) => api(`/api/customers/${customer._id}`, {
+    method: 'PATCH', token: admin, body: { assignedTo: to },
+  });
+
+  assert.equal((await reassign(manager)).status, 400, 'a manager who is not an admin');
+  assert.equal((await reassign(producer)).status, 400, 'anyone outside marketing');
+  assert.equal((await reassign(salesperson)).status, 200, 'somebody in marketing');
+
+  const lead = await api('/api/leads', {
+    method: 'POST', token: admin, body: { company: 'Moved Along Knits', mobile: '9898001166', assignedTo: salesperson },
+  });
+  assert.equal(lead.status, 201, lead.json.message);
+  assert.equal((await api(`/api/leads/${lead.json.data._id}`, {
+    method: 'PATCH', token: admin, body: { assignedTo: producer },
+  })).status, 400, 'leads the same');
+
+  const bulk = await api('/api/bulk/customers/reassign', {
+    method: 'POST', token: admin, body: { ids: [customer._id], assignTo: producer },
+  });
+  assert.equal(bulk.status, 400, 'and in bulk');
+
+  /* A leaver's book with buyers in it goes to marketing, not to the press floor. */
+  const offboard = await api(`/api/users/${salesperson}?transferTo=${producer}`, { method: 'DELETE', token: admin });
+  assert.equal(offboard.status, 400, offboard.json.message);
+  assert.match(offboard.json.message, /not in marketing/);
+  const handedOn = await api(`/api/users/${salesperson}?transferTo=${await person('Anu Sales', 'marketing')}`, {
+    method: 'DELETE', token: admin,
+  });
+  assert.equal(handedOn.status, 200, handedOn.json.message);
 });
