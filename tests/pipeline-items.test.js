@@ -787,3 +787,104 @@ test('a row that says it has no tool is accepted, and clears the tool', async ()
   assert.equal(cleared.json.data.items[0].mould ?? null, null, 'the row has no tool');
   assert.equal(cleared.json.data.mould ?? null, null, 'and neither does the enquiry');
 });
+
+/* ------------------ The costing sheet a two-model enquiry asks for ------------------ */
+
+/*
+ * Found by the audit. Asking an enquiry for a price raises the costing sheet automatically,
+ * one line per model — and that sheet was still built as though only model one could name a
+ * tool. Line two arrived with no mould, so its costing started blank; and a model named only
+ * by its mould ("the 420, same as last time") was dropped from the sheet entirely.
+ */
+
+const sheetFor = async (enquiryId) => {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const { json } = await api(`/api/pricings?enquiry=${enquiryId}`, { token: admin });
+    if (json.data?.length) return json.data[0];
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return undefined;
+};
+
+test('each costing line carries its own model’s tool', async () => {
+  const first = await registerMould('M-470A', 'Top hanger 470mm');
+  const second = await registerMould('M-480A', 'Top hanger 480mm');
+
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [{ mould: first, modelNumber: 'NPT-470' }, { mould: second, modelNumber: 'NPT-480' }],
+      ...followUp,
+    },
+  });
+  assert.equal(enquiry.status, 201, enquiry.json.message);
+
+  const moved = await api(`/api/enquiries/${enquiry.json.data._id}/status`, {
+    method: 'POST',
+    token: nandhini,
+    body: { status: 'pricing_required' },
+  });
+  assert.equal(moved.status, 200, moved.json.message);
+
+  const sheet = await sheetFor(enquiry.json.data._id);
+  assert.ok(sheet, 'a costing sheet was raised');
+  const tools = sheet.lines.map((line) => String(line.mould?._id ?? line.mould ?? ''));
+  assert.deepEqual(tools, [first, second], 'the second line is costed on its own steel');
+});
+
+test('a model named only by its tool still gets a costing line', async () => {
+  const named = await registerMould('M-490A', 'Top hanger 490mm');
+
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [{ modelNumber: 'NPT-400', colour: 'White' }, { mould: named }],
+      ...followUp,
+    },
+  });
+  assert.equal(enquiry.status, 201, enquiry.json.message);
+
+  await api(`/api/enquiries/${enquiry.json.data._id}/status`, {
+    method: 'POST',
+    token: nandhini,
+    body: { status: 'pricing_required' },
+  });
+
+  const sheet = await sheetFor(enquiry.json.data._id);
+  assert.equal(sheet?.lines?.length, 2, '"the 490, same as last time" is on the sheet');
+  assert.equal(String(sheet.lines[1].mould?._id ?? sheet.lines[1].mould), named);
+});
+
+test('a costing raised by hand for an enquiry takes each model’s tool, row for row', async () => {
+  /*
+   * The hand-raised door took the model number row for row from the enquiry but the mould only
+   * for line one — so a sheet raised for two models priced the second with no tool.
+   */
+  const first = await registerMould('M-500A', 'Top hanger 500mm');
+  const second = await registerMould('M-510A', 'Top hanger 510mm');
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer: customerId,
+      items: [{ mould: first, modelNumber: 'NPT-500' }, { mould: second, modelNumber: 'NPT-510' }],
+      ...followUp,
+    },
+  });
+  assert.equal(enquiry.status, 201, enquiry.json.message);
+
+  const sheet = await api('/api/pricings', {
+    method: 'POST',
+    token: admin,
+    body: { enquiry: enquiry.json.data._id, lines: [{}, {}] },
+  });
+  assert.equal(sheet.status, 201, sheet.json.message);
+  assert.deepEqual(
+    sheet.json.data.lines.map((line) => String(line.mould?._id ?? line.mould ?? '')),
+    [first, second]
+  );
+});

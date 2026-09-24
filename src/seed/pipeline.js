@@ -590,7 +590,7 @@ export async function seedPipeline({ nandhini, arun, meera }) {
          */
         items: (enquiry.items || []).map((item, index) => {
           const { _id, quantity, ...wanted } = item.toObject?.() ?? item;
-          return { ...wanted, mould: index === 0 ? enquiry.mould : undefined, quantity: rest.quantity };
+          return { ...wanted, mould: wanted.mould || (index === 0 ? enquiry.mould : undefined), quantity: rest.quantity };
         }),
         // Inherited from the tool, the way a request raised through the API inherits it.
         hookType: tool?.hookType,

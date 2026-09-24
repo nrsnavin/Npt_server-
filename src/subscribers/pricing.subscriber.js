@@ -59,8 +59,11 @@ async function costingTeam() {
  * Nothing here computes a cost. This raises the sheet; building it is `/cost`, and a line with
  * no cost on it is exactly what "somebody still has to price this" looks like.
  *
- * The mould is the enquiry's, and there is only one of it, so it lands on the first line. A
- * second model on the same enquiry is a different mould that nobody has named yet.
+ * Each line takes its own model's tool. It used to take the enquiry's single mould on line one
+ * and nothing on the rest, from when only the first model could name one; once every item
+ * could, line two kept arriving blank — the costing had to start from nothing for a model whose
+ * tool the enquiry already named. The enquiry's own mould is still line one's fallback, for a
+ * record written before items carried a tool.
  */
 function lineFor(item = {}, { mould } = {}) {
   return {
@@ -76,10 +79,18 @@ function lineFor(item = {}, { mould } = {}) {
   };
 }
 
+/*
+ * A model named only by its tool counts. "The 420, same as last time" has no text in it at all,
+ * and filtering on the described fields alone dropped it from the sheet — the same mistake the
+ * enquiry controller once made, and fixed, with `describesItem`.
+ */
+const describesItem = (row) => Boolean(row?.mould || hasRequirement(row));
+
 function linesFor(enquiry) {
-  const items = (enquiry.items || []).filter(hasRequirement);
+  const items = (enquiry.items || []).filter(describesItem);
   const rows = items.length ? items : [enquiry.requirement || {}];
-  return rows.map((item, index) => lineFor(item, { mould: index === 0 ? enquiry.mould : undefined }));
+  return rows.map((item, index) =>
+    lineFor(item, { mould: item.mould || (index === 0 ? enquiry.mould : undefined) }));
 }
 
 let registered = [];

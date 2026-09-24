@@ -418,7 +418,14 @@ export const createPricing = asyncHandler(async (req, res) => {
   const lines = await Promise.all(
     asked.map((row, index) =>
       lineFrom(
-        { ...row, mould: row.mould ?? (index === 0 ? enquiry?.mould : undefined) },
+        /* The tool row for row, like the model number beside it: the enquiry's item at the same
+           position names its own mould now, and only line one falls back to the enquiry's. */
+        {
+          ...row,
+          mould: row.mould
+            ?? enquiry?.items?.[index]?.mould
+            ?? (index === 0 ? enquiry?.mould : undefined),
+        },
         { fallbackModel: enquiry?.items?.[index]?.modelNumber ?? enquiry?.requirement?.modelNumber }
       )
     )
