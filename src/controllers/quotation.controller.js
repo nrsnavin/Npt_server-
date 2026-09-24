@@ -460,6 +460,30 @@ function assertValidityAhead(value) {
   }
 }
 
+/**
+ * What a quotation may point at: an enquiry of its own buyer, and an owner only an administrator
+ * chooses.
+ *
+ * Both came straight off the request and neither was checked. A marketing person could raise a
+ * quote on their own buyer tied to a colleague's enquiry — and the buyer's answer on it moves
+ * that enquiry, which is somebody else's pipeline — or hand a quotation to anyone by sending
+ * `assignedTo`, on create or on a later edit, where customers, leads and enquiries all refuse it
+ * with "only an administrator". Found by the backend audit's mass-assignment probe: one PATCH
+ * gave a live quotation away, and the person who sent it could no longer open it.
+ */
+async function assertQuotationLinks(user, { customerId, enquiryId, assignedTo, owner }) {
+  if (enquiryId) {
+    const enquiry = await Enquiry.findById(enquiryId).select('customer');
+    if (!enquiry) throw ApiError.badRequest('That enquiry does not exist');
+    if (String(enquiry.customer) !== String(customerId)) {
+      throw ApiError.badRequest('That enquiry is for a different customer');
+    }
+  }
+  if (assignedTo && String(assignedTo) !== String(owner) && user.role !== 'admin') {
+    throw ApiError.forbidden('Only an administrator can change who a record belongs to');
+  }
+}
+
 export async function newQuotation(fields, user) {
   assertValidityAhead(fields.validUntil);
 
@@ -474,6 +498,12 @@ export async function newQuotation(fields, user) {
   if (!ownsRecord(user, customer)) {
     throw ApiError.forbidden('That customer belongs to another marketing person');
   }
+  await assertQuotationLinks(user, {
+    customerId,
+    enquiryId: fields.enquiry,
+    assignedTo: fields.assignedTo,
+    owner: customer.assignedTo || user._id,
+  });
 
   const quotation = new Quotation({
     ...fields,
@@ -621,6 +651,12 @@ export const updateQuotation = asyncHandler(async (req, res) => {
   }
 
   assertValidityAhead(req.body.validUntil);
+  await assertQuotationLinks(req.user, {
+    customerId: quotation.customer,
+    enquiryId: req.body.enquiry && String(req.body.enquiry) !== String(quotation.enquiry) ? req.body.enquiry : null,
+    assignedTo: req.body.assignedTo,
+    owner: quotation.assignedTo,
+  });
 
   expectVersion(quotation, req.body);
   const before = snapshot(quotation);

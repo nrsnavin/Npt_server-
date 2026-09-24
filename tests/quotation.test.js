@@ -1060,3 +1060,73 @@ test('marketing reads the same board without the cost base on it', async () => {
   const raw = JSON.stringify(json.data);
   assert.ok(!raw.includes('machineCostPerPiece'), 'and nothing leaks through the populated sheet');
 });
+
+/* ------------------- Found by the backend audit of 24 Sept 2026 ------------------- */
+
+test('a quotation cannot be handed to somebody else by its holder', async () => {
+  /*
+   * One PATCH carrying `assignedTo` gave a live quotation to a colleague, and the person who
+   * sent it could no longer open it. Customers, leads and enquiries refuse that to anyone but
+   * an administrator; quotations did not, on create or on edit.
+   */
+  const kavithaId = await tokenOwnerId(kavitha);
+
+  const raised = await api('/api/quotations', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer, assignedTo: kavithaId, validUntil: inDays(30),
+      lines: [{ quantity: 40000, unitPrice: 7.5, modelNumber: 'NH-400' }],
+    },
+  });
+  assert.equal(raised.status, 403, 'not on create');
+
+  const made = await quote();
+  const given = await api(`/api/quotations/${made._id}`, {
+    method: 'PATCH', token: nandhini, body: { assignedTo: kavithaId },
+  });
+  assert.equal(given.status, 403, 'not on edit');
+  assert.equal((await api(`/api/quotations/${made._id}`, { token: nandhini })).status, 200, 'still hers');
+
+  /* Sending back the owner it already has is not a change, and management can still move it. */
+  assert.equal((await api(`/api/quotations/${made._id}`, {
+    method: 'PATCH', token: nandhini, body: { assignedTo: await tokenOwnerId(nandhini), remarks: 'same owner' },
+  })).status, 200);
+  assert.equal((await api(`/api/quotations/${made._id}`, {
+    method: 'PATCH', token: admin, body: { assignedTo: kavithaId },
+  })).status, 200);
+});
+
+test('a quotation can only name an enquiry of its own buyer', async () => {
+  /*
+   * The buyer's answer on a quotation moves its enquiry. Naming a colleague's enquiry on a quote
+   * for your own buyer put your quote into their pipeline.
+   */
+  const theirs = (await api('/api/customers', {
+    method: 'POST',
+    token: kavitha,
+    body: { assignedTo: await tokenOwnerId(kavitha), name: 'Tirupur Garments Co', mobile: '9840099887' },
+  })).json.data._id;
+  const theirEnquiry = (await api('/api/enquiries', {
+    method: 'POST',
+    token: kavitha,
+    body: { customer: theirs, mould, requirement: { quantity: 20000 }, ...followUp },
+  })).json.data._id;
+
+  const raised = await api('/api/quotations', {
+    method: 'POST',
+    token: nandhini,
+    body: {
+      customer, enquiry: theirEnquiry, validUntil: inDays(30),
+      lines: [{ quantity: 20000, unitPrice: 7.5, modelNumber: 'NH-400' }],
+    },
+  });
+  assert.equal(raised.status, 400);
+  assert.match(raised.json.message, /different customer/);
+
+  const made = await quote();
+  const moved = await api(`/api/quotations/${made._id}`, {
+    method: 'PATCH', token: nandhini, body: { enquiry: theirEnquiry },
+  });
+  assert.equal(moved.status, 400);
+});
