@@ -241,6 +241,12 @@ export function taggedUnreadFor(query, cursorAt, me) {
   ).length;
 }
 
+/** How many messages on this thread tag me, read or not — whether the row is one of "mine". */
+export function taggedFor(query, me) {
+  return (query.messages || []).filter((message) =>
+    (message.mentions || []).some((person) => idOf(person) === String(me))).length;
+}
+
 /** The last thing said, as a list row previews it. */
 export function lastSaid(query) {
   const entries = said(query);
@@ -312,9 +318,12 @@ export const listQueries = asyncHandler(async (req, res) => {
 
   const scoped = await queryFilter(req, filter);
 
-  const [data, total] = await Promise.all([
+  const [data, total, taggedOpen] = await Promise.all([
     Query.find(scoped).populate(POPULATE).sort(sort).skip((page - 1) * limit).limit(limit),
     Query.countDocuments(scoped),
+    /* For the "Tagged me" toggle: live threads naming me, whatever the other filters say.
+       Being tagged puts a person in the room, so no room scope is needed to keep this honest. */
+    Query.countDocuments({ 'messages.mentions': req.user._id, status: { $ne: 'closed' } }),
   ]);
 
   /*
@@ -343,12 +352,13 @@ export const listQueries = asyncHandler(async (req, res) => {
     /* Per reader, like the urgency, and for the same reason never stored on the thread. */
     unread: unreadFor(query, cursors.get(String(query._id)), req.user._id),
     taggedMe: taggedUnreadFor(query, cursors.get(String(query._id)), req.user._id),
+    tagged: taggedFor(query, req.user._id),
     last: lastSaid(query),
   }));
 
   /* `read` travels beside the page rather than inside it: the screen shows what the phrase was
      taken to mean so the reader can see it and drop it. Fourth argument, not a pagination key. */
-  paginated(res, rows, { page, limit, total }, read ? { read } : undefined);
+  paginated(res, rows, { page, limit, total }, { taggedOpen, ...(read ? { read } : {}) });
 });
 
 /**
@@ -442,6 +452,8 @@ async function queryFilter(req, filter) {
   if (req.query.open === 'true') filter.status = { $ne: 'closed' };
   if (req.query.department) filter['participants.department'] = req.query.department;
   if (req.query.mine === 'true') filter.raisedBy = req.user._id;
+  /* Threads I have been tagged in, read or not — the list that answers "who needs me". */
+  if (req.query.tagged === 'me') filter['messages.mentions'] = req.user._id;
 
   /*
    * Threads one person is in — "what is Anita carrying", which is the question a department

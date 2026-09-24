@@ -178,6 +178,8 @@ const querySchema = new mongoose.Schema(
 querySchema.index({ customer: 1, createdAt: -1 });
 querySchema.index({ 'participants.department': 1, status: 1, updatedAt: -1 });
 querySchema.index({ 'participants.user': 1, status: 1, updatedAt: -1 });
+/* "Tagged me" — the threads a person was named in, which is a filter and a count on every inbox. */
+querySchema.index({ 'messages.mentions': 1 });
 
 /**
  * The text a plain search matches, kept as one index rather than three `$regex` scans.

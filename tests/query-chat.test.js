@@ -495,3 +495,21 @@ test('a tag that could never be seen is refused by name, and tagging yourself do
   assert.equal(self.status, 201);
   assert.deepEqual(self.json.tagged.people, []);
 });
+
+test('a thread I was tagged in stays marked as mine, and can be listed on its own', async () => {
+  const query = await raise();
+  const nandhiniId = await whoIs(nandhini);
+  await tag(query._id, '@Nandhini S the buyer wants a call', [nandhiniId]);
+  await raise(); // one she is in but was not tagged on
+
+  await api(`/api/queries/${query._id}/read`, { method: 'POST', token: nandhini, body: {} });
+  const row = await rowFor(nandhini, query._id);
+  assert.equal(row.taggedMe, 0, 'read, so nothing new');
+  assert.equal(row.tagged, 1, 'but still a thread she was tagged in');
+
+  const { json } = await api('/api/queries?tagged=me&limit=50', { token: nandhini });
+  assert.ok(json.data.length >= 1);
+  assert.ok(json.data.every((listed) => listed.tagged > 0), 'only threads that tag her');
+  assert.ok(json.data.some((listed) => listed._id === query._id));
+  assert.ok(json.taggedOpen >= 1, 'and the count the toggle shows');
+});
