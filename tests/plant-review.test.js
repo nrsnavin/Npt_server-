@@ -437,3 +437,76 @@ test('management can hand a problem to whichever department owns it', async () =
   assert.equal(raised.status, 201);
   assert.equal(raised.json.data.department, 'production');
 });
+
+/* ----------------------------------- Money ----------------------------------- */
+
+test('money owed past its date is in the brief, even behind years of paid invoices', async () => {
+  const { default: Receivable } = await import('../src/models/Receivable.js');
+  const { default: User } = await import('../src/models/User.js');
+  const navin = await User.findOne({ email: 'admin@np.com' });
+  const base = { customer: customer._id, order: new mongoose.Types.ObjectId(), assignedTo: navin._id };
+
+  /* Six hundred settled invoices from the years before — what a live plant's collection holds. */
+  await Receivable.insertMany(Array.from({ length: 600 }, (_, n) => ({
+    ...base,
+    number: `RCV-OLD-${n}`,
+    invoice: { number: `INV-OLD-${n}`, date: days(-400), value: 10000 },
+    dueBy: days(-370),
+    receipts: [{ amount: 10000, receivedAt: days(-372), recordedBy: navin._id }],
+  })));
+  /* And one that is not: ₹2,50,000 invoiced, ₹50,000 in, twenty days past due. */
+  const owed = await Receivable.create({
+    ...base,
+    number: 'RCV-OWED-1',
+    invoice: { number: 'INV-OWED-1', date: days(-50), value: 250000 },
+    dueBy: days(-20),
+    receipts: [{ amount: 50000, receivedAt: days(-30), recordedBy: navin._id }],
+  });
+
+  try {
+    const review = await api('/api/workspace/review', { token: admin });
+    assert.equal(review.status, 200, review.json.message);
+    const money = review.json.data.findings.find((finding) => finding.kind === 'money_overdue');
+    assert.ok(money, 'overdue money is a finding');
+    assert.equal(money.value, 200000, 'what is still owed, not what was invoiced');
+    assert.equal(money.count, 1);
+    assert.match(money.detail, /RCV-OWED-1/);
+  } finally {
+    await Receivable.deleteMany({ $or: [{ _id: owed._id }, { number: /^RCV-OLD-/ }] });
+  }
+});
+
+test('finished stock nobody has sent is in despatch’s brief, less what consignments already claim', async () => {
+  const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
+  const { default: Dispatch } = await import('../src/models/Dispatch.js');
+  const { default: User } = await import('../src/models/User.js');
+  const navin = await User.findOne({ email: 'admin@np.com' });
+
+  const made = await SalesOrder.create({
+    number: 'SO-STANDING-1',
+    customer: customer._id,
+    assignedTo: navin._id,
+    createdBy: navin._id,
+    status: 'production_completed',
+    lines: [{
+      modelNumber: 'NPT-450V', quantity: 12000, unitPrice: 9, deliveryDate: days(-3),
+      production: { producedQty: 12000, readyQty: 12000, status: 'completed' },
+    }],
+  });
+  /* 5,000 already on a consignment being packed: 7,000 are standing. */
+  const claimed = await Dispatch.create({
+    number: 'DSP-STANDING-1', order: made._id, customer: customer._id, assignedTo: navin._id, raisedBy: navin._id,
+    status: 'packing', lines: [{ orderLine: made.lines[0]._id, modelNumber: 'NPT-450V', quantity: 5000 }],
+  });
+
+  try {
+    const review = await api('/api/workspace/review', { token: kavitha });
+    assert.equal(review.status, 200, review.json.message);
+    const standing = review.json.data.findings.find((finding) => finding.kind === 'dispatch_stock_standing');
+    assert.ok(standing, 'finished stock left standing is a finding');
+    assert.match(standing.headline, /^7,000 finished pieces/);
+  } finally {
+    await Dispatch.deleteOne({ _id: claimed._id });
+    await SalesOrder.deleteOne({ _id: made._id });
+  }
+});

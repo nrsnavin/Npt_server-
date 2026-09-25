@@ -3,7 +3,7 @@ import Dispatch, { ARRIVED_DISPATCH_STATUSES, CLOSED_DISPATCH_STATUSES } from '.
 import OrderQuery from '../models/OrderQuery.js';
 import Receivable from '../models/Receivable.js';
 import Todo from '../models/Todo.js';
-import { stockFor } from './dispatchStock.service.js';
+import { claimsFor, stockOf } from './dispatchStock.service.js';
 import { over, since, plural } from '../utils/phrases.js';
 
 /**
@@ -304,15 +304,22 @@ async function despatchFindings() {
    * Computed from the same stock arithmetic the despatch screens use, so this cannot disagree
    * with what a clerk sees when they open the queue.
    */
+  /*
+   * Only orders with a finished line that has stock ready — the only lines this finding can
+   * report — and the claims on all of them in one read rather than one per order, which grew
+   * with every live order and took seconds once there were a few hundred.
+   */
   const released = await SalesOrder.find({
     status: { $nin: [...PRE_RELEASE_STATUSES, ...CLOSED_ORDER_STATUSES] },
+    lines: { $elemMatch: { 'production.status': 'completed', 'production.readyQty': { $gt: 0 } } },
   })
     .populate('customer', 'name')
     .select('number customer lines status');
+  const claims = await claimsFor(released.map((order) => order._id));
 
   const standing = [];
   for (const order of released) {
-    const stock = await stockFor(order);
+    const stock = (order.lines || []).map((line) => stockOf(line, claims.get(String(line._id))));
     /*
      * Zipped back against the order line by index, because `stockOf` returns the arithmetic and
      * not the line: `productionStatus` and the buyer's date are read off the line itself. Read
@@ -389,9 +396,22 @@ async function queryFindings() {
 
 /** Money owed, and promises about money that have been broken [§25]. */
 async function moneyFindings() {
-  const open = await Receivable.find({ balance: { $gt: 0 } })
+  /*
+   * `balance` is worked out from the invoice and its receipts — it is not stored. Filtering on it
+   * matched nothing the database could see, so the filter was dropped and this read the first
+   * 500 invoices in storage order, oldest and long paid first; and selecting it without the
+   * invoice and receipts it is computed from made every balance 0. Money owed never reached the
+   * brief. So the database is asked for what is past its date and not yet covered by receipts,
+   * with the fields the arithmetic needs.
+   */
+  const open = await Receivable.find({
+    dueBy: { $lt: new Date() },
+    judgement: null,
+    $expr: { $gt: ['$invoice.value', { $sum: '$receipts.amount' }] },
+  })
     .populate('customer', 'name')
-    .select('number customer amount balance dueDate followUps judgement order')
+    .select('number customer kind invoice receipts dueBy followUps judgement order')
+    .sort({ dueBy: 1 })
     .limit(500);
 
   const overdue = open.filter((row) => row.isOverdue);
@@ -408,7 +428,7 @@ async function moneyFindings() {
     detail:
       `The largest is ${worst.number}, ${lakh(worst.balance)} from ` +
       `${worst.customer?.name || 'a customer'}.`,
-    severity: severity({ base: 40, days: daysSince(worst.dueDate), count: overdue.length, value: owed }),
+    severity: severity({ base: 40, days: daysSince(worst.dueBy), count: overdue.length, value: owed }),
     count: overdue.length,
     value: owed,
     link: '/payments',
