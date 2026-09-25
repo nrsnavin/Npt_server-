@@ -202,3 +202,24 @@ export const raiseFindingSchema = z.object({
   kind: z.string().trim().min(1).max(64),
   department: z.enum(DEPARTMENT_KEYS),
 });
+
+/**
+ * A saved view: a name and the list's query string. Keys and values are short strings — a view
+ * holds filters, not documents — and there are few of them.
+ */
+const viewParams = z
+  .record(z.string().regex(/^[a-zA-Z]{1,30}$/, 'A filter name is letters only'), z.string().max(200))
+  .refine((params) => Object.keys(params).length <= 12, 'A view holds at most 12 filters');
+
+export const savedViewSchema = z.object({
+  page: z.enum(['queries', 'enquiries', 'samples', 'leads', 'customers', 'pricings']),
+  name: z.string().trim().min(1, 'Name the view').max(40, 'Keep the name to 40 characters'),
+  params: viewParams.default({}),
+  pinned: z.boolean().optional(),
+});
+
+export const savedViewUpdateSchema = z.object({
+  name: z.string().trim().min(1, 'Name the view').max(40, 'Keep the name to 40 characters').optional(),
+  params: viewParams.optional(),
+  pinned: z.boolean().optional(),
+});

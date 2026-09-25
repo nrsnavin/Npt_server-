@@ -28,7 +28,10 @@ import {
   noteSchema,
   noteUpdateSchema,
   announcementSchema,
+  savedViewSchema,
+  savedViewUpdateSchema,
 } from '../validators/schemas.js';
+import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 
 const router = Router();
 
@@ -74,6 +77,12 @@ router.get('/review', plantReview);
 /* And handing one of them to the department that can clear it — an ordinary task, raised by the
    person who pressed it. The finding is re-derived server side, never accepted from the body. */
 router.post('/review/raise', validate(raiseFindingSchema), raiseFinding);
+
+/* Saved views — somebody's named filter sets, pinned in their sidebar. */
+router.get('/views', listViews);
+router.post('/views', validate(savedViewSchema), createView);
+router.patch('/views/:id', validate(savedViewUpdateSchema), updateView);
+router.delete('/views/:id', deleteView);
 
 router.get('/notes', listNotes);
 router.post('/notes', validate(noteSchema), createNote);
