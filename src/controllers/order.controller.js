@@ -263,7 +263,15 @@ export const getOrder = asyncHandler(async (req, res) => {
 
 export const exportOrders = asyncHandler(async (req, res) => {
   const { sort, filter } = await orderFilters(req);
-  const rows = await SalesOrder.find(filter).populate(POPULATE).sort(sort).limit(EXPORT_LIMIT);
+  /*
+   * Plain records, not documents. Building 5,000 full documents with every reference filled took
+   * seconds on three years of orders, and the API answers nobody else while it does. Nothing
+   * below needs a document — the one computed figure, the line value, is worked out here the way
+   * the model's virtual does.
+   */
+  const rows = await SalesOrder.find(filter).populate(POPULATE).sort(sort).limit(EXPORT_LIMIT).lean();
+  const lineValue = (line) =>
+    line.unitPrice && line.quantity ? Math.round(line.unitPrice * line.quantity * 100) / 100 : 0;
 
   /*
    * One row per line, not per order. A file with one row per order would have to fold several
@@ -295,7 +303,7 @@ export const exportOrders = asyncHandler(async (req, res) => {
     ['Print', (row) => row.line.printRef?.name || row.line.printing],
     ['Ordered', (row) => row.line.quantity],
     ...(money ? [['Rate', (row) => row.line.unitPrice]] : []),
-    ...(money ? [['Line value', (row) => row.line.lineValue]] : []),
+    ...(money ? [['Line value', (row) => lineValue(row.line)]] : []),
     ['Delivery date', (row) => row.line.deliveryDate],
     ['Production status', (row) => row.line.production?.status],
     ['Ready', (row) => row.line.production?.readyQty],

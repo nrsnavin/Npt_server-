@@ -736,3 +736,23 @@ test('an order can be told which outside record it is, and only once', async () 
   assert.equal(sneaky.status, 201, sneaky.json.message);
   assert.equal(sneaky.json.data.externalRef?.revision, undefined, 'the revision was not taken');
 });
+
+test('the export’s figures are the order’s own — the line value, the customer, the tool, the owner', async () => {
+  const made = await order({
+    lines: [{ mould, modelNumber: 'NH-400', colour: 'Black', quantity: 12345, unitPrice: 6.25, deliveryDate: inDays(20) }],
+  });
+  const response = await fetch(`${baseUrl}/api/orders/export`, { headers: { Authorization: `Bearer ${admin}` } });
+  const lines = (await response.text()).split(/\r?\n/);
+  const header = lines[0].split(',').map((cell) => cell.replace(/"/g, ''));
+  const row = lines.find((text) => text.includes(made.number));
+  assert.ok(row, 'the order is in the file');
+  const cells = row.split(',').map((cell) => cell.replace(/"/g, ''));
+  const at = (name) => cells[header.indexOf(name)];
+  assert.equal(at('Line value'), '77156.25', '12,345 × ₹6.25');
+  assert.equal(at('Rate'), '6.25');
+  assert.equal(at('Ordered'), '12345');
+  assert.equal(at('Colour'), 'Black');
+  assert.ok(at('Customer'), 'the customer is named');
+  assert.ok(at('Mould'), 'the tool is named');
+  assert.ok(at('Owner'), 'the owner is named');
+});
