@@ -1,4 +1,3 @@
-import webpush from 'web-push';
 import PushSubscription from '../models/PushSubscription.js';
 
 /**
@@ -16,11 +15,22 @@ export const pushPublicKey = () => process.env.WEB_PUSH_PUBLIC_KEY || null;
 export const pushConfigured = () =>
   Boolean(process.env.WEB_PUSH_PUBLIC_KEY && process.env.WEB_PUSH_PRIVATE_KEY && process.env.WEB_PUSH_SUBJECT);
 
-let ready = false;
-function configure() {
-  if (ready || !pushConfigured()) return;
-  webpush.setVapidDetails(process.env.WEB_PUSH_SUBJECT, process.env.WEB_PUSH_PUBLIC_KEY, process.env.WEB_PUSH_PRIVATE_KEY);
-  ready = true;
+/*
+ * `web-push` is loaded on the first push, not when the API starts. A deploy that pulled this code
+ * but skipped `npm ci` then loses push — said in the log — rather than the whole API.
+ */
+let client;
+async function webPush() {
+  if (client !== undefined) return client;
+  try {
+    const { default: webpush } = await import('web-push');
+    webpush.setVapidDetails(process.env.WEB_PUSH_SUBJECT, process.env.WEB_PUSH_PUBLIC_KEY, process.env.WEB_PUSH_PRIVATE_KEY);
+    client = webpush;
+  } catch (error) {
+    console.error(`[push] web-push is not installed — run \`npm ci\` on the server. Nothing is sent. (${error.message})`);
+    client = null;
+  }
+  return client;
 }
 
 /** Sends `{ title, body, link }` to every device each person has allowed. Never throws. */
@@ -29,7 +39,11 @@ export async function sendPush(userIds, message) {
   if (!ids.length) return;
   const devices = await PushSubscription.find({ user: { $in: ids } });
   if (!devices.length) return;
+  await deliverPush(devices, message);
+}
 
+/** Sends to the devices given. Never throws. */
+export async function deliverPush(devices, message) {
   if (!pushConfigured()) {
     for (const device of devices) {
       console.log(`\n[push] to user ${device.user}\n${message.title}\n${message.body || ''}\n${message.link || ''}\n`);
@@ -37,7 +51,8 @@ export async function sendPush(userIds, message) {
     return;
   }
 
-  configure();
+  const webpush = await webPush();
+  if (!webpush) return;
   const payload = JSON.stringify(message);
   await Promise.all(
     devices.map((device) =>
