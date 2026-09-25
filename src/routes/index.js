@@ -11,6 +11,7 @@ import whatsappRoutes from './whatsapp.routes.js';
 import queryRoutes from './query.routes.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
 import { globalSearch } from '../controllers/search.controller.js';
+import { inbox } from '../controllers/inbox.controller.js';
 import { recordHistory } from '../controllers/audit.controller.js';
 import { ask, status as jarvisStatus } from '../controllers/jarvis.controller.js';
 import { listStates, listCities } from '../controllers/place.controller.js';
@@ -39,6 +40,8 @@ router.use('/whatsapp', whatsappRoutes);
  * module — it decides per record type what the caller may read, and returns only those.
  */
 router.get('/search', authenticate, globalSearch);
+/* Everything waiting on me — the bell in the header. */
+router.get('/inbox', authenticate, inbox);
 /*
  * Ask Jarvis. Administrators only — it answers across every module at once, which is a
  * management view of the plant rather than anybody's own screen.
