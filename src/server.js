@@ -1,5 +1,6 @@
 import { reconcileDispatches } from './services/dispatchRecovery.service.js';
 import app from './app.js';
+import { installProcessGuards } from './config/processGuards.js';
 import { env, escalationIntervalMinutes, isProduction } from './config/env.js';
 import { connectDatabase } from './config/db.js';
 import { configurationProblem, isConfigured } from './providers/twilio.js';
@@ -199,6 +200,7 @@ function startIndiamartPoll() {
 }
 
 async function start() {
+  installProcessGuards();
   try {
     checkOtpDelivery();
 
