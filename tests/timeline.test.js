@@ -76,6 +76,11 @@ test.before(async () => {
     body: { customer: customerId, modelNumber: 'NH-400', quantity: 5, standaloneReason: 'Counter request', remarks: 'New finish' },
   });
   assert.equal(sample.status, 201, sample.json.message);
+  await wait();
+  const costing = await api('/api/pricings', {
+    method: 'POST', token: admin, body: { customer: customerId, lines: [{ modelNumber: 'NH-400' }] },
+  });
+  assert.equal(costing.status, 201, costing.json.message);
   for (const subject of ['First question', 'Second question']) {
     await wait();
     const raised = await api('/api/queries', {
@@ -95,9 +100,9 @@ test.after(async () => {
 test('every kind of record, newest first', async () => {
   const { status, json } = await api(`/api/customers/${customerId}/timeline`, { token: nandhini });
   assert.equal(status, 200, json.message);
-  assert.deepEqual(json.data.map((event) => event.kind), ['query', 'query', 'sample', 'enquiry']);
+  assert.deepEqual(json.data.map((event) => event.kind), ['query', 'query', 'costing', 'sample', 'enquiry']);
   assert.match(json.data[0].title, /Second question/);
-  assert.match(json.data[3].title, /NH-400/);
+  assert.match(json.data[4].title, /NH-400/);
   assert.equal(json.next, null);
 });
 
@@ -107,7 +112,12 @@ test('paged by date, with nothing repeated or skipped', async () => {
   assert.ok(first.json.next, 'a first page with more after it gave no cursor');
   const second = await api(`/api/customers/${customerId}/timeline?limit=2&before=${encodeURIComponent(first.json.next)}`, { token: nandhini });
   const all = [...first.json.data, ...second.json.data].map((event) => event.id);
-  assert.equal(new Set(all).size, 4, 'an event was repeated or lost across the pages');
+  const third = second.json.next
+    ? await api(`/api/customers/${customerId}/timeline?limit=2&before=${encodeURIComponent(second.json.next)}`, { token: nandhini })
+    : { json: { data: [] } };
+  all.push(...third.json.data.map((event) => event.id));
+  assert.equal(new Set(all).size, 5, 'an event was repeated or lost across the pages');
+  assert.equal(all.length, 5);
 });
 
 test('somebody in the room through a question sees the questions, and nothing else of the buyer', async () => {
