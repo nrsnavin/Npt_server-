@@ -31,7 +31,7 @@ AWS console → **EC2 → Launch instance**.
 | AMI | **Ubuntu Server 24.04 LTS (64-bit x86)** |
 | Instance type | **t3.small** (2 vCPU, 2 GB) |
 | Key pair | Create one, download the `.pem`, keep it safe — it is the only way in |
-| Storage | **60 GB gp3** — see *How much disk* below |
+| Storage | **40 GB gp3** — see *How much disk* below |
 
 **Region:** pick `ap-south-1` (Mumbai). Every millisecond of latency is one your users in
 Tiruppur pay on every click.
@@ -46,10 +46,11 @@ into a real MongoDB):
 | Swap file (step 3) | 2 GB | — |
 | **The database** — 100 queries a day with their threads, read markers and audit, plus quotes, orders, samples | **under 0.5 GB** | ~0.3 GB a year |
 | Database backups kept on the box (14 nights, compressed) | ~1 GB | slowly |
-| **Uploaded photos and documents** — about 30 a day at ~3 MB, a phone photo as taken | **~20–25 GB** | ~20–25 GB a year |
+| **Uploaded photos and documents** — about 30 a day; photos are shrunk in the browser to ~0.3–0.8 MB, documents go as they are | **~5–7 GB** | ~5–7 GB a year |
 | Logs | ~1 GB | rotated |
 
-So the files are nearly all of it, and 60 GB is year one with room to spare. The disk can be
+So the files are most of it, and 40 GB lasts about three years. (Before the website shrank
+photos, a phone photo was kept as taken — 3–5 MB — and the same year needed 60 GB.) The disk can be
 made bigger later without stopping anything (EC2 → Volumes → Modify, then `sudo growpart
 /dev/nvme0n1 1 && sudo resize2fs /dev/nvme0n1p1`). Set the alarm in *Disk alarm* below at 75% so
 that is a planned change and not an outage: **a full disk stops MongoDB, and with it the whole
@@ -457,7 +458,7 @@ aws s3 sync "$OUT" s3://npt-erp-backups/db/ --exclude '*.log'
 aws s3 sync /srv/npt/server/uploads s3://npt-erp-backups/uploads/
 ```
 
-S3 for this is roughly 25 GB after a year — well under $1 a month in Mumbai. Add a lifecycle
+S3 for this is roughly 6–8 GB after a year — cents a month in Mumbai. Add a lifecycle
 rule that moves `uploads/` to *Standard-IA* after 30 days and expires old versions after 90.
 
 ### Disk alarm
