@@ -300,3 +300,9 @@ export const quotationResponseSchema = z.object({
   accepted: z.boolean(),
   note: z.string().optional(),
 });
+
+/** Where a financial year's quote sequence carries on from [quote numbering]. */
+export const quoteNumberingSchema = z.object({
+  next: z.coerce.number().int('A quote number is a whole number').min(1, 'Quote numbers start at 1').max(99999, 'That is more quotes than a year holds'),
+  year: z.enum(['current', 'next']).default('current'),
+});

@@ -7,12 +7,13 @@ import {
   listQuotations, getQuotation, createQuotation, updateQuotation,
   reviseQuotation, sendQuotation, respondToQuotation, quotationPdf,
 } from '../controllers/quotation.controller.js';
-import { authenticate, requireModule } from '../middleware/auth.js';
+import { authenticate, authorize, requireModule } from '../middleware/auth.js';
+import { getQuoteNumbering, setQuoteNumbering } from '../controllers/quoteNumbering.controller.js';
 import { validate } from '../middleware/validate.js';
 import {
   pricingSchema, pricingUpdateSchema, pricingCostSchema, pricingDecisionSchema, pricingQuoteSchema,
   quotationSchema, quotationUpdateSchema, quotationRevisionSchema,
-  quotationSendSchema, quotationResponseSchema,
+  quotationSendSchema, quotationResponseSchema, quoteNumberingSchema,
 } from '../validators/pricing.schemas.js';
 
 const router = Router();
@@ -60,6 +61,9 @@ router.get('/pricings/:id/quotations', requireModule('pricing'), pricingQuotatio
 
 // Quotations [§10]
 router.get('/quotations', requireModule('pricing'), listQuotations);
+/* Where the quote sequence stands; only an administrator moves it. Before `/quotations/:id`. */
+router.get('/quotations/numbering', requireModule('pricing'), getQuoteNumbering);
+router.put('/quotations/numbering', authorize('admin'), validate(quoteNumberingSchema), setQuoteNumbering);
 router.post('/quotations', requireModule('pricing', 'quote'), validate(quotationSchema), createQuotation);
 router.get('/quotations/:id', requireModule('pricing'), getQuotation);
 /** The document the customer receives, rendered from the record on demand. */

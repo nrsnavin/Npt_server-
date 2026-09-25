@@ -1178,3 +1178,64 @@ test('the PDF’s file name is the quote number with no slashes in it', async ()
   const disposition = response.headers.get('content-disposition');
   assert.equal(disposition, `inline; filename="${made.number.replaceAll('/', '-')}.pdf"`);
 });
+
+/* ------------------------------ Quote numbering screen ------------------------------ */
+
+const seqOf = (number) => Number(number.split('/').at(-1));
+
+test('the numbering panel shows the last quote issued and the next one', async () => {
+  const made = await quote();
+  const read = await api('/api/quotations/numbering', { token: nandhini });
+  assert.equal(read.status, 200, read.json.message);
+  const { current } = read.json.data;
+  assert.equal(current.lastIssued, made.number);
+  assert.equal(current.nextSeq, seqOf(made.number) + 1);
+  assert.equal(current.lowestAllowed, seqOf(made.number) + 1);
+});
+
+test('only an administrator moves the sequence', async () => {
+  const tried = await api('/api/quotations/numbering', { method: 'PUT', token: nandhini, body: { next: 900 } });
+  assert.equal(tried.status, 403);
+});
+
+test('the sequence can carry on from the paper sheet, and the next quote takes that number', async () => {
+  const { current } = (await api('/api/quotations/numbering', { token: admin })).json.data;
+  const target = current.lowestAllowed + 40;
+  const set = await api('/api/quotations/numbering', { method: 'PUT', token: admin, body: { next: target } });
+  assert.equal(set.status, 200, set.json.message);
+  assert.equal(set.json.data.nextSeq, target);
+  assert.equal(set.json.data.changed.by, 'Navin R', 'who moved it is on record');
+  const made = await quote();
+  assert.equal(seqOf(made.number), target);
+});
+
+test('a sequence set too high can be brought back down, but never onto a number already used', async () => {
+  const { current } = (await api('/api/quotations/numbering', { token: admin })).json.data;
+  await api('/api/quotations/numbering', { method: 'PUT', token: admin, body: { next: current.lowestAllowed + 500 } });
+
+  const onto = await api('/api/quotations/numbering', { method: 'PUT', token: admin, body: { next: current.highestIssued } });
+  assert.equal(onto.status, 400);
+  assert.match(onto.json.message, new RegExp(`lowest the next number can be is ${current.lowestAllowed}`));
+
+  const back = await api('/api/quotations/numbering', { method: 'PUT', token: admin, body: { next: current.lowestAllowed } });
+  assert.equal(back.status, 200, back.json.message);
+  const made = await quote();
+  assert.equal(seqOf(made.number), current.lowestAllowed, 'no gap left by the mistake');
+});
+
+test('next year’s sequence can be set before 1 April without touching this year’s', async () => {
+  const before = (await api('/api/quotations/numbering', { token: admin })).json.data;
+  const set = await api('/api/quotations/numbering', { method: 'PUT', token: admin, body: { next: 7, year: 'next' } });
+  assert.equal(set.status, 200, set.json.message);
+  assert.equal(set.json.data.financialYear, before.next.financialYear);
+  assert.equal(set.json.data.next, `NP/${before.next.financialYear}/007`);
+  const after = (await api('/api/quotations/numbering', { token: admin })).json.data;
+  assert.equal(after.current.nextSeq, before.current.nextSeq, 'this year is unchanged');
+});
+
+test('a quote number is a whole number from 1', async () => {
+  for (const next of [0, -3, 2.5, 'abc']) {
+    const tried = await api('/api/quotations/numbering', { method: 'PUT', token: admin, body: { next } });
+    assert.equal(tried.status, 400, `refused ${next}`);
+  }
+});
