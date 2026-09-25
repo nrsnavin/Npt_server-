@@ -373,7 +373,7 @@ sudo certbot renew --dry-run
 ```bash
 sudo npm install -g pm2
 cd /srv/npt/server
-pm2 start src/server.js --name npt-api
+pm2 start src/server.js --name npt-api --node-args="--max-old-space-size=512" --max-memory-restart 800M
 pm2 save
 pm2 startup systemd -u ubuntu --hp /home/ubuntu    # run the line it prints
 ```
@@ -382,6 +382,14 @@ pm2 startup systemd -u ubuntu --hp /home/ubuntu    # run the line it prints
 pm2 status
 pm2 logs npt-api --lines 50
 ```
+
+**Why the two memory flags.** Node sizes its memory to the machine, and cleans up only when it
+is near that size. Under the volume test (`node tests/load/volume-test.mjs`) the API grew past
+1.2 GB without a leak — it simply had not needed to tidy up — and on a 2 GB box shared with
+MongoDB that is the road to the kernel killing one of them. `--max-old-space-size=512` makes it
+tidy up at 512 MB (the volume test runs the API with the same cap); `--max-memory-restart` is the backstop, a
+clean restart by pm2 rather than a kill by the kernel. Already running without them? `pm2 delete
+npt-api`, then the `pm2 start` line above, then `pm2 save`.
 
 The log should end with `NPT ERP API listening on port 5000`, `MongoDB connected`, and — if you
 left the IndiaMART key empty — `IndiaMART: no key configured — the feed is off`.

@@ -92,7 +92,12 @@ async function concrete(db, route) {
 
 console.log(`Building ${QUICK ? 'a tenth of ' : ''}the volume database…`);
 const stack = await startStack({
-  prepare: (db) => buildVolume(db, { copies: COPIES, queryHistory: QUERY_HISTORY, auditRows: AUDIT_ROWS, settle: !BACKLOG }), env: { RATE_LIMIT_MAX: '100000' } });
+  prepare: (db) => buildVolume(db, { copies: COPIES, queryHistory: QUERY_HISTORY, auditRows: AUDIT_ROWS, settle: !BACKLOG }), env: {
+    RATE_LIMIT_MAX: '100000',
+    /* As the deploy guide runs it under pm2, so a screen that needs more memory than production has fails here. */
+    NODE_OPTIONS: '--max-old-space-size=512',
+  },
+});
 const { call, timings, statuses } = client(stack.base);
 const signIn = async (email, password) => (await call('/api/auth/login', { method: 'POST', body: { email, password }, name: 'sign in' })).json.data?.token;
 const people = {
