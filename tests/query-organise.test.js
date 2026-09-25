@@ -26,11 +26,19 @@ process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
  */
 const calls = [];
 let lineReply = null;
+const labelCalls = [];
+let labelReply = null;
 const sdk = await import('@anthropic-ai/sdk');
 Object.defineProperty(sdk.default.prototype, 'messages', {
   configurable: true,
   get: () => ({
     create: async (request) => {
+      const forLabels = String(request.system).includes('You file internal threads');
+      if (forLabels) {
+        labelCalls.push(request);
+        if (!labelReply) return { stop_reason: 'refusal', content: [] };
+        return { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(labelReply(request)) }] };
+      }
       const forLines = String(request.system).includes('one line for each internal thread');
       if (!forLines) return { stop_reason: 'refusal', content: [] };
       calls.push(request);
@@ -148,6 +156,8 @@ test.after(async () => {
 
 test.beforeEach(() => {
   calls.length = 0;
+  labelCalls.length = 0;
+  labelReply = null;
   lineReply = echoLines;
   forgetHeldLines();
 });
@@ -337,4 +347,41 @@ test('bulk filing refuses what the editor refuses, and cannot reach threads you 
   assert.deepEqual(outsider.json.data.updated, [], 'somebody outside the room filed the thread');
   assert.equal(outsider.json.data.skipped[0].reason, 'Not found');
   assert.deepEqual((await api(`/api/queries/${query._id}`, { token: nandhini })).json.data.labels, []);
+});
+
+/* ------------------------------ Suggested labels ------------------------------ */
+
+const suggest = (id, token = nandhini) => api(`/api/queries/${id}/label-suggestions`, { token });
+
+test('suggestions are chosen only from labels in use, and never ones the thread has', async () => {
+  const filed = await raise();
+  await label(filed._id, ['quality', 'payment follow-up']);
+  const query = await raise();
+  await label(query._id, ['quality']);
+
+  labelCalls.length = 0;
+  labelReply = () => ({ suggestions: [{ label: 'payment follow-up', why: 'The buyer is holding payment' }] });
+  const answer = await suggest(query._id);
+  assert.equal(answer.status, 200, answer.json.message);
+  assert.deepEqual(answer.json.data, [{ label: 'payment follow-up', why: 'The buyer is holding payment', by: 'model' }]);
+
+  const allowed = labelCalls[0].output_config.format.schema.properties.suggestions.items.properties.label.enum;
+  assert.ok(allowed.includes('payment follow-up'));
+  assert.ok(!allowed.includes('quality'), 'a label the thread already carries was offered');
+  assert.equal(labelCalls[0].output_config.effort, undefined, 'effort was sent to Haiku');
+});
+
+test('a label the model invents is thrown out, and the rules answer instead', async () => {
+  const query = await raise();
+  await label((await raise())._id, ['lorry']);
+  labelReply = () => ({ suggestions: [{ label: 'brand new group', why: 'made up' }] });
+  const answer = await suggest(query._id);
+  assert.ok(!answer.json.data.some((entry) => entry.label === 'brand new group'), 'an invented label was suggested');
+  /* The question says "lorry", so the rules find the one that fits. */
+  assert.deepEqual(answer.json.data.map((entry) => [entry.label, entry.by]), [['lorry', 'rules']]);
+});
+
+test('nobody outside the thread is told what it might be filed under', async () => {
+  const query = await raise();
+  assert.equal((await suggest(query._id, kiran)).status, 404);
 });

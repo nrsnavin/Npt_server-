@@ -21,6 +21,7 @@ import { DEPARTMENT_KEYS, findDepartment } from '../config/modules.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { summarise, summariesForList } from '../services/querySummary.llm.js';
 import { gistByRules } from '../services/querySummary.rules.js';
+import { suggestLabels } from '../services/labelSuggest.llm.js';
 import { filtersFromPhrase } from '../services/querySearch.llm.js';
 import { urgencyByRules } from '../services/queryUrgency.rules.js';
 import { canRead, urgencyFor } from '../services/queryUrgency.llm.js';
@@ -443,6 +444,16 @@ export const setLabels = asyncHandler(async (req, res) => {
   await query.save({ timestamps: false });
   await recordChange({ model: 'Query', doc: query, before, by: req.user, note: 'Labels changed' });
   res.json({ success: true, data: await withRefs(query) });
+});
+
+/**
+ * Labels that might fit this thread, chosen from the ones already in use — for a person to
+ * accept with a click. Nothing is filed here; see `labelSuggest.llm.js`.
+ */
+export const labelSuggestions = asyncHandler(async (req, res) => {
+  const query = await readableQuery(req.params.id, req.user);
+  const known = (await labelCounts(req.user)).map((row) => row.label);
+  res.json({ success: true, data: await suggestLabels(query, known) });
 });
 
 /**

@@ -3,7 +3,7 @@ import {
   listQueries, getQuery, createQuery, addMessage,
   addParticipant, closeQuery, reopenQuery, participantOptions,
   readUrgency, suggestReply,
-  markRead, addFile, setUrgent, setLabels, readSummaries, bulkLabel,
+  markRead, addFile, setUrgent, setLabels, readSummaries, bulkLabel, labelSuggestions,
 } from '../controllers/query.controller.js';
 import { singleDocument } from '../middleware/upload.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
@@ -59,6 +59,8 @@ router.post('/queries/:id/files', requireModule('queries'), singleDocument('file
 router.post('/queries/:id/urgent', requireModule('queries'), validate(urgentSchema), setUrgent);
 /* Filing under labels — anybody who can open the thread. */
 router.put('/queries/:id/labels', requireModule('queries'), validate(labelsSchema), setLabels);
+/* Labels that might fit, from the ones in use. A suggestion; nothing is filed. */
+router.get('/queries/:id/label-suggestions', requireModule('queries'), labelSuggestions);
 router.post(
   '/queries/:id/participants',
   requireModule('queries'),
