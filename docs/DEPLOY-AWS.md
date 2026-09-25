@@ -31,10 +31,29 @@ AWS console → **EC2 → Launch instance**.
 | AMI | **Ubuntu Server 24.04 LTS (64-bit x86)** |
 | Instance type | **t3.small** (2 vCPU, 2 GB) |
 | Key pair | Create one, download the `.pem`, keep it safe — it is the only way in |
-| Storage | **30 GB gp3** |
+| Storage | **60 GB gp3** — see *How much disk* below |
 
 **Region:** pick `ap-south-1` (Mumbai). Every millisecond of latency is one your users in
 Tiruppur pay on every click.
+
+**How much disk.** Measured, not guessed (`tests/load/load-test.mjs` and a year of data loaded
+into a real MongoDB):
+
+| What | Year one | Grows by |
+|---|---|---|
+| Ubuntu, Node, MongoDB, Nginx | ~6 GB | — |
+| The app, its `node_modules`, the web build | ~1.5 GB | — |
+| Swap file (step 3) | 2 GB | — |
+| **The database** — 100 queries a day with their threads, read markers and audit, plus quotes, orders, samples | **under 0.5 GB** | ~0.3 GB a year |
+| Database backups kept on the box (14 nights, compressed) | ~1 GB | slowly |
+| **Uploaded photos and documents** — about 30 a day at ~3 MB, a phone photo as taken | **~20–25 GB** | ~20–25 GB a year |
+| Logs | ~1 GB | rotated |
+
+So the files are nearly all of it, and 60 GB is year one with room to spare. The disk can be
+made bigger later without stopping anything (EC2 → Volumes → Modify, then `sudo growpart
+/dev/nvme0n1 1 && sudo resize2fs /dev/nvme0n1p1`). Set the alarm in *Disk alarm* below at 75% so
+that is a planned change and not an outage: **a full disk stops MongoDB, and with it the whole
+app.**
 
 **Why t3.small, not t3.micro.** MongoDB, Node and Nginx on 1 GB will run until the first import
 and then be killed by the OOM reaper — which looks like the app randomly dying, not like running
@@ -408,12 +427,13 @@ OUT=/srv/npt/backups
 mongodump --uri="mongodb://nptadmin:THE-PASSWORD@127.0.0.1:27017/npt_erp?authSource=admin" \
   --archive="$OUT/npt-$STAMP.archive" --gzip
 
-# The attachments. These live inside the repo checkout and are NOT in git — a clean clone
-# would lose every drawing and signed approval on the system.
-tar czf "$OUT/uploads-$STAMP.tar.gz" -C /srv/npt/server uploads 2>/dev/null || true
+# Keep a fortnight of database dumps. They are small — tens of MB.
+find "$OUT" -type f -name '*.archive' -mtime +14 -delete
 
-# Keep a fortnight.
-find "$OUT" -type f -mtime +14 -delete
+# The attachments are NOT copied here. They live inside the repo checkout and are not in git,
+# so they must be backed up — but a nightly tar of the whole folder, kept for a fortnight, is
+# fifteen copies of every photo on the same disk, and it fills the disk within months. They go
+# to S3 instead, below, which copies only what is new each night.
 ```
 
 ```bash
@@ -425,15 +445,32 @@ crontab -e
 0 2 * * * /srv/npt/backup.sh >> /srv/npt/backups/backup.log 2>&1
 ```
 
-**A backup on the same disk as the database is not a backup.** Once this works, push the archives
-off the box — an S3 bucket with versioning is about $1/month:
+**A backup on the same disk as the database is not a backup.** Push both off the box, to an S3
+bucket in the same region with **versioning on** (so a file deleted or overwritten on the box
+is still in S3). Only new files travel each night:
 
 ```bash
 sudo snap install aws-cli --classic
 aws configure                      # an IAM user with write access to one bucket, nothing more
 # add to backup.sh:
-# aws s3 sync "$OUT" s3://npt-erp-backups/ --exclude '*.log'
+aws s3 sync "$OUT" s3://npt-erp-backups/db/ --exclude '*.log'
+aws s3 sync /srv/npt/server/uploads s3://npt-erp-backups/uploads/
 ```
+
+S3 for this is roughly 25 GB after a year — well under $1 a month in Mumbai. Add a lifecycle
+rule that moves `uploads/` to *Standard-IA* after 30 days and expires old versions after 90.
+
+### Disk alarm
+
+CloudWatch does not see disk usage on its own. Install the agent and alarm at 75%:
+
+```bash
+sudo apt install -y amazon-cloudwatch-agent   # or the .deb from AWS if apt lacks it
+sudo /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-config-wizard   # choose disk used_percent for /
+```
+
+Then CloudWatch → Alarms → `disk_used_percent` for `/` ≥ 75 for 5 minutes → email. The instance
+needs a role with `CloudWatchAgentServerPolicy`. Until that is in place, `df -h /` weekly.
 
 Restore, when you need it:
 
