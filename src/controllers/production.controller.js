@@ -100,8 +100,19 @@ export const listProductionLines = asyncHandler(async (req, res) => {
    * would give a page of unpredictable length in lines, and the export beside it promises the
    * file matches the screen. The set is bounded by what a plant actually has open.
    */
+  /*
+   * The views that ask for work still to do — open, overdue, will miss, held — leave closed orders
+   * out in the database. A closed order is finished even with a line short-closed at 95%, and
+   * reading one here showed it as work, as `productionDay` found for itself.
+   */
+  const wantsOpenWork = ['open', 'overdue', 'willMiss', 'held'].some((key) => req.query[key] === 'true');
+  if (wantsOpenWork) filter.status = { $nin: [...PRE_RELEASE_STATUSES, ...CLOSED_ORDER_STATUSES] };
+
+  /* Newest first, so that past EXPORT_LIMIT orders it is the oldest history that is left out and
+     never today's work — unsorted, the cap took the first 5,000 in storage order. */
   const orders = await SalesOrder.find({ ...filter, ...ownershipFilter(req.user) })
     .populate(LINE_POPULATE)
+    .sort({ orderDate: -1, _id: -1 })
     .limit(EXPORT_LIMIT);
 
   let rows = orders.flatMap((order) =>
@@ -213,6 +224,7 @@ export const listProductionLines = asyncHandler(async (req, res) => {
 export const exportProductionLines = asyncHandler(async (req, res) => {
   const orders = await SalesOrder.find({ ...RELEASED, ...ownershipFilter(req.user) })
     .populate(LINE_POPULATE)
+    .sort({ orderDate: -1, _id: -1 })
     .limit(EXPORT_LIMIT);
 
   const rows = orders.flatMap((order) =>
