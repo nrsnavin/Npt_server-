@@ -1130,3 +1130,51 @@ test('a quotation can only name an enquiry of its own buyer', async () => {
   });
   assert.equal(moved.status, 400);
 });
+
+/* ------------------------------ Quote numbers ------------------------------ */
+
+test('a quote is numbered the plant’s way — NP/<financial year>/001', async () => {
+  const { financialYear } = await import('../src/services/numbering.service.js');
+  const made = await quote();
+  assert.match(made.number, new RegExp(`^NP/${financialYear().label}/\\d{3,}$`));
+});
+
+test('the financial year turns over on 1 April in India, not in the server’s clock', async () => {
+  const { financialYear, nextNumber } = await import('../src/services/numbering.service.js');
+  /* 11:59 pm on 31 March in India is still the old year; midnight is the new one. */
+  assert.equal(financialYear(new Date('2027-03-31T18:29:59Z')).label, '26-27');
+  assert.equal(financialYear(new Date('2027-03-31T18:30:00Z')).label, '27-28');
+  assert.equal(financialYear(new Date('2026-01-15T06:00:00Z')).label, '25-26');
+  /* The other registers still run by calendar year — India's calendar year. */
+  assert.match(await nextNumber('TST', new Date('2026-12-31T18:30:00Z')), /^TST-2027-/);
+});
+
+test('quote numbers restart at 001 each financial year', async () => {
+  const { nextQuoteNumber } = await import('../src/services/numbering.service.js');
+  assert.equal(await nextQuoteNumber(new Date('2030-06-01T06:00:00Z')), 'NP/30-31/001');
+  assert.equal(await nextQuoteNumber(new Date('2031-02-01T06:00:00Z')), 'NP/30-31/002');
+  assert.equal(await nextQuoteNumber(new Date('2031-04-01T06:00:00Z')), 'NP/31-32/001');
+});
+
+test('forty quotes raised at the same moment get forty different numbers, none skipped', async () => {
+  const made = await Promise.all(Array.from({ length: 40 }, () => quote()));
+  const numbers = made.map((row) => row.number);
+  assert.equal(new Set(numbers).size, 40, 'no two share a number');
+  const seqs = numbers.map((number) => Number(number.split('/').at(-1))).sort((a, b) => a - b);
+  assert.equal(seqs.at(-1) - seqs[0], 39, 'and they run on without a gap');
+});
+
+test('a revision keeps its quote’s number', async () => {
+  const made = await quote();
+  const revised = await reviseTo(made._id, 7.1);
+  assert.equal(revised.status, 200, revised.json.message);
+  assert.equal(revised.json.data.number, made.number);
+});
+
+test('the PDF’s file name is the quote number with no slashes in it', async () => {
+  const made = await quote();
+  const response = await fetch(`${baseUrl}/api/quotations/${made._id}/pdf`, { headers: { Authorization: `Bearer ${nandhini}` } });
+  assert.equal(response.status, 200);
+  const disposition = response.headers.get('content-disposition');
+  assert.equal(disposition, `inline; filename="${made.number.replaceAll('/', '-')}.pdf"`);
+});

@@ -1,7 +1,7 @@
 import Customer from '../models/Customer.js';
 import Pricing from '../models/Pricing.js';
 import Quotation from '../models/Quotation.js';
-import { nextNumber } from '../services/numbering.service.js';
+import { nextNumber, nextQuoteNumber } from '../services/numbering.service.js';
 import { QUOTE_SHEET, SHEET_PRODUCTS } from './quoteSheet.js';
 import { FULL } from './size.js';
 
@@ -227,7 +227,7 @@ export async function seedPricing({ admin, nandhini }) {
     const { customer, at, row } = entries[0];
 
     const quotation = new Quotation({
-      number: await nextNumber('QTN'),
+      number: await nextQuoteNumber(at),
       customer: customer._id,
       assignedTo: nandhini._id,
       lines: entries.map((entry) => ({

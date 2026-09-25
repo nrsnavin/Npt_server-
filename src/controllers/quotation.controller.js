@@ -5,7 +5,7 @@ import Customer from '../models/Customer.js';
 import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
-import { nextNumber } from '../services/numbering.service.js';
+import { fileSafeNumber, nextQuoteNumber } from '../services/numbering.service.js';
 import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
@@ -512,7 +512,7 @@ export async function newQuotation(fields, user) {
     lines: await withMouldDefaults(fields.lines),
     customer: customerId,
     assignedTo: fields.assignedTo || customer.assignedTo || user._id,
-    number: await nextNumber('QTN'),
+    number: await nextQuoteNumber(),
     statusHistory: [{ to: 'draft', by: user._id }],
   });
 
@@ -917,6 +917,6 @@ export const quotationPdf = asyncHandler(async (req, res) => {
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Length', pdf.length);
-  res.setHeader('Content-Disposition', `inline; filename="${quotation.number}.pdf"`);
+  res.setHeader('Content-Disposition', `inline; filename="${fileSafeNumber(quotation.number)}.pdf"`);
   res.send(pdf);
 });
