@@ -385,3 +385,26 @@ test('nobody outside the thread is told what it might be filed under', async () 
   const query = await raise();
   assert.equal((await suggest(query._id, kiran)).status, 404);
 });
+
+/* ------------------------------ At the same moment ------------------------------ */
+
+test('replies sent at the same moment are all taken — a reply adds, it never overwrites', async () => {
+  const query = await raise();
+  const voices = [kavitha, nandhini, admin];
+  const sent = await Promise.all(Array.from({ length: 12 }, (_, n) => say(query._id, `Same moment ${n}`, voices[n % 3])));
+  assert.deepEqual(sent.map((row) => row.status), Array(12).fill(201), sent.map((row) => row.json.message).join(' | '));
+  const thread = (await api(`/api/queries/${query._id}`, { token: nandhini })).json.data;
+  const kept = thread.messages.filter((message) => /^Same moment \d+$/.test(message.body || ''));
+  assert.equal(kept.length, 12, 'every reply is in the thread, once');
+});
+
+test('labels dropped on one thread at the same moment are all kept', async () => {
+  const query = await raise();
+  const drops = [[nandhini, 'transport'], [kavitha, 'invoice'], [admin, 'rework'], [nandhini, 'follow up']];
+  const filed = await Promise.all(drops.map(([token, add]) =>
+    api('/api/queries/labels', { method: 'POST', token, body: { ids: [query._id], add } })));
+  assert.deepEqual(filed.map((row) => row.status), [200, 200, 200, 200], filed.map((row) => row.json.message).join(' | '));
+  assert.ok(filed.every((row) => row.json.data.updated.length === 1), 'each says it was applied');
+  const labels = (await api(`/api/queries/${query._id}`, { token: nandhini })).json.data.labels;
+  assert.deepEqual([...labels].sort(), ['follow up', 'invoice', 'rework', 'transport']);
+});

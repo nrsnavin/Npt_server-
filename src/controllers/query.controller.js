@@ -23,6 +23,7 @@ import { summarise, summariesForList } from '../services/querySummary.llm.js';
 import { gistByRules } from '../services/querySummary.rules.js';
 import { suggestLabels } from '../services/labelSuggest.llm.js';
 import { sendPush } from '../services/push.service.js';
+import { retryOnConflict } from '../utils/concurrency.js';
 import { filtersFromPhrase } from '../services/querySearch.llm.js';
 import { urgencyByRules } from '../services/queryUrgency.rules.js';
 import { canRead, urgencyFor } from '../services/queryUrgency.llm.js';
@@ -475,23 +476,32 @@ export const bulkLabel = asyncHandler(async (req, res) => {
   const seen = new Set(found.map((query) => String(query._id)));
   for (const id of ids) if (!seen.has(String(id))) skipped.push({ id, reason: 'Not found' });
 
-  for (const query of found) {
-    const labels = query.labels || [];
-    if (add && labels.includes(add)) continue;
-    if (remove && !labels.includes(remove)) continue;
-    if (add && labels.length >= MAX_LABELS) {
-      skipped.push({ id: String(query._id), number: query.number, reason: `Already has ${MAX_LABELS} labels` });
-      continue;
-    }
+  for (const first of found) {
+    /* Adding or taking off one label never undoes anybody else's, so a thread somebody saved in
+       the same instant is filed again as it now stands — see `retryOnConflict`. */
+    const outcome = await retryOnConflict(async (attempt) => {
+      const query = attempt === 1 ? first : await Query.findOne({ ...scoped, _id: first._id });
+      if (!query) return 'gone';
+      const labels = query.labels || [];
+      if (add && labels.includes(add)) return 'already';
+      if (remove && !labels.includes(remove)) return 'already';
+      if (add && labels.length >= MAX_LABELS) return { number: query.number };
 
-    const before = snapshot(query);
-    query.labels = add ? [...labels, add] : labels.filter((label) => label !== remove);
-    /* Not activity — see `setLabels`. */
-    await query.save({ timestamps: false });
-    await recordChange({
-      model: 'Query', doc: query, before, by: req.user, note: add ? `Labelled ${add}` : `Label ${remove} removed`,
+      const before = snapshot(query);
+      query.labels = add ? [...labels, add] : labels.filter((label) => label !== remove);
+      /* Not activity — see `setLabels`. */
+      await query.save({ timestamps: false });
+      await recordChange({
+        model: 'Query', doc: query, before, by: req.user, note: add ? `Labelled ${add}` : `Label ${remove} removed`,
+      });
+      return 'updated';
     });
-    updated.push(String(query._id));
+
+    if (outcome === 'updated') updated.push(String(first._id));
+    else if (outcome === 'gone') skipped.push({ id: String(first._id), reason: 'Not found' });
+    else if (outcome?.number) {
+      skipped.push({ id: String(first._id), number: outcome.number, reason: `Already has ${MAX_LABELS} labels` });
+    }
   }
 
   res.json({ success: true, data: { updated, skipped, label: add || remove, added: Boolean(add) } });
@@ -762,9 +772,12 @@ async function postMessage(req, query, { kind = 'reply', body, location, mention
 }
 
 export const addMessage = asyncHandler(async (req, res) => {
-  const query = await readableQuery(req.params.id, req.user);
   const { kind = 'reply', body, location, mentions } = req.body;
-  res.status(201).json(await postMessage(req, query, { kind, body, location, mentions }));
+  /* A reply only adds, so one saved in the same instant as somebody else's is put on the thread
+     as it now stands rather than refused — see `retryOnConflict`. */
+  const said = await retryOnConflict(async () =>
+    postMessage(req, await readableQuery(req.params.id, req.user), { kind, body, location, mentions }));
+  res.status(201).json(said);
 });
 
 /**
@@ -799,7 +812,9 @@ export const addFile = asyncHandler(async (req, res) => {
       uploadedBy: req.user._id,
       query: query._id,
     });
-    res.status(201).json(await postMessage(req, query, { kind, body, mentions, attachments: [file] }));
+    const said = await retryOnConflict(async (attempt) =>
+      postMessage(req, attempt === 1 ? query : await readableQuery(req.params.id, req.user), { kind, body, mentions, attachments: [file] }));
+    res.status(201).json(said);
   } catch (error) {
     /* A stored file no message points at is one nobody can find or delete. */
     if (file) await file.deleteOne().catch(() => null);

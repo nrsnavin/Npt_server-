@@ -1,4 +1,29 @@
+import mongoose from 'mongoose';
 import ApiError from './ApiError.js';
+
+/**
+ * Runs a write that only *adds* — a reply, a label — again on the record as it now stands, when
+ * somebody else saved it in the same instant.
+ *
+ * `protectWrites` refuses a save built on a version somebody has replaced, which is right for an
+ * edit: saving it would undo theirs. It is wrong for an addition. Two people answering one thread
+ * at once both load version n, the second save is refused, and a reply that overwrote nothing
+ * comes back as "someone else changed this record". So `attempt(n)` is called again — it must
+ * load the record afresh on every call after the first — after a short random pause, so a crowd
+ * spreads out rather than colliding again in step.
+ *
+ * Only for additions. An edit that meets a newer version still has to be refused.
+ */
+export async function retryOnConflict(attempt, { tries = 12 } = {}) {
+  for (let n = 1; ; n++) {
+    try {
+      return await attempt(n);
+    } catch (error) {
+      if (!(error instanceof mongoose.Error.VersionError) || n >= tries) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 5 + Math.random() * 20 * n));
+    }
+  }
+}
 
 /**
  * Refuses a write built on a version of the record somebody has already replaced.
