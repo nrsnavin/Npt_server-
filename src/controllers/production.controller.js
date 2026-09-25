@@ -101,12 +101,13 @@ export const listProductionLines = asyncHandler(async (req, res) => {
    * file matches the screen. The set is bounded by what a plant actually has open.
    */
   /*
-   * The views that ask for work still to do — open, overdue, will miss, held — leave closed orders
-   * out in the database. A closed order is finished even with a line short-closed at 95%, and
-   * reading one here showed it as work, as `productionDay` found for itself.
+   * The queue is the work: closed orders are left out in the database unless `history=true` asks
+   * for the register's past as well. Read by default they were three years of finished orders
+   * hydrated on every open of the queue — two seconds each, during which the API served nobody
+   * else — to show a page of twenty-five; and a closed order with a line short-closed at 95% read
+   * as work, as `productionDay` found for itself. The export keeps the history.
    */
-  const wantsOpenWork = ['open', 'overdue', 'willMiss', 'held'].some((key) => req.query[key] === 'true');
-  if (wantsOpenWork) filter.status = { $nin: [...PRE_RELEASE_STATUSES, ...CLOSED_ORDER_STATUSES] };
+  if (req.query.history !== 'true') filter.status = { $nin: [...PRE_RELEASE_STATUSES, ...CLOSED_ORDER_STATUSES] };
 
   /* Newest first, so that past EXPORT_LIMIT orders it is the oldest history that is left out and
      never today's work — unsorted, the cap took the first 5,000 in storage order. */

@@ -77,14 +77,16 @@ test('an order placed today is in the register however many came before it', asy
   await SalesOrder.deleteOne({ _id: fresh._id });
 });
 
-test('a closed order with a line short of its quantity is not open work', async () => {
+test('a closed order with a line short of its quantity is history, not work', async () => {
   const shortClosed = await SalesOrder.create({
     ...base, number: 'SO-SHORT-1', status: 'closed', orderDate: new Date(),
     lines: [line({ deliveryDate: days(-5), production: { status: 'running', producedQty: 9500, readyQty: 9500 } })],
   });
   /* Searched, so the order is certainly read — the question is only whether it counts as open. */
-  const everything = await api('/api/production?search=SO-SHORT-1', admin);
+  const everything = await api('/api/production?search=SO-SHORT-1&history=true', admin);
   assert.ok(everything.json.data.some((row) => row.order.number === 'SO-SHORT-1'), 'it is in the register’s history');
+  const queue = await api('/api/production?search=SO-SHORT-1', admin);
+  assert.ok(!queue.json.data.some((row) => row.order.number === 'SO-SHORT-1'), 'but not in the queue, which is the work');
   const open = await api('/api/production?search=SO-SHORT-1&open=true', admin);
   assert.equal(open.status, 200, open.json.message);
   assert.ok(!open.json.data.some((row) => row.order.number === 'SO-SHORT-1'), 'not in the open queue');
