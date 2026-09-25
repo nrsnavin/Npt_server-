@@ -387,7 +387,8 @@ pm2 logs npt-api --lines 50
 is near that size. Under the volume test (`node tests/load/volume-test.mjs`) the API grew past
 1.2 GB without a leak — it simply had not needed to tidy up — and on a 2 GB box shared with
 MongoDB that is the road to the kernel killing one of them. `--max-old-space-size=512` makes it
-tidy up at 512 MB (the volume test runs the API with the same cap); `--max-memory-restart` is the backstop, a
+tidy up at 512 MB — the volume test runs the API with the same cap, and three years of data
+with 25 people at once peaked at about 560 MB of process memory; `--max-memory-restart` is the backstop, a
 clean restart by pm2 rather than a kill by the kernel. Already running without them? `pm2 delete
 npt-api`, then the `pm2 start` line above, then `pm2 save`.
 
