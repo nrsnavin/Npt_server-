@@ -104,6 +104,32 @@ export const labelsSchema = z.object({
     .refine((labels) => new Set(labels).size === labels.length, 'That label is on the query twice'),
 });
 
+/**
+ * Filing several threads at once — a drop onto a label, or the bar over a selection.
+ *
+ * One label added or taken off, rather than a replacement set, because the screen that sends this
+ * holds a page of rows it may have loaded minutes ago: "add quality" is true whatever else was
+ * filed since, and a whole set built from a stale row would quietly undo somebody else's label.
+ */
+const oneLabel = z
+  .string()
+  .transform(normaliseLabel)
+  .pipe(
+    z
+      .string()
+      .min(2, 'A label needs at least two characters')
+      .max(LABEL_MAX_LENGTH, `Keep a label to ${LABEL_MAX_LENGTH} characters`)
+      .regex(/^[\p{L}\p{N}][\p{L}\p{M}\p{N} &/+-]*$/u, 'Use letters, numbers and spaces in a label')
+  );
+
+export const bulkLabelSchema = z
+  .object({
+    ids: z.array(objectId).min(1, 'Choose at least one query').max(50, 'Label up to 50 queries at a time'),
+    add: oneLabel.optional(),
+    remove: oneLabel.optional(),
+  })
+  .refine((body) => Boolean(body.add) !== Boolean(body.remove), 'Add one label or remove one, not both');
+
 export const messageSchema = z
   .object({
     kind: z.enum(['reply', 'note']).default('reply'),

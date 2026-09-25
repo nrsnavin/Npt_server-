@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import Query, { inTheRoom, messageText, normaliseLabel, roomFilter, seesEveryQuery } from '../models/Query.js';
+import Query, { MAX_LABELS, inTheRoom, messageText, normaliseLabel, roomFilter, seesEveryQuery } from '../models/Query.js';
 import QueryRead from '../models/QueryRead.js';
 import { nearestTown } from '../data/places.js';
 import Customer from '../models/Customer.js';
@@ -443,6 +443,46 @@ export const setLabels = asyncHandler(async (req, res) => {
   await query.save({ timestamps: false });
   await recordChange({ model: 'Query', doc: query, before, by: req.user, note: 'Labels changed' });
   res.json({ success: true, data: await withRefs(query) });
+});
+
+/**
+ * Filing several threads under one label, or taking it off them — the list's drag and drop.
+ *
+ * Each id is re-read through the list's own scope, so a thread the person cannot see is simply
+ * not there: it is reported as skipped rather than refused by name, which would say it exists.
+ * A thread already carrying five labels is skipped with the reason, not refused as a batch —
+ * one full thread should not stop the other nine being filed.
+ */
+export const bulkLabel = asyncHandler(async (req, res) => {
+  const { ids, add, remove } = req.body;
+  const scoped = await queryFilter({ ...req, query: {} }, { _id: { $in: ids } });
+  const found = await Query.find(scoped);
+
+  const updated = [];
+  const skipped = [];
+  const seen = new Set(found.map((query) => String(query._id)));
+  for (const id of ids) if (!seen.has(String(id))) skipped.push({ id, reason: 'Not found' });
+
+  for (const query of found) {
+    const labels = query.labels || [];
+    if (add && labels.includes(add)) continue;
+    if (remove && !labels.includes(remove)) continue;
+    if (add && labels.length >= MAX_LABELS) {
+      skipped.push({ id: String(query._id), number: query.number, reason: `Already has ${MAX_LABELS} labels` });
+      continue;
+    }
+
+    const before = snapshot(query);
+    query.labels = add ? [...labels, add] : labels.filter((label) => label !== remove);
+    /* Not activity — see `setLabels`. */
+    await query.save({ timestamps: false });
+    await recordChange({
+      model: 'Query', doc: query, before, by: req.user, note: add ? `Labelled ${add}` : `Label ${remove} removed`,
+    });
+    updated.push(String(query._id));
+  }
+
+  res.json({ success: true, data: { updated, skipped, label: add || remove, added: Boolean(add) } });
 });
 
 /**

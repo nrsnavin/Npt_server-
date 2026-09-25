@@ -284,3 +284,57 @@ test('asking for the line of a thread you are not in tells you nothing about it'
   assert.deepEqual(read.json.data, {}, 'an outsider was answered');
   assert.equal(calls.length, 0, 'an outsider’s ids were sent to the model');
 });
+
+/* ------------------------------ Filing in bulk ------------------------------ */
+
+const bulk = (body, token = nandhini) => api('/api/queries/labels', { method: 'POST', token, body });
+
+test('dropping several threads on a label adds it to each, keeping what they had', async () => {
+  const one = await raise();
+  const two = await raise();
+  await label(one._id, ['lorry']);
+
+  const filed = await bulk({ ids: [one._id, two._id], add: 'Quality' });
+  assert.equal(filed.status, 200, filed.json.message);
+  assert.deepEqual(filed.json.data.updated.sort(), [one._id, two._id].sort());
+  assert.equal(filed.json.data.label, 'quality', 'the label was not normalised');
+
+  const read = async (id) => (await api(`/api/queries/${id}`, { token: nandhini })).json.data.labels;
+  assert.deepEqual(await read(one._id), ['lorry', 'quality'], 'the drop replaced what the thread had');
+  assert.deepEqual(await read(two._id), ['quality']);
+
+  /* Dropping again changes nothing, and taking it off takes only that one. */
+  assert.deepEqual((await bulk({ ids: [one._id], add: 'quality' })).json.data.updated, []);
+  await bulk({ ids: [one._id, two._id], remove: 'quality' });
+  assert.deepEqual(await read(one._id), ['lorry']);
+  assert.deepEqual(await read(two._id), []);
+});
+
+test('a full thread is skipped with its reason, and the rest are still filed', async () => {
+  const full = await raise();
+  const room = await raise();
+  await label(full._id, ['a1', 'b2', 'c3', 'd4', 'e5']);
+
+  const filed = await bulk({ ids: [full._id, room._id], add: 'quality' });
+  assert.deepEqual(filed.json.data.updated, [room._id]);
+  assert.equal(filed.json.data.skipped[0].id, full._id);
+  assert.match(filed.json.data.skipped[0].reason, /5 labels/);
+});
+
+test('bulk filing refuses what the editor refuses, and cannot reach threads you cannot see', async () => {
+  const query = await raise();
+  for (const body of [
+    { ids: [query._id] },
+    { ids: [query._id], add: 'quality', remove: 'lorry' },
+    { ids: [query._id], add: '<b>' },
+    { ids: [], add: 'quality' },
+  ]) {
+    assert.equal((await bulk(body)).status, 400, `${JSON.stringify(body)} was taken`);
+  }
+
+  const outsider = await bulk({ ids: [query._id], add: 'quality' }, kiran);
+  assert.equal(outsider.status, 200);
+  assert.deepEqual(outsider.json.data.updated, [], 'somebody outside the room filed the thread');
+  assert.equal(outsider.json.data.skipped[0].reason, 'Not found');
+  assert.deepEqual((await api(`/api/queries/${query._id}`, { token: nandhini })).json.data.labels, []);
+});

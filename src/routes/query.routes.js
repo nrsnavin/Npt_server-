@@ -3,13 +3,13 @@ import {
   listQueries, getQuery, createQuery, addMessage,
   addParticipant, closeQuery, reopenQuery, participantOptions,
   readUrgency, suggestReply,
-  markRead, addFile, setUrgent, setLabels, readSummaries,
+  markRead, addFile, setUrgent, setLabels, readSummaries, bulkLabel,
 } from '../controllers/query.controller.js';
 import { singleDocument } from '../middleware/upload.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
-  querySchema, messageSchema, participantSchema, urgencySchema, urgentSchema, labelsSchema,
+  querySchema, messageSchema, participantSchema, urgencySchema, urgentSchema, labelsSchema, bulkLabelSchema,
 } from '../validators/query.schemas.js';
 
 /**
@@ -45,6 +45,8 @@ router.get('/queries', requireModule('queries'), listQueries);
  * nothing about it.
  */
 router.post('/queries/urgency', requireModule('queries'), validate(urgencySchema), readUrgency);
+/* Several threads filed under one label at once — the list's drag and drop. */
+router.post('/queries/labels', requireModule('queries'), validate(bulkLabelSchema), bulkLabel);
 /* A line per row, read after the list has drawn. Same ids shape as the urgency reading. */
 router.post('/queries/summaries', requireModule('queries'), validate(urgencySchema), readSummaries);
 router.post('/queries', requireModule('queries'), validate(querySchema), createQuery);
