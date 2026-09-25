@@ -39,6 +39,7 @@ import {
 import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validators/mould.schemas.js';
 import { materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
 import { componentSchema, componentUpdateSchema } from '../validators/component.schemas.js';
+import { customerTimeline } from '../controllers/timeline.controller.js';
 
 const router = Router();
 
@@ -111,6 +112,8 @@ router.get('/customers', requireModule('customers'), listCustomers);
 router.post('/customers', requireModule('customers', 'write'), validate(customerSchema), createCustomer);
 /* The map view's own request — see `getCustomerMap` for why it is not part of the detail. */
 router.get('/customers/:id/map', requireModule('customers'), getCustomerMap);
+/* The buyer's whole history on one scroll, paged by date. */
+router.get('/customers/:id/timeline', requireModule('customers'), customerTimeline);
 router.get('/customers/:id', requireModule('customers'), getCustomer);
 router.patch('/customers/:id', requireModule('customers', 'write'), validate(customerUpdateSchema), updateCustomer);
 /* The buyer's gate, pinned from a location somebody shared in a thread — never typed. */
