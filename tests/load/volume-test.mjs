@@ -159,8 +159,10 @@ console.log('\n2. 25 people at once on the full database, for 60 s');
   const sampler = setInterval(() => (peak = Math.max(peak, stack.rss())), 1000);
   await Promise.all(crowd.map(async (who) => {
     while (Date.now() < until) {
-      const url = reachable[who][Math.floor(Math.random() * reachable[who].length)];
-      const result = await call(url, { token: people[who], name: 'crowd' });
+      /* Downloads are an occasional act, not one click in ten: 2% of clicks, as in an office. */
+      const pool = reachable[who].filter((u) => u.includes('/export') === (Math.random() < 0.02));
+      const url = pool[Math.floor(Math.random() * pool.length)];
+      const result = await call(url, { token: people[who], name: url.includes('/export') ? 'crowd export' : 'crowd' });
       seen.total++;
       times.push(result.ms);
       seen.byStatus[result.status] = (seen.byStatus[result.status] || 0) + 1;
@@ -173,6 +175,8 @@ console.log('\n2. 25 people at once on the full database, for 60 s');
   }));
   clearInterval(sampler);
   console.log(`  ${seen.total.toLocaleString()} requests; responses ${JSON.stringify(seen.byStatus)}; p50 ${pct(times, 50).toFixed(0)} ms, p95 ${pct(times, 95).toFixed(0)} ms, p99 ${pct(times, 99).toFixed(0)} ms`);
+  const exportsTaken = timings.get('crowd export') || [];
+  if (exportsTaken.length) console.log(`  of which ${exportsTaken.length} downloads: p50 ${pct(exportsTaken, 50).toFixed(0)} ms, slowest ${Math.max(...exportsTaken).toFixed(0)} ms`);
   check(seen.errors === 0, `no server errors with 25 people on the full database (${seen.errors})`);
   check(pct(times, 95) < 2000, `p95 under 2 s (${pct(times, 95).toFixed(0)} ms)`);
   check(peak < 800, `API memory ${peakBefore} MB → peak ${peak} MB (under 800 MB)`);
