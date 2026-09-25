@@ -30,7 +30,10 @@ import {
   announcementSchema,
   savedViewSchema,
   savedViewUpdateSchema,
+  pushSubscribeSchema,
+  pushUnsubscribeSchema,
 } from '../validators/schemas.js';
+import { pushKey, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 
 const router = Router();
@@ -77,6 +80,11 @@ router.get('/review', plantReview);
 /* And handing one of them to the department that can clear it — an ordinary task, raised by the
    person who pressed it. The finding is re-derived server side, never accepted from the body. */
 router.post('/review/raise', validate(raiseFindingSchema), raiseFinding);
+
+/* Notifications on this device — the installed app's pushes. */
+router.get('/push/key', pushKey);
+router.post('/push/subscribe', validate(pushSubscribeSchema), subscribePush);
+router.post('/push/unsubscribe', validate(pushUnsubscribeSchema), unsubscribePush);
 
 /* Saved views — somebody's named filter sets, pinned in their sidebar. */
 router.get('/views', listViews);

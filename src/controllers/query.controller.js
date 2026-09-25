@@ -22,6 +22,7 @@ import { recordChange, snapshot } from '../services/audit.service.js';
 import { summarise, summariesForList } from '../services/querySummary.llm.js';
 import { gistByRules } from '../services/querySummary.rules.js';
 import { suggestLabels } from '../services/labelSuggest.llm.js';
+import { sendPush } from '../services/push.service.js';
 import { filtersFromPhrase } from '../services/querySearch.llm.js';
 import { urgencyByRules } from '../services/queryUrgency.rules.js';
 import { canRead, urgencyFor } from '../services/queryUrgency.llm.js';
@@ -829,6 +830,13 @@ async function notifyTagged(query, people, tagger, said) {
           + `<p><a href="${escapeHtml(link)}">Open the thread</a></p>`,
       }).catch((error) => console.error(`[query-tag] email to ${person.email} not sent: ${error.message}`));
     }
+    /* The installed app, on every device they allowed — a tag reaches the phone in the pocket. */
+    await sendPush([person._id], {
+      title: `${urgent}${tagger.name} tagged you in ${query.number}`,
+      body: `${query.subject} — "${said.slice(0, 120)}"`,
+      link: `/queries/${query._id}`,
+    }).catch((error) => console.error(`[query-tag] push to ${person.name} not sent: ${error.message}`));
+
     if (query.isUrgent && person.phone) {
       if (!isWhatsAppConfigured()) {
         console.log(`\n[whatsapp] to ${person.phone}\n${urgent}${tagger.name} tagged you in ${query.number}: ${link}\n`);

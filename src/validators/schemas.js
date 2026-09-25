@@ -223,3 +223,14 @@ export const savedViewUpdateSchema = z.object({
   params: viewParams.optional(),
   pinned: z.boolean().optional(),
 });
+
+/** A browser's push subscription: where to send, and the keys to encrypt with. */
+export const pushSubscribeSchema = z.object({
+  endpoint: z.string().url().max(1000).refine((url) => url.startsWith('https://'), 'A push endpoint is https'),
+  keys: z.object({
+    p256dh: z.string().min(10).max(200),
+    auth: z.string().min(8).max(100),
+  }),
+});
+
+export const pushUnsubscribeSchema = z.object({ endpoint: z.string().url().max(1000) });
