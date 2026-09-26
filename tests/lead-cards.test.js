@@ -26,14 +26,15 @@ Object.defineProperty(sdk.default.prototype, 'messages', {
   get: () => ({
     create: async (request) => {
       sent.push(request);
-      if (!cardReply) return { stop_reason: 'refusal', content: [] };
-      return { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(cardReply) }] };
+      const answer = Array.isArray(cardReply) ? cardReply.shift() : cardReply;
+      if (!answer) return { stop_reason: 'refusal', content: [] };
+      return { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(answer) }] };
     },
   }),
   set: () => {},
 });
 
-const blank = { readable: true, company: '', contactName: '', designation: '', mobile: '', whatsapp: '', email: '', city: '', state: '', productInterest: '', notes: '' };
+const blank = { kind: 'card', company: '', contactName: '', designation: '', mobile: '', whatsapp: '', email: '', city: '', state: '', productInterest: '', quantity: '', notes: '' };
 const card = (fields) => ({ ...blank, ...fields });
 
 /* What went back to WhatsApp — printed, as no provider is configured here. */
@@ -288,4 +289,93 @@ test('a card uploaded in the app is read straight away', async () => {
   assert.equal(made.json.data.status, 'ready');
   assert.equal(made.json.data.reading.company, 'Uploaded Apparel');
   assert.equal(made.json.data.reading.email, undefined, 'an address that is not an email is dropped, not stored');
+});
+
+/* ------------------------------ Chat screenshots ------------------------------ */
+
+const chat = (fields) => ({ ...blank, kind: 'chat', ...fields });
+const latestReply = () => replies.at(-1) || '';
+
+test('a screenshot of a chat with a buyer becomes a lead with what they asked for', async () => {
+  cardReply = chat({
+    company: 'Velan Textiles', contactName: 'Karthik', mobile: '+91 97890 12345',
+    productInterest: '400mm black shirt hangers', quantity: '5k pcs',
+    notes: 'Wants 5,000 black shirt hangers by the 20th; asked for a rate and a sample.',
+  });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const read = await readCardOf(nandhini);
+  assert.equal(read.kind, 'chat');
+  assert.equal(read.reading.estimatedQuantity, 5000, '"5k pcs" is 5,000 pieces');
+  assert.match(latestReply(), /Read this chat:[\s\S]*Quantity: 5,000 pcs[\s\S]*Reply YES/);
+
+  await whatsapp(NANDHINI_PHONE, { body: 'yes' });
+  const lead = await Lead.findOne({ company: 'Velan Textiles' });
+  assert.ok(lead, 'YES made the lead');
+  assert.equal(lead.estimatedQuantity, 5000);
+  assert.equal(lead.source, 'whatsapp');
+  assert.equal(lead.productInterest, '400mm black shirt hangers');
+  assert.match(lead.activities[0].summary, /WhatsApp chat screenshot[\s\S]*The conversation: Wants 5,000 black shirt hangers/);
+  assert.match(lead.nextAction, /follow up the WhatsApp conversation/);
+});
+
+test('a chat with only a saved name: the person stands in for the company, and a reply gives the number', async () => {
+  cardReply = chat({ contactName: 'Ramesh Tiruppur', productInterest: 'suit hangers' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const read = await readCardOf(nandhini);
+  assert.equal(read.reading.company, 'Ramesh Tiruppur');
+  assert.equal(read.companyFromName, true);
+  assert.match(latestReply(), /the person's name — no business was named/, 'said before anybody confirms');
+  assert.match(latestReply(), /No phone number was on it\. Reply with the buyer's number/);
+
+  const number = await whatsapp(NANDHINI_PHONE, { body: '97900 12345' });
+  assert.equal(number.json.outcome, 'lead_card_phone');
+  assert.match(latestReply(), /Mobile: \+919790012345[\s\S]*Reply YES/);
+
+  await whatsapp(NANDHINI_PHONE, { body: 'YES' });
+  const lead = await Lead.findOne({ mobile: '+919790012345' });
+  assert.ok(lead);
+  assert.equal(lead.company, 'Ramesh Tiruppur');
+});
+
+test('the rest of a long chat joins the screenshot that showed who it was with', async () => {
+  cardReply = [
+    chat({ contactName: 'Selvi', company: 'Selvi Fashions', mobile: '9790055555', notes: 'Asked about suit hangers.' }),
+    chat({ productInterest: 'wooden suit hangers', quantity: '2000', notes: 'Wants samples by Friday.' }),
+  ];
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const first = await readCardOf(nandhini);
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+
+  const open = (await api('/api/lead-cards', { token: nandhini })).json.data.filter((row) => row.reading?.company === 'Selvi Fashions' || !row.reading?.company);
+  assert.equal(open.length, 1, 'one chat, not two cards');
+  const merged = open[0];
+  assert.equal(merged._id, first._id);
+  assert.equal(merged.moreImages.length, 1, 'the second screenshot is kept with the first');
+  assert.equal(merged.reading.productInterest, 'wooden suit hangers');
+  assert.equal(merged.reading.estimatedQuantity, 2000);
+  assert.match(merged.reading.notes, /Asked about suit hangers\. Wants samples by Friday\./);
+  const second = await fetch(`${baseUrl}/api/lead-cards/${merged._id}/image?n=1`, { headers: { Authorization: `Bearer ${nandhini}` } });
+  assert.equal(second.status, 200);
+  await whatsapp(NANDHINI_PHONE, { body: 'no' });
+});
+
+test('a picture that is neither a card nor a chat says so and adds nothing', async () => {
+  cardReply = { ...blank, kind: 'other' };
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const read = await readCardOf(nandhini);
+  assert.equal(read.status, 'unreadable');
+  assert.match(latestReply(), /does not look like a card, an enquiry slip or a chat/);
+  await api(`/api/lead-cards/${read._id}/discard`, { method: 'POST', token: nandhini });
+});
+
+test('quantities are read the way people write them', async () => {
+  const { parseQuantity } = await import('../src/services/leadCard.llm.js');
+  assert.equal(parseQuantity('5000 pcs'), 5000);
+  assert.equal(parseQuantity('5,000'), 5000);
+  assert.equal(parseQuantity('5k'), 5000);
+  assert.equal(parseQuantity('1.5 lakh'), 150000);
+  assert.equal(parseQuantity('2 lacs'), 200000);
+  assert.equal(parseQuantity(''), null);
+  assert.equal(parseQuantity('a few thousand'), null);
 });

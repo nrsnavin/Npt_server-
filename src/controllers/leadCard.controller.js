@@ -51,11 +51,15 @@ export const getLeadCard = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await card.populate(POPULATE) });
 });
 
+/** The picture — `?n=1`, `?n=2` for the later screenshots of a long chat. */
 export const leadCardImage = asyncHandler(async (req, res) => {
   const card = await cardFor(req);
-  const stream = streamOf(card.imageKey);
+  const n = Number(req.query.n) || 0;
+  const image = n === 0 ? card : card.moreImages?.[n - 1];
+  if (!image) throw ApiError.notFound('Photo not found');
+  const stream = streamOf(image.imageKey);
   if (!stream) throw ApiError.notFound('Photo not found');
-  res.setHeader('Content-Type', card.mimeType);
+  res.setHeader('Content-Type', image.mimeType);
   res.setHeader('Cache-Control', 'private, max-age=3600');
   stream.on('error', () => res.destroy());
   stream.pipe(res);

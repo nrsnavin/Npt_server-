@@ -2,7 +2,7 @@ import Lead from '../models/Lead.js';
 import Customer from '../models/Customer.js';
 import User from '../models/User.js';
 import LeadCard, { OPEN_CARD_STATUSES } from '../models/LeadCard.js';
-import { readCard } from './leadCard.llm.js';
+import { hasIdentity, readCard } from './leadCard.llm.js';
 import { put, bufferOf } from './storage.service.js';
 import { fetchMedia, isWhatsAppConfigured, sendWhatsApp } from '../providers/twilio.js';
 import { canOwnBuyer, nextInRotation } from './assignment.service.js';
@@ -21,6 +21,10 @@ import { recordChange } from './audit.service.js';
  */
 
 const MOST_PHOTOS = 3;
+/* A screenshot with no header, sent within this long of a chat's first, is the rest of that chat. */
+const SAME_CHAT_MINUTES = 10;
+/* A message that is only a phone number: the reply to "no number was on it". */
+const JUST_A_NUMBER = /^[\s+()\d-]{8,20}$/;
 const YES = /^\s*(y|yes|ok|okay|confirm|add)\s*[.!]*\s*$/i;
 const NO = /^\s*(n|no|drop|discard|cancel)\s*[.!]*\s*$/i;
 
@@ -58,16 +62,80 @@ async function existingFor(reading) {
   return { lead, customer };
 }
 
-function summary(reading) {
+function summary(reading, { companyFromName } = {}) {
   const lines = [
-    reading.company && `Company: ${reading.company}`,
-    reading.contactName && `Name: ${reading.contactName}${reading.designation ? ` (${reading.designation})` : ''}`,
+    reading.company && `Company: ${reading.company}${companyFromName ? ' (the person\'s name — no business was named)' : ''}`,
+    reading.contactName && reading.contactName !== reading.company && `Name: ${reading.contactName}${reading.designation ? ` (${reading.designation})` : ''}`,
     reading.mobile && `Mobile: ${reading.mobile}`,
     reading.email && `Email: ${reading.email}`,
     (reading.city || reading.state) && `Place: ${[reading.city, reading.state].filter(Boolean).join(', ')}`,
     reading.productInterest && `Wants: ${reading.productInterest}`,
+    reading.estimatedQuantity && `Quantity: ${Number(reading.estimatedQuantity).toLocaleString('en-IN')} pcs`,
+    reading.notes && `Notes: ${reading.notes}`,
   ].filter(Boolean);
   return lines.join('\n');
+}
+
+const what = (card) => (card.kind === 'chat' ? 'this chat' : 'this card');
+
+/** The WhatsApp message that tells the sender what was read and what to do next. */
+async function tellSender(card) {
+  if (card.via !== 'whatsapp') return;
+  const reading = card.reading?.toObject?.() || card.reading || {};
+  const read = summary(reading, { companyFromName: card.companyFromName });
+  if (card.status === 'unreadable') {
+    const problem = card.problem || 'it could not be read.';
+    await reply(card.from, `Got it, but ${problem.charAt(0).toLowerCase()}${problem.slice(1)}${read ? `\n\nWhat could be read:\n${read}` : ''}\nOpen it here: ${cardLink(card)}`);
+    return;
+  }
+  const [lead, customer] = await Promise.all([
+    card.matchedLead ? Lead.findById(card.matchedLead).select('number company') : null,
+    card.matchedCustomer ? Customer.findById(card.matchedCustomer).select('code name') : null,
+  ]);
+  if (lead || customer) {
+    const holder = lead ? `lead ${lead.number} (${lead.company})` : `customer ${customer.code} (${customer.name})`;
+    await reply(card.from, `Read ${what(card)}:\n${read}\n\nThis buyer is already ${holder}, so nothing was added. Check it here: ${cardLink(card)}`);
+    return;
+  }
+  if (!reading.mobile && !reading.whatsapp && !reading.email) {
+    await reply(card.from, `Read ${what(card)}:\n${read}\n\nNo phone number was on it. Reply with the buyer's number (e.g. 98400 11223), then YES to add the lead. Or fill it in here: ${cardLink(card)}`);
+    return;
+  }
+  await reply(card.from, `Read ${what(card)}:\n${read}\n\nReply YES to add it as a lead, or NO to drop it. To correct anything first: ${cardLink(card)}`);
+}
+
+/** Marks who already holds this buyer, if anybody. */
+async function matchExisting(card) {
+  const { lead, customer } = await existingFor(card.reading?.toObject?.() || card.reading || {});
+  card.matchedLead = lead?._id;
+  card.matchedCustomer = customer?._id;
+}
+
+/**
+ * The chat an unheaded screenshot belongs to: the same person's chat screenshot from the last
+ * few minutes that is still waiting. Null when there is none — the screenshot then stands alone.
+ */
+async function chatItContinues(card) {
+  return LeadCard.findOne({
+    _id: { $ne: card._id },
+    sender: card.sender,
+    kind: 'chat',
+    status: { $in: ['ready', 'unreadable'] },
+    createdAt: { $gte: new Date(Date.now() - SAME_CHAT_MINUTES * 60000) },
+  }).sort({ createdAt: -1 });
+}
+
+/** Folds a later screenshot's reading into the chat it continues: blanks filled, notes added to. */
+function mergeInto(target, reading, image) {
+  const current = target.reading?.toObject?.() || target.reading || {};
+  const merged = { ...current };
+  for (const [key, value] of Object.entries(reading)) {
+    if (key === 'notes') continue;
+    if (merged[key] === undefined || merged[key] === '' || merged[key] === null) merged[key] = value;
+  }
+  if (reading.notes) merged.notes = [current.notes, reading.notes].filter(Boolean).join(' ').slice(0, 600);
+  target.reading = merged;
+  target.moreImages = [...(target.moreImages || []), image];
 }
 
 /**
@@ -77,34 +145,46 @@ function summary(reading) {
 export async function processCard(card, { notify = true } = {}) {
   try {
     const buffer = await bufferOf(card.imageKey);
-    const { reading, problem } = buffer
+    const { kind, reading, problem } = buffer
       ? await readCard({ buffer, mimeType: card.mimeType, caption: card.caption })
-      : { reading: {}, problem: 'The photo could not be opened.' };
+      : { kind: null, reading: {}, problem: 'The picture could not be opened.' };
 
-    const { lead, customer } = await existingFor(reading);
-    card.reading = reading;
-    card.readBy = problem && !Object.keys(reading).length ? 'none' : 'model';
-    card.problem = problem || undefined;
-    card.matchedLead = lead?._id;
-    card.matchedCustomer = customer?._id;
-    card.status = problem && !reading.company ? 'unreadable' : 'ready';
-    await card.save();
-
-    if (notify && card.via === 'whatsapp') {
-      if (card.status === 'unreadable') {
-        await reply(card.from, `Got the photo, but ${problem.charAt(0).toLowerCase()}${problem.slice(1)}\nOpen it here: ${cardLink(card)}`);
-      } else if (lead || customer) {
-        const holder = lead ? `lead ${lead.number} (${lead.company})` : `customer ${customer.code} (${customer.name})`;
-        await reply(card.from, `Read this card:\n${summary(reading)}\n\nThis buyer is already ${holder}, so nothing was added. Check it here: ${cardLink(card)}`);
-      } else {
-        await reply(card.from, `Read this card:\n${summary(reading)}\n\nReply YES to add it as a lead, or NO to drop it. To correct anything first: ${cardLink(card)}`);
+    /* The rest of a long chat: no header, so no buyer — it belongs with the screenshot that had one. */
+    if (kind === 'chat' && !hasIdentity(reading)) {
+      const target = await chatItContinues(card);
+      if (target) {
+        mergeInto(target, reading, { imageKey: card.imageKey, mimeType: card.mimeType });
+        await matchExisting(target);
+        await target.save();
+        await LeadCard.deleteOne({ _id: card._id });
+        if (notify) await tellSender(target);
+        return target;
       }
     }
+
+    card.kind = kind || undefined;
+    card.reading = reading;
+    /* A chat names a person more often than a business. The lead still needs a company, so the
+       person's name stands in — and the reply and the screen say so before anybody confirms. */
+    if (!reading.company && reading.contactName) {
+      card.reading = { ...reading, company: reading.contactName };
+      card.companyFromName = true;
+    }
+    card.readBy = problem && !Object.keys(reading).length ? 'none' : 'model';
+    card.problem = problem
+      || (kind === 'chat' && !hasIdentity(reading)
+        ? 'This screenshot does not show who the buyer is. Send the one with their name or number at the top, or reply with their number.'
+        : undefined);
+    card.status = card.problem && !card.reading.company ? 'unreadable' : 'ready';
+    await matchExisting(card);
+    await card.save();
+
+    if (notify) await tellSender(card);
   } catch (error) {
     console.error(`[lead-card] ${card._id} could not be processed: ${error.message}`);
     card.status = 'unreadable';
     card.readBy = 'none';
-    card.problem = 'Something went wrong reading this card. Type the details in from the photo.';
+    card.problem = 'Something went wrong reading this picture. Type the details in from it.';
     await card.save().catch(() => null);
   }
   return card;
@@ -153,6 +233,28 @@ export async function handleStaffMessage({ staff, from, body, media = [], provid
   }
 
   const text = String(body || '');
+
+  /* Just a number: the buyer's phone, for the waiting card or chat that had none. */
+  if (JUST_A_NUMBER.test(text) && normalisePhone(text)) {
+    const waiting = await LeadCard.findOne({
+      sender: staff._id,
+      via: 'whatsapp',
+      status: { $in: ['ready', 'unreadable'] },
+      'reading.mobile': { $exists: false },
+      'reading.whatsapp': { $exists: false },
+    }).sort({ createdAt: -1 });
+    if (!waiting) return null;
+    waiting.reading = { ...(waiting.reading?.toObject?.() || waiting.reading || {}), mobile: normalisePhone(text) };
+    if (waiting.status === 'unreadable' && waiting.reading.company) {
+      waiting.status = 'ready';
+      waiting.problem = undefined;
+    }
+    await matchExisting(waiting);
+    await waiting.save();
+    await tellSender(waiting);
+    return { outcome: 'lead_card_phone', card: waiting };
+  }
+
   const yes = YES.test(text);
   if (!yes && !NO.test(text)) return null;
 
@@ -248,22 +350,23 @@ export async function confirmCard(card, user, edits = {}, { owner } = {}) {
     city: fields.city,
     state: fields.state,
     productInterest: fields.productInterest,
-    source: edits.source || 'manual',
+    estimatedQuantity: fields.estimatedQuantity || undefined,
+    source: edits.source || (card.kind === 'chat' ? 'whatsapp' : 'manual'),
     assignedTo,
     status: 'new',
     visitingCardUrl: `/api/lead-cards/${card._id}/image`,
-    nextAction: `Call ${fields.contactName || fields.company} — their card came in`,
+    nextAction: `Call ${fields.contactName || fields.company} — ${card.kind === 'chat' ? 'follow up the WhatsApp conversation' : 'their card came in'}`,
     nextActionType: 'call',
     nextFollowUpDate: new Date(),
     activities: [
       {
         type: 'note',
         summary: [
-          `From a card ${card.via === 'whatsapp' ? 'sent on WhatsApp' : 'uploaded'} by ${sender?.name || 'a colleague'}`,
+          `From a ${card.kind === 'chat' ? 'WhatsApp chat screenshot' : 'card'} ${card.via === 'whatsapp' ? 'sent on WhatsApp' : 'uploaded'} by ${sender?.name || 'a colleague'}`,
           card.readBy === 'model' ? 'read by AI and checked by' : 'typed in by',
           `${user.name}.`,
           card.caption ? `Note with it: "${card.caption}"` : '',
-          fields.notes ? `On the card: ${fields.notes}` : '',
+          fields.notes ? `${card.kind === 'chat' ? 'The conversation' : 'On the card'}: ${fields.notes}` : '',
         ].filter(Boolean).join(' '),
         createdBy: user._id,
       },

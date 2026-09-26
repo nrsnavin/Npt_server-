@@ -2,8 +2,8 @@ import mongoose from 'mongoose';
 import { protectWrites } from '../utils/concurrency.js';
 
 /**
- * A photo of a lead — a visiting card, an enquiry slip, a letterhead — waiting for a person to
- * say what it is.
+ * A picture of a lead — a visiting card, an enquiry slip, a letterhead, or a screenshot of a
+ * WhatsApp chat with a buyer — waiting for a person to say what it is.
  *
  * Staff meet buyers at fairs, at the gate and on visits, and come away with a card. They send
  * the photo to the plant's WhatsApp number (or upload it in the app), the model reads it, and
@@ -27,7 +27,18 @@ const readingSchema = new mongoose.Schema(
     city: { type: String, trim: true },
     state: { type: String, trim: true },
     productInterest: { type: String, trim: true },
+    estimatedQuantity: { type: Number, min: 0 },
     notes: { type: String, trim: true },
+  },
+  { _id: false }
+);
+
+/** A later screenshot of the same long chat, kept with the first. */
+const extraImageSchema = new mongoose.Schema(
+  {
+    imageKey: { type: String, required: true },
+    mimeType: { type: String, required: true },
+    at: { type: Date, default: Date.now },
   },
   { _id: false }
 );
@@ -46,9 +57,15 @@ const leadCardSchema = new mongoose.Schema(
 
     imageKey: { type: String, required: true },
     mimeType: { type: String, required: true },
+    /** What the picture is: a card (or slip, or letterhead), or a screenshot of a chat with the buyer. */
+    kind: { type: String, enum: ['card', 'chat', 'other'] },
+    /** Later screenshots of a long chat — they arrive without the header that says who it is. */
+    moreImages: { type: [extraImageSchema], default: undefined },
 
     status: { type: String, enum: LEAD_CARD_STATUSES, default: 'reading', index: true },
     reading: { type: readingSchema, default: () => ({}) },
+    /** The company is the person's name, because the chat named no business — said before anyone confirms. */
+    companyFromName: { type: Boolean, default: undefined },
     /** 'model' when the model read it, 'none' when nobody could — the fields are then typed by hand. */
     readBy: { type: String, enum: ['model', 'none'] },
     /** Why a card could not be read, in words for the person who will type it in. */
