@@ -10,6 +10,7 @@ import { listParams, paginated } from '../utils/query.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { raiseTask } from '../services/task.service.js';
 import { findDepartment } from '../config/modules.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Orders the floor has stopped on [BLUEPRINT §25 by extension].
@@ -157,7 +158,7 @@ export const escalationOptions = asyncHandler(async (req, res) => {
 
 /* --------------------------------- Writing --------------------------------- */
 
-export const raiseEscalation = asyncHandler(async (req, res) => {
+export const raiseEscalation = asyncHandler(transactional(async (req, res) => {
   const order = await readableOrder(req.params.id, req.user);
 
   const { line, dispatch, kind, severity = 'blocking', detail, needsFrom } = req.body;
@@ -219,7 +220,7 @@ export const raiseEscalation = asyncHandler(async (req, res) => {
 
   await escalation.populate(POPULATE);
   res.status(201).json({ success: true, data: escalation });
-});
+}));
 
 /** The escalation, loaded and gated through the order it is about. */
 async function readableEscalation(id, user) {

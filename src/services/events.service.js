@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { afterCommit, currentTransaction } from '../utils/transaction.js';
 
 /**
  * Domain events.
@@ -53,12 +54,22 @@ export const EVENTS = {
   SAMPLE_REJECTED: 'sample.rejected',
 };
 
-export function publish(event, payload) {
+function emit(event, payload) {
   try {
     bus.emit(event, payload);
   } catch (error) {
     console.error(`[events] publishing ${event} failed:`, error);
   }
+}
+
+/**
+ * Inside a transaction the listeners wait for the commit: a handover for an order that was then
+ * rolled back would be a task about nothing, and a listener started inside the block would write
+ * through a transaction that has already ended.
+ */
+export function publish(event, payload) {
+  if (currentTransaction()?.real) afterCommit(() => emit(event, payload));
+  else emit(event, payload);
 }
 
 export const subscribe = (event, listener) => bus.on(event, listener);

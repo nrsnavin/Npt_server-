@@ -14,6 +14,7 @@ import asyncHandler from '../utils/asyncHandler.js';
 import ApiError from '../utils/ApiError.js';
 import CustomerMessage from '../models/CustomerMessage.js';
 import { isMetaWebhook, metaConfig, parseMetaWebhook, verifyMetaSignature } from '../providers/meta.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * The WhatsApp inbox [BLUEPRINT §41].
@@ -397,7 +398,7 @@ export const updateThread = asyncHandler(async (req, res) => {
  * record [§41.6]: six weeks later, "what did they actually ask for" is answered from the
  * enquiry rather than from somebody's personal chat.
  */
-export const convertToEnquiry = asyncHandler(async (req, res) => {
+export const convertToEnquiry = asyncHandler(transactional(async (req, res) => {
   const thread = await WhatsappThread.findById(req.params.id);
   if (!thread) throw ApiError.notFound('Conversation not found');
   if (!ownsRecord(req.user, thread)) throw ApiError.notFound('Conversation not found');
@@ -447,4 +448,4 @@ export const convertToEnquiry = asyncHandler(async (req, res) => {
   await thread.populate(POPULATE);
 
   res.status(201).json({ success: true, data: enquiry, thread });
-});
+}));

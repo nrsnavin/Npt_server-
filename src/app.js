@@ -5,6 +5,7 @@ import morgan from 'morgan';
 import compression from 'compression';
 import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
+import { randomUUID } from 'node:crypto';
 
 import { env, isProduction } from './config/env.js';
 import routes from './routes/index.js';
@@ -40,7 +41,34 @@ app.use(express.json({
 }));
 app.use(express.urlencoded({ extended: true }));
 app.use(compression());
-app.use(morgan(isProduction ? 'combined' : 'dev'));
+/*
+ * Every request carries an id: taken from the load balancer's X-Request-Id when it sends a sane
+ * one, made here otherwise. It goes back in the response header, into the access log line and
+ * into any error logged for the request — so "the screen said something went wrong at 3:12" can
+ * be traced to the exact request and its stack.
+ */
+app.use((req, res, next) => {
+  const offered = req.get('x-request-id');
+  req.id = offered && /^[\w.-]{1,64}$/.test(offered) ? offered : randomUUID();
+  res.set('X-Request-Id', req.id);
+  next();
+});
+morgan.token('id', (req) => req.id);
+morgan.token('user', (req) => (req.user?._id ? String(req.user._id) : '-'));
+/* Production logs one JSON object per request, which log search can filter by id, user or route. */
+const accessLog = isProduction
+  ? (tokens, req, res) => JSON.stringify({
+      t: tokens.date(req, res, 'iso'),
+      id: tokens.id(req, res),
+      user: tokens.user(req, res),
+      method: tokens.method(req, res),
+      url: tokens.url(req, res),
+      status: Number(tokens.status(req, res)) || null,
+      ms: Number(tokens['response-time'](req, res)) || null,
+      bytes: Number(tokens.res(req, res, 'content-length')) || null,
+    })
+  : ':method :url :status :response-time ms - :res[content-length] [:id]';
+app.use(morgan(accessLog));
 
 /*
  * The tight limit belongs on guessing a credential, not on holding one.

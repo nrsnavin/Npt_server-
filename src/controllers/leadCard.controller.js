@@ -6,6 +6,7 @@ import { assertCanOwnBuyer } from '../services/assignment.service.js';
 import { streamOf } from '../services/storage.service.js';
 import { cardFromUpload, confirmCard, discardCard } from '../services/leadCard.service.js';
 import { cardModelConfigured } from '../services/leadCard.llm.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Cards to confirm: photos of leads the model has read, waiting for a person [LeadCard.js].
@@ -76,7 +77,7 @@ export const uploadLeadCard = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: await card.populate(POPULATE) });
 });
 
-export const confirmLeadCard = asyncHandler(async (req, res) => {
+export const confirmLeadCard = asyncHandler(transactional(async (req, res) => {
   const card = await cardFor(req);
   const { assignedTo, ...edits } = req.body;
   const owner = assignedTo ? (await assertCanOwnBuyer(assignedTo))._id : undefined;
@@ -87,7 +88,7 @@ export const confirmLeadCard = asyncHandler(async (req, res) => {
     throw asApi(error);
   }
   res.json({ success: true, data: { card: await card.populate(POPULATE), lead } });
-});
+}));
 
 export const discardLeadCard = asyncHandler(async (req, res) => {
   const card = await cardFor(req);

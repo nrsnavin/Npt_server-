@@ -25,6 +25,7 @@ import { assertCanOwnBuyer } from '../services/assignment.service.js';
 import { buildSpec, registersFromPricing } from '../services/registers.service.js';
 import { put, remove } from '../services/storage.service.js';
 import { sendCsv } from '../utils/csv.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Sales orders [BLUEPRINT §12–13], and the release gate in front of production.
@@ -414,7 +415,7 @@ async function assertRefIsNew(externalRef) {
  * quote that was never recorded. The quotation door below is the ordinary one and should be
  * used wherever a quote exists, because it retypes nothing.
  */
-export const createOrder = asyncHandler(async (req, res) => {
+export const createOrder = asyncHandler(transactional(async (req, res) => {
   const customer = await Customer.findById(req.body.customer);
   if (!customer) throw ApiError.badRequest('That customer does not exist');
 
@@ -436,7 +437,7 @@ export const createOrder = asyncHandler(async (req, res) => {
 
   await order.populate(POPULATE);
   res.status(201).json({ success: true, data: orderVisibleTo(order, req.user) });
-});
+}));
 
 /**
  * The ordinary door: an accepted quotation becomes an order.
@@ -452,7 +453,7 @@ export const createOrder = asyncHandler(async (req, res) => {
  * by their quotation line id, so a PO that takes six of the eight models quoted is expressed by
  * naming six ids rather than by editing a copy of the quote.
  */
-export const orderFromQuotation = asyncHandler(async (req, res) => {
+export const orderFromQuotation = asyncHandler(transactional(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id)
     .populate('lines.mould', '_id')
     /* The costing behind each line, for its register picks — see the note where they are read.
@@ -552,7 +553,7 @@ export const orderFromQuotation = asyncHandler(async (req, res) => {
 
   await order.populate(POPULATE);
   res.status(201).json({ success: true, data: orderVisibleTo(order, req.user) });
-});
+}));
 
 /**
  * Correcting an order.

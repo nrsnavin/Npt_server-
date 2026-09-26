@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import OperationLock from '../models/OperationLock.js';
 import ApiError from '../utils/ApiError.js';
+import { currentTransaction, whenTransactionEnds } from '../utils/transaction.js';
 
 /**
  * How long a record's save waits for its owner's lock before giving up. Saves for one owner queue
@@ -12,11 +13,19 @@ import ApiError from '../utils/ApiError.js';
 export const OWNER_LOCK_WAIT_MS = 15000;
 
 export async function acquireOperationLock(key, { retryMs = 0 } = {}) {
+  /*
+   * Inside a transaction the lock is held until the transaction ends, not until the save that
+   * asked for it: releasing at the save would let offboarding in before this commit lands. And a
+   * retried attempt, or a second save in the same block, already holds it.
+   */
+  const transaction = currentTransaction();
+  if (transaction?.real && transaction.held.has(key)) return async () => {};
   const token = randomUUID();
   const deadline = Date.now() + retryMs;
   for (let attempt = 0; ; attempt += 1) {
     try {
-      await OperationLock.create({ _id: key, token, process: `${hostname()}:${process.pid}` });
+      /* Never part of a transaction: a lock only works if everyone else can see it at once. */
+      await OperationLock.create([{ _id: key, token, process: `${hostname()}:${process.pid}` }], { session: null });
       break;
     } catch (error) {
       if (error?.code !== 11000) throw error;
@@ -27,7 +36,16 @@ export async function acquireOperationLock(key, { retryMs = 0 } = {}) {
     }
   }
   /* A promise, not a lazy query, so a release that nobody awaits still happens. */
-  return () => OperationLock.deleteOne({ _id: key, token }).exec();
+  const release = () => OperationLock.deleteOne({ _id: key, token }).session(null).exec();
+  if (transaction?.real) {
+    transaction.held.set(key, release);
+    whenTransactionEnds(async () => {
+      transaction.held.delete(key);
+      await release();
+    });
+    return async () => {};
+  }
+  return release;
 }
 export async function withOperationLock(key, work) {
   const release = await acquireOperationLock(key);

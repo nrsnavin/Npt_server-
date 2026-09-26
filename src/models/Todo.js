@@ -114,6 +114,13 @@ const todoSchema = new mongoose.Schema(
     system: { type: Boolean, default: false },
     link: { type: String, trim: true },
     originKey: { type: String, trim: true },
+    /**
+     * What makes an automated task unique while it is open: `u:<user>:<origin>` for a person's
+     * task, `d:<department>:<origin>` for one on a department's queue. Set on creation, cleared
+     * when the task is completed, and unique — so two processes raising the same handover or the
+     * same reminder at the same moment get one task, not two. Kept by the hooks below.
+     */
+    openKey: { type: String },
   },
   { timestamps: true }
 );
@@ -143,6 +150,20 @@ todoSchema.index({ department: 1, completed: 1, 'escalation.at': -1 }, { sparse:
  * point of the queue is that one job is one row however many people could do it.
  */
 todoSchema.index({ department: 1, originKey: 1 }, { sparse: true });
+todoSchema.index({ openKey: 1 }, { unique: true, partialFilterExpression: { openKey: { $type: 'string' } } });
+
+/** The key an open automated task holds; completed ones hold none, so the job can be raised again. */
+export const openKeyFor = ({ user, department, originKey }) =>
+  originKey ? (user ? `u:${user._id || user}:${originKey}` : `d:${department}:${originKey}`) : undefined;
+
+todoSchema.pre('save', function keepOpenKey() {
+  if (this.isNew) {
+    if (this.originKey && !this.completed) this.openKey = openKeyFor(this);
+  } else if (this.isModified('completed')) {
+    /* Re-opening does not take the key back: another copy may have been raised meanwhile. */
+    if (this.completed) this.openKey = undefined;
+  }
+});
 
 protectWrites(todoSchema);
 export default mongoose.model('Todo', todoSchema);

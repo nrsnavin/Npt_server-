@@ -23,6 +23,7 @@ import { sendEmail } from '../services/notification.service.js';
 import { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } from '../providers/whatsapp.js';
 import { env, isProduction } from '../config/env.js';
 import { normalisePhone } from '../utils/phone.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Quotations [BLUEPRINT §10], and the price gate in front of them [§9].
@@ -536,10 +537,10 @@ export async function newQuotation(fields, user) {
   return quotation;
 }
 
-export const createQuotation = asyncHandler(async (req, res) => {
+export const createQuotation = asyncHandler(transactional(async (req, res) => {
   const quotation = await newQuotation(req.body, req.user);
   res.status(201).json({ success: true, data: quotation });
-});
+}));
 
 /**
  * Everything on a quotation that the customer actually reads.
@@ -698,7 +699,7 @@ export const updateQuotation = asyncHandler(async (req, res) => {
  * The old figures are already in `revisions`; this appends the new one and moves the live
  * fields onto it. Rev 0 ₹7.50, Rev 1 ₹7.30, Rev 2 ₹7.20 — all three answerable afterwards.
  */
-export const reviseQuotation = asyncHandler(async (req, res) => {
+export const reviseQuotation = asyncHandler(transactional(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id);
   if (!quotation) throw ApiError.notFound('Quotation not found');
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
@@ -739,7 +740,7 @@ export const reviseQuotation = asyncHandler(async (req, res) => {
 
   await quotation.save();
   res.json({ success: true, data: quotation });
-});
+}));
 
 /**
  * Sending it, which is the moment §9's gate applies.
@@ -838,7 +839,7 @@ export const sendQuotation = asyncHandler(async (req, res) => {
 });
 
 /** What the customer said. Accepting one is what moves the enquiry towards a PO. */
-export const respondToQuotation = asyncHandler(async (req, res) => {
+export const respondToQuotation = asyncHandler(transactional(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id);
   if (!quotation) throw ApiError.notFound('Quotation not found');
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
@@ -867,7 +868,7 @@ export const respondToQuotation = asyncHandler(async (req, res) => {
   });
 
   res.json({ success: true, data: quotation });
-});
+}));
 
 /**
  * The quotation as a document [§10].

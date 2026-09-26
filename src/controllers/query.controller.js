@@ -28,6 +28,7 @@ import { filtersFromPhrase } from '../services/querySearch.llm.js';
 import { urgencyByRules } from '../services/queryUrgency.rules.js';
 import { canRead, urgencyFor } from '../services/queryUrgency.llm.js';
 import { canDraft, draftReply } from '../services/queryReply.llm.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Queries: a question about a buyer, and everybody pulled in to answer it.
@@ -132,7 +133,7 @@ async function peopleBehind(participant) {
 
 /* --------------------------------- Raising --------------------------------- */
 
-export const createQuery = asyncHandler(async (req, res) => {
+export const createQuery = asyncHandler(transactional(async (req, res) => {
   const { customer: customerId, question, participants = [] } = req.body;
   const subject = req.body.subject || subjectFrom(question);
 
@@ -170,7 +171,7 @@ export const createQuery = asyncHandler(async (req, res) => {
   await shareCustomerWith(customer._id, [...granted, req.user._id]);
 
   res.status(201).json({ success: true, data: await withRefs(query) });
-});
+}));
 
 /**
  * One participant, validated.

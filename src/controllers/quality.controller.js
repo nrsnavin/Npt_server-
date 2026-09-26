@@ -12,6 +12,7 @@ import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { raiseTask } from '../services/task.service.js';
 import { qualityForLines } from '../services/quality.service.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Quality [BLUEPRINT §15, stage 7].
@@ -50,7 +51,7 @@ export const listQualityOptions = asyncHandler(async (req, res) => {
 
 /* -------------------------------- Recording -------------------------------- */
 
-export const recordInspection = asyncHandler(async (req, res) => {
+export const recordInspection = asyncHandler(transactional(async (req, res) => {
   const order = await SalesOrder.findById(req.params.id).populate('lines.mould', 'mouldCode name');
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -167,7 +168,7 @@ export const recordInspection = asyncHandler(async (req, res) => {
 
   await inspection.populate(POPULATE);
   res.status(201).json({ success: true, data: inspection, heldLine });
-});
+}));
 
 /* --------------------------------- Reading --------------------------------- */
 

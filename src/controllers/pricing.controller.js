@@ -16,6 +16,7 @@ import { EVENTS, publish } from '../services/events.service.js';
 import { allVisibleTo, assertMayCost, seesCosting, visibleTo } from '../services/pricingVisibility.js';
 import { ownsRecord } from '../services/ownership.service.js';
 import { priceFrom } from '../services/pricing.service.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Costing sheets [BLUEPRINT §7, §9].
@@ -377,7 +378,7 @@ export const getPricing = asyncHandler(async (req, res) => {
  * The customer is required either way. A cost is of a *job*, and the same hanger costs
  * different money for a buyer who takes 40,000 and one who takes 2,000.
  */
-export const createPricing = asyncHandler(async (req, res) => {
+export const createPricing = asyncHandler(transactional(async (req, res) => {
   const enquiry = req.body.enquiry ? await Enquiry.findById(req.body.enquiry) : null;
   if (req.body.enquiry && !enquiry) throw ApiError.badRequest('That enquiry does not exist');
 
@@ -456,7 +457,7 @@ export const createPricing = asyncHandler(async (req, res) => {
   /* Replied with names, as the detail read is — see `costPricing`. */
   await pricing.populate(POPULATE);
   res.status(201).json({ success: true, data: visibleTo(pricing, req.user) });
-});
+}));
 
 /**
  * Building the sheet: the costs, the margin, and the three prices.
@@ -725,7 +726,7 @@ export const decidePricing = asyncHandler(async (req, res) => {
  * Only an approved costing may be quoted. A sheet still in costing has no price yet, and one
  * waiting on §9 is precisely the case the approval route exists to stop.
  */
-export const quoteFromPricing = asyncHandler(async (req, res) => {
+export const quoteFromPricing = asyncHandler(transactional(async (req, res) => {
   const pricing = await Pricing.findById(req.params.id);
   if (!pricing) throw ApiError.notFound('Costing not found');
 
@@ -916,7 +917,7 @@ export const quoteFromPricing = asyncHandler(async (req, res) => {
   );
 
   return res.status(201).json({ success: true, data: quotation });
-});
+}));
 
 /**
  * What a costing produced.

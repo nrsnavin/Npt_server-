@@ -16,7 +16,8 @@ export function protectOwnership(schema, fields = ['assignedTo']) {
     try {
       for (const id of ids) {
         this.$locals.ownerLocks.push(await acquireOperationLock(`owner:${id}`, { retryMs: OWNER_LOCK_WAIT_MS }));
-        const user = await User.findById(id).select('isActive');
+        /* The latest word on the owner, not the transaction's snapshot from before we waited. */
+        const user = await User.findById(id).select('isActive').session(null);
         if (user?.isActive === false) throw ApiError.conflict('That owner has been deactivated. Reload and assign an active colleague.');
       }
     } catch (error) { await release(this); throw error; }

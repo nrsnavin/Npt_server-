@@ -36,6 +36,7 @@ import { ENQUIRY_ACTIONS, actionsFrom } from '../services/enquiryActions.js';
 import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { applySpec, buildSpec } from '../services/registers.service.js';
 import { copyRequirement, hasRequirement } from '../models/requirement.schema.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * How many rows an export may take.
@@ -459,7 +460,7 @@ export const getCustomer = asyncHandler(async (req, res) => {
   });
 });
 
-export const createCustomer = asyncHandler(async (req, res) => {
+export const createCustomer = asyncHandler(transactional(async (req, res) => {
   const duplicate = await findDuplicateCustomer(req.body);
   if (duplicate) {
     throw ApiError.conflict(
@@ -484,7 +485,7 @@ export const createCustomer = asyncHandler(async (req, res) => {
   });
 
   res.status(201).json({ success: true, data: customer });
-});
+}));
 
 export const updateCustomer = asyncHandler(async (req, res) => {
   const customer = await Customer.findById(req.params.id);
@@ -670,7 +671,7 @@ export const getLead = asyncHandler(async (req, res) => {
   res.json({ success: true, data: lead });
 });
 
-export const createLead = asyncHandler(async (req, res) => {
+export const createLead = asyncHandler(transactional(async (req, res) => {
   /*
    * Whose lead it is, asked rather than worked out.
    *
@@ -700,7 +701,7 @@ export const createLead = asyncHandler(async (req, res) => {
   await syncFollowUpReminder(lead);
 
   res.status(201).json({ success: true, data: lead });
-});
+}));
 
 export const updateLead = asyncHandler(async (req, res) => {
   const lead = await Lead.findById(req.params.id);
@@ -1166,7 +1167,7 @@ export async function convertLeadRecord(lead, user, body = {}) {
  * — a sample request refuses a converted or disqualified lead in its own words, before it gets
  * this far, and a second copy of the same refusal would be the one that drifted.
  */
-export const convertLead = asyncHandler(async (req, res) => {
+export const convertLead = asyncHandler(transactional(async (req, res) => {
   const lead = await Lead.findById(req.params.id);
   if (!lead) throw ApiError.notFound('Lead not found');
   if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
@@ -1175,7 +1176,7 @@ export const convertLead = asyncHandler(async (req, res) => {
 
   const { customer, enquiry } = await convertLeadRecord(lead, req.user, req.body);
   res.status(201).json({ success: true, data: { lead, customer, enquiry } });
-});
+}));
 
 /* -------------------------------- Enquiries -------------------------------- */
 
@@ -1558,7 +1559,7 @@ export const getEnquiry = asyncHandler(async (req, res) => {
   res.json({ success: true, data: enquiry });
 });
 
-export const createEnquiry = asyncHandler(async (req, res) => {
+export const createEnquiry = asyncHandler(transactional(async (req, res) => {
   const customer = await Customer.findById(req.body.customer);
   if (!customer) throw ApiError.badRequest('That customer does not exist');
   if (!ownsRecord(req.user, customer)) {
@@ -1571,14 +1572,14 @@ export const createEnquiry = asyncHandler(async (req, res) => {
   );
 
   res.status(201).json({ success: true, data: enquiry });
-});
+}));
 
 /**
  * Creates several enquiries from one conversation — one per model, sharing a group
  * reference so follow-up keeps them together while sample and price stay answerable
  * per model.
  */
-export const createEnquiryGroup = asyncHandler(async (req, res) => {
+export const createEnquiryGroup = asyncHandler(transactional(async (req, res) => {
   const customer = await Customer.findById(req.body.customer);
   if (!customer) throw ApiError.badRequest('That customer does not exist');
   if (!ownsRecord(req.user, customer)) {
@@ -1612,7 +1613,7 @@ export const createEnquiryGroup = asyncHandler(async (req, res) => {
   }
 
   res.status(201).json({ success: true, data: { groupRef, enquiries: created } });
-});
+}));
 
 export const updateEnquiry = asyncHandler(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);

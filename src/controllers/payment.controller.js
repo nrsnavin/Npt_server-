@@ -11,6 +11,7 @@ import { recordChange, snapshot } from '../services/audit.service.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { raiseTask } from '../services/task.service.js';
 import { dueDateFor, orderPosition } from '../services/receivable.service.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Payments [BLUEPRINT §20, §25].
@@ -322,7 +323,7 @@ export const paymentDay = asyncHandler(async (req, res) => {
  * percentage out of a sentence is the kind of cleverness that is right nine times and books the
  * wrong number the tenth. The person typing it has the PO in front of them.
  */
-export const raiseAdvance = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
+export const raiseAdvance = asyncHandler(withOrderLock(req => req.params.id, transactional(async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -363,7 +364,7 @@ export const raiseAdvance = asyncHandler(withOrderLock(req => req.params.id, asy
 
   await applyPaymentPositions([receivable]);
   res.status(201).json({ success: true, data: await receivable.populate(POPULATE) });
-}));
+})));
 
 /**
  * A conversation, logged.
@@ -419,7 +420,7 @@ export const logFollowUp = asyncHandler(async (req, res) => {
  * that as a *follow-up*, which is what it is: something they were told, not something anybody
  * has seen.
  */
-export const recordReceipt = asyncHandler(withOrderLock(async req => (await Receivable.findById(req.params.id).select('order'))?.order || req.params.id, async (req, res) => {
+export const recordReceipt = asyncHandler(withOrderLock(async req => (await Receivable.findById(req.params.id).select('order'))?.order || req.params.id, transactional(async (req, res) => {
   const receivable = await readable(req.params.id, req.user);
 
   const key = req.body.idempotencyKey;
@@ -483,7 +484,7 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
 
   await receivable.populate(POPULATE);
   res.status(201).json({ success: true, data: receivable });
-}));
+})));
 
 /**
  * Marking one disputed or on hold, and clearing it again.

@@ -7,7 +7,7 @@ export function notFoundHandler(req, _res, next) {
 }
 
 // eslint-disable-next-line no-unused-vars
-export function errorHandler(err, _req, res, _next) {
+export function errorHandler(err, req, res, _next) {
   let error = err;
 
   if (err instanceof mongoose.Error.VersionError || err instanceof mongoose.Error.DocumentNotFoundError) {
@@ -57,12 +57,14 @@ export function errorHandler(err, _req, res, _next) {
     const unexpected = status >= 500 && isProduction;
     error = new ApiError(
       status,
-      unexpected ? 'Something went wrong on the server. It has been logged.' : err.message || 'Internal server error'
+      unexpected
+        ? `Something went wrong on the server. It has been logged${req.id ? ` (reference ${req.id})` : ''}.`
+        : err.message || 'Internal server error'
     );
   }
 
   if (error.statusCode >= 500) {
-    console.error(err);
+    console.error(`[request ${req.id || '-'}] ${req.method} ${req.originalUrl}`, err);
   }
 
   res.status(error.statusCode).json({

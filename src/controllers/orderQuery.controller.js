@@ -8,6 +8,7 @@ import { listParams, paginated } from '../utils/query.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { raiseTask } from '../services/task.service.js';
 import { findDepartment } from '../config/modules.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Questions asked against a sales order [BLUEPRINT §12 by extension, §25 for the clock].
@@ -153,7 +154,7 @@ export const listQueryQueue = asyncHandler(async (req, res) => {
 
 /* --------------------------------- Writing --------------------------------- */
 
-export const raiseOrderQuery = asyncHandler(async (req, res) => {
+export const raiseOrderQuery = asyncHandler(transactional(async (req, res) => {
   const order = await readableOrder(req.params.id, req.user);
 
   const { line, dispatch, askedOf, question, urgency = 'normal' } = req.body;
@@ -226,7 +227,7 @@ export const raiseOrderQuery = asyncHandler(async (req, res) => {
 
   await query.populate(POPULATE);
   res.status(201).json({ success: true, data: query });
-});
+}));
 
 /**
  * Answering.

@@ -56,10 +56,25 @@ export async function raiseTask({
     if (existing) return existing;
   }
 
-  return Todo.create({
+  return createOnce({
     user, department: onQueue, title, notes, dueDate, priority, link, originKey,
     customer, order, system: true,
-  });
+  }, { user, originKey, completed: false });
+}
+
+/**
+ * Creates an automated task, or returns the open copy another process created at the same moment.
+ * The check above is a fast path; the unique `openKey` is what actually guarantees one copy.
+ */
+async function createOnce(fields, sameTask) {
+  try {
+    return await Todo.create(fields);
+  } catch (error) {
+    if (error?.code !== 11000 || !fields.originKey) throw error;
+    const existing = await Todo.findOne(sameTask);
+    if (existing) return existing;
+    throw error;
+  }
 }
 
 /**
@@ -82,9 +97,10 @@ export async function raiseDepartmentTask({
     if (existing) return existing;
   }
 
-  return Todo.create({
-    department, title, notes, dueDate, priority, link, originKey, customer, order, system: true,
-  });
+  return createOnce(
+    { department, title, notes, dueDate, priority, link, originKey, customer, order, system: true },
+    { department, originKey, completed: false }
+  );
 }
 
 /**
@@ -96,7 +112,7 @@ export async function resolveTasks(originKey) {
 
   const result = await Todo.updateMany(
     { originKey, completed: false },
-    { $set: { completed: true, completedAt: new Date() } }
+    { $set: { completed: true, completedAt: new Date() }, $unset: { openKey: 1 } }
   );
   return result.modifiedCount || 0;
 }
