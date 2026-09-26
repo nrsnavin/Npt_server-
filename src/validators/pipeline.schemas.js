@@ -331,3 +331,19 @@ export const bulkReassignSchema = z.object({
   ids: z.array(objectId).min(1, 'Pick at least one record').max(500, 'Too many at once'),
   assignTo: objectId,
 });
+
+/** A card made a lead: the reading as a person has corrected it [LeadCard.js]. */
+export const leadCardConfirmSchema = z.object({
+  company: z.string().trim().min(2, 'A lead needs a company name').max(160).optional(),
+  contactName: z.string().trim().max(160).optional(),
+  designation: z.string().trim().max(160).optional(),
+  mobile: z.string().trim().max(40).optional(),
+  whatsapp: z.string().trim().max(40).optional(),
+  email: z.string().trim().email('That email address is not valid').optional().or(z.literal('')),
+  city: z.string().trim().max(120).optional(),
+  state: z.string().trim().max(120).optional(),
+  productInterest: z.string().trim().max(300).optional(),
+  notes: z.string().trim().max(300).optional(),
+  source: z.enum(CUSTOMER_SOURCES).optional(),
+  assignedTo: objectId.optional(),
+});

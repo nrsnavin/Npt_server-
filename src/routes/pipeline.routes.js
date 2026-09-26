@@ -1,4 +1,7 @@
 import { Router } from 'express';
+import {
+  listLeadCards, getLeadCard, leadCardImage, uploadLeadCard, confirmLeadCard, discardLeadCard,
+} from '../controllers/leadCard.controller.js';
 import { clearSite, pinSite } from '../controllers/customerSite.controller.js';
 import {
   listCustomers, getCustomer, getCustomerMap, createCustomer, updateCustomer, checkDuplicateCustomer,
@@ -32,7 +35,7 @@ import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
   customerSchema, customerUpdateSchema,
-  leadSchema, leadUpdateSchema, leadActivitySchema, convertLeadSchema,
+  leadSchema, leadUpdateSchema, leadActivitySchema, convertLeadSchema, leadCardConfirmSchema,
   enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema,
   bulkReassignSchema,
 } from '../validators/pipeline.schemas.js';
@@ -142,6 +145,13 @@ router.get('/leads/owners', requireModule('enquiries'), leadOwners);
 router.get('/leads/team', requireModule('enquiries'), marketingRoster);
 router.get('/leads', requireModule('enquiries'), listLeads);
 router.post('/leads', requireModule('enquiries', 'write'), validate(leadSchema), createLead);
+/* Cards to confirm: photos of leads, read by the model, made leads only by a person [LeadCard.js]. */
+router.get('/lead-cards', requireModule('enquiries'), listLeadCards);
+router.post('/lead-cards', requireModule('enquiries', 'write'), singleImage('image'), uploadLeadCard);
+router.get('/lead-cards/:id', requireModule('enquiries'), getLeadCard);
+router.get('/lead-cards/:id/image', requireModule('enquiries'), leadCardImage);
+router.post('/lead-cards/:id/confirm', requireModule('enquiries', 'write'), validate(leadCardConfirmSchema), confirmLeadCard);
+router.post('/lead-cards/:id/discard', requireModule('enquiries', 'write'), discardLeadCard);
 router.get('/leads/:id', requireModule('enquiries'), getLead);
 router.patch('/leads/:id', requireModule('enquiries', 'write'), validate(leadUpdateSchema), updateLead);
 router.post('/leads/:id/activities', requireModule('enquiries', 'write'), validate(leadActivitySchema), addLeadActivity);

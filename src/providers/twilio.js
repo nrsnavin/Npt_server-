@@ -182,3 +182,47 @@ export async function sendWhatsApp({ to, body, contentSid, contentVariables }) {
 
   return post(params, { channel: 'whatsapp' });
 }
+
+/** The largest photo taken from a message: WhatsApp's own limit for an image is 5 MB. */
+export const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Where message media may be fetched from. Twilio's API only, by default — the URL arrives in a
+ * webhook body, and fetching whatever address a body names would let anybody holding the webhook
+ * token make this server call anywhere. `WHATSAPP_MEDIA_HOSTS` widens it (a comma list of hosts),
+ * which is how the tests point it at a local server.
+ */
+const mediaHosts = () =>
+  (process.env.WHATSAPP_MEDIA_HOSTS || 'api.twilio.com').split(',').map((host) => host.trim().toLowerCase()).filter(Boolean);
+
+/**
+ * The bytes of a photo sent to the WhatsApp number, as `{ buffer, mimeType }`.
+ *
+ * Twilio's media URLs need the account's credentials, and redirect to a signed CDN address that
+ * does not (fetch drops the Authorization header when the host changes).
+ */
+export async function fetchMedia(url, { maxBytes = MAX_MEDIA_BYTES } = {}) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error('The media address is not a URL');
+  }
+  if (!mediaHosts().includes(parsed.hostname.toLowerCase())) {
+    throw new Error(`Media is only fetched from ${mediaHosts().join(', ')}, not ${parsed.hostname}`);
+  }
+
+  const { accountSid, authToken } = env.twilio;
+  const headers = accountSid && authToken
+    ? { Authorization: `Basic ${Buffer.from(`${accountSid}:${authToken}`).toString('base64')}` }
+    : {};
+  const response = await fetch(parsed, { headers, signal: AbortSignal.timeout(20000) });
+  if (!response.ok) throw new Error(`The media could not be fetched (${response.status})`);
+
+  const declared = Number(response.headers.get('content-length') || 0);
+  if (declared > maxBytes) throw new Error('The photo is too large');
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length > maxBytes) throw new Error('The photo is too large');
+
+  return { buffer, mimeType: (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase() };
+}

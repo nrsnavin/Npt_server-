@@ -2,6 +2,7 @@ import WhatsappThread, { CLOSED_THREAD_STATUSES, THREAD_STATUSES } from '../mode
 import Customer from '../models/Customer.js';
 import Lead from '../models/Lead.js';
 import { receiveMessage } from '../services/whatsapp.inbox.js';
+import { handleStaffMessage, staffForNumber } from '../services/leadCard.service.js';
 import { createEnquiryRecord } from './pipeline.controller.js';
 import { assertAssignable, assertCanOwnBuyer, marketingTeam } from '../services/assignment.service.js';
 import {
@@ -68,12 +69,31 @@ export const inboundWebhook = asyncHandler(async (req, res) => {
     if (url) media.push({ url, contentType: payload[`MediaContentType${index}`] });
   }
 
+  /* `whatsapp:+9198…` is how Twilio addresses the channel; the number is what we key on. */
+  const from = String(payload.From || payload.from || '').replace(/^whatsapp:/i, '');
+  const body = payload.Body ?? payload.body;
+  const attached = media.length ? media : payload.media;
+  const providerId = payload.MessageSid || payload.messageId;
+
+  /*
+   * A staff member's own phone: a photo is a lead's card to read, and YES or NO answers the
+   * latest card waiting on them (leadCard.service). Anything else a colleague sends, and every
+   * message from anybody else, goes to the inbox as it always has.
+   */
+  const staff = await staffForNumber(from);
+  if (staff) {
+    const handled = await handleStaffMessage({ staff, from, body, media: attached, providerId });
+    if (handled) {
+      res.json({ success: true, outcome: handled.outcome, ...(handled.why ? { why: handled.why } : {}) });
+      return;
+    }
+  }
+
   const result = await receiveMessage({
-    /* `whatsapp:+9198…` is how Twilio addresses the channel; the number is what we key on. */
-    from: String(payload.From || payload.from || '').replace(/^whatsapp:/i, ''),
-    body: payload.Body ?? payload.body,
-    media: media.length ? media : payload.media,
-    providerId: payload.MessageSid || payload.messageId,
+    from,
+    body,
+    media: attached,
+    providerId,
     profileName: payload.ProfileName || payload.profileName,
     receivedAt: payload.receivedAt,
   });
