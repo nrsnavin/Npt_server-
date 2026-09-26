@@ -182,6 +182,14 @@ test('the webhook handshake echoes the challenge only for the right verify token
   assert.equal(await right.text(), '1158201444');
   const wrong = await fetch(`${baseUrl}/api/whatsapp/inbound?hub.mode=subscribe&hub.verify_token=guess&hub.challenge=1158201444`);
   assert.equal(wrong.status, 403);
+  /* A server not set up for Meta has no webhook to verify: not found, rather than a server fault. */
+  const token = process.env.META_WA_VERIFY_TOKEN;
+  delete process.env.META_WA_VERIFY_TOKEN;
+  try {
+    assert.equal((await fetch(`${baseUrl}/api/whatsapp/inbound?hub.mode=subscribe&hub.verify_token=x&hub.challenge=1`)).status, 404);
+  } finally {
+    process.env.META_WA_VERIFY_TOKEN = token;
+  }
 });
 
 test('a message from Meta is taken only when it carries the app secret’s signature', async () => {

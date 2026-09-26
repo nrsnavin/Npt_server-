@@ -68,7 +68,8 @@ export const verifyWebhook = (req, res) => {
   const mode = req.query['hub.mode'];
   const offered = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
-  if (!verifyToken) return res.status(503).type('text/plain').send('Set META_WA_VERIFY_TOKEN first.');
+  /* Not set up for Meta: there is no webhook to verify here — not a server fault. */
+  if (!verifyToken) return res.status(404).type('text/plain').send('Not found');
   if (mode !== 'subscribe' || offered !== verifyToken || !challenge) return res.status(403).type('text/plain').send('Forbidden');
   return res.status(200).type('text/plain').send(String(challenge));
 };

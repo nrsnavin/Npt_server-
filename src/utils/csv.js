@@ -61,7 +61,7 @@ const breathe = () => new Promise((resolve) => setImmediate(resolve));
  * with a pause for the event loop after each, the export takes about as long and nobody else
  * notices it.
  */
-export async function collect(query, { batchSize = 200 } = {}) {
+export async function collect(query, { batchSize = 1000 } = {}) {
   const rows = [];
   for await (const row of query.cursor({ batchSize })) {
     rows.push(row);
@@ -71,7 +71,7 @@ export async function collect(query, { batchSize = 200 } = {}) {
 }
 
 /** Sends a CSV as a download, named for what it is and when it was taken. Written in chunks. */
-export async function sendCsv(res, filename, rows, columns, { chunk = 500 } = {}) {
+export async function sendCsv(res, filename, rows, columns, { chunk = 2000 } = {}) {
   const stamp = new Date().toISOString().slice(0, 10);
 
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
