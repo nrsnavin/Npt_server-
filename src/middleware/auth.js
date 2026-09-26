@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
-import User from '../models/User.js';
+import User, { userCacheKey } from '../models/User.js';
+import { cacheGet, cacheSet } from '../services/cache.service.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { accessLevel } from '../services/access.service.js';
@@ -10,6 +11,23 @@ export const signToken = (user) =>
   jwt.sign({ sub: user._id.toString(), role: user.role }, env.jwtSecret, {
     expiresIn: env.jwtExpiresIn,
   });
+
+/**
+ * The signed-in person, from Redis when it holds a copy less than a minute old, otherwise from
+ * MongoDB (and then cached). Every change to a user drops the copy — see the hooks in User.js —
+ * so deactivation and a new password take effect on the next request, not a minute later.
+ * Without Redis this is the plain read it always was.
+ */
+const USER_TTL_SECONDS = 60;
+async function currentUser(id) {
+  const cached = await cacheGet(userCacheKey(id));
+  if (cached) return User.hydrate(cached);
+  const user = await User.findById(id);
+  if (user) {
+    cacheSet(userCacheKey(id), user.toObject({ depopulate: true, virtuals: false, getters: false, transform: false }), USER_TTL_SECONDS);
+  }
+  return user;
+}
 
 export const authenticate = asyncHandler(async (req, _res, next) => {
   const header = req.headers.authorization || '';
@@ -23,7 +41,7 @@ export const authenticate = asyncHandler(async (req, _res, next) => {
     throw ApiError.unauthorized('Invalid or expired token');
   }
 
-  const user = await User.findById(payload.sub);
+  const user = await currentUser(payload.sub);
   if (!user || !user.isActive) throw ApiError.unauthorized('Account is no longer active');
   if (user.issuedBeforePasswordChange(payload.iat)) {
     throw ApiError.unauthorized('Your password was changed. Sign in again.');

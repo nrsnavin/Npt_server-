@@ -4,7 +4,7 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
-import { sendCsv } from '../utils/csv.js';
+import { collect, sendCsv } from '../utils/csv.js';
 import Attachment from '../models/Attachment.js';
 import { put, remove } from '../services/storage.service.js';
 import { allMouldsVisibleTo, mouldVisibleTo, seesMachineRate } from '../services/pricingVisibility.js';
@@ -179,9 +179,9 @@ export const updateMould = asyncHandler(async (req, res) => {
 export const exportMoulds = asyncHandler(async (req, res) => {
   const { sort, filter } = mouldQuery(req.query, req.user);
 
-  const rows = await Mould.find(filter)
+  const rows = await collect(Mould.find(filter)
     .sort(sort)
-    .limit(EXPORT_LIMIT);
+    .limit(EXPORT_LIMIT));
 
   /*
    * The derived figures go in the file. A tool-room spreadsheet that carries only the measured
@@ -194,7 +194,7 @@ export const exportMoulds = asyncHandler(async (req, res) => {
    */
   const money = seesMachineRate(req.user);
 
-  sendCsv(res, 'moulds', rows, [
+  await sendCsv(res, 'moulds', rows, [
     ['Mould', (row) => row.mouldCode],
     ['Name', (row) => row.name],
     ['Category', (row) => row.category],

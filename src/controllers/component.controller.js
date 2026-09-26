@@ -5,7 +5,7 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
-import { sendCsv } from '../utils/csv.js';
+import { collect, sendCsv } from '../utils/csv.js';
 
 /** The same ceiling every other export uses — see pipeline.controller.js. */
 const EXPORT_LIMIT = 5000;
@@ -159,9 +159,9 @@ export const componentPricings = asyncHandler(async (req, res) => {
 
 export const exportComponents = asyncHandler(async (req, res) => {
   const { sort, filter } = componentQuery(req.query);
-  const rows = await Component.find(filter).sort(sort).limit(EXPORT_LIMIT);
+  const rows = await collect(Component.find(filter).sort(sort).limit(EXPORT_LIMIT));
 
-  sendCsv(res, `${filter.kind}s`, rows, [
+  await sendCsv(res, `${filter.kind}s`, rows, [
     ['Name', (row) => row.name],
     ['Code', (row) => row.code],
     ['Colour', (row) => row.colour],

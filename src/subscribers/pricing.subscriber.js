@@ -19,12 +19,21 @@ import { raiseTask, resolveTasks } from '../services/task.service.js';
  *   Costing → refused            ⇒ it goes back to whoever built it
  */
 
-const safely = (name, handler) => async (payload) => {
-  try {
-    await handler(payload);
-  } catch (error) {
-    console.error(`[pricing] ${name} failed:`, error);
-  }
+/**
+ * A listener, named so the outbox can tell which listeners of an event have already succeeded,
+ * and loud when it fails — the failure is logged here and handed back so the event is retried.
+ */
+const safely = (name, handler) => {
+  const listener = async (payload) => {
+    try {
+      await handler(payload);
+    } catch (error) {
+      console.error(`[pricing] ${name} failed:`, error);
+      throw error;
+    }
+  };
+  listener.handoverName = `pricing:${name}`;
+  return listener;
 };
 
 /**
@@ -135,7 +144,7 @@ export function registerPricingSubscribers() {
           requestedBy: enquiry.assignedTo,
           statusHistory: [{ to: 'requested', by: enquiry.assignedTo }],
         });
-        publish(EVENTS.PRICING_REQUESTED, { pricing, enquiry });
+        await publish(EVENTS.PRICING_REQUESTED, { pricing, enquiry });
       }
 
       await Promise.all(

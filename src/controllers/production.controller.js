@@ -16,7 +16,7 @@ import { warnPromiseWillSlip } from '../services/productionEscalation.service.js
 import { PRESSING_BANDS, byUrgency, urgencyOf } from '../services/productionUrgency.service.js';
 import { urgentOrdersFor } from '../services/urgentOrders.service.js';
 import OrderQuery from '../models/OrderQuery.js';
-import { sendCsv } from '../utils/csv.js';
+import { collect, sendCsv } from '../utils/csv.js';
 
 /**
  * Production status [BLUEPRINT §14–17].
@@ -223,10 +223,10 @@ export const listProductionLines = asyncHandler(async (req, res) => {
 });
 
 export const exportProductionLines = asyncHandler(async (req, res) => {
-  const orders = await SalesOrder.find({ ...RELEASED, ...ownershipFilter(req.user) })
+  const orders = await collect(SalesOrder.find({ ...RELEASED, ...ownershipFilter(req.user) })
     .populate(LINE_POPULATE)
     .sort({ orderDate: -1, _id: -1 })
-    .limit(EXPORT_LIMIT);
+    .limit(EXPORT_LIMIT));
 
   const rows = orders.flatMap((order) =>
     (order.lines || []).map((line, index) => ({ order, line, index }))
@@ -237,7 +237,7 @@ export const exportProductionLines = asyncHandler(async (req, res) => {
    * off their screen keeps it out of their download. A redaction the Export button walks around
    * is not a redaction.
    */
-  sendCsv(res, 'production', rows, [
+  await sendCsv(res, 'production', rows, [
     ['Order', (row) => row.order.number],
     ['Customer', (row) => row.order.customer?.name],
     ['Line', (row) => row.index + 1],

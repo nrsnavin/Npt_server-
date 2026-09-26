@@ -91,3 +91,29 @@ test('every response carries a request id, kept from the load balancer when it s
   const junk = await fetch(`${baseUrl}/api/nowhere`, { headers: { 'X-Request-Id': 'bad id with spaces <script>' } });
   assert.match(junk.headers.get('x-request-id'), /^[0-9a-f-]{36}$/, 'a malformed id is replaced, not echoed');
 });
+
+/* ------------------------------ Events are awaited ------------------------------ */
+
+test('every publish is awaited, so its outbox row is written inside the transaction', async () => {
+  const { readdir, readFile } = await import('node:fs/promises');
+  const path = await import('node:path');
+  const files = [];
+  const walk = async (dir) => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.name.endsWith('.js')) files.push(full);
+    }
+  };
+  await walk(new URL('../src', import.meta.url).pathname);
+  const offenders = [];
+  for (const file of files) {
+    const lines = (await readFile(file, 'utf8')).split('\n');
+    lines.forEach((line, index) => {
+      if (/(?<![\w.])publish\(/.test(line) && !/await publish\(|function publish\(/.test(line)) {
+        offenders.push(`${file.split('/src/')[1]}:${index + 1}`);
+      }
+    });
+  }
+  assert.deepEqual(offenders, [], 'publish() without await');
+});

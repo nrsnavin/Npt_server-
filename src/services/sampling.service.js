@@ -243,7 +243,7 @@ export async function createSampleRequest(
     ],
   });
 
-  publish(EVENTS.SAMPLE_CREATED, { sample, enquiry, autoCreated });
+  await publish(EVENTS.SAMPLE_CREATED, { sample, enquiry, autoCreated });
   return { sample, created: true };
 }
 

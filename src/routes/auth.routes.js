@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import { SharedRateStore } from '../services/cache.service.js';
 import {
   register,
   login,
@@ -38,6 +39,7 @@ const router = Router();
 const otpRequestLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: 20,
+  store: new SharedRateStore('otp-request'),
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many code requests from this device. Try again later.' },
@@ -46,6 +48,7 @@ const otpRequestLimiter = rateLimit({
 const otpVerifyLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
+  store: new SharedRateStore('otp-verify'),
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many verification attempts. Try again later.' },

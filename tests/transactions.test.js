@@ -120,15 +120,19 @@ test('an event inside a transaction reaches listeners only after the commit, nev
   events.subscribe('test.tx_event', listener);
   try {
     await assert.rejects(tx.inTransaction(async () => {
-      events.publish('test.tx_event', { id: 'rolled-back' });
+      await events.publish('test.tx_event', { id: 'rolled-back' });
       throw new Error('something went wrong after publishing');
     }));
     await tx.inTransaction(async () => {
-      events.publish('test.tx_event', { id: 'committed' });
+      await events.publish('test.tx_event', { id: 'committed' });
       assert.deepEqual(heard, [], 'not before the commit');
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.deepEqual(heard, ['committed']);
+    /* And the written-down copy of the event rolled back with everything else. */
+    const { default: Outbox } = await import('../src/models/Outbox.js');
+    assert.equal(await Outbox.countDocuments({ event: 'test.tx_event', 'payload.id': 'rolled-back' }), 0);
+    assert.equal(await Outbox.countDocuments({ event: 'test.tx_event', 'payload.id': 'committed', status: 'done' }), 1);
   } finally {
     events.unsubscribe('test.tx_event', listener);
   }

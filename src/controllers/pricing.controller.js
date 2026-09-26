@@ -453,7 +453,7 @@ export const createPricing = asyncHandler(transactional(async (req, res) => {
     statusHistory: [{ to: 'requested', by: req.user._id }],
   });
 
-  publish(EVENTS.PRICING_REQUESTED, { pricing, by: req.user });
+  await publish(EVENTS.PRICING_REQUESTED, { pricing, by: req.user });
   /* Replied with names, as the detail read is — see `costPricing`. */
   await pricing.populate(POPULATE);
   res.status(201).json({ success: true, data: visibleTo(pricing, req.user) });
@@ -631,7 +631,7 @@ export const costPricing = asyncHandler(async (req, res) => {
   await pricing.save();
   await recordChange({ model: 'Pricing', doc: pricing, before, by: req.user });
 
-  publish(to === 'approved' ? EVENTS.PRICING_APPROVED : EVENTS.PRICING_APPROVAL_REQUIRED, {
+  await publish(to === 'approved' ? EVENTS.PRICING_APPROVED : EVENTS.PRICING_APPROVAL_REQUIRED, {
     pricing,
     by: req.user,
   });
@@ -700,7 +700,7 @@ export const decidePricing = asyncHandler(async (req, res) => {
   }
 
   await pricing.save();
-  publish(approve ? EVENTS.PRICING_APPROVED : EVENTS.PRICING_REJECTED, { pricing, by: req.user });
+  await publish(approve ? EVENTS.PRICING_APPROVED : EVENTS.PRICING_REJECTED, { pricing, by: req.user });
 
   await pricing.populate(POPULATE);
   res.json({ success: true, data: visibleTo(pricing, req.user) });

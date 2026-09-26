@@ -14,12 +14,21 @@ import { raiseTask, resolveTasks } from '../services/task.service.js';
  * decision away from the only person who has spoken to the buyer.
  */
 
-const safely = (name, handler) => async (payload) => {
-  try {
-    await handler(payload);
-  } catch (error) {
-    console.error(`[quotation] ${name} failed:`, error);
-  }
+/**
+ * A listener, named so the outbox can tell which listeners of an event have already succeeded,
+ * and loud when it fails — the failure is logged here and handed back so the event is retried.
+ */
+const safely = (name, handler) => {
+  const listener = async (payload) => {
+    try {
+      await handler(payload);
+    } catch (error) {
+      console.error(`[quotation] ${name} failed:`, error);
+      throw error;
+    }
+  };
+  listener.handoverName = `quotation:${name}`;
+  return listener;
 };
 
 const key = (quotation, kind) => `quotation:${quotation._id}:${kind}`;
@@ -57,9 +66,9 @@ async function advanceEnquiry(enquiryId, to, note) {
   enquiry.statusHistory.push({ from, to, note });
   await enquiry.save();
 
-  publish(EVENTS.ENQUIRY_STATUS_CHANGED, { enquiry, from, to });
+  await publish(EVENTS.ENQUIRY_STATUS_CHANGED, { enquiry, from, to });
   const specific = statusEvent(to);
-  if (specific) publish(specific, { enquiry, from });
+  if (specific) await publish(specific, { enquiry, from });
 
   return enquiry;
 }

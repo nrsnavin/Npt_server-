@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { askForJson, llmConfigured, BUDGETS } from './llm.client.js';
 import { bufferOf } from './storage.service.js';
 import { OFFICE_TYPES, officeText } from './officeText.js';
+import { cacheGet, cacheGetMany, cacheSet } from './cache.service.js';
 
 /**
  * Reading the files posted into a query thread — a buyer's PO, a photo of a short carton, a price
@@ -67,10 +68,28 @@ const held = new Map();
 const HOLD_AT_MOST = 1000;
 const inFlight = new Map();
 
-function hold(id, reading) {
+/*
+ * Also in Redis when it is configured, so every API instance shares a reading and a restart does
+ * not pay for it again. Still never in MongoDB, a report or an export — a cache with an expiry.
+ */
+const READING_TTL_SECONDS = 30 * 24 * 3600;
+const sharedKey = (id) => `llm:qfile:${id}`;
+
+function hold(id, reading, { share = true } = {}) {
   held.delete(id);
   held.set(id, reading);
   if (held.size > HOLD_AT_MOST) held.delete(held.keys().next().value);
+  if (share) cacheSet(sharedKey(id), reading, READING_TTL_SECONDS);
+}
+
+/** Brings readings another instance made into this one's memory — one round trip for a page. */
+export async function warmFileReadings(queries = []) {
+  const ids = [...new Set(queries.flatMap((query) => filesOf(query).map((file) => String(file._id))))].filter((id) => !held.has(id));
+  if (!ids.length) return;
+  const found = await cacheGetMany(ids.map(sharedKey));
+  ids.forEach((id, index) => {
+    if (found[index]) hold(id, found[index], { share: false });
+  });
 }
 
 /** For the tests: nothing carried from one case into the next. */
@@ -128,7 +147,14 @@ function readingOf(file) {
   if (!inFlight.has(id)) {
     inFlight.set(
       id,
-      read(file)
+      cacheGet(sharedKey(id))
+        .then((shared) => {
+          if (shared) {
+            hold(id, shared, { share: false });
+            return shared;
+          }
+          return read(file);
+        })
         .then((reading) => {
           if (reading) hold(id, reading);
           return reading;

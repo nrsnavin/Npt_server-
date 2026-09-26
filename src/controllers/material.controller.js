@@ -5,7 +5,7 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
-import { sendCsv } from '../utils/csv.js';
+import { collect, sendCsv } from '../utils/csv.js';
 
 /** The same ceiling every other export uses — see pipeline.controller.js. */
 const EXPORT_LIMIT = 5000;
@@ -168,9 +168,9 @@ export const materialPricings = asyncHandler(async (req, res) => {
 
 export const exportMaterials = asyncHandler(async (req, res) => {
   const { sort, filter } = materialQuery(req.query);
-  const rows = await Material.find(filter).sort(sort).limit(EXPORT_LIMIT);
+  const rows = await collect(Material.find(filter).sort(sort).limit(EXPORT_LIMIT));
 
-  sendCsv(res, 'materials', rows, [
+  await sendCsv(res, 'materials', rows, [
     ['Name', (row) => row.name],
     ['Code', (row) => row.code],
     ['Type', (row) => row.type],

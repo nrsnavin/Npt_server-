@@ -196,6 +196,16 @@ grep -A1 '^security:' /etc/mongod.conf    # confirm it took
 sudo systemctl restart mongod
 ```
 
+### Turn on transactions
+
+A standalone MongoDB cannot run transactions, and the app uses them where several records must be
+written together — an order and the number it takes, a lead and the enquiry made from it. Make
+this one server a one-node replica set: same data, same port, a few minutes. The steps are in
+[SCALING.md §1](SCALING.md#1-transactions) (a keyfile, two lines of config, `rs.initiate`), and add
+`&replicaSet=rs0` to `MONGO_URI` (§5) once it is done. They were checked against MongoDB 8 with a database already
+holding data. Skipping this is safe — the app runs as before — but orders and quotes can then lose
+a number when two are raised at the same moment.
+
 ---
 
 ## 5. The application
@@ -218,6 +228,7 @@ nano .env
 ```ini
 NODE_ENV=production
 PORT=5000
+# After "Turn on transactions" (§4), append &replicaSet=rs0 — and only then.
 MONGO_URI=mongodb://nptadmin:PUT-A-LONG-RANDOM-PASSWORD-HERE@127.0.0.1:27017/npt_erp?authSource=admin
 
 # Anything long and random. Changing it signs everybody out.
@@ -750,5 +761,8 @@ of these becomes true, not before:
   (from ~$9/month) takes the database off it and backs itself up.
 - **Deploys during working hours are a problem.** Two small instances behind an ALB let you
   update one at a time.
-- **Attachments outgrow the disk.** They are on the instance's own volume; S3 is the answer, and
-  `storage.service.js` is the only file that has to change.
+- **Attachments outgrow the disk.** Set `S3_BUCKET` and run `npm run migrate:uploads-to-s3`.
+
+Everything a second instance needs — transactions, durable handovers, sweeps that run once, Redis,
+S3, a background worker — is built and switched on by settings. [SCALING.md](SCALING.md) has what
+each needs and the order to do it in.

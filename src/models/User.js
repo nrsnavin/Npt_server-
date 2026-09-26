@@ -1,3 +1,4 @@
+import { cacheDelete } from '../services/cache.service.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
@@ -83,6 +84,36 @@ userSchema.methods.comparePassword = function comparePassword(candidate) {
 userSchema.methods.hasPassword = function hasPassword() {
   return Boolean(this.password);
 };
+
+/*
+ * The signed-in person's record is cached for a minute (middleware/auth.js). Any change to a user
+ * — deactivation, a new password, different module access — drops that copy at once, so the
+ * next request reads the change rather than waiting out the minute.
+ */
+export const userCacheKey = (id) => `auth:user:${id}`;
+const forget = (ids) => {
+  const keys = [...new Set(ids.filter(Boolean).map(String))].map(userCacheKey);
+  if (!keys.length) return;
+  cacheDelete(...keys).catch(() => {});
+  /*
+   * And again a moment later: a request that read the old record just before this change can
+   * write that stale copy back after the first delete. The second one clears it.
+   */
+  setTimeout(() => cacheDelete(...keys).catch(() => {}), 1500).unref();
+};
+const idsIn = (filter = {}) => {
+  const id = filter._id;
+  if (!id) return [];
+  if (id.$in) return id.$in;
+  return typeof id === 'object' && !id._bsontype && !(id instanceof mongoose.Types.ObjectId) ? [] : [id];
+};
+userSchema.post('save', (doc) => forget([doc._id]));
+userSchema.post(['findOneAndUpdate', 'findOneAndDelete', 'findOneAndReplace'], function forgetFound(doc) {
+  forget([doc?._id, ...idsIn(this.getFilter())]);
+});
+userSchema.post(['updateOne', 'updateMany', 'deleteOne', 'deleteMany', 'replaceOne'], function forgetFiltered() {
+  forget(idsIn(this.getFilter()));
+});
 
 protectWrites(userSchema);
 export default mongoose.model('User', userSchema);

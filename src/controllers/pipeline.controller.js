@@ -30,7 +30,7 @@ import { syncFollowUpReminder } from '../subscribers/leadFollowUp.subscriber.js'
 import { suggestNextStep, coachConfigured } from '../services/leadCoach.service.js';
 import { analyse, followUpQueue, leadAnalytics, untouchedLeads } from '../services/leadLog.service.js';
 import { scoreFor, teamScoreboard } from '../services/scoreboard.service.js';
-import { sendCsv } from '../utils/csv.js';
+import { collect, sendCsv } from '../utils/csv.js';
 import { spelledLike } from '../data/places.js';
 import { ENQUIRY_ACTIONS, actionsFrom } from '../services/enquiryActions.js';
 import { buildBoard, perColumnFrom } from '../services/board.service.js';
@@ -245,9 +245,9 @@ export const exportCustomers = asyncHandler(async (req, res) => {
   if (req.query.rating) filter.rating = req.query.rating;
   if (req.query.status) filter.status = req.query.status;
 
-  const rows = await Customer.find(filter).populate('assignedTo', 'name').sort(sort).limit(EXPORT_LIMIT);
+  const rows = await collect(Customer.find(filter).populate('assignedTo', 'name').sort(sort).limit(EXPORT_LIMIT));
 
-  sendCsv(res, 'customers', rows, [
+  await sendCsv(res, 'customers', rows, [
     ['Code', (row) => row.code],
     ['Name', (row) => row.name],
     ['Type', (row) => row.customerType],
@@ -275,9 +275,9 @@ export const exportLeads = asyncHandler(async (req, res) => {
 
   Object.assign(filter, leadFilters(req));
 
-  const rows = await Lead.find(filter).populate('assignedTo', 'name').sort(sort).limit(EXPORT_LIMIT);
+  const rows = await collect(Lead.find(filter).populate('assignedTo', 'name').sort(sort).limit(EXPORT_LIMIT));
 
-  sendCsv(res, 'leads', rows, [
+  await sendCsv(res, 'leads', rows, [
     ['Number', (row) => row.number],
     ['Company', (row) => row.company],
     ['Contact', (row) => row.contactName],
@@ -304,13 +304,13 @@ export const exportEnquiries = asyncHandler(async (req, res) => {
   // The same filter the screen used, so the file is what was on it.
   const filter = await enquiryFilters(req);
 
-  const rows = await Enquiry.find(filter)
+  const rows = await collect(Enquiry.find(filter)
     .populate('customer', 'code name')
     .populate('assignedTo', 'name')
     .sort(sort)
-    .limit(EXPORT_LIMIT);
+    .limit(EXPORT_LIMIT));
 
-  sendCsv(res, 'enquiries', rows, [
+  await sendCsv(res, 'enquiries', rows, [
     ['Number', (row) => row.number],
     ['Date', (row) => row.enquiryDate],
     ['Customer', (row) => row.customer?.name],
@@ -1153,7 +1153,7 @@ export async function convertLeadRecord(lead, user, body = {}) {
   lead.convertedAt = new Date();
   await lead.save();
 
-  publish(EVENTS.LEAD_CONVERTED, {
+  await publish(EVENTS.LEAD_CONVERTED, {
     lead, customer, enquiry, samples: carried.modifiedCount, attached: Boolean(existing),
   });
 
@@ -1375,7 +1375,7 @@ export async function createEnquiryRecord(input, user) {
 
   await enquiry.save();
 
-  publish(EVENTS.ENQUIRY_CREATED, { enquiry, by: user });
+  await publish(EVENTS.ENQUIRY_CREATED, { enquiry, by: user });
   return enquiry;
 }
 
@@ -1823,9 +1823,9 @@ async function moveEnquiry(enquiry, body, user) {
   assertNextAction(enquiry);
   await enquiry.save();
 
-  publish(EVENTS.ENQUIRY_STATUS_CHANGED, { enquiry, from, to: status, by: user });
+  await publish(EVENTS.ENQUIRY_STATUS_CHANGED, { enquiry, from, to: status, by: user });
   const specific = statusEvent(status);
-  if (specific) publish(specific, { enquiry, from, by: user });
+  if (specific) await publish(specific, { enquiry, from, by: user });
 
   return enquiry;
 }

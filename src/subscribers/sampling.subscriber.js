@@ -23,12 +23,21 @@ import { AUTOMATIC, notifyCustomer } from '../services/customerMessage.service.j
  * automation is not a reason to refuse it — so each one swallows and logs.
  */
 
-const safely = (name, handler) => async (payload) => {
-  try {
-    await handler(payload);
-  } catch (error) {
-    console.error(`[sampling] ${name} failed:`, error);
-  }
+/**
+ * A listener, named so the outbox can tell which listeners of an event have already succeeded,
+ * and loud when it fails — the failure is logged here and handed back so the event is retried.
+ */
+const safely = (name, handler) => {
+  const listener = async (payload) => {
+    try {
+      await handler(payload);
+    } catch (error) {
+      console.error(`[sampling] ${name} failed:`, error);
+      throw error;
+    }
+  };
+  listener.handoverName = `sampling:${name}`;
+  return listener;
 };
 
 /** One stable key per handover, so the same instruction cannot queue twice. */
@@ -69,9 +78,9 @@ async function advanceEnquiry(enquiryId, to, note) {
   enquiry.statusHistory.push({ from, to, note });
   await enquiry.save();
 
-  publish(EVENTS.ENQUIRY_STATUS_CHANGED, { enquiry, from, to });
+  await publish(EVENTS.ENQUIRY_STATUS_CHANGED, { enquiry, from, to });
   const specific = statusEvent(to);
-  if (specific) publish(specific, { enquiry, from });
+  if (specific) await publish(specific, { enquiry, from });
 
   return enquiry;
 }

@@ -24,7 +24,7 @@ import { ORDER_ACTIONS, orderActionsFrom } from '../services/orderActions.js';
 import { assertCanOwnBuyer } from '../services/assignment.service.js';
 import { buildSpec, registersFromPricing } from '../services/registers.service.js';
 import { put, remove } from '../services/storage.service.js';
-import { sendCsv } from '../utils/csv.js';
+import { collect, sendCsv } from '../utils/csv.js';
 import { transactional } from '../utils/transaction.js';
 
 /**
@@ -270,7 +270,7 @@ export const exportOrders = asyncHandler(async (req, res) => {
    * below needs a document — the one computed figure, the line value, is worked out here the way
    * the model's virtual does.
    */
-  const rows = await SalesOrder.find(filter).populate(POPULATE).sort(sort).limit(EXPORT_LIMIT).lean();
+  const rows = await collect(SalesOrder.find(filter).populate(POPULATE).sort(sort).limit(EXPORT_LIMIT).lean());
   const lineValue = (line) =>
     line.unitPrice && line.quantity ? Math.round(line.unitPrice * line.quantity * 100) / 100 : 0;
 
@@ -288,7 +288,7 @@ export const exportOrders = asyncHandler(async (req, res) => {
     (order.lines || []).map((line, index) => ({ order, line, index }))
   );
 
-  sendCsv(res, 'sales-orders', flat, [
+  await sendCsv(res, 'sales-orders', flat, [
     ['Order', (row) => row.order.number],
     ['Order date', (row) => row.order.orderDate],
     ['Customer', (row) => row.order.customer?.name],

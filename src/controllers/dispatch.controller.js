@@ -30,7 +30,7 @@ import { dispatchQuality } from '../services/quality.service.js';
 import { completeDispatchEffects } from '../services/dispatchRecovery.service.js';
 import { put, remove } from '../services/storage.service.js';
 import { raiseTask } from '../services/task.service.js';
-import { sendCsv } from '../utils/csv.js';
+import { collect, sendCsv } from '../utils/csv.js';
 
 /**
  * Dispatch [BLUEPRINT §18–19].
@@ -264,7 +264,7 @@ export const getDispatch = asyncHandler(async (req, res) => {
 
 export const exportDispatches = asyncHandler(async (req, res) => {
   const { sort, filter } = dispatchFilters(req);
-  const rows = await Dispatch.find(filter).populate(POPULATE).sort(sort).limit(EXPORT_LIMIT);
+  const rows = await collect(Dispatch.find(filter).populate(POPULATE).sort(sort).limit(EXPORT_LIMIT));
 
   /*
    * One row per model on the lorry, not per lorry. The first thing anybody does with this file
@@ -280,7 +280,7 @@ export const exportDispatches = asyncHandler(async (req, res) => {
     (dispatch.lines || []).map((line) => ({ dispatch, line }))
   );
 
-  sendCsv(res, 'dispatches', flat, [
+  await sendCsv(res, 'dispatches', flat, [
     ['Consignment', (row) => row.dispatch.number],
     ['Order', (row) => row.dispatch.order?.number],
     ['Customer', (row) => row.dispatch.customer?.name],

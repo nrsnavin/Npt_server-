@@ -532,7 +532,7 @@ export async function newQuotation(fields, user) {
   quotation.revisions = [snapshotOf(quotation, 0, user)];
 
   await quotation.save();
-  publish(EVENTS.QUOTATION_CREATED, { quotation, by: user });
+  await publish(EVENTS.QUOTATION_CREATED, { quotation, by: user });
 
   return quotation;
 }
@@ -796,7 +796,7 @@ export const sendQuotation = asyncHandler(async (req, res) => {
       });
       quotation.status = 'approval_pending';
       await quotation.save();
-      publish(EVENTS.QUOTATION_APPROVAL_REQUIRED, { quotation, by: req.user, why });
+      await publish(EVENTS.QUOTATION_APPROVAL_REQUIRED, { quotation, by: req.user, why });
     }
     throw ApiError.badRequest(why);
   }
@@ -833,7 +833,7 @@ export const sendQuotation = asyncHandler(async (req, res) => {
   if (current) current.sentAt = quotation.sentAt;
 
   await quotation.save();
-  publish(EVENTS.QUOTATION_SENT, { quotation, by: req.user });
+  await publish(EVENTS.QUOTATION_SENT, { quotation, by: req.user });
 
   res.json({ success: true, data: quotation, deliveries });
 });
@@ -862,7 +862,7 @@ export const respondToQuotation = asyncHandler(transactional(async (req, res) =>
   if (!accepted) quotation.rejectionNote = note;
 
   await quotation.save();
-  publish(accepted ? EVENTS.QUOTATION_ACCEPTED : EVENTS.QUOTATION_REJECTED, {
+  await publish(accepted ? EVENTS.QUOTATION_ACCEPTED : EVENTS.QUOTATION_REJECTED, {
     quotation,
     by: req.user,
   });

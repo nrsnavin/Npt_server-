@@ -49,8 +49,29 @@ export function toCsv(rows, columns) {
   return [header, ...body].join('\r\n');
 }
 
-/** Sends a CSV as a download, named for what it is and when it was taken. */
-export function sendCsv(res, filename, rows, columns) {
+/** A turn of the event loop, so other people's requests are answered in between. */
+const breathe = () => new Promise((resolve) => setImmediate(resolve));
+
+/**
+ * The rows of an export query, read through a cursor in batches rather than all at once.
+ *
+ * An export can be five thousand populated records. Loading them in one go turned them into
+ * documents in one uninterrupted stretch of a second or two, and every other request in the
+ * process waited behind it — exports were 2% of clicks and set everybody's p95. Read in batches,
+ * with a pause for the event loop after each, the export takes about as long and nobody else
+ * notices it.
+ */
+export async function collect(query, { batchSize = 200 } = {}) {
+  const rows = [];
+  for await (const row of query.cursor({ batchSize })) {
+    rows.push(row);
+    if (rows.length % batchSize === 0) await breathe();
+  }
+  return rows;
+}
+
+/** Sends a CSV as a download, named for what it is and when it was taken. Written in chunks. */
+export async function sendCsv(res, filename, rows, columns, { chunk = 500 } = {}) {
   const stamp = new Date().toISOString().slice(0, 10);
 
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -63,5 +84,11 @@ export function sendCsv(res, filename, rows, columns) {
    * response as text will never show it. Assert on the bytes, or the check passes on a file
    * that has one and fails on a file that does not, for the same reason.
    */
-  res.send(`﻿${toCsv(rows, columns)}`);
+  res.write(`\uFEFF${columns.map(([label]) => cell(label)).join(',')}`);
+  for (let start = 0; start < rows.length; start += chunk) {
+    const lines = rows.slice(start, start + chunk).map((row) => columns.map(([, valueOf]) => cell(valueOf(row))).join(','));
+    res.write(`\r\n${lines.join('\r\n')}`);
+    if (start + chunk < rows.length) await breathe();
+  }
+  res.end();
 }

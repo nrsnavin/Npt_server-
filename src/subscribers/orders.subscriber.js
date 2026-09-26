@@ -18,12 +18,21 @@ import { raiseTask } from '../services/task.service.js';
  * that never arrived, and quietly losing every order won in the meantime.
  */
 
-const safely = (name, handler) => async (payload) => {
-  try {
-    await handler(payload);
-  } catch (error) {
-    console.error(`[orders] ${name} failed:`, error);
-  }
+/**
+ * A listener, named so the outbox can tell which listeners of an event have already succeeded,
+ * and loud when it fails — the failure is logged here and handed back so the event is retried.
+ */
+const safely = (name, handler) => {
+  const listener = async (payload) => {
+    try {
+      await handler(payload);
+    } catch (error) {
+      console.error(`[orders] ${name} failed:`, error);
+      throw error;
+    }
+  };
+  listener.handoverName = `orders:${name}`;
+  return listener;
 };
 
 /**

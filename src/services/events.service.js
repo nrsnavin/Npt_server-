@@ -1,5 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { afterCommit, currentTransaction } from '../utils/transaction.js';
+import Outbox from '../models/Outbox.js';
+import { deliver, recoverOutbox, serialize } from './outbox.service.js';
 
 /**
  * Domain events.
@@ -54,23 +56,46 @@ export const EVENTS = {
   SAMPLE_REJECTED: 'sample.rejected',
 };
 
-function emit(event, payload) {
+/**
+ * Publishing an event.
+ *
+ * The event is written to the outbox first — inside the transaction when there is one, so it
+ * exists exactly when the change that caused it does — and then handed to its listeners at once,
+ * with the documents it was published with. If a listener fails, or the process dies before they
+ * finish, the row stays pending and `recoverEvents` delivers it again. So a handover is never
+ * lost to a restart, and never delivered for a change that was rolled back.
+ *
+ * Awaited by callers: inside a transaction the row has to be written before the commit.
+ */
+export async function publish(event, payload = {}) {
+  const listeners = bus.listeners(event);
+  if (!listeners.length) return;
+
+  let row = null;
   try {
-    bus.emit(event, payload);
+    [row] = await Outbox.create([{ event, payload: serialize(payload) }]);
   } catch (error) {
-    console.error(`[events] publishing ${event} failed:`, error);
+    /* Better delivered from memory than not at all; the log says it was not written down. */
+    console.error(`[events] could not record ${event}, delivering from memory only:`, error.message);
   }
+
+  const run = () => {
+    if (row) {
+      deliver(row, payload, bus.listeners(event)).catch((error) =>
+        console.error(`[events] delivering ${event} failed:`, error.message));
+    } else {
+      for (const listener of bus.listeners(event)) {
+        Promise.resolve().then(() => listener(payload)).catch(() => {});
+      }
+    }
+  };
+
+  if (currentTransaction()?.real) afterCommit(run);
+  else run();
 }
 
-/**
- * Inside a transaction the listeners wait for the commit: a handover for an order that was then
- * rolled back would be a task about nothing, and a listener started inside the block would write
- * through a transaction that has already ended.
- */
-export function publish(event, payload) {
-  if (currentTransaction()?.real) afterCommit(() => emit(event, payload));
-  else emit(event, payload);
-}
+/** Delivers again whatever is still pending — run by the background sweep on one process. */
+export const recoverEvents = (options = {}) => recoverOutbox({ ...options, listenersFor: (event) => bus.listeners(event) });
 
 export const subscribe = (event, listener) => bus.on(event, listener);
 export const unsubscribe = (event, listener) => bus.off(event, listener);

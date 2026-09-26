@@ -930,9 +930,9 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
     }).catch(() => null);
   }
 
-  publish(EVENTS.SAMPLE_STATUS_CHANGED, { sample, from, to: status, by: req.user });
+  await publish(EVENTS.SAMPLE_STATUS_CHANGED, { sample, from, to: status, by: req.user });
   const specific = sampleStatusEvent(status);
-  if (specific) publish(specific, { sample, from, by: req.user });
+  if (specific) await publish(specific, { sample, from, by: req.user });
 
   res.json({ success: true, data: await withRefs(sample) });
 });
@@ -990,8 +990,8 @@ export const recordFeedback = asyncHandler(async (req, res) => {
   sample.statusHistory.push({ from, to: outcome, by: req.user._id, note });
   await sample.save();
 
-  publish(EVENTS.SAMPLE_STATUS_CHANGED, { sample, from, to: outcome, by: req.user });
-  publish(sampleStatusEvent(outcome), { sample, from, by: req.user });
+  await publish(EVENTS.SAMPLE_STATUS_CHANGED, { sample, from, to: outcome, by: req.user });
+  await publish(sampleStatusEvent(outcome), { sample, from, by: req.user });
 
   res.json({ success: true, data: await withRefs(sample) });
 });

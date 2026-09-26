@@ -8,6 +8,7 @@ import jwt from 'jsonwebtoken';
 import { randomUUID } from 'node:crypto';
 
 import { env, isProduction } from './config/env.js';
+import { SharedRateStore } from './services/cache.service.js';
 import routes from './routes/index.js';
 import healthRoutes from './routes/health.routes.js';
 import { notFoundHandler, errorHandler } from './middleware/error.js';
@@ -84,9 +85,11 @@ app.use(morgan(accessLog));
  * somebody's account — and everything else falls through to the ordinary API limit. The OTP
  * routes keep their own tighter limits on top, in auth.routes.js.
  */
+/* Counted in Redis when it is configured, so every API instance shares one count — see cache.service. */
 const credentialLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 50,
+  store: new SharedRateStore('credentials'),
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -143,6 +146,7 @@ app.use('/api', rateLimit({
   windowMs: 60 * 1000,
   max: requestsPerMinute,
   keyGenerator: callerKey,
+  store: new SharedRateStore('api'),
   standardHeaders: true,
   legacyHeaders: false,
 }));

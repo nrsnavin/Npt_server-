@@ -1,5 +1,12 @@
 # Data consistency and recovery
 
+**Since the scale audit (Sep 2026):** on a replica set, twenty multi-record write handlers run as
+transactions (`src/utils/transaction.js`); order and owner locks are held until the transaction
+ends; events are written to the outbox in the same transaction and re-delivered until every
+listener succeeds; background sweeps each run on one process at a time (leases, which do expire —
+unlike the operation locks below). Dispatch keeps the durable-flag design described here. See
+[SCALING.md](SCALING.md).
+
 Document saves use optimistic concurrency (`__v`), including scalar edits. Query updates advance the version. Editing clients echo `expectedUpdatedAt`; old pricing clients may echo `updatedAt`. Stale forms and overlapping saves return HTTP 409 and require a reload. A client without a token cannot detect a form that was already stale when its request began.
 
 Stock operations and payment allocation serialize per order using a MongoDB lock, including on standalone MongoDB. New assignments serialize briefly per owner with offboarding. These locks are shared by all API processes. Deploy the updated server to all writers together; older processes do not honor the locks.

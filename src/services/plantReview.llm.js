@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { cacheGet, cacheSet } from './cache.service.js';
 import { z } from 'zod';
 import { askForJson, llmConfigured, BUDGETS } from './llm.client.js';
 
@@ -222,6 +224,14 @@ function remember(key, review) {
  */
 const inFlight = new Map();
 
+/*
+ * Shared through Redis for the same three minutes when it is configured, so the nine o'clock
+ * burst pays once for the plant rather than once per API instance. The key is a digest of the
+ * brief: two identical sets of findings are one question.
+ */
+const sharedKeyFor = (key) => `llm:plant:${createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
+const sharedReview = (key) => cacheGet(sharedKeyFor(key));
+
 /** For the tests, and for a deployment that wants to clear it without a restart. */
 export function forgetReviews() {
   cache.clear();
@@ -246,7 +256,17 @@ export async function reviewFindings(findings, { scope = 'plant' } = {}) {
   const already = inFlight.get(key);
   if (already) return already;
 
-  const work = rank(findings, key).finally(() => inFlight.delete(key));
+  const work = sharedReview(key)
+    .then((shared) => {
+      if (shared) {
+        /* Frozen like a review made here, for the reason given where those are made. */
+        const review = Object.freeze({ ...shared, picks: Object.freeze((shared.picks || []).map((pick) => Object.freeze(pick))) });
+        remember(key, review);
+        return review;
+      }
+      return rank(findings, key);
+    })
+    .finally(() => inFlight.delete(key));
   inFlight.set(key, work);
   return work;
 }
@@ -307,5 +327,6 @@ async function rank(findings, key) {
     from: 'model',
   });
   remember(key, review);
+  cacheSet(sharedKeyFor(key), review, TTL / 1000);
   return review;
 }

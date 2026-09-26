@@ -4,6 +4,9 @@ import { env } from '../config/env.js';
 import { isConfigured as twilioConfigured } from '../providers/twilio.js';
 import { whatsappProvider } from '../providers/whatsapp.js';
 import { phoneCodesByWhatsApp } from '../services/notification.service.js';
+import { cacheReady } from '../services/cache.service.js';
+import { outboxHealth } from '../services/outbox.service.js';
+import { transactionsSupported } from '../utils/transaction.js';
 import asyncHandler from '../utils/asyncHandler.js';
 
 const require = createRequire(import.meta.url);
@@ -83,6 +86,17 @@ export const ready = asyncHandler(async (_req, res) => {
     status: isReady ? 'ready' : 'not_ready',
     ...baseInfo(),
     checks: { database },
+    /*
+     * How the scale-out pieces stand. Informational like `delivery`: Redis being down slows
+     * things but breaks nothing, and a handover backlog is a worker to look at, not an outage.
+     */
+    platform: isReady
+      ? {
+          transactions: await transactionsSupported(),
+          cache: process.env.REDIS_URL ? (cacheReady() ? 'redis' : 'redis-unreachable') : 'memory',
+          handovers: await outboxHealth().catch(() => null),
+        }
+      : undefined,
     // Informational only: missing providers are a configuration smell, not an outage.
     delivery: {
       email: env.smtp.host ? 'smtp' : 'console',

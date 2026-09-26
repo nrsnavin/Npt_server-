@@ -2,7 +2,8 @@ import { z } from 'zod';
 import { askForJson, llmConfigured, BUDGETS } from './llm.client.js';
 import { gistByRules } from './querySummary.rules.js';
 import { messageText } from '../models/Query.js';
-import { heldThreadFiles, readThreadFiles } from './queryFiles.llm.js';
+import { heldThreadFiles, readThreadFiles, warmFileReadings } from './queryFiles.llm.js';
+import { cacheGetMany, cacheSet } from './cache.service.js';
 
 /**
  * Reading a long thread back in a sentence — with a language model [queries].
@@ -278,10 +279,26 @@ const readingsOf = (query) => new Map(heldThreadFiles(query).map((file) => [file
 const keyOf = (query, readings = readingsOf(query)) =>
   `${query._id}:${new Date(query.updatedAt || 0).getTime()}:${query.status}:${[...readings.values()].filter((file) => file.says).length}`;
 
-function hold(key, line) {
+/* Shared through Redis when configured, for a day; the key changes whenever the thread does. */
+const LINE_TTL_SECONDS = 24 * 3600;
+const sharedKey = (key) => `llm:qline:${key}`;
+
+function hold(key, line, { share = true } = {}) {
   held.delete(key);
   held.set(key, line);
   if (held.size > HOLD_AT_MOST) held.delete(held.keys().next().value);
+  if (share) cacheSet(sharedKey(key), line, LINE_TTL_SECONDS);
+}
+
+/** Lines another instance already paid for, into this one's memory: one round trip for the page. */
+async function warmLines(queries) {
+  await warmFileReadings(queries);
+  const missing = queries.map((query) => keyOf(query)).filter((key) => !held.has(key));
+  if (!missing.length) return;
+  const found = await cacheGetMany(missing.map(sharedKey));
+  missing.forEach((key, index) => {
+    if (found[index]) hold(key, found[index], { share: false });
+  });
 }
 
 /** For the tests: an empty cache, so one case's answers cannot leak into the next. */
@@ -294,6 +311,7 @@ export const forgetHeldLines = () => held.clear();
 export async function summariesForList(queries = []) {
   const lines = new Map();
   const worth = [];
+  await warmLines(queries);
 
   for (const query of queries) {
     const id = String(query._id);
