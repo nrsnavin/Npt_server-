@@ -92,7 +92,8 @@ materialSchema.set('toObject', { virtuals: true });
  */
 export function grammageFrom(ppGrams, factorPercent = 0) {
   if (!ppGrams) return 0;
-  return Math.round(ppGrams * (1 + (factorPercent || 0) / 100) * 1000) / 1000;
+  /* Five decimals, as grams are carried everywhere — see Mould.js `roundGrams`. */
+  return Math.round(ppGrams * (1 + (factorPercent || 0) / 100) * 100000) / 100000;
 }
 
 protectWrites(materialSchema);

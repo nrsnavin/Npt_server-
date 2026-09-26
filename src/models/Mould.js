@@ -232,14 +232,14 @@ mouldSchema.virtual('runningCavities').get(function runningCavities() {
 mouldSchema.virtual('shotWeightGrams').get(function shotWeightGrams() {
   const cavities = this.runningCavities;
   if (!cavities) return 0;
-  return round3(cavities * (this.partWeightGrams || 0) + (this.runnerWeightGrams || 0));
+  return roundGrams(cavities * (this.partWeightGrams || 0) + (this.runnerWeightGrams || 0));
 });
 
 /** The runner, divided over the pieces that came out with it. */
 mouldSchema.virtual('runnerPerPieceGrams').get(function runnerPerPieceGrams() {
   const cavities = this.runningCavities;
   if (!cavities) return 0;
-  return round3((this.runnerWeightGrams || 0) / cavities);
+  return roundGrams((this.runnerWeightGrams || 0) / cavities);
 });
 
 /**
@@ -254,7 +254,7 @@ mouldSchema.virtual('runnerPerPieceGrams').get(function runnerPerPieceGrams() {
  */
 mouldSchema.virtual('consumptionPerPieceGrams').get(function consumptionPerPieceGrams() {
   const recovered = (this.regrindRecoveryPercent || 0) / 100;
-  return round3((this.partWeightGrams || 0) + this.runnerPerPieceGrams * (1 - recovered));
+  return roundGrams((this.partWeightGrams || 0) + this.runnerPerPieceGrams * (1 - recovered));
 });
 
 /**
@@ -304,9 +304,13 @@ mouldSchema.virtual('runnable').get(function runnable() {
   return this.isActive !== false && this.status === 'active' && this.runningCavities > 0;
 });
 
-/** Grams carry three decimals: a tenth of a gram on a 30g part is a third of a percent of resin. */
-function round3(value) {
-  return Math.round(value * 1000) / 1000;
+/**
+ * Grams carry five decimals, as the plant weighs and costs them — a light clip or a thin hook
+ * part is costed to the hundred-thousandth of a gram, and rounding it to three here changed the
+ * figure the costing sheet started from.
+ */
+function roundGrams(value) {
+  return Math.round(value * 100000) / 100000;
 }
 
 mouldSchema.set('toJSON', { virtuals: true });

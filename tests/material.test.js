@@ -543,3 +543,23 @@ test('changing the resin does not quietly revert the parts lines', async () => {
   assert.equal(switched.json.data.cost.gramWeight, 38.94, 'the resin change did its own job');
   assert.equal(switched.json.data.cost.hookCost, 1.1, 'and left the hook where the register put it');
 });
+
+test('a grammage keeps five decimals, in the conversion and on the sheet', async () => {
+  assert.equal(grammageFrom(12.34567, 18), 14.56789, '12.34567 g of PP in HIPS');
+  assert.equal(grammageFrom(12.34567, 0), 12.34567);
+
+  const made = await api('/api/pricings', {
+    method: 'POST',
+    token: admin,
+    body: { customer, quantity: 40000, mould, materialRef: pp },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  const typed = await api(`/api/pricings/${made.json.data._id}/cost`, {
+    method: 'PATCH',
+    token: admin,
+    body: { materialRef: pp, cost: { gramWeight: 12.34567 } },
+  });
+  assert.equal(typed.status, 200, typed.json.message);
+  assert.equal(typed.json.data.cost.gramWeight, 12.34567, 'the weight as typed');
+  assert.equal(Math.round(typed.json.data.materialCost * 100000) / 100000, 1.97531, '12.34567 g × ₹160/kg');
+});

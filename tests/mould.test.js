@@ -421,3 +421,12 @@ test('whoever keeps the register can see the rate they are keeping', async () =>
   const asMarketing = await api(`/api/moulds/${id}`, { token: nandhini });
   assert.equal(asMarketing.json.data.machine.hourRate, undefined);
 });
+
+test('weights keep five decimals through the arithmetic', async () => {
+  const { status, json } = await addMould({ partWeightGrams: 12.34567, runnerWeightGrams: 0.00004, regrindRecoveryPercent: 0 });
+  assert.equal(status, 201, json.message);
+  assert.equal(json.data.partWeightGrams, 12.34567, 'the part weight as typed');
+  assert.equal(json.data.runnerPerPieceGrams, 0.00001, 'the runner over four pieces, not rounded away');
+  assert.equal(json.data.consumptionPerPieceGrams, 12.34568);
+  assert.equal(json.data.shotWeightGrams, 49.38272);
+});
