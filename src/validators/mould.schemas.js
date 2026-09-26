@@ -3,9 +3,13 @@ import {
   HANGER_CATEGORIES, HOOK_TYPES, MATERIALS, MOULD_OWNERSHIP, MOULD_STATUSES,
 } from '../models/Mould.js';
 import { objectId } from './schemas.js';
+import { cutGrams } from '../models/Mould.js';
 import { versioned } from './pipeline.schemas.js';
 
 const grams = z.number().nonnegative();
+/** A weight in grams, cut at five decimals as the model carries them (Mould.js `cutGrams`). */
+const weight = z.number().nonnegative().transform(cutGrams);
+const pieceWeight = (message) => z.number().positive(message).transform(cutGrams);
 
 /**
  * The mould register.
@@ -32,8 +36,8 @@ const mouldFields = z.object({
     /** Blocked cavities are real; left out, every cut cavity is assumed to be running. */
     activeCavities: z.number().int().nonnegative().optional(),
 
-    partWeightGrams: grams.positive('A moulded piece has a weight'),
-    runnerWeightGrams: grams.optional(),
+    partWeightGrams: pieceWeight('A moulded piece has a weight'),
+    runnerWeightGrams: weight.optional(),
     regrindRecoveryPercent: z.number().min(0).max(100).optional(),
 
     cycleTimeSeconds: z.number().positive('A cycle takes time'),
@@ -133,8 +137,8 @@ export const mouldUpdateSchema = z
     cavities: z.number().int().positive().optional(),
     activeCavities: z.number().int().nonnegative().optional(),
 
-    partWeightGrams: grams.positive().optional(),
-    runnerWeightGrams: grams.optional(),
+    partWeightGrams: pieceWeight().optional(),
+    runnerWeightGrams: weight.optional(),
     regrindRecoveryPercent: z.number().min(0).max(100).optional(),
 
     cycleTimeSeconds: z.number().positive().optional(),

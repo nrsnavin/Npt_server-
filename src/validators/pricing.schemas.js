@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MATERIALS } from '../models/Mould.js';
+import { MATERIALS, cutGrams } from '../models/Mould.js';
 import { FREIGHT_TERMS } from '../models/Quotation.js';
 import { objectId } from './schemas.js';
 
@@ -7,6 +7,8 @@ import { objectId } from './schemas.js';
 const versioned = { expectedUpdatedAt: z.coerce.date().optional(), updatedAt: z.coerce.date().optional() };
 
 const money = z.number().nonnegative();
+/** Grams a piece consumes, cut at five decimals as the model carries them (Mould.js `cutGrams`). */
+const weight = z.number().nonnegative().transform(cutGrams);
 
 /* ---------------------------------- Pricing ---------------------------------- */
 
@@ -76,7 +78,7 @@ export const pricingCostSchema = z
     line: objectId.optional(),
     cost: z
       .object({
-        gramWeight: money.optional(),
+        gramWeight: weight.optional(),
         rawMaterialRate: money.optional(),
         jobWorkCost: money.optional(),
         hookCost: money.optional(),

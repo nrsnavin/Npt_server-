@@ -232,14 +232,14 @@ mouldSchema.virtual('runningCavities').get(function runningCavities() {
 mouldSchema.virtual('shotWeightGrams').get(function shotWeightGrams() {
   const cavities = this.runningCavities;
   if (!cavities) return 0;
-  return roundGrams(cavities * (this.partWeightGrams || 0) + (this.runnerWeightGrams || 0));
+  return cutGrams(cavities * (this.partWeightGrams || 0) + (this.runnerWeightGrams || 0));
 });
 
 /** The runner, divided over the pieces that came out with it. */
 mouldSchema.virtual('runnerPerPieceGrams').get(function runnerPerPieceGrams() {
   const cavities = this.runningCavities;
   if (!cavities) return 0;
-  return roundGrams((this.runnerWeightGrams || 0) / cavities);
+  return cutGrams((this.runnerWeightGrams || 0) / cavities);
 });
 
 /**
@@ -254,7 +254,7 @@ mouldSchema.virtual('runnerPerPieceGrams').get(function runnerPerPieceGrams() {
  */
 mouldSchema.virtual('consumptionPerPieceGrams').get(function consumptionPerPieceGrams() {
   const recovered = (this.regrindRecoveryPercent || 0) / 100;
-  return roundGrams((this.partWeightGrams || 0) + this.runnerPerPieceGrams * (1 - recovered));
+  return cutGrams((this.partWeightGrams || 0) + this.runnerPerPieceGrams * (1 - recovered));
 });
 
 /**
@@ -305,12 +305,13 @@ mouldSchema.virtual('runnable').get(function runnable() {
 });
 
 /**
- * Grams carry five decimals, as the plant weighs and costs them — a light clip or a thin hook
- * part is costed to the hundred-thousandth of a gram, and rounding it to three here changed the
- * figure the costing sheet started from.
+ * Grams carry five decimals, as the plant weighs and costs them, and are *cut* there rather than
+ * rounded: 1.234567 g is 1.23456 g, never 1.23457 g. The multiplication is cleaned of
+ * floating-point noise first — 1.23456 × 100000 is 123455.99999999999 in JavaScript, and cutting
+ * that would lose a digit the weight really has.
  */
-function roundGrams(value) {
-  return Math.round(value * 100000) / 100000;
+export function cutGrams(value) {
+  return Math.trunc(Number(((Number(value) || 0) * 100000).toFixed(6))) / 100000;
 }
 
 mouldSchema.set('toJSON', { virtuals: true });

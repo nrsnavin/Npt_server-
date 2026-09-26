@@ -430,3 +430,19 @@ test('weights keep five decimals through the arithmetic', async () => {
   assert.equal(json.data.consumptionPerPieceGrams, 12.34568);
   assert.equal(json.data.shotWeightGrams, 49.38272);
 });
+
+test('weights are cut at five decimals, never rounded up', async () => {
+  /* 0.00003 g of runner over four pieces is 0.0000075 g: cut to 0.00000, not rounded to 0.00001. */
+  const { status, json } = await addMould({ partWeightGrams: 1.23456, runnerWeightGrams: 0.00003, regrindRecoveryPercent: 0 });
+  assert.equal(status, 201, json.message);
+  assert.equal(json.data.runnerPerPieceGrams, 0);
+  assert.equal(json.data.consumptionPerPieceGrams, 1.23456, 'a five-decimal weight survives the cut exactly');
+  assert.equal(json.data.shotWeightGrams, 4.93827, '4 × 1.23456 + 0.00003 = 4.93827');
+});
+
+test('a weight typed past five decimals is cut when it is saved', async () => {
+  const { status, json } = await addMould({ partWeightGrams: 1.234567, runnerWeightGrams: 0.123459 });
+  assert.equal(status, 201, json.message);
+  assert.equal(json.data.partWeightGrams, 1.23456);
+  assert.equal(json.data.runnerWeightGrams, 0.12345);
+});

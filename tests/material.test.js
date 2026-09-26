@@ -563,3 +563,17 @@ test('a grammage keeps five decimals, in the conversion and on the sheet', async
   assert.equal(typed.json.data.cost.gramWeight, 12.34567, 'the weight as typed');
   assert.equal(Math.round(typed.json.data.materialCost * 100000) / 100000, 1.97531, '12.34567 g × ₹160/kg');
 });
+
+test('a converted grammage is cut at five decimals, not rounded', () => {
+  assert.equal(grammageFrom(1.23457, 10), 1.35802, '1.358027 g, cut — rounding would say 1.35803');
+  assert.equal(grammageFrom(1.23456, 0), 1.23456, 'an exact five-decimal weight is left alone');
+});
+
+test('a gram weight typed past five decimals is cut on the sheet', async () => {
+  const made = await api('/api/pricings', { method: 'POST', token: admin, body: { customer, quantity: 40000, mould, materialRef: pp } });
+  const typed = await api(`/api/pricings/${made.json.data._id}/cost`, {
+    method: 'PATCH', token: admin, body: { materialRef: pp, cost: { gramWeight: 12.345678 } },
+  });
+  assert.equal(typed.status, 200, typed.json.message);
+  assert.equal(typed.json.data.cost.gramWeight, 12.34567);
+});
