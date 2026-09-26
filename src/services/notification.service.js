@@ -75,7 +75,7 @@ function logFallback(channel, to, body) {
   console.log(`\n[${channel}] to ${to}\n${body}\n`);
 }
 
-export async function sendEmail({ to, subject, text, html }) {
+export async function sendEmail({ to, subject, text, html, attachments }) {
   const transporter = await getMailTransporter();
 
   if (!transporter) {
@@ -84,7 +84,8 @@ export async function sendEmail({ to, subject, text, html }) {
   }
 
   try {
-    const info = await transporter.sendMail({ from: env.smtp.from, to, subject, text, html });
+    /* `attachments` as nodemailer takes them: `[{ filename, content: Buffer, contentType }]`. */
+    const info = await transporter.sendMail({ from: env.smtp.from, to, subject, text, html, ...(attachments?.length ? { attachments } : {}) });
     // The message id is what makes a delivery traceable in the mail server's own logs.
     return { delivered: true, channel: 'email', messageId: info?.messageId };
   } catch (error) {

@@ -5,7 +5,7 @@ import {
 } from '../controllers/pricing.controller.js';
 import {
   listQuotations, getQuotation, createQuotation, updateQuotation,
-  reviseQuotation, sendQuotation, respondToQuotation, quotationPdf,
+  reviseQuotation, sendQuotation, respondToQuotation, quotationPdf, sendPreview,
 } from '../controllers/quotation.controller.js';
 import { authenticate, authorize, requireModule } from '../middleware/auth.js';
 import { getQuoteNumbering, setQuoteNumbering } from '../controllers/quoteNumbering.controller.js';
@@ -68,6 +68,7 @@ router.post('/quotations', requireModule('pricing', 'quote'), validate(quotation
 router.get('/quotations/:id', requireModule('pricing'), getQuotation);
 /** The document the customer receives, rendered from the record on demand. */
 router.get('/quotations/:id/pdf', requireModule('pricing'), quotationPdf);
+router.get('/quotations/:id/send-preview', requireModule('pricing', 'quote'), sendPreview);
 router.patch('/quotations/:id', requireModule('pricing', 'quote'), validate(quotationUpdateSchema), updateQuotation);
 /** A new price keeps the old one [§10]. */
 router.post('/quotations/:id/revisions', requireModule('pricing', 'quote'), validate(quotationRevisionSchema), reviseQuotation);

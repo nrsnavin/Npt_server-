@@ -168,7 +168,7 @@ export async function sendSms({ to, body }) {
  * fallback — right for the sandbox and for replies inside an open conversation, and refused
  * with error 63016 otherwise.
  */
-export async function sendWhatsApp({ to, body, contentSid, contentVariables }) {
+export async function sendWhatsApp({ to, body, contentSid, contentVariables, mediaUrl }) {
   const { whatsappFrom } = env.twilio;
 
   const params = new URLSearchParams({ To: asWhatsApp(to), From: asWhatsApp(whatsappFrom) });
@@ -178,6 +178,8 @@ export async function sendWhatsApp({ to, body, contentSid, contentVariables }) {
     if (contentVariables) params.set('ContentVariables', JSON.stringify(contentVariables));
   } else {
     params.set('Body', body);
+    /* A document with the message — a quotation's PDF. Twilio fetches it from this public URL. */
+    if (mediaUrl) params.set('MediaUrl', mediaUrl);
   }
 
   return post(params, { channel: 'whatsapp' });

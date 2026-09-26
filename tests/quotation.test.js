@@ -1239,3 +1239,25 @@ test('a quote number is a whole number from 1', async () => {
     assert.equal(tried.status, 400, `refused ${next}`);
   }
 });
+
+test('a save waits its turn for the owner’s lock instead of failing', async () => {
+  /*
+   * Records owned by one person take a short lock on that person while they are saved, so that
+   * deactivating them cannot interleave. Held for longer than a save used to wait — as when the
+   * plant is busy, or somebody is being offboarded — a new quote was refused with "related
+   * records are being updated". It now waits.
+   */
+  const { acquireOperationLock } = await import('../src/services/operationLock.service.js');
+  const owner = await tokenOwnerId(nandhini);
+  const release = await acquireOperationLock(`owner:${owner}`);
+  const held = setTimeout(() => release(), 2500);
+  const started = Date.now();
+  try {
+    const made = await quote();
+    assert.ok(made.number, 'the quote was made');
+    assert.ok(Date.now() - started >= 2000, 'after the lock was let go');
+  } finally {
+    clearTimeout(held);
+    await release();
+  }
+});

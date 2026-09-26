@@ -16,6 +16,13 @@ import { assertCanOwnBuyer } from '../services/assignment.service.js';
 import { renderQuotationPdf } from '../services/quotationPdf.js';
 import { bufferOf } from '../services/storage.service.js';
 import { lineCosting } from '../services/pricingVisibility.js';
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import CustomerMessage from '../models/CustomerMessage.js';
+import { draftQuoteMessages, recipientOf, sendProblem } from '../services/quotationMessage.js';
+import { sendEmail } from '../services/notification.service.js';
+import { isWhatsAppConfigured, sendWhatsApp } from '../providers/twilio.js';
+import { env, isProduction } from '../config/env.js';
+import { normalisePhone } from '../utils/phone.js';
 
 /**
  * Quotations [BLUEPRINT §10], and the price gate in front of them [§9].
@@ -742,6 +749,10 @@ export const reviseQuotation = asyncHandler(async (req, res) => {
  * for a signature.
  */
 export const sendQuotation = asyncHandler(async (req, res) => {
+  const channels = { email: req.body?.email, whatsapp: req.body?.whatsapp };
+  const invalid = sendProblem(channels);
+  if (invalid) throw ApiError.badRequest(invalid);
+
   const quotation = await Quotation.findById(req.params.id);
   if (!quotation) throw ApiError.notFound('Quotation not found');
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
@@ -789,10 +800,31 @@ export const sendQuotation = asyncHandler(async (req, res) => {
     throw ApiError.badRequest(why);
   }
 
+  /*
+   * Deliver first, and mark it sent only if something went — or if nobody asked for a channel,
+   * which is recording a quote handed over in person. A quote whose every channel failed has not
+   * reached the buyer, and saying it had would stop anybody sending it again.
+   */
+  let deliveries = [];
+  if (channels.email?.send || channels.whatsapp?.send) {
+    const full = await loadForPdf(quotation._id);
+    deliveries = await deliverQuotation(req, full, channels);
+    if (!deliveries.some((row) => row.status === 'sent')) {
+      const why = deliveries.map((row) => `${row.channel === 'email' ? 'Email' : 'WhatsApp'}: ${
+        row.status === 'skipped' ? (row.skipReason === 'opted_out' ? 'the customer has asked not to be messaged this way' : 'not set up on this server') : row.error || 'failed'
+      }`).join('. ');
+      throw new ApiError(502, `The quotation was not sent. ${why}.`);
+    }
+  }
+
   const from = quotation.status;
   quotation.status = 'sent';
   quotation.sentAt = new Date();
-  quotation.statusHistory.push({ from, to: 'sent', by: req.user._id, note: req.body?.note });
+  const went = deliveries.filter((row) => row.status === 'sent').map((row) => `${row.channel} to ${row.recipient}`);
+  quotation.statusHistory.push({
+    from, to: 'sent', by: req.user._id,
+    note: [req.body?.note, went.length ? `Sent by ${went.join(' and ')}` : null].filter(Boolean).join(' — ') || undefined,
+  });
 
   // The revision that actually went out, marked as such: a revision drafted and superseded is
   // not the same thing as one the customer has seen.
@@ -802,7 +834,7 @@ export const sendQuotation = asyncHandler(async (req, res) => {
   await quotation.save();
   publish(EVENTS.QUOTATION_SENT, { quotation, by: req.user });
 
-  res.json({ success: true, data: quotation });
+  res.json({ success: true, data: quotation, deliveries });
 });
 
 /** What the customer said. Accepting one is what moves the enquiry towards a PO. */
@@ -876,30 +908,17 @@ async function costedResins(quotation) {
   return resins;
 }
 
-export const quotationPdf = asyncHandler(async (req, res) => {
-  const quotation = await Quotation.findById(req.params.id)
-    .populate('customer', 'code name address city state gstin mobile email')
+/** A quotation with everything its PDF prints. */
+const loadForPdf = (id) =>
+  Quotation.findById(id)
+    .populate('customer', 'code name address city state gstin mobile whatsapp email contacts notifications')
     .populate('enquiry', 'number')
-    .populate('assignedTo', 'name')
+    .populate('assignedTo', 'name phone')
     /* Per line now: the document's item table describes each model it carries. */
     .populate(mouldWithPhoto('lines.mould', 'mouldCode name category sizeMm material hookType'));
 
-  if (!quotation) throw ApiError.notFound('Quotation not found');
-  if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
-
-  /*
-   * The part photographs, in hand before anything is drawn.
-   *
-   * pdfkit embeds an image from a buffer, so there is no point in the layout where it could go
-   * and fetch one — and a document is laid out in one pass. Loaded here rather than inside the
-   * renderer so the renderer stays a pure function of what it is given, which is what lets it
-   * be tested without a filesystem.
-   *
-   * Deduplicated by key: one quotation quoting three colours off the same tool is three lines
-   * and one photograph, and reading the same file three times is three times the work for the
-   * same bytes. A file that will not read resolves to null and the cell prints empty — see the
-   * note at the top of the renderer.
-   */
+/** The PDF itself — the same document whether it is downloaded, attached to an email or linked on WhatsApp. */
+async function renderPdfFor(quotation) {
   const keys = [
     ...new Set(
       (quotation.lines || [])
@@ -907,16 +926,170 @@ export const quotationPdf = asyncHandler(async (req, res) => {
         .filter(Boolean)
     ),
   ];
-
   const photos = new Map(
     (await Promise.all(keys.map(async (key) => [key, await bufferOf(key)])))
       .filter(([, bytes]) => bytes)
   );
+  return renderQuotationPdf(quotation, photos, await costedResins(quotation));
+}
 
-  const pdf = await renderQuotationPdf(quotation, photos, await costedResins(quotation));
+export const quotationPdf = asyncHandler(async (req, res) => {
+  const quotation = await loadForPdf(req.params.id);
+  if (!quotation) throw ApiError.notFound('Quotation not found');
+  if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
+
+  const pdf = await renderPdfFor(quotation);
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Length', pdf.length);
   res.setHeader('Content-Disposition', `inline; filename="${fileSafeNumber(quotation.number)}.pdf"`);
   res.send(pdf);
 });
+
+/* --------------------------- The quotation, sent to the buyer --------------------------- */
+
+/*
+ * WhatsApp cannot carry a file from here: Twilio fetches a document from a URL. So a sent quote
+ * gets a link that opens its PDF without signing in — to that one quotation only, signed with the
+ * server's secret and expiring after a month, so the link in a buyer's chat cannot be guessed or
+ * turned into anybody else's quote.
+ */
+const PDF_LINK_DAYS = 30;
+const pdfSignature = (id, expires) =>
+  createHmac('sha256', env.jwtSecret).update(`quotation-pdf:${id}:${expires}`).digest('hex');
+
+export function publicPdfUrl(req, quotation) {
+  const expires = Date.now() + PDF_LINK_DAYS * 86400000;
+  const base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
+  return `${base}/public/quotations/${quotation._id}/${expires}/${pdfSignature(quotation._id, expires)}/${fileSafeNumber(quotation.number)}.pdf`;
+}
+
+/** The PDF behind a signed link. No session: the signature is the permission. */
+export const publicQuotationPdf = asyncHandler(async (req, res) => {
+  const { id, expires, signature } = req.params;
+  const expected = Buffer.from(pdfSignature(id, expires));
+  const given = Buffer.from(String(signature || ''));
+  const valid = given.length === expected.length && timingSafeEqual(given, expected) && Number(expires) > Date.now();
+  if (!valid) throw ApiError.notFound('This link has expired. Ask for the quotation again.');
+
+  const quotation = await loadForPdf(id).catch(() => null);
+  if (!quotation) throw ApiError.notFound('This link has expired. Ask for the quotation again.');
+  const pdf = await renderPdfFor(quotation);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Length', pdf.length);
+  res.setHeader('Content-Disposition', `inline; filename="${fileSafeNumber(quotation.number)}.pdf"`);
+  res.send(pdf);
+});
+
+/**
+ * What the send dialog opens with: the email and WhatsApp texts, pre-filled, and where each would
+ * go — all of it for the sender to change before anything leaves.
+ */
+export const sendPreview = asyncHandler(async (req, res) => {
+  const quotation = await loadForPdf(req.params.id);
+  if (!quotation) throw ApiError.notFound('Quotation not found');
+  if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
+
+  const customer = quotation.customer;
+  const recipient = recipientOf(customer);
+  const drafts = draftQuoteMessages({ quotation, customer, sender: req.user });
+  const sent = await CustomerMessage.find({ quotation: quotation._id })
+    .populate('sentBy', 'name')
+    .sort('-sentAt')
+    .limit(20);
+
+  res.json({
+    success: true,
+    data: {
+      number: quotation.number,
+      status: quotation.status,
+      customer: { _id: customer?._id, name: customer?.name },
+      email: {
+        to: recipient.email,
+        subject: drafts.subject,
+        body: drafts.email,
+        optedOut: customer?.notifications?.email === false,
+        configured: Boolean(env.smtp.host),
+      },
+      whatsapp: {
+        to: recipient.whatsapp,
+        body: drafts.whatsapp,
+        optedOut: customer?.notifications?.whatsapp === false,
+        configured: isWhatsAppConfigured(),
+        /* Outside 24 hours of the buyer's own last message, WhatsApp takes only an approved template. */
+        template: Boolean(process.env.TWILIO_WHATSAPP_QUOTE_TEMPLATE_SID),
+      },
+      attachment: `${fileSafeNumber(quotation.number)}.pdf`,
+      sent,
+    },
+  });
+});
+
+const escapeHtml = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/**
+ * Sends the quotation the way the dialog left it. Each channel is delivered and logged on its own;
+ * one that fails is reported without undoing one that went.
+ */
+async function deliverQuotation(req, quotation, { email, whatsapp }) {
+  const customer = quotation.customer;
+  const generated = draftQuoteMessages({ quotation, customer, sender: req.user });
+  const base = { customer: customer._id, enquiry: quotation.enquiry?._id || quotation.enquiry, quotation: quotation._id, event: 'quotation_sent', sentBy: req.user._id };
+  const results = [];
+  let pdf = null;
+
+  if (email?.send) {
+    const to = String(email.to).trim().toLowerCase();
+    const log = { ...base, channel: 'email', recipient: to, subject: email.subject, body: email.body, edited: email.subject !== generated.subject || email.body !== generated.email };
+    if (customer.notifications?.email === false) {
+      results.push(await CustomerMessage.create({ ...log, status: 'skipped', skipReason: 'opted_out' }));
+    } else {
+      try {
+        pdf = pdf || (await renderPdfFor(quotation));
+        const sent = await sendEmail({
+          to,
+          subject: email.subject,
+          text: email.body,
+          html: `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:560px;white-space:pre-wrap">${escapeHtml(email.body)}</div>`,
+          attachments: [{ filename: `${fileSafeNumber(quotation.number)}.pdf`, content: pdf, contentType: 'application/pdf' }],
+        });
+        results.push(await CustomerMessage.create({ ...log, status: 'sent', providerId: sent.messageId, providerStatus: sent.delivered ? 'sent' : 'logged' }));
+      } catch (error) {
+        results.push(await CustomerMessage.create({ ...log, status: 'failed', error: error.message }));
+      }
+    }
+  }
+
+  if (whatsapp?.send) {
+    const to = normalisePhone(whatsapp.to);
+    const log = { ...base, channel: 'whatsapp', recipient: to, body: whatsapp.body, edited: whatsapp.body !== generated.whatsapp };
+    if (customer.notifications?.whatsapp === false) {
+      results.push(await CustomerMessage.create({ ...log, status: 'skipped', skipReason: 'opted_out' }));
+    } else if (!isWhatsAppConfigured()) {
+      if (isProduction) {
+        results.push(await CustomerMessage.create({ ...log, status: 'skipped', skipReason: 'no_provider' }));
+      } else {
+        console.log(`\n[whatsapp] to ${to}\n${whatsapp.body}\n${publicPdfUrl(req, quotation)}\n`);
+        results.push(await CustomerMessage.create({ ...log, status: 'sent', providerStatus: 'logged' }));
+      }
+    } else {
+      try {
+        const link = publicPdfUrl(req, quotation);
+        const templateSid = process.env.TWILIO_WHATSAPP_QUOTE_TEMPLATE_SID;
+        const sent = await sendWhatsApp({
+          to,
+          body: whatsapp.body,
+          mediaUrl: link,
+          ...(templateSid
+            ? { contentSid: templateSid, contentVariables: { 1: recipientOf(customer).name || customer.name, 2: quotation.number, 3: link } }
+            : {}),
+        });
+        results.push(await CustomerMessage.create({ ...log, status: 'sent', providerId: sent.sid, providerStatus: sent.status, usedTemplate: Boolean(templateSid) }));
+      } catch (error) {
+        results.push(await CustomerMessage.create({ ...log, status: 'failed', error: error.message }));
+      }
+    }
+  }
+  return results;
+}
+

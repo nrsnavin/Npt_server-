@@ -27,6 +27,8 @@ const customerMessageSchema = new mongoose.Schema(
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
     /** The record the update is about. One per module as later phases land. */
     sample: { type: mongoose.Schema.Types.ObjectId, ref: 'Sample', index: true },
+    /** A quotation sent to the customer, when that is what this message carried. */
+    quotation: { type: mongoose.Schema.Types.ObjectId, ref: 'Quotation', index: true },
 
     /** Which of the §42.5 eligible updates this is. */
     event: { type: String, required: true, index: true },

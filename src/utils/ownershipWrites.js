@@ -1,5 +1,5 @@
 import User from '../models/User.js';
-import { acquireOperationLock } from '../services/operationLock.service.js';
+import { OWNER_LOCK_WAIT_MS, acquireOperationLock } from '../services/operationLock.service.js';
 import ApiError from './ApiError.js';
 
 /** Fence new ownership against offboarding; ordinary edits use the document version guard. */
@@ -15,7 +15,7 @@ export function protectOwnership(schema, fields = ['assignedTo']) {
     this.$locals.ownerLocks = [];
     try {
       for (const id of ids) {
-        this.$locals.ownerLocks.push(await acquireOperationLock(`owner:${id}`, { retryMs: 2000 }));
+        this.$locals.ownerLocks.push(await acquireOperationLock(`owner:${id}`, { retryMs: OWNER_LOCK_WAIT_MS }));
         const user = await User.findById(id).select('isActive');
         if (user?.isActive === false) throw ApiError.conflict('That owner has been deactivated. Reload and assign an active colleague.');
       }

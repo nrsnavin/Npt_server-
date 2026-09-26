@@ -3,20 +3,31 @@ import { hostname } from 'node:os';
 import OperationLock from '../models/OperationLock.js';
 import ApiError from '../utils/ApiError.js';
 
+/**
+ * How long a record's save waits for its owner's lock before giving up. Saves for one owner queue
+ * behind each other; two seconds was too short once the plant was busy — a quote raised while a
+ * colleague's saves for the same owner were queued was refused outright. Fifteen seconds lets a
+ * queue drain, and still ends in a clear refusal if a lock was left behind by a crash.
+ */
+export const OWNER_LOCK_WAIT_MS = 15000;
+
 export async function acquireOperationLock(key, { retryMs = 0 } = {}) {
   const token = randomUUID();
   const deadline = Date.now() + retryMs;
-  for (;;) {
+  for (let attempt = 0; ; attempt += 1) {
     try {
       await OperationLock.create({ _id: key, token, process: `${hostname()}:${process.pid}` });
       break;
     } catch (error) {
       if (error?.code !== 11000) throw error;
       if (Date.now() >= deadline) throw ApiError.conflict('Related records are being updated. Reload and try again. If this persists, ask an administrator to check interrupted operations.');
-      await new Promise(resolve => setTimeout(resolve, 20));
+      /* Backing off, with a little randomness, so a queue of waiters does not retry in step. */
+      const pause = Math.min(250, 20 * 2 ** Math.min(attempt, 4)) * (0.5 + Math.random() / 2);
+      await new Promise(resolve => setTimeout(resolve, Math.min(pause, Math.max(0, deadline - Date.now()) + 5)));
     }
   }
-  return () => OperationLock.deleteOne({ _id: key, token });
+  /* A promise, not a lazy query, so a release that nobody awaits still happens. */
+  return () => OperationLock.deleteOne({ _id: key, token }).exec();
 }
 export async function withOperationLock(key, work) {
   const release = await acquireOperationLock(key);
@@ -37,7 +48,7 @@ export const withOrderLock = (orderId, handler) => async (req, res) => {
 export async function withOwnerLocks(ids, work) {
   const releases = [];
   try {
-    for (const id of [...new Set(ids.filter(Boolean).map(String))].sort()) releases.push(await acquireOperationLock(`owner:${id}`, { retryMs: 2000 }));
+    for (const id of [...new Set(ids.filter(Boolean).map(String))].sort()) releases.push(await acquireOperationLock(`owner:${id}`, { retryMs: OWNER_LOCK_WAIT_MS }));
     return await work();
   } finally { for (const release of releases.reverse()) await release(); }
 }

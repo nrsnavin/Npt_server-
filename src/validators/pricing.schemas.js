@@ -296,7 +296,25 @@ export const quotationRevisionSchema = z.object({
   note: z.string().optional(),
 });
 
-export const quotationSendSchema = z.object({ note: z.string().optional() });
+/**
+ * Sending a quotation: the note for the record, and each channel as the send dialog left it —
+ * the address and the text the sender saw and may have edited. No channel is recording a quote
+ * handed over in person.
+ */
+export const quotationSendSchema = z.object({
+  note: z.string().optional(),
+  email: z.object({
+    send: z.boolean(),
+    to: z.string().trim().max(200).optional(),
+    subject: z.string().trim().max(300).optional(),
+    body: z.string().max(10000).optional(),
+  }).optional(),
+  whatsapp: z.object({
+    send: z.boolean(),
+    to: z.string().trim().max(40).optional(),
+    body: z.string().max(4000).optional(),
+  }).optional(),
+});
 
 export const quotationResponseSchema = z.object({
   accepted: z.boolean(),

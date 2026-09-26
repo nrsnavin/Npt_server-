@@ -17,6 +17,7 @@ import { ask, status as jarvisStatus } from '../controllers/jarvis.controller.js
 import { listStates, listCities } from '../controllers/place.controller.js';
 import { indiamartStatus, runIndiamartSync } from '../controllers/indiamart.controller.js';
 import { inboundWebhook } from '../controllers/whatsapp.controller.js';
+import { publicQuotationPdf } from '../controllers/quotation.controller.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 
 const router = Router();
@@ -34,6 +35,8 @@ router.use('/samples', sampleRoutes);
  * changed: everything else is protected by the middleware above it, and this one is not.
  */
 router.post('/whatsapp/inbound', inboundWebhook);
+/* A sent quotation's PDF behind a signed, expiring link — what WhatsApp fetches. No session. */
+router.get('/public/quotations/:id/:expires/:signature/:file', publicQuotationPdf);
 router.use('/whatsapp', whatsappRoutes);
 /*
  * One search across everything [§32]. Not inside a module's routes because it belongs to no
