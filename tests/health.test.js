@@ -70,7 +70,7 @@ test('readiness reports the database as up and how it will deliver codes', async
   assert.ok(json.checks.database.latencyMs >= 0);
 
   // No providers configured in tests, so both fall back to the console.
-  assert.deepEqual(json.delivery, { email: 'console', sms: 'console' });
+  assert.deepEqual(json.delivery, { email: 'console', sms: 'console', whatsapp: 'console' });
 });
 
 test('readiness is cached briefly so probes cannot hammer the database', async () => {

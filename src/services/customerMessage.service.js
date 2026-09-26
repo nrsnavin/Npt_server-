@@ -3,7 +3,7 @@ import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
 import { TEMPLATES, contextFor, render } from './customerMessage.templates.js';
 import { sendEmail } from './notification.service.js';
-import { isWhatsAppConfigured, sendWhatsApp } from '../providers/twilio.js';
+import { isWhatsAppConfigured, sendWhatsApp } from '../providers/whatsapp.js';
 import { isProduction } from '../config/env.js';
 
 /**
@@ -85,11 +85,11 @@ async function deliver({ channel, address, draft, event, context }) {
   const result = await sendWhatsApp({
     to: address,
     body: draft.body,
-    contentSid,
-    contentVariables: contentSid ? template.variables(context) : undefined,
+    template: contentSid,
+    variables: contentSid ? template.variables(context) : undefined,
   });
 
-  return { providerId: result.sid, providerStatus: result.status, usedTemplate: Boolean(contentSid) };
+  return { providerId: result.id, providerStatus: result.status, usedTemplate: Boolean(contentSid) };
 }
 
 /**

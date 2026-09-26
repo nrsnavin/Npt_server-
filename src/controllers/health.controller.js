@@ -2,6 +2,8 @@ import mongoose from 'mongoose';
 import { createRequire } from 'node:module';
 import { env } from '../config/env.js';
 import { isConfigured as twilioConfigured } from '../providers/twilio.js';
+import { whatsappProvider } from '../providers/whatsapp.js';
+import { phoneCodesByWhatsApp } from '../services/notification.service.js';
 import asyncHandler from '../utils/asyncHandler.js';
 
 const require = createRequire(import.meta.url);
@@ -84,7 +86,8 @@ export const ready = asyncHandler(async (_req, res) => {
     // Informational only: missing providers are a configuration smell, not an outage.
     delivery: {
       email: env.smtp.host ? 'smtp' : 'console',
-      sms: twilioConfigured() ? 'twilio' : 'console',
+      sms: twilioConfigured() ? 'twilio' : phoneCodesByWhatsApp() ? 'whatsapp' : 'console',
+      whatsapp: whatsappProvider() || 'console',
     },
   };
 

@@ -15,7 +15,7 @@ import { raiseTask } from '../services/task.service.js';
 import Attachment from '../models/Attachment.js';
 import { put, remove } from '../services/storage.service.js';
 import { sendEmail } from '../services/notification.service.js';
-import { isWhatsAppConfigured, sendWhatsApp } from '../providers/twilio.js';
+import { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } from '../providers/whatsapp.js';
 import { env } from '../config/env.js';
 import { DEPARTMENT_KEYS, findDepartment } from '../config/modules.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
@@ -828,7 +828,7 @@ export const addFile = asyncHandler(async (req, res) => {
  *
  * Best effort and logged: the task on their list is the record, these are how it reaches them.
  * WhatsApp to a person who has not messaged the plant's number in 24 hours needs an approved
- * template — set TWILIO_WHATSAPP_TAG_TEMPLATE_SID (variables 1 tagger, 2 query, 3 link) and it
+ * template — set WHATSAPP_TEMPLATE_TAG (variables 1 tagger, 2 query, 3 link) and it
  * is used; without one the plain text is sent, which works inside that window and in the sandbox.
  */
 async function notifyTagged(query, people, tagger, said) {
@@ -857,11 +857,11 @@ async function notifyTagged(query, people, tagger, said) {
         console.log(`\n[whatsapp] to ${person.phone}\n${urgent}${tagger.name} tagged you in ${query.number}: ${link}\n`);
         continue;
       }
-      const template = process.env.TWILIO_WHATSAPP_TAG_TEMPLATE_SID;
+      const template = whatsappTemplate('tag');
       await sendWhatsApp({
         to: person.phone,
         body: `${urgent}${tagger.name} tagged you in ${query.number} (${query.subject}): "${said.slice(0, 200)}" ${link}`,
-        ...(template ? { contentSid: template, contentVariables: { 1: tagger.name, 2: query.number, 3: link } } : {}),
+        ...(template ? { template, variables: { 1: tagger.name, 2: query.number, 3: link } } : {}),
       }).catch((error) => console.error(`[query-tag] WhatsApp to ${person.phone} not sent: ${error.message}`));
     }
   }

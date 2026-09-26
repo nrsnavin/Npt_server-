@@ -1,6 +1,7 @@
 import { env, isProduction } from '../config/env.js';
 import ApiError from '../utils/ApiError.js';
 import { isConfigured as twilioConfigured, sendSms as twilioSendSms } from '../providers/twilio.js';
+import { sendWhatsAppCode, whatsappTemplate, isWhatsAppConfigured } from '../providers/whatsapp.js';
 
 /**
  * Message delivery: OTP codes over email and SMS, and the customer updates in
@@ -158,8 +159,20 @@ export async function sendOtp({ identifier, channel, code, purpose, ttlMinutes }
     });
   }
 
+  /*
+   * A phone number: by SMS where Twilio's SMS is set up; otherwise on WhatsApp, as the approved
+   * authentication template — which is how a deployment on Meta's platform alone signs people in.
+   */
+  if (!twilioConfigured() && phoneCodesByWhatsApp()) {
+    const sent = await sendWhatsAppCode({ to: identifier, code });
+    return { ...sent, channel: 'whatsapp' };
+  }
+
   return sendSms({
     to: identifier,
     body: `${code} is your NPT Hangers verification code. It expires in ${expiry}.`,
   });
 }
+
+/** True when sign-in codes for a phone go by WhatsApp: a provider and an authentication template. */
+export const phoneCodesByWhatsApp = () => isWhatsAppConfigured() && Boolean(whatsappTemplate('otp'));

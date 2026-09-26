@@ -1,4 +1,4 @@
-import { whatsappTemplates } from '../config/env.js';
+import { whatsappTemplate } from '../providers/whatsapp.js';
 
 /**
  * What a customer may be told, and in what words.
@@ -82,7 +82,7 @@ export const TEMPLATES = {
       5: String(ctx.quantity),
       6: ctx.courierLine,
     }),
-    contentSid: () => whatsappTemplates.sample_ready,
+    contentSid: () => whatsappTemplate('sample_ready'),
   },
 
   sample_dispatched: {
@@ -105,7 +105,7 @@ export const TEMPLATES = {
       6: ctx.courier || '-',
       7: ctx.awbNumber || '-',
     }),
-    contentSid: () => whatsappTemplates.sample_dispatched,
+    contentSid: () => whatsappTemplate('sample_dispatched'),
   },
 };
 

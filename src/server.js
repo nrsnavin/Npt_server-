@@ -4,6 +4,9 @@ import { installProcessGuards } from './config/processGuards.js';
 import { env, escalationIntervalMinutes, isProduction } from './config/env.js';
 import { connectDatabase } from './config/db.js';
 import { configurationProblem, isConfigured } from './providers/twilio.js';
+import { metaConfigurationProblem } from './providers/meta.js';
+import { whatsappProvider } from './providers/whatsapp.js';
+import { phoneCodesByWhatsApp } from './services/notification.service.js';
 import { configurationProblem as smtpConfigurationProblem } from './services/notification.service.js';
 import { runSamplingEscalations } from './services/escalation.service.js';
 import { runStallSweep, runLeadStaleSweep } from './services/anomaly.service.js';
@@ -16,16 +19,24 @@ import { syncIndiamartLeads } from './services/indiamart.ingest.js';
 
 /** Reports how one-time codes will actually reach people on this deployment. */
 function checkOtpDelivery() {
-  const problem = configurationProblem();
+  const problem = configurationProblem() || metaConfigurationProblem();
   if (problem) throw new Error(problem);
+
+  const whatsapp = whatsappProvider();
+  console.log(`WhatsApp delivery: ${whatsapp === 'meta' ? 'Meta WhatsApp Business Platform' : whatsapp === 'twilio' ? 'Twilio' : 'not configured'}`);
 
   if (isConfigured()) {
     const { messagingServiceSid, fromNumber } = env.twilio;
     console.log(
       `SMS delivery: Twilio (${messagingServiceSid ? `messaging service ${messagingServiceSid}` : `from ${fromNumber}`})`
     );
+  } else if (phoneCodesByWhatsApp()) {
+    console.log('Phone sign-in codes: WhatsApp authentication template');
   } else if (isProduction) {
-    throw new Error('No SMS provider configured. Set the TWILIO_* environment variables.');
+    throw new Error(
+      'Phone sign-in codes have no way out. Set WHATSAPP_TEMPLATE_OTP (an approved WhatsApp '
+        + 'authentication template) with the META_WA_* settings, or the TWILIO_* SMS settings.'
+    );
   } else {
     console.warn('SMS delivery: not configured — codes will be printed to this console');
   }

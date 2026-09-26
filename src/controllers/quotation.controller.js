@@ -20,7 +20,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import CustomerMessage from '../models/CustomerMessage.js';
 import { draftQuoteMessages, recipientOf, sendProblem } from '../services/quotationMessage.js';
 import { sendEmail } from '../services/notification.service.js';
-import { isWhatsAppConfigured, sendWhatsApp } from '../providers/twilio.js';
+import { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } from '../providers/whatsapp.js';
 import { env, isProduction } from '../config/env.js';
 import { normalisePhone } from '../utils/phone.js';
 
@@ -1017,7 +1017,7 @@ export const sendPreview = asyncHandler(async (req, res) => {
         optedOut: customer?.notifications?.whatsapp === false,
         configured: isWhatsAppConfigured(),
         /* Outside 24 hours of the buyer's own last message, WhatsApp takes only an approved template. */
-        template: Boolean(process.env.TWILIO_WHATSAPP_QUOTE_TEMPLATE_SID),
+        template: Boolean(whatsappTemplate('quote')),
       },
       attachment: `${fileSafeNumber(quotation.number)}.pdf`,
       sent,
@@ -1075,16 +1075,17 @@ async function deliverQuotation(req, quotation, { email, whatsapp }) {
     } else {
       try {
         const link = publicPdfUrl(req, quotation);
-        const templateSid = process.env.TWILIO_WHATSAPP_QUOTE_TEMPLATE_SID;
+        const templateSid = whatsappTemplate('quote');
         const sent = await sendWhatsApp({
           to,
           body: whatsapp.body,
-          mediaUrl: link,
+          /* The PDF itself: a document in the chat on Meta, an attachment on Twilio. */
+          document: { url: link, filename: `${fileSafeNumber(quotation.number)}.pdf` },
           ...(templateSid
-            ? { contentSid: templateSid, contentVariables: { 1: recipientOf(customer).name || customer.name, 2: quotation.number, 3: link } }
+            ? { template: templateSid, variables: { 1: recipientOf(customer).name || customer.name, 2: quotation.number, 3: link } }
             : {}),
         });
-        results.push(await CustomerMessage.create({ ...log, status: 'sent', providerId: sent.sid, providerStatus: sent.status, usedTemplate: Boolean(templateSid) }));
+        results.push(await CustomerMessage.create({ ...log, status: 'sent', providerId: sent.id, providerStatus: sent.status, usedTemplate: Boolean(templateSid) }));
       } catch (error) {
         results.push(await CustomerMessage.create({ ...log, status: 'failed', error: error.message }));
       }

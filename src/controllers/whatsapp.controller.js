@@ -12,6 +12,8 @@ import { recordChange, snapshot } from '../services/audit.service.js';
 import { listParams, paginated } from '../utils/query.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import ApiError from '../utils/ApiError.js';
+import CustomerMessage from '../models/CustomerMessage.js';
+import { isMetaWebhook, metaConfig, parseMetaWebhook, verifyMetaSignature } from '../providers/meta.js';
 
 /**
  * The WhatsApp inbox [BLUEPRINT §41].
@@ -37,11 +39,74 @@ const POPULATE = [
 /* -------------------------------- The front door -------------------------------- */
 
 /**
- * The provider's webhook. Unauthenticated by necessity, guarded by a shared secret.
+ * One message arriving at the plant's number, from whichever provider: a staff member's photo
+ * becomes a lead card (leadCard.service), YES or NO answers the card waiting on them, and
+ * everything else — every message from anybody else — goes to the inbox.
+ */
+async function takeMessage({ from, body, media, providerId, profileName, receivedAt }) {
+  const staff = await staffForNumber(from);
+  if (staff) {
+    const handled = await handleStaffMessage({ staff, from, body, media, providerId });
+    if (handled) return { outcome: handled.outcome, ...(handled.why ? { why: handled.why } : {}) };
+  }
+
+  const result = await receiveMessage({ from, body, media, providerId, profileName, receivedAt });
+  return {
+    outcome: result.outcome,
+    ...(result.why ? { why: result.why } : {}),
+    ...(result.thread ? { thread: result.thread._id } : {}),
+  };
+}
+
+/**
+ * Meta's one-time check when the webhook is registered: it sends the verify token it was given
+ * and expects its challenge echoed back, as plain text.
+ */
+export const verifyWebhook = (req, res) => {
+  const { verifyToken } = metaConfig();
+  const mode = req.query['hub.mode'];
+  const offered = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+  if (!verifyToken) return res.status(503).type('text/plain').send('Set META_WA_VERIFY_TOKEN first.');
+  if (mode !== 'subscribe' || offered !== verifyToken || !challenge) return res.status(403).type('text/plain').send('Forbidden');
+  return res.status(200).type('text/plain').send(String(challenge));
+};
+
+/**
+ * Meta's webhook: signed with the app secret over the exact bytes, carrying any number of
+ * messages and delivery updates. A delivery update settles the send it belongs to — Meta only
+ * says "accepted" when a message is sent, and a refusal (the 24-hour window, a number not on
+ * WhatsApp) arrives here later, so this is where a sent message can still become a failed one.
+ */
+async function metaWebhook(req, res) {
+  if (!metaConfig().appSecret) {
+    throw new ApiError(503, 'The WhatsApp webhook is not configured — set META_WA_APP_SECRET.');
+  }
+  if (!verifyMetaSignature(req.rawBody, req.get('x-hub-signature-256'))) {
+    throw ApiError.unauthorized('Bad webhook signature');
+  }
+
+  const { messages, statuses } = parseMetaWebhook(req.body);
+  const outcomes = [];
+  for (const message of messages) outcomes.push(await takeMessage(message));
+
+  for (const update of statuses) {
+    if (!update.id) continue;
+    const change = { providerStatus: update.status };
+    if (update.status === 'failed') Object.assign(change, { status: 'failed', error: update.error || 'WhatsApp could not deliver it.' });
+    await CustomerMessage.updateMany({ channel: 'whatsapp', providerId: update.id }, { $set: change });
+  }
+
+  res.json({ success: true, outcomes, statuses: statuses.length });
+}
+
+/**
+ * The provider's webhook. Unauthenticated by necessity, guarded by a secret.
  *
- * Twilio posts here; there is no session and there never will be. So the only thing standing
- * between this route and the open internet is the token, and the route is mounted outside every
- * module grant for that reason — see the note where it is mounted.
+ * Meta signs its posts with the app secret; Twilio (and the plain JSON shape) carry the shared
+ * token. There is no session and there never will be, so those are the only things standing
+ * between this route and the open internet, and the route is mounted outside every module grant
+ * for that reason — see the note where it is mounted.
  *
  * It answers 200 even for a message it refuses. That is not laziness: a provider reads a
  * non-2xx as "retry", so returning 4xx for a message we have decided not to keep buys an
@@ -49,6 +114,8 @@ const POPULATE = [
  * in the body, where a person debugging can read it.
  */
 export const inboundWebhook = asyncHandler(async (req, res) => {
+  if (isMetaWebhook(req.body)) return metaWebhook(req, res);
+
   const expected = process.env.WHATSAPP_WEBHOOK_TOKEN;
   if (!expected) {
     throw new ApiError(503, 'The WhatsApp webhook is not configured — set WHATSAPP_WEBHOOK_TOKEN.');
@@ -56,11 +123,7 @@ export const inboundWebhook = asyncHandler(async (req, res) => {
   const offered = req.get('x-webhook-token') || req.query.token;
   if (offered !== expected) throw ApiError.unauthorized('Bad webhook token');
 
-  /*
-   * Twilio's form fields, and a plain JSON shape beside them. Two providers is the ordinary
-   * case for this kind of integration and the mapping is three lines, so it is done here rather
-   * than in a provider abstraction that would have exactly one implementation.
-   */
+  /* Twilio's form fields, and a plain JSON shape beside them. */
   const payload = req.body || {};
   const media = [];
   const count = Number(payload.NumMedia || 0);
@@ -70,40 +133,16 @@ export const inboundWebhook = asyncHandler(async (req, res) => {
   }
 
   /* `whatsapp:+9198…` is how Twilio addresses the channel; the number is what we key on. */
-  const from = String(payload.From || payload.from || '').replace(/^whatsapp:/i, '');
-  const body = payload.Body ?? payload.body;
-  const attached = media.length ? media : payload.media;
-  const providerId = payload.MessageSid || payload.messageId;
-
-  /*
-   * A staff member's own phone: a photo is a lead's card to read, and YES or NO answers the
-   * latest card waiting on them (leadCard.service). Anything else a colleague sends, and every
-   * message from anybody else, goes to the inbox as it always has.
-   */
-  const staff = await staffForNumber(from);
-  if (staff) {
-    const handled = await handleStaffMessage({ staff, from, body, media: attached, providerId });
-    if (handled) {
-      res.json({ success: true, outcome: handled.outcome, ...(handled.why ? { why: handled.why } : {}) });
-      return;
-    }
-  }
-
-  const result = await receiveMessage({
-    from,
-    body,
-    media: attached,
-    providerId,
+  const result = await takeMessage({
+    from: String(payload.From || payload.from || '').replace(/^whatsapp:/i, ''),
+    body: payload.Body ?? payload.body,
+    media: media.length ? media : payload.media,
+    providerId: payload.MessageSid || payload.messageId,
     profileName: payload.ProfileName || payload.profileName,
     receivedAt: payload.receivedAt,
   });
 
-  res.json({
-    success: result.outcome !== 'rejected',
-    outcome: result.outcome,
-    ...(result.why ? { why: result.why } : {}),
-    ...(result.thread ? { thread: result.thread._id } : {}),
-  });
+  res.json({ success: result.outcome !== 'rejected', ...result });
 });
 
 /* ---------------------------------- The inbox ---------------------------------- */

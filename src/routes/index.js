@@ -16,7 +16,7 @@ import { recordHistory } from '../controllers/audit.controller.js';
 import { ask, status as jarvisStatus } from '../controllers/jarvis.controller.js';
 import { listStates, listCities } from '../controllers/place.controller.js';
 import { indiamartStatus, runIndiamartSync } from '../controllers/indiamart.controller.js';
-import { inboundWebhook } from '../controllers/whatsapp.controller.js';
+import { inboundWebhook, verifyWebhook } from '../controllers/whatsapp.controller.js';
 import { publicQuotationPdf } from '../controllers/quotation.controller.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 
@@ -34,6 +34,7 @@ router.use('/samples', sampleRoutes);
  * checks — which is why it is the one route in this file that must be read before it is
  * changed: everything else is protected by the middleware above it, and this one is not.
  */
+router.get('/whatsapp/inbound', verifyWebhook);
 router.post('/whatsapp/inbound', inboundWebhook);
 /* A sent quotation's PDF behind a signed, expiring link — what WhatsApp fetches. No session. */
 router.get('/public/quotations/:id/:expires/:signature/:file', publicQuotationPdf);

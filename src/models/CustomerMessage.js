@@ -68,5 +68,7 @@ const customerMessageSchema = new mongoose.Schema(
 
 // The duplicate-send warning [§42.7] and the record's own message list run this query.
 customerMessageSchema.index({ sample: 1, event: 1, channel: 1, status: 1 });
+/* A delivery update from the provider finds its message by the provider's id. */
+customerMessageSchema.index({ providerId: 1 }, { sparse: true });
 
 export default mongoose.model('CustomerMessage', customerMessageSchema);

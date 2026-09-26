@@ -175,18 +175,7 @@ export const env = {
   },
 };
 
-/**
- * Approved WhatsApp templates, by the event that sends them.
- *
- * Meta refuses free text for a business-initiated message outside the 24-hour window, so a
- * scheduled update has to go as a template registered in advance. Each value is the Twilio
- * content SID for that template; without one the send falls back to a plain body, which
- * works in the sandbox and inside an open conversation and is refused otherwise.
- */
-export const whatsappTemplates = {
-  sample_ready: process.env.WHATSAPP_TEMPLATE_SAMPLE_READY,
-  sample_dispatched: process.env.WHATSAPP_TEMPLATE_SAMPLE_DISPATCHED,
-};
+/* Approved WhatsApp templates are read per send — see `whatsappTemplate` in providers/whatsapp.js. */
 
 /**
  * How often the §25 sampling escalation sweeps. Hourly is the right grain for a threshold

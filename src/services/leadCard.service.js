@@ -4,7 +4,7 @@ import User from '../models/User.js';
 import LeadCard, { OPEN_CARD_STATUSES } from '../models/LeadCard.js';
 import { hasIdentity, readCard } from './leadCard.llm.js';
 import { put, bufferOf } from './storage.service.js';
-import { fetchMedia, isWhatsAppConfigured, sendWhatsApp } from '../providers/twilio.js';
+import { fetchMedia, isWhatsAppConfigured, sendWhatsApp } from '../providers/whatsapp.js';
 import { canOwnBuyer, nextInRotation } from './assignment.service.js';
 import { nextNumber } from './numbering.service.js';
 import { normalisePhone } from '../utils/phone.js';
@@ -206,7 +206,7 @@ export async function handleStaffMessage({ staff, from, body, media = [], provid
       if (id && (await LeadCard.exists({ providerId: id }))) continue;
       let image;
       try {
-        image = await fetchMedia(photo.url);
+        image = await fetchMedia(photo);
       } catch (error) {
         console.error(`[lead-card] photo from ${from} not fetched: ${error.message}`);
         await reply(from, 'The photo could not be fetched. Please send it again.');
