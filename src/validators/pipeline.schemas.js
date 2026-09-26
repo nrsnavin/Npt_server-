@@ -332,7 +332,7 @@ export const bulkReassignSchema = z.object({
   assignTo: objectId,
 });
 
-/** A card or chat screenshot made a lead: the reading as a person has corrected it [LeadCard.js]. */
+/** A draft lead finished: what was read, as corrected, and the rest filled in by a person [LeadCard.js]. */
 export const leadCardConfirmSchema = z.object({
   company: z.string().trim().min(2, 'A lead needs a company name').max(160).optional(),
   contactName: z.string().trim().max(160).optional(),
@@ -345,6 +345,11 @@ export const leadCardConfirmSchema = z.object({
   productInterest: z.string().trim().max(300).optional(),
   estimatedQuantity: z.number().int('A quantity is a whole number of pieces').nonnegative().nullable().optional(),
   notes: z.string().trim().max(600).optional(),
+  /* The rest — the salesperson's to fill in; the draft becomes a lead only with them. */
   source: z.enum(CUSTOMER_SOURCES).optional(),
+  nextAction: z.string().trim().max(300).optional(),
+  nextActionType: z.enum(NEXT_ACTION_TYPES).optional(),
+  nextFollowUpDate: z.string().trim().max(40).optional(),
+  estimatedValue: z.number().nonnegative().nullable().optional(),
   assignedTo: objectId.optional(),
 });

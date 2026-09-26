@@ -13,8 +13,10 @@ import { syncFollowUpReminder } from '../subscribers/leadFollowUp.subscriber.js'
 import { recordChange } from './audit.service.js';
 
 /**
- * Leads from photos: a card sent to the WhatsApp number, or uploaded, read by the model, and
- * made a lead only when a person says so [house rule: the model never produces a stored fact].
+ * Draft leads from pictures: a card or a chat screenshot sent to the WhatsApp number, or uploaded,
+ * read by the model into a draft. The draft holds only what was recognised in the picture; the
+ * rest — the next step, when to follow up, how we met them — is the salesperson's to fill in, and
+ * the draft becomes a lead only when they do [house rule: the model never produces a stored fact].
  *
  * Only staff can send cards. A photo from a number that belongs to no active staff member is a
  * customer's message and goes to the WhatsApp inbox, exactly as it always has.
@@ -23,10 +25,6 @@ import { recordChange } from './audit.service.js';
 const MOST_PHOTOS = 3;
 /* A screenshot with no header, sent within this long of a chat's first, is the rest of that chat. */
 const SAME_CHAT_MINUTES = 10;
-/* A message that is only a phone number: the reply to "no number was on it". */
-const JUST_A_NUMBER = /^[\s+()\d-]{8,20}$/;
-const YES = /^\s*(y|yes|ok|okay|confirm|add)\s*[.!]*\s*$/i;
-const NO = /^\s*(n|no|drop|discard|cancel)\s*[.!]*\s*$/i;
 
 /** The active staff member this number belongs to, or null. */
 export async function staffForNumber(number) {
@@ -78,30 +76,27 @@ function summary(reading, { companyFromName } = {}) {
 
 const what = (card) => (card.kind === 'chat' ? 'this chat' : 'this card');
 
-/** The WhatsApp message that tells the sender what was read and what to do next. */
+/**
+ * The WhatsApp message that tells the sender what was recognised. It saves a draft and says so —
+ * finishing the lead is theirs to do, in the app.
+ */
 async function tellSender(card) {
   if (card.via !== 'whatsapp') return;
   const reading = card.reading?.toObject?.() || card.reading || {};
   const read = summary(reading, { companyFromName: card.companyFromName });
   if (card.status === 'unreadable') {
     const problem = card.problem || 'it could not be read.';
-    await reply(card.from, `Got it, but ${problem.charAt(0).toLowerCase()}${problem.slice(1)}${read ? `\n\nWhat could be read:\n${read}` : ''}\nOpen it here: ${cardLink(card)}`);
+    await reply(card.from, `Saved as a draft lead, but ${problem.charAt(0).toLowerCase()}${problem.slice(1)}${read ? `\n\nWhat could be read:\n${read}` : ''}\n\nFill it in here: ${cardLink(card)}`);
     return;
   }
   const [lead, customer] = await Promise.all([
     card.matchedLead ? Lead.findById(card.matchedLead).select('number company') : null,
     card.matchedCustomer ? Customer.findById(card.matchedCustomer).select('code name') : null,
   ]);
-  if (lead || customer) {
-    const holder = lead ? `lead ${lead.number} (${lead.company})` : `customer ${customer.code} (${customer.name})`;
-    await reply(card.from, `Read ${what(card)}:\n${read}\n\nThis buyer is already ${holder}, so nothing was added. Check it here: ${cardLink(card)}`);
-    return;
-  }
-  if (!reading.mobile && !reading.whatsapp && !reading.email) {
-    await reply(card.from, `Read ${what(card)}:\n${read}\n\nNo phone number was on it. Reply with the buyer's number (e.g. 98400 11223), then YES to add the lead. Or fill it in here: ${cardLink(card)}`);
-    return;
-  }
-  await reply(card.from, `Read ${what(card)}:\n${read}\n\nReply YES to add it as a lead, or NO to drop it. To correct anything first: ${cardLink(card)}`);
+  const already = lead
+    ? `\n\nNote: this buyer is already lead ${lead.number} (${lead.company}).`
+    : customer ? `\n\nNote: this buyer is already customer ${customer.code} (${customer.name}).` : '';
+  await reply(card.from, `Saved as a draft lead from ${what(card)}:\n${read}${already}\n\nFinish it in the app — add the next step and anything the picture did not show: ${cardLink(card)}`);
 }
 
 /** Marks who already holds this buyer, if anybody. */
@@ -198,9 +193,8 @@ export async function cardFromUpload({ sender, buffer, mimeType, caption }) {
 }
 
 /**
- * A message from a staff member's phone to the plant's number. Photos become cards; YES and NO
- * answer the latest card waiting on them. Returns null for anything else, which then goes to the
- * WhatsApp inbox as before.
+ * A message from a staff member's phone to the plant's number. Pictures become draft leads.
+ * Returns null for anything else, which then goes to the WhatsApp inbox as before.
  */
 export async function handleStaffMessage({ staff, from, body, media = [], providerId }) {
   const photos = (media || []).filter((item) => /^image\//i.test(item.contentType || '')).slice(0, MOST_PHOTOS);
@@ -232,55 +226,21 @@ export async function handleStaffMessage({ staff, from, body, media = [], provid
     return { outcome: 'lead_card', cards };
   }
 
-  const text = String(body || '');
-
-  /* Just a number: the buyer's phone, for the waiting card or chat that had none. */
-  if (JUST_A_NUMBER.test(text) && normalisePhone(text)) {
-    const waiting = await LeadCard.findOne({
-      sender: staff._id,
-      via: 'whatsapp',
-      status: { $in: ['ready', 'unreadable'] },
-      'reading.mobile': { $exists: false },
-      'reading.whatsapp': { $exists: false },
-    }).sort({ createdAt: -1 });
-    if (!waiting) return null;
-    waiting.reading = { ...(waiting.reading?.toObject?.() || waiting.reading || {}), mobile: normalisePhone(text) };
-    if (waiting.status === 'unreadable' && waiting.reading.company) {
-      waiting.status = 'ready';
-      waiting.problem = undefined;
-    }
-    await matchExisting(waiting);
-    await waiting.save();
-    await tellSender(waiting);
-    return { outcome: 'lead_card_phone', card: waiting };
-  }
-
-  const yes = YES.test(text);
-  if (!yes && !NO.test(text)) return null;
-
-  const card = await LeadCard.findOne({ sender: staff._id, status: 'ready', via: 'whatsapp' }).sort({ createdAt: -1 });
-  if (!card) return null;
-
-  if (!yes) {
-    await discardCard(card, staff);
-    await reply(from, 'Dropped. Nothing was added.');
-    return { outcome: 'lead_card_discarded', card };
-  }
-
-  try {
-    const lead = await confirmCard(card, staff, {});
-    await reply(from, `Added lead ${lead.number} — ${lead.company}. ${env.appUrl}/leads/${lead._id}`);
-    return { outcome: 'lead_card_confirmed', card, lead };
-  } catch (error) {
-    await reply(from, `Not added: ${error.message} Fix it here: ${cardLink(card)}`);
-    return { outcome: 'lead_card_refused', card, why: error.message };
-  }
+  /* Anything else a colleague sends goes to the inbox, as before. Drafts are finished in the app. */
+  return null;
 }
 
 /** Why a card cannot become a lead as it stands, or null. The same checks, however it is confirmed. */
 export function confirmProblem(fields) {
   if (!fields.company || String(fields.company).trim().length < 2) return 'A lead needs a company name.';
   if (!fields.mobile && !fields.email && !fields.whatsapp) return 'A lead needs a phone number or an email to reach them on.';
+  if (!String(fields.nextAction || '').trim()) return 'Say what the next step is.';
+  if (!fields.nextFollowUpDate) return 'Say when to follow up.';
+  const due = new Date(fields.nextFollowUpDate);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (Number.isNaN(due.getTime()) || due < today) return 'The follow-up date cannot be in the past.';
+  if (!fields.source) return 'Say how we met them.';
   return null;
 }
 
@@ -351,19 +311,21 @@ export async function confirmCard(card, user, edits = {}, { owner } = {}) {
     state: fields.state,
     productInterest: fields.productInterest,
     estimatedQuantity: fields.estimatedQuantity || undefined,
-    source: edits.source || (card.kind === 'chat' ? 'whatsapp' : 'manual'),
+    estimatedValue: fields.estimatedValue || undefined,
+    source: fields.source,
     assignedTo,
     status: 'new',
     visitingCardUrl: `/api/lead-cards/${card._id}/image`,
-    nextAction: `Call ${fields.contactName || fields.company} — ${card.kind === 'chat' ? 'follow up the WhatsApp conversation' : 'their card came in'}`,
-    nextActionType: 'call',
-    nextFollowUpDate: new Date(),
+    /* The salesperson's own next step — not one the app made up. */
+    nextAction: String(fields.nextAction).trim(),
+    nextActionType: fields.nextActionType || 'call',
+    nextFollowUpDate: new Date(fields.nextFollowUpDate),
     activities: [
       {
         type: 'note',
         summary: [
           `From a ${card.kind === 'chat' ? 'WhatsApp chat screenshot' : 'card'} ${card.via === 'whatsapp' ? 'sent on WhatsApp' : 'uploaded'} by ${sender?.name || 'a colleague'}`,
-          card.readBy === 'model' ? 'read by AI and checked by' : 'typed in by',
+          card.readBy === 'model' ? 'read by AI, checked and completed by' : 'typed in by',
           `${user.name}.`,
           card.caption ? `Note with it: "${card.caption}"` : '',
           fields.notes ? `${card.kind === 'chat' ? 'The conversation' : 'On the card'}: ${fields.notes}` : '',
