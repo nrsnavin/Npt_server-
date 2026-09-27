@@ -377,3 +377,22 @@ test('with WHATSAPP_LOGIN_PING set, a sign-in sends hello_world, and its deliver
     delete process.env.WHATSAPP_LOGIN_PING;
   }
 });
+
+test('when Meta refuses the account, the sign-in check says why — without the token', async () => {
+  process.env.WHATSAPP_LOGIN_PING = '7550005370';
+  nextError = { message: 'Error validating access token: Session has expired on Saturday, 26-Sep-26.', type: 'OAuthException', code: 190, error_subcode: 463, fbtrace_id: 'T9' };
+  const log = console.error;
+  console.error = () => {};
+  try {
+    assert.equal((await api('/api/auth/login', { method: 'POST', body: { email: 'admin@np.com', password: 'Admin@12345' } })).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    const ping = (await api('/health/ready')).json.platform.whatsappLoginPing;
+    assert.equal(ping.status, 'failed');
+    assert.match(ping.error, /access token has expired or is not valid/);
+    assert.match(ping.error, /Meta error 190\/463: Error validating access token/);
+    assert.doesNotMatch(ping.error, /meta-test-token/);
+  } finally {
+    console.error = log;
+    delete process.env.WHATSAPP_LOGIN_PING;
+  }
+});

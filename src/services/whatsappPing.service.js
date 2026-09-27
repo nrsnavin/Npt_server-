@@ -45,8 +45,9 @@ export function pingOnSignIn(user, method) {
       say(`${template} to ${entry.to} accepted by ${entry.provider} (${sent.id}) — sign-in by ${user?.name || 'someone'} via ${method}`);
     })
     .catch((error) => {
-      Object.assign(entry, { status: 'failed', error: error.message });
-      say(`${template} to ${entry.to} failed: ${error.message}`);
+      /* The real reason where there is one — this check exists to say what is wrong. */
+      Object.assign(entry, { status: 'failed', error: error.diagnosis || error.message });
+      say(`${template} to ${entry.to} failed: ${entry.error}`);
     });
 }
 

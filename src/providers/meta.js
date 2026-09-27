@@ -82,17 +82,31 @@ const CONFIG_ERRORS = {
 
 const RATE_LIMITS = [4, 80007, 130429, 131048, 131056];
 
+/*
+ * What Meta actually said, for whoever runs the server: kept off the error people see (it can name
+ * account ids) but attached, not enumerable, so the WhatsApp check on /health/ready can show it.
+ */
+function diagnose(apiError, error, httpStatus, ours) {
+  const code = [error.code, error.error_subcode].filter((part) => part != null).join('/');
+  const said = [ours, `Meta error ${code || `HTTP ${httpStatus}`}${error.message ? `: ${error.message}` : ''}`].filter(Boolean).join(' — ');
+  Object.defineProperty(apiError, 'diagnosis', { value: said, enumerable: false });
+  return apiError;
+}
+
 function translate(payload, httpStatus) {
   const error = payload?.error || {};
   const code = Number(error.code);
-  if (RECIPIENT_ERRORS[code]) return ApiError.badRequest(RECIPIENT_ERRORS[code]);
+  if (RECIPIENT_ERRORS[code]) return diagnose(ApiError.badRequest(RECIPIENT_ERRORS[code]), error, httpStatus);
   if (CONFIG_ERRORS[code]) {
-    console.error(`[whatsapp/meta] ${CONFIG_ERRORS[code]} (code ${code}, trace ${error.fbtrace_id || '-'})`);
-    return new ApiError(500, 'WhatsApp is not set up correctly on the server. An administrator can see why in the server log.');
+    console.error(`[whatsapp/meta] ${CONFIG_ERRORS[code]} (code ${code}${error.error_subcode ? `/${error.error_subcode}` : ''}: ${error.message || '-'}; trace ${error.fbtrace_id || '-'})`);
+    return diagnose(
+      new ApiError(500, 'WhatsApp is not set up correctly on the server. An administrator can see why in the server log.'),
+      error, httpStatus, CONFIG_ERRORS[code]
+    );
   }
-  if (RATE_LIMITS.includes(code)) return new ApiError(503, 'WhatsApp is limiting how fast messages go out. Try again in a minute.');
+  if (RATE_LIMITS.includes(code)) return diagnose(new ApiError(503, 'WhatsApp is limiting how fast messages go out. Try again in a minute.'), error, httpStatus);
   console.error(`[whatsapp/meta] send failed with HTTP ${httpStatus}`, { code: error.code, subcode: error.error_subcode, message: error.message, trace: error.fbtrace_id });
-  return new ApiError(502, 'WhatsApp did not accept the message. Please try again shortly.');
+  return diagnose(new ApiError(502, 'WhatsApp did not accept the message. Please try again shortly.'), error, httpStatus);
 }
 
 async function graph(path, { method = 'GET', body } = {}, attempt = 1) {
