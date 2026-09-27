@@ -336,3 +336,44 @@ test('with no SMS, a phone sign-in code goes as the WhatsApp authentication temp
   assert.equal(button.sub_type, 'url');
   assert.deepEqual(button.parameters, [{ type: 'text', text: code }]);
 });
+
+/* ------------------------------ The sign-in check ------------------------------ */
+
+test('with WHATSAPP_LOGIN_PING set, a sign-in sends hello_world, and its delivery report is seen', async () => {
+  const signInAsAdmin = () => api('/api/auth/login', { method: 'POST', body: { email: 'admin@np.com', password: 'Admin@12345' } });
+  const readiness = async () => {
+    await new Promise((resolve) => setTimeout(resolve, 2100)); /* past the readiness cache */
+    return (await api('/health/ready')).json.platform;
+  };
+
+  /* Off by default: signing in sends nothing. */
+  delete process.env.WHATSAPP_LOGIN_PING;
+  assert.equal((await signInAsAdmin()).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(sentTo('917550005370').length, 0);
+
+  process.env.WHATSAPP_LOGIN_PING = '7550005370';
+  try {
+    const signed = await signInAsAdmin();
+    assert.equal(signed.status, 200, 'the sign-in itself is untouched');
+    assert.ok(signed.json.data.token);
+    for (let i = 0; i < 40 && !sentTo('917550005370').length; i += 1) await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const [message] = sentTo('917550005370');
+    assert.equal(message.type, 'template');
+    assert.deepEqual(message.template, { name: 'hello_world', language: { code: 'en_US' } }, 'no parameters: the sample template has none');
+
+    let ping = (await readiness()).whatsappLoginPing;
+    assert.equal(ping.status, 'accepted');
+    assert.equal(ping.to, '+91******5370', 'the number is masked on the public endpoint');
+
+    /* Meta reports it delivered, through the signed webhook. */
+    const id = `wamid.TEST${wamid}`;
+    const delivered = await deliver(change({ statuses: [{ id, status: 'delivered', timestamp: '1790500000', recipient_id: '917550005370' }] }));
+    assert.equal(delivered.status, 200);
+    ping = (await readiness()).whatsappLoginPing;
+    assert.equal(ping.status, 'delivered');
+  } finally {
+    delete process.env.WHATSAPP_LOGIN_PING;
+  }
+});

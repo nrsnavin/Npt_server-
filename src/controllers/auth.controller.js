@@ -1,3 +1,4 @@
+import { pingOnSignIn } from '../services/whatsappPing.service.js';
 import bcrypt from 'bcryptjs';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
@@ -41,6 +42,8 @@ async function completeSignIn(user, method) {
   user.lastLoginAt = new Date();
   user.lastLoginMethod = method;
   await user.save({ validateBeforeSave: false });
+  /* The WhatsApp check, when WHATSAPP_LOGIN_PING is set; never holds up the sign-in. */
+  pingOnSignIn(user, method);
 
   return { user: publicUser(user), token: signToken(user) };
 }

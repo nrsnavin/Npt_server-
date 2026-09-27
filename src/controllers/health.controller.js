@@ -6,6 +6,7 @@ import { whatsappProvider } from '../providers/whatsapp.js';
 import { phoneCodesByWhatsApp } from '../services/notification.service.js';
 import { cacheReady } from '../services/cache.service.js';
 import { outboxHealth } from '../services/outbox.service.js';
+import { loginPingReport } from '../services/whatsappPing.service.js';
 import { transactionsSupported } from '../utils/transaction.js';
 import asyncHandler from '../utils/asyncHandler.js';
 
@@ -95,6 +96,7 @@ export const ready = asyncHandler(async (_req, res) => {
           transactions: await transactionsSupported(),
           cache: process.env.REDIS_URL ? (cacheReady() ? 'redis' : 'redis-unreachable') : 'memory',
           handovers: await outboxHealth().catch(() => null),
+          ...(process.env.WHATSAPP_LOGIN_PING ? { whatsappLoginPing: loginPingReport() } : {}),
         }
       : undefined,
     // Informational only: missing providers are a configuration smell, not an outage.
