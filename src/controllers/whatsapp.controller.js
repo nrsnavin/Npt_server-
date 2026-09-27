@@ -63,14 +63,32 @@ async function takeMessage({ from, body, media, providerId, profileName, receive
  * Meta's one-time check when the webhook is registered: it sends the verify token it was given
  * and expects its challenge echoed back, as plain text.
  */
+/* A token pasted with a stray space or wrapped in quotes is the same token. */
+const cleanToken = (value) => String(value ?? '').trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+
 export const verifyWebhook = (req, res) => {
-  const { verifyToken } = metaConfig();
+  const verifyToken = cleanToken(metaConfig().verifyToken);
   const mode = req.query['hub.mode'];
-  const offered = req.query['hub.verify_token'];
+  const offered = cleanToken(req.query['hub.verify_token']);
   const challenge = req.query['hub.challenge'];
-  /* Not set up for Meta: there is no webhook to verify here — not a server fault. */
-  if (!verifyToken) return res.status(404).type('text/plain').send('Not found');
-  if (mode !== 'subscribe' || offered !== verifyToken || !challenge) return res.status(403).type('text/plain').send('Forbidden');
+  /*
+   * Each refusal says why in the server log — Meta's own screen only says "couldn't be validated",
+   * which is the same words for a missing setting, a mistyped token and an unreachable server.
+   * The token itself is never logged, only its length.
+   */
+  if (!verifyToken) {
+    console.warn('[whatsapp/meta] webhook verification refused: META_WA_VERIFY_TOKEN is not set on this server (restart after adding it to .env)');
+    return res.status(404).type('text/plain').send('Not found');
+  }
+  if (mode !== 'subscribe' || !challenge) {
+    console.warn(`[whatsapp/meta] webhook verification refused: expected hub.mode=subscribe with a hub.challenge, got mode "${mode || ''}"`);
+    return res.status(403).type('text/plain').send('Forbidden');
+  }
+  if (offered !== verifyToken) {
+    console.warn(`[whatsapp/meta] webhook verification refused: the verify token Meta sent (${offered.length} characters) does not match META_WA_VERIFY_TOKEN (${verifyToken.length} characters)`);
+    return res.status(403).type('text/plain').send('Forbidden');
+  }
+  console.log('[whatsapp/meta] webhook verified by Meta');
   return res.status(200).type('text/plain').send(String(challenge));
 };
 

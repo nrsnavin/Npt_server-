@@ -182,6 +182,10 @@ test('the webhook handshake echoes the challenge only for the right verify token
   assert.equal(await right.text(), '1158201444');
   const wrong = await fetch(`${baseUrl}/api/whatsapp/inbound?hub.mode=subscribe&hub.verify_token=guess&hub.challenge=1158201444`);
   assert.equal(wrong.status, 403);
+  /* The same token with a stray space, or pasted in quotes, is still the token. */
+  const padded = await fetch(`${baseUrl}/api/whatsapp/inbound?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(' "meta-verify-token" ')}&hub.challenge=77`);
+  assert.equal(padded.status, 200);
+  assert.equal(await padded.text(), '77');
   /* A server not set up for Meta has no webhook to verify: not found, rather than a server fault. */
   const token = process.env.META_WA_VERIFY_TOKEN;
   delete process.env.META_WA_VERIFY_TOKEN;
