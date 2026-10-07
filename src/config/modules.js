@@ -319,7 +319,7 @@ export const MODULE_KEYS = MODULES.map((module) => module.key);
  * customer messages stay with marketing and management. Neither is expressible as a
  * module level, so both must be enforced inside those modules when they are built.
  */
-export const DEPARTMENTS = [
+const DEPARTMENT_LIST = [
   {
     key: 'marketing',
     label: 'Marketing',
@@ -365,7 +365,7 @@ export const DEPARTMENTS = [
   },
   {
     key: 'sampling',
-    label: 'Sample team',
+    label: 'Sampling',
     defaultAccess: {
       queries: 'write',
       samples: 'write',
@@ -380,7 +380,7 @@ export const DEPARTMENTS = [
   },
   {
     key: 'order_confirmation',
-    label: 'Order confirmation team',
+    label: 'Sales / SO',
     defaultAccess: {
       queries: 'write',
       orders: 'write',
@@ -397,9 +397,30 @@ export const DEPARTMENTS = [
       announcements: 'read',
     },
   },
+  /*
+   * Costing and quotations (Navin CRM role requirements, 7 Oct 2026, §4). The people who may
+   * quote — Senthilkumar, Sivakumar and Nandhini — may also sit in another department; the
+   * department is where the quotation work queues, the grant is what lets them do it.
+   */
+  {
+    key: 'quotation',
+    label: 'Quotation',
+    defaultAccess: {
+      queries: 'write',
+      pricing: 'write',
+      tasks: 'write',
+      enquiries: 'read',
+      customers: 'read',
+      samples: 'read',
+      orders: 'read',
+      moulds: 'read',
+      materials: 'read',
+      announcements: 'read',
+    },
+  },
   {
     key: 'production',
-    label: 'Production department',
+    label: 'Production',
     defaultAccess: {
       queries: 'write',
       production: 'write',
@@ -415,7 +436,7 @@ export const DEPARTMENTS = [
   },
   {
     key: 'quality',
-    label: 'Quality team',
+    label: 'Quality',
     defaultAccess: {
       queries: 'write',
       quality: 'write',
@@ -428,9 +449,23 @@ export const DEPARTMENTS = [
       announcements: 'read',
     },
   },
+  /* Assembling instructions, completed and pending work (role requirements §8). */
+  {
+    key: 'assembling',
+    label: 'Assembling',
+    defaultAccess: {
+      queries: 'write',
+      tasks: 'write',
+      production: 'read',
+      orders: 'read',
+      quality: 'read',
+      moulds: 'read',
+      announcements: 'read',
+    },
+  },
   {
     key: 'despatch',
-    label: 'Despatch team',
+    label: 'Dispatch',
     defaultAccess: {
       queries: 'write',
       dispatch: 'write',
@@ -444,7 +479,7 @@ export const DEPARTMENTS = [
   },
   {
     key: 'accounts',
-    label: 'Accounts department',
+    label: 'Accounts / Payment Follow-up',
     defaultAccess: {
       queries: 'write',
       payments: 'write',
@@ -457,10 +492,22 @@ export const DEPARTMENTS = [
   },
   {
     key: 'management',
-    label: 'Management',
+    label: 'Admin',
     defaultAccess: Object.fromEntries(MODULE_KEYS.map((key) => [key, 'write'])),
   },
 ];
+
+/**
+ * The ten departments, in the order the plant lists them (role requirements, 7 Oct 2026). The
+ * keys are older than some of the names — `management` is Admin, `order_confirmation` is
+ * Sales / SO, `despatch` is Dispatch — and are kept, because every user and task stores them.
+ */
+const DEPARTMENT_ORDER = [
+  'management', 'marketing', 'order_confirmation', 'quotation', 'sampling',
+  'production', 'quality', 'assembling', 'despatch', 'accounts',
+];
+
+export const DEPARTMENTS = DEPARTMENT_ORDER.map((key) => DEPARTMENT_LIST.find((department) => department.key === key));
 
 export const DEPARTMENT_KEYS = DEPARTMENTS.map((department) => department.key);
 

@@ -233,7 +233,7 @@ test('the order’s owner is told, because they are the one who rings the buyer'
   assert.equal(String(told.user), String(nandhiniId));
   /* Named by the department's own label from the access catalogue, so the sentence stays right
      if somebody renames it there. */
-  assert.match(told.title, /Production department escalated/);
+  assert.match(told.title, /Production escalated/);
   assert.match(told.title, new RegExp(order.number));
   assert.equal(told.priority, 'high', 'a stopped order is not a normal-priority nudge');
   /* Dated today: an undated task sits only in the to-do rail, and My day would tell somebody

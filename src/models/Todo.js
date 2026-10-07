@@ -1,6 +1,7 @@
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import { DEPARTMENT_KEYS } from '../config/modules.js';
+import { HANDOFF_KEYS } from '../config/handoffs.js';
 
 export const PRIORITIES = ['low', 'normal', 'high'];
 
@@ -64,6 +65,35 @@ const todoSchema = new mongoose.Schema(
      */
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', index: true },
     order: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder', index: true },
+
+    /*
+     * A task one department sent another about an enquiry [config/handoffs.js]: which button,
+     * from which department, and what came of it. The task list is the enquiry's record of who
+     * was asked what — nothing else keeps a copy.
+     */
+    enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
+    kind: { type: String, enum: HANDOFF_KEYS },
+    fromDepartment: { type: String, enum: DEPARTMENT_KEYS },
+    /** Done (with what they recorded) or sent back (with why), by whom and when. */
+    outcome: {
+      result: { type: String, enum: ['done', 'returned'] },
+      note: { type: String, trim: true, maxlength: 2000 },
+      fields: { type: Map, of: String, default: undefined },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      _id: false,
+    },
+    /** Every change of due date, and why — the reason is the point of allowing it. */
+    reschedules: {
+      type: [new mongoose.Schema({
+        from: Date,
+        to: Date,
+        reason: { type: String, trim: true, maxlength: 500 },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        at: { type: Date, default: Date.now },
+      }, { _id: false })],
+      default: undefined,
+    },
 
     /**
      * Handed to another department, and why [§25].

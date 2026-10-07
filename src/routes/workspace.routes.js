@@ -35,6 +35,8 @@ import {
 } from '../validators/schemas.js';
 import { pushKey, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
+import { handoffDone, handoffReschedule, handoffSendBack } from '../controllers/handoff.controller.js';
+import { handoffDoneSchema, handoffRescheduleSchema, handoffReturnSchema } from '../validators/handoff.schemas.js';
 
 const router = Router();
 
@@ -65,6 +67,10 @@ router.patch('/todos/:id', validate(todoUpdateSchema), updateTodo);
  */
 router.get('/todos/:id/suggest', suggestRoutingFor);
 router.post('/todos/:id/escalate', validate(todoEscalateSchema), escalateTodo);
+/* A department task about an enquiry: done, sent back to whoever asked, or re-dated. */
+router.post('/todos/:id/done', validate(handoffDoneSchema), handoffDone);
+router.post('/todos/:id/send-back', validate(handoffReturnSchema), handoffSendBack);
+router.post('/todos/:id/reschedule', validate(handoffRescheduleSchema), handoffReschedule);
 router.delete('/todos/:id', deleteTodo);
 
 /*

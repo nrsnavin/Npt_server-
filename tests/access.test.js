@@ -277,7 +277,7 @@ test('the catalogue exposes modules and department templates', async () => {
 
   assert.equal(status, 200);
   assert.ok(json.data.modules.some((module) => module.key === 'dispatch'));
-  assert.equal(json.data.departments.length, 8);
+  assert.equal(json.data.departments.length, 10);
 
   /*
    * Every module must be owned by a department that still exists — or by none at all.

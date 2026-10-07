@@ -65,6 +65,13 @@ const VOCABULARY = {
     'artwork approval', 'specification', 'spec sheet', 'release the order',
     'order verification', 'checklist',
   ],
+  quotation: [
+    'costing', 'cost sheet', 'margin', 'grammage', 'create (a |the )?quotation', 'quotation pdf',
+    'per colour', 'printing cost',
+  ],
+  assembling: [
+    'assembl', 'hook fitting', 'fit the hooks', 'clip fitting', 'fit the clips',
+  ],
   management: [
     'approval', 'approve the', 'sign off', 'signature', 'below the floor',
     'below cost', 'escalate to management', 'policy', 'management', 'managing director',

@@ -566,6 +566,32 @@ caller cannot see is still a duplicate, and answering "no match" would produce t
 master record the rule exists to prevent. It reports that one exists and who owns it, without
 handing the record over.
 
+**Departments and their tasks.** Ten departments, as the plant names them: Admin, Marketing,
+Sales / SO, Quotation, Sampling, Production, Quality, Assembling, Dispatch and Accounts / Payment
+Follow-up (`src/config/modules.js`; the older keys `management`, `order_confirmation` and
+`despatch` are kept). An enquiry shows where it is as one of **twelve stages** — Enquiry, Sample,
+Pricing / Quote, PO & SO, Production / EDD, Mould, Team Payment Follow-up, Invoice & Dispatch, LR
+Copy, Quality, A/C Clarify, My Payment Follow-up — plus Closed (`src/config/enquiryStages.js`).
+They are not a fixed order: the stage is wherever the last task sent it.
+
+The buttons on the enquiry (`src/config/handoffs.js` — Sample Request, Create Quotation, Ask EDD,
+Mould Issue, LR Copy, …) send a **task** to a department (`src/services/handoff.service.js`):
+
+- It lands on that department's queue, **due by the end of the day** (India time), and anyone
+  in the department may pick it up. The department is told on WhatsApp and in the app.
+- **Done** — they say what was done and fill in the details the button asks for; the sender
+  gets a task back for the next step, and a WhatsApp message.
+- **Send back** — with a reason; the sender gets that too.
+- **Change date** — with a reason, kept on the task. **Hand it on** moves it to another
+  department, with a reason, and tells them.
+- Any department sent a task about an enquiry may send tasks on it to others (production
+  raising a quality issue); marketing sends on its own enquiries. **Task Closed** ends the
+  enquiry and every task still open on it. **Photos Sent** only records.
+
+The first four stages also follow the sales status (a status move to *pricing required* puts it
+at Pricing / Quote) while the enquiry is still in them. Existing enquiries get their stage from
+their status with `npm run migrate:enquiry-stages -- --confirm`.
+
 Stage changes are recorded on the enquiry and published on an internal event bus
 (`src/services/events.service.js`), which is how the modules hand work to each other without
 knowing about each other.

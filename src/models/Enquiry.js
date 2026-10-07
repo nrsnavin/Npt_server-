@@ -1,6 +1,7 @@
 import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
+import { STAGE_KEYS, stageForStatus } from '../config/enquiryStages.js';
 import { CUSTOMER_SOURCES } from './Customer.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
 import { withConversationRef } from './conversationRef.js';
@@ -250,6 +251,19 @@ function keepFirstItemInStep(doc) {
   if (corrected) doc.items.set(at, { ...asRow(), _id: rows[at]._id });
 }
 
+/** A move between the twelve stages, and the task that made it, when one did. */
+const stageChangeSchema = new mongoose.Schema(
+  {
+    from: String,
+    to: { type: String, required: true },
+    at: { type: Date, default: Date.now },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    task: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
+    note: String,
+  },
+  { _id: false }
+);
+
 const statusChangeSchema = new mongoose.Schema(
   {
     from: String,
@@ -320,6 +334,13 @@ const enquirySchema = new mongoose.Schema(
     status: { type: String, enum: ENQUIRY_STATUSES, default: 'new', index: true },
     statusHistory: [statusChangeSchema],
 
+    /**
+     * Where it is now — the twelve stages on the plant's own screen [config/enquiryStages.js].
+     * Moved by department tasks, and by the sales status while it is in the first four.
+     */
+    stage: { type: String, enum: STAGE_KEYS, default: 'enquiry', index: true },
+    stageHistory: [stageChangeSchema],
+
     /** Mandatory while open [§3]: an enquiry may not sit without a defined next step. */
     nextAction: { type: String, trim: true },
     /**
@@ -354,6 +375,19 @@ enquirySchema.index({ assignedTo: 1, status: 1, nextFollowUpDate: 1 });
    looks, or it is refused for a field the caller did in fact supply. */
 enquirySchema.pre('validate', function alignItems() {
   keepFirstItemInStep(this);
+});
+
+/*
+ * The first four stages follow the sales status, wherever the status was changed from — the
+ * action buttons, the sample and quotation automation, the board — so none of them has to know.
+ */
+enquirySchema.pre('save', function followStatus() {
+  if (!this.isNew && !this.isModified('status')) return;
+  const next = stageForStatus(this.status, this.isNew ? null : this.stage);
+  if (!next || next === this.stage) return;
+  const last = this.statusHistory?.[this.statusHistory.length - 1];
+  if (!this.isNew) this.stageHistory.push({ from: this.stage, to: next, by: last?.by, note: `Status: ${this.status.replace(/_/g, ' ')}` });
+  this.stage = next;
 });
 
 enquirySchema.virtual('isOpen').get(function isOpen() {

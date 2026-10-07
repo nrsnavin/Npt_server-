@@ -35,6 +35,8 @@ const TEMPLATE_SETTINGS = {
   sample_ready: ['WHATSAPP_TEMPLATE_SAMPLE_READY'],
   sample_dispatched: ['WHATSAPP_TEMPLATE_SAMPLE_DISPATCHED'],
   otp: ['WHATSAPP_TEMPLATE_OTP'],
+  /* A department task sent, done or sent back. Variables: 1 headline, 2 details, 3 link. */
+  task: ['WHATSAPP_TEMPLATE_TASK'],
 };
 
 /** The template configured for `key`, or undefined — read now, so a restart picks up a change. */

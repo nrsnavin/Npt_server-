@@ -22,6 +22,10 @@ bus.on('error', (error) => console.error('[events] listener failed:', error));
 
 export const EVENTS = {
   ENQUIRY_CREATED: 'enquiry.created',
+  /* One department asking another for something about an enquiry [config/handoffs.js]. */
+  HANDOFF_SENT: 'handoff.sent',
+  HANDOFF_DONE: 'handoff.done',
+  HANDOFF_RETURNED: 'handoff.returned',
   ENQUIRY_STATUS_CHANGED: 'enquiry.status_changed',
   /** Phase 2 — sampling creates a sample request from this. */
   ENQUIRY_SAMPLE_REQUIRED: 'enquiry.sample_required',

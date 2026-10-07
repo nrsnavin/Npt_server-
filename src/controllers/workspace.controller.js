@@ -5,6 +5,7 @@ import Customer from '../models/Customer.js';
 import Query, { askedOfFilter } from '../models/Query.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
+import { EVENTS, publish } from '../services/events.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
 import { suggestRouting, routingModelConfigured } from '../services/taskRouting.llm.js';
@@ -26,6 +27,13 @@ const TODO_POPULATE = [
   { path: 'escalation.acknowledgedBy', select: 'name' },
   { path: 'customer', select: 'code name' },
   { path: 'order', select: 'number status' },
+  /* A department task about an enquiry carries what the department needs to do it, so the
+     card can say it without the enquiry module [config/handoffs.js]. */
+  {
+    path: 'enquiry',
+    select: 'number stage status remarks requirement.modelNumber requirement.colour requirement.printing items.modelNumber items.colour',
+  },
+  { path: 'outcome.by', select: 'name' },
 ];
 
 /** Start and end of the caller's day, used by the reminder feed. */
@@ -332,6 +340,16 @@ export const updateTodo = asyncHandler(async (req, res) => {
 
   const { title, notes, dueDate, priority, completed, claim } = req.body;
 
+  /* A department task about an enquiry is finished by saying what was done — the sender gets
+     that back [handoff.service] — and its date moves only with a reason. */
+  if (todo.kind && (completed !== undefined || dueDate !== undefined)) {
+    throw ApiError.badRequest(
+      completed !== undefined
+        ? 'Use Done or Send back on this task, so whoever sent it hears what happened'
+        : 'Use Change date on this task, with the reason'
+    );
+  }
+
   if (title !== undefined) todo.title = title;
   if (notes !== undefined) todo.notes = notes;
   if (dueDate !== undefined) todo.dueDate = dueDate || undefined;
@@ -444,6 +462,8 @@ export const escalateTodo = asyncHandler(async (req, res) => {
   }
 
   await todo.save();
+  /* A department task passed on tells its new department, the same as one sent fresh. */
+  if (todo.kind) await publish(EVENTS.HANDOFF_SENT, { task: todo, by: req.user });
   res.json({ success: true, data: await todo.populate(TODO_POPULATE) });
 });
 
@@ -452,6 +472,11 @@ export const deleteTodo = asyncHandler(async (req, res) => {
 
   const refusal = mayWorkOn(req.user, todo);
   if (refusal) throw ApiError.forbidden(refusal);
+
+  /* A task sent about an enquiry is the enquiry's record of who was asked what. */
+  if (todo.kind) {
+    throw ApiError.badRequest('A task sent about an enquiry is finished by marking it done or sending it back, not deleted');
+  }
 
   /*
    * A system task is the app's record that a handover is owed [§35], not a note somebody wrote.

@@ -40,6 +40,8 @@ import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validator
 import { materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
 import { componentSchema, componentUpdateSchema } from '../validators/component.schemas.js';
 import { customerTimeline } from '../controllers/timeline.controller.js';
+import { handoffCatalogue, listEnquiryHandoffs, sendEnquiryHandoff } from '../controllers/handoff.controller.js';
+import { handoffSchema } from '../validators/handoff.schemas.js';
 
 const router = Router();
 
@@ -136,6 +138,14 @@ router.post(
   confirmBuyerCard
 );
 router.post('/buyer-cards/:id/discard', requireModule('customers', 'write'), discardBuyerCard);
+
+/*
+ * Department tasks about an enquiry. No module check here: a department asked about an enquiry
+ * may pass it on without the enquiry module, and the service decides who may (`mayHandOff`).
+ */
+router.get('/handoffs', handoffCatalogue);
+router.get('/enquiries/:id/handoffs', listEnquiryHandoffs);
+router.post('/enquiries/:id/handoffs', validate(handoffSchema), sendEnquiryHandoff);
 
 // Enquiries
 router.get('/enquiries/export', requireModule('enquiries'), exportEnquiries);

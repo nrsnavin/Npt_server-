@@ -17,6 +17,7 @@ import { registerSamplingSubscribers } from './subscribers/sampling.subscriber.j
 import { registerPricingSubscribers } from './subscribers/pricing.subscriber.js';
 import { registerOrderSubscribers } from './subscribers/orders.subscriber.js';
 import { registerQuotationSubscribers } from './subscribers/quotation.subscriber.js';
+import { registerHandoffSubscribers } from './subscribers/handoff.subscriber.js';
 
 const app = express();
 
@@ -181,6 +182,7 @@ registerSamplingSubscribers();
 registerPricingSubscribers();
 registerOrderSubscribers();
 registerQuotationSubscribers();
+registerHandoffSubscribers();
 
 app.use(notFoundHandler);
 app.use(errorHandler);
