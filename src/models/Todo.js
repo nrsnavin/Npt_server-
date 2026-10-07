@@ -83,6 +83,8 @@ const todoSchema = new mongoose.Schema(
       at: Date,
       _id: false,
     },
+    /** When the late notice went out — once per task, so a late task is told about, not nagged. */
+    lateNotifiedAt: Date,
     /** Every change of due date, and why — the reason is the point of allowing it. */
     reschedules: {
       type: [new mongoose.Schema({
@@ -180,6 +182,8 @@ todoSchema.index({ department: 1, completed: 1, 'escalation.at': -1 }, { sparse:
  * point of the queue is that one job is one row however many people could do it.
  */
 todoSchema.index({ department: 1, originKey: 1 }, { sparse: true });
+/* Department dashboards and the late sweep read department tasks by department and state. */
+todoSchema.index({ kind: 1, department: 1, completed: 1, dueDate: 1 }, { partialFilterExpression: { kind: { $type: 'string' } } });
 todoSchema.index({ openKey: 1 }, { unique: true, partialFilterExpression: { openKey: { $type: 'string' } } });
 
 /** The key an open automated task holds; completed ones hold none, so the job can be raised again. */

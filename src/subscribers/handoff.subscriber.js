@@ -102,6 +102,34 @@ export function registerHandoffSubscribers() {
     });
   });
 
+  /*
+   * Late: the department that holds it, whoever sent it, and Admin — once [runLateTaskSweep].
+   * Admin because a late task is the delay the role requirements ask Admin to see.
+   */
+  subscribe(
+    EVENTS.HANDOFF_LATE,
+    safely('tell about a late task', async ({ task }) => {
+      if (!task || task.completed) return;
+      const active = { isActive: { $ne: false } };
+      const [holders, sender, admins] = await Promise.all([
+        task.user
+          ? User.find({ _id: task.user, ...active }).select('name phone')
+          : User.find({ department: task.department, ...active }).select('name phone'),
+        task.createdBy ? User.find({ _id: task.createdBy, ...active }).select('name phone') : [],
+        User.find({ $or: [{ role: 'admin' }, { department: 'management' }], ...active }).select('name phone'),
+      ]);
+      const people = [...new Map([...holders, ...sender, ...admins].map((person) => [String(person._id), person])).values()];
+      if (!people.length) return;
+
+      const { label, department } = describeHandoff(task);
+      await tell(people, {
+        headline: `Late: ${label} with ${department}`,
+        details: `${await aboutOf(task)} — was due ${new Date(task.dueDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}.`,
+        link: task.link || '/today',
+      });
+    })
+  );
+
   subscribe(EVENTS.HANDOFF_DONE, backToSender('done'));
   subscribe(EVENTS.HANDOFF_RETURNED, backToSender('sent back'));
 }

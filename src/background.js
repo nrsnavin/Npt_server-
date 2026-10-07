@@ -2,6 +2,7 @@ import { env, escalationIntervalMinutes } from './config/env.js';
 import { reconcileDispatches } from './services/dispatchRecovery.service.js';
 import { runSamplingEscalations } from './services/escalation.service.js';
 import { runStallSweep } from './services/anomaly.service.js';
+import { runLateTaskSweep } from './services/handoff.service.js';
 import { runQueryEscalations } from './services/queryEscalation.service.js';
 import { runPaymentEscalations } from './services/receivable.service.js';
 import { runProductionEscalations } from './services/productionEscalation.service.js';
@@ -166,7 +167,7 @@ function startIndiamartPoll() {
 }
 
 
-const LEASES = ['sweep:escalations', 'sweep:indiamart', 'sweep:dispatch-recovery', 'sweep:outbox'];
+const LEASES = ['sweep:escalations', 'sweep:indiamart', 'sweep:dispatch-recovery', 'sweep:outbox', 'sweep:handoff-late'];
 
 export function startBackground() {
   const timers = [
@@ -178,6 +179,14 @@ export function startBackground() {
     everyExclusively('sweep:outbox', 30_000, async () => {
       const { delivered, failed } = await recoverEvents();
       if (delivered || failed) console.log(`Handovers: re-delivered ${delivered}, gave up on ${failed}`);
+    }),
+    /* Department tasks past their due time: told once, to the department, the sender and Admin. */
+    everyExclusively('sweep:handoff-late', 5 * 60_000, async () => {
+      const late = await runLateTaskSweep().catch((error) => {
+        console.error('Late-task sweep failed:', error.message);
+        return [];
+      });
+      if (late.length) console.log(`Late department tasks: told about ${late.length}`);
     }),
     startEscalationSweep(),
     startIndiamartPoll(),

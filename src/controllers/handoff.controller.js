@@ -5,9 +5,10 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { transactional } from '../utils/transaction.js';
 import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
 import { HANDOFFS } from '../config/handoffs.js';
-import { DEPARTMENTS } from '../config/modules.js';
+import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
-  completeHandoff, mayHandOff, rescheduleHandoff, returnHandoff, sendHandoff,
+  allDepartmentFigures, completeHandoff, departmentDashboard, mayHandOff, rescheduleHandoff,
+  returnHandoff, sendHandoff,
 } from '../services/handoff.service.js';
 
 /**
@@ -90,4 +91,27 @@ export const handoffSendBack = asyncHandler(transactional(async (req, res) => {
 export const handoffReschedule = asyncHandler(async (req, res) => {
   const task = await rescheduleHandoff(await taskFor(req), req.user, req.body);
   await answer(res, task);
+});
+
+/* ------------------------------ Dashboards ------------------------------ */
+
+/** Admin sees every department; everybody else, their own. */
+const seesEveryDepartment = (user) => user.role === 'admin' || user.department === 'management';
+
+/** Every department side by side: open, unclaimed, late, due today, done this week. */
+export const departmentsOverview = asyncHandler(async (req, res) => {
+  if (!seesEveryDepartment(req.user)) {
+    throw ApiError.forbidden('Only Admin sees every department — open your own department instead');
+  }
+  res.json({ success: true, data: await allDepartmentFigures(DEPARTMENT_KEYS) });
+});
+
+/** One department's dashboard — its own people, or Admin. */
+export const departmentDashboardFor = asyncHandler(async (req, res) => {
+  const key = req.params.key === 'mine' ? req.user.department : req.params.key;
+  if (!DEPARTMENT_KEYS.includes(key)) throw ApiError.notFound('No such department');
+  if (key !== req.user.department && !seesEveryDepartment(req.user)) {
+    throw ApiError.forbidden('That is another department\'s dashboard');
+  }
+  res.json({ success: true, data: await departmentDashboard(key) });
 });

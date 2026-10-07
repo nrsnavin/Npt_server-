@@ -588,6 +588,16 @@ Mould Issue, LR Copy, …) send a **task** to a department (`src/services/handof
   raising a quality issue); marketing sends on its own enquiries. **Task Closed** ends the
   enquiry and every task still open on it. **Photos Sent** only records.
 
+**The same ask twice is one task**: a button whose task is still open on that enquiry says who has
+it rather than raising a copy. **Late tasks** — past the end of the day they were due — are told
+about once, by WhatsApp and the app, to the department, the sender and Admin (a sweep every five
+minutes, `runLateTaskSweep`).
+
+**Department dashboards** (`GET /departments/:key/dashboard`, `mine` for your own): late, due
+today, waiting to be picked up, done this week, sent back, on-time percentage and average time to
+done over 30 days; the queue, late first; what the department is waiting on from others and what
+came back this week. Admin also has `GET /departments/overview`, all ten side by side.
+
 The first four stages also follow the sales status (a status move to *pricing required* puts it
 at Pricing / Quote) while the enquiry is still in them. Existing enquiries get their stage from
 their status with `npm run migrate:enquiry-stages -- --confirm`.

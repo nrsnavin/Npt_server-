@@ -40,7 +40,9 @@ import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validator
 import { materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
 import { componentSchema, componentUpdateSchema } from '../validators/component.schemas.js';
 import { customerTimeline } from '../controllers/timeline.controller.js';
-import { handoffCatalogue, listEnquiryHandoffs, sendEnquiryHandoff } from '../controllers/handoff.controller.js';
+import {
+  departmentDashboardFor, departmentsOverview, handoffCatalogue, listEnquiryHandoffs, sendEnquiryHandoff,
+} from '../controllers/handoff.controller.js';
 import { handoffSchema } from '../validators/handoff.schemas.js';
 
 const router = Router();
@@ -146,6 +148,9 @@ router.post('/buyer-cards/:id/discard', requireModule('customers', 'write'), dis
 router.get('/handoffs', handoffCatalogue);
 router.get('/enquiries/:id/handoffs', listEnquiryHandoffs);
 router.post('/enquiries/:id/handoffs', validate(handoffSchema), sendEnquiryHandoff);
+/* Department dashboards: Admin's overview of all ten, and each department's own. */
+router.get('/departments/overview', departmentsOverview);
+router.get('/departments/:key/dashboard', departmentDashboardFor);
 
 // Enquiries
 router.get('/enquiries/export', requireModule('enquiries'), exportEnquiries);

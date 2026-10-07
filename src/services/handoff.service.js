@@ -140,6 +140,19 @@ export async function sendHandoff({ enquiry, kind, note, user }) {
     return record;
   }
 
+  /*
+   * The same ask twice is one task. A double press, or two people asking production for the
+   * same date, would otherwise put two copies on the queue and have two people answer it.
+   */
+  const already = await Todo.findOne({ enquiry: enquiry._id, kind, completed: false }).populate('user', 'name');
+  if (already) {
+    throw ApiError.conflict(
+      `${handoff.label} is already with ${departmentName(already.department)}`
+        + `${already.user?.name ? ` (${already.user.name})` : ''} — sent ${already.createdAt.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}.`
+        + ' Add to that one, or wait for it to come back.'
+    );
+  }
+
   /* "My Payment Follow-up" is for whoever holds the enquiry, personally. */
   const forOwner = handoff.department === 'owner';
   const ownerId = enquiry.assignedTo?._id || enquiry.assignedTo;
@@ -257,3 +270,126 @@ export const describeHandoff = (task) => {
     stage: handoff?.stage ? stageLabel(handoff.stage) : null,
   };
 };
+
+/* ------------------------------ Late tasks ------------------------------ */
+
+/**
+ * Department tasks that have passed their due time and nobody has been told about yet: each is
+ * marked, once, and the event tells the department, the sender and Admin. Once — a late task is
+ * something to act on, and a reminder every hour turns it into noise people learn to ignore.
+ * The mark is claimed atomically, so two processes running the sweep never tell twice.
+ */
+export async function runLateTaskSweep({ now = new Date(), limit = 200 } = {}) {
+  const late = await Todo.find({
+    kind: { $exists: true },
+    completed: false,
+    dueDate: { $lt: now },
+    lateNotifiedAt: { $exists: false },
+  }).sort({ dueDate: 1 }).limit(limit);
+
+  const told = [];
+  for (const task of late) {
+    const claimed = await Todo.updateOne(
+      { _id: task._id, lateNotifiedAt: { $exists: false } },
+      { $set: { lateNotifiedAt: now } }
+    );
+    if (!claimed.modifiedCount) continue;
+    await publish(EVENTS.HANDOFF_LATE, { task });
+    told.push(task);
+  }
+  return told;
+}
+
+/* ------------------------------ Dashboards ------------------------------ */
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** The numbers a department is run by, from its own tasks. */
+export async function departmentFigures(department, { now = new Date() } = {}) {
+  const tonight = endOfDayIST(now);
+  const week = new Date(now.getTime() - 7 * DAY_MS);
+  const month = new Date(now.getTime() - 30 * DAY_MS);
+  const mine = { kind: { $exists: true }, department };
+  const open = { ...mine, completed: false };
+
+  const [counts] = await Todo.aggregate([
+    { $match: mine },
+    {
+      $facet: {
+        open: [{ $match: { completed: false } }, { $count: 'n' }],
+        unclaimed: [{ $match: { completed: false, user: null } }, { $count: 'n' }],
+        late: [{ $match: { completed: false, dueDate: { $lt: now } } }, { $count: 'n' }],
+        dueToday: [{ $match: { completed: false, dueDate: { $gte: now, $lte: tonight } } }, { $count: 'n' }],
+        doneWeek: [{ $match: { 'outcome.result': 'done', completedAt: { $gte: week } } }, { $count: 'n' }],
+        sentBackWeek: [{ $match: { 'outcome.result': 'returned', completedAt: { $gte: week } } }, { $count: 'n' }],
+        speed: [
+          { $match: { 'outcome.result': 'done', completedAt: { $gte: month } } },
+          {
+            $group: {
+              _id: null,
+              n: { $sum: 1 },
+              hours: { $avg: { $divide: [{ $subtract: ['$completedAt', '$createdAt'] }, 3600000] } },
+              onTime: { $sum: { $cond: [{ $lte: ['$completedAt', '$dueDate'] }, 1, 0] } },
+            },
+          },
+        ],
+      },
+    },
+  ]);
+  const n = (key) => counts?.[key]?.[0]?.n || 0;
+  const speed = counts?.speed?.[0];
+
+  return {
+    department,
+    label: departmentName(department),
+    open: n('open'),
+    unclaimed: n('unclaimed'),
+    late: n('late'),
+    dueToday: n('dueToday'),
+    doneThisWeek: n('doneWeek'),
+    sentBackThisWeek: n('sentBackWeek'),
+    /* Over the last thirty days, so one slow week does not define a department. */
+    averageHoursToDone: speed ? Math.round(speed.hours * 10) / 10 : null,
+    onTimePercent: speed?.n ? Math.round((speed.onTime / speed.n) * 100) : null,
+    openFilter: open,
+  };
+}
+
+const LIST_POPULATE = [
+  { path: 'createdBy', select: 'name department' },
+  { path: 'user', select: 'name' },
+  { path: 'outcome.by', select: 'name' },
+  { path: 'customer', select: 'code name' },
+  { path: 'enquiry', select: 'number stage requirement.modelNumber requirement.colour' },
+];
+
+/**
+ * One department's dashboard: its figures, the work on its queue (late first, then by due
+ * time), what it finished lately, and — the marketing question, asked by every department —
+ * what it is waiting on from others and what came back.
+ */
+export async function departmentDashboard(department, { now = new Date() } = {}) {
+  const figures = await departmentFigures(department, { now });
+  const { openFilter, ...numbers } = figures;
+  const week = new Date(now.getTime() - 7 * DAY_MS);
+
+  const [queue, recentlyDone, waitingOnOthers, cameBack] = await Promise.all([
+    Todo.find(openFilter).sort({ dueDate: 1, createdAt: 1 }).limit(100).populate(LIST_POPULATE),
+    Todo.find({ kind: { $exists: true }, department, completed: true, completedAt: { $gte: week } })
+      .sort({ completedAt: -1 }).limit(20).populate(LIST_POPULATE),
+    Todo.find({ kind: { $exists: true }, fromDepartment: department, department: { $ne: department }, completed: false })
+      .sort({ dueDate: 1 }).limit(50).populate(LIST_POPULATE),
+    Todo.find({
+      kind: { $exists: true }, fromDepartment: department, department: { $ne: department },
+      completed: true, completedAt: { $gte: week },
+    }).sort({ completedAt: -1 }).limit(20).populate(LIST_POPULATE),
+  ]);
+
+  return { figures: numbers, queue, recentlyDone, waitingOnOthers, cameBack };
+}
+
+/** Every department's figures side by side — Admin's view of where work is stuck. */
+export async function allDepartmentFigures(departments, { now = new Date() } = {}) {
+  const rows = await Promise.all(departments.map((key) => departmentFigures(key, { now })));
+  return rows.map(({ openFilter, ...numbers }) => numbers);
+}

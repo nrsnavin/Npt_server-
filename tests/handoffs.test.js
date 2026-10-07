@@ -156,6 +156,13 @@ test('a sample request lands on the sampling queue, unclaimed, due tonight, and 
   assert.ok(!sent.some((line) => line.includes(PHONES.siva)), 'production is not told about sampling\'s work');
 });
 
+test('the same ask twice is one task', async () => {
+  const twice = await send('sample_request', 'again');
+  assert.equal(twice.status, 409);
+  assert.match(twice.json.message, /Sample Request is already with Sampling/);
+  assert.equal(await Todo.countDocuments({ enquiry: enquiryId, kind: 'sample_request' }), 1);
+});
+
 test('the department sees it on its queue, with the enquiry\'s details', async () => {
   const { json } = await api('/api/workspace/todos?scope=department', { token: arun });
   const row = (json.data || []).find((task) => task._id === sampleTask._id);
@@ -327,6 +334,62 @@ test('task closed ends the enquiry: open tasks are closed with it, and nothing m
   const after = await send('ask_edd', 'one more');
   assert.equal(after.status, 400);
   assert.match(after.json.message, /closed/);
+});
+
+test('a late task is told about once — to the department, the sender and Admin', async () => {
+  const { runLateTaskSweep } = await import('../src/services/handoff.service.js');
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST', token: nandhini,
+    body: { customer: (await Enquiry.findById(enquiryId)).customer, requirement: { modelNumber: 'NH-LATE' } },
+  });
+  const { json } = await send('ask_edd', 'Buyer is asking', nandhini, enquiry.json.data._id);
+  const id = json.data.task._id;
+  await Todo.updateOne({ _id: id }, { dueDate: new Date(Date.now() - 3600000) });
+
+  sent.length = 0;
+  const first = await runLateTaskSweep();
+  assert.ok(first.some((task) => String(task._id) === id));
+  await until(() => sent.some((line) => line.includes(PHONES.siva)) && sent.some((line) => line.includes(PHONES.nandhini)));
+  assert.match(sent.find((line) => line.includes(PHONES.siva)), /Late: Ask EDD with Production/);
+  assert.ok(sent.some((line) => line.includes(PHONES.nandhini)), 'the sender is told');
+  assert.ok((await Todo.findById(id)).lateNotifiedAt);
+
+  const again = await runLateTaskSweep();
+  assert.ok(!again.some((task) => String(task._id) === id), 'once, not every sweep');
+});
+
+test('a department dashboard: its numbers, its queue, and what it is waiting on from others', async () => {
+  const production = await api('/api/departments/mine/dashboard', { token: siva });
+  assert.equal(production.status, 200, production.json.message);
+  const { figures, queue } = production.json.data;
+  assert.equal(figures.label, 'Production');
+  assert.ok(figures.late >= 1, 'the late Ask EDD');
+  assert.equal(figures.open, queue.length);
+  assert.ok(queue.every((task) => task.department === 'production'));
+  assert.ok(queue[0].dueDate <= queue.at(-1).dueDate, 'late first, then by due time');
+
+  const marketing = await api('/api/departments/marketing/dashboard', { token: nandhini });
+  assert.equal(marketing.status, 200);
+  assert.ok(marketing.json.data.waitingOnOthers.length >= 1, 'what marketing sent and is still open');
+  assert.ok(marketing.json.data.waitingOnOthers.every((task) => task.fromDepartment === 'marketing'));
+
+  const sampling = await api('/api/departments/sampling/dashboard', { token: siva });
+  assert.equal(sampling.status, 403, 'another department\'s dashboard is not yours to open');
+  const sampled = await api('/api/departments/sampling/dashboard', { token: arun });
+  assert.ok(sampled.json.data.figures.doneThisWeek >= 1, 'the sample request done earlier');
+  assert.ok(sampled.json.data.figures.averageHoursToDone !== null);
+  assert.ok(sampled.json.data.figures.onTimePercent !== null);
+});
+
+test('Admin sees every department side by side; nobody else does', async () => {
+  const refused = await api('/api/departments/overview', { token: nandhini });
+  assert.equal(refused.status, 403);
+  const { status, json } = await api('/api/departments/overview', { token: admin });
+  assert.equal(status, 200);
+  assert.equal(json.data.length, 10);
+  const production = json.data.find((row) => row.department === 'production');
+  assert.ok(production.late >= 1);
+  assert.equal(json.data[0].label, 'Admin');
 });
 
 test('the end of the day is India\'s', async () => {
