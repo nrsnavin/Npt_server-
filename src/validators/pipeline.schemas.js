@@ -1,9 +1,8 @@
 import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS } from '../models/Mould.js';
 import { CUSTOMER_TYPES, RATINGS, CUSTOMER_SOURCES } from '../models/Customer.js';
-import { LEAD_STATUSES, DISQUALIFY_REASONS, NEXT_ACTION_TYPES } from '../models/Lead.js';
 import { ENQUIRY_STATUSES, LOST_REASONS } from '../models/Enquiry.js';
-import { ENQUIRY_ACTION_KEYS } from '../services/enquiryActions.js';
+import { ENQUIRY_ACTION_KEYS, ENQUIRY_NEXT_ACTION_TYPES } from '../services/enquiryActions.js';
 
 // The one definition, which also accepts a populated reference — see schemas.js.
 import { objectId } from './schemas.js';
@@ -80,21 +79,9 @@ const requirementSchema = z.object({
 });
 
 /**
- * The list, when a conversation covered more than one thing.
- *
- * Capped, because a list nobody can read is not a record: past a dozen models this is a price
- * list rather than an enquiry, and the person entering it has lost track of which row they are
- * on. Empty rows are dropped by the controller rather than refused here — somebody tabbing
- * through a form leaves them behind and refusing the save over one is a refusal about nothing.
- */
-const requirementListSchema = z.array(requirementSchema).max(12).optional();
-
-/**
  * The enquiry's list, where each row is a whole model rather than a mention.
  *
- * A row carries its own tool and its own new-development tick, which a lead's row does not and
- * should not: a first call names nothing on the register — that is what makes it a lead — while
- * an enquiry is the point at which each model either runs on steel the plant owns, is bought
+ * A row carries its own tool and its own new-development tick: an enquiry is the point at which each model either runs on steel the plant owns, is bought
  * in, or is a development nobody has cut. Asking that question once for the whole enquiry made
  * every model after the first a lesser record.
  */
@@ -138,8 +125,7 @@ export const customerSchema = z.object({
   /*
    * Required, and chosen from the marketing team [§29].
    *
-   * Optional here meant the controller filled it in — the creator for a customer, the rotation
-   * for a lead — and a guess that looks like a decision is worse than a question. `.partial()`
+   * Optional here meant the controller filled it in — the creator for a customer — and a guess that looks like a decision is worse than a question. `.partial()`
    * makes it optional again on the update schemas below, which is right: an edit that does not
    * mention the owner is not an edit that clears it.
    */
@@ -157,65 +143,6 @@ export const customerSchema = z.object({
 });
 
 export const customerUpdateSchema = customerSchema.partial().extend(versioned);
-
-/* ---------------------------------- Leads ---------------------------------- */
-
-export const leadSchema = z.object({
-  company: z.string().min(2).max(160),
-  contactName: z.string().optional(),
-  designation: z.string().optional(),
-  mobile: z.string().optional(),
-  whatsapp: z.string().optional(),
-  email: z.string().trim().email().optional(),
-  city: z.string().optional(),
-  state: z.string().optional(),
-  source: z.enum(CUSTOMER_SOURCES).optional(),
-  conversation: conversationRef,
-  productInterest: z.string().optional(),
-  /* What they said they want, when the call went far enough to write it down. Most leads have
-     none; `productInterest` above is the line of free text a first call usually produces. */
-  items: requirementListSchema,
-  estimatedValue: z.number().nonnegative().optional(),
-  assignedTo: objectId,
-  nextAction: z.string().optional(),
-  nextActionType: z.enum(NEXT_ACTION_TYPES).optional(),
-  nextFollowUpDate: clearableDate,
-  notes: z.string().optional(),
-  visitingCardUrl: z.string().optional(),
-});
-
-export const leadUpdateSchema = leadSchema.partial().extend({
-  status: z.enum(LEAD_STATUSES).optional(),
-  disqualifyReason: z.enum(DISQUALIFY_REASONS).optional(),
-  disqualifyNote: z.string().optional(),
-  /**
-   * Why a written-off lead is being brought back.
-   *
-   * Required by the controller on that one transition and ignored on every other, which is why
-   * it is optional here: a schema that demanded it would refuse an ordinary rename. It is not
-   * stored on the lead — it becomes a log entry beside the write-off it undoes, the same way an
-   * enquiry's reopen note lands in its history.
-   */
-  note: z.string().max(500).optional(),
-  ...versioned,
-});
-
-/**
- * Logging contact, and the next step it implies.
- *
- * The next step is optional here and part of the same submission on purpose: the moment
- * somebody records a call is the moment they know what happens next, and making them open a
- * second dialog to say so is where the next step quietly stops being set.
- */
-export const leadActivitySchema = z.object({
-  nextAction: z.string().optional(),
-  nextActionType: z.enum(NEXT_ACTION_TYPES).optional(),
-  nextFollowUpDate: clearableDate,
-  type: z.enum(['call', 'email', 'whatsapp', 'meeting', 'visit', 'note']).optional(),
-  summary: z.string().min(1).max(1000),
-  occurredAt: z.coerce.date().optional(),
-});
-
 
 export const enquiryCore = {
   /** The tool that makes it. Absent for a new development, and for anything bought in. */
@@ -251,8 +178,7 @@ export const enquirySchema = z.object({
  * `assignedTo` is named here as well as on create, because leaving it out did not refuse a
  * reassignment — it dropped one. Validation strips what it does not know, so an admin moving
  * an enquiry got a 200 and an unchanged owner, which is the worst of both: the screen said it
- * worked. Customers and leads always accepted the field; the controller decides who may use
- * it.
+ * worked. Customers always accepted the field; the controller decides who may use it.
  */
 export const enquiryUpdateSchema = z
   .object({ ...enquiryCore, assignedTo: objectId, requirement: requirementSchema.optional() })
@@ -310,31 +236,15 @@ export const enquiryActionSchema = z.object({
   holdReason: z.string().optional(),
 });
 
-/* -------------------------------- Conversion -------------------------------- */
-
-export const convertLeadSchema = z.object({
-  /**
-   * The lead is a party we already supply, and this is that customer.
-   *
-   * Present instead of `customer`, never alongside it: one says "make a customer from this
-   * lead" and the other says "this lead already is one", and a request carrying both has not
-   * decided which. Without this the duplicate check was a dead end — it refused the conversion
-   * and advised linking the enquiry to the existing record, which no action could do.
-   */
-  existingCustomer: objectId.optional(),
-  customer: customerSchema.partial().optional(),
-  enquiry: z.object(enquiryCore).optional(),
-});
-
 /** Moving a batch of records to another owner. */
 export const bulkReassignSchema = z.object({
   ids: z.array(objectId).min(1, 'Pick at least one record').max(500, 'Too many at once'),
   assignTo: objectId,
 });
 
-/** A draft lead finished: what was read, as corrected, and the rest filled in by a person [LeadCard.js]. */
-export const leadCardConfirmSchema = z.object({
-  company: z.string().trim().min(2, 'A lead needs a company name').max(160).optional(),
+/** A draft finished: what was read, as corrected, and the rest filled in by a person [BuyerCard.js]. */
+export const buyerCardConfirmSchema = z.object({
+  company: z.string().trim().min(2, 'A customer needs a company name').max(160).optional(),
   contactName: z.string().trim().max(160).optional(),
   designation: z.string().trim().max(160).optional(),
   mobile: z.string().trim().max(40).optional(),
@@ -345,10 +255,10 @@ export const leadCardConfirmSchema = z.object({
   productInterest: z.string().trim().max(300).optional(),
   estimatedQuantity: z.number().int('A quantity is a whole number of pieces').nonnegative().nullable().optional(),
   notes: z.string().trim().max(600).optional(),
-  /* The rest — the salesperson's to fill in; the draft becomes a lead only with them. */
+  /* The rest — the salesperson's to fill in; the draft becomes a customer only with them. */
   source: z.enum(CUSTOMER_SOURCES).optional(),
   nextAction: z.string().trim().max(300).optional(),
-  nextActionType: z.enum(NEXT_ACTION_TYPES).optional(),
+  nextActionType: z.enum(ENQUIRY_NEXT_ACTION_TYPES).optional(),
   nextFollowUpDate: z.string().trim().max(40).optional(),
   estimatedValue: z.number().nonnegative().nullable().optional(),
   assignedTo: objectId.optional(),

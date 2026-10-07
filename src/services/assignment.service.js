@@ -3,21 +3,22 @@ import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 
 /**
- * Who a new lead belongs to [BLUEPRINT §41.3].
+ * Who a new buyer belongs to [BLUEPRINT §41.3].
  *
  * The blueprint states the rule inside the WhatsApp section, and §8 is explicit that it is
- * not a WhatsApp rule: *existing customers go to the account owner; genuinely new leads go
+ * not a WhatsApp rule: *existing customers go to the account owner; genuinely new buyers go
  * round-robin across the marketing team*. Built here so the enquiry module has it now and the
  * integration reuses it rather than inventing a second answer later.
  *
  * The account-owner half already lives where it belongs — an enquiry raised against a
- * customer takes that customer's owner. This is the other half: the lead nobody owns yet.
+ * customer takes that customer's owner. This is the other half: the buyer nobody owns yet
+ * (`ownerForNewBuyer` in intake.service.js).
  *
  * **Round-robin, not least-loaded.** §41.3 says round-robin, and it is the rule a team can
  * check: everyone can see whose turn it was. Least-loaded sounds fairer and is worse to be
- * on the end of, because closing your leads quickly earns you more of them.
+ * on the end of, because closing your enquiries quickly earns you more of them.
  *
- * The turn is kept in the same atomic counter the document numbers use, so two leads
+ * The turn is kept in the same atomic counter the document numbers use, so two buyers
  * arriving together cannot both take the same person, and a restart does not put the
  * rotation back to whoever happens to sort first.
  */
@@ -26,7 +27,7 @@ import ApiError from '../utils/ApiError.js';
  * Refuses an owner who cannot hold the work.
  *
  * Every module that assigns anything needs this, and each one that grew its own version grew
- * it late: customers, leads and enquiries went without it until an administrator could hand a
+ * it late: customers and enquiries went without it until an administrator could hand a
  * record to somebody who had already left, and samples went without it in three more places.
  * A record owned by a name that no longer answers is the worst kind of missing — it is not
  * unassigned, so it is not on the queue waiting to be picked up, and it is not anybody's, so
@@ -46,7 +47,7 @@ export async function assertAssignable(assignTo) {
 /**
  * The people in the rotation.
  *
- * Marketing by department *and* by grant. Department alone would hand leads to someone who
+ * Marketing by department *and* by grant. Department alone would hand buyers to someone who
  * cannot open an enquiry; the grant alone would put management and every admin in the
  * rotation, since they hold everything — and the MD is not the next name on the list.
  */
@@ -70,7 +71,7 @@ export async function marketingTeam() {
  * refusal used as a lookup — which reads as an error path every time somebody opens a form.
  *
  * The department, not the rotation's roster: the rule is "somebody in marketing", and the
- * roster additionally needs the enquiries grant, which is about who gets *new* leads.
+ * roster additionally needs the enquiries grant, which is about who gets *new* buyers.
  */
 export async function canOwnBuyer(person, team) {
   if (!person || person.isActive === false) return false;
@@ -84,7 +85,7 @@ export async function canOwnBuyer(person, team) {
  * Refuses an owner who could not chase a buyer.
  *
  * Stricter than `assertAssignable`, and used where a *person is choosing* an owner rather than
- * where the plant is resolving one for itself. A lead or a customer belongs to one marketing
+ * where the plant is resolving one for itself. A customer belongs to one marketing
  * person [§29], so a record handed to despatch is owned — and therefore on nobody's queue — by
  * somebody whose screens do not show it.
  *
@@ -116,7 +117,7 @@ export async function assertCanOwnBuyer(assignTo) {
  * The next marketing person in the rotation, or null when there is nobody to rotate over.
  *
  * Null rather than a guess: the caller knows what to fall back to, and silently assigning a
- * lead to whoever asked for it would be indistinguishable from the rotation working.
+ * buyer to whoever asked for it would be indistinguishable from the rotation working.
  */
 export async function nextInRotation() {
   const team = await marketingTeam();
@@ -132,31 +133,4 @@ export async function nextInRotation() {
   // The counter only ever grows; the team can change size beneath it, which just moves where
   // the rotation resumes rather than breaking it.
   return team[counter.seq % team.length];
-}
-
-/**
- * Who a lead being created should belong to, when there is nobody to ask.
- *
- * This is now the *front-door* rule only — the WhatsApp number nobody recognises, the IndiaMART
- * enquiry that arrives at two in the morning. There is no person at the keyboard on either, so
- * something has to choose, and §41.3 says round-robin across marketing.
- *
- * It used to answer for the form as well, and that was the wrong shape for a human: somebody
- * filling in a lead they had just taken a call about would submit it and find it had gone to a
- * colleague by rotation, or — if they were in marketing themselves — silently to them. Neither
- * was a decision anybody made, and a record whose owner nobody chose is one that gets chased by
- * whoever notices. The form asks now; see `createLead`.
- */
-export async function ownerForNewLead({ requested, creator }) {
-  if (requested) return { user: requested, rotated: false };
-
-  const creatorIsMarketing = creator?.department === 'marketing';
-  if (creatorIsMarketing) return { user: creator._id, rotated: false };
-
-  const next = await nextInRotation();
-  if (next) return { user: next._id, rotated: true, name: next.name };
-
-  // Nobody to rotate over. The lead still needs an owner, and an unowned lead is the one
-  // §3 exists to prevent, so it stays with whoever entered it.
-  return { user: creator?._id, rotated: false };
 }

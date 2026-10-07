@@ -84,9 +84,6 @@ router.post('/:id/resample', requireModule('samples', 'write'), validate(resampl
  * to, and *who* it was made for, is marketing's knowledge and not the bench's. The bench never
  * spoke to the buyer and has no way to know which of two enquiries a request was for.
  *
- * This matters more now that a sample can be raised against a lead. Marketing raises one for a
- * party who is not a customer yet, converts the lead, and creates the first enquiry — and on
- * `samples` write alone could not then attach the sample to the enquiry they had just made.
  * Both records are still ownership-checked inside the controllers, so this widens who may ask,
  * never what they can reach.
  */

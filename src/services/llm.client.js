@@ -4,8 +4,8 @@ import Anthropic from '@anthropic-ai/sdk';
  * The one door to the model, with the budgets every call through it is held to.
  *
  * Four features ask the model something — the assistant reads a question, the task dialog
- * suggests a department, the review ranks the plant's problems, the lead coach reads an activity
- * log. Each had its own copy of the same thirty lines: a lazily built client, a refusal check, a
+ * suggests a department, the review ranks the plant's problems, the card reader reads a photo.
+ * Each had its own copy of the same thirty lines: a lazily built client, a refusal check, a
  * text-block dig, a `JSON.parse`, a Zod recheck and a catch that falls back. Four copies is how
  * a gap gets into all four at once, and one did:
  *

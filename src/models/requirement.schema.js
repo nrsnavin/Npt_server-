@@ -4,7 +4,7 @@ import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
 /**
  * One thing a buyer wants, wherever in the pipeline it is being recorded.
  *
- * A lead, an enquiry and a costing all describe the same object — a hanger, in a material, a
+ * An enquiry, a sample and a costing all describe the same object — a hanger, in a material, a
  * colour and a size, with a hook, a clip and a print — and until now each wrote that description
  * out for itself. One definition here instead, because the whole value of carrying the four
  * register references from the first record is that they are *the same references* all the way
@@ -13,8 +13,8 @@ import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
  * comparison rather than two boxes of similar text. Three copies of the shape is three chances
  * for one of them to drift.
  *
- * **Every field is optional, and that is what a requirement is.** At lead stage almost none of
- * it is known; at enquiry stage some of it is; by the time a costing is raised most of it has to
+ * **Every field is optional, and that is what a requirement is.** On a buyer's first message
+ * almost none of it is known; as the enquiry is worked more of it is; by the time a costing is raised most of it has to
  * be. Enforcing more here would mean refusing to record a conversation that actually happened.
  *
  * `_id` is on, unlike the single `requirement` this was extracted from, because these now live
@@ -84,8 +84,7 @@ export const hasRequirement = (item) =>
 /**
  * The fields worth copying when one record's item becomes another's.
  *
- * A lead's items become the enquiry's on conversion, and an enquiry's become a costing's when
- * one is raised. Copied field by field rather than by spreading the whole sub-document, because
+ * An enquiry's items become a costing's when one is raised. Copied field by field rather than by spreading the whole sub-document, because
  * a sub-document carries `_id` and mongoose internals that have no business being written into
  * a different record — and because a field added to the shape later should have to be thought
  * about here rather than arriving silently.

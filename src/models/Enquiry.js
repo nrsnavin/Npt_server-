@@ -341,7 +341,6 @@ const enquirySchema = new mongoose.Schema(
     holdReason: String,
 
     source: { type: String, enum: CUSTOMER_SOURCES, default: 'manual' },
-    lead: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead' },
     /** Shared by enquiries raised together from one conversation. */
     groupRef: { type: String, index: true },
   },

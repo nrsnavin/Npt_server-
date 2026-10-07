@@ -241,7 +241,7 @@ module ships.
 | Incoming messages · **unassigned queue** | Stat tiles | `whatsapp` (deferred) |
 | Unanswered inbound, by age | Ranked table | `whatsapp` (deferred) |
 | First-response time | Stat tile | `whatsapp` (deferred) |
-| Leads created vs converted to enquiry | Funnel | `whatsapp` (deferred) |
+| Draft enquiries saved vs dropped | Funnel | `whatsapp` (deferred) |
 
 ---
 

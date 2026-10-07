@@ -3,15 +3,16 @@ import { askForJson, llmConfigured, BUDGETS } from './llm.client.js';
 import { normalisePhone } from '../utils/phone.js';
 
 /**
- * Reading a photo of a lead into a lead's fields: a visiting card, an enquiry slip, a letterhead —
+ * Reading a photo of a new buyer into a customer's fields: a visiting card, an enquiry slip, a letterhead —
  * or a screenshot of a WhatsApp conversation with a buyer.
  *
- * The reading is a suggestion: it lands on a LeadCard and waits for a person (see LeadCard.js).
+ * The reading is a suggestion: it lands on a BuyerCard and waits for a person (see BuyerCard.js).
  * The phone numbers, the email and the quantity are then checked by rule, not taken on the
  * model's word — a number that does not normalise to a phone is dropped rather than stored
  * half-right.
  */
-const MODEL = process.env.LEAD_CARD_MODEL || 'claude-sonnet-5';
+/* LEAD_CARD_MODEL is the setting's name from before leads were removed, still honoured. */
+const MODEL = process.env.BUYER_CARD_MODEL || process.env.LEAD_CARD_MODEL || 'claude-sonnet-5';
 
 /* The formats the model can read. WhatsApp sends photos and screenshots as JPEG. */
 export const READABLE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -124,7 +125,7 @@ export async function readCard({ buffer, mimeType, caption }) {
   }
 
   const answer = await askForJson({
-    label: 'lead-card',
+    label: 'buyer-card',
     model: MODEL,
     system: SYSTEM,
     user: [

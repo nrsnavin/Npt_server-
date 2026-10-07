@@ -278,7 +278,7 @@ function mediaOf(message) {
 /**
  * Meta's webhook body, as the messages and the delivery updates in it.
  * Messages: `{ from, body, media, providerId, profileName, receivedAt }`, the shape the inbox and
- * the lead cards already take. Statuses: `{ id, status, error }`.
+ * the buyer cards already take. Statuses: `{ id, status, error }`.
  */
 export function parseMetaWebhook(body) {
   const messages = [];

@@ -3,7 +3,6 @@ import Sample, {
   ON_THE_BENCH_STATUSES, isBackwardSampleMove, SAMPLE_STATUSES, WITH_CUSTOMER_STATUSES,
 } from '../models/Sample.js';
 import Enquiry from '../models/Enquiry.js';
-import Lead from '../models/Lead.js';
 import Customer from '../models/Customer.js';
 import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import ApiError from '../utils/ApiError.js';
@@ -22,9 +21,6 @@ import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { raiseTask } from '../services/task.service.js';
-/* A sample for a lead raises that lead's first enquiry, which is a conversion — shared with
-   the endpoint rather than copied, so the two can never disagree about what conversion is. */
-import { convertLeadRecord } from './pipeline.controller.js';
 
 /**
  * Marketing's view of a sample runs through `requestedBy`, not `assignedTo` — the sample is
@@ -45,7 +41,6 @@ const POPULATE = [
    */
   { path: 'customer', select: 'code name assignedTo', populate: { path: 'assignedTo', select: 'name' } },
   { path: 'enquiry', select: 'number status requirement.modelNumber requirement.colour' },
-  { path: 'lead', select: 'number company status' },
   { path: 'requestedBy', select: 'name' },
   { path: 'assignedTo', select: 'name' },
   mouldWithPhoto('mould', 'mouldCode name category sizeMm'),
@@ -108,8 +103,6 @@ function sampleFilters(req, { withStatus = true } = {}) {
   if (req.query.purpose) filter.purpose = req.query.purpose;
   if (req.query.customer) filter.customer = req.query.customer;
   if (req.query.enquiry) filter.enquiry = req.query.enquiry;
-  /* What was made for one lead — the list its own screen reads. */
-  if (req.query.lead) filter.lead = req.query.lead;
   // Matches a field that was never set and one that was cleared, which are the same thing
   // to the queue but not to Mongo.
   if (req.query.unassigned === 'true') filter.assignedTo = null;
@@ -181,7 +174,7 @@ export const listSamples = asyncHandler(async (req, res) => {
    *
    * Done as two queries rather than one aggregation, and deliberately. An `$addFields` stage
    * could rank lateness in a single pass, but `aggregate` does not cast a filter the way `find`
-   * does — `customer`, `enquiry` and `lead` arrive off the query string as plain strings, and
+   * does — `customer` and `enquiry` arrive off the query string as plain strings, and
    * against an ObjectId column they would match nothing at all, silently. The same reason keeps
    * the virtuals and the populate working: these are still ordinary documents.
    *
@@ -233,7 +226,7 @@ export const listSamples = asyncHandler(async (req, res) => {
 export const sampleBoard = asyncHandler(async (req, res) => {
   /*
    * By required date, soonest first. Undated requests surface at the top of their column for
-   * the same reason an unpromised lead does — a sample with no date is one nothing can chase.
+   * the same reason an unpromised enquiry does — a sample with no date is one nothing can chase.
    */
   const sort = 'requiredDate';
 
@@ -247,7 +240,7 @@ export const sampleBoard = asyncHandler(async (req, res) => {
      * number on a screen that means nothing. The column line says so in its unit. */
     valueField: 'quantity',
     select:
-      'number customer enquiry lead mould modelNumber colour printing quantity purpose status ' +
+      'number customer enquiry mould modelNumber colour printing quantity purpose status ' +
       'requiredDate requestedAt assignedTo requestedBy courier awbNumber dispatchedQuantity ' +
       'colourMandatory dispatchedColour ' +
       'statusHistory.from statusHistory.to statusHistory.at createdAt updatedAt',
@@ -259,9 +252,6 @@ export const sampleBoard = asyncHandler(async (req, res) => {
         populate: { path: 'assignedTo', select: 'name' },
       },
       { path: 'enquiry', select: 'number status' },
-      /* So a request made for a lead names the company rather than reading as a trial for
-         nobody — the card has no other way to tell those two apart. */
-      { path: 'lead', select: 'number company' },
       mouldWithPhoto('mould', 'mouldCode name category sizeMm'),
       { path: 'assignedTo', select: 'name' },
       { path: 'requestedBy', select: 'name' },
@@ -292,84 +282,6 @@ export const getSample = asyncHandler(async (req, res) => {
 });
 
 /** The requirement fields an enquiry carries, so a sample's spec can seed one [§28]. */
-const REQUIREMENT_FIELDS = [
-  'modelNumber', 'category', 'sizeMm',
-  'materialRef', 'hookRef', 'clipRef', 'printRef',
-  'material', 'colour', 'colourMandatory', 'printing', 'packing',
-];
-
-/**
- * A sample asked for on behalf of a lead raises that lead's first enquiry [§5, added].
- *
- * Asking for a sample is the clearest signal a lead gives: somebody has described a piece
- * well enough to make it, and is waiting to see it. Leaving that as a bare sample request
- * meant the requirement lived only on the bench's card — the enquiry pipeline showed nothing,
- * §3's follow-up discipline had no record to act on, and the quotation that follows a sample
- * approval had nothing to be raised against. So the enquiry is raised here, seeded from the
- * specification the request was just resolved against, and nothing is re-keyed [§41.4].
- *
- * An enquiry needs a customer, so **raising one for a lead is converting that lead** — that is
- * the whole of why this calls conversion rather than creating an enquiry directly. It is a
- * real consequence and it is the right one: a buyer who is being sent a sample is a buyer, and
- * the alternatives were a customer master with a `null` in it or a sample the pipeline cannot
- * see.
- *
- * One case conversion refuses that this must not: the lead's company is already on the
- * customer master. That is an attachment, not a duplicate — the enquiry belongs on the record
- * that exists — and conversion already hands back which customer when the caller may see it.
- * When they may not, the refusal is theirs to read: somebody else holds that buyer, and a
- * sample raised here would put work in their book without them knowing.
- */
-async function enquiryForLead(lead, spec, user) {
-  const requirement = Object.fromEntries(
-    REQUIREMENT_FIELDS.map((field) => [field, spec[field]]).filter(([, value]) => value != null)
-  );
-
-  /*
-   * §3 asks an open enquiry for a next action *and* a date, and the marketing dashboard counts
-   * one without both as an exception. Seeding only the action produced an enquiry that arrived
-   * on that exception list at birth, already carrying the action — a screen saying "this needs
-   * a next step" about a record that visibly had one.
-   *
-   * The date is the day the sample is wanted, because that is the day there is something to
-   * say: the bench is done, or it is late and the buyer should hear why. A caller may back-date
-   * a sample — a request written up the morning after it was made — and a follow-up already in
-   * the past is refused by `assertFutureFollowUp` and would read on somebody's morning list as
-   * neglect on the day it was created, so a past date falls back to the standing default.
-   */
-  const wanted = spec.requiredDate ? new Date(spec.requiredDate) : null;
-  const chaseOn = wanted && wanted > new Date() ? wanted : defaultRequiredDate();
-
-  const seed = {
-    mould: spec.mould || undefined,
-    requirement,
-    remarks: spec.remarks || undefined,
-    /* The reason it exists, on the record rather than inferable from the dates. */
-    nextAction: 'Sample requested — show it to them when the bench is done',
-    nextFollowUpDate: chaseOn,
-  };
-
-  try {
-    return await convertLeadRecord(lead, user, { enquiry: seed });
-  } catch (problem) {
-    if (problem.statusCode !== 409) throw problem;
-
-    /* Ours to attach to: the enquiry is raised against the customer that already exists. */
-    if (problem.details?.customer?.id) {
-      return convertLeadRecord(lead, user, {
-        existingCustomer: problem.details.customer.id,
-        enquiry: seed,
-      });
-    }
-
-    throw ApiError.conflict(
-      `${lead.company} is already a customer of ${problem.details?.owner || 'somebody else'}. ` +
-        'Ask them to raise the enquiry, and the sample against it.',
-      problem.details
-    );
-  }
-}
-
 /**
  * Whether a list of rows actually names something to make.
  *
@@ -398,11 +310,11 @@ const specRows = (rows) => Promise.all(rows.map((row) => buildSpec(row)));
  * a request the sample team takes directly.
  */
 export const createSample = asyncHandler(async (req, res) => {
-  const { enquiry: enquiryId, customer: customerId, lead: leadId, ...input } = req.body;
+  const { enquiry: enquiryId, customer: customerId, ...input } = req.body;
 
   /*
    * A sample is owned through `requestedBy`, so naming somebody else there puts the request
-   * in their list — the same hand-off of a relationship that customers and leads reserve to
+   * in their list — the same hand-off of a relationship that customers reserve to
    * management, reachable through a create field nobody was checking. It also has to be a
    * real, active person, for the same reason every other owner does.
    */
@@ -426,48 +338,6 @@ export const createSample = asyncHandler(async (req, res) => {
     customer = await Customer.findById(customerId);
     if (!customer) throw ApiError.badRequest('That customer does not exist');
     if (!ownsRecord(req.user, customer)) throw ApiError.notFound('Customer not found');
-  }
-
-  /*
-   * A sample for a party that is not a customer yet.
-   *
-   * The checks are the ones the other two links carry, plus two about the lead's own state.
-   * A converted lead is refused because it has *become* a customer and that customer is where
-   * the work now lives — adding to the lead would file the request against a record nobody
-   * opens again. A disqualified one is refused because making a sample for a party already
-   * written off is a decision somebody should have to reverse deliberately.
-   */
-  let lead = null;
-  if (leadId) {
-    if (customerId) {
-      throw ApiError.badRequest(
-        'A request names the lead or the customer, not both — a lead is a party who is not a customer yet'
-      );
-    }
-    /*
-     * And not an enquiry either. An enquiry already names a customer, so a request naming both
-     * says the party is and is not a customer at the same time — and since a lead request now
-     * raises its own enquiry, the two would end up as two enquiries for one conversation.
-     */
-    if (enquiryId) {
-      throw ApiError.badRequest(
-        'A request names the lead or the enquiry, not both — an enquiry already belongs to a customer'
-      );
-    }
-
-    lead = await Lead.findById(leadId);
-    if (!lead) throw ApiError.badRequest('That lead does not exist');
-    /* Raising against a lead you cannot see would put the request in its owner's list. */
-    if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
-
-    if (lead.status === 'converted') {
-      throw ApiError.badRequest(
-        'This lead has been converted — raise the sample against the customer it became'
-      );
-    }
-    if (lead.status === 'disqualified') {
-      throw ApiError.badRequest('This lead was disqualified, so nothing more is being made for it');
-    }
   }
 
   /*
@@ -506,8 +376,7 @@ export const createSample = asyncHandler(async (req, res) => {
    * How many pieces go in the bag, said by whoever asked. The screen has always required it;
    * the model's default of one filled the gap for any other caller, so a request the bench
    * reads as "make one" was sometimes nobody's answer at all. Asked after the checks on who
-   * and what, so a request that should not exist is refused for that, and before a lead is
-   * converted, so a refusal here leaves nothing half-made behind.
+   * and what, so a request that should not exist is refused for that.
    */
   const counted = input.items?.length
     ? input.items.every((item) => item.quantity != null)
@@ -520,29 +389,10 @@ export const createSample = asyncHandler(async (req, res) => {
     );
   }
 
-  /*
-   * A lead's request raises the lead's first enquiry, which converts the lead [§5]. See
-   * `enquiryForLead`.
-   *
-   * Before the sample rather than after, deliberately. Conversion is the step that can be
-   * refused — a company already on the master, a mould that has gone off the register — and a
-   * sample written first would survive that refusal as a request against a lead that never
-   * became anybody, which is the orphan §6 and §42 have nobody to tell about.
-   */
-  let converted = null;
-  if (lead) {
-    converted = await enquiryForLead(lead, spec, req.user);
-    enquiry = converted.enquiry;
-    customer = converted.customer;
-  }
-
   const { sample, created } = await createSampleRequest(
     {
       enquiry,
       customer: customer?._id ?? undefined,
-      /* Kept alongside the customer it became: it is where the request came from, and the
-         lead's own screen lists what was made for it. */
-      lead: lead?._id ?? undefined,
       ...spec,
     },
     req.user
@@ -554,28 +404,7 @@ export const createSample = asyncHandler(async (req, res) => {
     );
   }
 
-  /*
-   * What happened to the lead travels with the answer, because it was not asked for.
-   *
-   * The person pressed "request a sample" and a customer and an enquiry came into being. That
-   * is the right behaviour and a surprise, so the screen is given the two records by name to
-   * say so — a consequence nobody is told about is one they discover later as a record they
-   * cannot account for.
-   */
-  res.status(201).json({
-    success: true,
-    data: await withRefs(sample),
-    ...(converted
-      ? {
-          converted: {
-            lead: { id: converted.lead._id, number: converted.lead.number },
-            customer: { id: converted.customer._id, code: converted.customer.code, name: converted.customer.name },
-            enquiry: { id: converted.enquiry._id, number: converted.enquiry.number },
-            attached: converted.attached,
-          },
-        }
-      : {}),
-  });
+  res.status(201).json({ success: true, data: await withRefs(sample) });
 });
 
 /**

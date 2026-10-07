@@ -2,16 +2,19 @@ import mongoose from 'mongoose';
 import { protectWrites } from '../utils/concurrency.js';
 
 /**
- * A picture of a lead — a visiting card, an enquiry slip, a letterhead, or a screenshot of a
- * WhatsApp chat with a buyer — waiting for a person to say what it is.
+ * A picture of a new buyer — a visiting card, an enquiry slip, a letterhead, or a screenshot of
+ * a WhatsApp chat with a buyer — waiting for a person to say what it is.
  *
  * Staff meet buyers at fairs, at the gate and on visits, and come away with a card. They send
  * the photo to the plant's WhatsApp number (or upload it in the app), the model reads it, and
- * the reading waits here. **The reading is a suggestion, never a lead**: the house rule is that
- * the model does not produce a stored fact, so nothing becomes a lead until a person has looked
- * at what was read and said yes — by replying YES on WhatsApp, or on the Cards to confirm screen.
+ * the reading waits here. **The reading is a suggestion, never a customer**: the house rule is
+ * that the model does not produce a stored fact, so nothing becomes a customer and an enquiry
+ * until a person has looked at what was read and confirmed it on the Cards to confirm screen.
+ *
+ * Stored in the `leadcards` collection, its name from before leads were removed, so the drafts
+ * already waiting are still there.
  */
-export const LEAD_CARD_STATUSES = ['reading', 'ready', 'unreadable', 'confirmed', 'discarded'];
+export const CARD_STATUSES = ['reading', 'ready', 'unreadable', 'confirmed', 'discarded'];
 /** Still waiting on somebody. */
 export const OPEN_CARD_STATUSES = ['reading', 'ready', 'unreadable'];
 
@@ -43,7 +46,7 @@ const extraImageSchema = new mongoose.Schema(
   { _id: false }
 );
 
-const leadCardSchema = new mongoose.Schema(
+const buyerCardSchema = new mongoose.Schema(
   {
     /** The staff member who sent or uploaded it — the person the reply goes to. */
     sender: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -62,7 +65,7 @@ const leadCardSchema = new mongoose.Schema(
     /** Later screenshots of a long chat — they arrive without the header that says who it is. */
     moreImages: { type: [extraImageSchema], default: undefined },
 
-    status: { type: String, enum: LEAD_CARD_STATUSES, default: 'reading', index: true },
+    status: { type: String, enum: CARD_STATUSES, default: 'reading', index: true },
     reading: { type: readingSchema, default: () => ({}) },
     /** The company is the person's name, because the chat named no business — said before anyone confirms. */
     companyFromName: { type: Boolean, default: undefined },
@@ -71,19 +74,20 @@ const leadCardSchema = new mongoose.Schema(
     /** Why a card could not be read, in words for the person who will type it in. */
     problem: { type: String, trim: true },
 
-    /** A lead or customer that already has this phone or email, found when it was read. */
-    matchedLead: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead' },
+    /** A customer that already has this phone or email, found when it was read. */
     matchedCustomer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
 
-    lead: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead' },
+    /** What confirming it made. */
+    customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
+    enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry' },
     decidedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     decidedAt: Date,
   },
   { timestamps: true }
 );
 
-leadCardSchema.index({ providerId: 1 }, { unique: true, partialFilterExpression: { providerId: { $type: 'string' } } });
-leadCardSchema.index({ sender: 1, status: 1, createdAt: -1 });
+buyerCardSchema.index({ providerId: 1 }, { unique: true, partialFilterExpression: { providerId: { $type: 'string' } } });
+buyerCardSchema.index({ sender: 1, status: 1, createdAt: -1 });
 
-protectWrites(leadCardSchema);
-export default mongoose.model('LeadCard', leadCardSchema);
+protectWrites(buyerCardSchema);
+export default mongoose.model('BuyerCard', buyerCardSchema, 'leadcards');

@@ -199,7 +199,7 @@ sudo systemctl restart mongod
 ### Turn on transactions
 
 A standalone MongoDB cannot run transactions, and the app uses them where several records must be
-written together — an order and the number it takes, a lead and the enquiry made from it. Make
+written together — an order and the number it takes, a customer and the enquiry made from it. Make
 this one server a one-node replica set: same data, same port, a few minutes. The steps are in
 [SCALING.md §1](SCALING.md#1-transactions) (a keyfile, two lines of config, `rs.initiate`), and add
 `&replicaSet=rs0` to `MONGO_URI` (§5) once it is done. They were checked against MongoDB 8 with a database already
@@ -293,7 +293,7 @@ server {
     index index.html;
 
     # A single-page app: every unknown path is a route, not a missing file. Without this,
-    # reloading on /leads/123 returns a 404 from Nginx rather than the app.
+    # reloading on /enquiries/123 returns a 404 from Nginx rather than the app.
     location / {
         try_files $uri $uri/ /index.html;
     }
@@ -741,7 +741,7 @@ df -h && free -m
 |---|---|
 | Every API call fails, console says CORS | `CORS_ORIGIN` does not match the browser's origin exactly. No trailing slash, `https://` not `http://` |
 | App loads, all requests 404 | `VITE_API_URL` was wrong at build time. Fix `.env.production` and **rebuild** — it is baked in |
-| Reloading `/leads/123` gives Nginx's 404 | The `try_files` line is missing from the app's server block |
+| Reloading `/enquiries/123` gives Nginx's 404 | The `try_files` line is missing from the app's server block |
 | "This screen's code could not be fetched", naming a file under `/assets/` | A tab was open across a deploy and is asking for a chunk this release renamed. The app reloads itself once to recover, so this message means that did not help: check `dist.old` exists and that the `@previous` fallback is in the server block |
 | Uploads fail around 1 MB | `client_max_body_size` missing from the API block |
 | API restarts in a loop | `pm2 logs npt-api` — usually `MONGO_URI` auth, or a missing `.env` |

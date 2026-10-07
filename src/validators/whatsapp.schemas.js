@@ -17,7 +17,6 @@ export const threadUpdateSchema = z
     status: z.enum(THREAD_STATUSES),
     notes: z.string().max(2000),
     customer: objectId,
-    lead: objectId,
   })
   .partial();
 

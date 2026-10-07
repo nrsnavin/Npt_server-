@@ -1,8 +1,8 @@
 # NPT Server — authentication API
 
 Backend for the Navin Hangers console: a Customer Order Lifecycle CRM for a hanger
-manufacturer. Authentication and per-user module access, the pipeline from a lead to a
-customer to an enquiry, and the sampling module that enquiry hands its work to.
+manufacturer. Authentication and per-user module access, the pipeline from a customer to an
+enquiry, and the sampling module that enquiry hands its work to.
 
 Node.js + Express + MongoDB (Mongoose), JWT auth with role-based access.
 
@@ -42,9 +42,9 @@ The API listens on `http://localhost:5000`. Health checks: `GET /health` and
 Each also has a phone number (`+9198765000 01`–`09`) for SMS sign-in.
 
 There are two marketing accounts on purpose: sign in as each to see the ownership rule, since
-neither can open the other's customers, leads or enquiries.
+neither can open the other's customers or enquiries.
 
-The seed also loads a working data set — 10 hanger models, 6 customers, 4 leads, 9 enquiries
+The seed also loads a working data set — 10 hanger models, 6 customers, 9 enquiries
 across the funnel and 4 sample requests, including one new development, one lost enquiry and
 one sample already overdue.
 
@@ -106,8 +106,7 @@ Runs against an in-memory MongoDB — no local `mongod` needed.
   They never touch the network or cost a message.
 - `tests/access.test.js` — module grants, the department templates and the `requireModule`
   middleware.
-- `tests/pipeline.test.js` — products, customers, leads and enquiries: lead conversion,
-  duplicate detection, the enquiry stage machine, the next-action rule and record ownership.
+- `tests/pipeline.test.js` — products, customers and enquiries: duplicate detection, the enquiry stage machine, the next-action rule and record ownership.
 - `tests/sampling.test.js` — the enquiry-to-sample automation, the dispatch rule, the split
   between making a sample and recording what the customer said, re-sampling, and the overdue
   escalation query.
@@ -161,9 +160,8 @@ applied inside the controllers because it varies by department.
 | GET/POST | `/products` | The hanger catalogue; `GET /products/:id`, `PATCH /products/:id` |
 | GET/POST | `/customers` | Customer masters; `GET /customers/:id` returns the record plus its enquiry timeline |
 | GET | `/customers/check-duplicate` | GST-then-number duplicate check, before submitting |
-| GET/POST | `/leads` | Leads; `POST /leads/:id/activities` logs contact |
-| POST | `/leads/:id/convert` | Creates the customer, its first contact and optionally the first enquiry |
-| GET/POST | `/enquiries` | Enquiries; `?open=true`, `?dueBy=`, `?groupRef=`, `?customer=` |
+| GET/POST | `/buyer-cards` | Draft enquiries from chat screenshots and visiting cards; `POST /buyer-cards/:id/confirm` makes the customer and the enquiry |
+| GET/POST | `/enquiries` | Enquiries; `?open=true`, `?dueBy=`, `?groupRef=`, `?customer=`, `?source=` |
 | POST | `/enquiries/group` | Several models from one conversation, under a shared group reference |
 | POST | `/enquiries/:id/status` | Move a stage, with the reason a close or hold needs |
 | POST | `/enquiries/:id/promote-product` | Turn an approved new development into a catalogue model |
@@ -194,7 +192,7 @@ applied inside the controllers because it varies by department.
 | GET | `/jarvis/status` | Whether the language model is configured, or the rules are reading |
 | GET | `/history/:model/:id` | Who changed what on one record, newest first |
 | GET | `/customers/export` | The customers on screen, as CSV — same filters as the list route |
-| GET | `/leads/export`, `/enquiries/export`, `/products/export` | The same, for each list |
+| GET | `/enquiries/export`, `/products/export` | The same, for each list |
 | POST | `/bulk/:collection/reassign` | Move a batch to another owner; administrators only |
 | GET/POST | `/:collection/:id/documents` | Files on a customer or an enquiry [§27] |
 | DELETE | `/:collection/:id/documents/:documentId` | Remove one — its uploader or an administrator |
@@ -282,7 +280,7 @@ against a fixed list with somebody waiting on a panel, so it runs at `effort: "l
 small token ceiling.
 
 The parse is two axes rather than a list of intents, because that is how the questions
-decompose: a **subject** (samples, enquiries, leads, customers, orders) and an **aspect**
+decompose: a **subject** (samples, enquiries, customers, orders) and an **aspect**
 (this one, what is late, what is new, how many). A flat list needs an entry per combination
 and turns brittle; a grid degrades, and an unrecognised corner can say precisely which half it
 did not follow. Both parsers return that same shape, which is why either can read a question
@@ -349,8 +347,7 @@ nobody reads into an outage everybody notices.
 One rule, in `assertReassignment`: giving a relationship away is management's call, not the
 holder's [§29], and the person it goes to has to exist and still be active.
 
-Both halves had gaps. Customers and leads enforced the first and neither enforced the
-second, so an administrator working from a stale screen could hand a customer to somebody
+Both halves had gaps. Customers enforced the first and not the second, so an administrator working from a stale screen could hand a customer to somebody
 who had already left — the record then belongs to nobody, because ownership scoping hides it
 from every marketing user and only an administrator can see it has gone missing.
 
@@ -516,53 +513,52 @@ integration is wired up last, once the modules it feeds exist. Enquiries are rai
 until then. A few cheap decisions in Phase 1 keep that door open —
 see [BLUEPRINT §8](docs/BLUEPRINT.md#8-whatsapp-as-the-front-door-41--deferred).
 
-**Built so far**: `customers`, `products`, `enquiries` (which covers leads) and `samples`,
+**Built so far**: `customers`, `products`, `enquiries` and `samples`,
 alongside `announcements` and `users`. The rest exist in the catalogue so access is defined
 ahead of the feature — see [Build order](docs/BLUEPRINT.md#11-build-order-39).
 
 ### Phase 1: the pipeline
 
-A party we are not working yet is a **lead**. Logging contact moves it off `new`; qualifying
-it says the volume and the buyer are real; converting it creates the **customer**, its first
-contact and optionally the first **enquiry** in one action, so nothing is re-keyed. A
-customer already matching on GST or phone blocks the conversion rather than producing a
-second master record.
+There are no leads. The plant's workflow starts at the enquiry (Enquiry → Sample → Pricing /
+Quote → PO & SO → …), so a new buyer becomes a **customer** and an **enquiry** straight away,
+from one of three doors:
 
-**Who a new lead belongs to** [§41.3]. An existing customer's work goes to the account owner
-— an enquiry raised against a customer takes that customer's owner. A lead nobody owns yet
-goes round-robin across marketing, in the same atomic counter the document numbers use, so
-two leads arriving together cannot take the same person and a restart does not put the
-rotation back to whoever sorts first. The rota is marketing by department *and* by grant:
-department alone would hand leads to someone who cannot open an enquiry, and the grant alone
-would put every admin in the rotation, since they hold everything.
+- **By hand** — marketing registers the customer and raises the enquiry.
+- **A WhatsApp chat screenshot or a visiting card** sent to the plant's number by a staff
+  member (or uploaded on *Enquiries → Draft enquiries*). The model reads it into a draft; the
+  salesperson checks it, adds the next step and the follow-up date, and saving it makes the
+  customer and the enquiry. The model never saves anything itself
+  (`src/services/buyerCard.service.js`).
+- **IndiaMART** — every enquiry pulled from the feed is matched to a customer by phone or email,
+  or makes a new one, and raises an enquiry on it (`src/services/indiamart.ingest.js`).
 
-A marketing person entering a call they took keeps it — the rotation is for the lead that
-arrives with nobody attached, and handing someone's own conversation to a colleague on their
-behalf would be surprising rather than fair. So it applies to an administrator typing in a
-trade-show list, and later to the WhatsApp front door, where an unknown number genuinely has
-no owner. When it rotates, the lead says so in its own activity log. §41.3 says round-robin
-rather than least-loaded, and it is the better rule as well as the stated one: under
-least-loaded, closing your leads quickly earns you more of them.
+A first message rarely names a model, so the last two open the enquiry in **requirement
+clarification** with the buyer's own words in the remarks. An enquiry may be captured that way
+— in clarification, with remarks, and no model — and must name a model (or be marked a new
+development) before it moves on to sampling, pricing or anything after.
+
+**Who a new buyer belongs to** [§41.3]. An existing customer's work goes to the account owner.
+A buyer nobody owns yet — an IndiaMART enquiry at two in the morning, a card sent by somebody
+outside marketing — goes round-robin across marketing, in the same atomic counter the document
+numbers use, so two buyers arriving together cannot take the same person. The rota is
+marketing by department *and* by grant. A marketing person who sends a card keeps the buyer.
 
 An enquiry carries **one model**. A buyer asking about three models produces three enquiries
 sharing a `groupRef`, so sample and price stay answerable per model while follow-up keeps
 them together. A requirement with no catalogue match is flagged `isNewDevelopment` and
 promoted into the product master once sampling has developed it and the buyer has approved.
 
-Conversion writes three records and must not half-happen, so the enquiry is judged before
-the customer is written: a customer left behind by a rejected enquiry would match the
-duplicate check on the retry, and the lead could then never be converted at all. A grouped
-enquiry is validated in full before any of it is written, for the same reason. Neither leans
-on a transaction, because this database is not necessarily a replica set.
+A grouped enquiry is validated in full before any of it is written, so a rejected row leaves
+nothing half-made behind.
 
 Two rules are enforced on write rather than reported afterwards:
 
 - **An open enquiry always has a next action and a follow-up date.** An enquiry with no next
   step is exactly the one that goes quiet. Closing it clears both.
 - **Marketing sees only its own records.** A marketing person cannot open another's
-  customers, leads or enquiries — those carry the relationship. Every other department sees
+  customers or enquiries — those carry the relationship. Every other department sees
   whatever its module grant already allows, because none of them compete for the same
-  customer. See `src/services/ownership.service.js`. Reassigning a customer or a lead is an
+  customer. See `src/services/ownership.service.js`. Reassigning a customer or an enquiry is an
   administrator's decision, not the holder's.
 
 The duplicate check is the one place ownership is deliberately crossed: a duplicate the
@@ -575,7 +571,7 @@ Stage changes are recorded on the enquiry and published on an internal event bus
 knowing about each other.
 
 **One search across everything** [§32]. `GET /search?q=` answers over customers, enquiries,
-samples, leads and the catalogue at once — the rest join as their modules land. It does what
+samples and the catalogue at once — the rest join as their modules land. It does what
 §32 actually asks, which is not "find matching rows" but "retrieve the entire related
 history": typing a customer's name reaches their enquiries and their samples, which carry the
 customer as a reference rather than as text, so matching each collection against the words
@@ -593,12 +589,9 @@ because a number nobody can open is a number nobody trusts. It also reports open
 carrying no next action — the module refuses to write that state, but a rule with no way of
 telling you it has been broken is one you hear about from the customer.
 
-**Built for a front door that does not exist yet** [§8]. Leads, customers and enquiries each
-carry an optional `conversation` — the provider and that provider's own id for the thread —
-and it is null on every record today. §41.6 requires conversation history to stay linked to
-the lead, the contact, the customer and the enquiry, and converting a lead carries the
-reference onto both records it produces, so the chain holds rather than ending at a lead
-nobody opens again. The field is here now because retrofitting an origin across a year of
+**Where a record came from** [§8]. Customers and enquiries each carry an optional
+`conversation` — the provider and that provider's own id for the thread or query. IndiaMART
+sets it to the IndiaMART query id, which is also what makes re-reading a window free. The field is here now because retrofitting an origin across a year of
 live enquiries is the migration nobody wants; it is optional forever, since an enquiry with
 no thread behind it is the normal case rather than a defect. Nothing sets it yet, and there
 is no UI for it: a field that is always null is not a screen.

@@ -31,9 +31,9 @@ const contactSchema = new mongoose.Schema(
 );
 
 /**
- * One master record per customer [BLUEPRINT §2]. Created when a qualified lead converts,
- * so the master means "companies we are actively working" rather than "companies who have
- * bought".
+ * One master record per customer [BLUEPRINT §2]. Created when marketing registers a buyer or
+ * one arrives from IndiaMART or a visiting card, so the master means "companies we are actively
+ * working" rather than "companies who have bought".
  */
 const customerSchema = new mongoose.Schema(
   {
@@ -139,7 +139,6 @@ const customerSchema = new mongoose.Schema(
     outstandingAmount: { type: Number, default: 0 },
 
     source: { type: String, enum: CUSTOMER_SOURCES, default: 'manual' },
-    convertedFromLead: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead' },
 
     /**
      * Whether this customer accepts automatic updates, per channel [§42].

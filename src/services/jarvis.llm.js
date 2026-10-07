@@ -62,7 +62,7 @@ const FORMAT = {
       reference: {
         type: ['string', 'null'],
         description:
-          'A document number exactly as stored: SMP-2026-0004, ENQ-2026-0001, LEAD-2026-0002, CUST-2026-0003. Zero-pad the sequence to four digits. Null if none was given.',
+          'A document number exactly as stored: SMP-2026-0004, ENQ-2026-0001, CUST-2026-0003. Zero-pad the sequence to four digits. Null if none was given.',
       },
       party: {
         type: ['string', 'null'],

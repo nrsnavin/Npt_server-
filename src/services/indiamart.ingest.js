@@ -1,31 +1,24 @@
-import Lead from '../models/Lead.js';
+import Enquiry from '../models/Enquiry.js';
 import SyncState from '../models/SyncState.js';
 import { env } from '../config/env.js';
-import { nextNumber } from '../services/numbering.service.js';
-import { ownerForNewLead } from '../services/assignment.service.js';
-import { syncFollowUpReminder } from '../subscribers/leadFollowUp.subscriber.js';
 import { normalisePhone } from '../utils/phone.js';
 import { PROVIDER, fetchLeads, isConfigured } from './indiamart.client.js';
+import { createBuyer, customerByContact, ownerForNewBuyer, raiseFirstEnquiry } from './intake.service.js';
 
 /**
- * Turning IndiaMART enquiries into leads [BLUEPRINT §41 by analogy].
+ * Turning IndiaMART enquiries into enquiries [BLUEPRINT §41 by analogy].
  *
- * §41 specifies this shape for WhatsApp and the reasoning carries over unchanged: a buyer who
- * arrives through a marketplace must land in the pipeline **without anybody re-keying them**,
- * must be de-duplicated against what we already have, and must come out owned by a named
- * marketing person with a next step against it. A feed that drops anonymous rows into a table
- * is a second inbox, not a CRM.
+ * A buyer who arrives through a marketplace must land in the pipeline **without anybody
+ * re-keying them**, must be de-duplicated against what we already have, and must come out owned
+ * by a named marketing person with a next step against it.
  *
- * Three rules do the work here.
+ * **Idempotent on their query id.** Every IndiaMART enquiry carries a unique id, stored as the
+ * enquiry's conversation reference. Re-reading a window is therefore free, which is what lets the
+ * poller overlap its windows rather than trust two clocks to agree.
  *
- * **Idempotent on their query id.** Every enquiry carries a unique id; it is stored as the
- * lead's conversation reference, which §8 already added and indexed for exactly this. Re-reading
- * a window is therefore free, which is what lets the poller overlap its windows rather than
- * trust two clocks to agree.
- *
- * **A known buyer is not a new lead.** The same firm enquiring twice in a fortnight is one
- * relationship; two lead records for it means two marketing people ringing the same buyer. A
- * second enquiry lands as an activity on the open lead instead.
+ * **A known buyer is not a new customer.** Matched on phone or email, a buyer we already have
+ * gets the enquiry on their own record, with whoever already looks after them. Only a buyer we
+ * have never had becomes a new customer, owned by the next in the marketing rotation.
  *
  * **Nothing here throws into the caller.** A malformed row is skipped and counted, not fatal:
  * one buyer with an unparseable phone number must not stop the other nineteen from arriving.
@@ -41,15 +34,15 @@ const trimmed = (value) => {
 };
 
 /**
- * Their row, as one of our leads.
+ * Their row, in our words.
  *
  * Returns null for a row we cannot use. The unique id is the one field with no fallback: without
- * it the row cannot be de-duplicated, and a feed that creates a fresh lead on every poll is
+ * it the row cannot be de-duplicated, and a feed that creates a fresh enquiry on every poll is
  * worse than one that drops the row and says so.
  *
- * `company` falls back through the sender's name to a marker, because it is required on a lead
- * and IndiaMART routinely omits it for an individual buyer — refusing those would silently lose
- * real enquiries.
+ * `company` falls back through the sender's name to a marker, because a customer needs a name
+ * and IndiaMART routinely omits the company for an individual buyer — refusing those would
+ * silently lose real enquiries.
  */
 export function normalise(row) {
   const reference = trimmed(row.UNIQUE_QUERY_ID ?? row.QUERY_ID);
@@ -62,8 +55,8 @@ export function normalise(row) {
 
   /*
    * What they asked for, in their words. The product name is their catalogue's, the message is
-   * the buyer's; both matter and neither is a model number we could match to the master, so it
-   * stays free text exactly as `productInterest` is meant to be.
+   * the buyer's; neither is a model number we could match to the master, so both go into the
+   * enquiry's remarks and the model is the first thing the call finds out.
    */
   const interest = [trimmed(row.QUERY_PRODUCT_NAME), trimmed(row.QUERY_MCAT_NAME)]
     .filter(Boolean)
@@ -72,7 +65,7 @@ export function normalise(row) {
   return {
     reference,
     receivedAt: row.QUERY_TIME ? new Date(row.QUERY_TIME) : new Date(),
-    lead: {
+    buyer: {
       company,
       contactName: name,
       mobile,
@@ -80,131 +73,70 @@ export function normalise(row) {
       email: trimmed(row.SENDER_EMAIL)?.toLowerCase(),
       city: trimmed(row.SENDER_CITY),
       state: trimmed(row.SENDER_STATE),
-      source: 'indiamart',
-      productInterest: interest || undefined,
     },
+    interest: interest || undefined,
     message: trimmed(row.QUERY_MESSAGE),
   };
-}
-
-/**
- * The lead this enquiry belongs to, if we already have it.
- *
- * Matched on the phone number first because that is what a buyer reuses and a company name is
- * what they spell differently — "SCM Garments", "S.C.M Garments Pvt Ltd" — and only among leads
- * still open. A converted or disqualified lead is finished; a new enquiry against that buyer is
- * genuinely new work, and hanging it off a closed record hides it.
- */
-async function openLeadFor({ mobile, email }) {
-  const clauses = [];
-  if (mobile) clauses.push({ mobile });
-  if (email) clauses.push({ email });
-  if (!clauses.length) return null;
-
-  return Lead.findOne({
-    $or: clauses,
-    status: { $nin: ['converted', 'disqualified'] },
-  });
 }
 
 /**
  * Ingests one enquiry.
  *
  * Returns what it did, so the run can report honestly rather than claiming to have created
- * everything it saw.
+ * everything it saw: `created` (a new customer and its enquiry), `attached` (an enquiry on a
+ * customer we already had), `duplicate` or `skipped`.
  */
 export async function ingestOne(row, { now = () => new Date() } = {}) {
   const parsed = normalise(row);
   if (!parsed) return { outcome: 'skipped', why: 'no unique query id on the row' };
 
-  /*
-   * Seen before — the overlap window re-reads deliberately, so this is the ordinary case.
-   *
-   * Checked against `sourceRefs` rather than the conversation reference, because an enquiry
-   * that landed on an *existing* lead never becomes that lead's originating reference. Reading
-   * only the latter made every poll re-attach the same enquiry, which at a quarter-hourly
-   * cadence is ninety-odd copies of one activity a day.
-   */
-  const already = await Lead.findOne({
-    $or: [{ sourceRefs: parsed.reference }, { 'conversation.reference': parsed.reference }],
-  });
-  if (already) return { outcome: 'duplicate', lead: already };
+  /* Seen before — the overlap window re-reads deliberately, so this is the ordinary case. */
+  const already = await Enquiry.findOne({ 'conversation.reference': parsed.reference });
+  if (already) return { outcome: 'duplicate', enquiry: already };
 
-  const activity = {
-    type: 'note',
-    summary: [
-      'IndiaMART enquiry',
-      parsed.lead.productInterest && `for ${parsed.lead.productInterest}`,
-      parsed.message && `— "${parsed.message}"`,
-    ]
-      .filter(Boolean)
-      .join(' '),
-    occurredAt: parsed.receivedAt,
-  };
+  const conversation = { provider: PROVIDER, reference: parsed.reference };
+  let customer = await customerByContact(parsed.buyer);
+  const known = Boolean(customer);
+  let rotated = null;
 
-  /*
-   * A buyer we are already working. The enquiry becomes an activity on the open lead rather
-   * than a second record — two leads for one buyer means two people ringing them — and the
-   * reference is *not* moved onto that lead, because it already carries the id of the enquiry
-   * that created it.
-   */
-  const existing = await openLeadFor(parsed.lead);
-  if (existing) {
-    existing.activities.push(activity);
-    // Recorded, or the next overlapping window adds this same enquiry all over again.
-    existing.sourceRefs = [...(existing.sourceRefs || []), parsed.reference];
-    /* A fresh enquiry is a reason to chase, whatever the follow-up date said before. */
-    existing.nextFollowUpDate = now();
-    await existing.save();
-    return { outcome: 'attached', lead: existing };
-  }
-
-  const owner = await ownerForNewLead({ creator: null });
-  const assignedTo = owner.user;
-  if (!assignedTo) {
-    /*
-     * §3 again: a lead nobody owns is the thing the rule exists to prevent, and an unowned
-     * lead here would be invisible rather than merely unassigned. Better to leave it unread
-     * and say so — the next poll will re-offer it once somebody is in the rotation.
-     */
-    return { outcome: 'skipped', why: 'nobody in marketing to assign it to' };
-  }
-
-  const lead = await Lead.create({
-    ...parsed.lead,
-    number: await nextNumber('LEAD'),
-    assignedTo,
-    status: 'new',
-    /*
-     * The next step, written by the machine because §3 requires one and because a marketplace
-     * lead has exactly one sensible first move. Marketing changes it the moment they touch it;
-     * what matters is that it is never blank, and never a date nobody chose.
-     */
-    nextAction: `Call the buyer about ${parsed.lead.productInterest || 'their IndiaMART enquiry'}`,
-    nextActionType: 'call',
-    nextFollowUpDate: now(),
-    activities: [
-      activity,
+  if (!customer) {
+    const owner = await ownerForNewBuyer(null);
+    if (!owner.user) {
       /*
-       * Said out loud on the record, the same as a lead typed in by hand. A lead that appears
-       * in somebody's queue overnight with no explanation is one they assume is a mistake.
+       * §3: a buyer nobody owns is the thing the rule exists to prevent, and an unowned one here
+       * would be invisible rather than merely unassigned. Better to leave it unread and say so —
+       * the next poll re-offers it once somebody is in the rotation.
        */
-      ...(owner.rotated
-        ? [{ type: 'note', summary: `Assigned to ${owner.name} by rotation`, occurredAt: parsed.receivedAt }]
-        : []),
-    ],
-    sourceRefs: [parsed.reference],
-    conversation: { provider: PROVIDER, reference: parsed.reference },
+      return { outcome: 'skipped', why: 'nobody in marketing to assign it to' };
+    }
+    rotated = owner.rotated;
+    customer = await createBuyer(parsed.buyer, {
+      assignedTo: owner.user,
+      source: 'indiamart',
+      conversation,
+      notes: rotated ? `From IndiaMART. Assigned to ${rotated} by rotation.` : 'From IndiaMART.',
+    });
+  }
+
+  const remarks = [
+    `IndiaMART enquiry${parsed.interest ? ` for ${parsed.interest}` : ''}`,
+    parsed.message && `"${parsed.message}"`,
+  ].filter(Boolean).join(' — ');
+
+  const enquiry = await raiseFirstEnquiry({
+    customer,
+    remarks,
+    /*
+     * Written by the machine because §3 requires a next step and a marketplace enquiry has
+     * exactly one sensible first move. Marketing changes it the moment they touch it.
+     */
+    nextAction: `Call the buyer about ${parsed.interest || 'their IndiaMART enquiry'} and find out the model`,
+    nextFollowUpDate: now(),
+    source: 'indiamart',
+    conversation,
   });
 
-  /*
-   * The reminder is how the lead reaches a person. Leads created by hand go through the same
-   * call, and skipping it here would leave an auto-loaded lead sitting in the table with a
-   * follow-up date nothing was watching — visible only to whoever thought to look.
-   */
-  await syncFollowUpReminder(lead);
-
-  return { outcome: 'created', lead };
+  return { outcome: known ? 'attached' : 'created', customer, enquiry };
 }
 
 /**
@@ -213,16 +145,16 @@ export async function ingestOne(row, { now = () => new Date() } = {}) {
  * The order matters. The mark advances only after every row has been written, so a run that
  * dies halfway leaves it where it was and the next poll re-asks the same window — safe,
  * because ingestion is idempotent. Advancing first would lose whatever the failure interrupted,
- * and nothing downstream would ever know a lead had gone missing.
+ * and nothing downstream would ever know an enquiry had gone missing.
  */
-export async function syncIndiamartLeads({ fetchImpl, now = () => new Date() } = {}) {
+export async function syncIndiamartEnquiries({ fetchImpl, now = () => new Date() } = {}) {
   if (!isConfigured()) return { skipped: true, why: 'no IndiaMART key configured' };
 
   const state = await SyncState.forKey(PROVIDER);
   const to = now();
 
   /*
-   * Overlapped on purpose. `QUERY_TIME` is their clock, and a lead stamped a minute either side
+   * Overlapped on purpose. `QUERY_TIME` is their clock, and an enquiry stamped a minute either side
    * of our watermark would otherwise fall between two windows and never be read. Re-reading
    * costs nothing; the unique id absorbs it.
    */

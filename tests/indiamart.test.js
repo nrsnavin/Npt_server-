@@ -1,5 +1,5 @@
 /**
- * Auto-loading leads from IndiaMART [BLUEPRINT §41 by analogy].
+ * Auto-loading IndiaMART enquiries [BLUEPRINT §41 by analogy] — as a customer and an enquiry.
  *
  * Three failures this guards against, all of which are silent:
  *
@@ -8,9 +8,9 @@
  * the same buyer and two marketing people ring them.
  *
  * **A shape change read as an empty feed.** IndiaMART answers a bad key with an HTML page and
- * a 200. Parsed loosely, that is "no new leads" — forever, quietly.
+ * a 200. Parsed loosely, that is "no new enquiries" — forever, quietly.
  *
- * **A lost window.** The watermark must not advance past leads that were never written, or
+ * **A lost window.** The watermark must not advance past rows that were never written, or
  * they are gone with nothing to say so.
  *
  *   node --test tests/indiamart.test.js
@@ -24,10 +24,11 @@ process.env.JWT_SECRET = 'indiamart-test-secret-value';
 process.env.INDIAMART_CRM_KEY = 'test-key-not-a-real-one';
 
 const { asApiTime, parseResponse } = await import('../src/services/indiamart.client.js');
-const { normalise, ingestOne, syncIndiamartLeads } = await import('../src/services/indiamart.ingest.js');
+const { normalise, ingestOne, syncIndiamartEnquiries } = await import('../src/services/indiamart.ingest.js');
 
 let mongo;
-let Lead;
+let Customer;
+let Enquiry;
 let User;
 let SyncState;
 
@@ -48,7 +49,7 @@ const row = (overrides = {}) => ({
   ...overrides,
 });
 
-/** A different buyer, for the cases that want two leads rather than one and an activity. */
+/** A different buyer, for the cases that want two customers rather than one. */
 const otherBuyer = (overrides = {}) =>
   row({
     UNIQUE_QUERY_ID: '2026080287654321',
@@ -72,7 +73,8 @@ test.before(async () => {
   process.env.MONGO_URI = mongo.getUri();
   await mongoose.connect(process.env.MONGO_URI);
 
-  Lead = (await import('../src/models/Lead.js')).default;
+  Customer = (await import('../src/models/Customer.js')).default;
+  Enquiry = (await import('../src/models/Enquiry.js')).default;
   User = (await import('../src/models/User.js')).default;
   SyncState = (await import('../src/models/SyncState.js')).default;
 
@@ -98,7 +100,8 @@ test.after(async () => {
 });
 
 const reset = async () => {
-  await Lead.deleteMany({});
+  await Customer.deleteMany({});
+  await Enquiry.deleteMany({});
   await SyncState.deleteMany({});
 };
 
@@ -125,7 +128,7 @@ test('a refusal carries their own words, not ours', () => {
 test('a changed payload shape is an error, never an empty feed', () => {
   /*
    * The failure this exists for: read loosely, a payload that is no longer a list reports
-   * "0 new leads" every quarter of an hour and nobody finds out for a month.
+   * "0 new enquiries" every quarter of an hour and nobody finds out for a month.
    */
   assert.throws(() => parseResponse({ CODE: 200, RESPONSE: { leads: [] } }), /has changed/i);
   assert.throws(() => parseResponse('<html>Invalid key</html>'), /not an object/i);
@@ -133,24 +136,23 @@ test('a changed payload shape is an error, never an empty feed', () => {
 
 /* ------------------------------- Normalising ------------------------------- */
 
-test('a row becomes a lead we could have typed ourselves', () => {
+test('a row becomes a buyer we could have typed in ourselves', () => {
   const parsed = normalise(row());
 
   assert.equal(parsed.reference, '2026080112345678');
-  assert.equal(parsed.lead.company, 'Sunrise Exports');
-  assert.equal(parsed.lead.contactName, 'Rakesh Kumar');
-  assert.equal(parsed.lead.city, 'Tiruppur');
-  assert.equal(parsed.lead.source, 'indiamart');
-  assert.match(parsed.lead.productInterest, /Velvet Flocked Hanger/);
+  assert.equal(parsed.buyer.company, 'Sunrise Exports');
+  assert.equal(parsed.buyer.contactName, 'Rakesh Kumar');
+  assert.equal(parsed.buyer.city, 'Tiruppur');
+  assert.match(parsed.interest, /Velvet Flocked Hanger/);
 });
 
 test('a buyer with no company still gets in', () => {
   // IndiaMART routinely omits the company for an individual. Refusing those loses real work.
   const parsed = normalise(row({ SENDER_COMPANY: '' }));
-  assert.equal(parsed.lead.company, 'Rakesh Kumar');
+  assert.equal(parsed.buyer.company, 'Rakesh Kumar');
 
   const anonymous = normalise(row({ SENDER_COMPANY: '', SENDER_NAME: '' }));
-  assert.equal(anonymous.lead.company, 'Unnamed IndiaMART buyer');
+  assert.equal(anonymous.buyer.company, 'Unnamed IndiaMART buyer');
 });
 
 test('a row with no query id is dropped, because it could never be de-duplicated', () => {
@@ -159,63 +161,106 @@ test('a row with no query id is dropped, because it could never be de-duplicated
 
 /* -------------------------------- Ingesting -------------------------------- */
 
-test('an enquiry becomes an owned lead with a next step against it', async () => {
+test('a new buyer becomes an owned customer and an enquiry with a next step', async () => {
   await reset();
 
-  const { outcome, lead } = await ingestOne(row());
+  const { outcome, customer, enquiry } = await ingestOne(row());
   assert.equal(outcome, 'created');
 
-  assert.ok(lead.number.startsWith('LEAD-'));
-  assert.ok(lead.assignedTo, 'a lead nobody owns is the thing §3 exists to prevent');
-  assert.ok(lead.nextAction, 'and it must never arrive blank');
-  assert.ok(lead.nextFollowUpDate);
-  assert.equal(lead.conversation.provider, 'indiamart');
-  assert.equal(lead.conversation.reference, '2026080112345678');
+  assert.ok(customer.code.startsWith('CUST-'));
+  assert.equal(customer.name, 'Sunrise Exports');
+  assert.equal(customer.source, 'indiamart');
+  assert.ok(customer.assignedTo, 'a buyer nobody owns is the thing §3 exists to prevent');
+  assert.equal(customer.contacts[0].name, 'Rakesh Kumar');
+
+  assert.ok(enquiry.number.startsWith('ENQ-'));
+  assert.equal(String(enquiry.customer), String(customer._id));
+  assert.equal(String(enquiry.assignedTo), String(customer.assignedTo));
+  /* The model is what the first call finds out, so it waits in clarification. */
+  assert.equal(enquiry.status, 'requirement_clarification');
+  assert.equal(enquiry.source, 'indiamart');
+  assert.ok(enquiry.nextAction, 'and it must never arrive blank');
+  assert.ok(enquiry.nextFollowUpDate);
+  assert.equal(enquiry.conversation.provider, 'indiamart');
+  assert.equal(enquiry.conversation.reference, '2026080112345678');
 
   // What the buyer actually said, kept verbatim on the record.
-  assert.match(lead.activities[0].summary, /Need 40000 pcs/);
+  assert.match(enquiry.remarks, /Need 40000 pcs/);
+  assert.match(enquiry.remarks, /Velvet Flocked Hanger/);
 });
 
-test('the same enquiry twice is one lead', async () => {
+test('the same IndiaMART enquiry twice is one enquiry', async () => {
   await reset();
 
   await ingestOne(row());
   const second = await ingestOne(row());
 
   assert.equal(second.outcome, 'duplicate');
-  assert.equal(await Lead.countDocuments(), 1);
+  assert.equal(await Enquiry.countDocuments(), 1);
+  assert.equal(await Customer.countDocuments(), 1);
 });
 
-test('a second enquiry from a buyer we are working lands on the lead we have', async () => {
+test('a buyer we already have gets the enquiry on their own record, with their owner', async () => {
   await reset();
-  await ingestOne(row());
+  const { customer } = await ingestOne(row());
 
   const again = await ingestOne(
     row({ UNIQUE_QUERY_ID: '2026080999999999', QUERY_MESSAGE: 'Any update on the rate?' })
   );
 
   assert.equal(again.outcome, 'attached');
-  assert.equal(await Lead.countDocuments(), 1, 'two leads for one buyer means two people ringing them');
-
-  const lead = await Lead.findOne();
-  /*
-   * The enquiry, the rotation note explaining who it landed with, then the second enquiry.
-   * Checked from the end rather than by index, so adding another note on creation later does
-   * not silently turn this into an assertion about the wrong entry.
-   */
-  assert.match(lead.activities.at(-1).summary, /Any update on the rate/);
+  assert.equal(await Customer.countDocuments(), 1, 'two records for one buyer means two people ringing them');
+  assert.equal(await Enquiry.countDocuments(), 2);
+  assert.equal(String(again.enquiry.customer), String(customer._id));
+  assert.equal(String(again.enquiry.assignedTo), String(customer.assignedTo));
+  assert.match(again.enquiry.remarks, /Any update on the rate/);
 });
 
-test('a buyer whose lead is finished starts a new one', async () => {
+test('a buyer on file under a contact\'s number is matched too', async () => {
   await reset();
-  await ingestOne(row());
+  const { customer } = await ingestOne(row());
+  await Customer.updateOne(
+    { _id: customer._id },
+    { mobile: '9000000001', whatsapp: '9000000001', contacts: [{ name: 'Rakesh Kumar', mobile: '+919840011223' }] }
+  );
 
-  // Converted is finished. Hanging a fresh enquiry off it would hide genuinely new work.
-  await Lead.updateOne({}, { status: 'converted' });
+  const again = await ingestOne(row({ UNIQUE_QUERY_ID: '2026081011111111', SENDER_EMAIL: '' }));
+  assert.equal(again.outcome, 'attached');
+  assert.equal(await Customer.countDocuments(), 1);
+});
 
-  const fresh = await ingestOne(row({ UNIQUE_QUERY_ID: '2026081011111111' }));
-  assert.equal(fresh.outcome, 'created');
-  assert.equal(await Lead.countDocuments(), 2);
+test('an enquiry captured without a model cannot move on until it names one', async () => {
+  await reset();
+  const { enquiry } = await ingestOne(row());
+  const { default: app } = await import('../src/app.js');
+  const { signToken } = await import('../src/middleware/auth.js');
+  const token = signToken(await User.findById(enquiry.assignedTo));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve) => server.once('listening', resolve));
+  const move = async () => {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/enquiries/${enquiry._id}/status`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        status: 'pricing_required',
+        nextAction: 'Cost it',
+        nextFollowUpDate: new Date(Date.now() + 86400000).toISOString(),
+      }),
+    });
+    return { status: response.status, body: await response.json() };
+  };
+
+  try {
+    const stuck = await move();
+    assert.equal(stuck.status, 400, JSON.stringify(stuck.body));
+    assert.match(stuck.body.message, /Name the model/);
+
+    await Enquiry.updateOne({ _id: enquiry._id }, { 'requirement.modelNumber': 'VF-17' });
+    const moved = await move();
+    assert.equal(moved.status, 200, JSON.stringify(moved.body));
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 /* --------------------------------- The poll --------------------------------- */
@@ -223,7 +268,7 @@ test('a buyer whose lead is finished starts a new one', async () => {
 test('a poll ingests the window and moves the watermark', async () => {
   await reset();
 
-  const result = await syncIndiamartLeads({
+  const result = await syncIndiamartEnquiries({
     fetchImpl: stubFetch({ CODE: 200, RESPONSE: [row(), otherBuyer()] }),
   });
 
@@ -240,17 +285,17 @@ test('a failed fetch leaves the watermark alone', async () => {
   await reset();
 
   // Get one good run in, so there is a mark to protect.
-  await syncIndiamartLeads({ fetchImpl: stubFetch({ CODE: 200, RESPONSE: [row()] }) });
+  await syncIndiamartEnquiries({ fetchImpl: stubFetch({ CODE: 200, RESPONSE: [row()] }) });
   const before = (await SyncState.forKey('indiamart')).lastSyncedAt;
 
-  const failed = await syncIndiamartLeads({
+  const failed = await syncIndiamartEnquiries({
     fetchImpl: stubFetch({ CODE: 429, MESSAGE: 'Limit exceeded' }),
   });
   assert.equal(failed.failed, true);
 
   /*
    * The whole reason the mark advances last. Moving it on a failed run would skip a window
-   * nobody read, and the leads in it would be gone with nothing to say so.
+   * nobody read, and the enquiries in it would be gone with nothing to say so.
    */
   const after = await SyncState.forKey('indiamart');
   assert.deepEqual(after.lastSyncedAt, before);
@@ -261,7 +306,7 @@ test('a failed fetch leaves the watermark alone', async () => {
 test('one unreadable row does not cost the rest', async () => {
   await reset();
 
-  const result = await syncIndiamartLeads({
+  const result = await syncIndiamartEnquiries({
     fetchImpl: stubFetch({
       CODE: 200,
       RESPONSE: [row({ UNIQUE_QUERY_ID: '' }), row(), otherBuyer()],
@@ -277,17 +322,18 @@ test('re-reading an overlapped window creates nothing new', async () => {
   await reset();
 
   const feed = stubFetch({ CODE: 200, RESPONSE: [row(), otherBuyer()] });
-  await syncIndiamartLeads({ fetchImpl: feed });
-  const again = await syncIndiamartLeads({ fetchImpl: feed });
+  await syncIndiamartEnquiries({ fetchImpl: feed });
+  const again = await syncIndiamartEnquiries({ fetchImpl: feed });
 
   /*
    * The poller overlaps its windows deliberately — their `QUERY_TIME` is the buyer's clock,
-   * and a lead stamped either side of the mark would otherwise fall between two windows. That
+   * and a row stamped either side of the mark would otherwise fall between two windows. That
    * only works because re-reading is free.
    */
   assert.equal(again.created, 0);
+  assert.equal(again.attachedToExisting, 0);
   assert.equal(again.duplicates, 2);
-  assert.equal(await Lead.countDocuments(), 2);
+  assert.equal(await Enquiry.countDocuments(), 2);
 });
 
 test('with no key the feed is simply off', async () => {
@@ -302,56 +348,32 @@ test('with no key the feed is simply off', async () => {
   process.env.INDIAMART_CRM_KEY = key;
 });
 
-test('two enquiries from one buyer in the same window are one lead', async () => {
+test('two enquiries from one buyer in the same window are one customer with two enquiries', async () => {
   await reset();
 
   /*
-   * Found by a test that asserted the opposite and was wrong. A buyer who sends two enquiries
-   * an hour apart — a different product each time, which IndiaMART treats as two queries —
-   * arrives in one window as two rows sharing a phone number. They are one relationship, and
-   * two leads for them means two marketing people ringing the same person the same afternoon.
+   * A buyer who sends two enquiries an hour apart — a different product each time, which
+   * IndiaMART treats as two queries — arrives in one window as two rows sharing a phone number.
+   * They are one relationship: one customer, one owner, and each product its own enquiry.
    */
-  const result = await syncIndiamartLeads({
-    fetchImpl: stubFetch({
-      CODE: 200,
-      RESPONSE: [
-        row(),
-        row({ UNIQUE_QUERY_ID: '2026080199999999', QUERY_PRODUCT_NAME: 'Wooden Suit Hanger' }),
-      ],
-    }),
-  });
+  const window = {
+    CODE: 200,
+    RESPONSE: [
+      row(),
+      row({ UNIQUE_QUERY_ID: '2026080199999999', QUERY_PRODUCT_NAME: 'Wooden Suit Hanger' }),
+    ],
+  };
+  const result = await syncIndiamartEnquiries({ fetchImpl: stubFetch(window) });
 
   assert.equal(result.fetched, 2);
   assert.equal(result.created, 1);
   assert.equal(result.attachedToExisting, 1);
-  assert.equal(await Lead.countDocuments(), 1);
+  assert.equal(await Customer.countDocuments(), 1);
+  assert.equal(await Enquiry.countDocuments(), 2);
+  assert.ok(await Enquiry.exists({ remarks: /Wooden Suit Hanger/ }));
 
-  // And nothing the buyer said is lost — the second enquiry is on the record too.
-  const lead = await Lead.findOne();
-  assert.match(lead.activities.at(-1).summary, /Wooden Suit Hanger/);
-});
-
-test('an enquiry attached to an existing lead is not attached again', async () => {
-  await reset();
-
-  /*
-   * Found by pulling twice through the UI, which is the only way it shows: the first run looked
-   * perfect. An enquiry that lands on a lead we already have never becomes that lead's
-   * originating reference, so checking only `conversation.reference` reported it unseen on
-   * every subsequent poll — and the poller overlaps its windows on purpose. A quarter-hourly
-   * cadence would have put ninety-odd copies of one activity on the lead by the next morning.
-   */
-  const window = { CODE: 200, RESPONSE: [row(), row({ UNIQUE_QUERY_ID: 'second-from-same-buyer' })] };
-
-  const first = await syncIndiamartLeads({ fetchImpl: stubFetch(window) });
-  assert.equal(first.created, 1);
-  assert.equal(first.attachedToExisting, 1);
-
-  const again = await syncIndiamartLeads({ fetchImpl: stubFetch(window) });
-  assert.equal(again.attachedToExisting, 0, 'the second run must recognise it');
+  // And pulled again, the overlap adds nothing.
+  const again = await syncIndiamartEnquiries({ fetchImpl: stubFetch(window) });
   assert.equal(again.duplicates, 2);
-
-  const lead = await Lead.findOne();
-  // The enquiry, the rotation note, and the second enquiry. Not a fourth entry, ever.
-  assert.equal(lead.activities.length, 3);
+  assert.equal(await Enquiry.countDocuments(), 2);
 });

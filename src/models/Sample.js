@@ -146,14 +146,14 @@ const statusChangeSchema = new mongoose.Schema(
 /**
  * One model in the bag.
  *
- * The shared requirement shape [requirement.schema.js], so a lead's item, an enquiry's, a
- * costing's line and this are the same description of the same thing — which is what lets a
- * buyer's requirement travel the whole chain without being retyped at each step.
+ * The shared requirement shape [requirement.schema.js], so an enquiry's item, a costing's line
+ * and this are the same description of the same thing — which is what lets a buyer's requirement
+ * travel the whole chain without being retyped at each step.
  *
  * Two fields differ here, and both differ for the same reason: a sample is a physical bag of
  * pieces rather than a description of a job.
  *
- *   `mould`     the tool this model runs on. A lead or an enquiry carries one mould for the
+ *   `mould`     the tool this model runs on. An enquiry carries one mould for the
  *               whole record, because it is about one job; a bag with three models in it is
  *               three tools, and the bench needs to know which.
  *   `quantity`  how many pieces of *this* model to make. On an enquiry the quantity was a guess
@@ -240,22 +240,6 @@ const sampleSchema = new mongoose.Schema(
      */
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', index: true },
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
-    /**
-     * The lead it was made for, when there is not a customer yet.
-     *
-     * Asking for a sample is often the *first* thing a party does — "send me one and I will
-     * tell you whether we are interested" — which happens before anybody is a customer and
-     * before there is an enquiry to hang it on. Without somewhere to record that, the two ways
-     * out were both bad: invent a customer for a party that has not bought anything, which
-     * puts a stranger in the customer master and then in every count built on it; or raise the
-     * request standalone with the company name typed into the remarks, which works right up
-     * until somebody opens the lead and cannot see that a sample was ever sent.
-     *
-     * Set alongside `customer` rather than instead of it. At the moment the lead converts, the
-     * samples made for it gain the customer it became — so a request keeps the lead that asked
-     * for it *and* gains the buyer it turned into, and the history reads in one line.
-     */
-    lead: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead', index: true },
     /** The marketing person who needs it back. Ownership for marketing runs through here. */
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     /** The sample-team member working it. Empty until someone picks it up. */

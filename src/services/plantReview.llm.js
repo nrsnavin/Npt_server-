@@ -7,7 +7,7 @@ import { askForJson, llmConfigured, BUDGETS } from './llm.client.js';
  * What matters now — the model ordering a closed list of real problems [BLUEPRINT §25].
  *
  * The plant already raises six kinds of alarm on a timer: late production, undispatched stock,
- * stalled samples, unanswered queries, overdue money, quiet leads. Nothing is unflagged. What
+ * stalled samples, unanswered queries, overdue money. Nothing is unflagged. What
  * nobody has is a way to tell, before nine o'clock, which of that pile matters today — and a
  * seventh sweep would make the problem worse rather than better.
  *

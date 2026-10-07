@@ -1,6 +1,5 @@
 import Sample, { CLOSED_SAMPLE_STATUSES, NOT_ESCALATED_STATUSES } from '../models/Sample.js';
 import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
-import Lead from '../models/Lead.js';
 import Customer from '../models/Customer.js';
 import Mould from '../models/Mould.js';
 import { findModule } from '../config/modules.js';
@@ -68,7 +67,6 @@ const ROWS = 8;
 const KNOWN = {
   samples: 'samples',
   enquiries: 'enquiries',
-  leads: 'enquiries',
   customers: 'customers',
   moulds: 'moulds',
 };
@@ -104,13 +102,6 @@ const enquiryRow = (row) => ({
     .join(' · '),
   meta: row.nextFollowUpDate ? `Follow up ${row.nextFollowUpDate.toISOString().slice(0, 10)}` : null,
   link: `/enquiries/${row._id}`,
-});
-
-const leadRow = (row) => ({
-  _id: row._id,
-  title: row.company,
-  subtitle: [row.number, row.contactName, readable(row.status)].filter(Boolean).join(' · '),
-  link: `/leads/${row._id}`,
 });
 
 const customerRow = (row) => ({
@@ -177,18 +168,6 @@ async function oneEnquiry(user, number) {
   }
 
   return { answer, rows: [enquiryRow(enquiry)] };
-}
-
-async function oneLead(user, number) {
-  const lead = await Lead.findOne({ number, ...ownershipFilter(user) }).populate('assignedTo', 'name');
-  if (!lead) return reply(`I cannot find ${number}. It may not exist, or it may belong to a colleague.`);
-
-  let answer = `${lead.number} — ${lead.company} — is at "${readable(lead.status)}"`;
-  if (lead.assignedTo?.name) answer += ` with ${lead.assignedTo.name}`;
-  answer += '.';
-  if (lead.nextAction) answer += ` Next: ${lead.nextAction}.`;
-
-  return { answer, rows: [leadRow(lead)] };
 }
 
 async function oneCustomer(user, number) {
@@ -325,13 +304,6 @@ async function newRecords(user, subject, window) {
       row: sampleRow,
       one: 'new sample request',
     },
-    leads: {
-      model: Lead,
-      filter: { createdAt: { $gte: since }, ...ownershipFilter(user) },
-      sort: '-createdAt',
-      row: leadRow,
-      one: 'new lead',
-    },
     customers: {
       model: Customer,
       filter: { createdAt: { $gte: since }, ...ownershipFilter(user) },
@@ -385,14 +357,6 @@ async function openRecords(user, subject) {
       one: 'enquiry',
       many: 'enquiries',
       where: 'open',
-    },
-    leads: {
-      model: Lead,
-      filter: { status: { $nin: ['converted', 'disqualified'] }, ...ownershipFilter(user) },
-      sort: '-createdAt',
-      row: leadRow,
-      one: 'lead',
-      where: 'still being worked',
     },
     customers: {
       model: Customer,
@@ -490,7 +454,6 @@ async function byName(user, name) {
 const ASPECTS_FOR = {
   samples: ['what is stuck', 'what is overdue', 'what is open', 'what is new this week', 'or a number like SMP-2026-0004'],
   enquiries: ['what is new this week', 'what follow-ups are due', 'what is open', 'or a number like ENQ-2026-0001'],
-  leads: ['what is new', 'what is still open', 'or a number like LEAD-2026-0001'],
   customers: ['what is new', 'or name one — "what is happening with Trendline"'],
   moulds: ['what is new', 'how many are on the register'],
 };
@@ -504,7 +467,7 @@ const ASPECTS_FOR = {
 export async function answer(user, parsed) {
   const { subject, aspect, entities } = parsed;
 
-  if (!parsed.text) return reply('Ask me about samples, enquiries, leads or customers.');
+  if (!parsed.text) return reply('Ask me about samples, enquiries or customers.');
 
   /*
    * The unbuilt modules, answered by name. This is the one reply that matters most: an
@@ -516,13 +479,13 @@ export async function answer(user, parsed) {
     return reply(
       `${module?.label || sentenceCase(subject)} is not built yet — it arrives in a later phase, ` +
         `so I have no figures for it and would rather say so than answer zero. ` +
-        `I can answer on samples, enquiries, leads, customers and the catalogue.`
+        `I can answer on samples, enquiries, customers and the catalogue.`
     );
   }
 
   // A record named by number, whatever else the sentence said.
   if (entities.reference) {
-    const lookup = { samples: oneSample, enquiries: oneEnquiry, leads: oneLead, customers: oneCustomer }[subject];
+    const lookup = { samples: oneSample, enquiries: oneEnquiry, customers: oneCustomer }[subject];
     if (!canRead(user, KNOWN[subject])) {
       return reply(`You do not have access to ${KNOWN[subject]}, so I cannot look that up.`);
     }
@@ -539,7 +502,7 @@ export async function answer(user, parsed) {
 
   if (!subject) {
     return reply(
-      'I did not catch what that is about. Try naming one: samples, enquiries, leads, ' +
+      'I did not catch what that is about. Try naming one: samples, enquiries, ' +
         'customers or the catalogue — or give me a number like SMP-2026-0004.'
     );
   }

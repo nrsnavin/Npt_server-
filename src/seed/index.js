@@ -200,7 +200,7 @@ async function seed() {
   const parts = await seedComponents();
   const moulds = await seedMoulds();
 
-  console.log('Adding the customers, leads and enquiries...');
+  console.log('Adding the customers and enquiries...');
   const counts = await seedPipeline({
     nandhini: byEmail['marketing@npthangers.com'],
     arun: byEmail['marketing2@npthangers.com'],
@@ -279,7 +279,7 @@ async function seed() {
       `${announcements.length} announcements.`
   );
   console.log(
-    `  Phase 1: ${counts.customers} customers, ${counts.leads} leads, ` +
+    `  Phase 1: ${counts.customers} customers, ` +
       `${counts.enquiries} enquiries, ${counts.samples} samples.`
   );
   console.log(

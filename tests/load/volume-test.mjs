@@ -57,7 +57,7 @@ const ID_SOURCE = [
   [/^\/users\/:id/, 'users'], [/^\/samples\/:id/, 'samples'], [/^\/pricings\/:id/, 'pricings'], [/^\/quotations\/:id/, 'quotations'],
   [/^\/orders\/:id/, 'salesorders'], [/^\/payments\/:id/, 'receivables'], [/^\/dispatches\/:id/, 'dispatches'], [/^\/queries\/:id/, 'queries'],
   [/^\/moulds\/:id/, 'moulds'], [/^\/materials\/:id/, 'materials'], [/^\/components\/:id/, 'components'], [/^\/customers\/:id/, 'customers'],
-  [/^\/leads\/:id/, 'leads'], [/^\/enquiries\/:id/, 'enquiries'], [/^\/workspace\/todos\/:id/, 'todos'], [/^\/whatsapp\/threads\/:id/, 'whatsappthreads'],
+  [/^\/enquiries\/:id/, 'enquiries'], [/^\/workspace\/todos\/:id/, 'todos'], [/^\/whatsapp\/threads\/:id/, 'whatsappthreads'],
 ];
 /* What a route needs to be asked sensibly. */
 const QUERY_FOR = {

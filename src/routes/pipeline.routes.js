@@ -1,19 +1,16 @@
 import { Router } from 'express';
 import {
-  listLeadCards, getLeadCard, leadCardImage, uploadLeadCard, confirmLeadCard, discardLeadCard,
-} from '../controllers/leadCard.controller.js';
+  listBuyerCards, getBuyerCard, buyerCardImage, uploadBuyerCard, confirmBuyerCard, discardBuyerCard,
+} from '../controllers/buyerCard.controller.js';
 import { clearSite, pinSite } from '../controllers/customerSite.controller.js';
 import {
   listCustomers, getCustomer, getCustomerMap, createCustomer, updateCustomer, checkDuplicateCustomer,
-  listLeads, leadBoard, getLead, createLead, updateLead, addLeadActivity, convertLead,
-  suggestLeadNextStep, leadLogAnalytics, leadFollowUps, leadScoreboard, leadsOverview, leadOwners,
   marketingRoster,
   enquiryOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, applyEnquiryAction, listEnquiryActions, promoteToMould, enquiryPipeline,
   enquiryBoard,
   exportCustomers,
-  exportLeads,
   exportEnquiries,
   bulkReassign,
 } from '../controllers/pipeline.controller.js';
@@ -35,7 +32,7 @@ import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
   customerSchema, customerUpdateSchema,
-  leadSchema, leadUpdateSchema, leadActivitySchema, convertLeadSchema, leadCardConfirmSchema,
+  buyerCardConfirmSchema,
   enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema,
   bulkReassignSchema,
 } from '../validators/pipeline.schemas.js';
@@ -123,53 +120,22 @@ router.patch('/customers/:id', requireModule('customers', 'write'), validate(cus
 router.post('/customers/:id/site', requireModule('customers', 'write'), pinSite);
 router.delete('/customers/:id/site', requireModule('customers', 'write'), clearSite);
 
-// Leads
-router.get('/leads/export', requireModule('enquiries'), exportLeads);
 /*
- * Whose leads need somebody today. Above `/:id` so the literal segment wins, and on the read
- * grant — knowing what is waiting is not changing anything.
+ * Cards to confirm: photos of new buyers, read by the model, made a customer and its first
+ * enquiry only by a person [BuyerCard.js]. Confirming writes both, so it needs write on both.
  */
-router.get('/leads/follow-ups', requireModule('enquiries'), leadFollowUps);
-/*
- * The same book as `/leads`, arranged as columns. A read, on the read grant: a board changes
- * nothing by itself, and every move made from one goes back through the ordinary write routes
- * with all their rules — there is no faster path to a status change here.
- */
-router.get('/leads/board', requireModule('enquiries'), leadBoard);
-router.get('/leads/scoreboard', requireModule('enquiries'), leadScoreboard);
-router.get('/leads/overview', requireModule('enquiries'), leadsOverview);
-// Who holds leads, for the owner filter. Scoped, so it offers a marketing person only
-// themselves — which is what keeps the filter safe to put on everybody's screen.
-router.get('/leads/owners', requireModule('enquiries'), leadOwners);
-/* And who a new one may be given to — the whole marketing team, not just who holds leads now. */
-router.get('/leads/team', requireModule('enquiries'), marketingRoster);
-router.get('/leads', requireModule('enquiries'), listLeads);
-router.post('/leads', requireModule('enquiries', 'write'), validate(leadSchema), createLead);
-/* Cards to confirm: photos of leads, read by the model, made leads only by a person [LeadCard.js]. */
-router.get('/lead-cards', requireModule('enquiries'), listLeadCards);
-router.post('/lead-cards', requireModule('enquiries', 'write'), singleImage('image'), uploadLeadCard);
-router.get('/lead-cards/:id', requireModule('enquiries'), getLeadCard);
-router.get('/lead-cards/:id/image', requireModule('enquiries'), leadCardImage);
-router.post('/lead-cards/:id/confirm', requireModule('enquiries', 'write'), validate(leadCardConfirmSchema), confirmLeadCard);
-router.post('/lead-cards/:id/discard', requireModule('enquiries', 'write'), discardLeadCard);
-router.get('/leads/:id', requireModule('enquiries'), getLead);
-router.patch('/leads/:id', requireModule('enquiries', 'write'), validate(leadUpdateSchema), updateLead);
-router.post('/leads/:id/activities', requireModule('enquiries', 'write'), validate(leadActivitySchema), addLeadActivity);
-router.get('/leads/:id/log-analytics', requireModule('enquiries'), leadLogAnalytics);
-/*
- * Reads the log and proposes a next step. On the write grant despite writing nothing: it is
- * offered to the person who will act on it, and it costs a model call — neither belongs to a
- * reader who cannot do anything with the answer.
- */
-router.post('/leads/:id/suggest', requireModule('enquiries', 'write'), suggestLeadNextStep);
-// Conversion writes a customer as well, so it needs write on both.
+router.get('/buyer-cards', requireModule('customers'), listBuyerCards);
+router.post('/buyer-cards', requireModule('customers', 'write'), singleImage('image'), uploadBuyerCard);
+router.get('/buyer-cards/:id', requireModule('customers'), getBuyerCard);
+router.get('/buyer-cards/:id/image', requireModule('customers'), buyerCardImage);
 router.post(
-  '/leads/:id/convert',
-  requireModule('enquiries', 'write'),
+  '/buyer-cards/:id/confirm',
   requireModule('customers', 'write'),
-  validate(convertLeadSchema),
-  convertLead
+  requireModule('enquiries', 'write'),
+  validate(buyerCardConfirmSchema),
+  confirmBuyerCard
 );
+router.post('/buyer-cards/:id/discard', requireModule('customers', 'write'), discardBuyerCard);
 
 // Enquiries
 router.get('/enquiries/export', requireModule('enquiries'), exportEnquiries);
@@ -195,7 +161,8 @@ router.delete('/:collection/:id/documents/:documentId', authenticate, removeDocu
 router.get('/enquiries/pipeline', requireModule('enquiries'), enquiryPipeline);
 // The funnel as columns you can work in, rather than a strip of counts you can only read.
 router.get('/enquiries/board', requireModule('enquiries'), enquiryBoard);
-// Who holds enquiries, for the owner filter. Scoped, like its lead counterpart.
+// Who holds enquiries, for the owner filter. Scoped, so it offers a marketing person only
+// themselves — which is what keeps the filter safe to put on everybody's screen.
 router.get('/enquiries/owners', requireModule('enquiries'), enquiryOwners);
 // Marketing's own dashboard [§21]. On the enquiries grant, since that is the module it is
 // mostly built from; ownership then decides whose figures it shows.

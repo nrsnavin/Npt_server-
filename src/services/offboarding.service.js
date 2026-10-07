@@ -3,7 +3,6 @@ import Dispatch from '../models/Dispatch.js';
 import Receivable from '../models/Receivable.js';
 import Quotation from '../models/Quotation.js';
 import Customer from '../models/Customer.js';
-import Lead from '../models/Lead.js';
 import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
 import Sample, { CLOSED_SAMPLE_STATUSES } from '../models/Sample.js';
 
@@ -43,7 +42,6 @@ const OWNED = [
   { model: Receivable, field: 'assignedTo', key: 'receivables' },
   { model: Quotation, field: 'assignedTo', key: 'quotations' },
   { model: Customer, field: 'assignedTo', key: 'customers' },
-  { model: Lead, field: 'assignedTo', key: 'leads', openWhen: { status: { $nin: ['converted', 'disqualified'] } } },
   { model: Enquiry, field: 'assignedTo', key: 'enquiries', openWhen: { status: { $nin: CLOSED_STATUSES } } },
   { model: Sample, field: 'requestedBy', key: 'samples', openWhen: { status: { $nin: CLOSED_SAMPLE_STATUSES } } },
   // The bench's own queue. A departing sample-maker's work in progress needs a new pair of

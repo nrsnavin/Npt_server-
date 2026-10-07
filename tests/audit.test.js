@@ -37,7 +37,7 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
 /**
  * Who a token belongs to.
  *
- * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * Creating a customer names its owner now, rather than inheriting whoever posted the
  * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
  * owns it", which is what they relied on the old default for; this says it out loud.
  */
@@ -86,16 +86,6 @@ async function makeEnquiry(token, customerId, extra = {}) {
   return json.data;
 }
 
-async function makeLead(token, extra = {}) {
-  const n = unique();
-  const { json } = await api('/api/leads', {
-    method: 'POST',
-    token,
-    body: { assignedTo: await tokenOwnerId(token), company: `Prospect ${n}`, mobile: `97865${String(100000 + n).slice(-5)}`, ...extra },
-  });
-  return json.data;
-}
-
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
   process.env.MONGO_URI = mongo.getUri();
@@ -140,47 +130,6 @@ test.after(async () => {
   server?.close();
   await mongoose.connection.close();
   await mongo?.stop();
-});
-
-/* ------------------------- Conversion is all or nothing ------------------------- */
-
-test('a conversion that fails half way leaves the lead convertible', async () => {
-  const lead = await makeLead(nandhini, { mobile: '9876512345' });
-
-  /*
-   * The enquiry is rejected — a follow-up date cannot be set in the past. The customer must not
-   * survive that, or the lead can never be converted again: the duplicate check would block it.
-   *
-   * The refusal used to be "an open enquiry needs a next action", which no longer applies at
-   * capture. Any refusal inside the same validation does, and this one is the least contrived.
-   */
-  const failed = await api(`/api/leads/${lead._id}/convert`, {
-    method: 'POST',
-    token: nandhini,
-    body: {
-      customer: { name: 'Everblue Knitwear' },
-      enquiry: {
-        mould: mouldId,
-        requirement: requirement(),
-        nextAction: 'Call the buyer',
-        nextFollowUpDate: '2020-01-01',
-      },
-    },
-  });
-  assert.equal(failed.status, 400);
-
-  const orphans = await api('/api/customers?search=Everblue', { token: nandhini });
-  assert.equal(orphans.json.data.length, 0, 'no half-made customer should be left behind');
-
-  const retry = await api(`/api/leads/${lead._id}/convert`, {
-    method: 'POST',
-    token: nandhini,
-    body: {
-      customer: { name: 'Everblue Knitwear' },
-      enquiry: { mould: mouldId, requirement: requirement(), ...followUp },
-    },
-  });
-  assert.equal(retry.status, 201, 'the lead must still be convertible after a failed attempt');
 });
 
 test('a group that fails half way creates none of its enquiries', async () => {
@@ -351,19 +300,19 @@ test('management is not queued the bench’s own work', async () => {
 
 /* --------------------------- Reassignment is management --------------------------- */
 
-test('only an administrator can move a lead to someone else', async () => {
-  const lead = await makeLead(nandhini);
+test('only an administrator can move a customer to someone else', async () => {
+  const customer = await makeCustomer(nandhini);
   const users = await api('/api/users?search=priya', { token: admin });
   const priyaId = users.json.data[0].id;
 
-  const bySelf = await api(`/api/leads/${lead._id}`, {
+  const bySelf = await api(`/api/customers/${customer._id}`, {
     method: 'PATCH',
     token: nandhini,
     body: { assignedTo: priyaId },
   });
   assert.equal(bySelf.status, 403, 'giving a relationship away is a management decision');
 
-  const byAdmin = await api(`/api/leads/${lead._id}`, {
+  const byAdmin = await api(`/api/customers/${customer._id}`, {
     method: 'PATCH',
     token: admin,
     body: { assignedTo: priyaId },
@@ -516,7 +465,7 @@ test('a customer’s timeline carries its samples, not only its enquiries', asyn
 
 /* ---------------- Gaps §8 asked to be closed before WhatsApp ---------------- */
 
-test('a lead arriving with nobody attached goes round the marketing team', async () => {
+test('a buyer arriving with nobody attached goes round the marketing team', async () => {
   /*
    * §41.3, and §8 is explicit that it is a marketing-team rule rather than a WhatsApp one.
    *
@@ -526,17 +475,17 @@ test('a lead arriving with nobody attached goes round the marketing team', async
    * the morning. There is nobody to ask on either, so something still has to choose, and this is
    * the call both of them make.
    */
-  const { ownerForNewLead } = await import('../src/services/assignment.service.js');
+  const { ownerForNewBuyer } = await import('../src/services/intake.service.js');
 
   const owners = [];
   for (let index = 0; index < 4; index += 1) {
-    owners.push(String((await ownerForNewLead({ creator: null })).user));
+    owners.push(String((await ownerForNewBuyer(null)).user));
   }
 
   assert.ok(new Set(owners).size > 1, 'they did not all land on one person');
   assert.ok(
     owners[0] !== owners[1],
-    'consecutive leads go to different people — that is what round-robin means'
+    'consecutive buyers go to different people — that is what round-robin means'
   );
   // Two marketing people here, so the third is back with the first.
   assert.equal(owners[0], owners[2]);
@@ -547,21 +496,16 @@ test('a lead arriving with nobody attached goes round the marketing team', async
   assert.ok(!owners.includes(String(me.data.id)));
 });
 
-test('creating a lead without naming an owner is refused, not guessed', async () => {
+test('creating a customer without naming an owner is refused, not guessed', async () => {
   /*
-   * This used to be two silent rules: a marketing person keeping their own call, and everybody
-   * else's lead going round the rota. Both were defensible and neither was chosen by anybody —
-   * somebody typed up a call they had just had and the lead went to a colleague, with a line on
-   * the record reading "by rotation" as though that were an explanation.
-   *
-   * So the form asks, and a request that does not answer is refused rather than filled in. The
+   * The form asks, and a request that does not answer is refused rather than filled in. The
    * owner is the most consequential field on the screen: under §29 it decides whose list the
    * buyer appears on and who can see them at all.
    */
-  const silent = await api('/api/leads', {
+  const silent = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
-    body: { company: `Unowned ${unique()}`, mobile: `96543${String(400000 + unique()).slice(-5)}` },
+    body: { name: `Unowned ${unique()}`, mobile: `96543${String(400000 + unique()).slice(-5)}` },
   });
 
   assert.equal(silent.status, 400, silent.json.message);
@@ -570,47 +514,8 @@ test('creating a lead without naming an owner is refused, not guessed', async ()
 
 test('somebody in marketing may name themselves, which is the ordinary case', async () => {
   const { json: me } = await api('/api/auth/me', { token: nandhini });
-  const lead = await makeLead(nandhini);
-  assert.equal(String(lead.assignedTo), String(me.data.id));
-});
-
-test('a lead created on the form carries no rotation note, because nothing rotated', async () => {
-  /*
-   * The note existed to explain a decision nobody had taken. Now that the owner is chosen there
-   * is nothing to explain, and a log line saying "by rotation" on a lead somebody placed by hand
-   * would be false. The front doors still rotate; they are tested above.
-   */
-  const lead = await makeLead(admin);
-  const { json } = await api(`/api/leads/${lead._id}`, { token: admin });
-
-  assert.ok(
-    !json.data.activities?.some((entry) => /by rotation/i.test(entry.summary)),
-    'nothing claims a rotation that did not happen'
-  );
-});
-
-test('a conversation reference survives the lead becoming a customer and an enquiry', async () => {
-  // §41.6: the thread stays linked to the lead, the customer and the enquiry. §8 asks for
-  // the field now because retrofitting an origin across live records is the migration
-  // nobody wants — it is null on everything until the front door lands.
-  const thread = { provider: 'whatsapp', reference: `wa-thread-${unique()}` };
-
-  const lead = await makeLead(nandhini, { conversation: thread });
-  assert.equal(lead.conversation?.reference, thread.reference);
-
-  const { status, json } = await api(`/api/leads/${lead._id}/convert`, {
-    method: 'POST',
-    token: nandhini,
-    body: {
-      customer: { customerType: 'garment_factory' },
-      enquiry: { mould: mouldId, requirement: requirement(), ...followUp },
-    },
-  });
-
-  assert.equal(status, 201);
-  assert.equal(json.data.customer.conversation?.reference, thread.reference);
-  assert.equal(json.data.enquiry.conversation?.reference, thread.reference);
-  assert.equal(json.data.enquiry.conversation?.provider, 'whatsapp');
+  const customer = await makeCustomer(nandhini);
+  assert.equal(String(customer.assignedTo), String(me.data.id));
 });
 
 test('a record with no conversation behind it is the normal case', async () => {
@@ -623,24 +528,24 @@ test('a record with no conversation behind it is the normal case', async () => {
 
 test('naming the first owner is not a reassignment', async () => {
   /*
-   * The old rule: only an administrator could name an owner on create, because handing a lead to
+   * The old rule: only an administrator could name an owner on create, because handing a buyer to
    * a colleague was refused by PATCH and allowed by POST, so anybody could do in one step what
    * they were forbidden from doing in two.
    *
    * That reasoning is about a *reassignment* — taking a record off the person who has been
-   * working it, which is a management decision and which `updateLead` still refuses. It does not
-   * apply to a lead being created, because there is no owner yet to take it from. Somebody in
+   * working it, which is a management decision and which `updateCustomer` still refuses. It does
+   * not apply to a customer being created, because there is no owner yet to take it from. Somebody in
    * marketing writing up an enquiry for the colleague whose account it is was being refused for
    * a rule that was not about them.
    */
   const users = await api('/api/users?search=priya', { token: admin });
   const priyaId = users.json.data[0].id;
 
-  const placed = await api('/api/leads', {
+  const placed = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
     body: {
-      company: `Handover Test ${unique()}`,
+      name: `Handover Test ${unique()}`,
       mobile: `96543${String(200000 + unique()).slice(-5)}`,
       assignedTo: priyaId,
     },
@@ -650,12 +555,12 @@ test('naming the first owner is not a reassignment', async () => {
 
   /*
    * And she cannot take it back — 404 rather than 403, which is worth spelling out because it is
-   * the consequence the form warns about before she picks. Under §29 the lead is Priya's now, so
-   * it is not on Nandhini's screens at all; the reassignment rule never even gets asked, because
-   * as far as she is concerned the record does not exist. `updateLead` still holds that rule for
-   * a lead she *can* see — tested above, under its own name.
+   * the consequence the form warns about before she picks. Under §29 the customer is Priya's now,
+   * so it is not on Nandhini's screens at all; the reassignment rule never even gets asked,
+   * because as far as she is concerned the record does not exist. `updateCustomer` still holds
+   * that rule for a customer she *can* see — tested above, under its own name.
    */
-  const takeBack = await api(`/api/leads/${placed.json.data._id}`, {
+  const takeBack = await api(`/api/customers/${placed.json.data._id}`, {
     method: 'PATCH',
     token: nandhini,
     body: { assignedTo: (await api('/api/auth/me', { token: nandhini })).json.data.id },

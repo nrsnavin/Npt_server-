@@ -1,32 +1,32 @@
-import LeadCard, { OPEN_CARD_STATUSES } from '../models/LeadCard.js';
+import BuyerCard, { OPEN_CARD_STATUSES } from '../models/BuyerCard.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { isOwnershipScoped } from '../services/ownership.service.js';
 import { assertCanOwnBuyer } from '../services/assignment.service.js';
 import { streamOf } from '../services/storage.service.js';
-import { cardFromUpload, confirmCard, discardCard } from '../services/leadCard.service.js';
-import { cardModelConfigured } from '../services/leadCard.llm.js';
+import { cardFromUpload, confirmCard, discardCard } from '../services/buyerCard.service.js';
+import { cardModelConfigured } from '../services/buyerCard.llm.js';
 import { transactional } from '../utils/transaction.js';
 
 /**
- * Cards to confirm: photos of leads the model has read, waiting for a person [LeadCard.js].
+ * Cards to confirm: photos of new buyers the model has read, waiting for a person [BuyerCard.js].
  *
- * Marketing sees the cards they sent; management and administrators see every card. A card is
- * made a lead here or by a YES on WhatsApp, and the same checks run either way (leadCard.service).
+ * Marketing sees the cards they sent; management and administrators see every card. Confirming
+ * one makes the customer and its first enquiry (buyerCard.service).
  */
 
 const POPULATE = [
   { path: 'sender', select: 'name department' },
-  { path: 'matchedLead', select: 'number company assignedTo' },
   { path: 'matchedCustomer', select: 'code name' },
-  { path: 'lead', select: 'number company' },
+  { path: 'customer', select: 'code name' },
+  { path: 'enquiry', select: 'number status' },
   { path: 'decidedBy', select: 'name' },
 ];
 
 const scope = (user) => (isOwnershipScoped(user) ? { sender: user._id } : {});
 
 async function cardFor(req) {
-  const card = await LeadCard.findOne({ _id: req.params.id, ...scope(req.user) });
+  const card = await BuyerCard.findOne({ _id: req.params.id, ...scope(req.user) });
   if (!card) throw ApiError.notFound('Card not found');
   return card;
 }
@@ -37,23 +37,23 @@ const asApi = (error) => {
   return error;
 };
 
-export const listLeadCards = asyncHandler(async (req, res) => {
+export const listBuyerCards = asyncHandler(async (req, res) => {
   const open = req.query.status !== 'decided';
   const filter = { ...scope(req.user), status: open ? { $in: OPEN_CARD_STATUSES } : { $nin: OPEN_CARD_STATUSES } };
   const [data, waiting] = await Promise.all([
-    LeadCard.find(filter).populate(POPULATE).sort({ createdAt: -1 }).limit(100),
-    LeadCard.countDocuments({ ...scope(req.user), status: { $in: OPEN_CARD_STATUSES } }),
+    BuyerCard.find(filter).populate(POPULATE).sort({ createdAt: -1 }).limit(100),
+    BuyerCard.countDocuments({ ...scope(req.user), status: { $in: OPEN_CARD_STATUSES } }),
   ]);
   res.json({ success: true, data, waiting, reading: cardModelConfigured() });
 });
 
-export const getLeadCard = asyncHandler(async (req, res) => {
+export const getBuyerCard = asyncHandler(async (req, res) => {
   const card = await cardFor(req);
   res.json({ success: true, data: await card.populate(POPULATE) });
 });
 
 /** The picture — `?n=1`, `?n=2` for the later screenshots of a long chat. */
-export const leadCardImage = asyncHandler(async (req, res) => {
+export const buyerCardImage = asyncHandler(async (req, res) => {
   const card = await cardFor(req);
   const n = Number(req.query.n) || 0;
   const image = n === 0 ? card : card.moreImages?.[n - 1];
@@ -66,7 +66,7 @@ export const leadCardImage = asyncHandler(async (req, res) => {
   stream.pipe(res);
 });
 
-export const uploadLeadCard = asyncHandler(async (req, res) => {
+export const uploadBuyerCard = asyncHandler(async (req, res) => {
   if (!req.file) throw ApiError.badRequest('Attach a photo of the card');
   const card = await cardFromUpload({
     sender: req.user,
@@ -77,20 +77,20 @@ export const uploadLeadCard = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: await card.populate(POPULATE) });
 });
 
-export const confirmLeadCard = asyncHandler(transactional(async (req, res) => {
+export const confirmBuyerCard = asyncHandler(transactional(async (req, res) => {
   const card = await cardFor(req);
   const { assignedTo, ...edits } = req.body;
   const owner = assignedTo ? (await assertCanOwnBuyer(assignedTo))._id : undefined;
-  let lead;
+  let made;
   try {
-    lead = await confirmCard(card, req.user, edits, { owner });
+    made = await confirmCard(card, req.user, edits, { owner });
   } catch (error) {
     throw asApi(error);
   }
-  res.json({ success: true, data: { card: await card.populate(POPULATE), lead } });
+  res.json({ success: true, data: { card: await card.populate(POPULATE), ...made } });
 }));
 
-export const discardLeadCard = asyncHandler(async (req, res) => {
+export const discardBuyerCard = asyncHandler(async (req, res) => {
   const card = await cardFor(req);
   try {
     await discardCard(card, req.user);

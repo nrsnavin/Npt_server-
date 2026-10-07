@@ -20,7 +20,6 @@ import '../src/models/StickyNote.js';
 import '../src/models/Announcement.js';
 import '../src/models/Counter.js';
 import '../src/models/Customer.js';
-import '../src/models/Lead.js';
 import '../src/models/Enquiry.js';
 import '../src/models/Sample.js';
 import '../src/models/SampleLog.js';

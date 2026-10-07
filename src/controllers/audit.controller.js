@@ -1,5 +1,4 @@
 import Customer from '../models/Customer.js';
-import Lead from '../models/Lead.js';
 import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
 import SalesOrder from '../models/SalesOrder.js';
@@ -23,7 +22,6 @@ import { historyFor } from '../services/audit.service.js';
  */
 const SOURCES = {
   Customer: { model: Customer, module: 'customers', ownership: 'assignedTo' },
-  Lead: { model: Lead, module: 'enquiries', ownership: 'assignedTo' },
   Enquiry: { model: Enquiry, module: 'enquiries', ownership: 'assignedTo' },
   Sample: { model: Sample, module: 'samples', ownership: 'requestedBy' },
   /*

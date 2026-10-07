@@ -1,13 +1,13 @@
 import { env, escalationIntervalMinutes } from './config/env.js';
 import { reconcileDispatches } from './services/dispatchRecovery.service.js';
 import { runSamplingEscalations } from './services/escalation.service.js';
-import { runStallSweep, runLeadStaleSweep } from './services/anomaly.service.js';
+import { runStallSweep } from './services/anomaly.service.js';
 import { runQueryEscalations } from './services/queryEscalation.service.js';
 import { runPaymentEscalations } from './services/receivable.service.js';
 import { runProductionEscalations } from './services/productionEscalation.service.js';
 import { runDispatchEscalations } from './services/dispatchEscalation.service.js';
 import { isConfigured as isIndiamartConfigured } from './services/indiamart.client.js';
-import { syncIndiamartLeads } from './services/indiamart.ingest.js';
+import { syncIndiamartEnquiries } from './services/indiamart.ingest.js';
 import { recoverEvents } from './services/events.service.js';
 import { everyExclusively, releaseLease } from './services/lease.service.js';
 
@@ -47,11 +47,6 @@ function startEscalationSweep() {
        * anyone has touched it — and a stall is the overdue of next week, worth catching while
        * there is still time to do something about it.
        */
-      const quietLeads = await runLeadStaleSweep();
-      if (quietLeads.length) {
-        console.log(`Quiet leads: told management about ${quietLeads.length}`);
-      }
-
       const stalled = await runStallSweep();
       if (stalled.length) {
         console.log(
@@ -120,14 +115,14 @@ function startEscalationSweep() {
 }
 
 /**
- * Pulls IndiaMART leads on a timer [§41 by analogy].
+ * Pulls IndiaMART enquiries on a timer [§41 by analogy].
  *
  * Off unless a key is configured, which is the normal state for a deployment that does not
  * sell through IndiaMART — an integration that logs a warning every quarter of an hour is one
  * people learn to ignore, and then miss the warning that mattered.
  *
  * The interval is bounded below by *their* rate limit rather than by our appetite: IndiaMART
- * answers a burst with an error instead of data, so polling harder returns fewer leads, not
+ * answers a burst with an error instead of data, so polling harder returns fewer enquiries, not
  * more. The watermark is what makes a slow poll safe — nothing is missed by waiting, only
  * delayed.
  */
@@ -145,13 +140,13 @@ function startIndiamartPoll() {
 
   const poll = async () => {
     try {
-      const result = await syncIndiamartLeads();
+      const result = await syncIndiamartEnquiries();
       if (result.failed) {
         console.error(`IndiaMART: sync failed — ${result.error}`);
       } else if (result.created || result.attachedToExisting) {
         console.log(
-          `IndiaMART: ${result.created} new lead(s), ` +
-            `${result.attachedToExisting} added to leads we already had, ` +
+          `IndiaMART: ${result.created} new customer(s) with an enquiry, ` +
+            `${result.attachedToExisting} enquiry(ies) for customers we already had, ` +
             `${result.duplicates} seen before`
         );
       }
@@ -166,7 +161,7 @@ function startIndiamartPoll() {
   };
 
   /* At once: a process down overnight has a window to catch up on. */
-  console.log(`IndiaMART: pulling leads every ${minutes} minute(s)`);
+  console.log(`IndiaMART: pulling enquiries every ${minutes} minute(s)`);
   return everyExclusively('sweep:indiamart', minutes * 60 * 1000, poll);
 }
 

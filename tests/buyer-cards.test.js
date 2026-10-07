@@ -1,11 +1,12 @@
 /**
- * Draft leads from pictures: a card or chat screenshot sent to the WhatsApp number is read into a
- * draft holding only what the picture shows. The rest is the salesperson's to fill in, and the
- * draft becomes a lead only when they do — never on the model's word alone.
+ * Draft enquiries from pictures: a card or chat screenshot sent to the WhatsApp number is read into
+ * a draft holding only what the picture shows. The rest is the salesperson's to fill in, and the
+ * draft becomes a customer and its first enquiry only when they do — never on the model's word
+ * alone.
  *
  * The model is stubbed, and the "Twilio" media URL is a local server.
  *
- *   node --test tests/lead-cards.test.js
+ *   node --test tests/buyer-cards.test.js
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,8 +14,8 @@ import http from 'node:http';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
-process.env.JWT_SECRET = 'lead-cards-test-secret';
-process.env.WHATSAPP_WEBHOOK_TOKEN = 'lead-cards-webhook';
+process.env.JWT_SECRET = 'buyer-cards-test-secret';
+process.env.WHATSAPP_WEBHOOK_TOKEN = 'buyer-cards-webhook';
 process.env.WHATSAPP_MEDIA_HOSTS = '127.0.0.1';
 process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
 
@@ -64,7 +65,8 @@ let baseUrl;
 let admin;
 let nandhini;
 let arun;
-let Lead;
+let Customer;
+let Enquiry;
 let seq = 0;
 
 const NANDHINI_PHONE = '+919876500011';
@@ -81,7 +83,7 @@ const api = async (path, { method = 'GET', body, token, form } = {}) => {
 };
 
 const whatsapp = (from, { body, photo = false, sid } = {}) =>
-  api('/api/whatsapp/inbound?token=lead-cards-webhook', {
+  api('/api/whatsapp/inbound?token=buyer-cards-webhook', {
     method: 'POST',
     body: {
       From: `whatsapp:${from}`,
@@ -95,7 +97,7 @@ const whatsapp = (from, { body, photo = false, sid } = {}) =>
 /** The newest card this person can see, once the model has finished with it. */
 async function readCardOf(token) {
   for (let i = 0; i < 50; i++) {
-    const listed = await api('/api/lead-cards', { token });
+    const listed = await api('/api/buyer-cards', { token });
     const latest = listed.json.data?.[0];
     if (latest && latest.status !== 'reading') return latest;
     await new Promise((resolve) => setTimeout(resolve, 50));
@@ -111,7 +113,8 @@ test.before(async () => {
   process.env.MONGO_URI = mongo.getUri();
   await mongoose.connect(process.env.MONGO_URI);
   const { default: app } = await import('../src/app.js');
-  ({ default: Lead } = await import('../src/models/Lead.js'));
+  ({ default: Customer } = await import('../src/models/Customer.js'));
+  ({ default: Enquiry } = await import('../src/models/Enquiry.js'));
   server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -150,15 +153,15 @@ const DAY = 86400000;
 const inDays = (n) => new Date(Date.now() + n * DAY).toISOString().slice(0, 10);
 /** What only the salesperson can say: the next step, when, and how they met them. */
 const theRest = { nextAction: 'Send the 400mm rate card', nextFollowUpDate: inDays(2), source: 'trade_show' };
-const finish = (id, fields, token = nandhini) => api(`/api/lead-cards/${id}/confirm`, { method: 'POST', token, body: fields });
+const finish = (id, fields, token = nandhini) => api(`/api/buyer-cards/${id}/confirm`, { method: 'POST', token, body: fields });
 const latestReply = () => replies.at(-1) || '';
 
 test('a card sent on WhatsApp is saved as a draft with only what it shows', async () => {
   cardReply = card({ company: 'Sri Murugan Garments', contactName: 'R. Senthil', designation: 'Purchase Manager', mobile: '98400 11223', email: 'senthil@smg.in', city: 'Tiruppur', state: 'Tamil Nadu' });
-  const leadsBefore = await Lead.countDocuments();
+  const customersBefore = await Customer.countDocuments();
 
   const arrived = await whatsapp(NANDHINI_PHONE, { photo: true, body: 'Met at the Tiruppur fair' });
-  assert.equal(arrived.json.outcome, 'lead_card');
+  assert.equal(arrived.json.outcome, 'buyer_card');
   const draft = await readCardOf(nandhini);
 
   assert.equal(draft.status, 'ready');
@@ -166,16 +169,17 @@ test('a card sent on WhatsApp is saved as a draft with only what it shows', asyn
   assert.equal(draft.reading.nextAction, undefined, 'nothing the picture did not show');
   assert.equal(sent[0].messages[0].content[0].type, 'image', 'the photo went to the model');
   assert.match(sent[0].messages[0].content[1].text, /Tiruppur fair/, 'with the caption');
-  assert.equal(await Lead.countDocuments(), leadsBefore, 'a draft is not a lead');
-  assert.match(latestReply(), /Saved as a draft lead from this card:[\s\S]*Sri Murugan Garments[\s\S]*Finish it in the app/);
+  assert.equal(await Customer.countDocuments(), customersBefore, 'a draft is not a customer');
+  assert.equal(await Enquiry.countDocuments(), 0, 'nor an enquiry');
+  assert.match(latestReply(), /Saved as a draft enquiry from this card:[\s\S]*Sri Murugan Garments[\s\S]*Finish it in the app/);
   assert.doesNotMatch(latestReply(), /Reply YES/);
 });
 
-test('a reply on WhatsApp does not make the draft a lead — finishing it is done in the app', async () => {
+test('a reply on WhatsApp does not finish the draft — finishing it is done in the app', async () => {
   const draft = await readCardOf(nandhini);
   const yes = await whatsapp(NANDHINI_PHONE, { body: 'yes' });
-  assert.notEqual(yes.json.outcome, 'lead_card_confirmed');
-  assert.equal(await Lead.countDocuments({ company: 'Sri Murugan Garments' }), 0);
+  assert.notEqual(yes.json.outcome, 'buyer_card');
+  assert.equal(await Customer.countDocuments({ name: 'Sri Murugan Garments' }), 0);
   assert.equal((await readCardOf(nandhini))._id, draft._id, 'still a draft');
 });
 
@@ -195,38 +199,48 @@ test('the salesperson must give the next step, when, and how they met them', asy
 
   const done = await finish(draft._id, { ...theRest, estimatedValue: 45000 });
   assert.equal(done.status, 200, done.json.message);
-  const lead = await Lead.findById(done.json.data.lead._id);
-  assert.equal(lead.company, 'Sri Murugan Garments');
-  assert.equal(lead.mobile, '+919840011223');
-  assert.equal(lead.nextAction, 'Send the 400mm rate card', 'their next step, not one the app made up');
-  assert.equal(lead.nextFollowUpDate.toISOString().slice(0, 10), theRest.nextFollowUpDate);
-  assert.equal(lead.source, 'trade_show');
-  assert.equal(lead.estimatedValue, 45000);
-  assert.match(lead.visitingCardUrl, /\/api\/lead-cards\/[0-9a-f]{24}\/image/);
-  assert.match(lead.activities[0].summary, /read by AI, checked and completed by Nandhini S/);
-  const owner = await mongoose.model('User').findById(lead.assignedTo);
+  const customer = await Customer.findById(done.json.data.customer._id);
+  assert.equal(customer.name, 'Sri Murugan Garments');
+  assert.equal(customer.mobile, '+919840011223');
+  assert.equal(customer.contacts[0].name, 'R. Senthil');
+  assert.equal(customer.source, 'trade_show');
+  assert.match(customer.notes, /read by AI, checked and completed by Nandhini S/);
+  const owner = await mongoose.model('User').findById(customer.assignedTo);
   assert.equal(owner.name, 'Nandhini S', 'the sender keeps the buyer they met');
+
+  /* And the enquiry it opens with, carrying the salesperson's next step. */
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.equal(String(enquiry.customer), String(customer._id));
+  assert.equal(enquiry.status, 'requirement_clarification');
+  assert.equal(enquiry.nextAction, 'Send the 400mm rate card', 'their next step, not one the app made up');
+  assert.equal(enquiry.nextFollowUpDate.toISOString().slice(0, 10), theRest.nextFollowUpDate);
+  assert.equal(enquiry.estimatedValue, 45000);
+  assert.equal(String(enquiry.assignedTo), String(customer.assignedTo));
+  const confirmed = (await api(`/api/buyer-cards/${draft._id}`, { token: nandhini })).json.data;
+  assert.equal(confirmed.customer._id, String(customer._id));
+  assert.equal(confirmed.enquiry._id, String(enquiry._id));
 });
 
 test('a draft can be dropped', async () => {
   cardReply = card({ company: 'Drop Me Textiles', mobile: '9840099999' });
   await whatsapp(NANDHINI_PHONE, { photo: true });
   const draft = await readCardOf(nandhini);
-  const dropped = await api(`/api/lead-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
+  const dropped = await api(`/api/buyer-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
   assert.equal(dropped.status, 200);
-  assert.equal(await Lead.countDocuments({ company: 'Drop Me Textiles' }), 0);
+  assert.equal(await Customer.countDocuments({ name: 'Drop Me Textiles' }), 0);
 });
 
 test('a buyer the plant already has is flagged on the draft and not added twice', async () => {
   cardReply = card({ company: 'Sri Murugan Garments', contactName: 'Another person', mobile: '+919840011223' });
   await whatsapp(NANDHINI_PHONE, { photo: true });
   const draft = await readCardOf(nandhini);
-  assert.ok(draft.matchedLead, 'the draft knows who already has this number');
-  assert.match(latestReply(), /Note: this buyer is already lead LEAD-/);
+  assert.ok(draft.matchedCustomer, 'the draft knows who already has this number');
+  assert.match(latestReply(), /Note: this buyer is already customer CUST-/);
   const tried = await finish(draft._id, theRest);
   assert.equal(tried.status, 409);
-  assert.equal(await Lead.countDocuments({ mobile: '+919840011223' }), 1);
-  await api(`/api/lead-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
+  assert.match(tried.json.message, /Raise the enquiry on that customer/);
+  assert.equal(await Customer.countDocuments({ mobile: '+919840011223' }), 1);
+  await api(`/api/buyer-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
 });
 
 test('a draft from someone outside marketing goes to the marketing rotation when finished', async () => {
@@ -235,14 +249,14 @@ test('a draft from someone outside marketing goes to the marketing rotation when
   const draft = await readCardOf(admin);
   const done = await finish(draft._id, { ...theRest, source: 'walk_in' }, admin);
   assert.equal(done.status, 200, done.json.message);
-  const owner = await mongoose.model('User').findById(done.json.data.lead.assignedTo);
+  const owner = await mongoose.model('User').findById(done.json.data.customer.assignedTo);
   assert.equal(owner.department, 'marketing', 'despatch cannot hold a buyer, so marketing does');
 });
 
 test('a photo from a customer’s number is a customer message, not a draft', async () => {
   cardReply = card({ company: 'Should Not Be Read' });
   const arrived = await whatsapp('+919811100000', { photo: true, body: 'Price for this hanger?' });
-  assert.notEqual(arrived.json.outcome, 'lead_card');
+  assert.notEqual(arrived.json.outcome, 'buyer_card');
   assert.ok(arrived.json.thread, 'it went to the WhatsApp inbox');
   assert.equal(sent.length, 0, 'and was never sent to the model');
 });
@@ -252,18 +266,18 @@ test('a redelivered webhook reads the picture once', async () => {
   await whatsapp(NANDHINI_PHONE, { photo: true, sid: 'SMREPEAT' });
   await whatsapp(NANDHINI_PHONE, { photo: true, sid: 'SMREPEAT' });
   await readCardOf(nandhini);
-  const drafts = (await api('/api/lead-cards', { token: admin })).json.data.filter((row) => row.reading?.company === 'Once Only Knits');
+  const drafts = (await api('/api/buyer-cards', { token: admin })).json.data.filter((row) => row.reading?.company === 'Once Only Knits');
   assert.equal(drafts.length, 1);
 });
 
 test('media is only fetched from the provider’s own host', async () => {
-  const before = (await api('/api/lead-cards', { token: admin })).json.waiting;
+  const before = (await api('/api/buyer-cards', { token: admin })).json.waiting;
   const hits = mediaHits;
   /* The same server under a name that is not on the list: reachable, and still refused. */
   const arrived = await whatsapp(NANDHINI_PHONE, { photo: `http://localhost:${media.address().port}/anything` });
   assert.equal(mediaHits, hits, 'the address was never called');
-  assert.equal(arrived.json.outcome, 'lead_card');
-  assert.equal((await api('/api/lead-cards', { token: admin })).json.waiting, before, 'no draft from a foreign address');
+  assert.equal(arrived.json.outcome, 'buyer_card');
+  assert.equal((await api('/api/buyer-cards', { token: admin })).json.waiting, before, 'no draft from a foreign address');
   assert.match(replies.join('\n'), /could not be fetched/);
 });
 
@@ -275,31 +289,31 @@ test('a picture the model could not read is typed in from the photo and finished
   const draft = await readCardOf(nandhini);
   assert.equal(draft.status, 'unreadable');
   assert.ok(draft.problem);
-  assert.match(latestReply(), /Saved as a draft lead, but/);
+  assert.match(latestReply(), /Saved as a draft enquiry, but/);
 
-  const image = await fetch(`${baseUrl}/api/lead-cards/${draft._id}/image`, { headers: { Authorization: `Bearer ${nandhini}` } });
+  const image = await fetch(`${baseUrl}/api/buyer-cards/${draft._id}/image`, { headers: { Authorization: `Bearer ${nandhini}` } });
   assert.equal(image.status, 200);
   assert.equal(image.headers.get('content-type'), 'image/png');
 
-  assert.equal((await finish(draft._id, { ...theRest, mobile: '9840055555' })).status, 400, 'a lead needs a company');
+  assert.equal((await finish(draft._id, { ...theRest, mobile: '9840055555' })).status, 400, 'a customer needs a company');
   assert.equal((await finish(draft._id, { ...theRest, company: 'Handwritten Hangers' })).status, 400, 'and a way to reach them');
   assert.equal((await finish(draft._id, { ...theRest, company: 'Handwritten Hangers', mobile: '12' })).status, 400);
 
   const done = await finish(draft._id, { ...theRest, company: 'Handwritten Hangers', mobile: '9840055555' });
   assert.equal(done.status, 200, done.json.message);
-  assert.match(done.json.data.lead.activities[0].summary, /typed in by Nandhini S/);
+  assert.match(done.json.data.customer.notes, /typed in by Nandhini S/);
   assert.equal((await finish(draft._id, { ...theRest, company: 'Handwritten Hangers', mobile: '9840055555' })).status, 409, 'a draft is finished once');
 });
 
 test('marketing sees the drafts they sent; management sees every draft', async () => {
-  const mine = (await api('/api/lead-cards?status=decided', { token: nandhini })).json.data;
+  const mine = (await api('/api/buyer-cards?status=decided', { token: nandhini })).json.data;
   assert.ok(mine.length > 0);
   assert.ok(mine.every((row) => row.sender.name === 'Nandhini S'));
-  const theirs = (await api('/api/lead-cards?status=decided', { token: arun })).json.data;
+  const theirs = (await api('/api/buyer-cards?status=decided', { token: arun })).json.data;
   assert.equal(theirs.length, 0, 'Arun sent none');
-  const refused = await fetch(`${baseUrl}/api/lead-cards/${mine[0]._id}/image`, { headers: { Authorization: `Bearer ${arun}` } });
+  const refused = await fetch(`${baseUrl}/api/buyer-cards/${mine[0]._id}/image`, { headers: { Authorization: `Bearer ${arun}` } });
   assert.equal(refused.status, 404, 'nor may he open her pictures');
-  const all = (await api('/api/lead-cards?status=decided', { token: admin })).json.data;
+  const all = (await api('/api/buyer-cards?status=decided', { token: admin })).json.data;
   assert.ok(all.some((row) => row.sender.name === 'Kavitha D'));
 });
 
@@ -307,7 +321,7 @@ test('a picture uploaded in the app is read straight away', async () => {
   cardReply = card({ company: 'Uploaded Apparel', mobile: '9840044444', email: 'not-an-email' });
   const form = new FormData();
   form.append('image', new Blob([PNG], { type: 'image/png' }), 'card.png');
-  const made = await api('/api/lead-cards', { method: 'POST', token: arun, form });
+  const made = await api('/api/buyer-cards', { method: 'POST', token: arun, form });
   assert.equal(made.status, 201, made.json.message);
   assert.equal(made.json.data.status, 'ready');
   assert.equal(made.json.data.reading.company, 'Uploaded Apparel');
@@ -328,15 +342,17 @@ test('a chat screenshot is drafted with what the buyer asked for, and finished b
   const draft = await readCardOf(nandhini);
   assert.equal(draft.kind, 'chat');
   assert.equal(draft.reading.estimatedQuantity, 5000, '"5k pcs" is 5,000 pieces');
-  assert.match(latestReply(), /Saved as a draft lead from this chat:[\s\S]*Quantity: 5,000 pcs/);
+  assert.match(latestReply(), /Saved as a draft enquiry from this chat:[\s\S]*Quantity: 5,000 pcs/);
 
   const done = await finish(draft._id, { ...theRest, source: 'whatsapp', nextAction: 'Send rate and sample' });
   assert.equal(done.status, 200, done.json.message);
-  const lead = await Lead.findById(done.json.data.lead._id);
-  assert.equal(lead.estimatedQuantity, 5000);
-  assert.equal(lead.productInterest, '400mm black shirt hangers');
-  assert.equal(lead.nextAction, 'Send rate and sample');
-  assert.match(lead.activities[0].summary, /WhatsApp chat screenshot[\s\S]*The conversation: Wants 5,000 black shirt hangers/);
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.match(enquiry.remarks, /Wants: 400mm black shirt hangers/);
+  assert.match(enquiry.remarks, /About 5,000 pcs/);
+  assert.match(enquiry.remarks, /The conversation: Wants 5,000 black shirt hangers/);
+  assert.equal(enquiry.nextAction, 'Send rate and sample');
+  assert.equal(enquiry.source, 'whatsapp');
+  assert.match(done.json.data.customer.notes, /WhatsApp chat screenshot/);
 });
 
 test('a chat with only a saved name: the person stands in for the company, and the number is left to fill in', async () => {
@@ -352,7 +368,8 @@ test('a chat with only a saved name: the person stands in for the company, and t
   assert.equal(noNumber.status, 400);
   const done = await finish(draft._id, { ...theRest, mobile: '97900 12345' });
   assert.equal(done.status, 200, done.json.message);
-  assert.equal(done.json.data.lead.mobile, '+919790012345');
+  assert.equal(done.json.data.customer.mobile, '+919790012345');
+  assert.equal(done.json.data.customer.name, 'Ramesh Tiruppur');
 });
 
 test('the rest of a long chat joins the screenshot that showed who it was with', async () => {
@@ -365,7 +382,7 @@ test('the rest of a long chat joins the screenshot that showed who it was with',
   await whatsapp(NANDHINI_PHONE, { photo: true });
   await new Promise((resolve) => setTimeout(resolve, 400));
 
-  const open = (await api('/api/lead-cards', { token: nandhini })).json.data.filter((row) => row.reading?.company === 'Selvi Fashions' || !row.reading?.company);
+  const open = (await api('/api/buyer-cards', { token: nandhini })).json.data.filter((row) => row.reading?.company === 'Selvi Fashions' || !row.reading?.company);
   assert.equal(open.length, 1, 'one chat, not two drafts');
   const merged = open[0];
   assert.equal(merged._id, first._id);
@@ -373,9 +390,9 @@ test('the rest of a long chat joins the screenshot that showed who it was with',
   assert.equal(merged.reading.productInterest, 'wooden suit hangers');
   assert.equal(merged.reading.estimatedQuantity, 2000);
   assert.match(merged.reading.notes, /Asked about suit hangers\. Wants samples by Friday\./);
-  const second = await fetch(`${baseUrl}/api/lead-cards/${merged._id}/image?n=1`, { headers: { Authorization: `Bearer ${nandhini}` } });
+  const second = await fetch(`${baseUrl}/api/buyer-cards/${merged._id}/image?n=1`, { headers: { Authorization: `Bearer ${nandhini}` } });
   assert.equal(second.status, 200);
-  await api(`/api/lead-cards/${merged._id}/discard`, { method: 'POST', token: nandhini });
+  await api(`/api/buyer-cards/${merged._id}/discard`, { method: 'POST', token: nandhini });
 });
 
 test('a picture that is neither a card nor a chat says so and adds nothing', async () => {
@@ -384,11 +401,11 @@ test('a picture that is neither a card nor a chat says so and adds nothing', asy
   const draft = await readCardOf(nandhini);
   assert.equal(draft.status, 'unreadable');
   assert.match(latestReply(), /does not look like a card, an enquiry slip or a chat/);
-  await api(`/api/lead-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
+  await api(`/api/buyer-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
 });
 
 test('quantities are read the way people write them', async () => {
-  const { parseQuantity } = await import('../src/services/leadCard.llm.js');
+  const { parseQuantity } = await import('../src/services/buyerCard.llm.js');
   assert.equal(parseQuantity('5000 pcs'), 5000);
   assert.equal(parseQuantity('5,000'), 5000);
   assert.equal(parseQuantity('5k'), 5000);

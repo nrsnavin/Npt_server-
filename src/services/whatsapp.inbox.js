@@ -1,5 +1,4 @@
 import Customer from '../models/Customer.js';
-import Lead from '../models/Lead.js';
 import WhatsappThread from '../models/WhatsappThread.js';
 import { nextInRotation } from './assignment.service.js';
 import { normalisePhone } from '../utils/phone.js';
@@ -11,8 +10,8 @@ import { normalisePhone } from '../utils/phone.js';
  *
  * **Match before you create [§41.2].** The first move on any inbound message is a number
  * lookup — never a write. An existing customer attaches the conversation to that customer and
- * routes it to the person who already owns the relationship; an open lead does the same; only
- * a number nobody holds becomes something new. Getting this backwards is the failure the rule
+ * routes it to the person who already owns the relationship; only a number nobody holds becomes
+ * something new. Getting this backwards is the failure the rule
  * exists to prevent: a buyer who has been an account for three years messages about a repeat
  * order and appears in the system as a stranger, assigned to somebody who has never spoken to
  * them.
@@ -25,10 +24,9 @@ import { normalisePhone } from '../utils/phone.js';
  * is indistinguishable from the buyer sending the same thing twice, and the inbox slowly fills
  * with phantom traffic that makes the queue counts lie.
  *
- * **Nothing here writes a lead or an enquiry.** That is the fourth rule and the least obvious.
- * A message is not a qualified requirement: somebody says "hi", somebody asks whether the
- * plant is open on Saturday. §41's chain is *lead → qualification → enquiry*, and the
- * qualification step is a person deciding. So the inbox records what arrived, matches it, puts
+ * **Nothing here writes a customer or an enquiry.** That is the fourth rule and the least
+ * obvious. A message is not a qualified requirement: somebody says "hi", somebody asks whether
+ * the plant is open on Saturday. Deciding it is an enquiry is a person's step. So the inbox records what arrived, matches it, puts
  * it in front of the right person, and stops. Converting is an action somebody takes.
  */
 
@@ -67,35 +65,19 @@ export async function customerForNumber(number) {
 }
 
 /**
- * An open lead carrying this number.
- *
- * Only open ones. A lead that was disqualified last year should not silently capture a fresh
- * message — the buyer has come back, which is news, and attaching it to a closed record would
- * bury that under a status nobody is watching.
- */
-export async function openLeadForNumber(number) {
-  if (!number) return null;
-  return Lead.findOne({
-    $or: [{ mobile: number }, { whatsapp: number }],
-    status: { $nin: ['converted', 'disqualified'] },
-  });
-}
-
-/**
  * Who should pick this up [§41.3].
  *
  * A known customer goes to the account owner, always — that is §29's ownership rule and it
  * outranks the rotation, because the buyer already has a person and being handed to somebody
- * else reads as the plant having lost their file. An open lead goes to whoever is working it.
- * Only a genuinely unknown number goes round-robin.
+ * else reads as the plant having lost their file. Only a genuinely unknown number goes
+ * round-robin.
  *
  * Returns `{ user: null }` rather than throwing when nobody is in the rotation. A thread with
  * no owner is bad; a message the plant never recorded because nobody was rostered is worse, and
  * §41.5 has an Unassigned queue precisely so that case is visible instead of silent.
  */
-export async function ownerFor({ customer, lead }) {
+export async function ownerFor({ customer }) {
   if (customer?.assignedTo) return { user: customer.assignedTo, rotated: false };
-  if (lead?.assignedTo) return { user: lead.assignedTo, rotated: false };
 
   const next = await nextInRotation();
   if (next) return { user: next._id, rotated: true, name: next.name };
@@ -159,17 +141,15 @@ export async function receiveMessage({
     return { outcome: 'appended', thread: existing };
   }
 
-  /* A number nobody holds — but only after both lookups have said so. */
+  /* A number nobody holds — but only after the lookup has said so. */
   const customer = await customerForNumber(number);
-  const lead = customer ? null : await openLeadForNumber(number);
-  const owner = await ownerFor({ customer, lead });
+  const owner = await ownerFor({ customer });
 
   const thread = await WhatsappThread.create({
     number,
     profileName,
     customer: customer?._id,
-    lead: lead?._id,
-    matchedBy: customer ? 'customer' : lead ? 'lead' : 'unknown',
+    matchedBy: customer ? 'customer' : 'unknown',
     assignedTo: owner.user || undefined,
     assignedByRotation: Boolean(owner.rotated),
     status: 'new',

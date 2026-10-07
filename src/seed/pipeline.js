@@ -1,6 +1,6 @@
 /**
- * Phase 1 sample data: customers, open leads and enquiries spread across the funnel. Called
- * by the main seed so a fresh database has something to work with on the customers, leads and
+ * Phase 1 sample data: customers and enquiries spread across the funnel. Called
+ * by the main seed so a fresh database has something to work with on the customers and
  * enquiries screens.
  *
  * The models these enquiries ask for come off the mould register, which is seeded first — there
@@ -10,7 +10,6 @@
  */
 import Mould from '../models/Mould.js';
 import Customer from '../models/Customer.js';
-import Lead from '../models/Lead.js';
 import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
 import Counter from '../models/Counter.js';
@@ -42,7 +41,6 @@ const walk = (requestedAt, steps) => {
 export async function seedPipeline({ nandhini, arun, meera }) {
   await Promise.all([
     Customer.deleteMany({}),
-    Lead.deleteMany({}),
     Enquiry.deleteMany({}),
     Sample.deleteMany({}),
     Counter.deleteMany({}),
@@ -188,85 +186,6 @@ export async function seedPipeline({ nandhini, arun, meera }) {
     customers.push(await Customer.create({ ...row, code: await nextNumber('CUST') }));
   }
   const byName = Object.fromEntries(customers.map((customer) => [customer.name, customer]));
-
-  const leadRows = [
-    {
-      company: 'Everblue Knitwear',
-      contactName: 'Prakash D',
-      designation: 'Purchase Executive',
-      mobile: '9865412300',
-      email: 'prakash@everblueknit.in',
-      city: 'Tiruppur',
-      state: 'Tamil Nadu',
-      source: 'trade_show',
-      productInterest: 'Shirt hangers, 400mm, white — roughly 60,000 pcs a quarter',
-      estimatedValue: 312000,
-      status: 'new',
-      assignedTo: nandhini._id,
-      nextAction: 'Call to confirm sizes and packing',
-      nextFollowUpDate: days(0, 15),
-    },
-    {
-      company: 'Coral Fashions',
-      contactName: 'Meenakshi R',
-      designation: 'Owner',
-      mobile: '9600788112',
-      email: 'coral.fashions@outlook.com',
-      city: 'Erode',
-      state: 'Tamil Nadu',
-      source: 'referral',
-      productInterest: 'Kids hangers in assorted colours',
-      estimatedValue: 85000,
-      status: 'contacted',
-      assignedTo: nandhini._id,
-      nextAction: 'Send catalogue and colour chart',
-      nextFollowUpDate: days(-1, 16),
-      activities: [
-        { type: 'call', summary: 'Introductory call. Buys through a Chennai agent today, open to direct supply.', occurredAt: days(-3), createdBy: nandhini._id },
-      ],
-    },
-    {
-      company: 'Northstar Apparel Group',
-      contactName: 'Vikram Sethi',
-      designation: 'Head of Sourcing',
-      mobile: '9820344551',
-      email: 'vikram.sethi@northstarapparel.com',
-      city: 'Mumbai',
-      state: 'Maharashtra',
-      source: 'email',
-      productInterest: 'Velvet suit hangers for a premium in-store rollout',
-      estimatedValue: 258000,
-      status: 'qualified',
-      assignedTo: arun._id,
-      nextAction: 'Convert and raise the sample enquiry',
-      nextFollowUpDate: days(2, 11),
-      activities: [
-        { type: 'call', summary: 'Discussed volumes. 12,000 pcs first drop, repeat every quarter.', occurredAt: days(-7), createdBy: arun._id },
-        { type: 'meeting', summary: 'Showed the flocked range at their Mumbai office. Wants charcoal.', occurredAt: days(-2), createdBy: arun._id },
-      ],
-    },
-    {
-      company: 'Budget Bazaar Retail',
-      contactName: 'Naresh Kumar',
-      mobile: '9945011223',
-      city: 'Hyderabad',
-      state: 'Telangana',
-      source: 'phone',
-      productInterest: '2,000 assorted hangers',
-      status: 'disqualified',
-      disqualifyReason: 'volume_too_low',
-      disqualifyNote: 'Below MOQ on every model and unwilling to consolidate.',
-      assignedTo: nandhini._id,
-      activities: [
-        { type: 'call', summary: 'Quantity is one-off and below MOQ. Referred to our Hyderabad distributor.', occurredAt: days(-9), createdBy: nandhini._id },
-      ],
-    },
-  ];
-
-  const leads = [];
-  for (const row of few(leadRows)) {
-    leads.push(await Lead.create({ ...row, number: await nextNumber('LEAD') }));
-  }
 
   /*
    * Enquiries by a key of their own, not by the number they happen to be issued.
@@ -662,7 +581,6 @@ export async function seedPipeline({ nandhini, arun, meera }) {
 
   return {
     customers: customers.length,
-    leads: leads.length,
     enquiries: enquiries.length,
     samples: samples.length,
   };

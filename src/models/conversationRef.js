@@ -4,7 +4,7 @@ import mongoose from 'mongoose';
  * A pointer to the conversation a record came out of [BLUEPRINT §8, §41.6].
  *
  * Null on every record today, and that is the point. §41.6 requires conversation history to
- * stay linked to the lead, the contact, the customer and the enquiry; §8 asks for the field
+ * stay linked to the contact, the customer and the enquiry; §8 asks for the field
  * now rather than after there are live records to migrate, because retrofitting an origin
  * across a year of enquiries is the migration nobody wants.
  *

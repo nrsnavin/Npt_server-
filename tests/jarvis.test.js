@@ -39,7 +39,7 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
 /**
  * Who a token belongs to.
  *
- * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * Creating a customer names its owner now, rather than inheriting whoever posted the
  * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
  * owns it", which is what they relied on the old default for; this says it out loud.
  */
@@ -268,9 +268,9 @@ test('new enquiries answer within a window, and name the window used', async () 
   assert.match(answer, /new enquiries/i, answer);
   assert.match(answer, /last 7 days/i, 'so nobody assumes a different span than they were given');
 
-  // And a window with nothing in it says so, rather than reporting the default span's count.
-  const none = await ask('any new leads today', admin);
-  assert.match(none.answer, /no new leads today/i, none.answer);
+  // "Leads" is what people still call new enquiries, so it is answered as enquiries.
+  const leads = await ask('any new leads this week', admin);
+  assert.match(leads.answer, /new enquiries/i, leads.answer);
 });
 
 test('a count says the shape of the pile, not only its size', async () => {

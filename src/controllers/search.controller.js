@@ -1,5 +1,4 @@
 import Customer from '../models/Customer.js';
-import Lead from '../models/Lead.js';
 import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
 import SalesOrder from '../models/SalesOrder.js';
@@ -173,19 +172,6 @@ export const globalSearch = asyncHandler(async (req, res) => {
         [row.customer?.name || 'Internal trial', row.modelNumber, readable(row.status)]
           .filter(Boolean)
           .join(' · '),
-    },
-    {
-      key: 'leads',
-      label: 'Leads',
-      module: 'enquiries',
-      model: Lead,
-      fields: ['company', 'number', 'contactName', 'mobile', 'whatsapp', 'email'],
-      scope: () => ownershipFilter(user),
-      select: 'number company contactName mobile status city',
-      sort: '-createdAt',
-      link: (row) => `/leads/${row._id}`,
-      title: (row) => row.company,
-      subtitle: (row) => [row.number, row.contactName, readable(row.status)].filter(Boolean).join(' · '),
     },
     {
       key: 'moulds',

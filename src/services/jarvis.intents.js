@@ -20,7 +20,7 @@ import { normalisePhone } from '../utils/phone.js';
  * charge, no third party holding the plant's customer names.
  *
  * The parse is two axes rather than a flat list of intents, because that is how the questions
- * actually decompose: a *subject* (samples, enquiries, leads, customers, orders) and an
+ * actually decompose: a *subject* (samples, enquiries, customers, orders) and an
  * *aspect* (this specific one, what is late, what is new, how many). A flat list needs an
  * entry per combination and grows brittle; a grid degrades gracefully, and an unknown corner
  * of it can say precisely which half it did not understand.
@@ -35,7 +35,6 @@ import { normalisePhone } from '../utils/phone.js';
 const NUMBER_PATTERNS = [
   { subject: 'samples', pattern: /\bSMP[-\s]?(\d{4})[-\s]?(\d+)\b/i, format: (y, n) => `SMP-${y}-${n}` },
   { subject: 'enquiries', pattern: /\bENQ[-\s]?(\d{4})[-\s]?(\d+)\b/i, format: (y, n) => `ENQ-${y}-${n}` },
-  { subject: 'leads', pattern: /\bLEAD[-\s]?(\d{4})[-\s]?(\d+)\b/i, format: (y, n) => `LEAD-${y}-${n}` },
   { subject: 'customers', pattern: /\bCUST[-\s]?(\d{4})[-\s]?(\d+)\b/i, format: (y, n) => `CUST-${y}-${n}` },
 ];
 
@@ -93,8 +92,8 @@ export function timeWindow(text) {
  */
 const SUBJECTS = [
   { key: 'samples', terms: [/\bsamples?\b/i, /\bsmp\b/i, /\bbench\b/i, /\bsampling\b/i] },
-  { key: 'enquiries', terms: [/\benquir(y|ies)\b/i, /\binquir(y|ies)\b/i, /\benq\b/i, /\brfq\b/i] },
-  { key: 'leads', terms: [/\bleads?\b/i, /\bprospects?\b/i] },
+  /* "Leads" and "prospects" are what people still call new enquiries, so they are asked about here. */
+  { key: 'enquiries', terms: [/\benquir(y|ies)\b/i, /\binquir(y|ies)\b/i, /\benq\b/i, /\brfq\b/i, /\bleads?\b/i, /\bprospects?\b/i] },
   { key: 'customers', terms: [/\bcustomers?\b/i, /\bbuyers?\b/i, /\baccounts?\b/i, /\bparty\b/i, /\bparties\b/i] },
   { key: 'moulds', terms: [/\bmoulds?\b/i, /\bmolds?\b/i, /\btools?\b/i, /\bproducts?\b/i, /\bmodels?\b/i, /\bcatalogue\b/i, /\bcatalog\b/i, /\bhangers?\b/i] },
   { key: 'orders', terms: [/\borders?\b/i, /\bpo\b/i, /\bpurchase orders?\b/i] },

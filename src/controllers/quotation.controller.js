@@ -476,7 +476,7 @@ function assertValidityAhead(value) {
  * Both came straight off the request and neither was checked. A marketing person could raise a
  * quote on their own buyer tied to a colleague's enquiry — and the buyer's answer on it moves
  * that enquiry, which is somebody else's pipeline — or hand a quotation to anyone by sending
- * `assignedTo`, on create or on a later edit, where customers, leads and enquiries all refuse it
+ * `assignedTo`, on create or on a later edit, where customers and enquiries both refuse it
  * with "only an administrator". Found by the backend audit's mass-assignment probe: one PATCH
  * gave a live quotation away, and the person who sent it could no longer open it.
  */

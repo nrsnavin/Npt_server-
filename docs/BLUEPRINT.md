@@ -7,6 +7,11 @@ implemented yet except announcements and user administration.
 Section numbers in brackets refer to the source document, and `src/config/modules.js`
 carries the same reference on every module.
 
+> **Changed since (October 2026):** there are no leads. The workflow starts at the enquiry, per
+> the *Navin CRM Role Requirements* (7 Oct 2026). Where this guide says "lead", read "a new
+> customer and its first enquiry" — IndiaMART and WhatsApp chat screenshots now raise those
+> directly, and conversion no longer exists. See the README's "Phase 1: the pipeline".
+
 ---
 
 ## 1. What this CRM is

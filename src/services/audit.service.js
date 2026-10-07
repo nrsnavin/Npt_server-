@@ -2,7 +2,6 @@ import AuditLog from '../models/AuditLog.js';
 import User from '../models/User.js';
 import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
-import Lead from '../models/Lead.js';
 import Mould from '../models/Mould.js';
 
 /**
@@ -239,7 +238,6 @@ const REFERENCED = {
   uploadedBy: { model: User, label: (row) => row.name },
   customer: { model: Customer, label: (row) => (row.code ? `${row.name} (${row.code})` : row.name) },
   enquiry: { model: Enquiry, label: (row) => row.number },
-  lead: { model: Lead, label: (row) => row.company },
   mould: { model: Mould, label: (row) => row.mouldCode },
 };
 

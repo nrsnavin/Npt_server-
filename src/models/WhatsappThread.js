@@ -5,8 +5,8 @@ import { normalisePhone } from '../utils/phone.js';
  * One WhatsApp conversation, keyed by the number it came from [BLUEPRINT §41].
  *
  * **A thread per number, never a record per message.** That is §41.2 and it is the whole shape
- * of this model. A buyer who sends four messages about one job is one conversation; creating a
- * lead — or an inbox row — for each is how two people end up ringing the same buyer about the
+ * of this model. A buyer who sends four messages about one job is one conversation; creating an
+ * enquiry — or an inbox row — for each is how two people end up ringing the same buyer about the
  * same hanger. The number is the identity because it is the only thing an inbound message
  * reliably carries: a display name is whatever the sender set on their phone that week.
  *
@@ -35,8 +35,6 @@ export const CLOSED_THREAD_STATUSES = ['converted', 'closed'];
 export const MATCH_KINDS = [
   /** The number is on a customer record — §41.2's first lookup, and the one that must win. */
   'customer',
-  /** No customer, but an open lead already carries this number. */
-  'lead',
   /** Nobody has this number. A genuinely new enquiry. */
   'unknown',
 ];
@@ -84,7 +82,6 @@ const whatsappThreadSchema = new mongoose.Schema(
     /* ----------------------------- What it was matched to ----------------------------- */
 
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', index: true },
-    lead: { type: mongoose.Schema.Types.ObjectId, ref: 'Lead', index: true },
     /** Set when the thread has been turned into an enquiry [§41.4]. */
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
 

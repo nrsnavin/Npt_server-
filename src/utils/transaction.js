@@ -6,7 +6,7 @@ import mongoose from 'mongoose';
  *
  * On a replica set (MongoDB Atlas, or a single-node replica set on the box) a block run through
  * `inTransaction` commits every write in it at once, or none — a sales order and the number it
- * took, a dispatch and its receivable, a lead and the enquiry made from it. Mongoose passes the
+ * took, a dispatch and its receivable, a customer and the enquiry made from it. Mongoose passes the
  * transaction to every query inside the block by itself (`transactionAsyncLocalStorage`), so the
  * code inside does not change.
  *

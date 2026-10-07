@@ -36,7 +36,7 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
 /**
  * Who a token belongs to.
  *
- * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * Creating a customer names its owner now, rather than inheriting whoever posted the
  * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
  * owns it", which is what they relied on the old default for; this says it out loud.
  */
@@ -152,17 +152,6 @@ test('a town the plant typed is offered the next time, even unbundled', async ()
   assert.equal(after.json.data[0].state, 'Tamil Nadu', 'and carries the state it was typed with');
 });
 
-test('a town first entered on a lead is offered on the customer it becomes', async () => {
-  await api('/api/leads', {
-    method: 'POST',
-    token: nandhini,
-    body: { assignedTo: await tokenOwnerId(nandhini), company: 'Sivakasi Garments', contactName: 'R Kumar', mobile: '9840011666', city: 'Sivakasi' },
-  });
-
-  const { json } = await api('/api/places/cities?q=sivak', { token: nandhini });
-  assert.deepEqual(names(json.data), ['Sivakasi']);
-});
-
 test('the canonical spelling wins over the variant already in the database', async () => {
   /*
    * The whole point of having a list. A database holding "tirupur" must not perpetuate it —
@@ -187,11 +176,11 @@ test('the canonical spelling wins over the variant already in the database', asy
 test('a town nobody has heard of is still enterable', async () => {
   // The rule a suggestion list must never break. A buyer in a village the list has never seen
   // is a buyer, and a form that refuses them is worse than an inconsistent spelling.
-  const { status, json } = await api('/api/leads', {
+  const { status, json } = await api('/api/customers', {
     method: 'POST',
     token: nandhini,
     body: { assignedTo: await tokenOwnerId(nandhini),
-      company: 'Backwater Exports',
+      name: 'Backwater Exports',
       contactName: 'A Nair',
       mobile: '9840011888',
       city: 'Chengannur',

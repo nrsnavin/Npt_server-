@@ -1,4 +1,3 @@
-import Lead from '../models/Lead.js';
 import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
 import Quotation from '../models/Quotation.js';
@@ -48,16 +47,8 @@ export async function customerMap(customer, user) {
    */
   const may = (moduleKey) => canRead(user, moduleKey);
 
-  const [leads, enquiries, samples, quotations, orders, consignments, receivables, queries] =
+  const [enquiries, samples, quotations, orders, consignments, receivables, queries] =
     await Promise.all([
-      /* Where this buyer came from, and every later lead that turned out to be them. */
-      may('enquiries')
-        ? Lead.find({ convertedCustomer: customer._id })
-          .select('number company convertedAt convertedFromStatus')
-          .sort('-convertedAt')
-          .limit(PER_STRAND)
-        : [],
-
       may('enquiries')
         ? Enquiry.find(of)
           .select('number status enquiryDate requirement.modelNumber')
@@ -135,9 +126,6 @@ export async function customerMap(customer, user) {
     ]);
 
   return {
-    leads: leads.map((lead) =>
-      node(lead._id, lead.number, lead.company, lead.convertedFromStatus || 'converted')),
-
     enquiries: enquiries.map((enquiry) =>
       node(enquiry._id, enquiry.number, enquiry.requirement?.modelNumber, enquiry.status)),
 
@@ -158,7 +146,6 @@ export async function customerMap(customer, user) {
     queries: queries.map((query) => node(query._id, query.number, query.subject, query.status)),
 
     totals: {
-      leads: leads.length,
       enquiries: enquiryTotal,
       samples: sampleTotal,
       quotations: quotationTotal,

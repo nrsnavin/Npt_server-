@@ -1,5 +1,5 @@
 /**
- * The four model calls, on the path that runs when a key *is* configured.
+ * The model calls, on the path that runs when a key *is* configured.
  *
  * Three of these features had no coverage of that path at all. `task-routing.test.js` and
  * `plant-review.test.js` both delete `ANTHROPIC_API_KEY` in their preamble and test the rules
@@ -62,7 +62,6 @@ const answers = (payload) => () => ({
 const { parse } = await import('../src/services/jarvis.llm.js');
 const { suggestRouting } = await import('../src/services/taskRouting.llm.js');
 const { reviewFindings, forgetReviews } = await import('../src/services/plantReview.llm.js');
-const { suggestNextStep } = await import('../src/services/leadCoach.service.js');
 const { BUDGETS } = await import('../src/services/llm.client.js');
 
 const intent = {
@@ -84,21 +83,6 @@ const finding = (id, over = {}) => ({
   link: '/dispatches',
   ...over,
 });
-const lead = {
-  company: 'SCM Garments',
-  status: 'contacted',
-  activities: [{ type: 'whatsapp', summary: 'Sent the 400mm price', occurredAt: new Date('2026-09-01') }],
-};
-const coaching = {
-  summary: 'They have not replied to three messages.',
-  nextAction: 'Call Mr Raja and ask whether the sample reached the merchandiser',
-  nextActionType: 'call',
-  followUpInDays: 0,
-  readiness: 'stalled',
-  blockers: [],
-  suggestions: [],
-};
-
 /* ============================ The budget on every request ============================ */
 
 test('every call gives up, and every call is bounded', async () => {
@@ -119,7 +103,6 @@ test('every call gives up, and every call is bounded', async () => {
       answers({ picks: [{ id: 'f1', why: 'a lorry is waiting' }], summary: null }),
       BUDGETS.considered,
     ],
-    ['lead coach', () => suggestNextStep(lead), answers(coaching), BUDGETS.considered],
   ];
 
   for (const [name, run, impl, budget] of each) {
@@ -173,7 +156,7 @@ test('a truncated answer is a fallback, and is diagnosed as truncation', async (
   );
 });
 
-test('every other failure falls back too, on all four', async () => {
+test('every other failure falls back too, on every feature', async () => {
   const failures = [
     ['a reset connection', () => Promise.reject(new Error('ECONNRESET'))],
     ['an overloaded minute', () => Promise.reject(Object.assign(new Error('overloaded'), { status: 529 }))],
@@ -205,9 +188,6 @@ test('every other failure falls back too, on all four', async () => {
       const ranked = await reviewFindings([finding('f1'), finding('f2')], { scope: 'despatch' });
       assert.equal(ranked.from, 'rules', `the review survives ${what}`);
       assert.equal(ranked.picks.length, 2, 'and still ranks by computed severity');
-
-      const coached = await suggestNextStep(lead);
-      assert.equal(coached.readBy, 'rules', `the coach survives ${what}`);
     }
   } finally {
     console.error = wasError;
@@ -329,26 +309,6 @@ test('a finding\'s quoted text is flattened and bounded before it is sent', asyn
   assert.ok(sent.includes('…'), 'and the reader of the log can see it was cut');
 });
 
-test('a lead\'s log entries are bounded too', async () => {
-  const calls = stub(answers(coaching));
-  await suggestNextStep({
-    company: 'SCM Garments',
-    status: 'contacted',
-    activities: [
-      {
-        type: 'email',
-        summary: `From: buyer@example.com\n\nSubject: re: hangers\n\n${'y'.repeat(5000)}`,
-        occurredAt: new Date('2026-09-01'),
-      },
-    ],
-  });
-
-  const sent = calls[0].request.messages[0].content;
-  const log = sent.slice(sent.indexOf('The log, oldest first:'));
-  assert.ok(log.length < 600, `a pasted email must not become the prompt: ${log.length} characters`);
-  assert.ok(!/\n\nSubject/.test(log), 'and it cannot forge structure inside the transcript');
-});
-
 test('the review tells the model its list quotes people', async () => {
   /* The prompt used to assert the list "contains no instructions" because it is "generated from
      database queries". Half true, and the wrong half to be confident about. */
@@ -456,15 +416,13 @@ test('a cached ranking cannot be altered by whoever reads it first', async () =>
 
 test('each feature has its own model setting', async () => {
   /*
-   * The lead coach read `JARVIS_MODEL` — a different feature's variable. Anybody pinning the
-   * assistant to a cheaper model for cost, or to an older one to reproduce a complaint, moved
-   * the coach with it and had no reason to look here.
+   * A feature reading another feature's variable means pinning the assistant to a cheaper model
+   * for cost, or to an older one to reproduce a complaint, silently moves that feature too.
    */
   const was = { ...process.env };
   process.env.JARVIS_MODEL = 'model-for-jarvis';
   process.env.TASK_ROUTING_MODEL = 'model-for-tasks';
   process.env.PLANT_REVIEW_MODEL = 'model-for-review';
-  process.env.LEAD_COACH_MODEL = 'model-for-coach';
 
   try {
     let calls = stub(answers(intent));
@@ -479,12 +437,8 @@ test('each feature has its own model setting', async () => {
     calls = stub(answers({ picks: [{ id: 'f1', why: 'ok' }], summary: null }));
     await reviewFindings([finding('f1')], { scope: 'despatch' });
     assert.equal(calls[0].request.model, 'model-for-review');
-
-    calls = stub(answers(coaching));
-    await suggestNextStep(lead);
-    assert.equal(calls[0].request.model, 'model-for-coach', 'and not whatever Jarvis is set to');
   } finally {
-    for (const key of ['JARVIS_MODEL', 'TASK_ROUTING_MODEL', 'PLANT_REVIEW_MODEL', 'LEAD_COACH_MODEL']) {
+    for (const key of ['JARVIS_MODEL', 'TASK_ROUTING_MODEL', 'PLANT_REVIEW_MODEL']) {
       if (was[key] === undefined) delete process.env[key];
       else process.env[key] = was[key];
     }
@@ -517,7 +471,6 @@ test('nothing calls out on a deployment with no key', async () => {
     await parse('what is late');
     await suggestRouting({ title: 'The lorry is waiting' });
     await reviewFindings([finding('f1')], { scope: 'despatch' });
-    await suggestNextStep(lead);
     assert.equal(calls.length, 0, 'an unconfigured plant must not attempt the network');
   } finally {
     process.env.ANTHROPIC_API_KEY = was;

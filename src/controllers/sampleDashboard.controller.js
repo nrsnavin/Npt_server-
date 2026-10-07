@@ -254,14 +254,13 @@ export const sampleDay = asyncHandler(async (req, res) => {
   })
     .select(
       'number modelNumber colour colourMandatory status purpose requiredDate requestedAt ' +
-        'createdAt requestedBy assignedTo customer lead escalationLevel'
+        'createdAt requestedBy assignedTo customer escalationLevel'
     )
     .populate('requestedBy', 'name')
     .populate('assignedTo', 'name')
     /* The customer's owner as well as its name [§29] — not the same person as the requester,
        and the one the buyer will actually ring when a sample slips. */
     .populate({ path: 'customer', select: 'name assignedTo', populate: { path: 'assignedTo', select: 'name' } })
-    .populate('lead', 'company')
     .limit(500);
 
   const mine = (sample) => String(sample.assignedTo?._id || sample.assignedTo) === String(req.user._id);
@@ -277,8 +276,7 @@ export const sampleDay = asyncHandler(async (req, res) => {
     colourMandatory: Boolean(sample.colourMandatory),
     status: sample.status,
     purpose: sample.purpose,
-    /* A lead's request has no customer yet — the company name is on the lead [§4]. */
-    customer: sample.customer?.name || sample.lead?.company || null,
+    customer: sample.customer?.name || null,
     /* Who the buyer belongs to, which is who hears about it when this slips. */
     customerOwner: sample.customer?.assignedTo?.name || null,
     requestedBy: sample.requestedBy?.name,

@@ -1,4 +1,3 @@
-import Lead from '../models/Lead.js';
 import Customer from '../models/Customer.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { STATES, CITIES, placeKey as key } from '../data/places.js';
@@ -77,10 +76,7 @@ export const listCities = asyncHandler(async (req, res) => {
   const query = String(req.query.q || '').trim();
   const state = String(req.query.state || '').trim();
 
-  /*
-   * What the plant has actually typed. Distinct over both collections, because a town first
-   * entered on a lead should be suggested on the customer it becomes.
-   */
+  /* What the plant has actually typed on its customers. */
   const match = { city: { $nin: [null, ''] } };
   if (state) match.state = new RegExp(`^${escape(state)}$`, 'i');
 
@@ -90,10 +86,7 @@ export const listCities = asyncHandler(async (req, res) => {
    * choosing it left the state blank.
    */
   const group = [{ $match: match }, { $group: { _id: '$city', state: { $first: '$state' } } }];
-  const [leadCities, customerCities] = await Promise.all([
-    Lead.aggregate(group),
-    Customer.aggregate(group),
-  ]);
+  const customerCities = await Customer.aggregate(group);
 
   const bundled = Object.entries(CITIES)
     .filter(([, inState]) => !state || inState.toLowerCase() === state.toLowerCase())
@@ -106,7 +99,7 @@ export const listCities = asyncHandler(async (req, res) => {
    */
   const seen = new Map();
   for (const name of bundled) seen.set(key(name), { name, state: CITIES[name] });
-  for (const row of [...leadCities, ...customerCities]) {
+  for (const row of customerCities) {
     const name = String(row._id || '').trim();
     if (!name) continue;
     const id = key(name);

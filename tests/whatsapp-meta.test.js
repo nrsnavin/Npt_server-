@@ -217,15 +217,15 @@ test('a message from Meta is taken only when it carries the app secret’s signa
   assert.equal((await WhatsappThread.findOne({ number: '+919840012345' })).messages.length, 1);
 });
 
-test('a photo a colleague sends is fetched from Meta by its id and becomes a lead card', async () => {
+test('a photo a colleague sends is fetched from Meta by its id and becomes a draft enquiry', async () => {
   const response = await deliver(change({
     messages: [{ from: '919876500011', id: 'wamid.PHOTO1', timestamp: '1790400100', type: 'image', image: { id: 'MEDIA123', mime_type: 'image/png', caption: 'met at the fair' } }],
   }));
   assert.equal(response.status, 200);
   const body = await response.json();
-  assert.equal(body.outcomes[0].outcome, 'lead_card');
-  const { default: LeadCard } = await import('../src/models/LeadCard.js');
-  const card = await LeadCard.findOne({ providerId: 'wamid.PHOTO1:0' });
+  assert.equal(body.outcomes[0].outcome, 'buyer_card');
+  const { default: BuyerCard } = await import('../src/models/BuyerCard.js');
+  const card = await BuyerCard.findOne({ providerId: 'wamid.PHOTO1:0' });
   assert.ok(card, 'a draft card from the photo');
   assert.equal(card.caption, 'met at the fair');
   assert.equal(card.mimeType, 'image/png');

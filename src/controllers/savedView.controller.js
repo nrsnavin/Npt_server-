@@ -5,7 +5,7 @@ import { canRead } from '../services/access.service.js';
 
 /** The module a page belongs to — a view on a list the person cannot open is no view at all. */
 const MODULE_OF = {
-  queries: 'queries', enquiries: 'enquiries', leads: 'enquiries', samples: 'samples',
+  queries: 'queries', enquiries: 'enquiries', samples: 'samples',
   customers: 'customers', pricings: 'pricing',
 };
 

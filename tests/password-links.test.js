@@ -92,7 +92,7 @@ test('a new account is emailed its access and a link to choose a password', asyn
   assert.match(email, /account is ready/);
   assert.match(email, /Department: Marketing/);
   assert.match(email, /Role: Member/);
-  assert.match(email, /Leads & enquiries: Read & write/, 'each module, and what they may do in it');
+  assert.match(email, /Enquiries: Read & write/, 'each module, and what they may do in it');
   assert.match(email, /https:\/\/npt\.example\.test\/reset-password\?token=/);
 
   /* The mail did not go (no SMTP here), so the administrator is handed the link to pass on. */

@@ -1,5 +1,5 @@
 /**
- * Several things on one lead and one enquiry [§2, §3].
+ * Several things on one enquiry [§2, §3].
  *
  * A buyer rings about shirt hangers *and* trouser hangers on the same call. Recording that as
  * two enquiries splits one conversation into two follow-up dates, two next actions and two
@@ -141,7 +141,7 @@ test('the first item and the requirement are one fact', async () => {
 test('an enquiry raised the old way still answers as a list', async () => {
   /*
    * Every enquiry already on the system, and every caller that has not been changed — the
-   * WhatsApp conversion, the lead conversion, an integration. They send a requirement and no
+   * WhatsApp conversion, IndiaMART, an integration. They send a requirement and no
    * list, and they have to come back with one, or a screen reading `items` shows an enquiry
    * with nothing in it.
    */
@@ -260,70 +260,7 @@ test('a list is capped, because past a dozen it is a price list', async () => {
   assert.equal(status, 400);
 });
 
-/* ------------------------------- A lead's list ------------------------------- */
-
-test('a lead can record what they asked about, and it survives conversion', async () => {
-  /*
-   * The point of giving a lead the same shape as an enquiry: conversion is a copy rather than a
-   * re-interview. Whatever was learned on the call arrives pointing at the same register rows,
-   * instead of being retyped by somebody who was not on it.
-   */
-  const lead = await api('/api/leads', {
-    method: 'POST',
-    token: nandhini,
-    body: {
-      company: 'Trendline Apparels',
-      assignedTo: nandhiniId,
-      mobile: '9876512345',
-      items: [{ modelNumber: 'NPT-800S', colour: 'Red' }, { modelNumber: 'NPT-900T' }],
-      ...followUp,
-    },
-  });
-  assert.equal(lead.status, 201, lead.json.message);
-  assert.equal(lead.json.data.items.length, 2);
-
-  const converted = await api(`/api/leads/${lead.json.data._id}/convert`, {
-    method: 'POST',
-    token: nandhini,
-    body: { enquiry: { ...followUp } },
-  });
-
-  assert.equal(converted.status, 201, converted.json.message);
-  const enquiry = converted.json.data.enquiry;
-  assert.deepEqual(enquiry.items.map((item) => item.modelNumber), ['NPT-800S', 'NPT-900T']);
-  assert.equal(enquiry.requirement.modelNumber, 'NPT-800S', 'and the first one leads, as always');
-  assert.equal(enquiry.requirement.colour, 'Red');
-});
-
-test('what the conversion form says beats what the lead recorded', async () => {
-  /*
-   * Whoever is converting has the newer information — they are on the call now. The lead's rows
-   * are a fallback for the common case where the conversion form says nothing about models, not
-   * a record that overrides the person doing the work.
-   */
-  const lead = await api('/api/leads', {
-    method: 'POST',
-    token: nandhini,
-    body: {
-      company: 'Yorker Knits',
-      assignedTo: nandhiniId,
-      mobile: '9876554321',
-      items: [{ modelNumber: 'NPT-OLD' }],
-      ...followUp,
-    },
-  });
-
-  const converted = await api(`/api/leads/${lead.json.data._id}/convert`, {
-    method: 'POST',
-    token: nandhini,
-    body: { enquiry: { items: [{ modelNumber: 'NPT-NEW' }], ...followUp } },
-  });
-
-  assert.equal(converted.status, 201, converted.json.message);
-  assert.deepEqual(converted.json.data.enquiry.items.map((i) => i.modelNumber), ['NPT-NEW']);
-});
-
-test('an item carries no quantity, on a lead any more than on an enquiry', async () => {
+test('an item on an enquiry carries no quantity', async () => {
   /*
    * The rule that was nearly reopened one row at a time. Nothing before the purchase order
    * knows how many, and the polite figure a buyer gives on the phone used to travel the whole

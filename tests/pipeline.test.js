@@ -1,6 +1,5 @@
 /**
- * Phase 1: moulds, customers, leads and enquiries — including lead conversion,
- * the enquiry stage machine, record ownership and the automation hooks.
+ * Phase 1: moulds, customers and enquiries — including the enquiry stage machine, record ownership and the automation hooks.
  *
  *   node --test tests/pipeline.test.js
  */
@@ -12,7 +11,6 @@ import mongoose from 'mongoose';
 process.env.JWT_SECRET = 'pipeline-test-secret-value';
 
 let mongo;
-let Lead;
 let server;
 let baseUrl;
 let admin;      // management, sees everything
@@ -36,7 +34,7 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
 /**
  * Who a token belongs to.
  *
- * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * Creating a customer names its owner now, rather than inheriting whoever posted the
  * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
  * owns it", which is what they relied on the old default for; this says it out loud.
  */
@@ -63,9 +61,6 @@ test.before(async () => {
 
   events = await import('../src/services/events.service.js');
   const { default: app } = await import('../src/app.js');
-  /* After the connection is up, like `app`. One test ages a lead past its follow-up date the
-     way time does, which the API deliberately will not do. */
-  ({ default: Lead } = await import('../src/models/Lead.js'));
   server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -198,144 +193,6 @@ test('sampling and management are not ownership-scoped', async () => {
     const { json } = await api('/api/customers', { token });
     assert.ok(json.data.length > 0, `${label} should see customers`);
   }
-});
-
-/* ---------------------------------- Leads ---------------------------------- */
-
-test('a lead is created, worked, and logging contact advances it', async () => {
-  const created = await api('/api/leads', {
-    method: 'POST',
-    token: nandhini,
-    body: { assignedTo: await tokenOwnerId(nandhini),
-      company: 'Urban Threads',
-      contactName: 'Sneha Iyer',
-      mobile: '9000012345',
-      city: 'Mumbai',
-      source: 'trade_show',
-      productInterest: 'Velvet slim hangers, around 60,000 a month',
-      ...followUp,
-    },
-  });
-
-  assert.equal(created.status, 201);
-  assert.match(created.json.data.number, /^LEAD-\d{4}-\d{4}$/);
-  assert.equal(created.json.data.status, 'new');
-
-  const logged = await api(`/api/leads/${created.json.data._id}/activities`, {
-    method: 'POST',
-    token: nandhini,
-    body: { type: 'meeting', summary: 'Met at Garment Tech Expo, shared samples' },
-  });
-  assert.equal(logged.json.data.status, 'contacted', 'logging contact moves it off new');
-  assert.equal(logged.json.data.activities.length, 1);
-});
-
-test('disqualifying a lead demands a reason', async () => {
-  const { json } = await api('/api/leads', { token: nandhini });
-  const id = json.data[0]._id;
-
-  const bare = await api(`/api/leads/${id}`, {
-    method: 'PATCH',
-    token: nandhini,
-    body: { status: 'disqualified' },
-  });
-  assert.equal(bare.status, 400);
-  assert.match(bare.json.message, /reason/i);
-});
-
-/* -------------------------------- Conversion -------------------------------- */
-
-test('converting a lead creates the customer, its contact and the first enquiry', async () => {
-  const lead = await api('/api/leads', {
-    method: 'POST',
-    token: nandhini,
-    body: { assignedTo: await tokenOwnerId(nandhini),
-      company: 'Coastal Apparels',
-      contactName: 'Nithya Rao',
-      designation: 'Sourcing Head',
-      mobile: '9000022222',
-      email: 'nithya@coastal.example',
-      city: 'Kochi',
-      source: 'referral',
-      ...followUp,
-    },
-  });
-  const leadId = lead.json.data._id;
-
-  await api(`/api/leads/${leadId}`, { method: 'PATCH', token: nandhini, body: { status: 'qualified' } });
-
-  const { json: moulds } = await api('/api/moulds', { token: nandhini });
-  const mouldId = moulds.data[0]._id;
-
-  const converted = await api(`/api/leads/${leadId}/convert`, {
-    method: 'POST',
-    token: nandhini,
-    body: {
-      customer: { customerType: 'exporter', gstin: '32AABCC1111C1ZQ', rating: 'A' },
-      enquiry: {
-        mould: mouldId,
-        requirement: { colour: 'Black' },
-        targetPrice: 10.8,
-        ...followUp,
-      },
-    },
-  });
-
-  assert.equal(converted.status, 201);
-
-  const { lead: after, customer, enquiry } = converted.json.data;
-  assert.equal(after.status, 'converted');
-  assert.equal(customer.name, 'Coastal Apparels', 'the company name carries across');
-  assert.equal(customer.contacts[0].name, 'Nithya Rao', 'and the contact is created');
-  assert.equal(customer.contacts[0].isPrimary, true);
-  assert.equal(customer.source, 'referral', 'the source survives conversion');
-  assert.equal(String(customer.assignedTo), String(after.assignedTo), 'ownership follows the lead');
-  assert.ok(enquiry.number.startsWith('ENQ-'));
-  assert.equal(enquiry.requirement.colour, 'Black', 'the requirement carries across');
-  /* And no quantity: nothing before the purchase order knows how many, so the enquiry stopped
-     asking — see the requirement schema's note. */
-  assert.equal(enquiry.requirement.quantity, undefined);
-});
-
-test('a converted lead cannot be converted or edited again', async () => {
-  const { json } = await api('/api/leads?status=converted', { token: nandhini });
-  const id = json.data[0]._id;
-
-  const again = await api(`/api/leads/${id}/convert`, { method: 'POST', token: nandhini, body: {} });
-  assert.equal(again.status, 409);
-
-  const edit = await api(`/api/leads/${id}`, {
-    method: 'PATCH',
-    token: nandhini,
-    body: { notes: 'late edit' },
-  });
-  assert.equal(edit.status, 400);
-});
-
-test('conversion is refused when the customer already exists, and offers that customer', async () => {
-  /*
-   * Still refused — a second master record for one buyer is the thing this check exists to
-   * prevent. What changed is the advice: it used to say "link the enquiry to that customer
-   * instead", which no action could do, so the lead was stuck and the only way out was
-   * disqualifying a real buyer as a duplicate. The match now travels with the refusal so the
-   * screen can offer it. See tests/lead-conversion.test.js for the attach path itself.
-   */
-  const lead = await api('/api/leads', {
-    method: 'POST',
-    token: nandhini,
-    body: { assignedTo: await tokenOwnerId(nandhini), company: 'SCM Again', mobile: '9876500011', ...followUp },
-  });
-
-  const converted = await api(`/api/leads/${lead.json.data._id}/convert`, {
-    method: 'POST',
-    token: nandhini,
-    body: {},
-  });
-
-  assert.equal(converted.status, 409);
-  assert.match(converted.json.message, /already exists/i);
-  assert.match(converted.json.message, /Attach this lead to that customer/);
-  assert.ok(converted.json.details?.customer?.id, 'and hands back the record to attach to');
 });
 
 /* -------------------------------- Enquiries -------------------------------- */
@@ -682,7 +539,7 @@ test('a customer with a long history says how long it is', async () => {
 /* --------------------------- Handing work over --------------------------- */
 
 test('an enquiry cannot be handed over by the person holding it', async () => {
-  // Customers and leads enforced this from the start and enquiries did not, which made it a
+  // Customers enforced this from the start and enquiries did not, which made it a
   // gap rather than a rule: the record the follow-up sweep chases was the one anybody could
   // take. Doing in one PATCH what two other screens refuse is the whole shape of the bug.
   const customer = await api('/api/customers', {
@@ -760,155 +617,11 @@ test('a record cannot be handed to somebody who is not there', async () => {
   assert.match(departed.json.message, /not active/i);
 });
 
-/* ------------------- The two halves of one pipeline, agreeing ------------------- */
-
-/**
- * A lead and an enquiry are the same relationship at two stages, and three rules had been
- * settled on the enquiry half and never carried back to the lead half. Each of these is that
- * gap, and each was reachable from the screen.
- */
-
-const aLead = async (over = {}) => {
-  const made = await api('/api/leads', {
-    method: 'POST',
-    token: nandhini,
-    body: { assignedTo: await tokenOwnerId(nandhini),
-      company: `Pipeline ${Math.random().toString(36).slice(2, 8)}`,
-      mobile: `98411${String(Math.floor(Math.random() * 90000) + 10000)}`,
-      ...over,
-    },
-  });
-  assert.equal(made.status, 201, made.json.message);
-  return made.json.data;
-};
-
 const inDays = (n) => {
   const d = new Date();
   d.setDate(d.getDate() + n);
   return d.toISOString().slice(0, 10);
 };
-
-/**
- * A reminder born overdue.
- *
- * The enquiry half refuses a follow-up date that has already gone, and the lead half accepted
- * one — which was the worse of the two places to allow it, because a lead's next step becomes a
- * real task in somebody's list. A lead entered on Friday with Tuesday's date put an
- * already-late reminder in the morning queue and read as neglect on the day it was created.
- *
- * What is refused is *setting* a date that is gone. A lead whose date passed while nobody rang
- * is correctly overdue, and editing its notes must still work — that distinction is the whole
- * of the rule, so it is tested in both directions.
- */
-test('a lead cannot be given a follow-up date that has already gone', async () => {
-  const born = await api('/api/leads', {
-    method: 'POST',
-    token: nandhini,
-    body: { assignedTo: await tokenOwnerId(nandhini), company: 'Late Start Mills', mobile: '9841100001', nextAction: 'Call', nextFollowUpDate: inDays(-10) },
-  });
-  assert.equal(born.status, 400, 'a lead was created with a reminder already late');
-  assert.match(born.json.message, /past/i);
-
-  const lead = await aLead();
-  const moved = await api(`/api/leads/${lead._id}`, {
-    method: 'PATCH', token: nandhini, body: { nextAction: 'Call', nextFollowUpDate: inDays(-3) },
-  });
-  assert.equal(moved.status, 400, 'a lead was edited to a date already gone');
-
-  const logged = await api(`/api/leads/${lead._id}/activities`, {
-    method: 'POST',
-    token: nandhini,
-    body: { type: 'call', summary: 'Rang, no answer', nextAction: 'Try again', nextFollowUpDate: inDays(-1) },
-  });
-  assert.equal(logged.status, 400, 'the activity door set a date already gone');
-
-  /* And the other direction: a date that passed on its own does not block ordinary edits. */
-  const aged = await aLead({ nextAction: 'Call', nextFollowUpDate: inDays(1) });
-  await Lead.updateOne({ _id: aged._id }, { $set: { nextFollowUpDate: inDays(-5) } });
-  const edited = await api(`/api/leads/${aged._id}`, {
-    method: 'PATCH', token: nandhini, body: { notes: 'Buyer asked us to try next month' },
-  });
-  assert.equal(edited.status, 200, 'an overdue lead could not be corrected');
-});
-
-/**
- * Bringing a written-off lead back.
- *
- * It used to happen silently, and the lead kept the reason it was written off — so the list
- * drew it as *Qualified* with "price shopper" still attached, a record contradicting itself.
- * It also walked around `convertLead`'s own refusal in a single PATCH, with nothing recorded
- * about who decided the write-off was wrong.
- *
- * The enquiry half had already answered both questions when it learned to reopen: deliberately
- * or not at all, and reopening clears what closed it.
- */
-test('a disqualified lead comes back only with a reason, and stops reading as written off', async () => {
-  const lead = await aLead();
-  const out = await api(`/api/leads/${lead._id}`, {
-    method: 'PATCH',
-    token: nandhini,
-    body: { status: 'disqualified', disqualifyReason: 'price_shopper', disqualifyNote: 'Wanted ₹4.10' },
-  });
-  assert.equal(out.status, 200, out.json.message);
-
-  const silent = await api(`/api/leads/${lead._id}`, {
-    method: 'PATCH', token: nandhini, body: { status: 'qualified' },
-  });
-  assert.equal(silent.status, 400, 'a written-off lead was revived with nothing recorded');
-  assert.match(silent.json.message, /why/i);
-
-  const back = await api(`/api/leads/${lead._id}`, {
-    method: 'PATCH',
-    token: nandhini,
-    body: { status: 'qualified', note: 'Came back at our price after their supplier let them down' },
-  });
-  assert.equal(back.status, 200, back.json.message);
-  assert.equal(back.json.data.status, 'qualified');
-
-  /* The half that made the record lie: the write-off reason is gone. */
-  assert.ok(!back.json.data.disqualifyReason, 'it still reads as written off');
-  assert.ok(!back.json.data.disqualifyNote);
-
-  /* And why is on the record, beside the write-off it undoes. */
-  assert.ok(
-    (back.json.data.activities || []).some((entry) => /supplier let them down/.test(entry.summary)),
-    'the reason it came back was not written down anywhere'
-  );
-
-  /* Which is the point: it can now be converted, and that is a decision somebody signed. */
-  const converted = await api(`/api/leads/${lead._id}/convert`, { method: 'POST', token: nandhini, body: {} });
-  assert.equal(converted.status, 201, converted.json.message);
-});
-
-/**
- * The door `updateLead` closed and this one left open.
- *
- * Both write `nextAction` and `nextFollowUpDate`. So a converted lead could be given a live
- * next step through the activity endpoint, and the leads list then drew a row reading
- * *Converted* beside "Chase · in 9 days" — for work that moved to the customer weeks ago.
- */
-test('a converted lead takes no more activity, the same as it takes no more edits', async () => {
-  const lead = await aLead({ nextAction: 'Call', nextFollowUpDate: inDays(3) });
-  const converted = await api(`/api/leads/${lead._id}/convert`, { method: 'POST', token: nandhini, body: {} });
-  assert.equal(converted.status, 201, converted.json.message);
-
-  const edited = await api(`/api/leads/${lead._id}`, {
-    method: 'PATCH', token: nandhini, body: { notes: 'after' },
-  });
-  assert.equal(edited.status, 400, 'the edit door was open');
-
-  const logged = await api(`/api/leads/${lead._id}/activities`, {
-    method: 'POST',
-    token: nandhini,
-    body: { type: 'call', summary: 'Rang them again', nextAction: 'Chase', nextFollowUpDate: inDays(9) },
-  });
-  assert.equal(logged.status, 400, 'a converted lead accepted a new next step');
-  assert.match(logged.json.message, /customer it became/i);
-
-  /* And nothing was written: the lead still says what it said when it closed. */
-  const after = await api(`/api/leads/${lead._id}`, { token: nandhini });
-  assert.equal(after.json.data.nextAction, 'Call', 'the next step was overwritten anyway');
-});
 
 /**
  * Reopening a closed enquiry, and what the refusal says.

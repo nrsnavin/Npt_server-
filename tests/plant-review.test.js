@@ -53,7 +53,7 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
 /**
  * Who a token belongs to.
  *
- * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * Creating a customer names its owner now, rather than inheriting whoever posted the
  * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
  * owns it", which is what they relied on the old default for; this says it out loud.
  */

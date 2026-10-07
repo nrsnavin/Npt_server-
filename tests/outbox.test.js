@@ -151,6 +151,9 @@ test('the real handovers go through it: an enquiry needing a sample raises the b
   await events.publish(EVENTS.ENQUIRY_SAMPLE_REQUIRED, { enquiry });
   for (let i = 0; i < 40 && !(await Sample.exists({ enquiry: enquiry._id })); i += 1) await settle();
   assert.ok(await Sample.exists({ enquiry: enquiry._id }), 'the sample request exists');
+  /* The row is marked done after the listener returns, so the sample can exist a moment first. */
+  const doneRow = () => Outbox.exists({ event: EVENTS.ENQUIRY_SAMPLE_REQUIRED, status: 'done' });
+  for (let i = 0; i < 40 && !(await doneRow()); i += 1) await settle();
   const row = await Outbox.findOne({ event: EVENTS.ENQUIRY_SAMPLE_REQUIRED }).lean();
   assert.equal(row.status, 'done');
   assert.deepEqual(row.payload.enquiry, { $ref: 'Enquiry', id: enquiry._id });

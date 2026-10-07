@@ -21,7 +21,6 @@ const bus = new EventEmitter();
 bus.on('error', (error) => console.error('[events] listener failed:', error));
 
 export const EVENTS = {
-  LEAD_CONVERTED: 'lead.converted',
   ENQUIRY_CREATED: 'enquiry.created',
   ENQUIRY_STATUS_CHANGED: 'enquiry.status_changed',
   /** Phase 2 — sampling creates a sample request from this. */

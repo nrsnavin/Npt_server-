@@ -1,5 +1,5 @@
 /**
- * The three boards: leads, enquiries and the sample bench.
+ * The boards: enquiries and the sample bench.
  *
  * A board is a read, and every one of these tests is really asking the same question in a
  * different vocabulary: does the board tell the truth about a book too big to fit on it? The
@@ -49,7 +49,7 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
 /**
  * Who a token belongs to.
  *
- * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * Creating a customer names its owner now, rather than inheriting whoever posted the
  * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
  * owns it", which is what they relied on the old default for; this says it out loud.
  */
@@ -62,23 +62,6 @@ const signIn = async (email, password) => {
 
 /** A column off a board reply, by status. */
 const columnOf = (json, status) => json.data.columns.find((column) => column.status === status);
-
-const raiseLead = async (company, extra = {}, token = nandhini) => {
-  const { status, json } = await api('/api/leads', {
-    method: 'POST',
-    token,
-    body: { assignedTo: await tokenOwnerId(token),
-      company,
-      contactName: 'Buyer',
-      mobile: `98400${String(Math.floor(Math.random() * 90000) + 10000)}`,
-      nextAction: 'Call them',
-      nextFollowUpDate: inDays(2),
-      ...extra,
-    },
-  });
-  assert.equal(status, 201, json.message);
-  return json.data;
-};
 
 const raiseEnquiry = async (extra = {}, token = nandhini) => {
   const { status, json } = await api('/api/enquiries', {
@@ -169,94 +152,35 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-/* ---------------------------------- The lead board ---------------------------------- */
-
-test('a lead board draws every stage, including the empty ones', async () => {
-  const { status, json } = await api('/api/leads/board', { token: nandhini });
-  assert.equal(status, 200, json.message);
-
-  // Every stage is a column even with nothing in it. A board that hides its empty columns
-  // rearranges itself as work moves, and the shape of the book is the thing being read.
-  assert.deepEqual(
-    json.data.columns.map((column) => column.status),
-    ['new', 'contacted', 'qualified', 'converted', 'disqualified']
-  );
-  assert.ok(json.data.columns.every((column) => Array.isArray(column.cards)));
-});
+/* ------------------------------ What every board does ------------------------------ */
 
 test('the sort the board used comes back with it, so page two agrees with page one', async () => {
   // Not decoration: "show more" goes to the ordinary list endpoint, and a list ordered any
   // differently would repeat some cards on page two and silently drop others.
-  const { json } = await api('/api/leads/board', { token: nandhini });
+  const { json } = await api('/api/enquiries/board', { token: nandhini });
   assert.equal(json.meta.sort, 'nextFollowUpDate');
 });
 
 test('a column counts what it holds, not what it handed over', async () => {
   for (let index = 0; index < 5; index += 1) {
-    await raiseLead(`Counting Mills ${index}`, { estimatedValue: 1000 });
+    await raiseEnquiry({ estimatedValue: 1000, remarks: `Counting batch ${index}` });
   }
 
-  const { json } = await api('/api/leads/board?perColumn=2', { token: nandhini });
+  const { json } = await api('/api/enquiries/board?perColumn=2&search=Counting batch', { token: nandhini });
   const fresh = columnOf(json, 'new');
 
   assert.equal(fresh.cards.length, 2, 'only a screenful is sent');
-  assert.ok(fresh.total >= 5, 'but the count is of the whole column');
-  assert.ok(fresh.total > fresh.cards.length, 'which is the entire point of the distinction');
+  assert.equal(fresh.total, 5, 'but the count is of the whole column');
 });
 
 test('a column adds up the value behind it, over the whole column and not the page', async () => {
-  const { json } = await api('/api/leads/board?perColumn=1&search=Counting Mills', { token: nandhini });
+  const { json } = await api('/api/enquiries/board?perColumn=1&search=Counting batch', { token: nandhini });
   const fresh = columnOf(json, 'new');
 
   assert.equal(fresh.cards.length, 1);
   assert.equal(fresh.total, 5);
-  // Five leads at 1,000 each. Reading the money off the one card sent would say 1,000.
+  // Five enquiries at 1,000 each. Reading the money off the one card sent would say 1,000.
   assert.equal(fresh.value, 5000);
-});
-
-test('a lead with no next step rises to the top of its column', async () => {
-  /*
-   * §3 asks that an open record always carries a defined next step, so a lead without one is
-   * the real failure on the board — Mongo sorting a missing date ahead of every real one puts
-   * it exactly where it needs to be seen, and this pins that behaviour down as intended.
-   */
-  await raiseLead('Nothing Promised Ltd', { nextFollowUpDate: undefined, nextAction: undefined });
-
-  const { json } = await api('/api/leads/board?search=Promised', { token: nandhini });
-  const fresh = columnOf(json, 'new');
-
-  assert.equal(fresh.cards[0].company, 'Nothing Promised Ltd');
-  assert.equal(fresh.cards[0].nextFollowUpDate, undefined);
-});
-
-test('a lead card carries its last activity and not its whole log', async () => {
-  const lead = await raiseLead('Chatty Exports');
-
-  for (const summary of ['First call', 'Second call', 'Third call']) {
-    await api(`/api/leads/${lead._id}/activities`, {
-      method: 'POST',
-      token: nandhini,
-      body: { type: 'call', summary },
-    });
-  }
-
-  const { json } = await api('/api/leads/board?search=Chatty', { token: nandhini });
-  // Logging contact moves a new lead to contacted, so that is where it now is.
-  const card = columnOf(json, 'contacted').cards.find((row) => row.company === 'Chatty Exports');
-
-  assert.ok(card, 'the lead moved with its log');
-  assert.equal(card.activities.length, 1, 'one activity on the card, not three');
-  assert.equal(card.activities[0].summary, 'Third call', 'and it is the newest');
-});
-
-test('the board is scoped to the reader exactly as the list is', async () => {
-  await raiseLead('Arun Only Mills', {}, arun);
-
-  const hers = await api('/api/leads/board?search=Arun Only', { token: nandhini });
-  const theirs = await api('/api/leads/board?search=Arun Only', { token: arun });
-
-  assert.equal(columnOf(hers.json, 'new').total, 0, "another marketing person's lead is invisible");
-  assert.equal(columnOf(theirs.json, 'new').total, 1, 'and visible to its owner');
 });
 
 /* -------------------------------- The enquiry board -------------------------------- */

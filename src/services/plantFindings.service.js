@@ -21,7 +21,7 @@ import { over, since, plural } from '../utils/phrases.js';
  * worst a bad review does is put the second-most-important thing first.
  *
  * **Not a seventh alarm.** The plant already has six sweeps raising tasks: late production,
- * undispatched stock, stalled samples, unanswered queries, overdue money, quiet leads. The
+ * undispatched stock, stalled samples, unanswered queries, overdue money. The
  * problem this addresses is not that nothing is flagged — it is that six sweeps produce a pile
  * and nobody can tell which of it matters before nine o'clock. So this *reads the same ground
  * they cover* and ranks it. Nothing here raises anything by itself.

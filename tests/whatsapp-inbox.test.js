@@ -51,7 +51,7 @@ const api = async (path, { method = 'GET', body, token, headers = {} } = {}) => 
 /**
  * Who a token belongs to.
  *
- * Creating a customer or a lead names its owner now, rather than inheriting whoever posted the
+ * Creating a customer names its owner now, rather than inheriting whoever posted the
  * request — see `assertCanOwnBuyer`. These fixtures always meant "the person making this call
  * owns it", which is what they relied on the old default for; this says it out loud.
  */
@@ -286,95 +286,6 @@ test('an unknown number becomes its own conversation, assigned by rotation', asy
   assert.equal(thread.assignedByRotation, true, 'and the inbox can say the rotation chose');
 });
 
-test('an open lead carrying the number captures the conversation', async () => {
-  const lead = await api('/api/leads', {
-    method: 'POST',
-    token: nandhini,
-    body: { assignedTo: await tokenOwnerId(nandhini),
-      company: 'Everblue Knitwear', mobile: '+919000000077',
-      nextAction: 'Call about their hanger requirement', nextFollowUpDate: '2026-10-01',
-    },
-  });
-  assert.equal(lead.status, 201, lead.json.message);
-
-  const { json } = await inbound('+919000000077', 'Following up on my enquiry');
-  assert.equal(json.outcome, 'created');
-
-  const thread = await threadFor('+919000000077');
-  assert.equal(thread.matchedBy, 'lead');
-  assert.equal(thread.lead?._id, lead.json.data._id);
-  assert.equal(thread.assignedTo?._id, nandhiniId, 'whoever is working the lead keeps it');
-});
-
-/**
- * The inversion §41.2 exists to prevent, and the one the other tests did not catch.
- *
- * A buyer is routinely both: an account the plant has invoiced for years, and an old lead
- * record from before they were one. Ask the lead first and a ten-year customer comes back as a
- * prospect — attached to a stale record, routed to whoever was chasing them in 2023, and shown
- * to marketing as somebody they have never sold to. Nothing errors. The conversation simply
- * lands on the wrong desk with the wrong history behind it.
- */
-test('a number on both a customer and an open lead matches the customer', async () => {
-  const BOTH = '+919000000055';
-
-  const account = await api('/api/customers', {
-    method: 'POST',
-    token: nandhini,
-    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Vogue Retail India', whatsapp: BOTH, city: 'Chennai', state: 'Tamil Nadu' },
-  });
-  assert.equal(account.status, 201, account.json.message);
-
-  /* The same number on an open lead, which is the ordinary mess of a real customer book. */
-  const stale = await api('/api/leads', {
-    method: 'POST',
-    token: arun,
-    body: { assignedTo: await tokenOwnerId(arun),
-      company: 'Vogue Retail (old enquiry)', mobile: BOTH,
-      nextAction: 'Call them back', nextFollowUpDate: '2026-10-01',
-    },
-  });
-  assert.equal(stale.status, 201, stale.json.message);
-
-  await inbound(BOTH, 'Same rate as last season?');
-
-  const thread = await threadFor(BOTH);
-  assert.equal(thread.matchedBy, 'customer', 'the account wins — §41.2 asks the customer first');
-  assert.equal(thread.customer?._id, account.json.data._id);
-  assert.equal(thread.lead, undefined, 'and the stale lead does not capture it');
-  assert.equal(
-    thread.assignedTo?._id,
-    nandhiniId,
-    'so it goes to the person who owns the relationship, not whoever chased the old lead'
-  );
-});
-
-test('a disqualified lead does not capture a fresh message', async () => {
-  /*
-   * The buyer has come back, which is news. Attaching it to a closed record would bury that
-   * under a status nobody is watching.
-   */
-  const lead = await api('/api/leads', {
-    method: 'POST',
-    token: nandhini,
-    body: { assignedTo: await tokenOwnerId(nandhini),
-      company: 'Coral Fashions', mobile: '+919000000088',
-      nextAction: 'Call them', nextFollowUpDate: '2026-10-01',
-    },
-  });
-  await api(`/api/leads/${lead.json.data._id}`, {
-    method: 'PATCH',
-    token: nandhini,
-    body: { status: 'disqualified', disqualifyReason: 'price_shopper', disqualifyNote: 'Too dear for them' },
-  });
-
-  await inbound('+919000000088', 'Are you still making the 380?');
-
-  const thread = await threadFor('+919000000088');
-  assert.equal(thread.matchedBy, 'unknown', 'a closed lead is not a match');
-  assert.equal(thread.lead, undefined);
-});
-
 /* ------------------- §41.2: one conversation, not one per message ------------------- */
 
 test('a second message from the same number joins the conversation', async () => {
@@ -522,7 +433,7 @@ test('converting raises an enquiry without re-entering what we already knew', as
       mould,
       requirement: { modelNumber: 'NH-400', colour: 'White' },
       nextAction: 'Send the costing once it is approved',
-      nextFollowUpDate: '2026-10-05',
+      nextFollowUpDate: new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10),
     },
   });
 

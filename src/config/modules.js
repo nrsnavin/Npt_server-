@@ -61,7 +61,7 @@ const DEFAULT_LEVELS = ['read', 'write'];
 export const MODULES = [
   {
     key: 'enquiries',
-    label: 'Leads & enquiries',
+    label: 'Enquiries',
     description: 'The first customer requirement: product, quantity, target price and required date, with a next action always set.',
     group: 'Pipeline',
     stage: 1,

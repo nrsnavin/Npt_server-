@@ -1,8 +1,7 @@
 import WhatsappThread, { CLOSED_THREAD_STATUSES, THREAD_STATUSES } from '../models/WhatsappThread.js';
 import Customer from '../models/Customer.js';
-import Lead from '../models/Lead.js';
 import { receiveMessage } from '../services/whatsapp.inbox.js';
-import { handleStaffMessage, staffForNumber } from '../services/leadCard.service.js';
+import { handleStaffMessage, staffForNumber } from '../services/buyerCard.service.js';
 import { createEnquiryRecord } from './pipeline.controller.js';
 import { assertAssignable, assertCanOwnBuyer, marketingTeam } from '../services/assignment.service.js';
 import {
@@ -33,7 +32,6 @@ import { transactional } from '../utils/transaction.js';
 
 const POPULATE = [
   { path: 'customer', select: 'code name city state assignedTo' },
-  { path: 'lead', select: 'number company status' },
   { path: 'enquiry', select: 'number status' },
   { path: 'assignedTo', select: 'name' },
 ];
@@ -42,8 +40,8 @@ const POPULATE = [
 
 /**
  * One message arriving at the plant's number, from whichever provider: a staff member's photo
- * becomes a lead card (leadCard.service), YES or NO answers the card waiting on them, and
- * everything else — every message from anybody else — goes to the inbox.
+ * becomes a buyer card to confirm (buyerCard.service), and everything else — every message from
+ * anybody else — goes to the inbox.
  */
 async function takeMessage({ from, body, media, providerId, profileName, receivedAt }) {
   const staff = await staffForNumber(from);
@@ -314,10 +312,10 @@ export const updateThread = asyncHandler(async (req, res) => {
   if (!ownsRecord(req.user, thread)) throw ApiError.notFound('Conversation not found');
 
   const before = snapshot(thread);
-  const { assignedTo, status, notes, customer, lead } = req.body;
+  const { assignedTo, status, notes, customer } = req.body;
 
   if (assignedTo !== undefined) {
-    /* The thread's owner is who the lead it becomes will belong to. */
+    /* The thread's owner is who the enquiry it becomes will belong to. */
     if (assignedTo) await assertCanOwnBuyer(assignedTo);
     thread.assignedTo = assignedTo;
     /* No longer the rotation's doing once a person has chosen. */
@@ -386,17 +384,6 @@ export const updateThread = asyncHandler(async (req, res) => {
       }
       await record.save();
     }
-  }
-
-  if (lead !== undefined) {
-    const record = await Lead.findById(lead);
-    if (!record) throw ApiError.badRequest('That lead does not exist');
-    if (!ownsRecord(req.user, record)) {
-      throw ApiError.forbidden('That lead belongs to another marketing person');
-    }
-    thread.lead = record._id;
-    if (thread.matchedBy === 'unknown') thread.matchedBy = 'lead';
-    if (!thread.assignedTo) thread.assignedTo = record.assignedTo;
   }
 
   await thread.save();

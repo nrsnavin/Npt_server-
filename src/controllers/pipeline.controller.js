@@ -1,9 +1,7 @@
 import { customerSummaries } from '../services/customerSummary.service.js';
 import { customerMap } from '../services/customerMap.service.js';
-import mongoose from 'mongoose';
 import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import Customer from '../models/Customer.js';
-import Lead, { LEAD_STATUSES } from '../models/Lead.js';
 import Enquiry, {
   CLOSED_STATUSES, ENQUIRY_STAGE_ORDER, ENQUIRY_STATUSES, fallsBack, furthestStage, stageLabel,
 } from '../models/Enquiry.js';
@@ -19,23 +17,17 @@ import {
   assertCanOwnBuyer,
   canOwnBuyer,
   marketingTeam,
-  ownerForNewLead,
 } from '../services/assignment.service.js';
 import { EVENTS, publish, statusEvent } from '../services/events.service.js';
 import { normalisePhone } from '../utils/phone.js';
 import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
-import { syncFollowUpReminder } from '../subscribers/leadFollowUp.subscriber.js';
-import { suggestNextStep, coachConfigured } from '../services/leadCoach.service.js';
-import { analyse, followUpQueue, leadAnalytics, untouchedLeads } from '../services/leadLog.service.js';
-import { scoreFor, teamScoreboard } from '../services/scoreboard.service.js';
 import { collect, sendCsv } from '../utils/csv.js';
-import { spelledLike } from '../data/places.js';
 import { ENQUIRY_ACTIONS, actionsFrom } from '../services/enquiryActions.js';
 import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { applySpec, buildSpec } from '../services/registers.service.js';
-import { copyRequirement, hasRequirement } from '../models/requirement.schema.js';
+import { hasRequirement } from '../models/requirement.schema.js';
 import { transactional } from '../utils/transaction.js';
 
 /**
@@ -47,67 +39,6 @@ import { transactional } from '../utils/transaction.js';
  * wrong figure ends up in a meeting.
  */
 const EXPORT_LIMIT = 5000;
-
-/**
- * The filters a lead list understands, in one place.
- *
- * One function rather than the same block in the list and the export, because the export's
- * whole promise is that the file is what was on the screen. Two copies of this had already
- * started to drift — the screen would have narrowed to a town and the download would have
- * quietly handed over the lot, which is the kind of wrong figure that reaches a meeting.
- */
-const LEAD_SEARCH_FIELDS = ['company', 'contactName', 'mobile', 'email', 'number'];
-
-function leadFilters(req, { withStatus = true } = {}) {
-  /*
-   * The search belongs in here rather than in each caller.
-   *
-   * It used to be assembled by the list endpoint and merged over the top of this, which meant
-   * every *other* reader of the lead book — the board, most recently — silently searched
-   * nothing at all: typing a company name narrowed the table beside it and left the columns
-   * showing the whole book. Nothing errors, the screen simply ignores you. Held here, a caller
-   * cannot forget it, which is the only version of this that stays true.
-   */
-  const { filter } = listParams(req.query, { searchFields: LEAD_SEARCH_FIELDS });
-
-  const scope = ownershipFilter(req.user);
-  Object.assign(filter, scope);
-
-  // Narrowing to one marketing person's leads, which may only ever narrow — see the service.
-  const owner = narrowToOwner(scope, req.query.assignedTo);
-  if (owner !== undefined) filter.assignedTo = owner;
-
-  /*
-   * The stage tally is the one caller that wants every other filter and not this one — it has
-   * to say how many each stage *would* show, and a tally narrowed to the stage already chosen
-   * would read "Qualified 7" beside four zeroes.
-   */
-  if (withStatus && req.query.status) filter.status = req.query.status;
-  if (req.query.source) filter.source = req.query.source;
-  /*
-   * Narrowing to a place, so a dot on the map is something you can click through to. Matched
-   * on the spelling key rather than the string: the book holds "tirupur" beside "Tiruppur",
-   * the map draws them as one dot of eleven, and a click that returned four of them would be
-   * read as the map being wrong rather than the spelling.
-   */
-  if (req.query.city) filter.city = spelledLike(req.query.city);
-  if (req.query.state) filter.state = spelledLike(req.query.state);
-  if (withStatus && req.query.open === 'true') {
-    filter.status = { $nin: ['converted', 'disqualified'] };
-  }
-  /*
-   * Everything that should already have been chased, the same question the enquiry list
-   * answers with the same parameter — and the same caveat with it. Chasing a lead that
-   * converted last week is not a follow-up, so a due list that carried the closed ones would
-   * be a morning queue with finished work in it.
-   */
-  if (withStatus && req.query.dueBy) {
-    filter.nextFollowUpDate = { $lte: new Date(req.query.dueBy) };
-    if (!filter.status) filter.status = { $nin: ['converted', 'disqualified'] };
-  }
-
-  return filter;
-}
 
 /**
  * True when a write actually moves a record to a different owner.
@@ -125,8 +56,8 @@ const isReassignment = (current, incoming) => {
  * The whole rule for handing a record to somebody else, in one place.
  *
  * Giving a relationship away is management's call, not the holder's, and the person it goes
- * to has to exist. Both halves belong together: customers and leads enforced the first and
- * neither enforced the second, and enquiries — the record the follow-up sweep chases and the
+ * to has to exist. Both halves belong together: customers enforced the first and not the
+ * second, and enquiries — the record the follow-up sweep chases and the
  * one most worth taking — enforced neither. A rule applied to two of three records is not a
  * rule, it is a gap with two witnesses.
  */
@@ -156,7 +87,6 @@ const TIMELINE_PAGE = 10;
  */
 const REASSIGNABLE = {
   customers: { model: Customer, module: 'customers', field: 'assignedTo', label: 'Customer' },
-  leads: { model: Lead, module: 'enquiries', field: 'assignedTo', label: 'Lead' },
   enquiries: { model: Enquiry, module: 'enquiries', field: 'assignedTo', label: 'Enquiry' },
   samples: { model: Sample, module: 'samples', field: 'requestedBy', label: 'Sample' },
 };
@@ -264,33 +194,6 @@ export const exportCustomers = asyncHandler(async (req, res) => {
     ['Owner', (row) => row.assignedTo?.name],
     ['Source', (row) => row.source],
     ['Status', (row) => row.status],
-    ['Created', (row) => row.createdAt],
-  ]);
-});
-
-export const exportLeads = asyncHandler(async (req, res) => {
-  const { sort, filter } = listParams(req.query, {
-    searchFields: ['company', 'contactName', 'mobile', 'email', 'number'],
-  });
-
-  Object.assign(filter, leadFilters(req));
-
-  const rows = await collect(Lead.find(filter).populate('assignedTo', 'name').sort(sort).limit(EXPORT_LIMIT));
-
-  await sendCsv(res, 'leads', rows, [
-    ['Number', (row) => row.number],
-    ['Company', (row) => row.company],
-    ['Contact', (row) => row.contactName],
-    ['Mobile', (row) => row.mobile],
-    ['Email', (row) => row.email],
-    ['City', (row) => row.city],
-    ['Status', (row) => row.status],
-    ['Interest', (row) => row.productInterest],
-    ['Est. value', (row) => row.estimatedValue],
-    ['Owner', (row) => row.assignedTo?.name],
-    ['Source', (row) => row.source],
-    ['Next action', (row) => row.nextAction],
-    ['Next follow-up', (row) => row.nextFollowUpDate],
     ['Created', (row) => row.createdAt],
   ]);
 });
@@ -415,7 +318,7 @@ export const getCustomer = asyncHandler(async (req, res) => {
    * which is the same list this is a preview of.
    */
   const filter = { customer: customer._id };
-  const [enquiries, total, samples, sampleTotal, leads] = await Promise.all([
+  const [enquiries, total, samples, sampleTotal] = await Promise.all([
     Enquiry.find(filter)
       .select('number enquiryDate status requirement.modelNumber estimatedValue')
       .sort('-enquiryDate')
@@ -432,30 +335,13 @@ export const getCustomer = asyncHandler(async (req, res) => {
       .sort('-requestedAt')
       .limit(TIMELINE_PAGE),
     Sample.countDocuments(filter),
-    /*
-     * Where this customer came from, and what else was folded into it.
-     *
-     * Read off `lead.convertedCustomer` rather than a field on the customer, and that is the
-     * whole point: a customer is *created from* at most one lead, but any number of later leads
-     * can turn out to be the same buyer and be attached to it — a new contact filling in the
-     * website form, an IndiaMART enquiry from a company already supplied. One field could hold
-     * the first and would silently lose every one after it, and it would be a second copy of
-     * something the lead already records. Asking the leads is the only version that stays true.
-     *
-     * `convertedFromStatus` comes along because it is the honest label: a lead that reached
-     * `qualified` before it closed reads differently from one converted straight off the rank.
-     */
-    Lead.find({ convertedCustomer: customer._id })
-      .select('number company convertedAt convertedFromStatus convertedEnquiry')
-      .sort('-convertedAt')
-      .limit(TIMELINE_PAGE),
   ]);
 
   res.json({
     success: true,
     data: {
       customer: (await customerSummaries([customer]))[0],
-      timeline: { enquiries, total, samples, sampleTotal, leads },
+      timeline: { enquiries, total, samples, sampleTotal },
     },
   });
 });
@@ -570,286 +456,10 @@ export const checkDuplicateCustomer = asyncHandler(async (req, res) => {
   });
 });
 
-/* --------------------------------- Leads --------------------------------- */
+/* --------------------------------- Owners --------------------------------- */
 
 /**
- * What the leads table will order by — the columns it actually draws, and nothing else.
- *
- * `company` rather than a contact name, because the table leads with the firm. `estimatedValue`
- * is on the list and is not a §8 figure: a lead's estimate is marketing's own guess about a
- * party who has not said what they want yet, not a price the plant has worked out.
- */
-const LEAD_SORTABLE = [
-  'number', 'company', 'city', 'estimatedValue', 'nextFollowUpDate', 'status', 'createdAt',
-];
-
-export const listLeads = asyncHandler(async (req, res) => {
-  const { page, limit, sort } = listParams(req.query, {
-    searchFields: LEAD_SEARCH_FIELDS,
-    sortable: LEAD_SORTABLE,
-  });
-
-  const filter = leadFilters(req);
-
-  /*
-   * How many sit at each stage, and what they are worth.
-   *
-   * The stage buttons above the list used to say "Show" — five identical cards carrying no
-   * information, which is a row of chrome where the shape of somebody's week should be. The
-   * tally comes back with the rows rather than from its own endpoint because it has to be
-   * computed from the same filter: fetched separately, it would disagree with the list
-   * underneath it the moment a town or a colleague was chosen.
-   */
-  const tallyFilter = leadFilters(req, { withStatus: false });
-
-  const [data, total, stages] = await Promise.all([
-    Lead.find(filter).populate('assignedTo', 'name').sort(sort).skip((page - 1) * limit).limit(limit),
-    Lead.countDocuments(filter),
-    Lead.aggregate([
-      { $match: tallyFilter },
-      { $group: { _id: '$status', leads: { $sum: 1 }, value: { $sum: '$estimatedValue' } } },
-    ]),
-  ]);
-
-  const stageCounts = Object.fromEntries(
-    stages.map((row) => [row._id, { leads: row.leads, value: row.value || 0 }])
-  );
-
-  paginated(res, data, { page, limit, total }, { stageCounts });
-});
-
-/**
- * The lead book as a board: every stage a column, the head of each in follow-up order.
- *
- * Deliberately not the list endpoint with a bigger page. A list narrowed to one stage and read
- * five times is five different moments in time, and bucketing one page of fifty in the browser
- * gives columns made of whatever sorted first. The tally and the cards here come off the same
- * filter in the same breath.
- *
- * The stage filter is dropped — `withStatus: false`, the same escape hatch the tally beside the
- * list already uses. On a board the columns *are* the stage filter, and a board showing one
- * column is a list that scrolls sideways. Every other filter still applies, so switching a
- * search or an owner from the list to the board keeps the same set of leads.
- */
-export const leadBoard = asyncHandler(async (req, res) => {
-  /*
-   * Soonest promise first — and, because Mongo sorts a missing date before every real one, the
-   * leads nobody promised anything about rise to the top of their column. That is not a
-   * side effect worth fixing: §3 asks that an open record always carry a defined next step, so
-   * a lead with no date is the one genuine failure on the board and belongs where it is seen.
-   */
-  const sort = 'nextFollowUpDate';
-
-  const columns = await buildBoard({
-    Model: Lead,
-    filter: leadFilters(req, { withStatus: false }),
-    statuses: LEAD_STATUSES,
-    sort,
-    perColumn: perColumnFrom(req.query),
-    valueField: 'estimatedValue',
-    select:
-      'number company contactName city state source status estimatedValue ' +
-      'productInterest nextAction nextActionType nextFollowUpDate assignedTo activities ' +
-      /* `updatedAt` so a move from the board can carry the same optimistic-concurrency check a
-         move from the lead screen does — a card is a stale copy the moment somebody else edits. */
-      'createdAt updatedAt',
-    populate: [{ path: 'assignedTo', select: 'name' }],
-    lastActivityOnly: true,
-  });
-
-  /* The sort travels with the answer so "show more" pages the list in the board's own order. */
-  res.json({ success: true, data: { columns }, meta: { sort } });
-});
-
-export const getLead = asyncHandler(async (req, res) => {
-  const lead = await Lead.findById(req.params.id)
-    .populate('assignedTo', 'name email')
-    .populate('convertedCustomer', 'code name')
-    .populate('convertedEnquiry', 'number status');
-  if (!lead) throw ApiError.notFound('Lead not found');
-  if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
-  res.json({ success: true, data: lead });
-});
-
-export const createLead = asyncHandler(transactional(async (req, res) => {
-  /*
-   * Whose lead it is, asked rather than worked out.
-   *
-   * This used to be the rotation's job [§41.3]: a marketing person entering a lead kept it,
-   * everybody else's went round-robin across the team. It is the right rule for the front doors
-   * — WhatsApp and IndiaMART have nobody to ask, and `ownerForNewLead` still answers for them —
-   * but on a form it made a decision nobody had taken. Somebody typed up a call they had just
-   * had and the lead went to a colleague, with a line on the record saying "by rotation" as
-   * though that explained it.
-   *
-   * The old admin-only gate goes with it. It was there because handing a lead to a colleague was
-   * refused by `updateLead` and allowed by this one, so anybody could do in one step what they
-   * were forbidden from doing in two. That reasoning holds for a *reassignment*, which takes a
-   * record off the person who has been working it — and it does not apply here, because a lead
-   * being created has no owner yet to take it from. `updateLead` is untouched: moving a lead
-   * after the fact is still a management decision.
-   */
-  await assertCanOwnBuyer(req.body.assignedTo);
-  assertFutureFollowUp(req.body.nextFollowUpDate);
-
-  const lead = await Lead.create({
-    ...req.body,
-    number: await nextNumber('LEAD'),
-    assignedTo: req.body.assignedTo,
-  });
-
-  await syncFollowUpReminder(lead);
-
-  res.status(201).json({ success: true, data: lead });
-}));
-
-export const updateLead = asyncHandler(async (req, res) => {
-  const lead = await Lead.findById(req.params.id);
-  if (!lead) throw ApiError.notFound('Lead not found');
-  if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
-  if (lead.status === 'converted') {
-    throw ApiError.badRequest('This lead has been converted and can no longer be edited');
-  }
-
-  await assertReassignment(lead.assignedTo, req.body.assignedTo, req.user);
-
-  const { status, disqualifyReason, note } = req.body;
-  if (status === 'disqualified' && !disqualifyReason && !lead.disqualifyReason) {
-    throw ApiError.badRequest('Give a reason when disqualifying a lead');
-  }
-  if (status === 'converted') {
-    throw ApiError.badRequest('Use the convert action rather than setting the status directly');
-  }
-  assertFutureFollowUp(req.body.nextFollowUpDate);
-
-  /*
-   * Bringing a written-off lead back, which used to happen silently and left the record
-   * contradicting itself.
-   *
-   * Two things were wrong and they compounded. A lead could go from `disqualified` to any open
-   * stage with nothing recorded — so `convertLead`'s own refusal ("a disqualified lead cannot
-   * be converted") was one PATCH away from being bypassed, with no trace of who decided the
-   * write-off was wrong. And `disqualifyReason` survived the move, so the lead then read
-   * *Qualified* on the list with "price shopper" still attached to it.
-   *
-   * The enquiry half of this module already settled both questions when it learned to reopen a
-   * closed enquiry: it reopens deliberately or not at all, and reopening clears what closed it.
-   * The same answer, in the same words, because a lead and an enquiry coming back from the dead
-   * are the same event at two stages of one pipeline.
-   */
-  const reviving = lead.status === 'disqualified' && status && status !== 'disqualified';
-  if (reviving) {
-    if (!note?.trim()) {
-      throw ApiError.badRequest(
-        'Say why this lead is being brought back — it goes into the log beside the write-off'
-      );
-    }
-  }
-
-  expectVersion(lead, req.body);
-  const before = snapshot(lead);
-  /* `note` is not a field on a lead — it is why this change is being made, and it belongs in
-     the log rather than assigned over the record. */
-  const { note: _why, ...patch } = withoutVersion(req.body);
-  Object.assign(lead, patch);
-
-  if (reviving) {
-    /* Or the lead reads Qualified with the reason it was written off still beside it. */
-    lead.disqualifyReason = undefined;
-    lead.disqualifyNote = undefined;
-    /* Beside the write-off in the log, which is the half somebody reads six weeks later. */
-    lead.activities.push({
-      type: 'note',
-      summary: `Brought back from disqualified — ${note.trim()}`,
-      createdBy: req.user._id,
-    });
-  }
-
-  await lead.save();
-  await recordChange({ model: 'Lead', doc: lead, before, by: req.user });
-  // A moved date replaces its reminder rather than leaving the old one to be chased.
-  await syncFollowUpReminder(lead);
-
-  res.json({ success: true, data: lead });
-});
-
-export const addLeadActivity = asyncHandler(async (req, res) => {
-  const lead = await Lead.findById(req.params.id);
-  if (!lead) throw ApiError.notFound('Lead not found');
-  if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
-  /*
-   * The same door `updateLead` closed, closed here too.
-   *
-   * It was shut on the PATCH and left open on this one, and the two write the same fields: this
-   * endpoint sets `nextAction` and `nextFollowUpDate` as well as pushing the log entry. So a
-   * converted lead could be given a live next step through the back door, and the leads list
-   * then drew it — a row reading *Converted* beside "Chase · in 9 days", for work that moved to
-   * the customer weeks ago. The screen hid the form, which is not the same as the rule existing.
-   */
-  if (lead.status === 'converted') {
-    throw ApiError.badRequest(
-      'This lead has been converted — log the call against the customer it became'
-    );
-  }
-  assertFutureFollowUp(req.body.nextFollowUpDate);
-
-  lead.activities.push({ ...req.body, createdBy: req.user._id });
-  // Logging contact is itself progress, so a new lead stops being new.
-  if (lead.status === 'new') lead.status = 'contacted';
-
-  /*
-   * The moment somebody records a call is the moment they know what happens next, so the form
-   * offers it here and this saves it — rather than making them open the edit dialog to set a
-   * date they have already decided on, which is where the next step gets skipped.
-   */
-  if (req.body.nextAction !== undefined) lead.nextAction = req.body.nextAction;
-  if (req.body.nextActionType !== undefined) lead.nextActionType = req.body.nextActionType;
-  if (req.body.nextFollowUpDate !== undefined) lead.nextFollowUpDate = req.body.nextFollowUpDate;
-
-  await lead.save();
-  await syncFollowUpReminder(lead);
-
-  res.status(201).json({ success: true, data: lead, meta: { log: analyse(lead) } });
-});
-
-/**
- * What the log says, and what to do about it.
- *
- * Proposes; never writes. The reply is a draft the marketing person accepts, edits or
- * dismisses — so a misread is a suggestion somebody declines rather than a wrong follow-up
- * date on a real buyer that nobody can tell a model set.
- */
-export const suggestLeadNextStep = asyncHandler(async (req, res) => {
-  const lead = await Lead.findById(req.params.id);
-  if (!lead) throw ApiError.notFound('Lead not found');
-  if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
-
-  const suggestion = await suggestNextStep(lead);
-  res.json({ success: true, data: suggestion, meta: { model: coachConfigured() } });
-});
-
-/** The arithmetic over the log, without asking a model anything. */
-export const leadLogAnalytics = asyncHandler(async (req, res) => {
-  const lead = await Lead.findById(req.params.id);
-  if (!lead) throw ApiError.notFound('Lead not found');
-  if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
-
-  res.json({ success: true, data: analyse(lead) });
-});
-
-/** Whose leads need somebody today — overdue, due, undecided, and quietly cooling. */
-export const leadFollowUps = asyncHandler(async (req, res) => {
-  res.json({ success: true, data: await followUpQueue(ownershipFilter(req.user)) });
-});
-
-/**
- * The shape of the lead book, and the leads that have gone quiet in it.
- *
- * One endpoint rather than two because they are read together: the funnel says how many are
- * at each stage, and the anomaly list says how many of those are only nominally there.
- */
-/**
- * Who is holding leads, so the list can be narrowed to one of them.
+ * Who is holding records, so the list can be narrowed to one of them.
  *
  * Scoped like everything else, which is what makes the filter safe to show to everybody: a
  * marketing person gets exactly one name — their own — so the picker has nothing to offer them
@@ -859,14 +469,14 @@ export const leadFollowUps = asyncHandler(async (req, res) => {
 async function ownersOf(Model, req, res) {
   const rows = await Model.aggregate([
     { $match: ownershipFilter(req.user) },
-    { $group: { _id: '$assignedTo', leads: { $sum: 1 } } },
+    { $group: { _id: '$assignedTo', count: { $sum: 1 } } },
   ]);
 
   const owners = await User.find({ _id: { $in: rows.map((row) => row._id).filter(Boolean) } })
     .select('name department')
     .sort('name');
 
-  const counts = new Map(rows.map((row) => [String(row._id), row.leads]));
+  const counts = new Map(rows.map((row) => [String(row._id), row.count]));
 
   res.json({
     success: true,
@@ -874,20 +484,18 @@ async function ownersOf(Model, req, res) {
       _id: owner._id,
       name: owner.name,
       department: owner.department,
-      leads: counts.get(String(owner._id)) || 0,
+      count: counts.get(String(owner._id)) || 0,
     })),
     // Said rather than left to be inferred from a total that does not add up.
     unassigned: counts.get('null') || counts.get('undefined') || 0,
   });
 }
 
-export const leadOwners = asyncHandler((req, res) => ownersOf(Lead, req, res));
-
-/** The same question about enquiries, answered by the same rule — see `ownersOf`. */
+/** Who holds enquiries — see `ownersOf`. */
 export const enquiryOwners = asyncHandler((req, res) => ownersOf(Enquiry, req, res));
 
 /**
- * Who a new lead or customer may be given to: the marketing team.
+ * Who a new customer may be given to: the marketing team.
  *
  * A different question from `ownersOf`, which answers "who currently *holds* records" for the
  * owner filter and is therefore ownership-scoped down to one name. This one answers "who *may*
@@ -936,248 +544,6 @@ export const marketingRoster = asyncHandler(async (req, res) => {
   });
 });
 
-export const leadsOverview = asyncHandler(async (req, res) => {
-  const scope = ownershipFilter(req.user);
-  const [analytics, untouched] = await Promise.all([
-    leadAnalytics(scope),
-    untouchedLeads(scope),
-  ]);
-
-  res.json({ success: true, data: { ...analytics, untouchedLeads: untouched } });
-});
-
-/**
- * The scoreboard: one card for the person asking, and the team for management.
- *
- * Nothing here counts activity — see `scoreboard.service.js` for why that would be the one
- * change guaranteed to make the data worse.
- */
-export const leadScoreboard = asyncHandler(async (req, res) => {
-  const mine = await scoreFor(req.user);
-  const canSeeTeam = req.user.role === 'admin' || req.user.department === 'management';
-
-  res.json({
-    success: true,
-    data: { mine, team: canSeeTeam ? await teamScoreboard() : null },
-  });
-});
-
-/**
- * Turns a qualified lead into a Customer, its first Contact and the first Enquiry, in one
- * action [BLUEPRINT §41.4 — nothing may be re-keyed].
- *
- * The enquiry is optional: sometimes a lead is worth keeping as a customer before any firm
- * requirement exists. When one is given it follows the same rules as any other enquiry.
- *
- * Exported because a sample requested against a lead now runs it too: an enquiry needs a
- * customer, so raising one for a lead *is* converting that lead, and the alternative was a
- * second copy of these hundred lines that would drift from this one. Same pattern as
- * `createEnquiryRecord`, which `whatsapp.controller` already shares.
- *
- * The caller has loaded the lead and checked it may be converted. This writes.
- */
-export async function convertLeadRecord(lead, user, body = {}) {
-  const {
-    customer: customerOverrides = {},
-    existingCustomer: existingCustomerId,
-    enquiry: enquiryInput,
-  } = body;
-
-  /*
-   * The lead is a party we already supply.
-   *
-   * The commonest awkward case in the book: a new contact at a customer fills in the website
-   * form, or an IndiaMART enquiry arrives from a company we shipped to last month. The
-   * duplicate check below correctly refused to make a second master record and advised linking
-   * the enquiry to the existing one — advice nothing could follow, so the only way to clear the
-   * lead was to disqualify a real buyer as a duplicate and re-key their requirement by hand.
-   *
-   * Attaching does everything conversion does except create the customer: the enquiry is raised
-   * against the record that already exists, the lead is closed against it, and the lead's log
-   * stays reachable from the customer it belonged to all along.
-   */
-  let existing = null;
-  if (existingCustomerId) {
-    if (Object.keys(customerOverrides).length) {
-      throw ApiError.badRequest(
-        'Either make a customer from this lead or attach it to one that exists — not both'
-      );
-    }
-
-    existing = await Customer.findById(existingCustomerId);
-    if (!existing) throw ApiError.badRequest('That customer does not exist');
-    /*
-     * Ownership is checked on the customer, not on the lead alone. Attaching writes an enquiry
-     * into somebody else's book otherwise — the duplicate check deliberately finds customers
-     * the caller cannot see, so this is the door that has to be shut.
-     */
-    if (!ownsRecord(user, existing)) throw ApiError.notFound('Customer not found');
-  }
-
-  const merged = {
-    name: customerOverrides.name || lead.company,
-    gstin: customerOverrides.gstin,
-    mobile: customerOverrides.mobile || lead.mobile,
-    whatsapp: customerOverrides.whatsapp || lead.whatsapp,
-  };
-
-  const duplicate = existing ? null : await findDuplicateCustomer(merged);
-  if (duplicate) {
-    /*
-     * The match travels with the refusal so the screen can offer it, and only when the caller
-     * may actually see it — a customer somebody else holds is reported as existing, with who to
-     * talk to, and never handed over. Same rule as `checkDuplicateCustomer`.
-     */
-    const visible = ownsRecord(user, duplicate);
-    throw ApiError.conflict(
-      `${duplicate.name} (${duplicate.code}) already exists with the same ${duplicate.matchedOn}. ` +
-        (visible
-          ? 'Attach this lead to that customer instead of converting.'
-          : `It belongs to ${duplicate.assignedTo?.name || 'somebody else'} — ask them to raise the enquiry.`),
-      {
-        matchedOn: duplicate.matchedOn,
-        owner: duplicate.assignedTo?.name,
-        ...(visible ? { customer: { id: duplicate._id, code: duplicate.code, name: duplicate.name } } : {}),
-      }
-    );
-  }
-
-  /*
-   * Conversion writes three records and must not half-happen. A customer left behind by a
-   * rejected enquiry would match the duplicate check on the retry, and the lead could then
-   * never be converted at all — so the enquiry is judged before the customer is written.
-   */
-  if (enquiryInput) {
-    /* Judged with the lead's own items folded in, because that is what will actually be
-       written — checking the form alone refused a conversion whose model was on the lead all
-       along, which is the one case carrying them across exists for. */
-    await assertEnquiryValid({
-      ...enquiryInput,
-      items: enquiryInput.items?.length ? enquiryInput.items : lead.items,
-      assignedTo: lead.assignedTo,
-    });
-  }
-
-  /* Attaching writes no customer: the record already exists and stays exactly as it is. */
-  const customer = existing || await Customer.create({
-    code: await nextNumber('CUST'),
-    name: merged.name,
-    customerType: customerOverrides.customerType || 'garment_factory',
-    city: customerOverrides.city || lead.city,
-    state: customerOverrides.state || lead.state,
-    mobile: merged.mobile,
-    whatsapp: merged.whatsapp,
-    email: customerOverrides.email || lead.email,
-    gstin: merged.gstin,
-    contacts: lead.contactName
-      ? [
-          {
-            name: lead.contactName,
-            designation: lead.designation,
-            mobile: lead.mobile,
-            whatsapp: lead.whatsapp,
-            email: lead.email,
-            isPrimary: true,
-          },
-        ]
-      : [],
-    // Ownership follows the lead, so converting never quietly moves a relationship.
-    assignedTo: lead.assignedTo,
-    creditTermsDays: customerOverrides.creditTermsDays,
-    paymentTerms: customerOverrides.paymentTerms,
-    rating: customerOverrides.rating || 'B',
-    source: lead.source,
-    // §41.6: the thread stays attached to every record the lead becomes, or the history is
-    // linked to a lead nobody opens again once it has been converted.
-    conversation: lead.conversation,
-    convertedFromLead: lead._id,
-    notes: lead.notes,
-  });
-
-  let enquiry = null;
-  if (enquiryInput) {
-    enquiry = await createEnquiryRecord(
-      {
-        ...enquiryInput,
-        customer: customer._id,
-        /*
-         * A new customer inherits the lead's owner, so the enquiry does too. An existing one
-         * already has an owner and the enquiry follows *them* — putting it on the lead's holder
-         * would hand a relationship over through a side door, which is precisely what §29
-         * reserves to management.
-         */
-        assignedTo: existing ? existing.assignedTo : lead.assignedTo,
-        /*
-         * Whatever the lead learned about what they want, carried across rather than retyped.
-         *
-         * Only when the conversion form did not say otherwise: somebody filling in the enquiry
-         * at the moment of conversion has the newer information, and overriding them with what
-         * the lead recorded weeks ago would be the older answer winning. The copy is field by
-         * field, so the row's `_id` and mongoose's internals stay on the lead where they belong.
-         */
-        items: enquiryInput.items?.length
-          ? enquiryInput.items
-          : (lead.items || []).map((item) => copyRequirement(item)),
-        source: lead.source,
-        conversation: lead.conversation,
-        lead: lead._id,
-      },
-      user
-    );
-  }
-
-  /*
-   * The samples made for this lead gain the customer it became.
-   *
-   * Without this, asking for a sample before anybody is a customer means the request is
-   * orphaned at the exact moment the relationship becomes real: the lead stops being a screen
-   * anybody opens, and the sample it carried has no buyer on it — so §6 and §42 have nobody to
-   * tell when it is ready or when it goes out.
-   *
-   * The customer is set and the enquiry deliberately is not. That the lead became this customer
-   * is a fact; which of two samples belongs to the one enquiry conversion happened to create is
-   * a judgement, and `linkEnquiry` already exists for somebody to make it deliberately. Only
-   * requests that do not already name a customer are touched, so nothing that was set by hand
-   * is overwritten.
-   */
-  const carried = await Sample.updateMany(
-    { lead: lead._id, customer: { $in: [null, undefined] } },
-    { $set: { customer: customer._id } }
-  );
-
-  /* What the lead was before it closed, so skipping the qualified rung is countable [R2]. */
-  lead.convertedFromStatus = lead.status;
-  lead.status = 'converted';
-  lead.convertedCustomer = customer._id;
-  lead.convertedEnquiry = enquiry?._id;
-  lead.convertedAt = new Date();
-  await lead.save();
-
-  await publish(EVENTS.LEAD_CONVERTED, {
-    lead, customer, enquiry, samples: carried.modifiedCount, attached: Boolean(existing),
-  });
-
-  return { lead, customer, enquiry, samplesCarried: carried.modifiedCount, attached: Boolean(existing) };
-}
-
-/**
- * The endpoint: load the lead, check it may be converted, convert it.
- *
- * The guards live here rather than in `convertLeadRecord` because the other caller has its own
- * — a sample request refuses a converted or disqualified lead in its own words, before it gets
- * this far, and a second copy of the same refusal would be the one that drifted.
- */
-export const convertLead = asyncHandler(transactional(async (req, res) => {
-  const lead = await Lead.findById(req.params.id);
-  if (!lead) throw ApiError.notFound('Lead not found');
-  if (!ownsRecord(req.user, lead)) throw ApiError.notFound('Lead not found');
-  if (lead.status === 'converted') throw ApiError.conflict('This lead has already been converted');
-  if (lead.status === 'disqualified') throw ApiError.badRequest('A disqualified lead cannot be converted');
-
-  const { customer, enquiry } = await convertLeadRecord(lead, req.user, req.body);
-  res.status(201).json({ success: true, data: { lead, customer, enquiry } });
-}));
-
 /* -------------------------------- Enquiries -------------------------------- */
 
 /**
@@ -1208,6 +574,28 @@ function assertNextAction(enquiry) {
  * reminder born overdue, which lands in the morning list looking like neglect on the day it
  * was created.
  */
+/**
+ * An enquiry captured without a model [the fourth way, in `assertEnquiryValid`] has to name
+ * one before it is worked any further. Sampling, costing and quoting all start from the model,
+ * and an enquiry reaching them saying only "plastic hangers" hands the next department a phone
+ * call instead of a job. Waiting, holding and losing need no model.
+ */
+const NEEDS_NO_MODEL = ['new', 'requirement_clarification', 'hold', 'lost'];
+
+function assertSaysWhatIsWanted(enquiry, status) {
+  if (NEEDS_NO_MODEL.includes(status)) return;
+  const rows = (enquiry.items || []).filter(describesItem);
+  const says = enquiry.mould
+    || enquiry.isNewDevelopment
+    || enquiry.requirement?.modelNumber
+    || rows.some((row) => row.mould || row.modelNumber || row.isNewDevelopment);
+  if (!says) {
+    throw ApiError.badRequest(
+      'Name the model the buyer wants (or mark it a new development) before moving this enquiry on'
+    );
+  }
+}
+
 function assertFutureFollowUp(value) {
   if (value === undefined || value === null || value === '') return;
 
@@ -1222,8 +610,8 @@ function assertFutureFollowUp(value) {
 /**
  * Everything about a proposed enquiry that can be judged before anything is written.
  *
- * Separated from creation so a caller that writes other records first — lead conversion
- * writes a customer, a group writes several enquiries — can find out it is going to fail
+ * Separated from creation so a caller that writes other records first — a group writes several
+ * enquiries — can find out it is going to fail
  * before it has left half a conversion behind. Rolling back afterwards is not equivalent:
  * this database is not necessarily a replica set, so there is no transaction to lean on.
  */
@@ -1257,7 +645,16 @@ async function assertEnquiryValid(input) {
   const anyTool = mould || rows.some((row) => row.mould);
   const anyNew = isNewDevelopment || rows.some((row) => row.isNewDevelopment);
 
-  if (!anyTool && !anyNew && !named) {
+  /*
+   * Or, a fourth: nobody knows yet, and the enquiry says so. An IndiaMART message or a visiting
+   * card is a buyer asking about "plastic hangers" — real work with a name and a number on it,
+   * and the model is the first thing the call finds out. Such an enquiry is captured in
+   * requirement clarification with the buyer's words in the remarks, and cannot move on to
+   * sampling or pricing until it names a model [`assertSaysWhatIsWanted`].
+   */
+  const clarifying = input.status === 'requirement_clarification' && Boolean(String(input.remarks || '').trim());
+
+  if (!anyTool && !anyNew && !named && !clarifying) {
     throw ApiError.badRequest(
       'Name the mould, or the model the buyer asked for, or mark this as a new development'
     );
@@ -1351,7 +748,7 @@ async function itemSpecs(rows = [], fallback = {}) {
   );
 }
 
-/** Shared by the create endpoint and by lead conversion. */
+/** Shared by the create endpoints and by intake (IndiaMART, visiting cards). */
 export async function createEnquiryRecord(input, user) {
   await assertEnquiryValid(input);
 
@@ -1369,8 +766,9 @@ export async function createEnquiryRecord(input, user) {
        both kinds of caller end up with a record of the same shape. */
     items: await itemSpecs(input.items, input),
     number: await nextNumber('ENQ'),
-    assignedTo: input.assignedTo || user._id,
-    statusHistory: [{ to: input.status || 'new', by: user._id }],
+    /* `user` is null for the IndiaMART import, which has nobody at the keyboard. */
+    assignedTo: input.assignedTo || user?._id,
+    statusHistory: [{ to: input.status || 'new', by: user?._id }],
   });
 
   await enquiry.save();
@@ -1423,6 +821,8 @@ async function enquiryFilters(req, { withStatus = true } = {}) {
   }
 
   if (req.query.customer) filter.customer = req.query.customer;
+  /* Where it came from — the IndiaMART screen links to what its feed has raised. */
+  if (req.query.source) filter.source = String(req.query.source);
   if (req.query.groupRef) filter.groupRef = req.query.groupRef;
 
   if (withStatus) {
@@ -1509,7 +909,7 @@ export const listEnquiries = asyncHandler(async (req, res) => {
 });
 
 /**
- * The enquiry book as a board. Same construction as the lead board, and the same argument.
+ * The enquiry book as a board.
  *
  * `statusHistory` is on the card and everything else is trimmed away, which looks backwards
  * until you remember what the board has to decide before a card is dropped: §3 refuses a move
@@ -1552,8 +952,7 @@ export const getEnquiry = asyncHandler(async (req, res) => {
     .populate('requirement.materialRef', 'name code type colour')
     .populate('requirement.hookRef', 'name code colour kind')
     .populate('requirement.clipRef', 'name code colour kind')
-    .populate('requirement.printRef', 'name code kind')
-    .populate('lead', 'number company');
+    .populate('requirement.printRef', 'name code kind');
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
   res.json({ success: true, data: enquiry });
@@ -1787,6 +1186,7 @@ async function moveEnquiry(enquiry, body, user) {
   }
 
   assertFutureFollowUp(nextFollowUpDate);
+  assertSaysWhatIsWanted(enquiry, status);
 
   const from = enquiry.status;
   enquiry.status = status;
