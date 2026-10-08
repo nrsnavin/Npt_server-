@@ -598,8 +598,20 @@ it holds (`src/services/handoff.service.js`; the database refuses a second open 
 - Status changes that hand work on move it through the same door: sample required → Sampling,
   pricing required → Quotation, negotiation → Price Negotiation, won → Sales / SO (only while
   it is still in the first four stages). Raising a sample or a costing on it does the same.
-- **Request PRT Visit** asks Admin without moving it; **Photos Sent** only records; **Task
-  Closed** ends the enquiry and every task still open on it.
+- **Request PRT Visit** asks Admin and **Team Payment Follow-up** asks Accounts, both without
+  moving it — Accounts chases the money while Production or Dispatch keeps the job. **Photos
+  Sent** only records; **Task Closed** ends the enquiry and every task still open on it.
+- **Quality before Dispatch:** Invoice & Dispatch is refused until Quality has passed the job —
+  a *Quality Check* moved on with Result = Passed, or a passed final / pre-dispatch inspection in
+  the Quality module — and passed again after any rework (`src/services/enquiryGates.service.js`).
+- **Dispatch keeps the balance:** Dispatch cannot move the enquiry to another department while a
+  sales order on it still has pieces to send; each lot is posted as an Update. Quality can still
+  be called in, and a short-closed order no longer counts.
+- **Assembling** has its own stage (5A), so *Ask Assembling EDD* lands on Assembling's queue.
+- **Records move it on:** releasing the sales order moves it from PO & SO to Production; a
+  consignment leaving the plant moves it from Invoice & Dispatch to LR Copy (invoice number,
+  quantity and transporter filled in); the last payment received, with nothing left to send,
+  closes it. Each only from the stage it belongs to — an enquiry already elsewhere is left alone.
 
 Nothing is raised without an enquiry: a sample, costing sheet, quotation or sales order is created
 only on one, for its buyer, and never on a closed enquiry (`src/services/enquiryLink.service.js`,
@@ -619,7 +631,7 @@ all ten side by side.
 **Deploying this** (in order, after a backup): `npm run migrate:enquiry-stages -- --confirm`
 gives every existing enquiry its stage from its status; then `npm run migrate:enquiry-holders --
 --confirm` gives every open enquiry its holding task for that stage (an open task already sent
-with that stage's button is kept as it). Both show what they would do without `--confirm`, and
+with that stage's button is kept as it) and moves enquiries with Assembling to its new stage. Both show what they would do without `--confirm`, and
 both are safe to run again.
 
 Stage changes are recorded on the enquiry and published on an internal event bus

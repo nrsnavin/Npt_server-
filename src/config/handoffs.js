@@ -13,6 +13,7 @@
  *   hidden       not offered as a button (the task every new enquiry starts with).
  *   records      what the department fills in when it is done, beside the note — all optional,
  *                because the note is what is required and these are the details worth keeping.
+ *                `type` is `date`, `choice` (with `options`) or plain text.
  *   opens        the screen where the work itself is done, when there is one.
  *
  * These are a first reading of the role requirements (7 Oct 2026); what each department records
@@ -57,7 +58,7 @@ export const HANDOFFS = [
     records: [{ key: 'edd', label: 'Expected date', type: 'date' }, { key: 'pending', label: 'Pending quantity' }],
   },
   {
-    key: 'ask_assembling_edd', label: 'Ask Assembling EDD', department: 'assembling', stage: 'production_edd',
+    key: 'ask_assembling_edd', label: 'Ask Assembling EDD', department: 'assembling', stage: 'assembling',
     hint: 'When will assembling finish?',
     records: [{ key: 'edd', label: 'Expected date', type: 'date' }, { key: 'pending', label: 'Pending quantity' }],
   },
@@ -67,7 +68,11 @@ export const HANDOFFS = [
     records: [{ key: 'readyBy', label: 'Fixed by', type: 'date' }],
   },
   {
-    key: 'team_payment_followup', label: 'Team Payment Follow-up', department: 'accounts', stage: 'team_payment_followup',
+    key: 'team_payment_followup', label: 'Team Payment Follow-up', department: 'accounts', stage: null,
+    /*
+     * A side request, not a move: Accounts chases the money while Production or Dispatch keeps
+     * the enquiry — two departments at once on one job, which a stage move cannot express.
+     */
     hint: 'Accounts to chase the payment',
     records: [
       { key: 'paymentStatus', label: 'Payment status' },
@@ -88,6 +93,19 @@ export const HANDOFFS = [
     key: 'lr_copy', label: 'LR Copy', department: 'despatch', stage: 'lr_copy',
     hint: 'Send the LR / docket copy',
     records: [{ key: 'lrNumber', label: 'LR / docket number' }],
+  },
+  {
+    /*
+     * The check before goods go. Invoice & Dispatch is refused until Quality has passed the job
+     * here (or by a final inspection in the Quality module) [services/handoff.service.js].
+     */
+    key: 'quality_check', label: 'Quality Check', department: 'quality', stage: 'quality',
+    hint: 'Check the goods before they are invoiced and sent',
+    records: [
+      { key: 'result', label: 'Result', type: 'choice', options: ['Passed', 'Failed'] },
+      { key: 'passedQty', label: 'Passed quantity' },
+      { key: 'correction', label: 'Correction needed' },
+    ],
   },
   {
     key: 'quality_issue', label: 'Quality Issue', department: 'quality', stage: 'quality',
@@ -141,6 +159,7 @@ export const KIND_FOR_STAGE = {
   pricing_quote: 'create_quotation',
   po_so: 'po_so',
   production_edd: 'ask_edd',
+  assembling: 'ask_assembling_edd',
   mould: 'mould_issue',
   team_payment_followup: 'team_payment_followup',
   invoice_dispatch: 'invoice_dispatch',

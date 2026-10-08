@@ -12,6 +12,7 @@ import { mouldWithPhoto } from '../models/Mould.js';
 import Customer from '../models/Customer.js';
 import Attachment from '../models/Attachment.js';
 import ApiError from '../utils/ApiError.js';
+import { EVENTS, publish } from '../services/events.service.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { listParams, paginated } from '../utils/query.js';
@@ -753,6 +754,8 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
 
   await order.save();
   await recordChange({ model: 'SalesOrder', doc: order, before, by: req.user, note: recipe.label });
+  /* Released to the plant: the enquiry moves from Sales / SO to Production [handoff.subscriber]. */
+  if (action === 'release') await publish(EVENTS.ORDER_RELEASED, { orderId: order._id, by: req.user });
 
   await order.populate(POPULATE);
   res.json({

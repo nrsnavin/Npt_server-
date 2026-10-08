@@ -28,6 +28,10 @@ export const EVENTS = {
   HANDOFF_RETURNED: 'handoff.returned',
   HANDOFF_LATE: 'handoff.late',
   HANDOFF_UPDATED: 'handoff.updated',
+  /* The order-to-payment records that move the enquiry on by themselves [handoff.subscriber]. */
+  ORDER_RELEASED: 'order.released',
+  DISPATCH_LEFT: 'dispatch.left',
+  PAYMENT_SETTLED: 'payment.settled',
   ENQUIRY_STATUS_CHANGED: 'enquiry.status_changed',
   /** Phase 2 — sampling creates a sample request from this. */
   ENQUIRY_SAMPLE_REQUIRED: 'enquiry.sample_required',

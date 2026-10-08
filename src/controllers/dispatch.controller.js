@@ -9,6 +9,7 @@ import Dispatch, {
 import SalesOrder, { PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
 import Attachment from '../models/Attachment.js';
 import ApiError from '../utils/ApiError.js';
+import { EVENTS, publish } from '../services/events.service.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { listParams, paginated, sortRows } from '../utils/query.js';
@@ -862,6 +863,8 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
 
   await dispatch.save();
   await recordChange({ model: 'Dispatch', doc: dispatch, before, by: req.user, note: recipe.label });
+  /* The goods have left: the enquiry moves from Invoice & Dispatch to LR Copy [handoff.subscriber]. */
+  if (recipe.to === 'dispatched') await publish(EVENTS.DISPATCH_LEFT, { dispatchId: dispatch._id, by: req.user });
 
   let moved = null, pending = false;
   try { moved = await completeDispatchEffects(dispatch, req.user); }

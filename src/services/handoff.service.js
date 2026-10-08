@@ -7,6 +7,7 @@ import { canRead } from './access.service.js';
 import { isOwnershipScoped, ownsRecord } from './ownership.service.js';
 import { EVENTS, publish } from './events.service.js';
 import ApiError from '../utils/ApiError.js';
+import { describeBalance, dispatchBalance, qualityPassed } from './enquiryGates.service.js';
 
 /**
  * One department asking another for something about an enquiry — the buttons on the enquiry
@@ -162,13 +163,20 @@ function dueFor(handoff, enquiry, now = new Date()) {
   return endOfDayIST(now);
 }
 
-/** Keep the details a button records, and nothing else. */
+/** Keep the details a button records, and nothing else; a choice must be one of its options. */
 function keptFields(kind, fields = {}) {
-  const allowed = new Set((findHandoff(kind)?.records || []).map((field) => field.key));
+  const records = new Map((findHandoff(kind)?.records || []).map((field) => [field.key, field]));
   return Object.fromEntries(
     Object.entries(fields || {})
-      .filter(([key, value]) => allowed.has(key) && String(value ?? '').trim())
-      .map(([key, value]) => [key, String(value).trim().slice(0, 200)])
+      .filter(([key, value]) => records.has(key) && String(value ?? '').trim())
+      .map(([key, value]) => {
+        const field = records.get(key);
+        const text = String(value).trim().slice(0, 200);
+        if (field.type === 'choice' && !field.options.includes(text)) {
+          fail(`${field.label} is one of: ${field.options.join(', ')}`);
+        }
+        return [key, text];
+      })
   );
 }
 
@@ -263,12 +271,29 @@ export async function moveEnquiry({ enquiry, kind, note, fields, user, system = 
     );
   }
 
+  /*
+   * The two gates [services/enquiryGates.service.js]. Into Dispatch only once Quality has passed
+   * the job; out of Dispatch only once nothing is left to send.
+   */
+  /* What the department that had it records — checked first, so a bad value is named as such. */
+  const kept = current ? keptFields(current.kind, fields) : {};
+  const target = handoff.department === 'owner' ? 'marketing' : handoff.department;
+  if (kind === 'invoice_dispatch' && current?.department !== 'despatch'
+      && !(await qualityPassed(enquiry._id, { closing: current, fields: kept }))) {
+    fail('Quality has not passed this job yet. Send it to Quality Check first; Quality moves it on to Invoice & Dispatch once it passes.');
+  }
+  if (current?.department === 'despatch' && target !== 'despatch' && kind !== 'quality_issue') {
+    const left = await dispatchBalance(enquiry._id);
+    if (left.length) {
+      fail(`${describeBalance(left)} still to send. Dispatch keeps the enquiry until the balance has gone — post each lot as an Update. If the order is being short-closed, close it on the order first.`);
+    }
+  }
+
   const text = String(note || '').trim();
   const now = new Date();
   let closedAsDone = false;
   let closed = null;
   if (current) {
-    const kept = keptFields(current.kind, fields);
     /* Done when the department that had it moves it on; "moved" when someone else took it. */
     closedAsDone = Boolean(user && mayWorkOnHandoff(user, current) && !isAdminOverride(user, current));
     /*
@@ -310,6 +335,42 @@ export async function moveEnquiry({ enquiry, kind, note, fields, user, system = 
 /** Admin moving a department's enquiry is taking it, not doing it — unless Admin is the holder. */
 const isAdminOverride = (user, task) =>
   isAdmin(user) && task.department !== user.department && idOf(task.user) !== idOf(user._id);
+
+/** Closing ends everything still open on the enquiry, the holding task included, and says so. */
+async function closeOpenTasks(enquiryId, why, user) {
+  const open = await Todo.find({ enquiry: enquiryId, kind: { $exists: true }, completed: false });
+  for (const task of open) {
+    task.completed = true;
+    task.completedAt = new Date();
+    if (user) task.completedBy = user._id;
+    task.outcome = { result: 'done', note: `Closed with the enquiry: ${why}`, by: user?._id, at: new Date() };
+    await task.save();
+  }
+}
+
+/**
+ * Closes an enquiry on nobody's behalf — paid in full with nothing left to send. Recorded as a
+ * Task Closed like the button, by the system, with why.
+ */
+export async function closeEnquiryAutomatically({ enquiry, note }) {
+  if (enquiry.stage === CLOSED_STAGE) return null;
+  const record = await Todo.create({
+    enquiry: enquiry._id,
+    customer: enquiry.customer?._id || enquiry.customer,
+    kind: 'task_closed',
+    department: enquiry.heldBy || 'management',
+    system: true,
+    title: `${findHandoff('task_closed').label} — ${aboutOf(enquiry)}`,
+    notes: note,
+    completed: true,
+    completedAt: new Date(),
+    outcome: { result: 'done', note, at: new Date() },
+    link: `/enquiries/${enquiry._id}`,
+  });
+  await closeOpenTasks(enquiry._id, note);
+  await moveStage(enquiry, CLOSED_STAGE, { task: record, note, heldBy: null });
+  return record;
+}
 
 /**
  * One button pressed on the enquiry screen. Returns the task (or the record, for the buttons
@@ -355,17 +416,7 @@ export async function sendHandoff({ enquiry, kind, note, fields, user }) {
       outcome: { result: 'done', note: text || undefined, by: user._id, at: new Date() },
     });
 
-    if (kind === 'task_closed') {
-      /* Closing ends everything still open on it, the holding task included, and says so. */
-      const open = await Todo.find({ enquiry: enquiry._id, kind: { $exists: true }, completed: false });
-      for (const task of open) {
-        task.completed = true;
-        task.completedAt = new Date();
-        task.completedBy = user._id;
-        task.outcome = { result: 'done', note: `Closed with the enquiry: ${text}`, by: user._id, at: new Date() };
-        await task.save();
-      }
-    }
+    if (kind === 'task_closed') await closeOpenTasks(enquiry._id, text, user);
     await moveStage(enquiry, handoff.stage, {
       user, task: record, note: text || handoff.label, heldBy: kind === 'task_closed' ? null : undefined,
     });

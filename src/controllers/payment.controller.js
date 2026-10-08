@@ -4,6 +4,7 @@ import Receivable, { JUDGED_STATUSES } from '../models/Receivable.js';
 import SalesOrder from '../models/SalesOrder.js';
 import Customer from '../models/Customer.js';
 import ApiError from '../utils/ApiError.js';
+import { EVENTS, publish } from '../services/events.service.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { listParams, paginated } from '../utils/query.js';
@@ -472,6 +473,8 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
    * a buyer who has already paid.
    */
   if (receivable.balance <= 0) {
+    /* Settled: if it was the last money owed and nothing is left to send, the enquiry closes. */
+    await publish(EVENTS.PAYMENT_SETTLED, { receivableId: receivable._id, by: req.user });
     await raiseTask({
       user: receivable.assignedTo,
       title: `Paid: ${receivable.customer?.name || 'a customer'} — ${receivable.invoice?.number || receivable.number}`,

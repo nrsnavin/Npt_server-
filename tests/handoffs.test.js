@@ -111,22 +111,26 @@ test('the ten departments, in the plant\'s order', async () => {
   ]);
 });
 
-test('the buttons and the twelve stages come from the server', async () => {
+test('the buttons and the stages come from the server', async () => {
   const { status, json } = await api('/api/handoffs', { token: arun });
   assert.equal(status, 200);
-  assert.equal(json.data.stages.filter((stage) => stage.number).length, 12);
+  /* The plant's twelve, plus Assembling's own (5A). */
+  assert.equal(json.data.stages.filter((stage) => stage.number).length, 13);
+  assert.equal(json.data.stages.find((stage) => stage.key === 'assembling').number, '5A');
   assert.deepEqual(json.data.stages.slice(0, 4).map((stage) => stage.label), ['Enquiry', 'Sample', 'Pricing / Quote', 'PO & SO']);
   const drawn = json.data.buttons.filter((button) => !button.hidden);
   assert.deepEqual(drawn.map((button) => button.label), [
     'Photos Sent', 'Create Quotation', 'Sample Request', 'Price Negotiation', 'PO & SO', 'Ask EDD',
     'Ask Assembling EDD', 'Mould Issue', 'Team Payment Follow-up', 'Invoice & Dispatch', 'LR Copy',
-    'Quality Issue', 'GST / Invoice Audit', 'Request PRT Visit', 'My Payment Follow-up', 'Back to Marketing', 'Task Closed',
+    'Quality Check', 'Quality Issue', 'GST / Invoice Audit', 'Request PRT Visit', 'My Payment Follow-up', 'Back to Marketing', 'Task Closed',
   ]);
   /* Which of them hand the enquiry over, and which only record or ask on the side. */
   const moves = Object.fromEntries(json.data.buttons.map((button) => [button.key, button.moves]));
   assert.equal(moves.sample_request, true);
   assert.equal(moves.photos_sent, false);
   assert.equal(moves.request_prt_visit, false, 'a visit is asked for without moving the enquiry');
+  assert.equal(moves.team_payment_followup, false, 'Accounts chases money while someone else holds it');
+  assert.equal(moves.quality_check, true);
   assert.equal(moves.task_closed, false);
 });
 

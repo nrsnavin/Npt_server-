@@ -24,7 +24,20 @@ import { ensureHolder, holderOf } from '../src/services/handoff.service.js';
 const confirm = process.argv.includes('--confirm');
 
 export async function backfillHolders({ write = confirm, log = console.log } = {}) {
-  const report = { adopted: 0, opened: 0, alreadyHeld: 0 };
+  const report = { adopted: 0, opened: 0, alreadyHeld: 0, toAssembling: 0 };
+
+  /* Assembling has its own stage now: an enquiry with Assembling's task moves to it. */
+  const withAssembling = await Todo.find({ kind: 'ask_assembling_edd', holds: true, completed: false }).select('enquiry').lean();
+  if (withAssembling.length) {
+    const ids = withAssembling.map((task) => task.enquiry);
+    const moving = await Enquiry.countDocuments({ _id: { $in: ids }, stage: 'production_edd' });
+    report.toAssembling = moving;
+    if (moving) log(`  ${moving} enquir${moving === 1 ? 'y' : 'ies'} with Assembling move to the Assembling stage`);
+    if (write && moving) {
+      await Enquiry.updateMany({ _id: { $in: ids }, stage: 'production_edd' }, { $set: { stage: 'assembling' } }, { timestamps: false, keepVersion: true });
+    }
+  }
+
   const cursor = Enquiry.find({ stage: { $ne: CLOSED_STAGE } }).populate('customer', 'code name').cursor();
 
   for await (const enquiry of cursor) {
@@ -53,8 +66,8 @@ async function main() {
   await connectDatabase();
   console.log(confirm ? '\nGiving open enquiries their department task:\n' : '\nDry run — nothing will change:\n');
   const report = await backfillHolders();
-  console.log(`\n${report.opened} opened, ${report.adopted} kept an open task, ${report.alreadyHeld} already held.`);
-  if (!confirm && (report.opened || report.adopted)) console.log('Run again with --confirm to write.');
+  console.log(`\n${report.opened} opened, ${report.adopted} kept an open task, ${report.alreadyHeld} already held, ${report.toAssembling} moved to Assembling.`);
+  if (!confirm && (report.opened || report.adopted || report.toAssembling)) console.log('Run again with --confirm to write.');
   await disconnectDatabase();
 }
 

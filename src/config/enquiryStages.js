@@ -16,6 +16,8 @@ export const STAGES = [
   { key: 'pricing_quote', number: 3, label: 'Pricing / Quote', department: 'quotation' },
   { key: 'po_so', number: 4, label: 'PO & SO', department: 'order_confirmation' },
   { key: 'production_edd', number: 5, label: 'Production / EDD', department: 'production' },
+  /* Not on the plant's original screen: Assembling's own stage, so its work is counted as its own. */
+  { key: 'assembling', number: '5A', label: 'Assembling', department: 'assembling' },
   { key: 'mould', number: 6, label: 'Mould', department: 'production' },
   { key: 'team_payment_followup', number: 7, label: 'Team Payment Follow-up', department: 'accounts' },
   { key: 'invoice_dispatch', number: 8, label: 'Invoice & Dispatch', department: 'despatch' },

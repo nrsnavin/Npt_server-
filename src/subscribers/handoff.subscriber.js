@@ -99,6 +99,29 @@ async function moveOnBehalf(enquiryId, kind, { by, status } = {}) {
   }
 }
 
+/**
+ * Moves the enquiry on someone's behalf when a record says the work moved — but only from the
+ * stage that work belongs to, so an enquiry somebody has already sent elsewhere is left alone.
+ */
+async function moveWhenAt(enquiryId, { at, kind, by, fields, note }) {
+  const enquiry = await Enquiry.findById(enquiryId?._id || enquiryId).populate('customer', 'code name');
+  if (!enquiry || !at.includes(enquiry.stage)) return;
+  const holder = await holderOf(enquiry._id);
+  if (holder?.kind === kind) return;
+  const user = by?._id ? await User.findById(by._id).select('name department role') : undefined;
+  try {
+    await moveEnquiry({ enquiry, kind, fields, note, user: user || undefined, system: true, openRecords: false });
+  } catch (error) {
+    if (error?.code === 11000 || error?.statusCode === 409) return;
+    /* A gate said no (Quality not passed, a balance left): the department moves it by hand. */
+    if (error?.statusCode === 400) {
+      console.warn(`[handoff] ${enquiry.number} not moved to ${kind}: ${error.message}`);
+      return;
+    }
+    throw error;
+  }
+}
+
 let registered = [];
 
 export function registerHandoffSubscribers() {
@@ -194,6 +217,66 @@ export function registerHandoffSubscribers() {
     safely('move with the status', async ({ enquiry, to, by }) => {
       const kind = STATUS_MOVES[to];
       if (kind) await moveOnBehalf(enquiry, kind, { by, status: to });
+    })
+  );
+
+  /* The sales order released to the plant: Sales / SO is done, Production has it. */
+  subscribe(
+    EVENTS.ORDER_RELEASED,
+    safely('production has the enquiry', async ({ orderId, by }) => {
+      const { default: SalesOrder } = await import('../models/SalesOrder.js');
+      const order = await SalesOrder.findById(orderId).select('number enquiry customerPo');
+      if (!order?.enquiry) return;
+      await moveWhenAt(order.enquiry, {
+        at: ['po_so'], kind: 'ask_edd', by,
+        fields: { poNumber: order.customerPo?.number, soNumber: order.number },
+        note: `${order.number} released to production`,
+      });
+    })
+  );
+
+  /* The goods have left the plant: Invoice & Dispatch is done, the LR copy is next. */
+  subscribe(
+    EVENTS.DISPATCH_LEFT,
+    safely('dispatch moves to the LR copy', async ({ dispatchId, by }) => {
+      const { default: Dispatch } = await import('../models/Dispatch.js');
+      const { default: SalesOrder } = await import('../models/SalesOrder.js');
+      const dispatch = await Dispatch.findById(dispatchId).select('number order invoice transporter lines');
+      const order = dispatch && await SalesOrder.findById(dispatch.order).select('enquiry');
+      if (!order?.enquiry) return;
+      const sent = (dispatch.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0);
+      await moveWhenAt(order.enquiry, {
+        at: ['invoice_dispatch'], kind: 'lr_copy', by,
+        fields: { invoiceNumber: dispatch.invoice?.number, quantitySent: sent ? String(sent) : undefined, transporter: dispatch.transporter },
+        note: `${dispatch.number} has left the plant`,
+      });
+    })
+  );
+
+  /* The last money is in and nothing is left to send: the enquiry is finished. */
+  subscribe(
+    EVENTS.PAYMENT_SETTLED,
+    safely('close a paid enquiry', async ({ receivableId }) => {
+      const { default: Receivable } = await import('../models/Receivable.js');
+      const { default: SalesOrder } = await import('../models/SalesOrder.js');
+      const { dispatchBalance } = await import('../services/enquiryGates.service.js');
+      const { closeEnquiryAutomatically } = await import('../services/handoff.service.js');
+      const settled = await Receivable.findById(receivableId).select('order');
+      const order = settled && await SalesOrder.findById(settled.order).select('enquiry');
+      if (!order?.enquiry) return;
+      const enquiry = await Enquiry.findById(order.enquiry).populate('customer', 'code name');
+      if (!enquiry || enquiry.stage === 'closed') return;
+
+      const orders = await SalesOrder.find({ enquiry: enquiry._id, status: { $ne: 'cancelled' } }).select('_id');
+      const owed = await Receivable.find({ order: { $in: orders.map((row) => row._id) } });
+      if (!owed.length || owed.some((row) => row.balance > 0)) return;
+      if ((await dispatchBalance(enquiry._id)).length) return;
+
+      const total = owed.reduce((sum, row) => sum + (row.invoice?.value || 0), 0);
+      await closeEnquiryAutomatically({
+        enquiry,
+        note: `Paid in full — ₹${Math.round(total).toLocaleString('en-IN')} received, nothing left to send.`,
+      });
     })
   );
 
