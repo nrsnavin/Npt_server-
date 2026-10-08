@@ -1,10 +1,12 @@
 import ApiError from '../utils/ApiError.js';
 import { accessLevel } from './access.service.js';
 import { levelSatisfies } from '../config/modules.js';
-import { costingLine } from './pricing.service.js';
 
 /**
- * Who may see what on a costing sheet [BLUEPRINT §8].
+ * Who may see what on a quotation's costing [BLUEPRINT §8].
+ *
+ * The costing lives on the quotation's lines now [models/Quotation.js], so this is the wall
+ * between the cost of each line and the price on it.
  *
  * This is the one rule the module system cannot express. A grant says whether you may open
  * pricing at all; §8 says that *within* a sheet you may open, marketing sees the quoted price,
@@ -53,10 +55,14 @@ export const CONFIDENTIAL = [
  * difference between "decided to be public" and "nobody has thought about it yet".
  */
 export const PUBLIC_FIGURES = [
-  'approvedSellingPrice',
   'calculatedSellingPrice',
   'targetPrice',
   'quantity',
+  /* The offer, and the sign-off on it: what the buyer is told, so nobody's secret. */
+  'unitPrice',
+  'moq',
+  'approvedPrice',
+  'rejectedPrice',
 ];
 
 /**
@@ -90,133 +96,40 @@ export const mayQuote = (user) => levelSatisfies(accessLevel(user, 'pricing'), '
  * That distinction is the whole design: the block has to be explainable, or it reads as the
  * system being broken.
  */
-export function visibleTo(pricing, user) {
-  const plain = typeof pricing?.toJSON === 'function' ? pricing.toJSON() : { ...pricing };
+export function visibleTo(quotation, user) {
+  const plain = typeof quotation?.toJSON === 'function' ? quotation.toJSON() : { ...quotation };
   if (seesCosting(user)) return plain;
 
   for (const field of CONFIDENTIAL) delete plain[field];
 
-  /*
-   * And inside every line, which is where the cost base actually lives now.
-   *
-   * The top-level fields above are virtuals reading the first line [models/Pricing.js], so
-   * deleting them redacts one model's figures and leaves the other seven sitting in `lines`
-   * untouched. This is the leak the redesign could most easily have introduced, and it would
-   * have been invisible: the sheet would have looked properly redacted at a glance, and a
-   * marketing reader would have had the full cost of every model but the first.
-   *
-   * The same list, applied the same way, because they are the same fields — a line is what the
-   * sheet used to be.
-   */
+  /* Inside every line, which is where the cost lives. */
   plain.lines = (plain.lines || []).map((line) => {
     const seen = { ...line };
     for (const field of CONFIDENTIAL) delete seen[field];
 
-    /* The tool travels on the line and carries its own money, exactly as it did on the sheet. */
+    /* The tool carries its own money (machine rate), and so do the registers (their rates). */
     if (seen.mould && typeof seen.mould === 'object') seen.mould = mouldVisibleTo(seen.mould, user);
+    for (const ref of ['materialRef', 'hookRef', 'clipRef', 'printRef']) {
+      if (seen[ref] && typeof seen[ref] === 'object') {
+        const { ratePerKg: _kg, ratePerPiece: _piece, ...rest } = seen[ref];
+        seen[ref] = rest;
+      }
+    }
 
-    /* Facts about what happens next, not figures — the same two the sheet keeps below. */
+    /* Whether, not where: a price under its minimum, and whether it waits on Admin. */
     seen.belowMinimum = Boolean(line.belowMinimum);
     seen.needsApproval = line.status === 'approval_pending';
     return seen;
   });
 
-  /*
-   * The mould travels with the sheet, and it carries its own money. Redacting the cost lines
-   * here while the tool populated beside them reports a machine rate and a cost per piece would
-   * be the leak arriving through the door this function is standing in front of.
-   *
-   * Only when it is actually populated — an unpopulated reference serialises to an id, and
-   * spreading a string produces an object of numbered characters.
-   */
-  if (plain.mould && typeof plain.mould === 'object') {
-    plain.mould = mouldVisibleTo(plain.mould, user);
-  }
+  /* `soleLine` is a second copy of the one line — it has to be the redacted one. */
+  if ('soleLine' in plain) plain.soleLine = plain.lines.length === 1 ? plain.lines[0] : null;
 
-  /*
-   * Kept: facts about what may happen next, not figures. `needsApproval` is the one the screen
-   * should show — a sheet MD has signed off is still under the floor and is cleared to quote,
-   * and saying "needs approval" beside a badge reading Approved is the screen contradicting
-   * itself.
-   */
-  plain.belowMinimum = Boolean(pricing.belowMinimum);
-  plain.needsApproval = Boolean(pricing.needsApproval);
   plain.costingHidden = true;
   return plain;
 }
 
 export const allVisibleTo = (rows, user) => rows.map((row) => visibleTo(row, user));
-
-/**
- * One costing as it appears *on a quotation line*, which is a different question from §8's usual
- * one and worth its own function.
- *
- * A costing knows what it is worth at the price it was approved at. A quotation line knows what
- * was actually offered — and those diverge the moment anybody negotiates, which is most of the
- * time. So the margin here is computed against the **line's** price, not the sheet's:
- * `grossMarginPercent` on the costing answers "what would we make at the approved price", and
- * nobody is being charged the approved price. Neither record answers "what are we making on this
- * line" on its own, and that is the number a quotation screen exists to show.
- *
- * The wall stands exactly where §8 puts it. The cost base, the floor and the margin go only to
- * someone who may already open the costing; everyone else gets `belowFloor` — whether the price
- * offered sits under the minimum, without learning where the minimum is. That is the same
- * distinction `visibleTo` above draws for `belowMinimum`, and it is drawn again here rather than
- * inherited because the comparison is against a different price.
- *
- * **One line of the sheet, not the sheet.** A costing prices several models now, each with its
- * own cost and its own floor, so a quotation line has to be read against the line it was priced
- * from — otherwise the margin shown is one model's price over another model's cost, which is
- * worse than showing nothing because it looks like an answer.
- *
- * @param {object} pricing   the populated costing, or null
- * @param {object} line      the quotation line: what it quotes, and which costing line from
- * @param {object} user
- */
-export function lineCosting(pricing, line, user) {
-  if (!pricing) return null;
-
-  const unitPrice = line?.unitPrice;
-  const costed = costingLine(pricing, line) || {};
-
-  /*
-   * An allow-list, never a `select`. The costing's totals are virtuals and are recomputed on the
-   * way out whatever a projection said — see the note on `getQuotation`. Building the answer up
-   * from named fields is the only version that cannot drift into leaking one.
-   */
-  const seen = {
-    _id: pricing._id,
-    number: pricing.number,
-    /* The line's own state, because §9 is decided per model — the sheet's roll-up says
-       "approved" while the model on this line is still waiting on a signature. */
-    status: costed.status || pricing.status,
-    approvedSellingPrice: costed.approvedSellingPrice,
-  };
-
-  const floor = costed.minimumSellingPrice;
-  /* Only a real comparison counts: an uncosted sheet has no floor, and `undefined < n` is false
-     for the wrong reason. */
-  seen.belowFloor =
-    floor != null && unitPrice != null ? unitPrice < floor : false;
-
-  if (!seesCosting(user)) return seen;
-
-  const cost = costed.totalCost;
-  seen.totalCost = cost;
-  seen.minimumSellingPrice = floor;
-
-  if (cost != null && unitPrice) {
-    seen.marginPerPiece = Math.round((unitPrice - cost) * 100) / 100;
-    /* Margin on the price, markup on the cost — the sheet speaks in both, and confusing them is
-       how a 20% markup gets read as a 20% margin. */
-    seen.marginPercent = Math.round(((unitPrice - cost) / unitPrice) * 1000) / 10;
-    seen.markupPercent = cost
-      ? Math.round(((unitPrice - cost) / cost) * 1000) / 10
-      : null;
-  }
-
-  return seen;
-}
 
 /**
  * The mould register's own confidential half.

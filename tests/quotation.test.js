@@ -187,12 +187,27 @@ test('every revision stays — Rev 0 ₹7.50, Rev 1 ₹7.30, Rev 2 ₹7.20', asy
   );
 });
 
-test('the price cannot be changed by editing — that would overwrite the history', async () => {
+test('before it goes out the price is edited in place, and Rev 0 follows it', async () => {
+  /* Nothing has been offered yet, so there is no history to overwrite: Rev 0 is what will go out. */
   const made = await quote();
   const edited = await api(`/api/quotations/${made._id}`, {
     method: 'PATCH',
     token: nandhini,
-    body: { lines: [{ quantity: 40000, modelNumber: 'NH-400', unitPrice: 6.9 }] },
+    body: { lines: [{ _id: made.lines[0]._id, unitPrice: 6.9 }] },
+  });
+  assert.equal(edited.status, 200, edited.json.message);
+  assert.equal(edited.json.data.lines[0].unitPrice, 6.9);
+  assert.equal(edited.json.data.revisions.length, 1);
+  assert.equal(edited.json.data.revisions[0].lines[0].unitPrice, 6.9);
+});
+
+test('once it has gone out the price cannot be edited — that would overwrite what was said', async () => {
+  const made = await quote();
+  await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
+  const edited = await api(`/api/quotations/${made._id}`, {
+    method: 'PATCH',
+    token: nandhini,
+    body: { lines: [{ _id: made.lines[0]._id, unitPrice: 6.9 }] },
   });
 
   assert.equal(edited.status, 400);
@@ -316,170 +331,179 @@ test('refusing one needs a reason', async () => {
   assert.match(bare.json.message, /why/i);
 });
 
-/* ------------------- The costing, read from the quotation ------------------- */
+/* --------------------- The costing, on the quotation's lines --------------------- */
 
-test('a quotation line shows the margin on the price actually offered', async () => {
-  /*
-   * The figure neither record holds alone. The costing knows what it would earn at the price it
-   * was approved at; the line knows what was really quoted, and the two diverge the moment
-   * anybody negotiates — which is most of the time. Reading the sheet's own
-   * `grossMarginPercent` here would answer a question nobody asked.
-   */
-  const costing = await withCosting({ minimum: 6, approved: 9 });
-  const quoted = await quote({ pricing: costing, unitPrice: 8 });
+/*
+ * The quotation carries its costing now [models/Quotation.js]: the Quotation department costs
+ * each line, and the price on the line is what the buyer is offered. Cost here is 22 g at ₹95/kg
+ * plus ₹1 job work — ₹3.09 a piece.
+ */
+const COST = { gramWeight: 22, rawMaterialRate: 95, jobWorkCost: 1 };
+const TOTAL_COST = 3.09;
 
-  const { json } = await api(`/api/quotations/${quoted._id}`, { token: admin });
-  const line = json.data.lines[0];
+/** A quotation whose line is waiting for costing. */
+const toCost = async (lines = [{ modelNumber: 'NH-400', quantity: 40000 }]) => quote({ lines });
 
-  assert.ok(line.pricing.totalCost > 0, 'the cost base is there for somebody who may see it');
-  assert.equal(
-    line.pricing.marginPerPiece,
-    Math.round((8 - line.pricing.totalCost) * 100) / 100,
-    'margin is against the 8.00 quoted, not the 9.00 approved'
-  );
-  assert.ok(line.pricing.marginPercent > 0);
-  assert.equal(line.pricing.belowFloor, false, 'and 8.00 clears a floor of 6.00');
+/** Costs one line, as the Quotation department (admin here) does. */
+const costIt = (id, lineId, body, token = admin) =>
+  api(`/api/quotations/${id}/lines/${lineId}/cost`, { method: 'PATCH', token, body });
+
+/** A quotation costed with a minimum and priced at `price`. */
+const costedQuote = async ({ minimum, price }) => {
+  const made = await toCost();
+  const built = await costIt(made._id, made.lines[0]._id, {
+    cost: COST, markupPercent: 20, minimumOverride: minimum, unitPrice: price,
+  });
+  assert.equal(built.status, 200, built.json.message);
+  return built.json.data;
+};
+
+const decide = (id, lineId, body, token = admin) =>
+  api(`/api/quotations/${id}/lines/${lineId}/decision`, { method: 'POST', token, body });
+
+test('a line raised without a price waits for costing', async () => {
+  const made = await toCost();
+  assert.equal(made.status, 'costing');
+  assert.equal(made.lines[0].status, 'requested');
+
+  const sent = await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
+  assert.equal(sent.status, 400);
+  assert.match(sent.json.message, /NH-400 has no price yet/);
 });
 
-test('marketing sees the quotation exactly as before, and nothing of the cost', async () => {
-  /*
-   * The wall §8 draws, checked on the new door rather than assumed. A quotation is the document
-   * that goes to the buyer; the cost base, the margin and the floor are the things that must
-   * never travel with it.
-   */
-  const costing = await withCosting({ minimum: 6, approved: 9 });
-  const quoted = await quote({ pricing: costing, unitPrice: 8 });
+test('costing a line prices it at cost plus its markup, and the quotation is ready to send', async () => {
+  const made = await toCost();
+  const built = await costIt(made._id, made.lines[0]._id, { cost: COST, markupPercent: 20 });
+  assert.equal(built.status, 200, built.json.message);
 
-  const { json } = await api(`/api/quotations/${quoted._id}`, { token: nandhini });
+  const line = built.json.data.lines[0];
+  assert.equal(Math.round(line.totalCost * 100) / 100, TOTAL_COST);
+  assert.equal(line.calculatedSellingPrice, 3.75, 'cost + 20%, rounded up to five paise');
+  assert.equal(line.unitPrice, 3.75, 'the price defaults to it');
+  assert.equal(line.status, 'approved');
+  assert.equal(built.json.data.status, 'draft');
+  assert.equal(built.json.data.revisions[0].lines[0].unitPrice, 3.75, 'Rev 0 is what will go out');
+});
+
+test('a quotation line shows the margin on the price actually offered', async () => {
+  const made = await costedQuote({ minimum: 6, price: 8 });
+  const { json } = await api(`/api/quotations/${made._id}`, { token: admin });
   const line = json.data.lines[0];
 
-  assert.equal(line.pricing.number !== undefined, true, 'the costing is still named');
-  assert.equal(line.pricing.approvedSellingPrice, 9, 'and the price they may quote is public');
+  assert.ok(line.totalCost > 0, 'the cost base is there for somebody who may see it');
+  assert.equal(line.grossMarginPercent, Math.round(((8 - TOTAL_COST) / 8) * 1000) / 10);
+  assert.equal(line.belowMinimum, false, '8.00 clears a minimum of 6.00');
+});
 
-  for (const field of ['totalCost', 'minimumSellingPrice', 'marginPerPiece', 'marginPercent', 'markupPercent']) {
-    assert.equal(line.pricing[field], undefined, `${field} must not reach a marketing reader`);
+test('marketing sees the price on the quotation and nothing of the cost', async () => {
+  const made = await costedQuote({ minimum: 6, price: 8 });
+  const { json } = await api(`/api/quotations/${made._id}`, { token: nandhini });
+  const line = json.data.lines[0];
+
+  assert.equal(line.unitPrice, 8, 'the price is theirs to see');
+  assert.equal(json.data.costingHidden, true);
+  for (const field of ['cost', 'totalCost', 'materialCost', 'minimumSellingPrice', 'minimumOverride', 'grossMarginPercent', 'effectiveMarkupPercent', 'markupPercent', 'tiers']) {
+    assert.equal(line[field], undefined, `${field} must not reach a marketing reader`);
   }
 });
 
-test('marketing learns whether a line is under its floor, never where the floor is', async () => {
-  // The same distinction §8 already draws for `belowMinimum` on the costing itself: the block
-  // has to be explainable, or it reads as the system being broken.
-  const costing = await withCosting({ minimum: 9, approved: 9 });
-  const quoted = await quote({ pricing: costing, unitPrice: 7 });
-
-  const { json } = await api(`/api/quotations/${quoted._id}`, { token: nandhini });
+test('marketing learns whether a line is under its minimum, never where the minimum is', async () => {
+  const made = await costedQuote({ minimum: 9, price: 7 });
+  const { json } = await api(`/api/quotations/${made._id}`, { token: nandhini });
   const line = json.data.lines[0];
 
-  assert.equal(line.pricing.belowFloor, true, 'they can see there is a problem');
-  assert.equal(line.pricing.minimumSellingPrice, undefined, 'without learning the number');
+  assert.equal(line.belowMinimum, true, 'they can see there is a problem');
+  assert.equal(line.needsApproval, true);
+  assert.equal(line.minimumSellingPrice, undefined, 'without learning the number');
 });
 
-test('a line with no costing behind it says so rather than inventing figures', async () => {
-  const quoted = await quote({ unitPrice: 8 });
+test('a line with no cost behind it has no minimum, rather than inventing one', async () => {
+  const made = await quote({ unitPrice: 8 });
+  const { json } = await api(`/api/quotations/${made._id}`, { token: admin });
+  assert.equal(json.data.lines[0].totalCost, 0);
+  assert.equal(json.data.lines[0].minimumSellingPrice, undefined);
+  assert.equal(json.data.lines[0].status, 'approved');
+});
 
-  const { json } = await api(`/api/quotations/${quoted._id}`, { token: admin });
-  assert.equal(json.data.lines[0].pricing, null);
+test('only costing may cost a line', async () => {
+  const made = await toCost();
+  const attempt = await costIt(made._id, made.lines[0]._id, { cost: COST }, nandhini);
+  assert.equal(attempt.status, 403);
 });
 
 /* --------------------------- §9: the price gate --------------------------- */
 
-/** A costing with a floor, linked to a quotation. */
-const withCosting = async ({ minimum, approved }) => {
-  const made = await api('/api/pricings', {
-    method: 'POST',
-    token: admin,
-    /* A costing prices one model, so it keeps its flat shape — lines are the quotation's. */
-    body: { customer, quantity: 40000, modelNumber: 'NH-400' },
-  });
-  const built = await api(`/api/pricings/${made.json.data._id}/cost`, {
-    method: 'PATCH',
-    token: admin,
-    body: {
-      cost: { gramWeight: 22, rawMaterialRate: 95, jobWorkCost: 1 },
-      markupPercent: 20,
-      minimumOverride: minimum,
-      approvedSellingPrice: approved,
-    },
-  });
-  /*
-   * Asserted, because it was not: when the field names changed under it this helper went on
-   * returning an id for a costing that had silently failed to build, and three §9 tests passed
-   * a quote through a gate that was no longer there.
-   */
-  assert.equal(built.status, 200, built.json.message);
-  return made.json.data._id;
-};
+test('a price under the minimum waits on Admin, and says so without naming the minimum', async () => {
+  const made = await costedQuote({ minimum: 7, price: 6.5 });
+  assert.equal(made.status, 'approval_pending', 'visibly in the queue it is in');
 
-test('a quote under the floor cannot be sent, and says so without naming the floor', async () => {
-  const pricing = await withCosting({ minimum: 7, approved: 7.5 });
-  const made = await quote({ pricing, unitPrice: 6.5 });
-
-  const sent = await api(`/api/quotations/${made._id}/send`, {
-    method: 'POST',
-    token: nandhini,
-    body: {},
-  });
-
+  const sent = await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
   assert.equal(sent.status, 400);
   assert.match(sent.json.message, /below the approved minimum/i);
   assert.ok(!/\b7\b/.test(sent.json.message), '§8 keeps the figure away from marketing');
+
+  const queue = await api('/api/quotations?awaitingApproval=true&limit=200', { token: admin });
+  assert.ok(queue.json.data.some((row) => String(row._id) === String(made._id)), 'it is on Admin’s queue');
 });
 
-test('the blocked quote is visibly in the queue it is in', async () => {
-  // A bare refusal leaves it looking ready and not being ready.
-  const pricing = await withCosting({ minimum: 7, approved: 7.5 });
-  const made = await quote({ pricing, unitPrice: 6.5 });
-  await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
-
-  const { json } = await api(`/api/quotations/${made._id}`, { token: nandhini });
-  assert.equal(json.data.status, 'approval_pending');
+test('a price at or above the minimum goes straight out', async () => {
+  const made = await costedQuote({ minimum: 7, price: 7.5 });
+  const sent = await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
+  assert.equal(sent.status, 200, sent.json.message);
+  assert.equal(sent.json.data.status, 'sent');
 });
 
-test('a quote at or above the floor goes straight out', async () => {
-  const pricing = await withCosting({ minimum: 7, approved: 7.5 });
-  const made = await quote({ pricing, unitPrice: 7.5 });
-
-  const sent = await api(`/api/quotations/${made._id}/send`, {
-    method: 'POST',
-    token: nandhini,
-    body: {},
+test('marketing cutting a price under the minimum sends it to Admin', async () => {
+  const made = await costedQuote({ minimum: 7, price: 7.5 });
+  const cut = await api(`/api/quotations/${made._id}`, {
+    method: 'PATCH', token: nandhini, body: { lines: [{ _id: made.lines[0]._id, unitPrice: 6.5 }] },
   });
+  assert.equal(cut.status, 200, cut.json.message);
+  assert.equal(cut.json.data.status, 'approval_pending');
+});
+
+test('only Admin signs a price off', async () => {
+  const made = await costedQuote({ minimum: 8, price: 6 });
+  assert.equal((await decide(made._id, made.lines[0]._id, { approve: true }, nandhini)).status, 403);
+});
+
+test('once signed off, the same quote sends — and a lower price needs signing again', async () => {
+  const made = await costedQuote({ minimum: 8, price: 6 });
+  const signed = await decide(made._id, made.lines[0]._id, { approve: true, note: 'Strategic account' });
+  assert.equal(signed.status, 200, signed.json.message);
+  assert.equal(signed.json.data.lines[0].approvedPrice, 6);
+  assert.equal(signed.json.data.status, 'draft');
+
+  const lower = await api(`/api/quotations/${made._id}`, {
+    method: 'PATCH', token: nandhini, body: { lines: [{ _id: made.lines[0]._id, unitPrice: 5.5 }] },
+  });
+  assert.equal(lower.json.data.status, 'approval_pending', 'the signature was for ₹6, not for anything lower');
+
+  const back = await api(`/api/quotations/${made._id}`, {
+    method: 'PATCH', token: nandhini, body: { lines: [{ _id: made.lines[0]._id, unitPrice: 6 }] },
+  });
+  assert.equal(back.json.data.status, 'draft', 'back at the signed price it is cleared again');
+  const sent = await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
   assert.equal(sent.status, 200, sent.json.message);
 });
 
-test('a costing still waiting on approval blocks its quote', async () => {
-  // The costing itself is under the floor, so nothing priced off it may go out yet.
-  const pricing = await withCosting({ minimum: 8, approved: 6 });
-  const made = await quote({ pricing, unitPrice: 6 });
+test('a refused price needs a reason, stays refused, and goes round again when it changes', async () => {
+  const made = await costedQuote({ minimum: 8, price: 6 });
+  assert.equal((await decide(made._id, made.lines[0]._id, { approve: false })).status, 400);
 
-  const sent = await api(`/api/quotations/${made._id}/send`, {
-    method: 'POST',
-    token: nandhini,
-    body: {},
-  });
-  assert.equal(sent.status, 400);
-  assert.match(sent.json.message, /waiting on approval/i);
+  const refused = await decide(made._id, made.lines[0]._id, { approve: false, note: 'Too thin' });
+  assert.equal(refused.status, 200, refused.json.message);
+  assert.equal(refused.json.data.lines[0].status, 'rejected');
+  assert.equal(refused.json.data.status, 'costing', 'back with costing');
+
+  const sent = await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
+  assert.match(sent.json.message, /refused the price on NH-400/);
+
+  const repriced = await costIt(made._id, made.lines[0]._id, { unitPrice: 7 });
+  assert.equal(repriced.json.data.status, 'approval_pending', 'a new price goes back to Admin');
 });
 
-test('once signed off, the same quote sends', async () => {
-  const pricing = await withCosting({ minimum: 8, approved: 6 });
-  const made = await quote({ pricing, unitPrice: 6 });
-
-  await api(`/api/pricings/${pricing}/decision`, {
-    method: 'POST',
-    token: admin,
-    body: { approve: true, note: 'Strategic account' },
-  });
-
-  const sent = await api(`/api/quotations/${made._id}/send`, {
-    method: 'POST',
-    token: nandhini,
-    body: {},
-  });
-  assert.equal(sent.status, 200, sent.json.message);
-});
-
-test('a quote with no costing behind it is not blocked', async () => {
+test('a quote with no cost behind it is not blocked', async () => {
   // Plenty of repeat jobs are quoted from a known price; refusing those would make the module
   // unusable for the commonest case it has.
   const made = await quote({ unitPrice: 0.5 });
@@ -566,50 +590,27 @@ test('a quotation needs at least one line', async () => {
   assert.equal(status, 400, 'an empty quotation is a mistake, not a draft');
 });
 
-test('one line under its floor holds the whole document [§9]', async () => {
-  /*
-   * The case a single-line model could not express, and the reason the gate had to move onto
-   * the lines: seven prices that are perfectly fine and an eighth that is not. A document-level
-   * check has no single price to look at, so it waves the whole thing through.
-   */
-  const fine = await withCosting({ minimum: 7, approved: 7.5 });
-  const under = await withCosting({ minimum: 7, approved: 7.5 });
+test('one line under its minimum holds the whole document [§9]', async () => {
+  /* Seven prices fine and an eighth not: the gate is per line, and the document waits for it. */
+  const made = await toCost([{ modelNumber: 'NH-400' }, { modelNumber: 'NH-450' }]);
+  await costIt(made._id, made.lines[0]._id, { cost: COST, minimumOverride: 7, unitPrice: 7.5 });
+  const second = await costIt(made._id, made.lines[1]._id, { cost: COST, minimumOverride: 7, unitPrice: 6.5 });
+  assert.equal(second.json.data.lines[0].status, 'approved', 'the fine line is cleared on its own');
+  assert.equal(second.json.data.lines[1].status, 'approval_pending');
 
-  const made = await quote({
-    lines: [
-      { modelNumber: 'NH-400', quantity: 40000, unitPrice: 7.5, pricing: fine },
-      { modelNumber: 'NH-450', quantity: 10000, unitPrice: 6.5, pricing: under },
-    ],
-  });
-
-  const sent = await api(`/api/quotations/${made._id}/send`, {
-    method: 'POST',
-    token: nandhini,
-    body: {},
-  });
-
+  const sent = await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
   assert.equal(sent.status, 400);
   assert.match(sent.json.message, /NH-450/, 'and it names the line to argue about');
   assert.ok(!/NH-400\b/.test(sent.json.message), 'not the one that was fine');
   assert.ok(!/\b7\b/.test(sent.json.message), '§8 still keeps the figure away from marketing');
 });
 
-test('every line clearing its own floor sends the document', async () => {
-  const first = await withCosting({ minimum: 7, approved: 7.5 });
-  const second = await withCosting({ minimum: 7, approved: 7.5 });
+test('every line clearing its own minimum sends the document', async () => {
+  const made = await toCost([{ modelNumber: 'NH-400' }, { modelNumber: 'NH-450' }]);
+  await costIt(made._id, made.lines[0]._id, { cost: COST, minimumOverride: 7, unitPrice: 7.5 });
+  await costIt(made._id, made.lines[1]._id, { cost: COST, minimumOverride: 7, unitPrice: 8.2 });
 
-  const made = await quote({
-    lines: [
-      { modelNumber: 'NH-400', quantity: 40000, unitPrice: 7.5, pricing: first },
-      { modelNumber: 'NH-450', quantity: 10000, unitPrice: 8.2, pricing: second },
-    ],
-  });
-
-  const sent = await api(`/api/quotations/${made._id}/send`, {
-    method: 'POST',
-    token: nandhini,
-    body: {},
-  });
+  const sent = await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
   assert.equal(sent.status, 200, sent.json.message);
 });
 
@@ -686,15 +687,14 @@ test('the history is frozen — a later edit does not rewrite what Rev 0 said', 
   assert.equal(json.data.lines[0].unitPrice, 6.9);
 });
 
-test('a revision keeps the costing behind a line it does not re-name', async () => {
+test('a revision keeps the cost behind a line it does not re-name', async () => {
   /*
-   * The quiet failure the line shape invites. A revision restates the offer, and a caller that
-   * sends back `{ modelNumber, quantity, unitPrice }` without repeating `pricing` would detach
-   * the costing. Nothing errors — the quote saves, and §9's floor check silently stops applying
-   * at the exact moment somebody is cutting the price.
+   * A revision restates the offer, and a caller that sends back `{ modelNumber, unitPrice }`
+   * without the line's id must not detach the cost — or §9 silently stops applying at the
+   * exact moment somebody is cutting the price.
    */
-  const costing = await withCosting({ minimum: 7, approved: 7.5 });
-  const made = await quote({ pricing: costing, unitPrice: 7.5 });
+  const made = await costedQuote({ minimum: 7, price: 7.5 });
+  await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
 
   const revised = await api(`/api/quotations/${made._id}/revisions`, {
     method: 'POST',
@@ -702,14 +702,10 @@ test('a revision keeps the costing behind a line it does not re-name', async () 
     body: { lines: [{ modelNumber: 'NH-400', quantity: 40000, unitPrice: 6.5 }], note: 'Cut' },
   });
   assert.equal(revised.status, 200, revised.json.message);
-  assert.ok(revised.json.data.lines[0].pricing, 'the costing came across');
+  assert.equal(String(revised.json.data.lines[0]._id), String(made.lines[0]._id), 'the same line');
+  assert.equal(revised.json.data.status, 'approval_pending', 'and its minimum still bites');
 
-  /* And because it did, the floor still bites on the way out. */
-  const sent = await api(`/api/quotations/${made._id}/send`, {
-    method: 'POST',
-    token: nandhini,
-    body: {},
-  });
+  const sent = await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
   assert.equal(sent.status, 400);
   assert.match(sent.json.message, /below the approved minimum/i);
 });
@@ -1018,51 +1014,23 @@ test('the stage counts on a sent board count only what was sent', async () => {
   assert.ok(draft._id, 'a draft exists to be left out');
 });
 
-/**
- * The costing on the row, not two screens down.
- *
- * "What did we work this price out from?" is the first question asked of a quotation that has
- * gone out. It was answerable only by opening the document and then opening the sheet.
- */
-test('a listed line carries the costing it was priced off', async () => {
-  const pricing = await withCosting({ minimum: 7, approved: 7.5 });
-  const made = await quote({ pricing, unitPrice: 7.5, modelNumber: 'ATTACHED' });
+/** The cost on the row for costing, and §8 on the list exactly as on the document. */
+test('a listed line carries its cost for costing, and not for marketing', async () => {
+  const made = await costedQuote({ minimum: 7, price: 7.5 });
   await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
 
-  const { json } = await api('/api/quotations?sent=true&limit=200', { token: admin });
-  const row = json.data.find((entry) => String(entry._id) === String(made._id));
-
+  const forCosting = await api('/api/quotations?sent=true&limit=200', { token: admin });
+  const row = forCosting.json.data.find((entry) => String(entry._id) === String(made._id));
   assert.ok(row, 'the quote is on the board');
-  assert.ok(row.lines[0].pricing, 'and its line names the sheet behind it');
-  assert.match(row.lines[0].pricing.number, /^PR/i);
-  assert.equal(row.lines[0].pricing.minimumSellingPrice, 7, 'costing sees the floor');
-});
+  assert.equal(row.lines[0].minimumSellingPrice, 7, 'costing sees the minimum');
 
-/**
- * And §8 holds on the list exactly as it does on the document.
- *
- * This is the risk the change carries: the sheet is populated whole so that the allow-list has
- * something to work from, and an allow-list that is applied on one route and forgotten on
- * another publishes the cost base to marketing on a screen nobody thought to check.
- */
-test('marketing reads the same board without the cost base on it', async () => {
-  const pricing = await withCosting({ minimum: 7, approved: 7.5 });
-  const made = await quote({ pricing, unitPrice: 7.5, modelNumber: 'REDACTED' });
-  await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} });
-
-  const { json } = await api('/api/quotations?sent=true&limit=200', { token: nandhini });
-  const row = json.data.find((entry) => String(entry._id) === String(made._id));
-  const costing = row.lines[0].pricing;
-
-  assert.ok(costing, 'marketing still gets the sheet number, which is how they ask about it');
-  assert.equal(costing.number !== undefined, true);
-  assert.equal(costing.totalCost, undefined, '§8: never the cost base');
-  assert.equal(costing.minimumSellingPrice, undefined, '§8: never the floor');
-  assert.equal(costing.marginPercent, undefined, '§8: never the margin');
-  assert.equal(costing.belowFloor, false, 'only whether, which is what a block has to explain');
-
-  const raw = JSON.stringify(json.data);
-  assert.ok(!raw.includes('machineCostPerPiece'), 'and nothing leaks through the populated sheet');
+  const forMarketing = await api('/api/quotations?sent=true&limit=200', { token: nandhini });
+  const theirs = forMarketing.json.data.find((entry) => String(entry._id) === String(made._id));
+  assert.equal(theirs.lines[0].totalCost, undefined, '§8: never the cost base');
+  assert.equal(theirs.lines[0].minimumSellingPrice, undefined, '§8: never the minimum');
+  assert.equal(theirs.lines[0].belowMinimum, false, 'only whether');
+  /* Not even through a second copy of the line — `soleLine` once carried the cost whole. */
+  assert.ok(!JSON.stringify(forMarketing.json.data).includes('rawMaterialRate'), 'and nothing leaks');
 });
 
 /* ------------------- Found by the backend audit of 24 Sept 2026 ------------------- */

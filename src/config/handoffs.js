@@ -28,7 +28,7 @@ export const HANDOFFS = [
     key: 'create_quotation', label: 'Create Quotation', department: 'quotation', stage: 'pricing_quote',
     hint: 'Cost the model and send back the quotation',
     records: [{ key: 'quotationNumber', label: 'Quotation number' }, { key: 'price', label: 'Price per piece (₹)' }],
-    opens: 'pricings',
+    opens: 'quotations',
   },
   {
     key: 'sample_request', label: 'Sample Request', department: 'sampling', stage: 'sample',
@@ -44,7 +44,7 @@ export const HANDOFFS = [
     key: 'price_negotiation', label: 'Price Negotiation', department: 'quotation', stage: 'pricing_quote',
     hint: 'The buyer is asking for a better price',
     records: [{ key: 'price', label: 'Revised price per piece (₹)' }],
-    opens: 'pricings',
+    opens: 'quotations',
   },
   {
     key: 'po_so', label: 'PO & SO', department: 'order_confirmation', stage: 'po_so',

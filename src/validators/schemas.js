@@ -212,7 +212,7 @@ const viewParams = z
   .refine((params) => Object.keys(params).length <= 12, 'A view holds at most 12 filters');
 
 export const savedViewSchema = z.object({
-  page: z.enum(['queries', 'enquiries', 'samples', 'leads', 'customers', 'pricings']),
+  page: z.enum(['queries', 'enquiries', 'samples', 'leads', 'customers', 'quotations']),
   name: z.string().trim().min(1, 'Name the view').max(40, 'Keep the name to 40 characters'),
   params: viewParams.default({}),
   pinned: z.boolean().optional(),

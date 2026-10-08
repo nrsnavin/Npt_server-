@@ -1,18 +1,13 @@
 import { Router } from 'express';
 import {
-  listPricings, getPricing, createPricing, updatePricing, costPricing, decidePricing,
-  quoteFromPricing, pricingQuotations,
-} from '../controllers/pricing.controller.js';
-import {
-  listQuotations, getQuotation, createQuotation, updateQuotation,
+  listQuotations, getQuotation, createQuotation, updateQuotation, costLine, decideLine,
   reviseQuotation, sendQuotation, respondToQuotation, quotationPdf, sendPreview,
 } from '../controllers/quotation.controller.js';
 import { authenticate, authorize, requireModule } from '../middleware/auth.js';
 import { getQuoteNumbering, setQuoteNumbering } from '../controllers/quoteNumbering.controller.js';
 import { validate } from '../middleware/validate.js';
 import {
-  pricingSchema, pricingUpdateSchema, pricingCostSchema, pricingDecisionSchema, pricingQuoteSchema,
-  quotationSchema, quotationUpdateSchema, quotationRevisionSchema,
+  quotationCostSchema, quotationDecisionSchema, quotationSchema, quotationUpdateSchema, quotationRevisionSchema,
   quotationSendSchema, quotationResponseSchema, quoteNumberingSchema,
 } from '../validators/pricing.schemas.js';
 
@@ -33,33 +28,6 @@ router.use(authenticate);
  * the door cannot tell a costing clerk from a marketing person opening the same sheet.
  */
 
-// Costings [§7, §9]
-router.get('/pricings', requireModule('pricing'), listPricings);
-router.post('/pricings', requireModule('pricing'), validate(pricingSchema), createPricing);
-router.get('/pricings/:id', requireModule('pricing'), getPricing);
-/*
- * Building the sheet and ruling on a price below the floor are both costing's work, and both
- * check `pricing: write` inside the controller as well — the second check is what keeps the
- * rule true if this route is ever loosened.
- */
-/** What the costing is *of* — the job. The prices have their own door below. */
-router.patch('/pricings/:id', requireModule('pricing'), validate(pricingUpdateSchema), updatePricing);
-router.patch('/pricings/:id/cost', requireModule('pricing'), validate(pricingCostSchema), costPricing);
-router.post('/pricings/:id/decision', requireModule('pricing'), validate(pricingDecisionSchema), decidePricing);
-
-/*
- * Turning a costed price into an offer [§7 → §10].
- *
- * `pricing: quote`, not `pricing: write` — and that distinction is the whole of why these two
- * could become one module. Raising a quotation is a question about quoting, not about costing:
- * marketing turns an approved price into a document without ever seeing the cost behind it.
- * Guarding this on write would mean nobody could quote without being shown the cost base.
- */
-router.post('/pricings/:id/quotation', requireModule('pricing', 'quote'), validate(pricingQuoteSchema), quoteFromPricing);
-/** The reverse view: what this sheet was quoted at, and how often. */
-router.get('/pricings/:id/quotations', requireModule('pricing'), pricingQuotations);
-
-// Quotations [§10]
 router.get('/quotations', requireModule('pricing'), listQuotations);
 /* Where the quote sequence stands; only an administrator moves it. Before `/quotations/:id`. */
 router.get('/quotations/numbering', requireModule('pricing'), getQuoteNumbering);
@@ -70,6 +38,13 @@ router.get('/quotations/:id', requireModule('pricing'), getQuotation);
 router.get('/quotations/:id/pdf', requireModule('pricing'), quotationPdf);
 router.get('/quotations/:id/send-preview', requireModule('pricing', 'quote'), sendPreview);
 router.patch('/quotations/:id', requireModule('pricing', 'quote'), validate(quotationUpdateSchema), updateQuotation);
+/*
+ * Costing a line, and Admin's sign-off on a price under its minimum [§7, §9]. Read at the door;
+ * the controller checks `pricing: write` (costing) and Admin (sign-off) inside, because the door
+ * cannot tell a costing clerk from a marketing person opening the same quotation.
+ */
+router.patch('/quotations/:id/lines/:lineId/cost', requireModule('pricing'), validate(quotationCostSchema), costLine);
+router.post('/quotations/:id/lines/:lineId/decision', requireModule('pricing'), validate(quotationDecisionSchema), decideLine);
 /** A new price keeps the old one [§10]. */
 router.post('/quotations/:id/revisions', requireModule('pricing', 'quote'), validate(quotationRevisionSchema), reviseQuotation);
 /** Putting it in front of the customer — the moment §9's gate applies. */

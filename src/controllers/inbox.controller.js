@@ -1,11 +1,10 @@
 import Query, { roomFilter, seesEveryQuery } from '../models/Query.js';
 import QueryRead from '../models/QueryRead.js';
-import Pricing from '../models/Pricing.js';
+import Quotation from '../models/Quotation.js';
 import Sample from '../models/Sample.js';
 import Todo from '../models/Todo.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { canRead } from '../services/access.service.js';
-import { seesCosting } from '../services/pricingVisibility.js';
 import { taggedUnreadFor, unreadFor } from './query.controller.js';
 
 /**
@@ -59,9 +58,10 @@ async function queryItems(user) {
   return items;
 }
 
+/* Prices under their minimum, waiting on Admin's signature [§9]. */
 async function approvalItems(user) {
-  if (!seesCosting(user)) return [];
-  const sheets = await Pricing.find({ 'lines.status': 'approval_pending' })
+  if (!(user?.role === 'admin' || user?.department === 'management')) return [];
+  const sheets = await Quotation.find({ 'lines.status': 'approval_pending' })
     .select('number customer lines.status lines.modelNumber updatedAt')
     .populate('customer', 'name')
     .sort({ updatedAt: -1 })
@@ -69,7 +69,7 @@ async function approvalItems(user) {
   return sheets.map((sheet) => {
     const waiting = sheet.lines.filter((line) => line.status === 'approval_pending');
     return {
-      id: `approval-${sheet._id}`, kind: 'approval', at: sheet.updatedAt, link: `/pricings/${sheet._id}`,
+      id: `approval-${sheet._id}`, kind: 'approval', at: sheet.updatedAt, link: `/quotations/${sheet._id}`,
       title: `${sheet.number} needs your signature`,
       detail: `${sheet.customer?.name || 'A buyer'} · ${waiting.map((line) => line.modelNumber).filter(Boolean).join(', ') || `${waiting.length} model${waiting.length === 1 ? '' : 's'}`} under the floor`,
     };

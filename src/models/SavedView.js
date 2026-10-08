@@ -8,7 +8,7 @@ import { protectWrites } from '../utils/concurrency.js';
  * the list's own query string and nothing more, so opening one is the same request the filters
  * would have made by hand — the list still decides what the person may see.
  */
-export const VIEW_PAGES = ['queries', 'enquiries', 'samples', 'customers', 'pricings'];
+export const VIEW_PAGES = ['queries', 'enquiries', 'samples', 'customers', 'quotations'];
 export const MAX_VIEWS = 20;
 
 const savedViewSchema = new mongoose.Schema(

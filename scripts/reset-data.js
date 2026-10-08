@@ -95,13 +95,13 @@ const flag = (name) => process.argv.includes(`--${name}`);
 /**
  * A label a person recognises. Only where the model name is not already one.
  *
- * `Pricing` is the costing sheet everywhere in the application, and `Counter` is the running
+ * `Quotation` carries the costing too now, and `Counter` is the running
  * numbers behind SO-2026-0001 — a line reading "Counter 14" tells somebody nothing about what
  * they are about to lose. Anything not named here prints its own model name, which is right
  * for `Lead`, `Enquiry` and most of the rest.
  */
 const LABELS = {
-  Pricing: 'Costings',
+  Quotation: 'Quotations (with their costings)',
   SalesOrder: 'Sales orders',
   Dispatch: 'Consignments',
   Inspection: 'Quality inspections',

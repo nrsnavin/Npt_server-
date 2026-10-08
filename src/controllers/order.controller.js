@@ -23,7 +23,7 @@ import { allOrdersVisibleTo, orderVisibleTo } from '../services/pricingVisibilit
 import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { ORDER_ACTIONS, orderActionsFrom } from '../services/orderActions.js';
 import { assertCanOwnBuyer } from '../services/assignment.service.js';
-import { buildSpec, registersFromPricing } from '../services/registers.service.js';
+import { buildSpec, registersFromQuoteLine } from '../services/registers.service.js';
 import { put, remove } from '../services/storage.service.js';
 import { requireEnquiry } from '../services/enquiryLink.service.js';
 import { collect, sendCsv } from '../utils/csv.js';
@@ -342,7 +342,7 @@ const lineFrom = async (line) => {
     quantity: built.quantity,
     unitPrice: built.unitPrice,
     deliveryDate: built.deliveryDate,
-    pricing: built.pricing || undefined,
+    quotationLine: built.quotationLine || undefined,
     remarks: built.remarks,
   };
 };
@@ -460,16 +460,7 @@ export const createOrder = asyncHandler(transactional(async (req, res) => {
  * naming six ids rather than by editing a copy of the quote.
  */
 export const orderFromQuotation = asyncHandler(transactional(async (req, res) => {
-  const quotation = await Quotation.findById(req.params.id)
-    .populate('lines.mould', '_id')
-    /* The costing behind each line, for its register picks — see the note where they are read.
-       A sheet prices several models, so the picks sit on its lines; the quotation line says
-       which of them it was built from. Only the four references: this is not the place a price
-       is looked at, and `lines` is selected without the cost fields for that reason. */
-    .populate(
-      'lines.pricing',
-      '_id lines._id lines.modelNumber lines.materialRef lines.hookRef lines.clipRef lines.printRef'
-    );
+  const quotation = await Quotation.findById(req.params.id).populate('lines.mould', '_id');
   if (!quotation) throw ApiError.notFound('Quotation not found');
   if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
 
@@ -520,13 +511,12 @@ export const orderFromQuotation = asyncHandler(transactional(async (req, res) =>
           /*
            * The specification comes across too, not only the price [§28].
            *
-           * The quote's rate came off a costing, and that costing named the resin, the hook, the
-           * clip and the print it was built on. Carrying them here is what makes "nothing is
+           * The quote's line was costed against a resin, a hook, a clip and a print. Carrying them here is what makes "nothing is
            * retyped" true of *what will be made* and not only of what it costs — an order booked
            * this way is made of exactly what was priced, and the two stop being able to differ.
            * Anything the PO itself specifies wins, because the buyer's paperwork governs.
            */
-          ...registersFromPricing(line.pricing, asked, line),
+          ...registersFromQuoteLine(line, asked),
           colour: asked.colour,
           printing: asked.printing,
           packing: asked.packing || quotation.packing,
@@ -534,7 +524,7 @@ export const orderFromQuotation = asyncHandler(transactional(async (req, res) =>
           /* The rate that was offered, unless the buyer negotiated one on the PO itself. */
           unitPrice: asked.unitPrice ?? line.unitPrice,
           deliveryDate: asked.deliveryDate,
-          pricing: line.pricing?._id || line.pricing || undefined,
+          quotationLine: line._id,
         });
       })
   );

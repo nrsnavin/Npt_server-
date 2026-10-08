@@ -110,11 +110,11 @@ test('an urgent thread rings for the people in it, and for nobody else', async (
 });
 
 test('a price under the floor rings for whoever may sign it, and not for marketing', async () => {
-  const Pricing = (await import('../src/models/Pricing.js')).default;
-  const sheet = await Pricing.create({
-    customer: customerId, number: 'PRC-TEST-1', requestedBy: ids.nandhini,
+  const Quotation = (await import('../src/models/Quotation.js')).default;
+  const sheet = await Quotation.create({
+    customer: customerId, number: 'NP/TEST/1', requestedBy: ids.nandhini, assignedTo: ids.nandhini,
     enquiry: (await raiseEnquiryFor({ customer: customerId, owner: ids.nandhini }))._id,
-    lines: [{ modelNumber: 'NH-400', status: 'approval_pending' }],
+    lines: [{ modelNumber: 'NH-400', unitPrice: 5, status: 'approval_pending' }],
   });
   assert.ok((await inbox(admin)).some((item) => item.id === `approval-${sheet._id}`), 'management was not asked');
   assert.ok(!(await inbox(nandhini)).some((item) => item.kind === 'approval'), 'marketing was asked to sign');

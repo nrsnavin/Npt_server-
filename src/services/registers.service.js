@@ -2,7 +2,6 @@ import Material from '../models/Material.js';
 import Component from '../models/Component.js';
 import Mould, { MATERIALS } from '../models/Mould.js';
 import ApiError from '../utils/ApiError.js';
-import { costingLine } from './pricing.service.js';
 
 /**
  * Turning register picks into a specification [BLUEPRINT §28].
@@ -110,28 +109,18 @@ export async function resolveLineRegisters(line = {}) {
 }
 
 /**
- * The register picks a costing already made, for a line being built from a quotation.
+ * The register picks a quotation line was costed against, for an order line built from it.
  *
- * The ordinary path into an order is an accepted quote, and the quote's price came off a
- * costing — which named the resin, the hook, the clip and the print it was built on. Carrying
- * those across is what makes "nothing is retyped" true of the specification and not only of the
- * price: an order booked this way is made of exactly what was costed, and a discrepancy between
- * the two stops being possible rather than merely unlikely.
- *
- * A pick already on the request wins, because a PO that specifies a different colour from the
- * quote is a real thing that happens and the buyer's paperwork is the one that governs.
+ * The quote's line names the resin, the hook, the clip and the print it was priced on; carrying
+ * them across is what makes an order booked from it made of exactly what was priced. A pick on
+ * the PO itself wins, because the buyer's paperwork governs.
  */
-export const registersFromPricing = (pricing, asked = {}, quoted = {}) => {
-  /* The line of that sheet the quote was built from, now that one sheet prices several [§7]. */
-  const costed = costingLine(pricing, quoted) || {};
-
-  return {
-    materialRef: asked.materialRef ?? costed.materialRef ?? undefined,
-    hookRef: asked.hookRef ?? costed.hookRef ?? undefined,
-    clipRef: asked.clipRef ?? costed.clipRef ?? undefined,
-    printRef: asked.printRef ?? costed.printRef ?? undefined,
-  };
-};
+export const registersFromQuoteLine = (quoted = {}, asked = {}) => ({
+  materialRef: asked.materialRef ?? quoted.materialRef ?? undefined,
+  hookRef: asked.hookRef ?? quoted.hookRef ?? undefined,
+  clipRef: asked.clipRef ?? quoted.clipRef ?? undefined,
+  printRef: asked.printRef ?? quoted.printRef ?? undefined,
+});
 
 /**
  * What the tool itself says about a line, for the fields nobody should have to look up.

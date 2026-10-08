@@ -296,11 +296,10 @@ async function seed() {
       `a cavity, ${customerOwned} owned by the customer.`
   );
   console.log(
-    `  Phase 3: ${pricing.pricings} costings across ${pricing.sheetModels} models from the ` +
-      `26-27 sheet — transcribed figures, so none of them names a tool — and the sheet's own ` +
-      `${pricing.quotations} quotations carrying ${pricing.quotedLines} lines between them: ` +
-      `${pricing.belowFloor} priced under their own floor, holding ` +
-      `${pricing.heldForApproval} whole document(s) on §9 approval.`
+    `  Phase 3: the 26-27 sheet as ${pricing.quotations} quotations (${pricing.sent} sent), ` +
+      `${pricing.costedLines} costed lines across ${pricing.sheetModels} models — transcribed ` +
+      `figures, so none names a tool — ${pricing.belowFloor} priced under their own minimum, ` +
+      `holding ${pricing.heldForApproval} quotation(s) on Admin approval.`
   );
   console.log(
     `  Registers: ${derived.costings} more costings built off a mould and a resin — ` +

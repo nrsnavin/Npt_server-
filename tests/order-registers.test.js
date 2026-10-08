@@ -26,6 +26,7 @@ import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import { withEnquiries } from './support/onEnquiry.js';
+import { withCostingLines } from './support/costingLine.js';
 
 process.env.JWT_SECRET = 'order-registers-test-secret';
 
@@ -85,7 +86,8 @@ const book = (line, token = priya) =>
   });
 
 /* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
-const api = withEnquiries(rawApi);
+/* Costings live on quotation lines now — see tests/support/costingLine.js. */
+const api = withCostingLines(withEnquiries(rawApi));
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -291,15 +293,9 @@ test('an order raised from a quotation is made of exactly what was costed', asyn
   });
   assert.equal(built.status, 200, built.json.message);
 
-  const quote = await api('/api/quotations', {
-    method: 'POST',
-    token: nandhini,
-    body: {
-      customer,
-      lines: [{ mould, modelNumber: 'NH-400', pricing: costing.json.data._id, unitPrice: 7.4, moq: 5000 }],
-    },
-  });
-  assert.equal(quote.status, 201, quote.json.message);
+  /* The costing *is* the quotation now: the same record goes to the buyer. */
+  const quote = await api(`/api/quotations/${costing.json.data._id}`, { token: nandhini });
+  assert.equal(quote.json.data.lines[0].unitPrice, 7.4);
 
   await api(`/api/quotations/${quote.json.data._id}/send`, { method: 'POST', token: nandhini, body: {} });
   const accepted = await api(`/api/quotations/${quote.json.data._id}/response`, {

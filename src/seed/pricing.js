@@ -1,7 +1,7 @@
 import Customer from '../models/Customer.js';
-import Pricing from '../models/Pricing.js';
-import Quotation from '../models/Quotation.js';
+import Quotation, { settleLine } from '../models/Quotation.js';
 import { nextNumber, nextQuoteNumber } from '../services/numbering.service.js';
+import { priceAt } from '../services/pricing.service.js';
 import { QUOTE_SHEET, SHEET_PRODUCTS } from './quoteSheet.js';
 import { FULL } from './size.js';
 import { enquiryFor } from './enquiryFor.js';
@@ -87,25 +87,9 @@ function sheetRows() {
 }
 
 export async function seedPricing({ admin, nandhini }) {
-  await Promise.all([Pricing.deleteMany({}), Quotation.deleteMany({})]);
+  await Quotation.deleteMany({});
 
   const rows = sheetRows();
-
-  /* -------------------------------- The models --------------------------------- */
-
-  /*
-   * Read, not written. These twenty-five models used to be created as catalogue rows here, on
-   * top of the seven the register carries — a second master, populated from a transcription,
-   * with a hand-set `mouldAvailable` tick on each. There is no catalogue now, and inventing
-   * mould records for them would be worse: nobody has measured a cavity count or a cycle time
-   * for any of these tools, and a register entry with those guessed is exactly the fiction the
-   * register exists to replace.
-   *
-   * So the costings below name their model the way the sheet does — by the code the buyer
-   * knows — and carry no mould. That is the ordinary shape of a transcribed costing, and it is
-   * what `seedRegisterCostings` is then able to contrast itself against: those four are built
-   * off a real tool and a real resin, and show the difference.
-   */
   const sheetModels = Object.fromEntries(SHEET_PRODUCTS.map((row) => [row.modelCode, row]));
 
   /* -------------------------------- The parties -------------------------------- */
@@ -126,185 +110,117 @@ export async function seedPricing({ admin, nandhini }) {
       }));
   }
 
-  /* ------------------------------- The costings -------------------------------- */
-
-  const pricings = [];
-  const quotations = [];
-  /** Every costed row with what it needs to become a quotation line further down. */
-  const costed = [];
-
-  for (const row of rows) {
-    const customer = parties[row.party];
-    if (!customer) continue;
-
-    const spec = sheetModels[row.model];
-    const at = sheetDate(row.date);
-
-    /*
-     * One line, because one row of the spreadsheet prices one model. A sheet holds as many as it
-     * needs to [§7]; what the 26-27 sheet actually recorded is a model at a time, and inventing
-     * groupings it did not have would be putting a shape on somebody else's document.
-     */
-    /* Every costing is for an enquiry [seed/enquiryFor.js]. */
-    const asked = await enquiryFor({
-      customer, owner: nandhini, modelNumber: row.model, status: 'quote_submitted', at,
-    });
-
-    const pricing = new Pricing({
-      number: await nextNumber('PRC'),
-      customer: customer._id,
-      enquiry: asked._id,
-      lines: [
-        {
-          modelNumber: row.model,
-          material: spec?.material,
-          procurement: row.procurement || 'manufacture',
-          printing: row.printing || undefined,
-          /* The sheet prices per piece and carries no lot size at all — see the model's note. */
-          cost: {
-            gramWeight: row.gram,
-            rawMaterialRate: row.rate,
-            jobWorkCost: row.jobWork || 0,
-            hookCost: row.hook || 0,
-            metalClipsCost: row.clips || 0,
-            printingCost: row.printPrice || 0,
-            packingCost: row.packing || 0,
-          },
-          markupPercent: 10,
-        },
-      ],
-      requestedBy: nandhini._id,
-      requestedAt: at,
-      costedBy: admin._id,
-    });
-
-    const line = pricing.lines[0];
-
-    /*
-     * The approved price is what was actually quoted, where the sheet quoted one. That is what
-     * puts three genuinely below-floor costings into the database — and those are the rows §9
-     * exists for, so seeding only the comfortable ones would leave its whole route unexercised.
-     */
-    line.calculatedSellingPrice = line.tiers[10];
-    line.approvedSellingPrice = row.quoted ?? line.tiers[10];
-
-    /* The decision sits on the line that was decided; the sheet's own status follows from it. */
-    const settled = line.belowMinimum ? 'approval_pending' : 'approved';
-    line.status = settled;
-    pricing.statusHistory = [
-      { to: 'requested', at, by: nandhini._id },
-      { from: 'requested', to: 'costed', at, by: admin._id },
-      { from: 'costed', to: settled, at, by: admin._id },
-    ];
-    if (settled === 'approved') {
-      line.approvedBy = admin._id;
-      line.approvedAt = at;
-    }
-
-    await pricing.save();
-    pricings.push(pricing);
-
-    /* Kept for the grouping below: a quotation is a document, and the sheet says which. */
-    costed.push({ row, pricing, customer, at });
-  }
-
   /* ------------------------------ The quotations ------------------------------ */
 
   /*
-   * **Grouped by the sheet's own quote reference, because that is what a quotation is.**
+   * One quotation per quote reference on the sheet, because that is what a quotation is:
+   * `NP/26-27/1` is eight priced models for Yorker knit under one number. Each line carries its
+   * costing — transcribed figures, so none names a tool — and the price the sheet quoted.
    *
-   * The sheet has two of them. `NP/26-27/1` covers sixteen models for Yorker knit — eight of
-   * them priced — under one number, one validity and one set of payment terms; `NP/26-27/2`
-   * covers nine for Samara Exports, six priced. This seed used to produce fourteen quotations,
-   * one per priced row, which gave the buyer fourteen reference numbers for one conversation
-   * and made "what did we quote Yorker knit?" a question with fourteen answers and no total.
-   *
-   * The rows with no price are costed and left off the document, which is exactly what the
-   * sheet does with them: a rate has been worked out and nothing has been offered yet.
+   * The rows the sheet costed but never quoted become one draft per party, priced at the 10%
+   * tier: a rate worked out and nothing offered yet, which is what the sheet says of them.
    */
+  const lineFor = (row) => {
+    const spec = sheetModels[row.model];
+    return {
+      modelNumber: row.model,
+      material: spec?.material,
+      procurement: row.procurement || 'manufacture',
+      printing: row.printing || undefined,
+      cost: {
+        gramWeight: row.gram,
+        rawMaterialRate: row.rate,
+        jobWorkCost: row.jobWork || 0,
+        hookCost: row.hook || 0,
+        metalClipsCost: row.clips || 0,
+        printingCost: row.printPrice || 0,
+        packingCost: row.packing || 0,
+      },
+      markupPercent: 10,
+      moq: 5000,
+    };
+  };
+
   const documents = new Map();
-  for (const entry of costed) {
-    if (entry.row.quoted == null) continue;
-    const key = entry.row.quote;
+  for (const row of rows) {
+    if (!parties[row.party]) continue;
+    const key = row.quoted == null ? `unquoted:${row.party}` : row.quote;
     if (!documents.has(key)) documents.set(key, []);
-    documents.get(key).push(entry);
+    documents.get(key).push(row);
   }
 
+  const quotations = [];
   for (const [reference, entries] of documents) {
-    const { customer, at, row } = entries[0];
+    const first = entries[0];
+    const customer = parties[first.party];
+    const at = sheetDate(first.date);
+    const quoted = !reference.startsWith('unquoted:');
+
+    /* Every quotation is on an enquiry [seed/enquiryFor.js]. */
+    const asked = await enquiryFor({
+      customer, owner: nandhini, modelNumber: first.model, status: quoted ? 'quote_submitted' : 'pricing_required', at,
+    });
 
     const quotation = new Quotation({
       number: await nextQuoteNumber(at),
       customer: customer._id,
-      /* The enquiry behind the first costing on it — every quotation is for one. */
-      enquiry: entries[0].pricing.enquiry,
+      enquiry: asked._id,
       assignedTo: nandhini._id,
-      lines: entries.map((entry) => ({
-        pricing: entry.pricing._id,
-        /* Which line of that sheet was quoted — one model each here, and named all the same. */
-        pricingLine: entry.pricing.lines[0]._id,
-        modelNumber: entry.row.model,
-        /* No quantity: a quotation quotes a rate against a minimum, and the sheet this is
-           transcribed from carries exactly that — a model and what it was quoted at. */
-        moq: 5000,
-        unitPrice: entry.row.quoted,
-      })),
+      requestedBy: nandhini._id,
+      requestedAt: at,
+      costedBy: admin._id,
+      lines: entries.map(lineFor),
       gstPercent: 18,
-      paymentTerms: PARTY_DETAIL[row.party].paymentTerms,
+      paymentTerms: PARTY_DETAIL[first.party].paymentTerms,
       deliveryTerms: '4 weeks from receipt of confirmed PO',
       freightTerms: 'ex_factory',
       packing: '200 pcs per carton',
       validUntil: new Date(at.getTime() + 30 * 24 * 60 * 60 * 1000),
-      /*
-       * The sheet's own quote reference kept as a remark, so a document here can be traced back
-       * to the spreadsheet it came from while both are still in use.
-       */
-      remarks: `Against ${reference}`,
-      statusHistory: [{ to: 'draft', at, by: nandhini._id }],
+      remarks: quoted ? `Against ${reference}` : 'Costed off the 26-27 sheet; not yet quoted',
+    });
+
+    quotation.lines.forEach((line, index) => {
+      line.calculatedSellingPrice = priceAt(line.totalCost, 10);
+      line.unitPrice = entries[index].quoted ?? line.calculatedSellingPrice;
+      settleLine(line);
     });
 
     /*
-     * One line under its floor holds the whole document, which is the rule a multi-line
-     * quotation makes real — and `NP/26-27/1` is the case: seven of its eight prices are fine
-     * and MAU-35 WB at ₹3.60 against a ₹7.65 floor is not, so nothing on it goes out until
-     * somebody signs. On a freshly seeded database that gives §9 a document to refuse rather
-     * than only a test.
+     * `NP/26-27/1` holds MAU-35 WB at ₹3.60 against a ₹7.65 floor, so nothing on it goes out
+     * until Admin signs — a document for §9 to refuse on a freshly seeded database.
      */
-    const blocked = entries.some((entry) => entry.pricing.belowMinimum);
-    quotation.status = blocked ? 'approval_pending' : 'sent';
-    quotation.sentAt = blocked ? undefined : at;
+    const blocked = quotation.lines.some((line) => line.status === 'approval_pending');
+    if (quoted && !blocked) {
+      quotation.status = 'sent';
+      quotation.sentAt = at;
+    }
+    quotation.statusHistory = [{ to: 'costing', at, by: nandhini._id }];
 
-    quotation.revisions = [
-      {
-        revision: 0,
-        lines: quotation.lines.map((line) => {
-          const plain = line.toObject();
-          delete plain._id;
-          return plain;
-        }),
-        validUntil: quotation.validUntil,
-        paymentTerms: quotation.paymentTerms,
-        deliveryTerms: quotation.deliveryTerms,
-        freightTerms: quotation.freightTerms,
-        packing: quotation.packing,
-        at,
-        by: nandhini._id,
-        sentAt: quotation.sentAt,
-      },
-    ];
+    quotation.revisions = [{
+      revision: 0,
+      lines: quotation.lines.map((line) => ({ modelNumber: line.modelNumber, moq: line.moq, unitPrice: line.unitPrice })),
+      validUntil: quotation.validUntil,
+      paymentTerms: quotation.paymentTerms,
+      deliveryTerms: quotation.deliveryTerms,
+      freightTerms: quotation.freightTerms,
+      packing: quotation.packing,
+      at,
+      by: nandhini._id,
+      sentAt: quotation.sentAt,
+    }];
 
     await quotation.save();
     quotations.push(quotation);
   }
 
+  const lines = quotations.flatMap((quotation) => quotation.lines);
   return {
-    /* Distinct models on the sheet, which is not the same as models on the register. */
-    sheetModels: new Set(pricings.map((pricing) => pricing.modelNumber)).size,
+    sheetModels: new Set(lines.map((line) => line.modelNumber)).size,
     parties: Object.keys(parties).length,
-    pricings: pricings.length,
+    costedLines: lines.length,
     quotations: quotations.length,
-    quotedLines: quotations.reduce((sum, quotation) => sum + quotation.lines.length, 0),
+    sent: quotations.filter((q) => q.sentAt).length,
     heldForApproval: quotations.filter((q) => q.status === 'approval_pending').length,
-    belowFloor: pricings.filter((p) => p.belowMinimum).length,
+    belowFloor: lines.filter((line) => line.belowMinimum).length,
   };
 }

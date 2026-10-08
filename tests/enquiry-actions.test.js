@@ -16,6 +16,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withCostingLines } from './support/costingLine.js';
 
 process.env.JWT_SECRET = 'enquiry-actions-test-secret-value';
 
@@ -31,7 +32,7 @@ let nandhini;
 let mould;
 let customer;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -42,6 +43,8 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
   });
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
+/* Costings live on quotation lines now — see tests/support/costingLine.js. */
+const api = withCostingLines(rawApi);
 
 /**
  * Who a token belongs to.

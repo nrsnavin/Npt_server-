@@ -1,5 +1,6 @@
 import Material from '../models/Material.js';
-import Pricing from '../models/Pricing.js';
+import Quotation from '../models/Quotation.js';
+import { ownershipFilter } from '../services/ownership.service.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { listParams, paginated } from '../utils/query.js';
@@ -146,9 +147,9 @@ export const materialPricings = asyncHandler(async (req, res) => {
    * on the lines that actually name this material — a sheet whose second model is in HIPS is
    * not stale because its first is in PP.
    */
-  const rows = await Pricing.find({ 'lines.materialRef': material._id })
+  const rows = await Quotation.find({ 'lines.materialRef': material._id, ...ownershipFilter(req.user) })
     .select('number status lines.modelNumber lines.materialRef lines.cost.rawMaterialRate '
-      + 'lines.approvedSellingPrice createdAt customer')
+      + 'lines.unitPrice createdAt customer')
     .populate('customer', 'name')
     .sort('-createdAt')
     .limit(50);

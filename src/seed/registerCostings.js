@@ -1,11 +1,11 @@
-import Pricing from '../models/Pricing.js';
+import Quotation, { settleLine } from '../models/Quotation.js';
 import Customer from '../models/Customer.js';
 import Mould from '../models/Mould.js';
 import Material from '../models/Material.js';
 import Component from '../models/Component.js';
-import { nextNumber } from '../services/numbering.service.js';
+import { nextQuoteNumber } from '../services/numbering.service.js';
 import { priceFrom } from '../services/pricing.service.js';
-import { costingFrom } from '../controllers/pricing.controller.js';
+import { costingFrom } from '../controllers/quotation.controller.js';
 import { few, leading } from './size.js';
 import { enquiryFor } from './enquiryFor.js';
 
@@ -167,11 +167,12 @@ export async function seedRegisterCostings({ admin, nandhini }) {
       customer, owner: nandhini, modelNumber: job.model, mould, status: 'pricing_required',
     });
 
-    const pricing = new Pricing({
-      number: await nextNumber('PRC'),
+    const quotation = new Quotation({
+      number: await nextQuoteNumber(),
       customer: customer._id,
       enquiry: asked._id,
-      /* One model per sheet here. A sheet holds several [§7]; these seven are seven jobs. */
+      assignedTo: nandhini._id,
+      /* One model each here. A quotation holds several [§10]; these are separate jobs. */
       lines: [
         {
           mould: mould._id,
@@ -184,9 +185,10 @@ export async function seedRegisterCostings({ admin, nandhini }) {
           material: material.type,
           procurement: 'manufacture',
           printing: job.printing,
-          /* The line that matters: the registers fill the sheet, exactly as the app does. */
+          /* The line that matters: the registers fill the costing, exactly as the app does. */
           cost: costingFrom(mould, material, parts),
           markupPercent: job.markupPercent,
+          moq: mould.moq || 0,
         },
       ],
       requestedBy: nandhini._id,
@@ -194,29 +196,16 @@ export async function seedRegisterCostings({ admin, nandhini }) {
       remarks: job.remarks,
     });
 
-    const line = pricing.lines[0];
-
-    /* The app's own tier arithmetic, not a second copy of it — same reasoning as `costingFrom`. */
+    const line = quotation.lines[0];
+    /* The app's own tier arithmetic, priced at it: a draft ready to send. */
     line.calculatedSellingPrice = priceFrom(line);
-    line.approvedSellingPrice = line.calculatedSellingPrice;
+    line.unitPrice = line.calculatedSellingPrice;
+    settleLine(line);
+    quotation.statusHistory = [{ to: 'costing', by: nandhini._id }];
+    quotation.revisions = [{ revision: 0, lines: [{ mould: mould._id, modelNumber: job.model, moq: line.moq, unitPrice: line.unitPrice }], by: nandhini._id }];
 
-    /*
-     * All of these clear their own floor, because they are priced off the tiers rather than off
-     * a negotiation. §9's refusal route already has three genuine cases from the 26-27 sheet;
-     * what the seed was missing was the ordinary state — an approved costing somebody can
-     * actually raise a quotation from.
-     */
-    line.status = 'approved';
-    line.approvedBy = admin._id;
-    line.approvedAt = new Date();
-    pricing.statusHistory = [
-      { to: 'requested', by: nandhini._id },
-      { from: 'requested', to: 'costed', by: admin._id },
-      { from: 'costed', to: 'approved', by: admin._id },
-    ];
-
-    await pricing.save();
-    made.push(pricing);
+    await quotation.save();
+    made.push(quotation.lines[0]);
   }
 
   const uplifted = made.filter((row) => {

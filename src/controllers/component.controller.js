@@ -1,5 +1,6 @@
 import Component, { COMPONENT_KINDS, COMPONENT_LABELS } from '../models/Component.js';
-import Pricing from '../models/Pricing.js';
+import Quotation from '../models/Quotation.js';
+import { ownershipFilter } from '../services/ownership.service.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { listParams, paginated } from '../utils/query.js';
@@ -138,9 +139,9 @@ export const componentPricings = asyncHandler(async (req, res) => {
    * part. Staleness is judged on the lines that actually name it — a sheet whose second model
    * uses a different hook is not stale because its first one's rate moved.
    */
-  const rows = await Pricing.find({ [`lines.${field}`]: component._id })
+  const rows = await Quotation.find({ [`lines.${field}`]: component._id, ...ownershipFilter(req.user) })
     .select(`number status lines.modelNumber lines.${field} lines.${line} `
-      + 'lines.approvedSellingPrice createdAt customer')
+      + 'lines.unitPrice createdAt customer')
     .populate('customer', 'name')
     .sort('-createdAt')
     .limit(50);

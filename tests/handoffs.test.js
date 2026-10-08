@@ -305,8 +305,8 @@ test('sent back: it goes back to whoever had it before, with why', async () => {
   const task = json.data.task;
   assert.equal(task.department, 'quotation');
   assert.equal((await Enquiry.findById(enquiryId)).stage, 'pricing_quote');
-  const { default: Pricing } = await import('../src/models/Pricing.js');
-  assert.ok(await Pricing.exists({ enquiry: enquiryId }), 'the costing sheet is waiting for quotation');
+  const { default: Quotation } = await import('../src/models/Quotation.js');
+  assert.ok(await Quotation.exists({ enquiry: enquiryId, status: 'costing' }), 'the quotation is waiting to be costed');
 
   /* Nobody in Quotation yet, so an administrator stands in. */
   const short = await api(`/api/workspace/todos/${task._id}/send-back`, { method: 'POST', token: admin, body: { reason: 'no' } });

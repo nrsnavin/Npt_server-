@@ -2,7 +2,6 @@ import mongoose from 'mongoose';
 import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
-import Pricing from '../models/Pricing.js';
 import Quotation from '../models/Quotation.js';
 import SalesOrder from '../models/SalesOrder.js';
 import Dispatch from '../models/Dispatch.js';
@@ -13,7 +12,7 @@ import { ownershipFilter, ownsCustomer, ownsRecord } from '../services/ownership
 import { canRead } from '../services/access.service.js';
 
 /**
- * One buyer's whole history, newest first — every enquiry, sample, costing, quotation, order,
+ * One buyer's whole history, newest first — every enquiry, sample, quotation, order,
  * dispatch and question, on one scroll.
  *
  * Each kind is read only if the person may open that module, and questions only where they are
@@ -31,12 +30,6 @@ const SOURCES = [
     kind: 'sample', module: 'samples', model: Sample, owner: 'requestedBy', select: 'number status modelNumber quantity createdAt',
     link: (row) => `/samples/${row._id}`,
     title: (row) => `Sample ${row.number}${row.modelNumber ? ` — ${row.modelNumber}` : ''}${row.quantity ? ` · ${row.quantity} pcs` : ''}`,
-  },
-  {
-    kind: 'costing', module: 'pricing', model: Pricing, select: 'number lines.modelNumber lines.status createdAt',
-    link: (row) => `/pricings/${row._id}`,
-    title: (row) => `Costing ${row.number}${row.lines?.length ? ` — ${row.lines.map((line) => line.modelNumber).filter(Boolean).join(', ')}` : ''}`,
-    status: (row) => row.lines?.[0]?.status,
   },
   {
     kind: 'quotation', module: 'pricing', model: Quotation, owner: 'assignedTo', select: 'number status createdAt lines.modelNumber',

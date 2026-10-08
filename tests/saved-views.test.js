@@ -93,7 +93,7 @@ test('a view is refused when malformed, duplicated, or on a list the person cann
   assert.equal((await save({ page: 'queries', name: 'Twice' })).status, 409);
 
   /* Despatch has no pricing access, so a costing view is not theirs to keep. */
-  assert.equal((await save({ page: 'pricings', name: 'Costings' }, kavitha)).status, 403);
+  assert.equal((await save({ page: 'quotations', name: 'Quotations' }, kavitha)).status, 403);
 });
 
 test('twenty views is the most one person keeps', async () => {

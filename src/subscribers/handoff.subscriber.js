@@ -280,7 +280,7 @@ export function registerHandoffSubscribers() {
     })
   );
 
-  /* A sample or a costing raised on an enquiry is that department taking it over. */
+  /* A sample, or a quotation waiting to be costed, raised on an enquiry is that department taking it over. */
   subscribe(
     EVENTS.SAMPLE_CREATED,
     safely('sampling has the enquiry', async ({ sample }) => {
@@ -289,8 +289,8 @@ export function registerHandoffSubscribers() {
   );
   subscribe(
     EVENTS.PRICING_REQUESTED,
-    safely('quotation has the enquiry', async ({ pricing, by }) => {
-      if (pricing?.enquiry) await moveOnBehalf(pricing.enquiry, 'create_quotation', { by });
+    safely('quotation has the enquiry', async ({ quotation, by }) => {
+      if (quotation?.enquiry) await moveOnBehalf(quotation.enquiry, 'create_quotation', { by });
     })
   );
 }

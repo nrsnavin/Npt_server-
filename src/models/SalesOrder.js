@@ -323,8 +323,8 @@ const lineSchema = new mongoose.Schema(
     promisedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     promisedAt: Date,
 
-    /** The costing behind the price, so a margin question has somewhere to be answered. */
-    pricing: { type: mongoose.Schema.Types.ObjectId, ref: 'Pricing' },
+    /** The quotation line the price came from — its cost is the answer to a margin question. */
+    quotationLine: { type: mongoose.Schema.Types.ObjectId },
 
     production: { type: productionSchema, default: () => ({}) },
 

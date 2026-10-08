@@ -46,8 +46,8 @@ const orderLine = z.object({
   quantity: pieces,
   unitPrice: money,
   deliveryDate: z.coerce.date().optional(),
-  /** The costing behind the price, so a margin question has somewhere to be answered. */
-  pricing: objectId.optional(),
+  /** The quotation line the price came from. */
+  quotationLine: objectId.optional(),
   remarks: z.string().optional(),
 });
 

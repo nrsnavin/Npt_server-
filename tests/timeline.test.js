@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import { withEnquiries } from './support/onEnquiry.js';
+import { withCostingLines } from './support/costingLine.js';
 
 process.env.JWT_SECRET = 'timeline-test-secret';
 delete process.env.ANTHROPIC_API_KEY;
@@ -37,7 +38,8 @@ const soon = () => new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10
 const wait = () => new Promise((resolve) => setTimeout(resolve, 15));
 
 /* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
-const api = withEnquiries(rawApi);
+/* Costings live on quotation lines now — see tests/support/costingLine.js. */
+const api = withCostingLines(withEnquiries(rawApi));
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -104,7 +106,7 @@ test.after(async () => {
 test('every kind of record, newest first', async () => {
   const { status, json } = await api(`/api/customers/${customerId}/timeline`, { token: nandhini });
   assert.equal(status, 200, json.message);
-  assert.deepEqual(json.data.map((event) => event.kind), ['query', 'query', 'costing', 'sample', 'enquiry']);
+  assert.deepEqual(json.data.map((event) => event.kind), ['query', 'query', 'quotation', 'sample', 'enquiry']);
   assert.match(json.data[0].title, /Second question/);
   assert.match(json.data[4].title, /NH-400/);
   assert.equal(json.next, null);

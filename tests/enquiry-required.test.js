@@ -93,7 +93,7 @@ test('nothing new is raised on a closed enquiry', async () => {
   const { default: Enquiry } = await import('../src/models/Enquiry.js');
   const closed = await api('/api/enquiries', { method: 'POST', body: { customer: customerId, requirement: { modelNumber: 'NH-500' } } });
   await Enquiry.updateOne({ _id: closed.json.data._id }, { $set: { stage: 'closed' } });
-  const refused = await api('/api/pricings', { method: 'POST', body: { enquiry: closed.json.data._id, modelNumber: 'NH-500' } });
+  const refused = await api('/api/quotations', { method: 'POST', body: { enquiry: closed.json.data._id, lines: [{ modelNumber: 'NH-500' }] } });
   assert.equal(refused.status, 400);
   assert.match(refused.json.message, /closed/);
 });
@@ -101,12 +101,10 @@ test('nothing new is raised on a closed enquiry', async () => {
 test('the models refuse a new record without an enquiry, whoever creates it; old ones still save', async () => {
   const { default: Sample } = await import('../src/models/Sample.js');
   const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
-  const { default: Pricing } = await import('../src/models/Pricing.js');
   const { default: Quotation } = await import('../src/models/Quotation.js');
 
   for (const [Model, fields] of [
     [Sample, { number: 'SMP-X', modelNumber: 'NH-400', quantity: 3 }],
-    [Pricing, { number: 'PRC-X', customer: customerId, lines: [{ modelNumber: 'NH-400' }] }],
     [Quotation, { number: 'Q-X', customer: customerId, lines: [LINE] }],
     [SalesOrder, { number: 'SO-X', customer: customerId, lines: [{ modelNumber: 'NH-400', quantity: 10, unitPrice: 1 }] }],
   ]) {

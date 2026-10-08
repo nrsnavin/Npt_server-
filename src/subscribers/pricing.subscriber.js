@@ -11,10 +11,10 @@ import { ensureCostingFor } from '../services/costingRequest.service.js';
  * against traffic that never arrived. Phase 3 is here now, and the shape held — the task is
  * still what tells a person to go and do it, and the costing record is what they do it on.
  *
- *   Enquiry → pricing required   ⇒ raise the costing, queue whoever prices a job
- *   Costing → below the floor    ⇒ management is asked to sign it off [§9]
- *   Costing → approved           ⇒ marketing is told they may quote
- *   Costing → refused            ⇒ it goes back to whoever built it
+ *   Enquiry → pricing required   ⇒ raise the quotation for costing
+ *   A price under its minimum    ⇒ Admin is asked to sign it off [§9]
+ *   Every line priced, cleared   ⇒ the owner is told it can go out
+ *   A price refused              ⇒ it goes back to whoever costed it
  */
 
 /**
@@ -66,60 +66,69 @@ export function registerPricingSubscribers() {
    * notice it: until it is signed off no quote can go out, so the enquiry behind it is simply
    * stopped. Management is told rather than left to find it on a list.
    */
+  /* A price under its minimum: Admin is asked to sign it off [§9]. */
   subscribe(
     EVENTS.PRICING_APPROVAL_REQUIRED,
-    safely('below-minimum approval', async ({ pricing }) => {
+    safely('below-minimum approval', async ({ quotation }) => {
+      if (!quotation) return;
       const approvers = await User.find({
         isActive: { $ne: false },
         $or: [{ role: 'admin' }, { department: 'management' }],
       }).select('_id');
 
+      const waiting = (quotation.lines || []).filter((line) => line.status === 'approval_pending');
       await Promise.all(
         approvers.map((member) =>
           raiseTask({
             user: member._id,
-            title: `Approve the price on ${pricing.number}`,
-            notes: 'It is below the approved minimum, so nothing can be quoted until it is signed off.',
+            title: `Approve the price on ${quotation.number}`,
+            notes: `${waiting.map((line) => line.modelNumber).filter(Boolean).join(', ') || 'A line'} is below the approved minimum, so it cannot be sent until it is signed off.`,
             priority: 'high',
-            link: `/pricings/${pricing._id}`,
-            originKey: key(pricing._id, 'approval'),
+            link: `/quotations/${quotation._id}`,
+            originKey: key(quotation._id, 'approval'),
           })
         )
       );
     })
   );
 
+  /* Every line priced and cleared: whoever owns the buyer may send it. */
   subscribe(
     EVENTS.PRICING_APPROVED,
-    safely('tell marketing they may quote', async ({ pricing }) => {
-      await resolveTasks(key(pricing._id, 'approval'));
-      if (pricing.enquiry) await resolveTasks(`enquiry:${pricing.enquiry}:pricing`);
-      if (!pricing.requestedBy) return;
+    safely('tell marketing they may send', async ({ quotation }) => {
+      if (!quotation) return;
+      await resolveTasks(key(quotation._id, 'approval'));
+      if (quotation.enquiry) await resolveTasks(`enquiry:${quotation.enquiry}:pricing`);
+      const to = quotation.assignedTo || quotation.requestedBy;
+      if (!to) return;
 
       await raiseTask({
-        user: pricing.requestedBy,
-        title: `Price ready on ${pricing.number}`,
-        notes: 'The costing is approved — the quotation can go out.',
+        user: to,
+        title: `Price ready on ${quotation.number}`,
+        notes: 'Every line is priced and cleared — the quotation can go out.',
         priority: 'high',
-        link: `/pricings/${pricing._id}`,
-        originKey: key(pricing._id, 'ready'),
+        link: `/quotations/${quotation._id}`,
+        originKey: key(quotation._id, 'ready'),
       });
     })
   );
 
+  /* A price Admin refused goes back to whoever costed it. */
   subscribe(
     EVENTS.PRICING_REJECTED,
-    safely('send it back', async ({ pricing }) => {
-      await resolveTasks(key(pricing._id, 'approval'));
-      if (!pricing.costedBy) return;
+    safely('send it back', async ({ quotation, lineId }) => {
+      if (!quotation) return;
+      await resolveTasks(key(quotation._id, 'approval'));
+      if (!quotation.costedBy) return;
+      const line = (quotation.lines || []).find((row) => String(row._id) === String(lineId));
 
       await raiseTask({
-        user: pricing.costedBy,
-        title: `Price refused on ${pricing.number}`,
-        notes: pricing.rejectionNote || 'Rebuild the costing and send it back for approval.',
+        user: quotation.costedBy,
+        title: `Price refused on ${quotation.number}${line?.modelNumber ? ` — ${line.modelNumber}` : ''}`,
+        notes: line?.rejectionNote || 'Change the price and it goes back for approval.',
         priority: 'high',
-        link: `/pricings/${pricing._id}`,
-        originKey: key(pricing._id, 'refused'),
+        link: `/quotations/${quotation._id}`,
+        originKey: key(quotation._id, `refused:${lineId}`),
       });
     })
   );

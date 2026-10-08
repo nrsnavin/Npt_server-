@@ -1,8 +1,11 @@
-import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
-import Pricing from '../models/Pricing.js';
+import Quotation, {
+  CLOSED_QUOTATION_STATUSES, UNSENT_STATUSES, settleLine,
+} from '../models/Quotation.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
-import Mould, { mouldWithPhoto } from '../models/Mould.js';
+import Mould, { MATERIALS, mouldWithPhoto } from '../models/Mould.js';
+import Material, { grammageFrom } from '../models/Material.js';
+import Component from '../models/Component.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { fileSafeNumber, nextQuoteNumber } from '../services/numbering.service.js';
@@ -10,12 +13,13 @@ import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { EVENTS, publish } from '../services/events.service.js';
-import { costingLine } from '../services/pricing.service.js';
+import { priceFrom } from '../services/pricing.service.js';
 import { narrowToOwner, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { assertCanOwnBuyer } from '../services/assignment.service.js';
 import { renderQuotationPdf } from '../services/quotationPdf.js';
 import { bufferOf } from '../services/storage.service.js';
-import { lineCosting } from '../services/pricingVisibility.js';
+import { allVisibleTo, assertMayCost, seesCosting, visibleTo } from '../services/pricingVisibility.js';
+import { hasRequirement } from '../models/requirement.schema.js';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import CustomerMessage from '../models/CustomerMessage.js';
 import { draftQuoteMessages, recipientOf, sendProblem } from '../services/quotationMessage.js';
@@ -27,460 +31,179 @@ import { normalisePhone } from '../utils/phone.js';
 import { transactional } from '../utils/transaction.js';
 
 /**
- * Quotations [BLUEPRINT §10], and the price gate in front of them [§9].
+ * Quotations — the costing and the offer on one record [BLUEPRINT §7–§10; models/Quotation.js].
  *
- * A quotation is a customer conversation, so unlike a costing it *is* ownership-scoped: a
- * marketing person sees their own [§29].
+ * The work goes:
  *
- * Two rules do most of the work here.
+ *   1. Raised on an enquiry — by Create Quotation, by the enquiry reaching pricing, or by hand.
+ *      One line per model the enquiry asks about, prefilled from the registers.
+ *   2. Costed, line by line, by the Quotation department (`/lines/:lineId/cost`). The price on
+ *      the line defaults to cost at its markup.
+ *   3. A price under its line's minimum waits on Admin (`/lines/:lineId/decision`) [§9].
+ *   4. Sent — by marketing or the Quotation department, whoever gets to it.
+ *   5. Revised after sending, every revision kept [§10]; answered by the buyer.
  *
- * **Every revision stays in history.** Changing the price never overwrites it — it appends,
- * and the live fields become the newest entry. Six weeks into a negotiation the only way to
- * answer "what did we last tell them?" is that list, and a quote that overwrites itself cannot
- * answer it at all, which is how a plant honours a number it never sent.
- *
- * **Nothing goes out below the floor without a signature.** The costing knows where the floor
- * is and marketing is not allowed to [§8], so the check happens here, against the linked
- * costing, and the refusal says only that approval is needed — never what the figure is.
+ * Two walls run through it. **Cost is hidden from marketing** [§8]: every reply goes through
+ * `visibleTo`, and only `assertMayCost` may write a cost. **Marketing sees their own** [§29]:
+ * the quotation is ownership-scoped like the enquiry it belongs to.
  */
+
+/** How many models one quotation may carry. Past this it is a price list. */
+export const MAX_LINES = 20;
+
+const REGISTER_FIELDS = {
+  materialRef: 'name code type colour ratePerKg grammageFactorPercent',
+  hookRef: 'name code colour ratePerPiece kind',
+  clipRef: 'name code colour ratePerPiece kind',
+  printRef: 'name code colour ratePerPiece kind',
+};
 
 const POPULATE = [
-  { path: 'customer', select: 'code name' },
-  { path: 'enquiry', select: 'number status' },
+  { path: 'customer', select: 'code name assignedTo', populate: { path: 'assignedTo', select: 'name' } },
+  { path: 'enquiry', select: 'number status stage requirement targetPrice' },
   { path: 'assignedTo', select: 'name' },
-  /*
-   * The costing behind each line, on the list and not only on the detail.
-   *
-   * "What did we work this price out from?" is the first question asked of a quotation that has
-   * gone to a customer, and answering it used to mean opening the document and then opening the
-   * sheet — two screens deep, for a fact that belongs on the row. Whole rather than projected,
-   * and narrowed per line below: the sheet's totals are virtuals recomputed on the way out
-   * whatever a `select` said, so a projection here would be a redaction that does not redact.
-   */
-  { path: 'lines.pricing' },
+  mouldWithPhoto(
+    'lines.mould',
+    'mouldCode name category sizeMm hookType moq packingQty ' +
+      'cavities activeCavities partWeightGrams runnerWeightGrams ' +
+      'regrindRecoveryPercent cycleTimeSeconds efficiencyPercent status material machine'
+  ),
+  ...Object.entries(REGISTER_FIELDS).map(([ref, select]) => ({ path: `lines.${ref}`, select })),
+  { path: 'requestedBy', select: 'name' },
+  { path: 'costedBy', select: 'name' },
+  { path: 'lines.approvedBy', select: 'name' },
 ];
 
+const isAdmin = (user) => user?.role === 'admin' || user?.department === 'management';
+
+/* ------------------------------ Building a line ------------------------------ */
+
 /**
- * Whether one line's price may be sent [§9].
+ * Everything a costing takes from the tool, the resin and the parts registers.
  *
- * Read off the costing rather than trusted from the request: the whole point is that the person
- * building the quote cannot see the minimum, so they cannot be the one to decide they are above
- * it. A line with no costing behind it is not blocked — plenty of repeat jobs are quoted from
- * a known price — but one that *has* a costing must respect it.
+ * Grams per piece come from the tool's consumption figure, converted onto the resin's grammage
+ * basis; the resin rate and the parts' rates are *copied*, so a rate that moves next month does
+ * not reach back into a price already given. A typed figure still wins — see `costLine`.
  */
-async function lineIsCleared(line) {
-  if (!line.pricing) return { cleared: true };
-
-  const pricing = await Pricing.findById(line.pricing);
-  if (!pricing) return { cleared: true };
-
-  /*
-   * The line of that sheet this price came off, not the sheet.
-   *
-   * A sheet prices several models and each carries its own floor and its own §9 decision, so
-   * reading the sheet's roll-up here would check one model's price against another model's
-   * minimum — and a roll-up says "approved" while a model on the same sheet is still waiting.
-   */
-  const costing = costingLine(pricing, line);
-  if (!costing) return { cleared: true };
-
-  if (costing.status === 'approval_pending') {
-    return { cleared: false, why: 'waiting', one: 'its costing is still waiting on approval', many: 'their costings are still waiting on approval' };
+export function costingFrom(mould, material, parts = {}) {
+  const filled = {};
+  if (mould) {
+    filled.gramWeight = grammageFrom(mould.consumptionPerPieceGrams, material?.grammageFactorPercent);
+    filled.jobWorkCost = mould.jobWorkCost || 0;
+    filled.hookCost = mould.hookCost || 0;
+    filled.metalClipsCost = mould.clipsCost || 0;
+    filled.printingCost = mould.printingCost || 0;
+    filled.packingCost = mould.packingCost || 0;
   }
-  if (costing.status === 'rejected') {
-    return { cleared: false, why: 'refused', one: 'its costing was refused and needs re-costing', many: 'their costings were refused and need re-costing' };
-  }
-  /*
-   * The floor, after any signature on it.
-   *
-   * §9 blocks a price below the approved minimum *until MD approves*. So once the sheet has
-   * been signed off, that signature is the sanction: a costing approved at ₹6 against a floor
-   * of ₹8 means ₹6 is allowed, and continuing to block it would make the approval route a
-   * dead end — the one thing §9 exists to provide.
-   *
-   * Where the sanctioned price is above the floor, the floor still governs: marketing may
-   * discount to it without asking, which is what a minimum is for.
-   */
-  const floor = Math.min(
-    costing.minimumSellingPrice ?? Infinity,
-    costing.approvedSellingPrice ?? Infinity
-  );
+  if (material) filled.rawMaterialRate = material.ratePerKg;
+  if (parts.hook) filled.hookCost = parts.hook.ratePerPiece;
+  if (parts.clip) filled.metalClipsCost = parts.clip.ratePerPiece;
+  if (parts.print) filled.printingCost = parts.print.ratePerPiece;
+  return filled;
+}
 
-  if (Number.isFinite(floor) && line.unitPrice < floor) {
-    return {
-      cleared: false,
-      // Deliberately does not name the figure: §8 keeps the floor away from marketing, and a
-      // refusal that quotes it hands over the very number the rule protects.
-      why: 'floor',
-      one: 'it is below the approved minimum',
-      many: 'they are below their approved minimums',
-    };
+/** The parts named on a request, refusing one not on its register or of the wrong kind. */
+async function partsFrom(body) {
+  const wanted = [['hook', body.hookRef], ['clip', body.clipRef], ['print', body.printRef]].filter(([, id]) => id);
+  if (!wanted.length) return {};
+
+  const found = await Component.find({ _id: { $in: wanted.map(([, id]) => id) } });
+  const byId = new Map(found.map((row) => [String(row._id), row]));
+  const parts = {};
+  for (const [kind, id] of wanted) {
+    const row = byId.get(String(id));
+    if (!row) throw ApiError.badRequest(`That ${kind} is not on the register`);
+    if (row.kind !== kind) throw ApiError.badRequest(`${row.name} is a ${row.kind}, not a ${kind}`);
+    parts[kind] = row;
   }
-  return { cleared: true };
+  return parts;
 }
 
 /**
- * Whether the whole document may go out — which means every line on it.
- *
- * **Every line, not the document.** This is the difference a multi-line quotation makes to §9,
- * and it is not a detail: a quote with seven prices comfortably above their floors and one
- * beneath is precisely what a single document-level check waves through, because there is no
- * one price for it to look at. The block is all-or-nothing because the document is — you cannot
- * send seven eighths of a quotation — and the message names the offending models so the person
- * holding it knows which price to argue about.
- *
- * Still never names a figure. §8 keeps the floor away from marketing whether it is refusing one
- * line or eight.
+ * A new line, from a request or an enquiry item, with the registers resolved and the cost
+ * prefilled. A price given with it is the offer; without one the line waits for costing.
  */
-async function priceIsCleared(quotation) {
-  const blocked = [];
+async function lineFrom(input = {}, { fallbackModel } = {}) {
+  const mouldId = input.mould || undefined;
+  const mould = mouldId ? await Mould.findById(mouldId) : null;
+  if (mouldId && !mould) throw ApiError.badRequest('That mould is not on the register');
 
-  for (const line of quotation.lines) {
-    const result = await lineIsCleared(line);
-    if (!result.cleared) blocked.push({ model: line.modelNumber || 'an unnamed line', ...result });
-  }
+  const material = input.materialRef ? await Material.findById(input.materialRef) : null;
+  if (input.materialRef && !material) throw ApiError.badRequest('That material is not on the register');
 
-  if (!blocked.length) return { cleared: true };
+  const parts = await partsFrom(input);
 
-  /*
-   * One reason repeated across every line reads better said once — "3 lines are below their
-   * approved minimums" rather than the same sentence three times with different model codes in
-   * front of it — but the models still have to be named, because that is what the reader acts
-   * on. Each reason carries a singular and a plural phrasing because it is written into a
-   * sentence whose subject is a count: "3 lines ... because its costing is waiting" is the sort
-   * of thing that makes a person read a message twice and trust it less.
-   */
-  const single = blocked.length === 1;
-  const kinds = [...new Map(blocked.map((entry) => [entry.why, entry])).values()];
-  const reasons = kinds.map((entry) => (single ? entry.one : entry.many)).join(', and ');
-  const models = blocked.map((entry) => entry.model).join(', ');
-
-  return {
-    cleared: false,
-    blocked,
-    why: single
-      ? `${models} cannot be sent because ${reasons} — this needs management approval first`
-      : `${blocked.length} lines cannot be sent (${models}) because ${reasons}` +
-        ' — this needs management approval first',
+  const line = {
+    mould: mould?._id,
+    materialRef: material?._id,
+    hookRef: parts.hook?._id,
+    clipRef: parts.clip?._id,
+    printRef: parts.print?._id,
+    modelNumber: String(input.modelNumber || fallbackModel || mould?.mouldCode || '').trim() || undefined,
+    material: input.material || (MATERIALS.includes(material?.type) ? material.type : undefined) || mould?.material,
+    procurement: input.procurement,
+    printing: input.printing,
+    markupPercent: input.markupPercent,
+    cost: costingFrom(mould, material, parts),
+    quantity: input.quantity,
+    moq: input.moq ?? mould?.moq ?? 0,
+    colour: input.colour,
+    remarks: input.remarks,
+    unitPrice: input.unitPrice ?? undefined,
+    status: 'requested',
   };
-}
-
-/**
- * What the quotation boards will order by — both of them, the open register and the sent list.
- *
- * `sentAt` and `respondedAt` are the two the sent board is really about: how long a price has
- * been with a buyer unanswered is the question that screen exists to ask, and it is a
- * subtraction between those two dates and today.
- *
- * The rate per piece is deliberately absent. It lives on `lines.unitPrice`, and ordering by a
- * field inside an array makes Mongo rank each document by the smallest (or largest) value in
- * it — so a three-line quotation would sort by a price that is not the one the table draws.
- * A column that sorts by a number the reader cannot see on the row is worse than no sort.
- *
- * `validUntil` is included because an expiring quote is a real queue: a price that lapses
- * tomorrow is a call somebody should make today.
- */
-const QUOTATION_SORTABLE = [
-  'number', 'createdAt', 'status', 'validUntil', 'sentAt', 'respondedAt', 'revision',
-];
-
-export const listQuotations = asyncHandler(async (req, res) => {
-  const { page, limit, sort, filter } = listParams(req.query, {
-    /* Model codes moved onto the lines, so searching for one has to look inside them. */
-    searchFields: ['number', 'lines.modelNumber'],
-    defaultSort: '-createdAt',
-    sortable: QUOTATION_SORTABLE,
-  });
-
-  const scope = ownershipFilter(req.user);
-  Object.assign(filter, scope);
-
-  const owner = narrowToOwner(scope, req.query.assignedTo);
-  if (owner !== undefined) filter.assignedTo = owner;
-
-  if (req.query.status) filter.status = { $in: String(req.query.status).split(',') };
-  if (req.query.open === 'true') filter.status = { $nin: CLOSED_QUOTATION_STATUSES };
-  if (req.query.enquiry) filter.enquiry = req.query.enquiry;
-  if (req.query.customer) filter.customer = req.query.customer;
-
-  /*
-   * Has it actually gone to the customer?
-   *
-   * Not a status — that is the point of asking it separately. `sent` is only the state a quote
-   * sits in between going out and being answered; a quotation that was sent and then revised,
-   * accepted or refused has left the building just the same, and a board built on
-   * `status === 'sent'` would quietly drop every one of them. `sentAt` is the fact: it is
-   * stamped once, on the way out, and nothing afterwards clears it.
-   */
-  const sentOnly =
-    req.query.sent === 'true'
-      ? { sentAt: { $ne: null } }
-      : req.query.sent === 'false'
-        ? { sentAt: null }
-        : null;
-  if (sentOnly) Object.assign(filter, sentOnly);
-
-  const [data, total, stages] = await Promise.all([
-    Quotation.find(filter).populate(POPULATE).sort(sort).skip((page - 1) * limit).limit(limit),
-    Quotation.countDocuments(filter),
-    /*
-     * The value of a quotation is the sum of its lines, so the total has to be reduced over
-     * them inside the pipeline. Multiplying a document-level price by a document-level quantity
-     * was the old shape and would now multiply two missing fields into nothing — a stage board
-     * reading zero against a full pipeline, which looks like a reporting fault rather than a
-     * schema one and gets chased for a day.
-     */
-    Quotation.aggregate([
-      /*
-       * The chips still count the whole board rather than the chip that is selected — that is
-       * what makes them a pipeline and not a echo of the current filter. But `sent` is the board,
-       * not a chip: on a screen showing only what has gone out, a Draft chip counting drafts
-       * would offer a filter that can only ever come back empty.
-       */
-      { $match: sentOnly ? { ...scope, ...sentOnly } : scope },
-      {
-        $group: {
-          _id: '$status',
-          leads: { $sum: 1 },
-          value: {
-            $sum: {
-              $reduce: {
-                input: { $ifNull: ['$lines', []] },
-                initialValue: 0,
-                in: {
-                  $add: [
-                    '$$value',
-                    {
-                      $multiply: [
-                        { $ifNull: ['$$this.unitPrice', 0] },
-                        { $ifNull: ['$$this.quantity', 0] },
-                      ],
-                    },
-                  ],
-                },
-              },
-            },
-          },
-        },
-      },
-    ]),
-  ]);
-
-  /*
-   * The same allow-list `getQuotation` runs, for the same reason and by the same route. Two
-   * people reading one list see different things about the same line, which is a property of the
-   * reader rather than of the query — so it cannot live in the projection, and the populate above
-   * deliberately fetched the sheet whole so that this is the only thing standing between a cost
-   * base and the screen.
-   */
-  const rows = data.map((quotation) => {
-    const row = quotation.toJSON();
-    for (const line of row.lines || []) {
-      line.pricing = lineCosting(line.pricing, line, req.user);
-    }
-    return row;
-  });
-
-  paginated(res, rows, { page, limit, total }, {
-    stageCounts: Object.fromEntries(
-      stages.map((row) => [row._id, { leads: row.leads, value: Math.round(row.value || 0) }])
-    ),
-  });
-});
-
-/**
- * One quotation, with everything a person needs to read it.
- *
- * More than the list carries, because a row and a document answer different questions. A row
- * says which quotations exist; this has to answer "what did we offer, and how did we get here"
- * — which needs the names against each revision, the model behind the line, and the costing the
- * price came from.
- *
- * The costing behind each line comes through `lineCosting`, which is an explicit allow-list and
- * not a `select`. That matters and is worth knowing: the costing's totals are *virtuals*, so
- * they are recomputed on the way out whatever the projection said, and `totalCost` arrived as
- * `0` — a figure that reveals nothing today but reads as "this costs nothing" on a screen, and
- * would start reporting real money the moment somebody widened the select. An allow-list cannot
- * drift that way.
- *
- * What it adds is the figure neither record holds alone: the margin on **this line's** price.
- * A costing knows what it would earn at the price it was approved at; a line knows what was
- * actually offered, and the two diverge the moment anybody negotiates. Someone who may open the
- * costing now sees that answer on the quotation instead of opening two screens and doing the
- * subtraction; someone who may not sees exactly what they saw before, plus whether the line
- * sits under its floor — the same "whether, not where" §8 already draws for `belowMinimum`.
- */
-export const getQuotation = asyncHandler(async (req, res) => {
-  const quotation = await Quotation.findById(req.params.id)
-    .populate('customer', 'code name city state gstin mobile email')
-    .populate('enquiry', 'number status')
-    .populate('assignedTo', 'name')
-    .populate(mouldWithPhoto('lines.mould', 'mouldCode name category sizeMm material hookType moq'))
-    /* Whole, and narrowed per line below: what may be shown depends on who is asking. */
-    .populate('lines.pricing')
-    .populate('revisions.by', 'name')
-    .populate('statusHistory.by', 'name');
-
-  if (!quotation) throw ApiError.notFound('Quotation not found');
-  if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
-
-  const data = quotation.toJSON();
-  /*
-   * Narrowed once per line, against the price that line actually quotes. Done on the document
-   * rather than in the populate, because the answer is different for two people reading the
-   * same quotation — which a projection cannot express.
-   */
-  for (const line of data.lines || []) {
-    line.pricing = lineCosting(line.pricing, line, req.user);
+  if (!line.mould && !line.modelNumber) {
+    throw ApiError.badRequest('Name the model on every line — a mould or a model number');
   }
-
-  res.json({ success: true, data });
-});
-
-/**
- * Builds and saves a quotation, whoever asked for it.
- *
- * Shared by the two doors into this module — marketing writing one from scratch, and a costing
- * being turned into a quote — because the interesting parts are the same either way: the
- * customer has to resolve, the owner has to be settled, and Rev 0 has to exist. A second copy
- * of that for the pricing route is a second place for the revision history to start wrong.
- */
-/**
- * Fills each line's MOQ from the mould register where the line does not name one [§28].
- *
- * Copied rather than looked up on read: a register edited next month must not change what an
- * issued quotation says it was offered at. One query for the whole set rather than one per
- * line, because an eight-model quotation should not be eight round trips.
- *
- * A line with no mould — a traded piece, or a model nobody has attached a tool to — simply
- * starts at nothing and takes whatever minimum the quoter states. That is the honest default:
- * there is no register entry to read one off, and inventing a minimum is worse than asking.
- */
-async function withMouldDefaults(lines = [], existing = []) {
-  /*
-   * A line that does not name its costing keeps the one it already had.
-   *
-   * This is the quiet failure the shape invites. A revision restates the offer — that is what
-   * makes it a revision — and a screen or a script that sends back `{ modelNumber, quantity,
-   * unitPrice }` without repeating `pricing` would detach the costing from the line. Nothing
-   * errors: the quote saves, and §9's floor check silently stops applying to it, at the exact
-   * moment somebody is cutting the price. Matched on the line's own id where the caller kept
-   * it, and on the model code otherwise, which is what a person restating a line actually
-   * holds on to.
-   */
-  const byId = new Map();
-  const byModel = new Map();
-  for (const line of existing) {
-    if (line._id) byId.set(String(line._id), line);
-    if (line.modelNumber) byModel.set(line.modelNumber, line);
-  }
-
-  /*
-   * Position is identity only when there is exactly one line on each side. Then "the line" is
-   * unambiguous and a revision that just restates a new price keeps its costing. Beyond that,
-   * matching by position would happily hand model B's floor to model A the first time somebody
-   * reorders a quote — so a multi-line revision has to name its models, which every screen does
-   * and which the API fills in from the register anyway.
-   */
-  const positional = lines.length === 1 && existing.length === 1 ? existing[0] : null;
-
-  const inherited = lines.map((line) => {
-    if (line.pricing) return line;
-    const previous =
-      (line._id && byId.get(String(line._id))) ||
-      (line.modelNumber && byModel.get(line.modelNumber)) ||
-      positional;
-    if (!previous?.pricing) return line;
-    return { ...line, pricing: previous.pricing, mould: line.mould ?? previous.mould };
-  });
-
-  const ids = inherited.map((line) => line.mould).filter(Boolean);
-  if (!ids.length) return inherited.map((line) => ({ ...line, moq: line.moq ?? 0 }));
-
-  const moulds = Object.fromEntries(
-    (await Mould.find({ _id: { $in: ids } }).select('moq mouldCode')).map((mould) => [
-      String(mould._id),
-      mould,
-    ])
-  );
-
-  return inherited.map((line) => {
-    const mould = line.mould ? moulds[String(line.mould)] : null;
-    return {
-      ...line,
-      modelNumber: line.modelNumber || mould?.mouldCode,
-      moq: line.moq ?? mould?.moq ?? 0,
-    };
-  });
+  return line;
 }
 
-/**
- * The offer as it stands, frozen for the history [§10].
- *
- * The lines are deep-copied through `toObject` rather than handed over as subdocuments: pushing
- * the live array into `revisions` would store references that move with the next edit, and the
- * history would then agree with the present no matter what it used to say — a revision list
- * that cannot disagree with the current price is not a history at all.
- */
-function snapshotOf(quotation, revision, user, at = new Date()) {
-  return {
-    revision,
-    lines: quotation.lines.map((line) => {
-      const plain = typeof line.toObject === 'function' ? line.toObject() : { ...line };
-      delete plain._id;
-      return plain;
-    }),
-    validUntil: quotation.validUntil,
-    paymentTerms: quotation.paymentTerms,
-    deliveryTerms: quotation.deliveryTerms,
-    freightTerms: quotation.freightTerms,
-    packing: quotation.packing,
-    remarks: quotation.remarks,
-    at,
-    by: user._id,
-  };
+/** A model named only by its tool counts — "the 420, same as last time". */
+const describesItem = (row) => Boolean(row?.mould || hasRequirement(row));
+
+/** The enquiry's models, one line each, with the registers its requirement names. */
+export function linesForEnquiry(enquiry) {
+  const items = (enquiry.items || []).filter(describesItem);
+  const rows = items.length ? items : [enquiry.requirement || {}];
+  /* A model the buyer described rather than named is called by its description, or the enquiry. */
+  const described = (item) =>
+    [item.category, item.sizeMm && `${item.sizeMm}mm`].filter(Boolean).join(' ') || `As per ${enquiry.number}`;
+  return rows.map((item, index) => ({
+    mould: item.mould || (index === 0 ? enquiry.mould : undefined),
+    modelNumber: item.modelNumber || (item.mould || (index === 0 && enquiry.mould) ? undefined : described(item)),
+    materialRef: item.materialRef,
+    hookRef: item.hookRef,
+    clipRef: item.clipRef,
+    printRef: item.printRef,
+    material: item.material,
+    colour: item.colour,
+  }));
 }
 
-/**
- * A validity date that has already gone.
- *
- * Refused at every door that sets one, because a quotation born expired is a document that is
- * wrong the moment it exists: `isExpired` is true on creation, the sent board draws "Validity
- * passed" against a quote nobody has even sent, and the count of offers still live is short by
- * one before anybody has done anything.
- *
- * What is refused is *setting* a date that is gone. A quotation whose validity lapsed while the
- * buyer thought about it is correctly expired and must still be revisable and answerable — that
- * distinction is the whole of the rule, and it is why this is checked against what the request
- * supplies rather than against what the document holds.
- */
+/** The line a route names by `:lineId`. */
+function lineOf(quotation, req) {
+  const line = quotation.lines.id(req.params.lineId);
+  if (!line) throw ApiError.notFound('That line is not on this quotation');
+  return line;
+}
+
+/* ------------------------------ Rules on the document ------------------------------ */
+
+/** A validity date that has already gone is refused at every door that sets one. */
 function assertValidityAhead(value) {
   if (value === undefined || value === null || value === '') return;
-
   const until = new Date(value);
-  if (Number.isNaN(until.getTime())) return; // The schema has its own opinion about shape.
-
+  if (Number.isNaN(until.getTime())) return;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   if (until < today) {
     throw ApiError.badRequest(
-      'A quotation cannot be given a validity date that has already passed — it would be ' +
-        'expired before it was sent.'
+      'A quotation cannot be given a validity date that has already passed — it would be expired before it was sent.'
     );
   }
 }
 
-/**
- * What a quotation may point at: an enquiry of its own buyer, and an owner only an administrator
- * chooses.
- *
- * Both came straight off the request and neither was checked. A marketing person could raise a
- * quote on their own buyer tied to a colleague's enquiry — and the buyer's answer on it moves
- * that enquiry, which is somebody else's pipeline — or hand a quotation to anyone by sending
- * `assignedTo`, on create or on a later edit, where customers and enquiries both refuse it
- * with "only an administrator". Found by the backend audit's mass-assignment probe: one PATCH
- * gave a live quotation away, and the person who sent it could no longer open it.
- */
+/** An enquiry of its own buyer, and an owner only an administrator chooses. */
 async function assertQuotationLinks(user, { customerId, enquiryId, assignedTo, owner }) {
   if (enquiryId) {
     const enquiry = await Enquiry.findById(enquiryId).select('customer');
@@ -495,259 +218,497 @@ async function assertQuotationLinks(user, { customerId, enquiryId, assignedTo, o
   }
 }
 
-export async function newQuotation(fields, user) {
+/** What the buyer reads on a line — change any of it after sending and it is a new offer. */
+const OFFER_FIELDS = ['modelNumber', 'quantity', 'moq', 'colour', 'unitPrice'];
+const DOCUMENT_FIELDS = ['gstPercent', 'isExport', 'paymentTerms', 'deliveryTerms', 'freightTerms', 'packing', 'validUntil', 'remarks'];
+
+const offerOf = (lines = []) =>
+  JSON.stringify(lines.map((line) => OFFER_FIELDS.map((field) => String(line[field] ?? ''))));
+
+/** The offer as it stands, frozen for the history [§10]. Only what the buyer reads. */
+function snapshotOf(quotation, revision, user, at = new Date()) {
+  return {
+    revision,
+    lines: quotation.lines.map((line) => ({
+      mould: line.mould?._id || line.mould,
+      modelNumber: line.modelNumber,
+      quantity: line.quantity,
+      moq: line.moq,
+      colour: line.colour,
+      unitPrice: line.unitPrice,
+      remarks: line.remarks,
+    })),
+    validUntil: quotation.validUntil,
+    paymentTerms: quotation.paymentTerms,
+    deliveryTerms: quotation.deliveryTerms,
+    freightTerms: quotation.freightTerms,
+    packing: quotation.packing,
+    remarks: quotation.remarks,
+    at,
+    by: user?._id,
+  };
+}
+
+/** Rev 0 follows a quotation until it first goes out; from then on it is what the buyer saw. */
+function followRevisionZero(quotation, user) {
+  if (!quotation.sentAt && quotation.revision === 0) {
+    quotation.revisions = [snapshotOf(quotation, 0, user, quotation.revisions?.[0]?.at)];
+  }
+}
+
+/**
+ * Applying the lines a request sends to the lines on the quotation.
+ *
+ * A line with an `_id` is that line: its offer fields (and the model, before sending) change in
+ * place, so its cost stays with it. A line without one is new. A line left out is dropped —
+ * before sending only. Any line whose price moved is settled again [§9].
+ */
+async function applyLines(quotation, incoming, { sent }) {
+  const kept = new Set();
+  const next = [];
+  /*
+   * A row without its id is matched by its model, or by position when there is one line on each
+   * side — so a revision that restates "NH-400 at ₹7.30" keeps the cost behind NH-400.
+   */
+  const unclaimed = (line) => !kept.has(String(line._id));
+  const identify = (row) => {
+    if (row._id) return quotation.lines.id(row._id);
+    if (row.modelNumber) {
+      const same = quotation.lines.filter((line) => unclaimed(line) && line.modelNumber === row.modelNumber);
+      if (same.length === 1) return same[0];
+    }
+    if (incoming.length === 1 && quotation.lines.length === 1 && !row.mould) return quotation.lines[0];
+    return null;
+  };
+  for (const row of incoming) {
+    const existing = identify(row);
+    if (row._id && !existing) throw ApiError.badRequest('That line is not on this quotation');
+    if (existing) {
+      kept.add(String(existing._id));
+      const priceBefore = existing.unitPrice;
+      for (const field of ['quantity', 'moq', 'colour', 'remarks', 'unitPrice']) {
+        if (row[field] !== undefined) existing[field] = row[field];
+      }
+      if (!sent && row.modelNumber !== undefined) existing.modelNumber = row.modelNumber;
+      if (existing.unitPrice !== priceBefore) settleLine(existing);
+      next.push(existing);
+    } else {
+      if (sent) throw ApiError.badRequest('A model is added to a sent quotation through a revision');
+      const fresh = await lineFrom(row);
+      next.push(fresh);
+    }
+  }
+  const dropped = quotation.lines.filter((line) => !kept.has(String(line._id)));
+  if (dropped.length && sent) {
+    throw ApiError.badRequest('A model comes off a sent quotation through a revision');
+  }
+  if (!next.length) throw ApiError.badRequest('A quotation needs at least one line');
+  if (next.length > MAX_LINES) throw ApiError.badRequest(`A quotation holds ${MAX_LINES} models`);
+  quotation.lines = next;
+  for (const line of quotation.lines) {
+    if (line.status === 'requested' && line.unitPrice != null) settleLine(line);
+  }
+}
+
+/** Why the quotation cannot go out yet, naming the models and never a figure [§8]. */
+function whyNotSendable(quotation) {
+  const named = (lines) => lines.map((line) => line.modelNumber || 'an unnamed line').join(', ');
+  const unpriced = quotation.lines.filter((line) => line.unitPrice == null || line.status === 'requested');
+  if (unpriced.length) return `${named(unpriced)} ${unpriced.length === 1 ? 'has' : 'have'} no price yet — it is still with costing`;
+  const waiting = quotation.lines.filter((line) => line.status === 'approval_pending');
+  if (waiting.length) {
+    return `${named(waiting)} ${waiting.length === 1 ? 'is' : 'are'} below the approved minimum — this needs Admin approval first`;
+  }
+  const refused = quotation.lines.filter((line) => line.status === 'rejected');
+  if (refused.length) return `Admin refused the price on ${named(refused)} — change it before sending`;
+  return null;
+}
+
+/* ------------------------------ Reading ------------------------------ */
+
+const QUOTATION_SORTABLE = ['number', 'createdAt', 'requestedAt', 'status', 'validUntil', 'sentAt', 'respondedAt', 'revision'];
+
+export const listQuotations = asyncHandler(async (req, res) => {
+  const { page, limit, sort, filter } = listParams(req.query, {
+    searchFields: ['number', 'lines.modelNumber'],
+    defaultSort: '-createdAt',
+    sortable: QUOTATION_SORTABLE,
+  });
+
+  const scope = ownershipFilter(req.user);
+  Object.assign(filter, scope);
+  const owner = narrowToOwner(scope, req.query.assignedTo);
+  if (owner !== undefined) filter.assignedTo = owner;
+
+  if (req.query.status) filter.status = { $in: String(req.query.status).split(',') };
+  if (req.query.open === 'true') filter.status = { $nin: CLOSED_QUOTATION_STATUSES };
+  /* The Quotation department's queue, and Admin's [§9]. */
+  if (req.query.costing === 'true') filter.status = 'costing';
+  if (req.query.awaitingApproval === 'true') filter.status = 'approval_pending';
+  if (req.query.enquiry) filter.enquiry = req.query.enquiry;
+  if (req.query.customer) filter.customer = req.query.customer;
+
+  /* Gone to the buyer is `sentAt`, not a status: revised, accepted and refused all went out. */
+  const sentOnly = req.query.sent === 'true' ? { sentAt: { $ne: null } } : req.query.sent === 'false' ? { sentAt: null } : null;
+  if (sentOnly) Object.assign(filter, sentOnly);
+
+  const [data, total, stages] = await Promise.all([
+    Quotation.find(filter).populate(POPULATE).sort(sort).skip((page - 1) * limit).limit(limit),
+    Quotation.countDocuments(filter),
+    Quotation.aggregate([
+      { $match: sentOnly ? { ...scope, ...sentOnly } : scope },
+      { $group: { _id: '$status', leads: { $sum: 1 } } },
+    ]),
+  ]);
+
+  paginated(res, allVisibleTo(data, req.user), { page, limit, total }, {
+    stageCounts: Object.fromEntries(stages.map((row) => [row._id, { leads: row.leads, value: 0 }])),
+  });
+});
+
+const loadDetail = (id) =>
+  Quotation.findById(id)
+    .populate('customer', 'code name city state gstin mobile email assignedTo')
+    .populate('enquiry', 'number status stage requirement targetPrice')
+    .populate('assignedTo', 'name')
+    .populate(mouldWithPhoto(
+      'lines.mould',
+      'mouldCode name category sizeMm material hookType moq packingQty cavities activeCavities ' +
+        'partWeightGrams runnerWeightGrams regrindRecoveryPercent cycleTimeSeconds efficiencyPercent status machine'
+    ))
+    .populate(Object.entries(REGISTER_FIELDS).map(([ref, select]) => ({ path: `lines.${ref}`, select })))
+    .populate('lines.approvedBy', 'name')
+    .populate('requestedBy', 'name')
+    .populate('costedBy', 'name')
+    .populate('revisions.by', 'name')
+    .populate('statusHistory.by', 'name');
+
+export const getQuotation = asyncHandler(async (req, res) => {
+  const quotation = await loadDetail(req.params.id);
+  if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
+  res.json({ success: true, data: visibleTo(quotation, req.user) });
+});
+
+/** The reply after a write: the record as the detail page reads it, as this person may see it. */
+async function replyWith(res, quotation, user, status = 200) {
+  const fresh = await loadDetail(quotation._id);
+  res.status(status).json({ success: true, data: visibleTo(fresh, user) });
+}
+
+/* ------------------------------ Raising one ------------------------------ */
+
+/**
+ * Builds and saves a quotation on an enquiry.
+ *
+ * `system` is the automation raising one when an enquiry reaches pricing: there is no person to
+ * check ownership for, and the enquiry's owner is the one it is for.
+ */
+export async function newQuotation(fields, user, { system = false } = {}) {
   assertValidityAhead(fields.validUntil);
 
-  /* Raised on an enquiry, always, and for that enquiry's buyer [services/enquiryLink.service.js].
-     No ownership check here: the customer's, just below, is the one that decides. */
   const enquiry = await requireEnquiry(fields.enquiry, null, { what: 'quotation', customer: fields.customer });
-  const customerId = enquiry.customer;
-
-  const customer = await Customer.findById(customerId);
+  const customer = await Customer.findById(enquiry.customer);
   if (!customer) throw ApiError.badRequest('That customer does not exist');
-  if (!ownsRecord(user, customer)) {
+  if (!system && !ownsRecord(user, customer)) {
     throw ApiError.forbidden('That customer belongs to another marketing person');
   }
-  await assertQuotationLinks(user, {
-    customerId,
-    enquiryId: fields.enquiry,
-    assignedTo: fields.assignedTo,
-    owner: customer.assignedTo || user._id,
-  });
+  const owner = enquiry.assignedTo || customer.assignedTo || user?._id;
+  if (!system) {
+    await assertQuotationLinks(user, { customerId: customer._id, enquiryId: enquiry._id, assignedTo: fields.assignedTo, owner });
+  }
 
+  /* Rows the request leaves blank take the enquiry's model and tool at the same position. */
+  const fromEnquiry = linesForEnquiry(enquiry);
+  const asked = fields.lines?.length
+    ? fields.lines.map((row, index) => ({
+      ...row,
+      mould: row.mould ?? (row.modelNumber ? undefined : fromEnquiry[index]?.mould),
+      modelNumber: row.modelNumber ?? (row.mould ? undefined : fromEnquiry[index]?.modelNumber),
+    }))
+    : fromEnquiry;
+  if (asked.length > MAX_LINES) throw ApiError.badRequest(`A quotation holds ${MAX_LINES} models`);
+  const lines = await Promise.all(asked.map((row) => lineFrom(row)));
+
+  const { lines: _l, customer: _c, enquiry: _e, assignedTo: _a, ...terms } = fields;
   const quotation = new Quotation({
-    ...fields,
-    lines: await withMouldDefaults(fields.lines),
-    customer: customerId,
-    assignedTo: fields.assignedTo || customer.assignedTo || user._id,
+    ...terms,
+    lines,
+    customer: customer._id,
+    enquiry: enquiry._id,
+    assignedTo: fields.assignedTo || owner,
+    targetPrice: fields.targetPrice ?? enquiry.targetPrice,
+    requestedBy: user?._id || owner,
     number: await nextQuoteNumber(),
-    statusHistory: [{ to: 'draft', by: user._id }],
   });
-
-  /*
-   * Rev 0 is written at creation rather than at the first send. §10's example starts at Rev 0
-   * with a price, so the first thing offered has to be in the list like every later one — a
-   * history that begins at Rev 1 has silently lost the original quote.
-   */
-  quotation.revisions = [snapshotOf(quotation, 0, user)];
+  for (const line of quotation.lines) if (line.unitPrice != null) settleLine(line);
+  quotation.status = undefined;
+  quotation.statusHistory = [];
+  quotation.$locals.by = user?._id;
+  quotation.revisions = [snapshotOf(quotation, 0, user || { _id: owner })];
+  await quotation.validate();
+  quotation.statusHistory = [{ to: quotation.status, by: user?._id }];
 
   await quotation.save();
   await publish(EVENTS.QUOTATION_CREATED, { quotation, by: user });
-
+  /* Somebody has to cost it: the Quotation department takes the enquiry [handoff.subscriber]. */
+  if (quotation.status === 'costing') await publish(EVENTS.PRICING_REQUESTED, { quotation, by: user });
+  if (quotation.status === 'approval_pending') await publish(EVENTS.PRICING_APPROVAL_REQUIRED, { quotation, by: user });
   return quotation;
 }
 
 export const createQuotation = asyncHandler(transactional(async (req, res) => {
   const quotation = await newQuotation(req.body, req.user);
-  res.status(201).json({ success: true, data: quotation });
+  await replyWith(res, quotation, req.user, 201);
 }));
 
-/**
- * Everything on a quotation that the customer actually reads.
- *
- * Named as a list because the rule below turns on it: once a quote has gone out, none of these
- * may move except through a revision. The links behind it — which enquiry, which costing, whose
- * name is on it — are bookkeeping and stay editable, because correcting them changes nothing
- * the buyer was told.
- */
-const DOCUMENT_FIELDS = [
-  'gstPercent', 'isExport',
-  'paymentTerms', 'deliveryTerms', 'freightTerms', 'packing', 'validUntil', 'remarks',
-];
+/* ------------------------------ Costing a line ------------------------------ */
 
 /**
- * What the buyer reads on a line: change any of it after sending and it is a new offer.
+ * The Quotation department costs one line: the registers, the cost build-up, the markup, the
+ * job's own minimum and, optionally, the price.
  *
- * `colour` counts. The rate is offered in a shade, the shade is printed on the document, and
- * quietly changing "white" to "black" under a sent quotation would leave the buyer holding a
- * price for a piece we are no longer offering at it.
+ * The calculated price is arithmetic and never typed. The price on the line defaults to it the
+ * first time; after that a typed price wins. Before sending, a moved price or cost settles the
+ * line again [§9]; after sending, the price changes only through a revision and a re-cost is
+ * recorded without touching what the buyer was offered.
  */
-const LINE_FIELDS = ['modelNumber', 'quantity', 'moq', 'colour', 'unitPrice'];
+export const costLine = asyncHandler(async (req, res) => {
+  assertMayCost(req.user);
 
-/** The lines reduced to what the customer was told, so two sets can be compared. */
-const offerOf = (lines = []) =>
-  JSON.stringify(
-    lines.map((line) => LINE_FIELDS.map((field) => String(line[field] ?? '')))
-  );
+  const quotation = await Quotation.findById(req.params.id);
+  if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
+  if (CLOSED_QUOTATION_STATUSES.includes(quotation.status)) {
+    throw ApiError.badRequest(`A ${quotation.status} quotation cannot be re-costed`);
+  }
+  expectVersion(quotation, req.body);
+  const before = snapshot(quotation);
+  const line = lineOf(quotation, req);
+  const sent = Boolean(quotation.sentAt);
 
-/** True when this patch would change something the customer has already been shown. */
-function changesTheOffer(quotation, patch) {
-  const changed = DOCUMENT_FIELDS.filter((field) => {
-    if (patch[field] === undefined) return false;
-    const current = quotation[field];
-    // Dates arrive as strings or Dates depending on the door; compare what they mean.
-    if (current instanceof Date) return new Date(patch[field]).getTime() !== current.getTime();
-    return patch[field] !== current;
-  });
+  const {
+    cost, markupPercent, unitPrice, minimumOverride, printing, procurement, mould,
+    materialRef, hookRef, clipRef, printRef, remarks,
+  } = withoutVersion(req.body);
 
-  /*
-   * The lines as a whole, because on a multi-line quote the offer can change without any single
-   * field doing so — a model dropped, or two lines swapped for one. Comparing field by field
-   * across a list would miss both.
-   */
-  if (patch.lines && offerOf(patch.lines) !== offerOf(quotation.lines)) {
-    changed.push('the lines');
+  if (sent && unitPrice !== undefined && unitPrice !== line.unitPrice) {
+    throw ApiError.badRequest(`${quotation.number} has gone to the buyer — change the price through a revision`);
   }
 
-  return changed;
+  if (mould === null) line.mould = undefined;
+  if (materialRef === null) line.materialRef = undefined;
+  for (const [field, value] of [['hookRef', hookRef], ['clipRef', clipRef], ['printRef', printRef]]) {
+    if (value === null) line[field] = undefined;
+  }
+  if (mould) line.mould = mould;
+  if (materialRef) line.materialRef = materialRef;
+  if (hookRef) line.hookRef = hookRef;
+  if (clipRef) line.clipRef = clipRef;
+  if (printRef) line.printRef = printRef;
+
+  if (mould || materialRef || hookRef || clipRef || printRef) {
+    /* Refilled from what the line now holds, so changing the resin keeps the register's hook rate. */
+    const [tool, resin, held] = await Promise.all([
+      line.mould ? Mould.findById(line.mould) : null,
+      line.materialRef ? Material.findById(line.materialRef) : null,
+      partsFrom({ hookRef: line.hookRef, clipRef: line.clipRef, printRef: line.printRef }),
+    ]);
+    if (mould && !tool) throw ApiError.badRequest('That mould is not on the register');
+    if (materialRef && !resin) throw ApiError.badRequest('That material is not on the register');
+    line.cost = { ...line.cost?.toObject?.(), ...costingFrom(tool, resin, held) };
+    if (materialRef && resin && MATERIALS.includes(resin.type)) line.material = resin.type;
+    if (mould && tool && !line.modelNumber) line.modelNumber = tool.mouldCode;
+  }
+
+  if (cost) line.cost = { ...line.cost?.toObject?.(), ...cost };
+  if (markupPercent !== undefined) line.markupPercent = markupPercent;
+  if (minimumOverride !== undefined) line.minimumOverride = minimumOverride;
+  if (printing !== undefined) line.printing = printing;
+  if (procurement !== undefined) line.procurement = procurement;
+  if (remarks !== undefined) quotation.remarks = remarks;
+
+  /* A floor beneath the cost is not a floor: it would let any price through unsigned [§9]. */
+  if (line.minimumOverride != null && line.totalCost && line.minimumOverride < line.totalCost) {
+    throw ApiError.badRequest(
+      `A minimum of ${line.minimumOverride.toFixed(2)} is below what the piece costs to make ` +
+        `(${line.totalCost.toFixed(2)}), so it would let any price through unchecked. Put the ` +
+        'price you want on the line instead — anything under the standing minimum goes to Admin.'
+    );
+  }
+
+  line.calculatedSellingPrice = priceFrom(line);
+  if (!sent) {
+    if (unitPrice !== undefined) line.unitPrice = unitPrice;
+    else if (line.unitPrice == null) line.unitPrice = line.calculatedSellingPrice;
+    settleLine(line);
+  }
+  quotation.costedBy = req.user._id;
+  quotation.$locals.by = req.user._id;
+  quotation.$locals.note = line.modelNumber ? `Costed ${line.modelNumber}` : 'Costed';
+  followRevisionZero(quotation, req.user);
+
+  const was = quotation.status;
+  await quotation.save();
+  await recordChange({ model: 'Quotation', doc: quotation, before, by: req.user });
+  await announce(quotation, was, req.user);
+  await replyWith(res, quotation, req.user);
+});
+
+/** Tells whoever is next: Admin when a price waits on them, the owner when it is ready to send. */
+async function announce(quotation, was, user) {
+  if (quotation.status === 'approval_pending') {
+    await publish(EVENTS.PRICING_APPROVAL_REQUIRED, { quotation, by: user });
+  } else if (['costing', 'approval_pending'].includes(was) && ['draft', 'revised'].includes(quotation.status)) {
+    await publish(EVENTS.PRICING_APPROVED, { quotation, by: user });
+  }
 }
 
 /**
- * Editing a quotation.
+ * Admin signs off, or refuses, a price under its line's minimum [§9].
  *
- * **Free while it is still a draft, revisions only once it has been sent.** The doc comment
- * here used to say "editing the terms of a draft" and the code never checked — so the payment
- * terms, the validity, even the quantity of a quote already sitting in a buyer's inbox could
- * be rewritten in place, with nothing in the history to say the offer had changed. That is the
- * same failure §10 exists to prevent for price, and it is arguably worse: a price at least had
- * its own door.
+ * One line, one decision: a signature stands for the price the signer can see. Approving
+ * records the price signed; a later lower price needs signing again. A refusal needs a reason —
+ * it goes back to whoever costed it.
+ */
+export const decideLine = asyncHandler(async (req, res) => {
+  if (!isAdmin(req.user)) throw ApiError.forbidden('Only Admin approves a price below the minimum');
+
+  const quotation = await Quotation.findById(req.params.id);
+  if (!quotation) throw ApiError.notFound('Quotation not found');
+  const line = lineOf(quotation, req);
+  if (line.status !== 'approval_pending') {
+    throw ApiError.badRequest(`${line.modelNumber || 'This line'} is not waiting on an approval`);
+  }
+
+  const { approve, note } = req.body;
+  if (!approve && !note?.trim()) {
+    throw ApiError.badRequest('Say why the price is refused — it goes back to whoever costed it');
+  }
+  if (approve) {
+    line.status = 'approved';
+    line.approvedPrice = line.unitPrice;
+    line.approvedBy = req.user._id;
+    line.approvedAt = new Date();
+    line.rejectedPrice = undefined;
+    line.rejectionNote = undefined;
+  } else {
+    line.status = 'rejected';
+    line.rejectedPrice = line.unitPrice;
+    line.rejectionNote = note;
+  }
+  quotation.$locals.by = req.user._id;
+  quotation.$locals.note = `${approve ? 'Approved' : 'Refused'} ${line.modelNumber || 'a line'}${note ? ` — ${note}` : ''}`;
+
+  const was = quotation.status;
+  await quotation.save();
+  if (approve) await announce(quotation, was, req.user);
+  else await publish(EVENTS.PRICING_REJECTED, { quotation, lineId: String(line._id), by: req.user });
+  await replyWith(res, quotation, req.user);
+});
+
+/* ------------------------------ Editing, revising ------------------------------ */
+
+/**
+ * Editing a quotation: freely before it goes out, and only the bookkeeping after.
  *
- * A revision can express any of it — the revision record carries the quantity, the terms and
- * the validity as well as the price — so nothing is lost by routing changes through it. What is
- * gained is that six weeks later "what did we last tell them?" still has an answer.
+ * Before sending, the prices, minimums, shades, models and terms change in place and Rev 0
+ * follows. Once the buyer has it, anything they read changes through a revision, so what they
+ * were told stays on record [§10].
  */
 export const updateQuotation = asyncHandler(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id);
-  if (!quotation) throw ApiError.notFound('Quotation not found');
-  if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
+  if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
   if (CLOSED_QUOTATION_STATUSES.includes(quotation.status)) {
     throw ApiError.badRequest(`A ${quotation.status} quotation cannot be edited`);
   }
-  /*
-   * A price change on any line goes through a revision, whatever else the patch carries. The
-   * check is over the whole set rather than one field, because with lines there are as many
-   * prices as models and any of them moving is the thing §10 wants recorded.
-   */
-  if (req.body.lines) {
-    /*
-     * Every price already on the quotation must still be on it. Anything beyond that is new.
-     *
-     * The old rule joined the prices into one string and compared, which made adding a model to
-     * a draft indistinguishable from moving a price — so the one thing a multi-model quotation
-     * exists to do, carry a second hanger under the same number, was refused with "use a
-     * revision to change a price" on a quote whose prices had not moved.
-     *
-     * Matching on `_id` instead would have been worse than the bug: a patch that simply omits
-     * the id reads as a brand-new line, so anyone could move a price by dropping one field. The
-     * check has to hold whatever the client sends, so it is made against the prices themselves.
-     *
-     * Ticking them off one by one rather than with a set, because two models on one document
-     * can share a rate and a set would let one of them quietly disappear. What is allowed is
-     * exactly addition: an existing rate that is not in the patch — changed, or dropped — is
-     * still a revision's job, which is what keeps what the buyer was told on the record.
-     */
-    const unaccounted = quotation.lines.map((line) => line.unitPrice);
-    for (const line of req.body.lines) {
-      const at = unaccounted.indexOf(Number(line.unitPrice));
-      if (at !== -1) unaccounted.splice(at, 1);
-    }
-    if (unaccounted.length) {
-      throw ApiError.badRequest('Use a revision to change a price, so the old one is kept');
-    }
-  }
+  expectVersion(quotation, req.body);
+  const before = snapshot(quotation);
+  const patch = withoutVersion(req.body);
+  const sent = Boolean(quotation.sentAt);
 
-  /*
-   * `sentAt` rather than the status, because the status moves on afterwards — `revised`,
-   * `approval_pending` — and what matters is only whether the customer has ever seen it.
-   */
-  if (quotation.sentAt) {
-    const changed = changesTheOffer(quotation, withoutVersion(req.body));
+  if (sent) {
+    const changed = DOCUMENT_FIELDS.filter((field) => {
+      if (patch[field] === undefined) return false;
+      const current = quotation[field];
+      if (current instanceof Date) return new Date(patch[field]).getTime() !== current.getTime();
+      return patch[field] !== current;
+    });
+    if (patch.lines && offerOf(patch.lines.map((row) => ({ ...quotation.lines.id(row._id)?.toObject(), ...row }))) !== offerOf(quotation.lines)) {
+      changed.push('the lines');
+    }
     if (changed.length) {
       throw ApiError.badRequest(
-        `This quotation has already gone to the customer, so ${changed.join(', ')} ` +
-          'can only change through a revision — that way what they were told is still on record.'
+        `This quotation has already gone to the customer, so ${changed.join(', ')} can only change ` +
+          'through a revision — that way what they were told is still on record.'
       );
     }
   }
 
-  assertValidityAhead(req.body.validUntil);
+  assertValidityAhead(patch.validUntil);
   await assertQuotationLinks(req.user, {
     customerId: quotation.customer,
-    enquiryId: req.body.enquiry && String(req.body.enquiry) !== String(quotation.enquiry) ? req.body.enquiry : null,
-    assignedTo: req.body.assignedTo,
+    enquiryId: patch.enquiry && String(patch.enquiry) !== String(quotation.enquiry) ? patch.enquiry : null,
+    assignedTo: patch.assignedTo,
     owner: quotation.assignedTo,
   });
 
-  expectVersion(quotation, req.body);
-  const before = snapshot(quotation);
-
-  const patch = withoutVersion(req.body);
-  if (patch.lines) patch.lines = await withMouldDefaults(patch.lines, quotation.lines);
-  Object.assign(quotation, patch);
-
-  /*
-   * Rev 0 follows a draft that has never been sent.
-   *
-   * Rev 0 is what was first offered, and nothing has been offered yet — so a draft edited after
-   * it was created had a Rev 0 describing a version of the quote that never left the building.
-   * Once `sentAt` is set this stops: from then on Rev 0 is what the buyer actually saw, and
-   * every later price goes through a revision.
-   */
-  if (!quotation.sentAt && quotation.revision === 0 && quotation.revisions?.length) {
-    quotation.revisions[0] = snapshotOf(quotation, 0, req.user, quotation.revisions[0].at);
+  const { lines, ...rest } = patch;
+  if (lines) await applyLines(quotation, lines, { sent });
+  for (const field of [...DOCUMENT_FIELDS, 'enquiry', 'assignedTo', 'targetPrice']) {
+    if (rest[field] !== undefined) quotation[field] = rest[field];
   }
+  quotation.$locals.by = req.user._id;
+  followRevisionZero(quotation, req.user);
 
+  const was = quotation.status;
   await quotation.save();
   await recordChange({ model: 'Quotation', doc: quotation, before, by: req.user });
-
-  res.json({ success: true, data: quotation });
+  await announce(quotation, was, req.user);
+  await replyWith(res, quotation, req.user);
 });
 
 /**
- * A new price on the same quotation [§10].
- *
- * The old figures are already in `revisions`; this appends the new one and moves the live
- * fields onto it. Rev 0 ₹7.50, Rev 1 ₹7.30, Rev 2 ₹7.20 — all three answerable afterwards.
+ * A new offer on the same quotation [§10]: Rev 0 ₹7.50, Rev 1 ₹7.30, Rev 2 ₹7.20, all kept.
+ * A price cut under a line's minimum waits on Admin before the revision can go out.
  */
 export const reviseQuotation = asyncHandler(transactional(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id);
-  if (!quotation) throw ApiError.notFound('Quotation not found');
-  if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
+  if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
   if (CLOSED_QUOTATION_STATUSES.includes(quotation.status)) {
     throw ApiError.badRequest(`A ${quotation.status} quotation cannot be revised — raise a new one`);
   }
-
   const { lines, note, ...terms } = req.body;
   assertValidityAhead(terms.validUntil);
 
-  /*
-   * Defaults first, then compare. A line that leaves `moq` out is asking for the register's
-   * figure, which is usually the one already stored — so comparing the raw request
-   * against the saved lines reads a blank as a change and lets a revision through that revises
-   * nothing. Resolving both to the same shape is what makes "has anything moved?" answerable.
-   */
-  const resolved = lines ? await withMouldDefaults(lines, quotation.lines) : null;
-
-  const linesMoved = resolved && offerOf(resolved) !== offerOf(quotation.lines);
-  if (!linesMoved && !Object.keys(terms).length) {
+  const offerBefore = offerOf(quotation.lines);
+  if (lines) {
+    /* A revision may add or drop a model too; that is what it is for. */
+    await applyLines(quotation, lines, { sent: false });
+  }
+  const linesMoved = offerOf(quotation.lines) !== offerBefore;
+  const termsMoved = DOCUMENT_FIELDS.some((field) => terms[field] !== undefined);
+  if (!linesMoved && !termsMoved) {
     throw ApiError.badRequest('Nothing has changed — a revision has to revise something');
   }
-
-  Object.assign(quotation, terms);
-  if (resolved) quotation.lines = resolved;
+  for (const field of DOCUMENT_FIELDS) if (terms[field] !== undefined) quotation[field] = terms[field];
 
   quotation.revision += 1;
   quotation.revisions.push(snapshotOf(quotation, quotation.revision, req.user));
 
-  /*
-   * A revised quote is not a sent one. Whatever it was before, the customer has not seen this
-   * price — leaving it at `sent` would mean the list of what is with customers includes a
-   * figure nobody has been given.
-   */
   const from = quotation.status;
   quotation.status = 'revised';
   quotation.statusHistory.push({ from, to: 'revised', by: req.user._id, note });
+  quotation.$locals.by = req.user._id;
 
   await quotation.save();
-  res.json({ success: true, data: quotation });
+  if (quotation.status === 'approval_pending') await publish(EVENTS.PRICING_APPROVAL_REQUIRED, { quotation, by: req.user });
+  await replyWith(res, quotation, req.user);
 }));
 
+/* ------------------------------ Sending, answering ------------------------------ */
+
 /**
- * Sending it, which is the moment §9's gate applies.
- *
- * Checked here rather than at the draft, because a draft below the floor is a perfectly
- * reasonable thing to be working on — it is putting it in front of a customer that has to wait
- * for a signature.
+ * Sending it — by marketing or the Quotation department. Every line has to be priced and
+ * cleared [§9]; the refusal names the models and never a figure [§8].
  */
 export const sendQuotation = asyncHandler(async (req, res) => {
   const channels = { email: req.body?.email, whatsapp: req.body?.whatsapp };
@@ -755,66 +716,29 @@ export const sendQuotation = asyncHandler(async (req, res) => {
   if (invalid) throw ApiError.badRequest(invalid);
 
   const quotation = await Quotation.findById(req.params.id);
-  if (!quotation) throw ApiError.notFound('Quotation not found');
-  if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
+  if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
   if (CLOSED_QUOTATION_STATUSES.includes(quotation.status)) {
     throw ApiError.badRequest(`A ${quotation.status} quotation has already been answered`);
   }
-  /*
-   * Sending something the buyer already has.
-   *
-   * Only the two answered statuses were blocked, so a quotation sitting at `sent` could be sent
-   * again — and that is not the harmless no-op it looks like. `sentAt` is stamped afresh, which
-   * resets the one figure the sent board exists to show: how long a price has been with a buyer
-   * unanswered. A quote ignored for three weeks reads as sent today, and the chase that was due
-   * disappears off the board. The §42 customer message fires a second time as well, so the
-   * buyer gets the same quotation twice with nothing having changed.
-   *
-   * The legitimate way to send again is the one §10 already provides: revise it, which moves it
-   * to `revised` and lets it go out carrying what actually changed.
-   */
+  /* Sending again what the buyer already has would reset how long it has waited unanswered. */
   if (quotation.status === 'sent') {
     throw ApiError.badRequest(
-      `${quotation.number} has already gone to the customer. Revise it if the offer has changed, ` +
-        'or record their answer.'
+      `${quotation.number} has already gone to the customer. Revise it if the offer has changed, or record their answer.`
     );
   }
+  const why = whyNotSendable(quotation);
+  if (why) throw ApiError.badRequest(why);
 
-  const { cleared, why } = await priceIsCleared(quotation);
-  if (!cleared) {
-    /*
-     * Moved to `approval_pending` rather than simply refused. A refusal leaves the quote in a
-     * state that looks ready and is not; this puts it visibly in the queue it is actually in,
-     * so the person waiting can see what they are waiting for.
-     */
-    if (quotation.status !== 'approval_pending') {
-      quotation.statusHistory.push({
-        from: quotation.status,
-        to: 'approval_pending',
-        by: req.user._id,
-        note: why,
-      });
-      quotation.status = 'approval_pending';
-      await quotation.save();
-      await publish(EVENTS.QUOTATION_APPROVAL_REQUIRED, { quotation, by: req.user, why });
-    }
-    throw ApiError.badRequest(why);
-  }
-
-  /*
-   * Deliver first, and mark it sent only if something went — or if nobody asked for a channel,
-   * which is recording a quote handed over in person. A quote whose every channel failed has not
-   * reached the buyer, and saying it had would stop anybody sending it again.
-   */
+  /* Deliver first; mark it sent only if something went, or nobody asked for a channel (handed over). */
   let deliveries = [];
   if (channels.email?.send || channels.whatsapp?.send) {
     const full = await loadForPdf(quotation._id);
     deliveries = await deliverQuotation(req, full, channels);
     if (!deliveries.some((row) => row.status === 'sent')) {
-      const why = deliveries.map((row) => `${row.channel === 'email' ? 'Email' : 'WhatsApp'}: ${
+      const failed = deliveries.map((row) => `${row.channel === 'email' ? 'Email' : 'WhatsApp'}: ${
         row.status === 'skipped' ? (row.skipReason === 'opted_out' ? 'the customer has asked not to be messaged this way' : 'not set up on this server') : row.error || 'failed'
       }`).join('. ');
-      throw new ApiError(502, `The quotation was not sent. ${why}.`);
+      throw new ApiError(502, `The quotation was not sent. ${failed}.`);
     }
   }
 
@@ -826,35 +750,27 @@ export const sendQuotation = asyncHandler(async (req, res) => {
     from, to: 'sent', by: req.user._id,
     note: [req.body?.note, went.length ? `Sent by ${went.join(' and ')}` : null].filter(Boolean).join(' — ') || undefined,
   });
-
-  // The revision that actually went out, marked as such: a revision drafted and superseded is
-  // not the same thing as one the customer has seen.
   const current = quotation.revisions.at(-1);
   if (current) current.sentAt = quotation.sentAt;
 
   await quotation.save();
   await publish(EVENTS.QUOTATION_SENT, { quotation, by: req.user });
-
-  res.json({ success: true, data: quotation, deliveries });
+  res.json({ success: true, data: visibleTo(await loadDetail(quotation._id), req.user), deliveries });
 });
 
 /** What the customer said. Accepting one is what moves the enquiry towards a PO. */
 export const respondToQuotation = asyncHandler(transactional(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id);
-  if (!quotation) throw ApiError.notFound('Quotation not found');
-  if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
+  if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
   if (CLOSED_QUOTATION_STATUSES.includes(quotation.status)) {
     throw ApiError.badRequest(`This quotation is already ${quotation.status}`);
   }
-  if (!quotation.sentAt) {
-    throw ApiError.badRequest('This quotation has not been sent, so there is nothing to answer');
-  }
+  if (!quotation.sentAt) throw ApiError.badRequest('This quotation has not been sent, so there is nothing to answer');
 
   const { accepted, note } = req.body;
   if (!accepted && !note?.trim()) {
     throw ApiError.badRequest('Say why it was refused — it is what the next quote is priced against');
   }
-
   const to = accepted ? 'accepted' : 'rejected';
   quotation.statusHistory.push({ from: quotation.status, to, by: req.user._id, note });
   quotation.status = to;
@@ -862,48 +778,17 @@ export const respondToQuotation = asyncHandler(transactional(async (req, res) =>
   if (!accepted) quotation.rejectionNote = note;
 
   await quotation.save();
-  await publish(accepted ? EVENTS.QUOTATION_ACCEPTED : EVENTS.QUOTATION_REJECTED, {
-    quotation,
-    by: req.user,
-  });
-
-  res.json({ success: true, data: quotation });
+  await publish(accepted ? EVENTS.QUOTATION_ACCEPTED : EVENTS.QUOTATION_REJECTED, { quotation, by: req.user });
+  await replyWith(res, quotation, req.user);
 }));
 
-/**
- * The quotation as a document [§10].
- *
- * Rendered on demand from the record rather than stored: a quotation's price changes with
- * every revision, and a stored file is a copy that stops agreeing with the thing it came from.
- * The customer and every line's mould are populated here beyond the list's needs because a
- * document is not a row — it carries the buyer's address and a description per model.
- *
- * `inline` so a browser shows it rather than dropping it in the downloads folder; the filename
- * is still set, so "save as" produces something recognisable rather than `123abc.pdf`.
- */
-/**
- * The material each line was costed in, by line id — what the document prints as its resin.
- *
- * Read off the costing line the quotation line was raised from (by its recorded line, else its
- * model number, else the sheet's only line — see `costingLine`): the resin picked from the
- * register by name, or the material the line records. One query for every sheet the document
- * draws on. A line with no costing behind it has no entry, and prints the tool's own resin.
- */
-async function costedResins(quotation) {
-  const lines = quotation.lines || [];
-  const ids = [...new Set(lines.map((line) => line.pricing?._id ?? line.pricing).filter(Boolean).map(String))];
-  if (!ids.length) return new Map();
+/* ------------------------------ The document ------------------------------ */
 
-  const sheets = new Map(
-    (await Pricing.find({ _id: { $in: ids } }).select('lines').populate('lines.materialRef', 'name type'))
-      .map((sheet) => [String(sheet._id), sheet])
-  );
-
+/** The resin each line prints as: the register's name where one was picked, else the line's material. */
+function costedResins(quotation) {
   const resins = new Map();
-  for (const line of lines) {
-    const sheet = sheets.get(String(line.pricing?._id ?? line.pricing));
-    const costed = costingLine(sheet, { pricingLine: line.pricingLine, modelNumber: line.modelNumber });
-    const resin = costed?.materialRef?.name || costed?.material;
+  for (const line of quotation.lines || []) {
+    const resin = line.materialRef?.name || line.material;
     if (resin) resins.set(String(line._id), resin);
   }
   return resins;
@@ -915,46 +800,28 @@ const loadForPdf = (id) =>
     .populate('customer', 'code name address city state gstin mobile whatsapp email contacts notifications')
     .populate('enquiry', 'number')
     .populate('assignedTo', 'name phone')
-    /* Per line now: the document's item table describes each model it carries. */
+    .populate('lines.materialRef', 'name type')
     .populate(mouldWithPhoto('lines.mould', 'mouldCode name category sizeMm material hookType'));
 
-/** The PDF itself — the same document whether it is downloaded, attached to an email or linked on WhatsApp. */
 async function renderPdfFor(quotation) {
-  const keys = [
-    ...new Set(
-      (quotation.lines || [])
-        .map((line) => line.mould?.photo?.key)
-        .filter(Boolean)
-    ),
-  ];
+  const keys = [...new Set((quotation.lines || []).map((line) => line.mould?.photo?.key).filter(Boolean))];
   const photos = new Map(
-    (await Promise.all(keys.map(async (key) => [key, await bufferOf(key)])))
-      .filter(([, bytes]) => bytes)
+    (await Promise.all(keys.map(async (key) => [key, await bufferOf(key)]))).filter(([, bytes]) => bytes)
   );
-  return renderQuotationPdf(quotation, photos, await costedResins(quotation));
+  return renderQuotationPdf(quotation, photos, costedResins(quotation));
 }
 
 export const quotationPdf = asyncHandler(async (req, res) => {
   const quotation = await loadForPdf(req.params.id);
-  if (!quotation) throw ApiError.notFound('Quotation not found');
-  if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
-
+  if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
   const pdf = await renderPdfFor(quotation);
-
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Length', pdf.length);
   res.setHeader('Content-Disposition', `inline; filename="${fileSafeNumber(quotation.number)}.pdf"`);
   res.send(pdf);
 });
 
-/* --------------------------- The quotation, sent to the buyer --------------------------- */
-
-/*
- * WhatsApp cannot carry a file from here: Twilio fetches a document from a URL. So a sent quote
- * gets a link that opens its PDF without signing in — to that one quotation only, signed with the
- * server's secret and expiring after a month, so the link in a buyer's chat cannot be guessed or
- * turned into anybody else's quote.
- */
+/* A signed link to one quotation's PDF, for WhatsApp, which fetches documents by URL. */
 const PDF_LINK_DAYS = 30;
 const pdfSignature = (id, expires) =>
   createHmac('sha256', env.jwtSecret).update(`quotation-pdf:${id}:${expires}`).digest('hex');
@@ -982,22 +849,15 @@ export const publicQuotationPdf = asyncHandler(async (req, res) => {
   res.send(pdf);
 });
 
-/**
- * What the send dialog opens with: the email and WhatsApp texts, pre-filled, and where each would
- * go — all of it for the sender to change before anything leaves.
- */
+/** What the send dialog opens with: the email and WhatsApp texts, pre-filled, for the sender to change. */
 export const sendPreview = asyncHandler(async (req, res) => {
   const quotation = await loadForPdf(req.params.id);
-  if (!quotation) throw ApiError.notFound('Quotation not found');
-  if (!ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
+  if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
 
   const customer = quotation.customer;
   const recipient = recipientOf(customer);
   const drafts = draftQuoteMessages({ quotation, customer, sender: req.user });
-  const sent = await CustomerMessage.find({ quotation: quotation._id })
-    .populate('sentBy', 'name')
-    .sort('-sentAt')
-    .limit(20);
+  const sent = await CustomerMessage.find({ quotation: quotation._id }).populate('sentBy', 'name').sort('-sentAt').limit(20);
 
   res.json({
     success: true,
@@ -1017,7 +877,6 @@ export const sendPreview = asyncHandler(async (req, res) => {
         body: drafts.whatsapp,
         optedOut: customer?.notifications?.whatsapp === false,
         configured: isWhatsAppConfigured(),
-        /* Outside 24 hours of the buyer's own last message, WhatsApp takes only an approved template. */
         template: Boolean(whatsappTemplate('quote')),
       },
       attachment: `${fileSafeNumber(quotation.number)}.pdf`,
@@ -1028,10 +887,7 @@ export const sendPreview = asyncHandler(async (req, res) => {
 
 const escapeHtml = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-/**
- * Sends the quotation the way the dialog left it. Each channel is delivered and logged on its own;
- * one that fails is reported without undoing one that went.
- */
+/** Sends the quotation the way the dialog left it; each channel delivered and logged on its own. */
 async function deliverQuotation(req, quotation, { email, whatsapp }) {
   const customer = quotation.customer;
   const generated = draftQuoteMessages({ quotation, customer, sender: req.user });
@@ -1080,7 +936,6 @@ async function deliverQuotation(req, quotation, { email, whatsapp }) {
         const sent = await sendWhatsApp({
           to,
           body: whatsapp.body,
-          /* The PDF itself: a document in the chat on Meta, an attachment on Twilio. */
           document: { url: link, filename: `${fileSafeNumber(quotation.number)}.pdf` },
           ...(templateSid
             ? { template: templateSid, variables: { 1: recipientOf(customer).name || customer.name, 2: quotation.number, 3: link } }
@@ -1095,3 +950,5 @@ async function deliverQuotation(req, quotation, { email, whatsapp }) {
   return results;
 }
 
+/* Exported for the registers' "where is this used" lists and the seeds. */
+export { lineFrom, seesCosting };
