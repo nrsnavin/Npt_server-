@@ -129,9 +129,7 @@ export const removeSampleLog = asyncHandler(async (req, res) => {
 
   const log = await SampleLog.findOne({ _id: req.params.logId, sample: sample._id });
   if (!log) throw ApiError.notFound('That entry is not on this sample');
-  if (String(log.author) !== String(req.user._id) && req.user.role !== 'admin') {
-    throw ApiError.forbidden('Only the person who wrote it can remove it');
-  }
+  /* Only Admin deletes [middleware/auth.js `adminOnly`], which the route has already checked. */
 
   if (log.attachment) {
     const attachment = await Attachment.findById(log.attachment);
@@ -153,9 +151,7 @@ export const removeLogComment = asyncHandler(async (req, res) => {
 
   const comment = log.comments.id(req.params.commentId);
   if (!comment) throw ApiError.notFound('That comment is not on this entry');
-  if (String(comment.author) !== String(req.user._id) && req.user.role !== 'admin') {
-    throw ApiError.forbidden('Only the person who wrote it can remove it');
-  }
+  /* Only Admin deletes [middleware/auth.js `adminOnly`], which the route has already checked. */
 
   comment.deleteOne();
   await log.save();

@@ -286,19 +286,22 @@ test('a note can be commented on too, not only a photo', async () => {
   assert.equal(json.data.comments.length, 1);
 });
 
-test('only the author can remove what they wrote', async () => {
+test('only Admin removes an entry — not even its author', async () => {
   const posted = await api(`/api/samples/${sampleId}/logs`, {
     method: 'POST',
     token: meera,
-    body: { body: 'Mine to delete.' },
+    body: { body: 'Typed in the wrong sample.' },
   });
   const logId = posted.json.data._id;
 
   const byOther = await api(`/api/samples/${sampleId}/logs/${logId}`, { method: 'DELETE', token: nandhini });
   assert.equal(byOther.status, 403);
-
   const byAuthor = await api(`/api/samples/${sampleId}/logs/${logId}`, { method: 'DELETE', token: meera });
-  assert.equal(byAuthor.status, 200);
+  assert.equal(byAuthor.status, 403);
+  assert.match(byAuthor.json.message, /Only Admin can delete records/);
+
+  const byAdmin = await api(`/api/samples/${sampleId}/logs/${logId}`, { method: 'DELETE', token: admin });
+  assert.equal(byAdmin.status, 200, byAdmin.json.message);
 });
 
 test('removing a photo entry takes the file with it', async () => {
@@ -308,7 +311,7 @@ test('removing a photo entry takes the file with it', async () => {
   const before = await readdir(UPLOADS);
   assert.ok(before.includes(attachment.key));
 
-  await api(`/api/samples/${sampleId}/logs/${_id}`, { method: 'DELETE', token: meera });
+  await api(`/api/samples/${sampleId}/logs/${_id}`, { method: 'DELETE', token: admin });
 
   const after = await readdir(UPLOADS);
   assert.ok(!after.includes(attachment.key), 'an unreachable file is not left on disk');

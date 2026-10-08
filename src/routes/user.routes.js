@@ -11,7 +11,7 @@ import {
   workload,
   resendInvitation,
 } from '../controllers/user.controller.js';
-import { authenticate, requireModule } from '../middleware/auth.js';
+import { adminOnly, authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
   createUserSchema,
@@ -33,6 +33,6 @@ router.put('/:id/access', requireModule('users', 'write'), validate(setAccessSch
 router.post('/:id/access/reset', requireModule('users', 'write'), resetAccessToDepartment);
 router.post('/:id/invitation', requireModule('users', 'write'), resendInvitation);
 router.get('/:id/workload', requireModule('users'), workload);
-router.delete('/:id', requireModule('users', 'write'), remove);
+router.delete('/:id', requireModule('users', 'write'), adminOnly, remove);
 
 export default router;

@@ -28,7 +28,7 @@ import {
 import { marketingDashboard } from '../controllers/marketingDashboard.controller.js';
 import { addDocument, listDocuments, removeDocument } from '../controllers/document.controller.js';
 import { singleDocument, singleImage } from '../middleware/upload.js';
-import { authenticate, requireModule } from '../middleware/auth.js';
+import { adminOnly, authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
   customerSchema, customerUpdateSchema,
@@ -171,7 +171,7 @@ router.post(
  */
 router.get('/:collection/:id/documents', authenticate, listDocuments);
 router.post('/:collection/:id/documents', authenticate, singleDocument('file'), addDocument);
-router.delete('/:collection/:id/documents/:documentId', authenticate, removeDocument);
+router.delete('/:collection/:id/documents/:documentId', authenticate, adminOnly, removeDocument);
 
 router.get('/enquiries/pipeline', requireModule('enquiries'), enquiryPipeline);
 // The funnel as columns you can work in, rather than a strip of counts you can only read.

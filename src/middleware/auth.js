@@ -125,3 +125,15 @@ export const authorize =
     }
     return next(ApiError.forbidden(`Requires one of the roles: ${roles.join(', ')}`));
   };
+
+/**
+ * Only Admin deletes records (role requirements, 7 Oct 2026: "Only Admin may delete records").
+ * Admin is the admin role or anyone in the Admin department. Everybody else closes, cancels or
+ * corrects instead, so nothing that happened is lost. A person's own to-dos, notes and saved
+ * views are not records and stay theirs to remove.
+ */
+export const adminOnly = (req, _res, next) => {
+  if (!req.user) return next(ApiError.unauthorized());
+  if (req.user.role === 'admin' || req.user.department === 'management') return next();
+  return next(ApiError.forbidden('Only Admin can delete records. Close, cancel or correct it instead.'));
+};

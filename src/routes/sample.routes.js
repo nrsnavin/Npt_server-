@@ -12,7 +12,7 @@ import {
 import {
   sampleDashboard, sampleDay, sampleAnalyticsReport,
 } from '../controllers/sampleDashboard.controller.js';
-import { authenticate, requireAnyModule, requireModule } from '../middleware/auth.js';
+import { adminOnly, authenticate, requireAnyModule, requireModule } from '../middleware/auth.js';
 import { singleImage } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -124,9 +124,9 @@ router.post(
  */
 router.get('/:id/logs', requireModule('samples'), listSampleLogs);
 router.post('/:id/logs', requireModule('samples'), singleImage('photo'), validate(sampleLogSchema), addSampleLog);
-router.delete('/:id/logs/:logId', requireModule('samples'), removeSampleLog);
+router.delete('/:id/logs/:logId', requireModule('samples'), adminOnly, removeSampleLog);
 router.post('/:id/logs/:logId/comments', requireModule('samples'), validate(logCommentSchema), addLogComment);
-router.delete('/:id/logs/:logId/comments/:commentId', requireModule('samples'), removeLogComment);
+router.delete('/:id/logs/:logId/comments/:commentId', requireModule('samples'), adminOnly, removeLogComment);
 
 // The buyer's own reference, as opposed to what the bench produced.
 router.put('/:id/reference-photo', requireModule('samples', 'write'), singleImage('photo'), setReferencePhoto);

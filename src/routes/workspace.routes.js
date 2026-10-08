@@ -18,7 +18,7 @@ import {
   deleteAnnouncement,
 } from '../controllers/workspace.controller.js';
 import { plantReview, raiseFinding } from '../controllers/review.controller.js';
-import { authenticate, requireModule } from '../middleware/auth.js';
+import { adminOnly, authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
   todoSchema,
@@ -112,6 +112,6 @@ router.post(
   createAnnouncement
 );
 router.post('/announcements/:id/read', requireModule('announcements'), markAnnouncementRead);
-router.delete('/announcements/:id', requireModule('announcements', 'write'), deleteAnnouncement);
+router.delete('/announcements/:id', requireModule('announcements', 'write'), adminOnly, deleteAnnouncement);
 
 export default router;
