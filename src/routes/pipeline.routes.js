@@ -9,7 +9,7 @@ import {
   enquiryOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, applyEnquiryAction, listEnquiryActions,
-  logEnquiryActivity, listEnquiryActivities, enquiryActivityTypes, promoteToMould, enquiryPipeline,
+  logEnquiryActivity, listEnquiryActivities, enquiryActivityTypes, delegateEnquiryTo, listDelegationTargets, promoteToMould, enquiryPipeline,
   enquiryBoard,
   exportCustomers,
   exportEnquiries,
@@ -34,7 +34,7 @@ import { validate } from '../middleware/validate.js';
 import {
   customerSchema, customerUpdateSchema,
   buyerCardConfirmSchema,
-  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema, enquiryActivitySchema,
+  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema, enquiryActivitySchema, enquiryDelegateSchema,
   bulkReassignSchema,
 } from '../validators/pipeline.schemas.js';
 import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validators/mould.schemas.js';
@@ -202,6 +202,9 @@ router.get('/enquiries/:id/actions', requireModule('enquiries'), listEnquiryActi
 router.post('/enquiries/:id/actions', requireModule('enquiries', 'write'), validate(enquiryActionSchema), applyEnquiryAction);
 /* Logging a conversation with the buyer. Moves nothing; may set the next step. */
 router.post('/enquiries/:id/activities', requireModule('enquiries', 'write'), validate(enquiryActivitySchema), logEnquiryActivity);
+/* Handing it to another marketing person, at any stage — the owner or Admin [services/delegation.service.js]. */
+router.get('/enquiries/:id/delegate', requireModule('enquiries', 'write'), listDelegationTargets);
+router.post('/enquiries/:id/delegate', requireModule('enquiries', 'write'), validate(enquiryDelegateSchema), delegateEnquiryTo);
 /*
  * A developed enquiry becoming a tool on the register. Both grants, because it writes to both
  * registers — and the mould half is production's, which is the point: cutting a tool is the

@@ -248,6 +248,12 @@ export const enquiryActivitySchema = z.object({
   nextFollowUpDate: clearableDate,
 });
 
+/** Handing an enquiry to another marketing person. */
+export const enquiryDelegateSchema = z.object({
+  to: objectId,
+  note: z.string().trim().max(500).optional(),
+});
+
 /** Moving a batch of records to another owner. */
 export const bulkReassignSchema = z.object({
   ids: z.array(objectId).min(1, 'Pick at least one record').max(500, 'Too many at once'),

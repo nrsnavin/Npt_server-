@@ -32,6 +32,7 @@ import { hasRequirement } from '../models/requirement.schema.js';
 import { transactional } from '../utils/transaction.js';
 import { STAGE_KEYS } from '../config/enquiryStages.js';
 import { ensureHolder, mayHandOff } from '../services/handoff.service.js';
+import { delegateEnquiry, delegationTargets, mayDelegate } from '../services/delegation.service.js';
 import { canRead } from '../services/access.service.js';
 import { ENQUIRY_ACTIVITY_KEYS, ENQUIRY_ACTIVITY_TYPES } from '../config/enquiryActivities.js';
 
@@ -969,7 +970,8 @@ export const getEnquiry = asyncHandler(async (req, res) => {
     .populate('requirement.hookRef', 'name code colour kind')
     .populate('requirement.clipRef', 'name code colour kind')
     .populate('requirement.printRef', 'name code kind')
-    .populate('activities.by', 'name');
+    .populate('activities.by', 'name')
+    .populate('handovers.from handovers.to handovers.by', 'name');
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   /*
    * Read by whoever may read enquiries (marketing, their own), and by a department that holds or
@@ -1456,6 +1458,25 @@ export const listEnquiryActivities = asyncHandler(async (req, res) => {
   paginated(res, result.data, { page, limit, total: result.total[0]?.n || 0 }, {
     byType: Object.fromEntries(result.byType.map((row) => [row._id, row.count])),
   });
+});
+
+/**
+ * Handing the enquiry to another marketing person, at any stage [services/delegation.service.js].
+ * The owner or Admin; its open tasks and its samples, quotes and orders go with it.
+ */
+export const delegateEnquiryTo = asyncHandler(transactional(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id);
+  if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+  const result = await delegateEnquiry({ enquiry, to: req.body.to, note: req.body.note, user: req.user });
+  res.json({ success: true, data: result });
+}));
+
+/** Who this enquiry may be handed to — empty when the reader may not hand it on. */
+export const listDelegationTargets = asyncHandler(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id).select('assignedTo');
+  if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+  const may = mayDelegate(req.user, enquiry);
+  res.json({ success: true, data: may ? await delegationTargets(enquiry) : [], mayDelegate: may });
 });
 
 /** The kinds of activity, from the one list [config/enquiryActivities.js]. */

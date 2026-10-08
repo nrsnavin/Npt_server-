@@ -289,6 +289,18 @@ const activitySchema = new mongoose.Schema({
   by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 });
 
+/** The enquiry handed from one marketing person to another [services/delegation.service.js]. */
+const handoverSchema = new mongoose.Schema(
+  {
+    from: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    to: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    at: { type: Date, default: Date.now },
+    note: { type: String, trim: true },
+  },
+  { _id: false }
+);
+
 /**
  * One enquiry carries one model [BLUEPRINT §3 — its fields are singular]. A buyer asking
  * about three models produces three enquiries sharing a `groupRef`, so sample and price
@@ -303,6 +315,8 @@ const enquirySchema = new mongoose.Schema(
     contact: { type: mongoose.Schema.Types.ObjectId },
     /** The owning marketing person. Ownership is strict [§29]. */
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    /** Each time it was handed to another marketing person, oldest first. */
+    handovers: { type: [handoverSchema], default: () => [] },
 
     /**
      * The tool that makes what was asked for, where one exists [§28].
