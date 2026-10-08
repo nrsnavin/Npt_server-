@@ -25,6 +25,7 @@ const TASK_POPULATE = [
   { path: 'user', select: 'name department' },
   { path: 'completedBy', select: 'name' },
   { path: 'outcome.by', select: 'name' },
+  { path: 'updates.by', select: 'name' },
   { path: 'reschedules.by', select: 'name' },
   { path: 'escalation.by', select: 'name department' },
 ];

@@ -35,6 +35,7 @@ const TODO_POPULATE = [
     select: 'number stage status remarks requirement.modelNumber requirement.colour requirement.printing items.modelNumber items.colour',
   },
   { path: 'outcome.by', select: 'name' },
+  { path: 'updates.by', select: 'name' },
 ];
 
 /** Start and end of the caller's day, used by the reminder feed. */

@@ -628,6 +628,7 @@ const LIST_POPULATE = [
   { path: 'createdBy', select: 'name department' },
   { path: 'user', select: 'name' },
   { path: 'outcome.by', select: 'name' },
+  { path: 'updates.by', select: 'name' },
   { path: 'customer', select: 'code name' },
   { path: 'enquiry', select: 'number stage requirement.modelNumber requirement.colour' },
 ];
