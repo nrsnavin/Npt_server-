@@ -17,6 +17,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withEnquiries } from './support/onEnquiry.js';
 
 process.env.JWT_SECRET = 'pipeline-items-test-secret';
 
@@ -28,7 +29,7 @@ let nandhini;
 let nandhiniId;
 let customerId;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -53,6 +54,9 @@ const inDays = (days) => {
 
 /** Enough for an enquiry to be accepted: a next action and a date. */
 const followUp = { nextAction: 'Send the quote', nextFollowUpDate: inDays(3) };
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();

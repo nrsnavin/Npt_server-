@@ -11,6 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withEnquiries } from './support/onEnquiry.js';
 
 process.env.JWT_SECRET = 'escalation-test-secret';
 
@@ -24,7 +25,7 @@ let mouldId;
 let Sample;
 let runSamplingEscalations;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -82,6 +83,9 @@ async function sampleDue(daysFromNow, overrides = {}) {
 }
 
 const tasksFor = async (token) => (await api('/api/workspace/todos', { token })).json.data;
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();

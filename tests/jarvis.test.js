@@ -10,6 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withEnquiries } from './support/onEnquiry.js';
 
 process.env.JWT_SECRET = 'jarvis-test-secret-value';
 
@@ -24,7 +25,7 @@ let parse;
 let customerId;
 let mouldId;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -62,6 +63,9 @@ const soon = (days = 3) => {
   return date.toISOString();
 };
 const followUp = { nextAction: 'Call the buyer', nextFollowUpDate: soon() };
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();

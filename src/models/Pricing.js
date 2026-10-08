@@ -1,5 +1,6 @@
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
+import belongsToEnquiry from './belongsToEnquiry.js';
 import { MATERIALS } from './Mould.js';
 import { MINIMUM_TIER, minimumFor, priceAt, tiersFor } from '../services/pricing.service.js';
 
@@ -440,4 +441,6 @@ pricingSchema.set('toJSON', { virtuals: true });
 pricingSchema.set('toObject', { virtuals: true });
 
 protectWrites(pricingSchema);
+pricingSchema.plugin(belongsToEnquiry, { what: 'costing sheet' });
+
 export default mongoose.model('Pricing', pricingSchema);

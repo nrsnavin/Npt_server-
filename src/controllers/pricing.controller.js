@@ -16,6 +16,7 @@ import { EVENTS, publish } from '../services/events.service.js';
 import { allVisibleTo, assertMayCost, seesCosting, visibleTo } from '../services/pricingVisibility.js';
 import { ownsRecord } from '../services/ownership.service.js';
 import { priceFrom } from '../services/pricing.service.js';
+import { requireEnquiry } from '../services/enquiryLink.service.js';
 import { transactional } from '../utils/transaction.js';
 
 /**
@@ -379,12 +380,9 @@ export const getPricing = asyncHandler(async (req, res) => {
  * different money for a buyer who takes 40,000 and one who takes 2,000.
  */
 export const createPricing = asyncHandler(transactional(async (req, res) => {
-  const enquiry = req.body.enquiry ? await Enquiry.findById(req.body.enquiry) : null;
-  if (req.body.enquiry && !enquiry) throw ApiError.badRequest('That enquiry does not exist');
-
-  const customerId = req.body.customer || enquiry?.customer;
-  if (!customerId) throw ApiError.badRequest('A costing needs the customer it is for');
-  if (!(await Customer.findById(customerId))) throw ApiError.badRequest('That customer does not exist');
+  /* Raised on an enquiry, always, and for that enquiry's buyer [services/enquiryLink.service.js]. */
+  const enquiry = await requireEnquiry(req.body.enquiry, req.user, { what: 'costing sheet', customer: req.body.customer });
+  const customerId = enquiry.customer;
 
   /*
    * The models this sheet is to price.
@@ -444,7 +442,7 @@ export const createPricing = asyncHandler(transactional(async (req, res) => {
 
   const pricing = await Pricing.create({
     customer: customerId,
-    enquiry: req.body.enquiry || undefined,
+    enquiry: enquiry._id,
     targetPrice: req.body.targetPrice,
     remarks: req.body.remarks,
     lines,

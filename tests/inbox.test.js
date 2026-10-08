@@ -7,6 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { raiseEnquiryFor, withEnquiries } from './support/onEnquiry.js';
 
 process.env.JWT_SECRET = 'inbox-test-secret';
 delete process.env.ANTHROPIC_API_KEY;
@@ -21,7 +22,7 @@ let kiran;
 let ids = {};
 let customerId;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -33,6 +34,9 @@ const signIn = async (email, password) =>
   (await api('/api/auth/login', { method: 'POST', body: { email, password } })).json.data?.token;
 const whoIs = async (token) => (await api('/api/auth/me', { token })).json.data.id;
 const inbox = async (token) => (await api('/api/inbox', { token })).json.data.items;
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -109,6 +113,7 @@ test('a price under the floor rings for whoever may sign it, and not for marketi
   const Pricing = (await import('../src/models/Pricing.js')).default;
   const sheet = await Pricing.create({
     customer: customerId, number: 'PRC-TEST-1', requestedBy: ids.nandhini,
+    enquiry: (await raiseEnquiryFor({ customer: customerId, owner: ids.nandhini }))._id,
     lines: [{ modelNumber: 'NH-400', status: 'approval_pending' }],
   });
   assert.ok((await inbox(admin)).some((item) => item.id === `approval-${sheet._id}`), 'management was not asked');

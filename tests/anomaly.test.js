@@ -12,6 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withEnquiries } from './support/onEnquiry.js';
 
 process.env.JWT_SECRET = 'anomaly-test-secret-value';
 // A fixed weekly off, so the arithmetic below does not depend on the machine's configuration.
@@ -31,7 +32,7 @@ let Todo;
 
 const DAY = 24 * 60 * 60 * 1000;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -87,6 +88,9 @@ async function sampleLastTouched(at, overrides = {}) {
 
   return created.json.data;
 }
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();

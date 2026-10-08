@@ -21,6 +21,7 @@ import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { raiseTask } from '../services/task.service.js';
+import { requireEnquiry } from '../services/enquiryLink.service.js';
 
 /**
  * Marketing's view of a sample runs through `requestedBy`, not `assignedTo` — the sample is
@@ -306,8 +307,8 @@ const specRows = (rows) => Promise.all(rows.map((row) => buildSpec(row)));
  * Raises a request by hand.
  *
  * The usual path is the automation: moving an enquiry to `sample_required` raises one [§6].
- * This exists for the cases automation cannot see — a second sample after a modification, or
- * a request the sample team takes directly.
+ * This exists for the cases automation cannot see — a second sample after a modification, say.
+ * Always on an enquiry: a sample with no enquiry behind it is work nobody can find again.
  */
 export const createSample = asyncHandler(async (req, res) => {
   const { enquiry: enquiryId, customer: customerId, ...input } = req.body;
@@ -325,31 +326,9 @@ export const createSample = asyncHandler(async (req, res) => {
     await assertAssignable(input.requestedBy);
   }
 
-  let enquiry = null;
-  if (enquiryId) {
-    enquiry = await Enquiry.findById(enquiryId);
-    if (!enquiry) throw ApiError.badRequest('That enquiry does not exist');
-    // Raising a request against an enquiry you cannot see would put it in its owner's list.
-    if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
-  }
-
-  let customer = null;
-  if (customerId) {
-    customer = await Customer.findById(customerId);
-    if (!customer) throw ApiError.badRequest('That customer does not exist');
-    if (!ownsRecord(req.user, customer)) throw ApiError.notFound('Customer not found');
-  }
-
-  /*
-   * With no enquiry to inherit from, the request has to say what to make on its own. A
-   * sample nobody can identify is a job the bench cannot start, so this is refused here
-   * rather than discovered at the bench.
-   */
-  if (!enquiry && !input.mould && !input.modelNumber && !namesAModel(input.items)) {
-    throw ApiError.badRequest(
-      'Pick a mould, or describe what to make, when there is no enquiry to take it from'
-    );
-  }
+  /* Raised on an enquiry, always — see services/enquiryLink.service.js. The buyer is the
+     enquiry's; naming a different one is refused rather than quietly overruled. */
+  const enquiry = await requireEnquiry(enquiryId, req.user, { what: 'sample', customer: customerId });
 
   /*
    * And the tool has to be one that exists — the same rule enquiries have always had. The
@@ -392,7 +371,6 @@ export const createSample = asyncHandler(async (req, res) => {
   const { sample, created } = await createSampleRequest(
     {
       enquiry,
-      customer: customer?._id ?? undefined,
       ...spec,
     },
     req.user

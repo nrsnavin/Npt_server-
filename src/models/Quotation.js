@@ -1,6 +1,7 @@
 import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
+import belongsToEnquiry from './belongsToEnquiry.js';
 
 /**
  * A quotation and every price it has ever carried [BLUEPRINT §10].
@@ -269,4 +270,6 @@ quotationSchema.set('toObject', { virtuals: true });
 
 protectWrites(quotationSchema);
 protectOwnership(quotationSchema);
+quotationSchema.plugin(belongsToEnquiry, { what: 'quotation' });
+
 export default mongoose.model('Quotation', quotationSchema);

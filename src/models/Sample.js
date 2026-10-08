@@ -1,6 +1,7 @@
 import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
+import belongsToEnquiry from './belongsToEnquiry.js';
 import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from './Mould.js';
 import { hasRequirement, requirementFields } from './requirement.schema.js';
 
@@ -455,4 +456,6 @@ sampleSchema.set('toObject', { virtuals: true });
 
 protectWrites(sampleSchema);
 protectOwnership(sampleSchema, ['requestedBy', 'assignedTo']);
+sampleSchema.plugin(belongsToEnquiry, { what: 'sample' });
+
 export default mongoose.model('Sample', sampleSchema);

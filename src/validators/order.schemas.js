@@ -87,8 +87,11 @@ const terms = {
 };
 
 export const orderSchema = z.object({
-  customer: objectId,
+  /* Taken from the enquiry when left out; must match it when sent. */
+  customer: objectId.optional(),
   quotation: objectId.optional(),
+  /* Every sales order is for an enquiry. Required — refused by `requireEnquiry`, which says
+     what to do instead [services/enquiryLink.service.js]. */
   enquiry: objectId.optional(),
   assignedTo: objectId.optional(),
   orderDate: z.coerce.date().optional(),

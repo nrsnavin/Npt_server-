@@ -15,6 +15,7 @@ import http from 'node:http';
 import { createHmac } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withEnquiries } from './support/onEnquiry.js';
 
 /* ------------------------------ A stand-in Graph API ------------------------------ */
 
@@ -81,7 +82,7 @@ let nandhini;
 let customer;
 let CustomerMessage;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -120,6 +121,9 @@ const quote = async () => {
 };
 const sendQuote = (id, whatsapp) =>
   api(`/api/quotations/${id}/send`, { method: 'POST', token: nandhini, body: { whatsapp: { send: true, to: '+91 98400 11223', ...whatsapp } } });
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();

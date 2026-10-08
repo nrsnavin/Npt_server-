@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withEnquiries } from './support/onEnquiry.js';
 
 process.env.JWT_SECRET = 'timeline-test-secret';
 delete process.env.ANTHROPIC_API_KEY;
@@ -21,7 +22,7 @@ let arun;
 let kavitha;
 let customerId;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -34,6 +35,9 @@ const signIn = async (email, password) =>
 const whoIs = async (token) => (await api('/api/auth/me', { token })).json.data.id;
 const soon = () => new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
 const wait = () => new Promise((resolve) => setTimeout(resolve, 15));
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -73,12 +77,12 @@ test.before(async () => {
   await wait();
   const sample = await api('/api/samples', {
     method: 'POST', token: nandhini,
-    body: { customer: customerId, modelNumber: 'NH-400', quantity: 5, standaloneReason: 'Counter request', remarks: 'New finish' },
+    body: { enquiry: enquiry.json.data._id, modelNumber: 'NH-400', quantity: 5, remarks: 'New finish' },
   });
   assert.equal(sample.status, 201, sample.json.message);
   await wait();
   const costing = await api('/api/pricings', {
-    method: 'POST', token: admin, body: { customer: customerId, lines: [{ modelNumber: 'NH-400' }] },
+    method: 'POST', token: admin, body: { enquiry: enquiry.json.data._id, lines: [{ modelNumber: 'NH-400' }] },
   });
   assert.equal(costing.status, 201, costing.json.message);
   for (const subject of ['First question', 'Second question']) {

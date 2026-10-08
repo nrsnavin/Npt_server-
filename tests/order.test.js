@@ -18,6 +18,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withEnquiries } from './support/onEnquiry.js';
 
 process.env.JWT_SECRET = 'order-test-secret-value';
 
@@ -34,7 +35,7 @@ let ramesh;     // production — works from it, and must not see the money
 let customer;
 let mould;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -98,6 +99,9 @@ const verifyAll = async (id, token = priya) => {
 
 const act = (id, action, body = {}, token = priya) =>
   api(`/api/orders/${id}/actions`, { method: 'POST', token, body: { action, ...body } });
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();

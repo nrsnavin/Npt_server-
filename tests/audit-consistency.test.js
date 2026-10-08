@@ -9,6 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { raiseEnquiryFor } from './support/onEnquiry.js';
 
 process.env.NODE_ENV = 'test';
 process.env.JWT_SECRET = 'isolated-audit-only';
@@ -59,6 +60,7 @@ async function fixture({ ready = 20000, status = 'part_quantity_ready' } = {}) {
   const customer = await Customer.create({ code: number('C'), name: 'Audit Garments', assignedTo: admin._id, creditTermsDays: 30 });
   const order = await SalesOrder.create({
     number: number('O'), customer: customer._id, assignedTo: admin._id, status,
+    enquiry: (await raiseEnquiryFor({ customer: customer._id, owner: admin._id }))._id,
     lines: [{ modelNumber: 'AUDIT-HANGER', quantity: 40000, unitPrice: 1,
       production: { status: 'part_quantity_ready', producedQty: 20000, readyQty: ready } }],
   });

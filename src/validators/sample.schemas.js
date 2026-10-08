@@ -69,15 +69,15 @@ const sampleCore = {
 };
 
 /**
- * A request raised by hand. Everything about what to make is optional when an enquiry is
- * given, because the enquiry already holds it; without one the caller has to say what the
- * sample is, which the controller checks — a schema cannot express "one of these two".
+ * A request raised by hand, on an enquiry — always [services/enquiryLink.service.js]. What to
+ * make is optional because the enquiry already holds it. `customer`, if sent, must be the
+ * enquiry's own.
  */
 export const sampleSchema = z.object({
+  /* Required — refused in the controller, by `requireEnquiry`, with what to do instead. */
   enquiry: objectId.optional(),
   customer: objectId.optional(),
   requestedBy: objectId.optional(),
-  standaloneReason: z.string().max(300).optional(),
   ...sampleCore,
 });
 

@@ -16,6 +16,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withEnquiries } from './support/onEnquiry.js';
 
 process.env.JWT_SECRET = 'quotation-test-secret-value';
 
@@ -32,7 +33,7 @@ let kavitha;
 let customer;
 let mould;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -99,6 +100,9 @@ const reviseTo = (id, unitPrice, body = {}, token = nandhini) =>
     token,
     body: { lines: [{ quantity: 40000, modelNumber: 'NH-400', unitPrice }], ...body },
   });
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();

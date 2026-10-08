@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { raiseEnquiryFor } from './support/onEnquiry.js';
 
 process.env.JWT_SECRET = 'production-volume-test-secret';
 
@@ -49,7 +50,10 @@ test.before(async () => {
   const { default: Customer } = await import('../src/models/Customer.js');
   const navin = await User.findOne({ email: 'admin@np.com' });
   const customer = await Customer.create({ code: 'CUST-V-1', name: 'SCM Garments', assignedTo: navin._id, createdBy: navin._id });
-  base = { customer: customer._id, assignedTo: navin._id, createdBy: navin._id };
+  base = {
+    customer: customer._id, assignedTo: navin._id, createdBy: navin._id,
+    enquiry: (await raiseEnquiryFor({ customer: customer._id, owner: navin._id }))._id,
+  };
 
   /* Five thousand and ten finished orders from the years before — more than the register reads. */
   await SalesOrder.collection.insertMany(Array.from({ length: 5010 }, (_, n) => ({

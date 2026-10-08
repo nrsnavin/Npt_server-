@@ -4,6 +4,7 @@ import Quotation from '../models/Quotation.js';
 import { nextNumber, nextQuoteNumber } from '../services/numbering.service.js';
 import { QUOTE_SHEET, SHEET_PRODUCTS } from './quoteSheet.js';
 import { FULL } from './size.js';
+import { enquiryFor } from './enquiryFor.js';
 
 /**
  * Seeds the pricing and quotation modules from the plant's real 26-27 sheet.
@@ -144,9 +145,15 @@ export async function seedPricing({ admin, nandhini }) {
      * needs to [§7]; what the 26-27 sheet actually recorded is a model at a time, and inventing
      * groupings it did not have would be putting a shape on somebody else's document.
      */
+    /* Every costing is for an enquiry [seed/enquiryFor.js]. */
+    const asked = await enquiryFor({
+      customer, owner: nandhini, modelNumber: row.model, status: 'quote_submitted', at,
+    });
+
     const pricing = new Pricing({
       number: await nextNumber('PRC'),
       customer: customer._id,
+      enquiry: asked._id,
       lines: [
         {
           modelNumber: row.model,
@@ -229,6 +236,8 @@ export async function seedPricing({ admin, nandhini }) {
     const quotation = new Quotation({
       number: await nextQuoteNumber(at),
       customer: customer._id,
+      /* The enquiry behind the first costing on it — every quotation is for one. */
+      enquiry: entries[0].pricing.enquiry,
       assignedTo: nandhini._id,
       lines: entries.map((entry) => ({
         pricing: entry.pricing._id,

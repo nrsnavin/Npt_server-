@@ -11,6 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { raiseEnquiryFor, withEnquiries } from './support/onEnquiry.js';
 
 process.env.JWT_SECRET = 'sample-analytics-test-secret';
 
@@ -27,7 +28,7 @@ let mouldId;
 
 const DAY = 24 * 60 * 60 * 1000;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -69,6 +70,7 @@ async function fulfilled({ days, readyDaysAgo = 2, ...attributes }) {
   return Sample.create({
     number: `SMP-TEST-${String(sequence).padStart(4, '0')}`,
     requestedBy: attributes.requestedBy,
+    enquiry: (await raiseEnquiryFor({ owner: attributes.requestedBy }))._id,
     modelNumber: 'NPT-400S',
     quantity: 5,
     status: 'sample_ready',
@@ -82,6 +84,9 @@ async function fulfilled({ days, readyDaysAgo = 2, ...attributes }) {
     ...attributes,
   });
 }
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -363,6 +368,7 @@ test('a sample dispatched without a ready tick still counts as fulfilled', async
   await Sample.create({
     number: `SMP-TEST-${String(sequence).padStart(4, '0')}`,
     requestedBy: me,
+    enquiry: (await raiseEnquiryFor({ owner: me }))._id,
     modelNumber: 'NPT-SKIP',
     quantity: 5,
     status: 'dispatched',

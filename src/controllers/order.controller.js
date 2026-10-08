@@ -24,6 +24,7 @@ import { ORDER_ACTIONS, orderActionsFrom } from '../services/orderActions.js';
 import { assertCanOwnBuyer } from '../services/assignment.service.js';
 import { buildSpec, registersFromPricing } from '../services/registers.service.js';
 import { put, remove } from '../services/storage.service.js';
+import { requireEnquiry } from '../services/enquiryLink.service.js';
 import { collect, sendCsv } from '../utils/csv.js';
 import { transactional } from '../utils/transaction.js';
 
@@ -416,7 +417,9 @@ async function assertRefIsNew(externalRef) {
  * used wherever a quote exists, because it retypes nothing.
  */
 export const createOrder = asyncHandler(transactional(async (req, res) => {
-  const customer = await Customer.findById(req.body.customer);
+  /* Raised on an enquiry, always, and for that enquiry's buyer [services/enquiryLink.service.js]. */
+  const enquiry = await requireEnquiry(req.body.enquiry, req.user, { what: 'sales order', customer: req.body.customer });
+  const customer = await Customer.findById(enquiry.customer);
   if (!customer) throw ApiError.badRequest('That customer does not exist');
 
   if (req.body.assignedTo) await assertCanOwnBuyer(req.body.assignedTo);
@@ -425,6 +428,8 @@ export const createOrder = asyncHandler(transactional(async (req, res) => {
 
   const order = await SalesOrder.create({
     ...req.body,
+    customer: customer._id,
+    enquiry: enquiry._id,
     /* Stamped here rather than taken from the request — see the note on the schema. */
     ...(req.body.externalRef
       ? { externalRef: { ...req.body.externalRef, importedAt: new Date() } }

@@ -19,6 +19,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { raiseEnquiryFor, withEnquiries } from './support/onEnquiry.js';
 
 import { CONFIDENTIAL, PUBLIC_FIGURES, seesCosting } from '../src/services/pricingVisibility.js';
 import { minimumFor, priceAt, priceFrom, tiersFor } from '../src/services/pricing.service.js';
@@ -37,7 +38,7 @@ let nandhini;   // marketing — must not
 let mould;
 let customer;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -88,6 +89,9 @@ const costed = async ({ approvedSellingPrice, minimumOverride = 8, mould: on } =
   assert.equal(built.status, 200, built.json.message);
   return built.json.data;
 };
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -446,27 +450,23 @@ test('an enquiry reaching pricing raises the costing itself', async () => {
 
 /* ------------------- A costing with no enquiry behind it ------------------- */
 
-test('a costing can be raised with no enquiry at all', async () => {
-  const made = await api('/api/pricings', {
-    method: 'POST',
-    token: admin,
-    body: { customer, quantity: 5000, modelNumber: 'NH-400' },
+test('a costing is raised on an enquiry, and for that enquiry\'s buyer', async () => {
+  /* Straight to the server, past the fixture that raises an enquiry for every create. */
+  const alone = await rawApi('/api/pricings', {
+    method: 'POST', token: admin, body: { customer, quantity: 5000, modelNumber: 'NH-400' },
   });
+  assert.equal(alone.status, 400, 'a costing with no enquiry behind it was raised');
+  assert.match(alone.json.message, /raise the costing sheet from there/i);
 
+  /* Named only by its enquiry, the costing is for the enquiry's customer. */
+  const enquiry = await raiseEnquiryFor({ customer });
+  const made = await rawApi('/api/pricings', {
+    method: 'POST', token: admin, body: { enquiry: String(enquiry._id), modelNumber: 'NH-400' },
+  });
   assert.equal(made.status, 201, made.json.message);
-  assert.equal(made.json.data.enquiry, undefined);
+  assert.equal(String(made.json.data.customer?._id || made.json.data.customer), String(customer));
+  assert.equal(String(made.json.data.enquiry?._id || made.json.data.enquiry), String(enquiry._id));
   assert.equal(made.json.data.status, 'requested');
-});
-
-test('a costing still needs the customer it is for', async () => {
-  const made = await api('/api/pricings', {
-    method: 'POST',
-    token: admin,
-    body: { quantity: 5000, modelNumber: 'NH-400' },
-  });
-
-  assert.equal(made.status, 400);
-  assert.match(made.json.message, /customer/i);
 });
 
 /* ----------------------------------- MOQ ----------------------------------- */

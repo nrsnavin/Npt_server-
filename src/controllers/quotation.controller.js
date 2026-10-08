@@ -20,6 +20,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import CustomerMessage from '../models/CustomerMessage.js';
 import { draftQuoteMessages, recipientOf, sendProblem } from '../services/quotationMessage.js';
 import { sendEmail } from '../services/notification.service.js';
+import { requireEnquiry } from '../services/enquiryLink.service.js';
 import { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } from '../providers/whatsapp.js';
 import { env, isProduction } from '../config/env.js';
 import { normalisePhone } from '../utils/phone.js';
@@ -497,11 +498,10 @@ async function assertQuotationLinks(user, { customerId, enquiryId, assignedTo, o
 export async function newQuotation(fields, user) {
   assertValidityAhead(fields.validUntil);
 
-  const enquiry = fields.enquiry ? await Enquiry.findById(fields.enquiry) : null;
-  if (fields.enquiry && !enquiry) throw ApiError.badRequest('That enquiry does not exist');
-
-  const customerId = fields.customer || enquiry?.customer;
-  if (!customerId) throw ApiError.badRequest('A quotation needs the customer it is for');
+  /* Raised on an enquiry, always, and for that enquiry's buyer [services/enquiryLink.service.js].
+     No ownership check here: the customer's, just below, is the one that decides. */
+  const enquiry = await requireEnquiry(fields.enquiry, null, { what: 'quotation', customer: fields.customer });
+  const customerId = enquiry.customer;
 
   const customer = await Customer.findById(customerId);
   if (!customer) throw ApiError.badRequest('That customer does not exist');

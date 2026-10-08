@@ -15,6 +15,7 @@ import Sample from '../models/Sample.js';
 import Counter from '../models/Counter.js';
 import { few, leading, resolved } from './size.js';
 import { nextNumber } from '../services/numbering.service.js';
+import { enquiryFor } from './enquiryFor.js';
 
 const days = (offset, hour = 11) => {
   const date = new Date();
@@ -546,10 +547,16 @@ export async function seedPipeline({ nandhini, arun, meera }) {
       [outcome, -row.agoDays + 5, 10],
     ];
 
+    /* Every sample is raised on an enquiry — the history included [seed/enquiryFor.js]. */
+    const asked = await enquiryFor({
+      customer, owner: nandhini, modelNumber: row.model, mould: tool, status: 'sample_feedback_pending', at: raised,
+    });
+
     samples.push(
       await Sample.create({
         number: await nextNumber('SMP'),
         customer: customer._id,
+        enquiry: asked._id,
         requestedBy: nandhini._id,
         assignedTo: meera?._id,
         mould: tool?._id,

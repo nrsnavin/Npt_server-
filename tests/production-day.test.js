@@ -21,6 +21,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withEnquiries } from './support/onEnquiry.js';
 
 import {
   PIECES_PER_DAY, SOON_DAYS, byUrgency, urgencyOf,
@@ -40,7 +41,7 @@ let customer;
 let mould;
 let nandhiniId;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -109,6 +110,9 @@ const day = (token = ramesh) => api('/api/production/day', { token });
 /** Where a given order's line sits on the day screen, across both of its lists. */
 const findRow = (data, number) =>
   [...data.pressing, ...data.next].find((row) => row.order.number === number);
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();

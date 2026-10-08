@@ -16,6 +16,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withEnquiries } from './support/onEnquiry.js';
 
 /* This file now drives several hundred calls in a few seconds — each `released()` books an
    order, ticks eight checks and releases it — which the deployed ceiling of 300 a minute
@@ -38,7 +39,7 @@ let customer;
 let mould;
 let nandhiniId;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -98,6 +99,9 @@ const released = async (lines) => {
 
 const record = (order, line, body, token = ramesh) =>
   api(`/api/orders/${order._id}/lines/${line._id}/production`, { method: 'PATCH', token, body });
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();

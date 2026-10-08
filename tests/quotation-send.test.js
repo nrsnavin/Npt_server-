@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withEnquiries } from './support/onEnquiry.js';
 
 /* -------- A mail server just big enough to take one message at a time -------- */
 const mails = [];
@@ -67,7 +68,7 @@ let nandhini;
 let customer;
 let CustomerMessage;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -91,6 +92,9 @@ const quote = async (to = customer) => {
   assert.equal(made.status, 201, made.json.message);
   return made.json.data;
 };
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();

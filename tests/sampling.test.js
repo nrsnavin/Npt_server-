@@ -8,6 +8,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { withEnquiries } from './support/onEnquiry.js';
 
 /* This file drives several hundred calls in a few seconds, which the deployed ceiling of 300
    a minute correctly refuses. The limiter stays mounted; only the number moves. */
@@ -27,7 +28,7 @@ let mouldId;
 /** The resin and the three parts a requirement can name [§28]. */
 const registers = {};
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -119,6 +120,9 @@ async function dispatchSample(sampleId) {
     },
   });
 }
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -620,185 +624,31 @@ test('only a modification can be re-sampled', async () => {
 
 /* --------------------------- Requests with no enquiry --------------------------- */
 
-test('a sample can be raised with no enquiry behind it', async () => {
-  const { status, json } = await api('/api/samples', {
+test('a sample is raised on an enquiry, never on its own', async () => {
+  /* Straight to the server, past the fixture that raises an enquiry for every create. */
+  const alone = await rawApi('/api/samples', {
     method: 'POST',
     token: meera,
-    body: {
-      modelNumber: 'NPT-400S',
-      colour: 'White',
-      quantity: 4,
-      purpose: 'new_development',
-      standaloneReason: 'Trialling the recycled blend on the 400 tool',
-    },
+    body: { modelNumber: 'NPT-400S', colour: 'White', quantity: 4, purpose: 'new_development' },
   });
+  assert.equal(alone.status, 400, 'a sample with no enquiry behind it was raised');
+  assert.match(alone.json.message, /raise the sample from there/i);
 
-  assert.equal(status, 201);
-  assert.equal(json.data.enquiry, undefined);
-  assert.equal(json.data.customer, undefined, 'an internal trial belongs to nobody');
-  assert.equal(json.data.isStandalone, true);
-  assert.equal(json.data.autoCreated, false);
-  // Whoever raised it is who it is for, since no enquiry named anyone.
-  assert.equal(json.data.requestedBy.name, 'Meera S');
-  assert.ok(json.data.requiredDate, 'the bench still gets a date');
-});
-
-test('a walk-in sample can name a customer without an enquiry', async () => {
-  const { json: customers } = await api('/api/customers?search=SCM', { token: nandhini });
-  const customer = customers.data[0];
-
-  const { status, json } = await api('/api/samples', {
-    method: 'POST',
-    token: nandhini,
-    body: {
-      customer: customer._id,
-      modelNumber: 'NPT-400S',
-      quantity: 2,
-      purpose: 'buyer_approval',
-      standaloneReason: 'Asked for one at the counter',
-    },
-  });
-
-  assert.equal(status, 201);
-  assert.equal(json.data.customer._id, customer._id);
-  assert.equal(json.data.enquiry, undefined);
-});
-
-test('a request with no enquiry must still say what to make', async () => {
-  const { status, json } = await api('/api/samples', {
-    method: 'POST',
-    token: meera,
-    body: { quantity: 2, purpose: 'fit_test' },
-  });
-
-  assert.equal(status, 400);
-  assert.match(json.message, /Pick a mould, or describe what to make/);
-});
-
-test('a standalone request walks the whole status cycle', async () => {
-  const created = await api('/api/samples', {
-    method: 'POST',
-    token: meera,
-    body: { modelNumber: 'NPT-400S', quantity: 3, standaloneReason: 'Counter request' },
-  });
-  const id = created.json.data._id;
-
-  // Every stage the automation-raised ones use, with nothing to inherit from.
-  for (const status of ['checking_stock', 'production_required', 'printing_required', 'sample_ready']) {
-    const moved = await api(`/api/samples/${id}/status`, {
-      method: 'POST',
-      token: meera,
-      body: { status },
-    });
-    assert.equal(moved.status, 200, `should reach ${status}`);
-    assert.equal(moved.json.data.status, status);
-  }
-
-  // The dispatch rule holds here too.
-  const bare = await api(`/api/samples/${id}/status`, {
-    method: 'POST',
-    token: meera,
-    body: { status: 'dispatched' },
-  });
-  assert.equal(bare.status, 400);
-
-  const dispatched = await api(`/api/samples/${id}/status`, {
-    method: 'POST',
-    token: meera,
-    body: { status: 'dispatched', courier: 'Blue Dart', awbNumber: '99001122334', dispatchedQuantity: 3 },
-  });
-  assert.equal(dispatched.status, 200);
-  await new Promise((resolve) => setTimeout(resolve, 150));
-
-  // Feedback closes it, and the enquiry handover simply has nothing to move.
-  const feedback = await api(`/api/samples/${id}/feedback`, {
-    method: 'POST',
-    token: meera,
-    body: { outcome: 'approved', note: 'Blend is fine' },
-  });
-  assert.equal(feedback.status, 200);
-  assert.equal(feedback.json.data.status, 'approved');
-
-  const history = feedback.json.data.statusHistory.map((entry) => entry.to);
-  assert.deepEqual(history, [
-    'request_received',
-    'checking_stock',
-    'production_required',
-    'printing_required',
-    'sample_ready',
-    'dispatched',
-    'approved',
-  ]);
-});
-
-test('a standalone request can be re-sampled', async () => {
-  const created = await api('/api/samples', {
-    method: 'POST',
-    token: meera,
-    body: { modelNumber: 'NPT-400S', quantity: 2, standaloneReason: 'Counter request' },
-  });
-  const id = created.json.data._id;
-
-  for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
-    await api(`/api/samples/${id}/status`, { method: 'POST', token: meera, body: { status } });
-  }
-  await api(`/api/samples/${id}/status`, {
-    method: 'POST',
-    token: meera,
-    body: { status: 'dispatched', courier: 'Blue Dart', awbNumber: '99001122335', dispatchedQuantity: 2 },
-  });
-  await api(`/api/samples/${id}/feedback`, {
-    method: 'POST',
-    token: meera,
-    body: { outcome: 'modification_required', note: 'Thicker hook' },
-  });
-
-  const { status, json } = await api(`/api/samples/${id}/resample`, {
-    method: 'POST',
-    token: meera,
-    body: {},
-  });
-
-  assert.equal(status, 201);
-  assert.equal(json.data.sample.enquiry, undefined);
-  assert.equal(json.data.sample.modelNumber, 'NPT-400S');
-  assert.equal(idOf(json.data.sample.previousSample), id);
-});
-
-test('a request raised before its enquiry can be attached to it afterwards', async () => {
-  const { json: customers } = await api('/api/customers?search=SCM', { token: nandhini });
-  const customer = customers.data[0];
-
-  const created = await api('/api/samples', {
-    method: 'POST',
-    token: nandhini,
-    body: { customer: customer._id, modelNumber: 'NPT-400S', quantity: 2 },
-  });
-  const id = created.json.data._id;
-
+  /* And the buyer is the enquiry's — naming another one is refused, not quietly overruled. */
   const enquiry = await raiseEnquiry();
-
-  const linked = await api(`/api/samples/${id}/link-enquiry`, {
+  const stranger = await api('/api/customers', {
     method: 'POST',
-    token: meera,
-    body: { enquiry: enquiry._id },
+    token: nandhini,
+    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Another Buyer', mobile: '9876599911' },
   });
-
-  assert.equal(linked.status, 200);
-  assert.equal(idOf(linked.json.data.enquiry), enquiry._id);
-  assert.equal(linked.json.data.isStandalone, false);
-  assert.ok(
-    linked.json.data.statusHistory.some((entry) => entry.note?.includes(enquiry.number)),
-    'the record says when it joined'
-  );
-
-  // Never moved once set: re-pointing it would rewrite what was made for whom.
-  const again = await api(`/api/samples/${id}/link-enquiry`, {
+  assert.equal(stranger.status, 201, stranger.json.message);
+  const wrongBuyer = await rawApi('/api/samples', {
     method: 'POST',
-    token: meera,
-    body: { enquiry: enquiry._id },
+    token: nandhini,
+    body: { enquiry: enquiry._id, customer: stranger.json.data._id, modelNumber: 'NPT-400S', quantity: 2 },
   });
-  assert.equal(again.status, 400);
+  assert.equal(wrongBuyer.status, 400);
+  assert.match(wrongBuyer.json.message, /different customer/);
 });
 
 test('a request cannot be attached to another customer’s enquiry', async () => {
@@ -834,35 +684,6 @@ test('a request cannot be attached to another customer’s enquiry', async () =>
   assert.equal(status, 400);
 });
 
-
-test('an internal trial is judged once it is made, not once it is posted', async () => {
-  const created = await api('/api/samples', {
-    method: 'POST',
-    token: meera,
-    body: { modelNumber: 'NPT-400S', quantity: 2, standaloneReason: 'Mould trial' },
-  });
-  const id = created.json.data._id;
-
-  // Nothing has been made yet, so there is nothing to judge.
-  const early = await api(`/api/samples/${id}/feedback`, {
-    method: 'POST',
-    token: meera,
-    body: { outcome: 'approved' },
-  });
-  assert.equal(early.status, 400);
-  assert.match(early.json.message, /once it has been made/);
-
-  await api(`/api/samples/${id}/status`, { method: 'POST', token: meera, body: { status: 'sample_ready' } });
-
-  // With no customer, the bench judges it from the bench — no dispatch involved.
-  const { status, json } = await api(`/api/samples/${id}/feedback`, {
-    method: 'POST',
-    token: meera,
-    body: { outcome: 'approved', note: 'Blend holds up' },
-  });
-  assert.equal(status, 200);
-  assert.equal(json.data.status, 'approved');
-});
 
 test('a trial with a customer still waits for the customer', async () => {
   const { json: customers } = await api('/api/customers?search=SCM', { token: nandhini });
@@ -1008,50 +829,6 @@ test('the pipeline reports every stage, including the empty ones', async () => {
 });
 
 /* --------------------------- Naming the buyer later --------------------------- */
-
-test('a trial raised for nobody can have its customer named later', async () => {
-  // The internal trial that turns into real work. Re-keying it to attach the buyer would
-  // throw away the record of what was already made and what the bench said about it.
-  const created = await api('/api/samples', {
-    method: 'POST',
-    token: meera,
-    body: {
-      modelNumber: 'NPT-400S',
-      quantity: 2,
-      standaloneReason: 'Trial of the new matte mould',
-    },
-  });
-  assert.equal(created.status, 201);
-  assert.equal(created.json.data.customer, undefined, 'raised for nobody');
-  const id = created.json.data._id;
-
-  const customer = await api('/api/customers', {
-    method: 'POST',
-    token: nandhini,
-    body: { assignedTo: await tokenOwnerId(nandhini), name: 'Walked In Exports', mobile: '9876591234' },
-  });
-
-  const linked = await api(`/api/samples/${id}/link-customer`, {
-    method: 'POST',
-    token: meera,
-    body: { customer: customer.json.data._id },
-  });
-
-  assert.equal(linked.status, 200);
-  assert.equal(idOf(linked.json.data.customer), customer.json.data._id);
-  assert.ok(
-    linked.json.data.statusHistory.some((entry) => entry.note?.includes('Walked In Exports')),
-    'the record says when the buyer was named'
-  );
-
-  // Set once, never moved: repointing would rewrite what was made for whom.
-  const again = await api(`/api/samples/${id}/link-customer`, {
-    method: 'POST',
-    token: meera,
-    body: { customer: customer.json.data._id },
-  });
-  assert.equal(again.status, 400);
-});
 
 test('a request that came from an enquiry takes its customer from there', async () => {
   const enquiry = await raiseEnquiry();

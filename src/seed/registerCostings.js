@@ -7,6 +7,7 @@ import { nextNumber } from '../services/numbering.service.js';
 import { priceFrom } from '../services/pricing.service.js';
 import { costingFrom } from '../controllers/pricing.controller.js';
 import { few, leading } from './size.js';
+import { enquiryFor } from './enquiryFor.js';
 
 /**
  * Costings built the way the app builds them: pick a tool, a resin and the parts, and let the
@@ -161,9 +162,15 @@ export async function seedRegisterCostings({ admin, nandhini }) {
       print: job.print ? part[job.print] : undefined,
     };
 
+    /* Every costing is for an enquiry [seed/enquiryFor.js]. */
+    const asked = await enquiryFor({
+      customer, owner: nandhini, modelNumber: job.model, mould, status: 'pricing_required',
+    });
+
     const pricing = new Pricing({
       number: await nextNumber('PRC'),
       customer: customer._id,
+      enquiry: asked._id,
       /* One model per sheet here. A sheet holds several [§7]; these seven are seven jobs. */
       lines: [
         {

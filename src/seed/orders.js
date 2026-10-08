@@ -8,6 +8,7 @@ import Inspection from '../models/Inspection.js';
 import Material from '../models/Material.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { few } from './size.js';
+import { enquiryFor } from './enquiryFor.js';
 
 /**
  * Sales orders, what the plant has made of them, and what has left the yard [§12–19].
@@ -87,10 +88,15 @@ export async function seedOrders({ priya, nandhini, arun, ramesh, anita }) {
   }) => {
     const when = orderDate || days(-20, 10);
 
+    const enquiry = await enquiryFor({
+      customer: buyer, owner, modelNumber: lines[0]?.modelNumber, mould: lines[0]?.mould, at: when,
+    });
+
     return SalesOrder.create({
       number: await nextNumber('SO'),
       orderDate: when,
       customer: buyer._id,
+      enquiry: enquiry._id,
       assignedTo: owner._id,
       customerPo: { number: `PO/${buyer.code}/${String(Math.abs(when.getDate())).padStart(2, '0')}`, date: when },
       lines: lines.map((line) => ({

@@ -22,6 +22,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { raiseEnquiryFor, withEnquiries } from './support/onEnquiry.js';
 
 import { reviewFindings, reviewModelConfigured } from '../src/services/plantReview.llm.js';
 import { over, since } from '../src/services/plantFindings.service.js';
@@ -38,7 +39,7 @@ let kavitha;    // despatch
 let suresh;     // production
 let customer;
 
-const api = async (path, { method = 'GET', body, token } = {}) => {
+const rawApi = async (path, { method = 'GET', body, token } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
@@ -73,6 +74,9 @@ const signIn = async (email, password) => {
  * the assertions check the same whatever time of day the tests run.
  */
 const days = (offset) => new Date(Date.now() + offset * 24 * 60 * 60 * 1000);
+
+/* Samples, costings, quotations and orders are raised on an enquiry — see tests/support/onEnquiry.js. */
+const api = withEnquiries(rawApi);
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -113,6 +117,7 @@ test.before(async () => {
   await SalesOrder.create({
     number: 'SO-REVIEW-1',
     customer: customer._id,
+    enquiry: (await raiseEnquiryFor({ customer: customer._id, owner: navin._id }))._id,
     assignedTo: navin._id,
     createdBy: navin._id,
     status: 'production_running',
@@ -485,6 +490,7 @@ test('finished stock nobody has sent is in despatch’s brief, less what consign
   const made = await SalesOrder.create({
     number: 'SO-STANDING-1',
     customer: customer._id,
+    enquiry: (await raiseEnquiryFor({ customer: customer._id, owner: navin._id }))._id,
     assignedTo: navin._id,
     createdBy: navin._id,
     status: 'production_completed',

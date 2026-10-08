@@ -13,6 +13,8 @@ const weight = z.number().nonnegative().transform(cutGrams);
 /* ---------------------------------- Pricing ---------------------------------- */
 
 export const pricingSchema = z.object({
+  /* Every costing is for an enquiry. Required — refused by `requireEnquiry`, which says what
+     to do instead [services/enquiryLink.service.js]. */
   enquiry: objectId.optional(),
   customer: objectId.optional(),
   /** The tool it is made on. Left out for a traded item, which has none. */
