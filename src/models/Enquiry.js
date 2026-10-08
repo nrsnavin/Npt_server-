@@ -340,6 +340,11 @@ const enquirySchema = new mongoose.Schema(
      */
     stage: { type: String, enum: STAGE_KEYS, default: 'enquiry', index: true },
     stageHistory: [stageChangeSchema],
+    /*
+     * The department that has the enquiry now — its open holding task's department
+     * [services/handoff.service.js]. Kept here so a list can say who has it without a lookup.
+     */
+    heldBy: { type: String, index: true },
 
     /** Mandatory while open [§3]: an enquiry may not sit without a defined next step. */
     nextAction: { type: String, trim: true },
@@ -378,16 +383,28 @@ enquirySchema.pre('validate', function alignItems() {
 });
 
 /*
- * The first four stages follow the sales status, wherever the status was changed from — the
- * action buttons, the sample and quotation automation, the board — so none of them has to know.
+ * A new enquiry starts at the stage its status says (an IndiaMART lead is at Enquiry). After
+ * that the stage moves only with the department holding it [services/handoff.service.js] —
+ * a status change that hands work on (sample required, pricing required, won) moves it through
+ * the same door, so the stage and the department that has it never disagree.
  */
 enquirySchema.pre('save', function followStatus() {
-  if (!this.isNew && !this.isModified('status')) return;
-  const next = stageForStatus(this.status, this.isNew ? null : this.stage);
-  if (!next || next === this.stage) return;
-  const last = this.statusHistory?.[this.statusHistory.length - 1];
-  if (!this.isNew) this.stageHistory.push({ from: this.stage, to: next, by: last?.by, note: `Status: ${this.status.replace(/_/g, ' ')}` });
-  this.stage = next;
+  if (!this.isNew) return;
+  const next = stageForStatus(this.status, null);
+  if (next) this.stage = next;
+});
+
+/*
+ * When marketing holds the enquiry, its task is due on the follow-up date — the date marketing
+ * already keeps on every open enquiry — so moving one moves the other.
+ */
+enquirySchema.pre('save', function noteFollowUpMoved() {
+  this.$locals.followUpMoved = !this.isNew && this.isModified('nextFollowUpDate');
+});
+enquirySchema.post('save', async function moveHolderDueDate(doc) {
+  if (!doc.$locals.followUpMoved || !doc.nextFollowUpDate) return;
+  const { syncOwnerDueDate } = await import('../services/handoff.service.js');
+  await syncOwnerDueDate(doc);
 });
 
 enquirySchema.virtual('isOpen').get(function isOpen() {

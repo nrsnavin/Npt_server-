@@ -80,6 +80,14 @@ export function protectWrites(schema) {
   schema.set('optimisticConcurrency', true);
   // Query updates must invalidate documents already loaded by another writer too.
   schema.pre(['updateOne', 'updateMany', 'findOneAndUpdate'], function advanceVersion() {
+    /*
+     * `keepVersion` opts a bookkeeping write out — the department holding an enquiry, its stage
+     * moving on. It changes nothing anyone typed, so it must not make their open copy stale.
+     */
+    if (this.getOptions().keepVersion) {
+      delete this.options.keepVersion;
+      return;
+    }
     const update = this.getUpdate();
     if (!update || Array.isArray(update)) return;
     delete update.__v;

@@ -30,6 +30,7 @@ import { applySpec, buildSpec } from '../services/registers.service.js';
 import { hasRequirement } from '../models/requirement.schema.js';
 import { transactional } from '../utils/transaction.js';
 import { STAGE_KEYS } from '../config/enquiryStages.js';
+import { ensureHolder } from '../services/handoff.service.js';
 
 /**
  * How many rows an export may take.
@@ -773,6 +774,8 @@ export async function createEnquiryRecord(input, user) {
   });
 
   await enquiry.save();
+  /* The enquiry is marketing's task from the moment it exists [services/handoff.service.js]. */
+  await ensureHolder(enquiry, { user });
 
   await publish(EVENTS.ENQUIRY_CREATED, { enquiry, by: user });
   return enquiry;

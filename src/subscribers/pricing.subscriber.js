@@ -1,9 +1,7 @@
 import User from '../models/User.js';
-import Pricing from '../models/Pricing.js';
-import { hasRequirement } from '../models/requirement.schema.js';
-import { EVENTS, publish, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
-import { nextNumber } from '../services/numbering.service.js';
+import { EVENTS, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
 import { raiseTask, resolveTasks } from '../services/task.service.js';
+import { ensureCostingFor } from '../services/costingRequest.service.js';
 
 /**
  * The enquiry module's edge into pricing, and pricing's edge back [BLUEPRINT §5, §9, §41.8].
@@ -36,72 +34,6 @@ const safely = (name, handler) => {
   return listener;
 };
 
-/**
- * Who prices a job.
- *
- * This organisation has no costing team, so `pricing: write` sits with management [§7]. The
- * grant is read rather than the department, so granting a marketing person pricing rights
- * puts them in the queue without anything here changing.
- */
-async function costingTeam() {
-  const holders = await User.find({
-    isActive: { $ne: false },
-    moduleAccess: { $elemMatch: { module: 'pricing', level: 'write' } },
-  }).select('_id');
-
-  if (holders.length) return holders;
-
-  // Nobody holds it, so the request would land nowhere. Admins are the fallback, not the
-  // default — the same rule the sample queue follows.
-  return User.find({ isActive: { $ne: false }, role: 'admin' }).select('_id');
-}
-
-/**
- * The models the costing has to price, one line each [§7].
- *
- * An enquiry carries a list of items now, and a sheet carries a line per model, so the handover
- * is row for row: five models asked about become five lines with five floors, rather than one
- * line and four models somebody has to remember. The registers the buyer's requirement already
- * names come across with them, so the sheet is costed against the same resin and parts the
- * enquiry asked for [§28].
- *
- * Nothing here computes a cost. This raises the sheet; building it is `/cost`, and a line with
- * no cost on it is exactly what "somebody still has to price this" looks like.
- *
- * Each line takes its own model's tool. It used to take the enquiry's single mould on line one
- * and nothing on the rest, from when only the first model could name one; once every item
- * could, line two kept arriving blank — the costing had to start from nothing for a model whose
- * tool the enquiry already named. The enquiry's own mould is still line one's fallback, for a
- * record written before items carried a tool.
- */
-function lineFor(item = {}, { mould } = {}) {
-  return {
-    mould,
-    modelNumber: item.modelNumber,
-    materialRef: item.materialRef,
-    hookRef: item.hookRef,
-    clipRef: item.clipRef,
-    printRef: item.printRef,
-    material: item.material,
-    quantity: item.quantity,
-    status: 'requested',
-  };
-}
-
-/*
- * A model named only by its tool counts. "The 420, same as last time" has no text in it at all,
- * and filtering on the described fields alone dropped it from the sheet — the same mistake the
- * enquiry controller once made, and fixed, with `describesItem`.
- */
-const describesItem = (row) => Boolean(row?.mould || hasRequirement(row));
-
-function linesFor(enquiry) {
-  const items = (enquiry.items || []).filter(describesItem);
-  const rows = items.length ? items : [enquiry.requirement || {}];
-  return rows.map((item, index) =>
-    lineFor(item, { mould: item.mould || (index === 0 ? enquiry.mould : undefined) }));
-}
-
 let registered = [];
 
 export function registerPricingSubscribers() {
@@ -119,54 +51,11 @@ export function registerPricingSubscribers() {
   subscribe(
     EVENTS.ENQUIRY_PRICING_REQUIRED,
     safely('costing request', async ({ enquiry }) => {
-      const team = await costingTeam();
-      const requirement = enquiry.requirement || {};
-
       /*
-       * The costing record itself, not just the instruction to make one.
-       *
-       * One open costing per enquiry: an enquiry that goes back and forth through pricing
-       * must not leave a drawer of half-built sheets behind it, and the second person to
-       * open one would not know which was current.
+       * The costing record. Who prices it is no longer a task per person: the enquiry itself
+       * moves to Quotation and is that department's task [subscribers/handoff.subscriber.js].
        */
-      const existing = await Pricing.findOne({
-        enquiry: enquiry._id,
-        status: { $nin: ['rejected'] },
-      });
-
-      if (!existing) {
-        const pricing = await Pricing.create({
-          number: await nextNumber('PRC'),
-          enquiry: enquiry._id,
-          customer: enquiry.customer,
-          lines: linesFor(enquiry),
-          targetPrice: enquiry.targetPrice,
-          requestedBy: enquiry.assignedTo,
-          statusHistory: [{ to: 'requested', by: enquiry.assignedTo }],
-        });
-        await publish(EVENTS.PRICING_REQUESTED, { pricing, enquiry });
-      }
-
-      await Promise.all(
-        team.map((member) =>
-          raiseTask({
-            user: member._id,
-            title: `Price ${enquiry.number}`,
-            notes:
-              /* No quantity: a costing on this sheet is a per-piece cost, and the enquiry no
-                 longer pretends to know how many. The colour is what actually varies the job. */
-              `${requirement.modelNumber || 'New development'}` +
-              `${requirement.colour ? ` · ${requirement.colour}` : ''}` +
-              `${enquiry.targetPrice ? ` · buyer's target ₹${enquiry.targetPrice}` : ''}`,
-            dueDate: enquiry.requiredDeliveryDate,
-            priority: 'high',
-            link: `/enquiries/${enquiry._id}`,
-            // One per enquiry: an enquiry that goes back and forth through pricing must not
-            // leave a queue of identical instructions behind it.
-            originKey: `enquiry:${enquiry._id}:pricing`,
-          })
-        )
-      );
+      await ensureCostingFor(enquiry);
     })
   );
 

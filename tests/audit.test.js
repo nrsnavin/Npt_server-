@@ -58,6 +58,17 @@ const soon = (days = 3) => {
 const followUp = { nextAction: 'Call the buyer', nextFollowUpDate: soon() };
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
 
+/** The department that has the enquiry, once a move made on someone's behalf has landed. */
+async function holderOf(id, department) {
+  let holder;
+  for (let i = 0; i < 100; i += 1) {
+    holder = (await api(`/api/enquiries/${id}/handoffs`, { token: admin })).json.holder;
+    if (holder?.department === department) break;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  }
+  return holder;
+}
+
 const requirement = (extra = {}) => ({
   modelNumber: 'NPT-400S',
   category: 'shirt',
@@ -298,8 +309,10 @@ test('management is not queued the bench’s own work', async () => {
     'an admin should not be handed the sample team’s queue'
   );
 
-  const benchTasks = await api('/api/workspace/todos', { token: meera });
-  assert.ok(benchTasks.json.data.some((todo) => todo.title.startsWith('Prepare sample')));
+  /* The bench's work is the enquiry itself, on Sampling's queue — not a task per person. */
+  const holder = await holderOf(enquiry._id, 'sampling');
+  assert.equal(holder?.department, 'sampling');
+  assert.ok(!adminTasks.json.data.some((todo) => String(todo._id) === String(holder._id)), 'and not on the admin\'s own list');
 });
 
 /* --------------------------- Reassignment is management --------------------------- */
@@ -396,35 +409,26 @@ test('the automated route into pricing raises the same handover as the manual on
   }
 });
 
-test('a request raised by hand queues the bench, exactly as an automated one does', async () => {
-  // Manual entry is the primary path [§8] and permanent. A counter request that lands in
-  // nobody's list is the black hole the automation exists to close — and it is worse than
-  // the automated case, because there is no enquiry sitting anywhere to notice it either.
+test('a request raised by hand hands the enquiry to the bench, exactly as an automated one does', async () => {
+  // Manual entry is the primary path [§8] and permanent. A request raised on an enquiry by hand
+  // moves that enquiry to Sampling just as the automation does, so it lands on the bench.
   const customer = await makeCustomer(nandhini);
+  const enquiry = await makeEnquiry(nandhini, customer._id);
 
   const raised = await api('/api/samples', {
     method: 'POST',
     token: nandhini,
-    body: {
-      customer: customer._id,
-      modelNumber: 'NPT-400S',
-      quantity: 4,
-      standaloneReason: 'Asked for one at the counter',
-    },
+    body: { enquiry: enquiry._id, modelNumber: 'NPT-400S', quantity: 4 },
   });
-  assert.equal(raised.status, 201);
-  await settle();
+  assert.equal(raised.status, 201, raised.json.message);
 
-  const { json: bench } = await api('/api/workspace/todos', { token: meera });
-  const queued = bench.data.filter((todo) => todo.link === `/samples/${raised.json.data._id}`);
-
-  assert.ok(queued.length, 'the sample team was told there is a sample to make');
-  assert.match(queued[0].title, new RegExp(raised.json.data.number));
+  const holder = await holderOf(enquiry._id, 'sampling');
+  assert.equal(holder?.department, 'sampling', 'the sample team has it');
+  assert.equal(holder.kind, 'sample_request');
 });
 
-test('reaching pricing queues someone to do the pricing', async () => {
-  // §5 and §41.8. The pricing module is Phase 3; the handover is §C.1 and is due now, or
-  // every enquiry that reached pricing before Phase 3 landed is one nobody was ever told about.
+test('reaching pricing hands the enquiry to Quotation, with the buyer\'s target on the sheet', async () => {
+  // §5 and §41.8: an enquiry reaching pricing is somebody's job the moment it gets there.
   const customer = await makeCustomer(nandhini);
   const enquiry = await makeEnquiry(nandhini, customer._id, { targetPrice: 7.2 });
 
@@ -433,15 +437,12 @@ test('reaching pricing queues someone to do the pricing', async () => {
     token: nandhini,
     body: { status: 'pricing_required', ...followUp },
   });
-  await settle();
 
-  // No costing team here, so it falls to management — the arrangement §7 describes.
-  const { json } = await api('/api/workspace/todos', { token: admin });
-  const queued = json.data.filter((todo) => todo.link === `/enquiries/${enquiry._id}`);
-
-  assert.ok(queued.length, 'somebody was asked to price it');
-  assert.match(queued[0].title, new RegExp(enquiry.number));
-  assert.match(queued[0].notes, /target/, "and told what the buyer is asking");
+  const holder = await holderOf(enquiry._id, 'quotation');
+  assert.equal(holder?.department, 'quotation', 'Quotation has it');
+  assert.match(holder.title, new RegExp(enquiry.number));
+  const sheets = await api(`/api/pricings?enquiry=${enquiry._id}`, { token: admin });
+  assert.equal(sheets.json.data?.[0]?.targetPrice, 7.2, 'and the sheet carries what the buyer is asking');
 });
 
 test('a customer’s timeline carries its samples, not only its enquiries', async () => {

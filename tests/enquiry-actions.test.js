@@ -74,6 +74,17 @@ const raise = async (extra = {}) => {
   return json.data;
 };
 
+/** The department that has the enquiry now, once the move made on its behalf has landed. */
+async function heldBy(id, department) {
+  let holder;
+  for (let i = 0; i < 160; i += 1) {
+    holder = (await api(`/api/enquiries/${id}/handoffs`, { token: nandhini })).json.holder;
+    if (holder?.department === department) break;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  }
+  return holder;
+}
+
 const act = (id, body, token = nandhini) =>
   api(`/api/enquiries/${id}/actions`, { method: 'POST', token, body });
 
@@ -208,17 +219,18 @@ test('the written next step is a default, not a cage', async () => {
 
 /* -------------------------------- Asking a price -------------------------------- */
 
-test('asking for a price queues whoever prices a job', async () => {
+test('asking for a price hands the enquiry to Quotation, with the costing sheet waiting', async () => {
   const enquiry = await raise();
   const done = await act(enquiry._id, { action: 'request_pricing' });
 
   assert.equal(done.status, 200, done.json.message);
   assert.equal(done.json.data.status, 'pricing_required');
-  await new Promise((resolve) => setTimeout(resolve, 250));
+  const holder = await heldBy(enquiry._id, 'quotation');
+  assert.equal(holder?.department, 'quotation', 'Quotation has the enquiry');
+  assert.equal(holder.kind, 'create_quotation');
 
-  const tasks = await api('/api/workspace/todos', { token: admin });
-  const costing = (tasks.json.data || []).find((row) => row.title?.includes(`Price ${enquiry.number}`));
-  assert.ok(costing, 'the costing request is on somebody’s list');
+  const sheets = await api(`/api/pricings?enquiry=${enquiry._id}`, { token: admin });
+  assert.ok((sheets.json.data || []).length >= 1, 'the costing sheet is raised on the enquiry');
 });
 
 /* ------------------------------ Confirming an order ------------------------------ */
@@ -241,12 +253,9 @@ test('confirming an order needs the figure, then hands it to order confirmation'
   assert.equal(done.json.data.estimatedValue, 512000);
   assert.equal(done.json.data.nextAction, undefined, 'winning clears the chase');
 
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  const tasks = await api('/api/workspace/todos', { token: admin });
-  const order = (tasks.json.data || []).find((row) =>
-    row.title?.includes(`Raise the sales order for ${enquiry.number}`)
-  );
-  assert.ok(order, 'order confirmation has been told');
+  const holder = await heldBy(enquiry._id, 'order_confirmation');
+  assert.equal(holder?.department, 'order_confirmation', 'Sales / SO has the enquiry');
+  assert.equal(holder.kind, 'po_so');
 });
 
 /* --------------------------------- Losing one --------------------------------- */

@@ -1,4 +1,5 @@
 import Todo from '../models/Todo.js';
+import Enquiry from '../models/Enquiry.js';
 import StickyNote from '../models/StickyNote.js';
 import Announcement from '../models/Announcement.js';
 import Customer from '../models/Customer.js';
@@ -463,6 +464,8 @@ export const escalateTodo = asyncHandler(async (req, res) => {
 
   await todo.save();
   /* A department task passed on tells its new department, the same as one sent fresh. */
+  /* Passing on the task that holds an enquiry passes the enquiry: the new department has it. */
+  if (todo.holds && todo.enquiry) await Enquiry.updateOne({ _id: todo.enquiry }, { $set: { heldBy: to } });
   if (todo.kind) await publish(EVENTS.HANDOFF_SENT, { task: todo, by: req.user });
   res.json({ success: true, data: await todo.populate(TODO_POPULATE) });
 });

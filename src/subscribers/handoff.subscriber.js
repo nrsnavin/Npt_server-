@@ -3,7 +3,7 @@ import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
 import { env } from '../config/env.js';
 import { EVENTS, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
-import { describeHandoff } from '../services/handoff.service.js';
+import { describeHandoff, holderOf, moveEnquiry } from '../services/handoff.service.js';
 import { sendPush } from '../services/push.service.js';
 import { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } from '../providers/whatsapp.js';
 
@@ -60,6 +60,45 @@ async function aboutOf(task) {
   return [enquiry?.number, customer?.name].filter(Boolean).join(' · ');
 }
 
+/** "Due today", or the day it is due — marketing's tasks are due on the follow-up date. */
+function dueWords(due) {
+  if (!due) return 'Due today';
+  const day = (date) => new Date(date).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+  return day(due) === day(new Date()) ? 'Due today' : `Due ${day(due)}`;
+}
+
+/*
+ * The status changes that hand the enquiry to another department, and the button they press
+ * on marketing's behalf. Only while the enquiry is still in the first four stages — a late
+ * "won" must not pull a job back out of production.
+ */
+const SALES_STAGES = ['enquiry', 'sample', 'pricing_quote', 'po_so'];
+
+const STATUS_MOVES = {
+  sample_required: 'sample_request',
+  pricing_required: 'create_quotation',
+  negotiation: 'price_negotiation',
+  won: 'po_so',
+};
+
+/** Moves the enquiry on someone's behalf, unless the department it should go to has it already. */
+async function moveOnBehalf(enquiryId, kind, { by, status } = {}) {
+  const enquiry = await Enquiry.findById(enquiryId?._id || enquiryId).populate('customer', 'code name');
+  if (!enquiry) return;
+  /* Only from the first four stages: past PO & SO, departments move it themselves. */
+  if (!SALES_STAGES.includes(enquiry.stage)) return;
+  const holder = await holderOf(enquiry._id);
+  if (holder?.kind === kind) return;
+  const user = by?._id ? (by.name ? by : await User.findById(by._id).select('name department role')) : undefined;
+  try {
+    await moveEnquiry({ enquiry, kind, user: user || undefined, system: true, openRecords: false, note: status ? `Status: ${status.replace(/_/g, ' ')}` : undefined });
+  } catch (error) {
+    /* Two of these racing (the status and the sample it raised): the other one moved it. */
+    if (error?.code === 11000 || error?.statusCode === 409) return;
+    throw error;
+  }
+}
+
 let registered = [];
 
 export function registerHandoffSubscribers() {
@@ -84,7 +123,7 @@ export function registerHandoffSubscribers() {
       const { label, department } = describeHandoff(task);
       await tell(recipients, {
         headline: `New task for ${task.user ? 'you' : department}: ${label}`,
-        details: `${await aboutOf(task)}${by?.name ? ` — from ${by.name}` : ''}. Due today.${task.notes ? ` "${task.notes.slice(0, 200)}"` : ''}`,
+        details: `${await aboutOf(task)}${by?.name ? ` — from ${by.name}` : ''}. ${dueWords(task.dueDate)}.${task.notes ? ` "${task.notes.slice(0, 200)}"` : ''}`,
         link: task.link || '/today',
       });
     })
@@ -132,4 +171,43 @@ export function registerHandoffSubscribers() {
 
   subscribe(EVENTS.HANDOFF_DONE, backToSender('done'));
   subscribe(EVENTS.HANDOFF_RETURNED, backToSender('sent back'));
+
+  /* An update from the department that has it: the marketing person who owns the buyer sees it. */
+  subscribe(
+    EVENTS.HANDOFF_UPDATED,
+    safely('tell the owner about an update', async ({ task, by }) => {
+      const enquiry = task?.enquiry ? await Enquiry.findById(task.enquiry).select('assignedTo') : null;
+      if (!enquiry?.assignedTo || String(enquiry.assignedTo) === String(by?._id)) return;
+      const update = task.updates?.at(-1);
+      const { label, department } = describeHandoff(task);
+      await sendPush([enquiry.assignedTo], {
+        title: `${department}: ${label}`,
+        body: `${await aboutOf(task)} — ${by?.name ? `${by.name}: ` : ''}${update?.note?.slice(0, 200) || 'updated'}`,
+        link: task.link || '/today',
+      }).catch((error) => console.error(`[handoff] push not sent: ${error.message}`));
+    })
+  );
+
+  /* The status changes that hand work on move the enquiry through the same door as the buttons. */
+  subscribe(
+    EVENTS.ENQUIRY_STATUS_CHANGED,
+    safely('move with the status', async ({ enquiry, to, by }) => {
+      const kind = STATUS_MOVES[to];
+      if (kind) await moveOnBehalf(enquiry, kind, { by, status: to });
+    })
+  );
+
+  /* A sample or a costing raised on an enquiry is that department taking it over. */
+  subscribe(
+    EVENTS.SAMPLE_CREATED,
+    safely('sampling has the enquiry', async ({ sample }) => {
+      if (sample?.enquiry) await moveOnBehalf(sample.enquiry, 'sample_request', { by: sample.requestedBy ? { _id: sample.requestedBy } : undefined });
+    })
+  );
+  subscribe(
+    EVENTS.PRICING_REQUESTED,
+    safely('quotation has the enquiry', async ({ pricing, by }) => {
+      if (pricing?.enquiry) await moveOnBehalf(pricing.enquiry, 'create_quotation', { by });
+    })
+  );
 }

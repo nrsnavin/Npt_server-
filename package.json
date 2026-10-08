@@ -33,7 +33,8 @@
     "doctor:consistency": "node scripts/doctor-consistency.js",
     "migrate:uploads-to-s3": "node scripts/migrate-uploads-to-s3.js",
     "delete:leads": "node scripts/delete-leads.js",
-    "migrate:enquiry-stages": "node scripts/migrate-enquiry-stages.js"
+    "migrate:enquiry-stages": "node scripts/migrate-enquiry-stages.js",
+    "migrate:enquiry-holders": "node scripts/migrate-enquiry-holders.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",

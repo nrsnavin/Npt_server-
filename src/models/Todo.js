@@ -74,14 +74,32 @@ const todoSchema = new mongoose.Schema(
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
     kind: { type: String, enum: HANDOFF_KEYS },
     fromDepartment: { type: String, enum: DEPARTMENT_KEYS },
-    /** Done (with what they recorded) or sent back (with why), by whom and when. */
+    /*
+     * The enquiry is this department's task right now [services/handoff.service.js]. One open
+     * holding task per enquiry, ever — the enquiry is at one stage and one department has it.
+     * Moving the enquiry on closes this one and opens the next department's.
+     */
+    holds: { type: Boolean, default: undefined },
+    /** Done (with what they recorded) or sent back (with why), by whom and when, and where it went next. */
     outcome: {
-      result: { type: String, enum: ['done', 'returned'] },
+      result: { type: String, enum: ['done', 'returned', 'moved'] },
       note: { type: String, trim: true, maxlength: 2000 },
       fields: { type: Map, of: String, default: undefined },
       by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
       at: Date,
+      /** The button it was moved on with — what the next department was asked. */
+      next: { type: String, enum: HANDOFF_KEYS },
       _id: false,
+    },
+    /** Progress said along the way without moving the enquiry — pending quantity, a call made. */
+    updates: {
+      type: [new mongoose.Schema({
+        note: { type: String, trim: true, maxlength: 2000 },
+        fields: { type: Map, of: String, default: undefined },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        at: { type: Date, default: Date.now },
+      }, { _id: false })],
+      default: undefined,
     },
     /** When the late notice went out — once per task, so a late task is told about, not nagged. */
     lateNotifiedAt: Date,
@@ -185,6 +203,8 @@ todoSchema.index({ department: 1, originKey: 1 }, { sparse: true });
 /* Department dashboards and the late sweep read department tasks by department and state. */
 todoSchema.index({ kind: 1, department: 1, completed: 1, dueDate: 1 }, { partialFilterExpression: { kind: { $type: 'string' } } });
 todoSchema.index({ openKey: 1 }, { unique: true, partialFilterExpression: { openKey: { $type: 'string' } } });
+/* One department holds an enquiry at a time: a second open holding task is refused by the database. */
+todoSchema.index({ enquiry: 1 }, { unique: true, name: 'one_holder_per_enquiry', partialFilterExpression: { holds: true, completed: false } });
 
 /** The key an open automated task holds; completed ones hold none, so the job can be raised again. */
 export const openKeyFor = ({ user, department, originKey }) =>

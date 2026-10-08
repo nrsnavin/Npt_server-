@@ -574,33 +574,53 @@ Pricing / Quote, PO & SO, Production / EDD, Mould, Team Payment Follow-up, Invoi
 Copy, Quality, A/C Clarify, My Payment Follow-up — plus Closed (`src/config/enquiryStages.js`).
 They are not a fixed order: the stage is wherever the last task sent it.
 
-The buttons on the enquiry (`src/config/handoffs.js` — Sample Request, Create Quotation, Ask EDD,
-Mould Issue, LR Copy, …) send a **task** to a department (`src/services/handoff.service.js`):
+**Everything is an enquiry.** The enquiry *is* the task: at any moment exactly one department
+holds it — the one that owns the stage it is at — and that department's queue is the enquiries
+it holds (`src/services/handoff.service.js`; the database refuses a second open holding task).
 
-- It lands on that department's queue, **due by the end of the day** (India time), and anyone
-  in the department may pick it up. The department is told on WhatsApp and in the app.
-- **Done** — they say what was done and fill in the details the button asks for; the sender
-  gets a task back for the next step, and a WhatsApp message.
-- **Send back** — with a reason; the sender gets that too.
-- **Change date** — with a reason, kept on the task. **Hand it on** moves it to another
-  department, with a reason, and tells them.
-- Any department sent a task about an enquiry may send tasks on it to others (production
-  raising a quality issue); marketing sends on its own enquiries. **Task Closed** ends the
-  enquiry and every task still open on it. **Photos Sent** only records.
+- A new enquiry is **marketing's** task from the moment it exists, held by the marketing person
+  who owns the buyer and due on the enquiry's follow-up date (moving the date moves the task).
+- The buttons on the enquiry (`src/config/handoffs.js` — Sample Request, Create Quotation, Ask
+  EDD, Mould Issue, LR Copy, Back to Marketing, …) **move it on**: the department that had it is
+  done with it, and the button's department has it now, at the button's stage, **due by the end
+  of the day** (India time). Anyone in that department may pick it up; they are told on
+  WhatsApp and in the app. Sample Request also raises the sample, Create Quotation the costing
+  sheet, so the department finds its work waiting.
+- Only whoever holds it, the marketing person who owns the buyer, or Admin may move it. Another
+  department that worked on it before can still read it and send side requests.
+- **Update** — the holding department says how it is going (pending quantity, a call made)
+  without moving it; the marketing person is told in the app.
+- **Done** — they say what was done, fill in the details the button asks for, and choose
+  **where it goes next**; that department has it from there.
+- **Send back** — with a reason; it goes back to whoever had it before, at their stage.
+- **Change date** — with a reason, kept on the task. **Hand it on** passes the task, and the
+  enquiry with it, to another department.
+- Status changes that hand work on move it through the same door: sample required → Sampling,
+  pricing required → Quotation, negotiation → Price Negotiation, won → Sales / SO (only while
+  it is still in the first four stages). Raising a sample or a costing on it does the same.
+- **Request PRT Visit** asks Admin without moving it; **Photos Sent** only records; **Task
+  Closed** ends the enquiry and every task still open on it.
 
-**The same ask twice is one task**: a button whose task is still open on that enquiry says who has
-it rather than raising a copy. **Late tasks** — past the end of the day they were due — are told
-about once, by WhatsApp and the app, to the department, the sender and Admin (a sweep every five
-minutes, `runLateTaskSweep`).
+Nothing is raised without an enquiry: a sample, costing sheet, quotation or sales order is created
+only on one, for its buyer, and never on a closed enquiry (`src/services/enquiryLink.service.js`,
+enforced again by the models). Dispatches, payments, quality checks and order queries hang off
+the sales order, so they are on the enquiry too.
+
+**Late tasks** — past the end of the day they were due — are told about once, by WhatsApp and
+the app, to the department, the sender and Admin (a sweep every five minutes,
+`runLateTaskSweep`).
 
 **Department dashboards** (`GET /departments/:key/dashboard`, `mine` for your own): late, due
 today, waiting to be picked up, done this week, sent back, on-time percentage and average time to
-done over 30 days; the queue, late first; what the department is waiting on from others and what
-came back this week. Admin also has `GET /departments/overview`, all ten side by side.
+done over 30 days; the queue, late first; the enquiries at the department's stages; what it is
+waiting on from others and what came back this week. Admin also has `GET /departments/overview`,
+all ten side by side.
 
-The first four stages also follow the sales status (a status move to *pricing required* puts it
-at Pricing / Quote) while the enquiry is still in them. Existing enquiries get their stage from
-their status with `npm run migrate:enquiry-stages -- --confirm`.
+**Deploying this** (in order, after a backup): `npm run migrate:enquiry-stages -- --confirm`
+gives every existing enquiry its stage from its status; then `npm run migrate:enquiry-holders --
+--confirm` gives every open enquiry its holding task for that stage (an open task already sent
+with that stage's button is kept as it). Both show what they would do without `--confirm`, and
+both are safe to run again.
 
 Stage changes are recorded on the enquiry and published on an internal event bus
 (`src/services/events.service.js`), which is how the modules hand work to each other without

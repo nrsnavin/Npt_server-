@@ -4,11 +4,11 @@ import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { transactional } from '../utils/transaction.js';
 import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
-import { HANDOFFS } from '../config/handoffs.js';
+import { HANDOFFS, movesEnquiry } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
-  allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesAtStages, mayHandOff,
-  rescheduleHandoff, returnHandoff, sendHandoff,
+  allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesAtStages, mayHandOff, mayMove,
+  rescheduleHandoff, returnHandoff, sendHandoff, updateHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -35,7 +35,8 @@ export const handoffCatalogue = asyncHandler(async (req, res) => {
     success: true,
     data: {
       stages: [...STAGES, { key: CLOSED_STAGE, number: null, label: 'Closed', department: null }],
-      buttons: HANDOFFS,
+      /* `moves` says whether a button hands the enquiry over; `hidden` ones are never drawn. */
+      buttons: HANDOFFS.map((button) => ({ ...button, moves: movesEnquiry(button) })),
       departments: DEPARTMENTS.map(({ key, label }) => ({ key, label })),
     },
   });
@@ -50,7 +51,7 @@ async function enquiryFor(req) {
 
 export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) => {
   const enquiry = await enquiryFor(req);
-  const task = await sendHandoff({ enquiry, kind: req.body.kind, note: req.body.note, user: req.user });
+  const task = await sendHandoff({ enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, user: req.user });
   res.status(201).json({
     success: true,
     data: { task: await task.populate(TASK_POPULATE), stage: enquiry.stage },
@@ -64,11 +65,15 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     .populate(TASK_POPULATE)
     .sort({ createdAt: -1 })
     .limit(200);
+  /* Who has it now, and whether this person may move it on — the screen offers the buttons only then. */
+  const holder = tasks.find((task) => task.holds && !task.completed) || null;
   res.json({
     success: true,
     data: tasks,
     stage: enquiry.stage,
     stageHistory: enquiry.stageHistory,
+    holder,
+    mayMove: enquiry.stage !== CLOSED_STAGE && (await mayMove(req.user, enquiry, holder)),
   });
 });
 
@@ -84,6 +89,11 @@ export const handoffDone = asyncHandler(transactional(async (req, res) => {
   const task = await completeHandoff(await taskFor(req), req.user, req.body);
   await answer(res, task);
 }));
+
+export const handoffUpdate = asyncHandler(async (req, res) => {
+  const task = await updateHandoff(await taskFor(req), req.user, req.body);
+  await answer(res, task);
+});
 
 export const handoffSendBack = asyncHandler(transactional(async (req, res) => {
   const task = await returnHandoff(await taskFor(req), req.user, req.body);

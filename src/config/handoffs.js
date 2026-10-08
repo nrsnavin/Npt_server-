@@ -7,6 +7,10 @@
  *                marketing person who holds the enquiry, personally — "My" payment follow-up.
  *                Null for a button that records something rather than asking anybody.
  *   stage        where the enquiry is once it is sent [config/enquiryStages.js]; null leaves it.
+ *                A button with both a department and a stage *moves* the enquiry: that
+ *                department now holds it, and the one that had it is done with it. A button
+ *                with a department and no stage is a side request — the enquiry stays put.
+ *   hidden       not offered as a button (the task every new enquiry starts with).
  *   records      what the department fills in when it is done, beside the note — all optional,
  *                because the note is what is required and these are the details worth keeping.
  *   opens        the screen where the work itself is done, when there is one.
@@ -16,7 +20,7 @@
  */
 export const HANDOFFS = [
   {
-    key: 'photos_sent', label: 'Photos Sent', department: null, stage: 'sample',
+    key: 'photos_sent', label: 'Photos Sent', department: null, stage: null,
     hint: 'Record that sample photos went to the buyer',
   },
   {
@@ -105,6 +109,14 @@ export const HANDOFFS = [
     records: [{ key: 'promisedDate', label: 'Promised payment date', type: 'date' }],
   },
   {
+    key: 'back_to_marketing', label: 'Back to Marketing', department: 'owner', stage: 'enquiry',
+    hint: 'Hand it back to the marketing person who holds the buyer',
+  },
+  {
+    key: 'new_enquiry', label: 'New enquiry', department: 'owner', stage: 'enquiry', hidden: true,
+    hint: 'Follow up with the buyer and send it on',
+  },
+  {
     key: 'task_closed', label: 'Task Closed', department: null, stage: 'closed',
     hint: 'Everything on this enquiry is done',
   },
@@ -112,3 +124,28 @@ export const HANDOFFS = [
 
 export const HANDOFF_KEYS = HANDOFFS.map((handoff) => handoff.key);
 export const findHandoff = (key) => HANDOFFS.find((handoff) => handoff.key === key);
+
+/** Moves the enquiry: a department takes it over at a stage. */
+export const movesEnquiry = (handoff) => Boolean(handoff?.department && handoff?.stage && handoff.stage !== 'closed');
+
+/** The buttons a department may move an enquiry on with — what "where next" offers. */
+export const NEXT_STEPS = HANDOFFS.filter((handoff) => movesEnquiry(handoff) && !handoff.hidden);
+
+/**
+ * The task an enquiry already at a stage is held under, for enquiries that got there before
+ * there were holding tasks (and for the status changes that move it): the stage's own button.
+ */
+export const KIND_FOR_STAGE = {
+  enquiry: 'new_enquiry',
+  sample: 'sample_request',
+  pricing_quote: 'create_quotation',
+  po_so: 'po_so',
+  production_edd: 'ask_edd',
+  mould: 'mould_issue',
+  team_payment_followup: 'team_payment_followup',
+  invoice_dispatch: 'invoice_dispatch',
+  lr_copy: 'lr_copy',
+  quality: 'quality_issue',
+  ac_clarify: 'gst_invoice_audit',
+  my_payment_followup: 'my_payment_followup',
+};

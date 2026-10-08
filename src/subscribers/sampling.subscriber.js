@@ -86,30 +86,6 @@ async function advanceEnquiry(enquiryId, to, note) {
 }
 
 /**
- * The sample team's queue.
- *
- * A request is handed to the team rather than to a person: assigning it is the team's own
- * call, and picking a name here would guess at who is free. Everyone holding write on
- * `samples` gets the task, which is how a shared queue behaves when there is no queue view
- * open on someone's screen.
- */
-async function sampleTeam() {
-  const holders = await User.find({
-    isActive: { $ne: false },
-    moduleAccess: { $elemMatch: { module: 'samples', level: 'write' } },
-  }).select('_id');
-
-  if (holders.length) return holders;
-
-  /*
-   * Nobody holds the grant yet, so the request would land nowhere. Admins get it instead —
-   * but only as a fallback: being able to do everything is not a reason to be handed the
-   * bench's queue every time an enquiry needs a sample.
-   */
-  return User.find({ isActive: { $ne: false }, role: 'admin' }).select('_id');
-}
-
-/**
  * Registration is idempotent: calling it twice replaces the handlers rather than doubling
  * them, so a test that clears the bus between suites can register again without every
  * handover firing twice.
@@ -136,45 +112,12 @@ export function registerSamplingSubscribers() {
     })
   );
 
-  subscribe(
-    EVENTS.SAMPLE_CREATED,
-    safely('queue the bench', async ({ sample, enquiry }) => {
-      const team = await sampleTeam();
-      const origin = enquiry ? `for ${enquiry.number}` : sample.standaloneReason || 'raised by hand';
-
-      await Promise.all(
-        team.map((member) =>
-          raiseTask({
-            user: member._id,
-            title: `Prepare sample ${sample.number}`,
-            notes: `${sample.modelNumber || 'New development'} · ${sample.quantity} pc · ${origin}`,
-            dueDate: sample.requiredDate,
-            priority: 'high',
-            link: `/samples/${sample._id}`,
-            originKey: key(sample, 'prepare'),
-          })
-        )
-      );
-
-      /*
-       * Acknowledged back to whoever asked, so raising the request is visibly not a black
-       * hole — unless they are on the bench themselves, in which case they already hold the
-       * prepare task and a second row telling them about their own work is noise.
-       */
-      const onTheBench = team.some((member) => String(member._id) === String(sample.requestedBy));
-      if (onTheBench) return;
-
-      await raiseTask({
-        user: sample.requestedBy,
-        title: `Sample ${sample.number} is with the sample team`,
-        notes: `${enquiry ? `Raised from ${enquiry.number}. ` : ''}Due ${new Date(sample.requiredDate).toDateString()}.`,
-        dueDate: sample.requiredDate,
-        priority: 'low',
-        link: `/samples/${sample._id}`,
-        originKey: key(sample, 'acknowledged'),
-      });
-    })
-  );
+  /*
+   * A new sample used to raise "Prepare sample" for everyone on the bench, and an
+   * acknowledgement for whoever asked. The sample is raised on an enquiry, and the enquiry
+   * itself moving to Sampling is now the bench's task [subscribers/handoff.subscriber.js] —
+   * the asker sees it with Sampling on the enquiry — so neither copy is raised here.
+   */
 
   subscribe(
     EVENTS.SAMPLE_READY,

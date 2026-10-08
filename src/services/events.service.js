@@ -27,6 +27,7 @@ export const EVENTS = {
   HANDOFF_DONE: 'handoff.done',
   HANDOFF_RETURNED: 'handoff.returned',
   HANDOFF_LATE: 'handoff.late',
+  HANDOFF_UPDATED: 'handoff.updated',
   ENQUIRY_STATUS_CHANGED: 'enquiry.status_changed',
   /** Phase 2 — sampling creates a sample request from this. */
   ENQUIRY_SAMPLE_REQUIRED: 'enquiry.sample_required',
