@@ -307,3 +307,22 @@ test('paid in full with nothing left to send closes the enquiry; a balance keeps
   const closing = await Todo.findOne({ enquiry, kind: 'task_closed' });
   assert.match(closing.notes, /Paid in full — ₹7,500 received/);
 });
+
+/* ------------------------- Departments open what they work ------------------------- */
+
+test('a department without the enquiry module opens the enquiries it works, and only those', async () => {
+  const worked = await inProduction();
+  const untouched = await freshEnquiry('NH-900');
+
+  const opened = await api(`/api/enquiries/${worked}`, { as: 'siva' });
+  assert.equal(opened.status, 200, opened.json.message);
+  assert.equal(opened.json.data._id, worked);
+
+  const hidden = await api(`/api/enquiries/${untouched}`, { as: 'siva' });
+  assert.equal(hidden.status, 404, 'one Production never touched stays hidden');
+
+  const list = await api('/api/enquiries', { as: 'siva' });
+  assert.equal(list.status, 403, 'and the enquiry list itself is still marketing\'s');
+  const change = await api(`/api/enquiries/${worked}`, { method: 'PATCH', as: 'siva', body: { remarks: 'x' } });
+  assert.equal(change.status, 403, 'reading is not editing');
+});

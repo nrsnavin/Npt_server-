@@ -185,7 +185,8 @@ router.get('/dashboard/marketing', requireModule('enquiries'), marketingDashboar
 router.get('/enquiries', requireModule('enquiries'), listEnquiries);
 router.post('/enquiries', requireModule('enquiries', 'write'), validate(enquirySchema), createEnquiry);
 router.post('/enquiries/group', requireModule('enquiries', 'write'), validate(enquiryGroupSchema), createEnquiryGroup);
-router.get('/enquiries/:id', requireModule('enquiries'), getEnquiry);
+/* No module gate: a department that holds or held the enquiry may read it — checked inside. */
+router.get('/enquiries/:id', getEnquiry);
 router.patch('/enquiries/:id', requireModule('enquiries', 'write'), validate(enquiryUpdateSchema), updateEnquiry);
 router.post('/enquiries/:id/status', requireModule('enquiries', 'write'), validate(enquiryStatusSchema), setEnquiryStatus);
 /*

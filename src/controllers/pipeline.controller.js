@@ -30,7 +30,8 @@ import { applySpec, buildSpec } from '../services/registers.service.js';
 import { hasRequirement } from '../models/requirement.schema.js';
 import { transactional } from '../utils/transaction.js';
 import { STAGE_KEYS } from '../config/enquiryStages.js';
-import { ensureHolder } from '../services/handoff.service.js';
+import { ensureHolder, mayHandOff } from '../services/handoff.service.js';
+import { canRead } from '../services/access.service.js';
 
 /**
  * How many rows an export may take.
@@ -966,7 +967,15 @@ export const getEnquiry = asyncHandler(async (req, res) => {
     .populate('requirement.clipRef', 'name code colour kind')
     .populate('requirement.printRef', 'name code kind');
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
-  if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+  /*
+   * Read by whoever may read enquiries (marketing, their own), and by a department that holds or
+   * held it — Production, Quality, Dispatch and Accounts work an enquiry without the enquiry
+   * module, and its task links here. Assigned work only: one they never touched stays hidden.
+   */
+  const mayRead = canRead(req.user, 'enquiries')
+    ? ownsRecord(req.user, enquiry)
+    : await mayHandOff(req.user, enquiry);
+  if (!mayRead) throw ApiError.notFound('Enquiry not found');
   res.json({ success: true, data: enquiry });
 });
 

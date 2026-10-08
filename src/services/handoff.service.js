@@ -308,7 +308,7 @@ export async function moveEnquiry({ enquiry, kind, note, fields, user, system = 
         ...(!current.user && user && closedAsDone ? { user: user._id } : {}),
         outcome: {
           result: closedAsDone ? 'done' : 'moved',
-          note: text || `Moved on: ${handoff.label}`,
+          note: text || 'Moved on',
           ...(Object.keys(kept).length ? { fields: kept } : {}),
           ...(user ? { by: user._id } : {}),
           at: now,
