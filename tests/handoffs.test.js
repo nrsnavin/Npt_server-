@@ -50,8 +50,10 @@ const signIn = async (email, password) => (await api('/api/auth/login', { method
 const me = async (token) => (await api('/api/auth/me', { token })).json.data.id;
 const send = (kind, note, token = nandhini, id = enquiryId) => api(`/api/enquiries/${id}/handoffs`, { method: 'POST', token, body: { kind, ...(note ? { note } : {}) } });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
+/* Up to ten seconds for the outbox to deliver — returns as soon as it has, so it costs nothing
+ * when the machine is quick, and a cold first run no longer reads as a missing notice. */
 async function until(check) {
-  for (let i = 0; i < 40 && !(await check()); i += 1) await settle();
+  for (let i = 0; i < 160 && !(await check()); i += 1) await settle();
 }
 
 test.before(async () => {
@@ -349,9 +351,14 @@ test('a late task is told about once — to the department, the sender and Admin
   sent.length = 0;
   const first = await runLateTaskSweep();
   assert.ok(first.some((task) => String(task._id) === id));
-  await until(() => sent.some((line) => line.includes(PHONES.siva)) && sent.some((line) => line.includes(PHONES.nandhini)));
-  assert.match(sent.find((line) => line.includes(PHONES.siva)), /Late: Ask EDD with Production/);
-  assert.ok(sent.some((line) => line.includes(PHONES.nandhini)), 'the sender is told');
+  /*
+   * Looking for the late notice itself: the "New task" notice for this same task travels the
+   * outbox too and can land after `sent` was cleared, so "the first line to Siva" may be that one.
+   */
+  const late = (phone) => sent.find((line) => line.includes(phone) && line.includes('Late: Ask EDD'));
+  await until(() => late(PHONES.siva) && late(PHONES.nandhini));
+  assert.match(late(PHONES.siva) || '', /Late: Ask EDD with Production/);
+  assert.ok(late(PHONES.nandhini), 'the sender is told');
   assert.ok((await Todo.findById(id)).lateNotifiedAt);
 
   const again = await runLateTaskSweep();
@@ -379,6 +386,44 @@ test('a department dashboard: its numbers, its queue, and what it is waiting on 
   assert.ok(sampled.json.data.figures.doneThisWeek >= 1, 'the sample request done earlier');
   assert.ok(sampled.json.data.figures.averageHoursToDone !== null);
   assert.ok(sampled.json.data.figures.onTimePercent !== null);
+});
+
+test('a department sees the enquiries at its own stages; the enquiry list filters by stage', async () => {
+  const customer = await api('/api/customers', {
+    method: 'POST', token: priya, body: { name: 'Stage Knits', mobile: '9876512399', assignedTo: await me(priya) },
+  });
+  const raise = async (token) => (await api('/api/enquiries', {
+    method: 'POST', token, body: { customer: customer.json.data._id, requirement: { modelNumber: 'NH-500' } },
+  })).json.data._id;
+  const atPo = await raise(admin);
+  const priyas = await raise(priya);
+  await Enquiry.updateOne({ _id: atPo }, { $set: { stage: 'po_so' } });
+
+  const sales = await api('/api/departments/order_confirmation/dashboard', { token: admin });
+  assert.equal(sales.status, 200, sales.json.message);
+  assert.deepEqual(sales.json.data.atStages.map((stage) => stage.key), ['po_so']);
+  assert.equal(sales.json.data.atStages[0].count, await Enquiry.countDocuments({ stage: 'po_so' }));
+
+  /* Marketing counts its own enquiries only — Priya's is not Nandhini's to see. */
+  const marketing = await api('/api/departments/mine/dashboard', { token: nandhini });
+  assert.deepEqual(marketing.json.data.atStages.map((stage) => stage.key), ['enquiry', 'my_payment_followup']);
+  const nandhiniId = await me(nandhini);
+  assert.equal(
+    marketing.json.data.atStages[0].count,
+    await Enquiry.countDocuments({ stage: 'enquiry', assignedTo: nandhiniId }),
+  );
+  assert.ok(await Enquiry.exists({ _id: priyas, stage: 'enquiry' }));
+
+  /* Production cannot open enquiries, so it is not shown any. */
+  const production = await api('/api/departments/mine/dashboard', { token: siva });
+  assert.deepEqual(production.json.data.atStages, []);
+
+  const listed = await api('/api/enquiries?stage=po_so&limit=100', { token: admin });
+  assert.ok(listed.json.data.length >= 1);
+  assert.ok(listed.json.data.every((row) => row.stage === 'po_so'));
+  assert.ok(listed.json.data.some((row) => row._id === atPo));
+  const unknown = await api('/api/enquiries?stage=nonsense&limit=100', { token: admin });
+  assert.ok(unknown.json.data.length > listed.json.data.length, 'an unknown stage is ignored, not matched');
 });
 
 test('Admin sees every department side by side; nobody else does', async () => {

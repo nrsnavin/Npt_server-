@@ -1,5 +1,6 @@
 import Todo from '../models/Todo.js';
-import { CLOSED_STAGE, stageLabel } from '../config/enquiryStages.js';
+import Enquiry from '../models/Enquiry.js';
+import { CLOSED_STAGE, STAGES, stageLabel } from '../config/enquiryStages.js';
 import { findDepartment } from '../config/modules.js';
 import { findHandoff } from '../config/handoffs.js';
 import { canRead } from './access.service.js';
@@ -386,6 +387,24 @@ export async function departmentDashboard(department, { now = new Date() } = {})
   ]);
 
   return { figures: numbers, queue, recentlyDone, waitingOnOthers, cameBack };
+}
+
+/**
+ * How many enquiries sit at each of a department's stages right now — Sales / SO's "approved
+ * enquiries" are the ones at PO & SO, Dispatch's are at Invoice & Dispatch and LR Copy.
+ * `scope` is the viewer's ownership filter, so a marketing person counts only their own.
+ */
+export async function enquiriesAtStages(department, scope = {}) {
+  const stages = STAGES.filter((stage) => stage.department === department);
+  if (!stages.length) return [];
+
+  const rows = await Enquiry.aggregate([
+    { $match: { ...scope, stage: { $in: stages.map((stage) => stage.key) } } },
+    { $group: { _id: '$stage', count: { $sum: 1 } } },
+  ]);
+  const counts = Object.fromEntries(rows.map((row) => [row._id, row.count]));
+
+  return stages.map(({ key, number, label }) => ({ key, number, label, count: counts[key] || 0 }));
 }
 
 /** Every department's figures side by side — Admin's view of where work is stuck. */

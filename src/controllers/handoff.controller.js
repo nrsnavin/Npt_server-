@@ -7,9 +7,11 @@ import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
 import { HANDOFFS } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
-  allDepartmentFigures, completeHandoff, departmentDashboard, mayHandOff, rescheduleHandoff,
-  returnHandoff, sendHandoff,
+  allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesAtStages, mayHandOff,
+  rescheduleHandoff, returnHandoff, sendHandoff,
 } from '../services/handoff.service.js';
+import { canRead } from '../services/access.service.js';
+import { ownershipFilter } from '../services/ownership.service.js';
 
 /**
  * Department tasks about an enquiry [config/handoffs.js, services/handoff.service.js]: the
@@ -113,5 +115,10 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
   if (key !== req.user.department && !seesEveryDepartment(req.user)) {
     throw ApiError.forbidden('That is another department\'s dashboard');
   }
-  res.json({ success: true, data: await departmentDashboard(key) });
+  /* The enquiries at this department's stages — only for someone who may open enquiries. */
+  const [dashboard, atStages] = await Promise.all([
+    departmentDashboard(key),
+    canRead(req.user, 'enquiries') ? enquiriesAtStages(key, ownershipFilter(req.user)) : [],
+  ]);
+  res.json({ success: true, data: { ...dashboard, atStages } });
 });

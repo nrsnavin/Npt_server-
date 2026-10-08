@@ -29,6 +29,7 @@ import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { applySpec, buildSpec } from '../services/registers.service.js';
 import { hasRequirement } from '../models/requirement.schema.js';
 import { transactional } from '../utils/transaction.js';
+import { STAGE_KEYS } from '../config/enquiryStages.js';
 
 /**
  * How many rows an export may take.
@@ -824,6 +825,14 @@ async function enquiryFilters(req, { withStatus = true } = {}) {
   /* Where it came from — the IndiaMART screen links to what its feed has raised. */
   if (req.query.source) filter.source = String(req.query.source);
   if (req.query.groupRef) filter.groupRef = req.query.groupRef;
+  /*
+   * Where it sits on the plant's twelve stages — what a department's workspace links to
+   * ("the enquiries at PO & SO"). Unknown keys are dropped rather than matching nothing.
+   */
+  if (req.query.stage) {
+    const stages = String(req.query.stage).split(',').filter((key) => STAGE_KEYS.includes(key));
+    if (stages.length) filter.stage = { $in: stages };
+  }
 
   if (withStatus) {
     /*
