@@ -1,6 +1,7 @@
 import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
+import { FOLLOW_UP_MODES, FOLLOW_UP_STATUS_KEYS } from '../config/paymentFollowUp.js';
 
 /**
  * Money owed, and the chase for it [BLUEPRINT §20, §25].
@@ -103,6 +104,15 @@ const followUpSchema = new mongoose.Schema(
     note: { type: String, trim: true, maxlength: 1000, required: true },
     promisedDate: Date,
     promisedAmount: { type: Number, min: 0 },
+    /* Role requirements §10 — what Accounts keeps on every call [config/paymentFollowUp.js]. */
+    mode: { type: String, enum: FOLLOW_UP_MODES },
+    status: { type: String, enum: FOLLOW_UP_STATUS_KEYS },
+    /** The date they committed to (a cheque date, a payment run) — distinct from a promise. */
+    commitmentDate: Date,
+    /** When they asked to be rung back. */
+    callbackDate: Date,
+    /** When we will chase next, whatever they said. */
+    nextFollowUpDate: Date,
   },
   { _id: true, timestamps: false }
 );
@@ -147,6 +157,18 @@ const receivableSchema = new mongoose.Schema(
 
     receipts: { type: [receiptSchema], default: () => [] },
     followUps: { type: [followUpSchema], default: () => [] },
+    /** Who to speak to about this money — the payment contact (role requirements §10). */
+    paymentContact: {
+      name: { type: String, trim: true, maxlength: 120 },
+      phone: { type: String, trim: true, maxlength: 40 },
+      email: { type: String, trim: true, lowercase: true, maxlength: 200 },
+      _id: false,
+    },
+    /**
+     * When it is to be chased next: the latest call's next follow-up (or callback) date, kept
+     * here so the list of calls due today is a query rather than a walk through every call.
+     */
+    nextFollowUpDate: { type: Date, index: true },
 
     /**
      * Only ever `disputed` or `on_hold` — everything else is arithmetic, see `state` below.

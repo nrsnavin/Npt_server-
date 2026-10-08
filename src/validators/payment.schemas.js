@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { JUDGED_STATUSES, RECEIPT_MODES } from '../models/Receivable.js';
+import { FOLLOW_UP_MODES, FOLLOW_UP_STATUS_KEYS } from '../config/paymentFollowUp.js';
 
 /**
  * The chase, as things a person types [§20].
@@ -29,6 +30,19 @@ export const followUpSchema = z.strictObject({
    */
   promisedDate: z.coerce.date().optional(),
   promisedAmount: z.number().nonnegative().max(1e11).optional(),
+  /* Role requirements §10 [config/paymentFollowUp.js]. */
+  mode: z.enum(FOLLOW_UP_MODES).optional(),
+  status: z.enum(FOLLOW_UP_STATUS_KEYS).optional(),
+  commitmentDate: z.coerce.date().optional(),
+  callbackDate: z.coerce.date().optional(),
+  nextFollowUpDate: z.coerce.date().optional(),
+});
+
+/** Who to speak to about the money. Empty strings clear a field. */
+export const paymentContactSchema = z.strictObject({
+  name: z.string().trim().max(120).optional(),
+  phone: z.string().trim().max(40).optional(),
+  email: z.union([z.string().trim().email(), z.literal('')]).optional(),
 });
 
 export const receiptSchema = z.strictObject({

@@ -13,6 +13,8 @@ import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { raiseTask } from '../services/task.service.js';
 import { dueDateFor, orderPosition } from '../services/receivable.service.js';
 import { transactional } from '../utils/transaction.js';
+import { FOLLOW_UP_MODES, FOLLOW_UP_STATUSES } from '../config/paymentFollowUp.js';
+import { endOfDayIST } from '../services/handoff.service.js';
 
 /**
  * Payments [BLUEPRINT §20, §25].
@@ -103,6 +105,7 @@ export const listReceivables = asyncHandler(async (req, res) => {
    * ledger — the figure and the list it opened disagreed, and the figure was right.
    */
   const asked =
+    (req.query.due === 'true' && 'due') ||
     (req.query.overdue === 'true' && 'overdue') ||
     (req.query.broken === 'true' && 'broken') ||
     (req.query.open === 'true' && 'open') ||
@@ -121,8 +124,11 @@ export const listReceivables = asyncHandler(async (req, res) => {
   let total;
 
   if (asked) {
+    /* Calls due: a next follow-up or callback date that has arrived (by the end of today, India). */
+    const tonight = endOfDayIST();
     const matched =
-      asked === 'overdue' ? owing.filter((row) => row.isOverdue)
+      asked === 'due' ? owing.filter((row) => row.nextFollowUpDate && row.nextFollowUpDate <= tonight)
+        : asked === 'overdue' ? owing.filter((row) => row.isOverdue)
         : asked === 'broken' ? owing.filter((row) => row.promise?.broken)
           : owing;
 
@@ -151,6 +157,7 @@ export const listReceivables = asyncHandler(async (req, res) => {
         owing.filter((row) => row.isOverdue).reduce((sum, row) => sum + row.balance, 0)
       ),
       brokenPromises: owing.filter((row) => row.promise?.broken).length,
+      callsDue: owing.filter((row) => row.nextFollowUpDate && row.nextFollowUpDate <= endOfDayIST()).length,
     },
   });
 });
@@ -387,7 +394,15 @@ export const logFollowUp = asyncHandler(async (req, res) => {
     note: req.body.note,
     promisedDate: req.body.promisedDate,
     promisedAmount: req.body.promisedAmount,
+    mode: req.body.mode,
+    status: req.body.status,
+    commitmentDate: req.body.commitmentDate,
+    callbackDate: req.body.callbackDate,
+    nextFollowUpDate: req.body.nextFollowUpDate,
   });
+  /* When to chase next: what this call said, else the callback they asked for, else unchanged. */
+  const next = req.body.nextFollowUpDate || req.body.callbackDate;
+  if (next) receivable.nextFollowUpDate = next;
 
   await receivable.save();
 
@@ -409,9 +424,39 @@ export const logFollowUp = asyncHandler(async (req, res) => {
     }).catch(() => null);
   }
 
+  /* A callback gets a task on its day too, for whoever took the call. */
+  if (req.body.callbackDate) {
+    await raiseTask({
+      user: req.user._id,
+      title: `Call back ${receivable.customer?.name || 'the customer'} about payment`,
+      notes: `${receivable.invoice?.number || receivable.number}${req.body.spokeTo ? ` · ask for ${req.body.spokeTo}` : ''}`,
+      dueDate: new Date(req.body.callbackDate),
+      link: `/payments/${receivable._id}`,
+      originKey: `payment-callback:${receivable._id}:${new Date(req.body.callbackDate).toISOString().slice(0, 10)}`,
+    }).catch(() => null);
+  }
+
   await receivable.populate(POPULATE);
   res.status(201).json({ success: true, data: receivable });
 });
+
+/** The payment contact: who to speak to about this money. Accounts keeps it. */
+export const setPaymentContact = asyncHandler(async (req, res) => {
+  const receivable = await readable(req.params.id, req.user);
+  const contact = { ...(receivable.paymentContact?.toObject?.() || receivable.paymentContact || {}) };
+  for (const key of ['name', 'phone', 'email']) {
+    if (req.body[key] !== undefined) contact[key] = req.body[key] || undefined;
+  }
+  receivable.paymentContact = contact;
+  await receivable.save();
+  await receivable.populate(POPULATE);
+  res.json({ success: true, data: receivable });
+});
+
+/** The statuses and ways of reaching a buyer, so the screen offers exactly the server's list. */
+export const followUpOptions = (req, res) => {
+  res.json({ success: true, data: { statuses: FOLLOW_UP_STATUSES, modes: FOLLOW_UP_MODES } });
+};
 
 /**
  * Money in — accounts only, and that is not a status distinction.

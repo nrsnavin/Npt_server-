@@ -343,6 +343,55 @@ test('marketing can chase, and accounts cannot be the only one who does', async 
   assert.ok(reminder, 'no reminder for the promised date');
 });
 
+test('Accounts records the status (TPCF and the rest), the commitment, a callback and when to chase next', async () => {
+  const { order } = await shipped({ value: 60000, quantity: 8000 });
+  const receivable = (await owedOn(order._id))[0];
+
+  const options = await api('/api/payments/follow-up-options', { token: kiran });
+  assert.equal(options.status, 200);
+  assert.ok(options.json.data.statuses.some((row) => row.key === 'tpcf' && row.label === 'TPCF'));
+  assert.deepEqual(options.json.data.modes, ['call', 'whatsapp', 'email', 'visit']);
+
+  const wrong = await api(`/api/payments/${receivable._id}/follow-ups`, {
+    method: 'POST', token: kiran, body: { note: 'Rang them', status: 'maybe' },
+  });
+  assert.equal(wrong.status, 400, 'a status not on the list is refused');
+
+  const logged = await api(`/api/payments/${receivable._id}/follow-ups`, {
+    method: 'POST', token: kiran,
+    body: {
+      note: 'Cheque to be dated the 15th', mode: 'call', status: 'tpcf', spokeTo: 'Mr Ravi',
+      commitmentDate: inDays(7), callbackDate: inDays(2), nextFollowUpDate: inDays(5),
+    },
+  });
+  assert.equal(logged.status, 201, logged.json.message);
+  const call = logged.json.data.followUps.at(-1);
+  assert.equal(call.status, 'tpcf');
+  assert.equal(call.mode, 'call');
+  assert.equal(call.commitmentDate.slice(0, 10), inDays(7).toISOString().slice(0, 10));
+  assert.equal(logged.json.data.nextFollowUpDate.slice(0, 10), inDays(5).toISOString().slice(0, 10), 'the receivable knows when to chase next');
+  assert.ok(await Todo.findOne({ originKey: `payment-callback:${receivable._id}:${inDays(2).toISOString().slice(0, 10)}` }), 'a reminder on the callback day');
+
+  /* Who to speak to about the money — Accounts keeps it, marketing can see it. */
+  const contact = await api(`/api/payments/${receivable._id}/contact`, {
+    method: 'PUT', token: kiran, body: { name: 'Ravi K', phone: '9876500077', email: 'ravi@scm.in' },
+  });
+  assert.equal(contact.status, 200, contact.json.message);
+  assert.equal(contact.json.data.paymentContact.name, 'Ravi K');
+  const byMarketing = await api(`/api/payments/${receivable._id}/contact`, { method: 'PUT', token: nandhini, body: { name: 'x' } });
+  assert.equal(byMarketing.status, 403);
+
+  /* Calls due: a next follow-up that has arrived puts it on the list; one ahead does not. */
+  const notYet = await api('/api/payments?due=true&limit=100', { token: kiran });
+  assert.ok(!notYet.json.data.some((row) => row._id === receivable._id));
+  await api(`/api/payments/${receivable._id}/follow-ups`, {
+    method: 'POST', token: kiran, body: { note: 'No answer', status: 'no_answer', nextFollowUpDate: inDays(0) },
+  });
+  const due = await api('/api/payments?due=true&limit=100', { token: kiran });
+  assert.ok(due.json.data.some((row) => row._id === receivable._id), 'due today is on the list');
+  assert.ok(due.json.meta.callsDue >= 1);
+});
+
 test('a promise that has gone by reads differently from one that has not', async () => {
   const { order } = await shipped({ value: 70000, quantity: 9000 });
   const receivable = (await owedOn(order._id))[0];
