@@ -6,6 +6,7 @@ import { CUSTOMER_SOURCES } from './Customer.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
 import { withConversationRef } from './conversationRef.js';
 import { ENQUIRY_NEXT_ACTION_TYPES } from '../services/enquiryActions.js';
+import { ENQUIRY_ACTIVITY_KEYS } from '../config/enquiryActivities.js';
 import {
   hasRequirement, requirementFields, requirementSchema as requirementShape,
 } from './requirement.schema.js';
@@ -276,6 +277,19 @@ const statusChangeSchema = new mongoose.Schema(
 );
 
 /**
+ * One conversation with the buyer about this enquiry — a call, a WhatsApp, an email, a visit or
+ * a meeting [config/enquiryActivities.js]. Kept on the enquiry so the next person to ring reads
+ * what was said last before they dial.
+ */
+const activitySchema = new mongoose.Schema({
+  type: { type: String, enum: ENQUIRY_ACTIVITY_KEYS, required: true },
+  spokeTo: { type: String, trim: true },
+  note: { type: String, trim: true, required: true },
+  at: { type: Date, default: Date.now },
+  by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+});
+
+/**
  * One enquiry carries one model [BLUEPRINT §3 — its fields are singular]. A buyer asking
  * about three models produces three enquiries sharing a `groupRef`, so sample and price
  * status stay answerable per model while follow-up keeps them together.
@@ -358,6 +372,11 @@ const enquirySchema = new mongoose.Schema(
      */
     nextActionType: { type: String, enum: ENQUIRY_NEXT_ACTION_TYPES },
     nextFollowUpDate: Date,
+
+    /** Calls, WhatsApps, emails, visits and meetings, oldest first. */
+    activities: { type: [activitySchema], default: () => [] },
+    /** When the buyer was last spoken to — kept so a list can sort on it without unwinding. */
+    lastActivityAt: { type: Date, index: true },
 
     estimatedValue: { type: Number, min: 0 },
     probability: { type: Number, min: 0, max: 100 },

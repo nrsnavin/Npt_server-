@@ -3,6 +3,7 @@ import { HANGER_CATEGORIES, MATERIALS } from '../models/Mould.js';
 import { CUSTOMER_TYPES, RATINGS, CUSTOMER_SOURCES } from '../models/Customer.js';
 import { ENQUIRY_STATUSES, LOST_REASONS } from '../models/Enquiry.js';
 import { ENQUIRY_ACTION_KEYS, ENQUIRY_NEXT_ACTION_TYPES } from '../services/enquiryActions.js';
+import { ENQUIRY_ACTIVITY_KEYS } from '../config/enquiryActivities.js';
 
 // The one definition, which also accepts a populated reference — see schemas.js.
 import { objectId } from './schemas.js';
@@ -234,6 +235,17 @@ export const enquiryActionSchema = z.object({
   lostReason: z.enum(LOST_REASONS).optional(),
   lostNote: z.string().optional(),
   holdReason: z.string().optional(),
+});
+
+/** A call, WhatsApp, email, visit or meeting logged on an enquiry, with the next step if it set one. */
+export const enquiryActivitySchema = z.object({
+  type: z.enum(ENQUIRY_ACTIVITY_KEYS),
+  note: z.string().trim().min(3, 'Say in a sentence what was said').max(2000),
+  spokeTo: z.string().trim().max(160).optional(),
+  at: z.coerce.date().optional(),
+  nextAction: z.string().trim().max(300).optional(),
+  nextActionType: z.enum(ENQUIRY_NEXT_ACTION_TYPES).optional(),
+  nextFollowUpDate: clearableDate,
 });
 
 /** Moving a batch of records to another owner. */

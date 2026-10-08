@@ -8,7 +8,8 @@ import {
   marketingRoster,
   enquiryOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
-  setEnquiryStatus, applyEnquiryAction, listEnquiryActions, promoteToMould, enquiryPipeline,
+  setEnquiryStatus, applyEnquiryAction, listEnquiryActions,
+  logEnquiryActivity, listEnquiryActivities, enquiryActivityTypes, promoteToMould, enquiryPipeline,
   enquiryBoard,
   exportCustomers,
   exportEnquiries,
@@ -33,7 +34,7 @@ import { validate } from '../middleware/validate.js';
 import {
   customerSchema, customerUpdateSchema,
   buyerCardConfirmSchema,
-  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema,
+  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema, enquiryActivitySchema,
   bulkReassignSchema,
 } from '../validators/pipeline.schemas.js';
 import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validators/mould.schemas.js';
@@ -182,6 +183,9 @@ router.get('/enquiries/owners', requireModule('enquiries'), enquiryOwners);
 // Marketing's own dashboard [§21]. On the enquiries grant, since that is the module it is
 // mostly built from; ownership then decides whose figures it shows.
 router.get('/dashboard/marketing', requireModule('enquiries'), marketingDashboard);
+/* Calls, WhatsApps, emails, visits and meetings across the book — marketing's Activities page. */
+router.get('/enquiries/activities', requireModule('enquiries'), listEnquiryActivities);
+router.get('/enquiries/activity-types', requireModule('enquiries'), enquiryActivityTypes);
 router.get('/enquiries', requireModule('enquiries'), listEnquiries);
 router.post('/enquiries', requireModule('enquiries', 'write'), validate(enquirySchema), createEnquiry);
 router.post('/enquiries/group', requireModule('enquiries', 'write'), validate(enquiryGroupSchema), createEnquiryGroup);
@@ -196,6 +200,8 @@ router.post('/enquiries/:id/status', requireModule('enquiries', 'write'), valida
  */
 router.get('/enquiries/:id/actions', requireModule('enquiries'), listEnquiryActions);
 router.post('/enquiries/:id/actions', requireModule('enquiries', 'write'), validate(enquiryActionSchema), applyEnquiryAction);
+/* Logging a conversation with the buyer. Moves nothing; may set the next step. */
+router.post('/enquiries/:id/activities', requireModule('enquiries', 'write'), validate(enquiryActivitySchema), logEnquiryActivity);
 /*
  * A developed enquiry becoming a tool on the register. Both grants, because it writes to both
  * registers — and the mould half is production's, which is the point: cutting a tool is the

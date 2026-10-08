@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { customerSummaries } from '../services/customerSummary.service.js';
 import { customerMap } from '../services/customerMap.service.js';
 import Mould, { mouldWithPhoto } from '../models/Mould.js';
@@ -32,6 +33,7 @@ import { transactional } from '../utils/transaction.js';
 import { STAGE_KEYS } from '../config/enquiryStages.js';
 import { ensureHolder, mayHandOff } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
+import { ENQUIRY_ACTIVITY_KEYS, ENQUIRY_ACTIVITY_TYPES } from '../config/enquiryActivities.js';
 
 /**
  * How many rows an export may take.
@@ -895,6 +897,7 @@ export const listEnquiries = asyncHandler(async (req, res) => {
 
   const [data, total, stages] = await Promise.all([
     Enquiry.find(filter)
+      .select('-activities')
       .populate('customer', 'code name')
       .populate('assignedTo', 'name')
       .populate(mouldWithPhoto())
@@ -965,7 +968,8 @@ export const getEnquiry = asyncHandler(async (req, res) => {
     .populate('requirement.materialRef', 'name code type colour')
     .populate('requirement.hookRef', 'name code colour kind')
     .populate('requirement.clipRef', 'name code colour kind')
-    .populate('requirement.printRef', 'name code kind');
+    .populate('requirement.printRef', 'name code kind')
+    .populate('activities.by', 'name');
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   /*
    * Read by whoever may read enquiries (marketing, their own), and by a department that holds or
@@ -1335,6 +1339,129 @@ export const applyEnquiryAction = asyncHandler(async (req, res) => {
 
   res.json({ success: true, data: enquiry, did: recipe.label });
 });
+
+/**
+ * A call, WhatsApp, email, visit or meeting, logged on the enquiry [role requirements §2].
+ *
+ * Moves nothing: the stage belongs to whichever department holds the enquiry, and a phone call
+ * is not a hand-over. What it may do is set the next step — "rang, he wants the price on
+ * Thursday" is both what was said and when to ring again, and making that two forms is how the
+ * second half never gets typed. A closed enquiry can still be logged against (a lost buyer who
+ * rings back is worth writing down) but gets no next step until it is reopened.
+ */
+export const logEnquiryActivity = asyncHandler(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id);
+  if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+
+  const { type, note, spokeTo, at, nextAction, nextActionType, nextFollowUpDate } = req.body;
+  const when = at || new Date();
+  /* A few minutes' grace for a phone clock ahead of the server's. */
+  if (when.getTime() > Date.now() + 10 * 60 * 1000) {
+    throw ApiError.badRequest('A call that has not happened yet is a follow-up date, not a log entry');
+  }
+
+  const settingNext = Boolean(nextAction || nextFollowUpDate);
+  if (settingNext && CLOSED_STATUSES.includes(enquiry.status)) {
+    throw ApiError.badRequest(`A ${enquiry.status} enquiry has to be reopened before it gets a next step`);
+  }
+  assertFutureFollowUp(nextFollowUpDate);
+
+  enquiry.activities.push({ type, note, spokeTo: spokeTo || undefined, at: when, by: req.user._id });
+  if (!enquiry.lastActivityAt || when > enquiry.lastActivityAt) enquiry.lastActivityAt = when;
+  if (nextAction) {
+    enquiry.nextAction = nextAction;
+    enquiry.nextActionType = nextActionType || 'call';
+  }
+  if (nextFollowUpDate) enquiry.nextFollowUpDate = nextFollowUpDate;
+  assertNextAction(enquiry);
+  await enquiry.save();
+
+  await enquiry.populate('activities.by', 'name');
+  res.status(201).json({
+    success: true,
+    data: { activity: enquiry.activities.at(-1), activities: enquiry.activities, enquiry: withoutActivities(enquiry) },
+  });
+});
+
+const withoutActivities = (enquiry) => {
+  const { activities, ...rest } = enquiry.toJSON();
+  return rest;
+};
+
+/**
+ * Recent calls across the enquiries this person may see — the marketing Activities page.
+ *
+ * Unwound from the enquiries rather than kept in a collection of their own, because a call means
+ * nothing without the enquiry it was about, and one place to write it is one place it can be.
+ * Scoped like the enquiry list: a marketing person sees their own book's calls.
+ */
+export const listEnquiryActivities = asyncHandler(async (req, res) => {
+  const page = Math.max(Number(req.query.page) || 1, 1);
+  const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
+
+  const scope = ownershipFilter(req.user);
+  const match = { 'activities.0': { $exists: true } };
+  if (scope.assignedTo) match.assignedTo = new mongoose.Types.ObjectId(String(scope.assignedTo));
+  const owner = narrowToOwner(scope, req.query.assignedTo);
+  if (owner !== undefined) match.assignedTo = owner;
+  if (req.query.customer) {
+    if (!mongoose.isValidObjectId(req.query.customer)) throw ApiError.badRequest('That is not a customer');
+    match.customer = new mongoose.Types.ObjectId(String(req.query.customer));
+  }
+
+  const rows = {};
+  if (req.query.type) {
+    if (!ENQUIRY_ACTIVITY_KEYS.includes(req.query.type)) throw ApiError.badRequest('That is not a kind of activity');
+    rows['activities.type'] = req.query.type;
+  }
+  const from = req.query.from ? new Date(req.query.from) : null;
+  const to = req.query.to ? new Date(req.query.to) : null;
+  if (from && !Number.isNaN(from.getTime())) rows['activities.at'] = { $gte: from };
+  if (to && !Number.isNaN(to.getTime())) rows['activities.at'] = { ...rows['activities.at'], $lte: to };
+
+  const [result] = await Enquiry.aggregate([
+    { $match: match },
+    { $project: { number: 1, customer: 1, assignedTo: 1, status: 1, stage: 1, 'requirement.modelNumber': 1, activities: 1 } },
+    { $unwind: '$activities' },
+    { $match: rows },
+    {
+      $facet: {
+        data: [
+          { $sort: { 'activities.at': -1 } },
+          { $skip: (page - 1) * limit },
+          { $limit: limit },
+          { $lookup: { from: 'customers', localField: 'customer', foreignField: '_id', as: 'customer', pipeline: [{ $project: { name: 1, code: 1 } }] } },
+          { $lookup: { from: 'users', localField: 'activities.by', foreignField: '_id', as: 'by', pipeline: [{ $project: { name: 1 } }] } },
+          {
+            $project: {
+              _id: '$activities._id',
+              type: '$activities.type',
+              note: '$activities.note',
+              spokeTo: '$activities.spokeTo',
+              at: '$activities.at',
+              by: { $first: '$by' },
+              enquiry: {
+                _id: '$_id', number: '$number', status: '$status', stage: '$stage',
+                modelNumber: '$requirement.modelNumber', customer: { $first: '$customer' },
+              },
+            },
+          },
+        ],
+        total: [{ $count: 'n' }],
+        byType: [{ $group: { _id: '$activities.type', count: { $sum: 1 } } }],
+      },
+    },
+  ]);
+
+  paginated(res, result.data, { page, limit, total: result.total[0]?.n || 0 }, {
+    byType: Object.fromEntries(result.byType.map((row) => [row._id, row.count])),
+  });
+});
+
+/** The kinds of activity, from the one list [config/enquiryActivities.js]. */
+export const enquiryActivityTypes = (req, res) => {
+  res.json({ success: true, data: ENQUIRY_ACTIVITY_TYPES });
+};
 
 /** The actions this enquiry can take from where it is, so the screen need not guess. */
 export const listEnquiryActions = asyncHandler(async (req, res) => {
