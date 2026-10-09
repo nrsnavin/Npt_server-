@@ -2,6 +2,7 @@ import Sample, {
   CLOSED_SAMPLE_STATUSES, IN_WORK_STATUSES, NOT_ESCALATED_STATUSES, SAMPLE_NEXT_STEP,
   WITH_CUSTOMER_STATUSES,
 } from '../models/Sample.js';
+import Query from '../models/Query.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter } from '../services/ownership.service.js';
 import { stalledSamples } from '../services/anomaly.service.js';
@@ -336,6 +337,167 @@ export const sampleDay = asyncHandler(async (req, res) => {
       overdue: late.length,
       inWork: inWork.length,
       mine: samples.filter(mine).length,
+    },
+  });
+});
+
+/* ------------------------------ The work queue ------------------------------ */
+
+/**
+ * The six things the sampling team says about a request, and the statuses behind each.
+ *
+ * The bench's own statuses are finer than this — stock checked, moulding, printing — and they
+ * stay on the request for whoever wants them. The queue speaks in the team's words: received,
+ * not available, under process, ready, sent, closed.
+ */
+export const QUEUE_STATUSES = [
+  { key: 'received', label: 'Sample Request Received', statuses: ['request_received'] },
+  { key: 'not_available', label: 'Sample Not Available', statuses: ['not_available'] },
+  {
+    key: 'under_process',
+    label: 'Sample Under Process',
+    statuses: ['checking_stock', 'sample_available', 'production_required', 'printing_required'],
+  },
+  { key: 'ready', label: 'Sample Ready', statuses: ['sample_ready'] },
+  {
+    key: 'sent',
+    label: 'Sample Sent',
+    statuses: ['dispatched', 'delivered', 'customer_feedback_pending', 'approved', 'modification_required', 'rejected'],
+  },
+  { key: 'closed', label: 'Task Closed', statuses: ['cancelled'] },
+];
+
+const queueStatusOf = (sample) =>
+  sample.benchClosedAt
+    ? 'closed'
+    : QUEUE_STATUSES.find((entry) => entry.statuses.includes(sample.status))?.key || 'received';
+
+/** How long a closed task stays under "Task Closed" before it drops off the queue. */
+const CLOSED_SHOWN_DAYS = 30;
+
+/** What a row's request says, in the bench's shorthand: model — material : colour — rule — pieces. */
+const itemLine = (item) =>
+  [
+    item.modelNumber || 'New model',
+    [item.material?.toUpperCase(), item.colour?.toUpperCase()].filter(Boolean).join(' : ') || null,
+    item.colour ? (item.colourMandatory ? 'Exact colour' : 'Preferred colour') : null,
+    `${item.quantity || 1} pcs`,
+  ]
+    .filter(Boolean)
+    .join(' — ');
+
+/**
+ * The sampling department's work queue.
+ *
+ * One row per request, with the customer, who asked, what is wanted, who has it, where it
+ * stands, how urgent it is, and the handover once it has gone. Open rows first, then what the
+ * team closed in the last month — the screen filters between them, so one read answers every
+ * chip without a round trip.
+ */
+export const sampleQueue = asyncHandler(async (req, res) => {
+  const now = Date.now();
+  const scope = ownershipFilter(req.user, 'requestedBy');
+
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const endOfToday = new Date(startOfToday.getTime() + DAY);
+  const closedSince = new Date(now - CLOSED_SHOWN_DAYS * DAY);
+
+  const samples = await Sample.find({
+    ...scope,
+    $or: [
+      { benchClosedAt: null, status: { $nin: CLOSED_SAMPLE_STATUSES } },
+      { updatedAt: { $gte: closedSince } },
+    ],
+  })
+    .select(
+      'number items modelNumber material colour colourMandatory quantity remarks purpose status ' +
+        'requiredDate requestedAt createdAt updatedAt requestedBy assignedTo customer enquiry ' +
+        'escalationLevel courier awbNumber deliveryMethod handedTo recipientPhone dispatchedAt ' +
+        'dispatchedQuantity dispatchedColour benchClosedAt statusHistory'
+    )
+    .populate('requestedBy', 'name')
+    .populate('assignedTo', 'name')
+    .populate('customer', 'name')
+    .populate('enquiry', 'number status')
+    .sort({ requiredDate: 1, createdAt: 1 })
+    .limit(500)
+    .lean();
+
+  const rows = samples.map((sample) => {
+    const queueStatus = queueStatusOf(sample);
+    const closed = queueStatus === 'closed' || CLOSED_SAMPLE_STATUSES.includes(sample.status);
+    const unsent = ['received', 'not_available', 'under_process', 'ready'].includes(queueStatus);
+    const due = sample.requiredDate ? new Date(sample.requiredDate) : null;
+    const late = Boolean(!closed && unsent && due && due < startOfToday);
+    const dueToday = Boolean(!closed && unsent && due && due >= startOfToday && due < endOfToday);
+    const urgent = !closed && (late || dueToday || (sample.escalationLevel || 0) > 0);
+    const items = sample.items?.length ? sample.items : [sample];
+    const lastNote = [...(sample.statusHistory || [])].reverse().find((entry) => entry.note)?.note;
+
+    return {
+      _id: sample._id,
+      number: sample.number,
+      customer: sample.customer ? { _id: sample.customer._id, name: sample.customer.name } : null,
+      enquiry: sample.enquiry ? { _id: sample.enquiry._id, number: sample.enquiry.number, status: sample.enquiry.status } : null,
+      requestedBy: sample.requestedBy?.name || null,
+      assignedTo: sample.assignedTo ? { _id: sample.assignedTo._id, name: sample.assignedTo.name } : null,
+      models: items.map((item) => ({
+        model: item.modelNumber || null,
+        material: item.material || null,
+        colour: item.colour || null,
+        colourMandatory: Boolean(item.colourMandatory),
+        quantity: item.quantity || 1,
+      })),
+      pieces: items.reduce((sum, item) => sum + (item.quantity || 1), 0),
+      colour: sample.colour || null,
+      request: [sample.remarks, items.map(itemLine).join('; ')].filter(Boolean).join(' | '),
+      status: sample.status,
+      queueStatus,
+      lastNote: lastNote || null,
+      fresh: sample.status === 'request_received',
+      closed,
+      late,
+      dueToday,
+      priority: urgent ? 'urgent' : 'normal',
+      highlighted: urgent || sample.status === 'not_available',
+      requiredDate: sample.requiredDate || null,
+      handover: WITH_CUSTOMER_STATUSES.includes(sample.status) || sample.dispatchedAt
+        ? {
+          method: sample.deliveryMethod || (sample.courier ? 'courier' : null),
+          courier: sample.courier || null,
+          awbNumber: sample.awbNumber || null,
+          handedTo: sample.handedTo || null,
+          recipientPhone: sample.recipientPhone || null,
+          at: sample.dispatchedAt || null,
+          quantity: sample.dispatchedQuantity || null,
+          colour: sample.dispatchedColour || null,
+        }
+        : null,
+      link: `/samples/${sample._id}`,
+    };
+  });
+
+  const open = rows.filter((row) => !row.closed);
+  const unsentOpen = open.filter((row) => ['received', 'not_available', 'under_process', 'ready'].includes(row.queueStatus));
+
+  /* Questions put to the sampling department and not yet closed — the "internal tags". */
+  const internalTags = await Query.countDocuments({
+    'participants.department': 'sampling',
+    status: { $ne: 'closed' },
+  });
+
+  res.json({
+    success: true,
+    data: {
+      rows: [...open, ...rows.filter((row) => row.closed)],
+      tiles: {
+        open: open.length,
+        dueToday: unsentOpen.filter((row) => row.dueToday || row.late).length,
+        urgentDispatch: unsentOpen.filter((row) => row.queueStatus === 'ready' || row.late || row.dueToday).length,
+        internalTags,
+      },
+      statuses: QUEUE_STATUSES.map(({ key, label }) => ({ key, label })),
     },
   });
 });

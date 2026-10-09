@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { enquiryTimeline, listEnquiryMessages, sendEnquiryMessage } from '../controllers/enquiryMessage.controller.js';
 import {
   listBuyerCards, getBuyerCard, buyerCardImage, uploadBuyerCard, confirmBuyerCard, discardBuyerCard,
 } from '../controllers/buyerCard.controller.js';
@@ -34,7 +35,7 @@ import { validate } from '../middleware/validate.js';
 import {
   customerSchema, customerUpdateSchema,
   buyerCardConfirmSchema,
-  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema, enquiryActivitySchema, enquiryDelegateSchema,
+  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema, enquiryActivitySchema, enquiryDelegateSchema, enquiryMessageSchema,
   bulkReassignSchema,
 } from '../validators/pipeline.schemas.js';
 import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validators/mould.schemas.js';
@@ -202,6 +203,11 @@ router.get('/enquiries/:id/actions', requireModule('enquiries'), listEnquiryActi
 router.post('/enquiries/:id/actions', requireModule('enquiries', 'write'), validate(enquiryActionSchema), applyEnquiryAction);
 /* Logging a conversation with the buyer. Moves nothing; may set the next step. */
 router.post('/enquiries/:id/activities', requireModule('enquiries', 'write'), validate(enquiryActivitySchema), logEnquiryActivity);
+/* Writing to the buyer from the company number and mail; the conversation is the owner's. */
+router.get('/enquiries/:id/messages', listEnquiryMessages);
+router.post('/enquiries/:id/messages', requireModule('enquiries', 'write'), validate(enquiryMessageSchema), sendEnquiryMessage);
+/* Everything that happened on the enquiry, for whoever may open it. */
+router.get('/enquiries/:id/timeline', enquiryTimeline);
 /* Handing it to another marketing person, at any stage — the owner or Admin [services/delegation.service.js]. */
 router.get('/enquiries/:id/delegate', requireModule('enquiries', 'write'), listDelegationTargets);
 router.post('/enquiries/:id/delegate', requireModule('enquiries', 'write'), validate(enquiryDelegateSchema), delegateEnquiryTo);

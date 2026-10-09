@@ -1,6 +1,7 @@
 import Enquiry from '../models/Enquiry.js';
 import Todo from '../models/Todo.js';
 import ApiError from '../utils/ApiError.js';
+import { inDepartment, isManagement } from '../utils/departments.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { transactional } from '../utils/transaction.js';
 import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
@@ -109,7 +110,7 @@ export const handoffReschedule = asyncHandler(async (req, res) => {
 /* ------------------------------ Dashboards ------------------------------ */
 
 /** Admin sees every department; everybody else, their own. */
-const seesEveryDepartment = (user) => user.role === 'admin' || user.department === 'management';
+const seesEveryDepartment = isManagement;
 
 /** Every department side by side: open, unclaimed, late, due today, done this week. */
 export const departmentsOverview = asyncHandler(async (req, res) => {
@@ -123,7 +124,8 @@ export const departmentsOverview = asyncHandler(async (req, res) => {
 export const departmentDashboardFor = asyncHandler(async (req, res) => {
   const key = req.params.key === 'mine' ? req.user.department : req.params.key;
   if (!DEPARTMENT_KEYS.includes(key)) throw ApiError.notFound('No such department');
-  if (key !== req.user.department && !seesEveryDepartment(req.user)) {
+  /* Any department the person works in — their main one or an extra one. */
+  if (!inDepartment(req.user, key) && !seesEveryDepartment(req.user)) {
     throw ApiError.forbidden('That is another department\'s dashboard');
   }
   /* The enquiries at this department's stages — only for someone who may open enquiries. */

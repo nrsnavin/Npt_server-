@@ -1,4 +1,5 @@
 import Customer from '../models/Customer.js';
+import { isManagement } from '../utils/departments.js';
 import Dispatch from '../models/Dispatch.js';
 import Quotation from '../models/Quotation.js';
 import Receivable from '../models/Receivable.js';
@@ -29,7 +30,7 @@ import { sendPush } from './push.service.js';
  * did it.
  */
 
-const isAdmin = (user) => user?.role === 'admin' || user?.department === 'management';
+const isAdmin = isManagement;
 const idOf = (value) => String(value?._id || value || '');
 
 /** The owner, or Admin. */

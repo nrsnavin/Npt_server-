@@ -7,7 +7,8 @@ import {
   moduleAccessFor,
   normaliseGrants,
 } from '../services/access.service.js';
-import { defaultAccessFor, findDepartment } from '../config/modules.js';
+import { defaultAccessForAll, findDepartment, LEVEL_RANK } from '../config/modules.js';
+import { departmentsOf } from '../utils/departments.js';
 import { resolveIdentifier } from '../services/otp.service.js';
 import { transferBook, workloadOf } from '../services/offboarding.service.js';
 import { recordChange } from '../services/audit.service.js';
@@ -21,6 +22,8 @@ const publicUser = (user) => ({
   email: user.email,
   role: user.role,
   department: user.department,
+  extraDepartments: user.extraDepartments || [],
+  departments: departmentsOf(user),
   phone: user.phone,
   emailVerified: user.emailVerified,
   phoneVerified: user.phoneVerified,
@@ -71,7 +74,11 @@ export const list = asyncHandler(async (req, res) => {
     sortable: USER_SORTABLE,
   });
 
-  if (req.query.department) filter.department = req.query.department;
+  /* Everybody who works in it, as their main department or an extra one. */
+  /* `$and`, because a search already uses `$or` and must not be overwritten. */
+  if (req.query.department) {
+    filter.$and = [...(filter.$and || []), { $or: [{ department: req.query.department }, { extraDepartments: req.query.department }] }];
+  }
   if (req.query.role) filter.role = req.query.role;
   if (req.query.isActive === 'true' || req.query.isActive === 'false') {
     filter.isActive = req.query.isActive === 'true';
@@ -106,6 +113,8 @@ export const getOne = asyncHandler(async (req, res) => {
  */
 export const create = asyncHandler(async (req, res) => {
   const { name, email, password, role, department, phone, moduleAccess } = req.body;
+  /* The main department is not also an extra one. */
+  const extraDepartments = [...new Set(req.body.extraDepartments || [])].filter((key) => key !== department);
 
   if (await User.findOne({ email: email.toLowerCase() })) {
     throw ApiError.conflict('An account with this email already exists');
@@ -120,7 +129,7 @@ export const create = asyncHandler(async (req, res) => {
 
   const grants = moduleAccess?.length
     ? normaliseGrants(moduleAccess)
-    : defaultAccessFor(department);
+    : defaultAccessForAll([department, ...extraDepartments]);
 
   const user = await User.create({
     name,
@@ -128,6 +137,7 @@ export const create = asyncHandler(async (req, res) => {
     password,
     phone,
     department,
+    extraDepartments,
     role: role || 'member',
     // An admin's access is implicit, so storing grants for one would only mislead.
     moduleAccess: role === 'admin' ? [] : grants,
@@ -179,6 +189,25 @@ export const update = asyncHandler(async (req, res) => withOwnerLocks([req.param
   if (isActive === false && (await workloadOf(user._id)).open > 0) throw ApiError.badRequest('Use offboarding and choose a colleague to receive this person’s work.');
   if (name) user.name = name;
   if (department) user.department = department;
+  if (req.body.extraDepartments !== undefined) {
+    const before = new Set(departmentsOf(user));
+    user.extraDepartments = [...new Set(req.body.extraDepartments)].filter((key) => key !== user.department);
+    /*
+     * A department added brings its default access with it — added to what the person has,
+     * never taking anything away. Removing a department leaves the grants for an admin to
+     * trim, as changing a main department always has.
+     */
+    const added = departmentsOf(user).filter((key) => !before.has(key));
+    if (added.length && user.role !== 'admin') {
+      const held = new Map((user.moduleAccess || []).map((grant) => [grant.module, grant.level]));
+      for (const { module, level } of defaultAccessForAll(added)) {
+        if (!held.has(module) || LEVEL_RANK[level] > LEVEL_RANK[held.get(module)]) held.set(module, level);
+      }
+      user.moduleAccess = [...held].map(([module, level]) => ({ module, level }));
+    }
+  } else if (department && user.extraDepartments?.includes(department)) {
+    user.extraDepartments = user.extraDepartments.filter((key) => key !== department);
+  }
   if (role) user.role = role;
   if (isActive !== undefined) user.isActive = isActive;
 
@@ -226,7 +255,8 @@ export const resetAccessToDepartment = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('Allocate this user to a department first');
   }
 
-  user.moduleAccess = defaultAccessFor(user.department);
+  /* Every department they work in, together. */
+  user.moduleAccess = defaultAccessForAll(departmentsOf(user));
   await user.save();
 
   res.json({ success: true, data: publicUser(user) });

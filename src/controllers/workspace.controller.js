@@ -5,6 +5,7 @@ import Announcement from '../models/Announcement.js';
 import Customer from '../models/Customer.js';
 import Query, { askedOfFilter } from '../models/Query.js';
 import ApiError from '../utils/ApiError.js';
+import { departmentsOf, inDepartment } from '../utils/departments.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { EVENTS, publish } from '../services/events.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
@@ -80,7 +81,8 @@ async function todoScopeFilter(req) {
         'Your account has no department set, so there is no queue to show. Ask an administrator.'
       );
     }
-    return { department: req.user.department };
+    /* Every queue the person works on — their main department's and any extra one's. */
+    return { department: { $in: departmentsOf(req.user) } };
   }
 
   if (scope === 'customers') {
@@ -164,7 +166,7 @@ export const needsMeToday = asyncHandler(async (req, res) => {
     return;
   }
 
-  const mine = { department: req.user.department, completed: false };
+  const mine = { department: { $in: departmentsOf(req.user) }, completed: false };
   const startOfToday = dayBounds().start;
 
   const [handedOver, urgent, asked] = await Promise.all([
@@ -301,7 +303,7 @@ export const createTodo = asyncHandler(async (req, res) => {
 function mayWorkOn(user, todo) {
   if (user.role === 'admin') return null;
   if (String(todo.user || '') === String(user._id)) return null;
-  if (todo.department && todo.department === user.department) return null;
+  if (inDepartment(user, todo.department)) return null;
 
   return (
     `This task is on the ${(todo.department || 'another').replace(/_/g, ' ')} queue. You can see ` +
@@ -318,7 +320,7 @@ async function todoInView(req) {
   if (req.user.role === 'admin') return todo;
   if (String(todo.user || '') === String(req.user._id)) return todo;
   if (String(todo.escalation?.by || '') === String(req.user._id)) return todo;
-  if (todo.department === req.user.department) return todo;
+  if (inDepartment(req.user, todo.department)) return todo;
 
   /* Marketing's window: a task on a buyer they own, whichever department holds it. */
   if (todo.customer) {
@@ -591,7 +593,7 @@ const visibleTo = (user) => ({
       $or: [
         { departments: { $size: 0 } },
         { departments: { $exists: false } },
-        ...(user.department ? [{ departments: user.department }] : []),
+        ...(departmentsOf(user).length ? [{ departments: { $in: departmentsOf(user) } }] : []),
       ],
     },
   ],

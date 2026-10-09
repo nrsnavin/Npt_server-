@@ -17,6 +17,7 @@ export const SAMPLE_STATUSES = [
   'request_received',
   'checking_stock',
   'sample_available',
+  'not_available',
   'production_required',
   'printing_required',
   'sample_ready',
@@ -46,7 +47,7 @@ export const WITH_CUSTOMER_STATUSES = ['dispatched', 'delivered', 'customer_feed
  * cannot share code — the virtual below reads a loaded document, the list endpoint has to
  * express the same thing as a query — and two copies would drift.
  */
-export const NOT_ESCALATED_STATUSES = [...CLOSED_SAMPLE_STATUSES, ...WITH_CUSTOMER_STATUSES];
+export const NOT_ESCALATED_STATUSES = [...CLOSED_SAMPLE_STATUSES, ...WITH_CUSTOMER_STATUSES, 'not_available'];
 
 /**
  * A request that is finished with *for the purpose of raising another one* [§4, §6].
@@ -108,6 +109,9 @@ export const SAMPLE_STAGE_RANK = {
   request_received: 0,
   checking_stock: 1,
   sample_available: 2,
+  /* The bench's third answer to "is there stock?": none, and it cannot be made now. Marketing
+     decides what happens next, so it waits on them rather than escalating against the bench. */
+  not_available: 2,
   production_required: 2,
   printing_required: 3,
   sample_ready: 4,
@@ -131,6 +135,18 @@ export const SAMPLE_PURPOSES = [
   'new_development',
   'fit_test',
   'buyer_approval',
+];
+
+/**
+ * How a sample left the plant: a courier with a tracking number, or handed over in person — to
+ * the buyer's runner at the gate, or by our own marketing person on a visit.
+ */
+export const DELIVERY_METHODS = ['courier', 'direct'];
+
+/** The couriers the plant uses, offered as a list. "Other" lets the bench type one. */
+export const SAMPLE_COURIERS = [
+  'DTDC', 'Professional Couriers', 'ST Courier', 'Blue Dart', 'Delhivery', 'India Post',
+  'Shree Maruti', 'Trackon', 'Franch Express',
 ];
 
 const statusChangeSchema = new mongoose.Schema(
@@ -344,6 +360,13 @@ const sampleSchema = new mongoose.Schema(
      */
     courier: { type: String, trim: true },
     awbNumber: { type: String, trim: true },
+    /**
+     * Courier, or handed over in person. A direct handover has no AWB to give, so it names who
+     * took it instead — a contact person or a phone number, at least one.
+     */
+    deliveryMethod: { type: String, enum: DELIVERY_METHODS },
+    handedTo: { type: String, trim: true },
+    recipientPhone: { type: String, trim: true },
     dispatchedAt: Date,
     dispatchedQuantity: { type: Number, min: 0 },
 
@@ -362,6 +385,16 @@ const sampleSchema = new mongoose.Schema(
      */
     dispatchedColour: { type: String, trim: true },
     deliveredAt: Date,
+
+    /**
+     * When the sample team closed its task on this request.
+     *
+     * The bench's work ends before the request does: once the bag has gone, what the buyer says
+     * is marketing's to chase. Closing takes the row off the sampling work queue without
+     * pretending the request itself is finished.
+     */
+    benchClosedAt: Date,
+    benchClosedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
     /** What the customer said, recorded by marketing. */
     feedbackAt: Date,

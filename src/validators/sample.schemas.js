@@ -1,7 +1,7 @@
 import { versioned } from './pipeline.schemas.js';
 import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from '../models/Mould.js';
-import { SAMPLE_PURPOSES, SAMPLE_STATUSES, FEEDBACK_STATUSES } from '../models/Sample.js';
+import { DELIVERY_METHODS, SAMPLE_PURPOSES, SAMPLE_STATUSES, FEEDBACK_STATUSES } from '../models/Sample.js';
 import { MESSAGE_CHANNELS } from '../models/CustomerMessage.js';
 import { EVENT_KEYS } from '../services/customerMessage.templates.js';
 
@@ -127,6 +127,20 @@ export const sampleStatusSchema = z.object({
   dispatchedAt: z.coerce.date().optional(),
   dispatchedQuantity: z.number().int().positive('A dispatch sends at least one piece').optional(),
   dispatchedColour: z.string().max(60).optional(),
+  /* The handover: by courier (courier + AWB), or in person (a contact or a phone). */
+  deliveryMethod: z.enum(DELIVERY_METHODS).optional(),
+  handedTo: z.string().trim().max(120).optional(),
+  recipientPhone: z
+    .string()
+    .trim()
+    .regex(/^\d{10}$/, 'A 10-digit phone number')
+    .optional()
+    .or(z.literal('')),
+});
+
+/** The sample team closing its task: a reason only when the sample never went out. */
+export const sampleCloseTaskSchema = z.object({
+  note: z.string().trim().max(500).optional(),
 });
 
 export const sampleFeedbackSchema = z.object({

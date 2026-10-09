@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { departmentsOf, inDepartment, isManagement } from '../utils/departments.js';
 import { DEPARTMENT_KEYS } from '../config/modules.js';
 import { protectWrites } from '../utils/concurrency.js';
 
@@ -270,7 +271,7 @@ export const inTheRoom = (query, user) => {
     if (participant.user) {
       return String(participant.user?._id ?? participant.user) === String(user._id);
     }
-    return participant.department === user.department;
+    return inDepartment(user, participant.department);
   });
 };
 
@@ -283,8 +284,7 @@ export const inTheRoom = (query, user) => {
  * one of them. It already did: the map showed an admin no queries at all while the list showed
  * them every one.
  */
-export const seesEveryQuery = (user) =>
-  user?.role === 'admin' || user?.department === 'management';
+export const seesEveryQuery = (user) => isManagement(user);
 
 /**
  * Every way of being a participant, as mongo fragments.
@@ -295,8 +295,8 @@ export const seesEveryQuery = (user) =>
  */
 const askedBranches = (user) => [
   { participants: { $elemMatch: { user: user._id } } },
-  { participants: { $elemMatch: { department: user.department, user: { $exists: false } } } },
-  { participants: { $elemMatch: { department: user.department, user: null } } },
+  { participants: { $elemMatch: { department: { $in: departmentsOf(user) }, user: { $exists: false } } } },
+  { participants: { $elemMatch: { department: { $in: departmentsOf(user) }, user: null } } },
 ];
 
 /** A mongo fragment matching the queries this person is in — the list screen's own filter. */

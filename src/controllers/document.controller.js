@@ -1,6 +1,7 @@
 import Attachment from '../models/Attachment.js';
 import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
+import Sample from '../models/Sample.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownsRecord } from '../services/ownership.service.js';
@@ -26,6 +27,8 @@ import { recordChange } from '../services/audit.service.js';
 const OWNERS = {
   customers: { model: Customer, field: 'customer', module: 'customers', ownership: 'assignedTo', label: 'Customer' },
   enquiries: { model: Enquiry, field: 'enquiry', module: 'enquiries', ownership: 'assignedTo', label: 'Enquiry' },
+  /* The courier copy and anything else that travelled with a sample. */
+  samples: { model: Sample, field: 'sample', module: 'samples', ownership: 'requestedBy', label: 'Sample' },
 };
 
 /**

@@ -1,3 +1,4 @@
+import { departmentsOf, inDepartment } from '../utils/departments.js';
 import OrderEscalation, {
   ESCALATION_KINDS, ESCALATION_SEVERITY,
 } from '../models/OrderEscalation.js';
@@ -121,7 +122,7 @@ export const listEscalationFeed = asyncHandler(async (req, res) => {
   if (req.query.severity) filter.severity = req.query.severity;
   if (req.query.kind) filter.kind = req.query.kind;
   /* `mine=true` is "what my department raised", for somebody checking their own list. */
-  if (req.query.mine === 'true') filter.raisedByDepartment = req.user.department;
+  if (req.query.mine === 'true') filter.raisedByDepartment = { $in: departmentsOf(req.user) };
 
   const [rows, total] = await Promise.all([
     OrderEscalation.find(filter)
@@ -139,10 +140,10 @@ export const listEscalationFeed = asyncHandler(async (req, res) => {
       open: rows.filter((row) => row.status === 'open').length,
       blocking: rows.filter((row) => row.status === 'open' && row.severity === 'blocking').length,
       /* What the reader's own department is being looked to for, when anybody named them. */
-      onUs: rows.filter((row) => row.status === 'open' && row.needsFrom === req.user.department)
+      onUs: rows.filter((row) => row.status === 'open' && inDepartment(req.user, row.needsFrom))
         .length,
       mine: rows.filter(
-        (row) => row.status === 'open' && row.raisedByDepartment === req.user.department
+        (row) => row.status === 'open' && inDepartment(req.user, row.raisedByDepartment)
       ).length,
     },
   });
@@ -294,7 +295,7 @@ export const resolveEscalation = asyncHandler(async (req, res) => {
   const isRaiser = String(escalation.raisedBy) === String(req.user._id);
   const sameDepartment =
     Boolean(escalation.raisedByDepartment) &&
-    escalation.raisedByDepartment === req.user.department;
+    inDepartment(req.user, escalation.raisedByDepartment);
 
   if (!isRaiser && !sameDepartment && req.user.role !== 'admin') {
     const raiser = findDepartment(escalation.raisedByDepartment)?.label || 'whoever raised it';

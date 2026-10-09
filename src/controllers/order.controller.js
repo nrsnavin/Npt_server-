@@ -1,4 +1,5 @@
 import { withOrderLock } from '../services/operationLock.service.js';
+import { isManagement } from '../utils/departments.js';
 import SalesOrder, {
   CLOSED_ORDER_STATUSES,
   ORDER_STATUSES,
@@ -874,7 +875,7 @@ export const setOrderPriority = asyncHandler(withOrderLock(req => req.params.id,
    * the message has to explain, or the plant reasonably concludes the screen is broken.
    */
   const owner = String(order.assignedTo) === String(req.user._id);
-  const oversees = req.user.role === 'admin' || req.user.department === 'management';
+  const oversees = isManagement(req.user);
   if (!owner && !oversees) {
     throw ApiError.forbidden(
       'Only the marketing person who owns this order can change what the plant is asked to prioritise'

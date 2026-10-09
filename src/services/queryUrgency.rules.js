@@ -22,6 +22,7 @@
  */
 
 import { plural } from '../utils/phrases.js';
+import { inDepartment } from '../utils/departments.js';
 
 /** The same three words the rest of the app uses for priority [Todo.js]. */
 export const URGENCIES = ['low', 'normal', 'high'];
@@ -46,7 +47,7 @@ const owes = (query, user) => {
     if (participant.user) {
       return String(participant.user?._id ?? participant.user) === String(user._id);
     }
-    return participant.department === user.department;
+    return inDepartment(user, participant.department);
   });
 };
 

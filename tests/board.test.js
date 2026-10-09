@@ -273,7 +273,9 @@ test('the enquiry board is scoped to the reader', async () => {
 test('a sample board draws the bench, outcomes included', async () => {
   const { status, json } = await api('/api/samples/board', { token: meera });
   assert.equal(status, 200, json.message);
-  assert.equal(json.data.columns.length, 13);
+  /* Fourteen: the bench's run, "not available", the customer's answers and cancelled. */
+  assert.equal(json.data.columns.length, 14);
+  assert.ok(json.data.columns.some((column) => column.status === 'not_available'));
   assert.equal(json.meta.sort, 'requiredDate');
 
   const statuses = json.data.columns.map((column) => column.status);

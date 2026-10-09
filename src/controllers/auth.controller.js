@@ -8,6 +8,7 @@ import { issueOtp, resolveIdentifier, verifyOtp } from '../services/otp.service.
 import { env } from '../config/env.js';
 import { maskIdentifier } from '../utils/phone.js';
 import { moduleAccessFor } from '../services/access.service.js';
+import { departmentsOf } from '../utils/departments.js';
 import { inspectLink, redeemLink, sendReset } from '../services/passwordLink.service.js';
 import PasswordToken from '../models/PasswordToken.js';
 
@@ -17,6 +18,8 @@ const publicUser = (user) => ({
   email: user.email,
   role: user.role,
   department: user.department,
+  extraDepartments: user.extraDepartments || [],
+  departments: departmentsOf(user),
   phone: user.phone,
   emailVerified: user.emailVerified,
   phoneVerified: user.phoneVerified,

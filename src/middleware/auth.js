@@ -1,4 +1,5 @@
 import jwt from 'jsonwebtoken';
+import { isManagement } from '../utils/departments.js';
 import { env } from '../config/env.js';
 import User, { userCacheKey } from '../models/User.js';
 import { cacheGet, cacheSet } from '../services/cache.service.js';
@@ -134,6 +135,6 @@ export const authorize =
  */
 export const adminOnly = (req, _res, next) => {
   if (!req.user) return next(ApiError.unauthorized());
-  if (req.user.role === 'admin' || req.user.department === 'management') return next();
+  if (isManagement(req.user)) return next();
   return next(ApiError.forbidden('Only Admin can delete records. Close, cancel or correct it instead.'));
 };
