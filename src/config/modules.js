@@ -434,6 +434,25 @@ const DEPARTMENT_LIST = [
       announcements: 'read',
     },
   },
+  /*
+   * Mould: the tool room. Owns the mould register with Production — a tool's cavities, weights and
+   * condition — takes Mould Issue and the Mould stage, and is asked when a tool stops an order.
+   */
+  {
+    key: 'mould',
+    label: 'Mould',
+    defaultAccess: {
+      queries: 'write',
+      moulds: 'write',
+      tasks: 'write',
+      production: 'read',
+      orders: 'read',
+      samples: 'read',
+      materials: 'read',
+      enquiries: 'read',
+      announcements: 'read',
+    },
+  },
   {
     key: 'quality',
     label: 'Quality',
@@ -536,13 +555,13 @@ const DEPARTMENT_LIST = [
 
 /**
  * The departments, in the order the plant lists them (role requirements, 7 Oct 2026), with
- * Payment Collection and Audit after Accounts. The keys are older than some of the names —
+ * Mould after Production, and Payment Collection and Audit after Accounts. The keys are older than some of the names —
  * `management` is Admin, `order_confirmation` is Sales / SO, `assembling` is Assembly,
  * `despatch` is Dispatch — and are kept, because every user and task stores them.
  */
 const DEPARTMENT_ORDER = [
   'management', 'marketing', 'order_confirmation', 'quotation', 'sampling',
-  'production', 'quality', 'assembling', 'despatch', 'accounts', 'payment_collection', 'audit',
+  'production', 'mould', 'quality', 'assembling', 'despatch', 'accounts', 'payment_collection', 'audit',
 ];
 
 export const DEPARTMENTS = DEPARTMENT_ORDER.map((key) => DEPARTMENT_LIST.find((department) => department.key === key));

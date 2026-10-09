@@ -63,9 +63,12 @@ export const HANDOFFS = [
     records: [{ key: 'edd', label: 'Expected date', type: 'date' }, { key: 'pending', label: 'Pending quantity' }],
   },
   {
-    key: 'mould_issue', label: 'Mould Issue', department: 'production', stage: 'mould',
-    hint: 'Something is wrong with the mould',
-    records: [{ key: 'readyBy', label: 'Fixed by', type: 'date' }],
+    key: 'mould_issue', label: 'Mould Issue', department: 'mould', stage: 'mould',
+    hint: 'The Mould department looks at the tool',
+    records: [
+      { key: 'problem', label: 'What is wrong with the tool' },
+      { key: 'readyBy', label: 'Fixed by', type: 'date' },
+    ],
   },
   {
     key: 'team_payment_followup', label: 'Team Payment Follow-up', department: 'payment_collection', stage: null,
