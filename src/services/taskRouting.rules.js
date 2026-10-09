@@ -32,7 +32,7 @@ const VOCABULARY = {
     'loading', 'packing list', 'despatch', 'dispatch', 'courier', 'freight',
   ],
   production: [
-    'mould', 'mold', 'cavity', 'cavities', 'cycle time', 'regrind', 'runner',
+    'cycle time', 'regrind', 'runner',
     'shot weight', 'press', 'machine', 'shift', 'resin', 'moulding', 'production run',
     'output', 'pieces short', 'short by', 'downtime',
     /* Its own name. "Ask production whether Monday is realistic" is the plainest statement of
@@ -77,6 +77,11 @@ const VOCABULARY = {
   quotation: [
     'costing', 'cost sheet', 'margin', 'grammage', 'create (a |the )?quotation', 'quotation pdf',
     'per colour', 'printing cost',
+  ],
+  /* The tool itself — a broken, worn or blocked mould is the tool room's, not the press's. */
+  mould: [
+    'mould', 'mold', 'cavity', 'cavities', 'tool room', 'toolroom', 'mould issue', 'mould repair',
+    'tool problem', 'tool cracked', 'polish', 'ejector', 'core pin', 'die',
   ],
   assembling: [
     'assembl', 'hook fitting', 'fit the hooks', 'clip fitting', 'fit the clips',

@@ -82,7 +82,8 @@ The departments and what belongs to each:
 - sampling — the bench: samples, counter samples, trials, colour and print approvals, new development before a tool is cut
 - order_confirmation (Sales / SO) — turning a purchase order into a released job: PO checks, specifications, artwork approval, the release checklist
 - quotation — costing a model and producing the quotation: material, grammage, printing and packing cost, margin, the quotation PDF
-- production — the press floor: moulds, cavities, cycle times, resin, shifts, output, a run that is short
+- production — the press floor: cycle times, resin, shifts, machines, output, a run that is short
+- mould (Mould) — the tools themselves: a mould issue, a cracked or worn tool, cavities blocked, repairs and polishing, when a tool will be back
 - quality — inspections and verdicts: rejects, defects, flash, short shots, warpage, tolerances, holds on quality grounds
 - assembling (Assembly) — fitting hooks, clips and parts onto moulded pieces; assembly dates, completed and pending quantities
 - despatch (Dispatch) — getting goods out of the gate: consignments, lorries, transporters, LR and e-way bills, packing, proof of delivery

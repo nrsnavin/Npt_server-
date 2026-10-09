@@ -146,9 +146,22 @@ test('Assembly gets its EDD question', async () => {
   assert.ok(desk.enquiries.some((row) => String(row.enquiry._id) === String(enquiry._id)));
 });
 
+test('Mould Issue goes to the Mould department, and so does a tool problem on an order', async () => {
+  const { findHandoff } = await import('../src/config/handoffs.js');
+  const { STAGES } = await import('../src/config/enquiryStages.js');
+  const { ESCALATION_KINDS } = await import('../src/models/OrderEscalation.js');
+  const { findDepartment } = await import('../src/config/modules.js');
+  assert.equal(findDepartment('mould').defaultAccess.moulds, 'write');
+  assert.equal(findHandoff('mould_issue').department, 'mould');
+  assert.equal(STAGES.find((stage) => stage.key === 'mould').department, 'mould');
+  assert.equal(ESCALATION_KINDS.find((kind) => kind.key === 'mould_problem').department, 'mould');
+});
+
 test('a task about chasing money or an audit routes to the new departments', async () => {
   const { suggestByRules } = await import('../src/services/taskRouting.rules.js');
   assert.equal(suggestByRules({ title: 'Chase the outstanding from SCM' }).department, 'payment_collection');
   assert.equal(suggestByRules({ title: 'Send this to the audit team' }).department, 'audit');
   assert.equal(suggestByRules({ title: 'Buyer is disputing the invoice' }).department, 'accounts');
+  assert.equal(suggestByRules({ title: 'Mould M-101 has a cracked cavity' }).department, 'mould');
+  assert.equal(suggestByRules({ title: 'Cycle time on M-101 has crept to 31s' }).department, 'production');
 });

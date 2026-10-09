@@ -32,6 +32,7 @@ let priya; // marketing, a colleague
 let arun; // sampling
 let siva; // production
 let kavitha; // quality
+let murugan; // mould
 let enquiryId;
 let Todo;
 let Enquiry;
@@ -75,6 +76,7 @@ test.before(async () => {
     ['Arun K', 'arun@np.com', 'sampling', PHONES.arun],
     ['Sivakumar', 'siva@np.com', 'production', PHONES.siva],
     ['Kavitha D', 'kavitha@np.com', 'quality', PHONES.kavitha],
+    ['Murugan M', 'murugan@np.com', 'mould', undefined],
   ]) {
     const made = await api('/api/users', { method: 'POST', token: admin, body: { name, email, password: 'Pass@123456', department, ...(phone ? { phone } : {}) } });
     assert.equal(made.status, 201, made.json.message);
@@ -84,6 +86,7 @@ test.before(async () => {
   arun = await signIn('arun@np.com', 'Pass@123456');
   siva = await signIn('siva@np.com', 'Pass@123456');
   kavitha = await signIn('kavitha@np.com', 'Pass@123456');
+  murugan = await signIn('murugan@np.com', 'Pass@123456');
 
   const customer = await api('/api/customers', {
     method: 'POST', token: nandhini, body: { name: 'SCM Garments', mobile: '9876512300', assignedTo: await me(nandhini) },
@@ -107,7 +110,7 @@ test('the departments, in the plant\'s order', async () => {
   const { DEPARTMENTS } = await import('../src/config/modules.js');
   assert.deepEqual(DEPARTMENTS.map((department) => department.label), [
     'Admin', 'Marketing', 'Sales / SO', 'Quotation', 'Sampling',
-    'Production', 'Quality', 'Assembly', 'Dispatch', 'Accounts', 'Payment Collection', 'Audit',
+    'Production', 'Mould', 'Quality', 'Assembly', 'Dispatch', 'Accounts', 'Payment Collection', 'Audit',
   ]);
 });
 
@@ -330,14 +333,14 @@ test('a department not asked about an enquiry cannot send on it; holding it, it 
 
   const mould = await send('mould_issue', 'Cavity 3 short', nandhini);
   assert.equal(mould.status, 201);
-  assert.equal(mould.json.data.task.department, 'production');
+  assert.equal(mould.json.data.task.department, 'mould');
   assert.equal((await Enquiry.findById(enquiryId)).stage, 'mould');
 
-  /* Production, holding it now, sends it on to quality — any department may send to another. */
-  const onward = await send('quality_issue', 'Check cavity 3 parts', siva);
+  /* The Mould department, holding it now, sends it on to quality — any department may send to another. */
+  const onward = await send('quality_issue', 'Check cavity 3 parts', murugan);
   assert.equal(onward.status, 201, onward.json.message);
   assert.equal(onward.json.data.task.department, 'quality');
-  assert.equal(onward.json.data.task.fromDepartment, 'production');
+  assert.equal(onward.json.data.task.fromDepartment, 'mould');
   assert.equal((await Enquiry.findById(enquiryId)).stage, 'quality');
 
   /* Sampling had it once, but does not have it now — so it cannot move it. */
@@ -380,9 +383,9 @@ test('the enquiry lists everything, who has it now, and whether you may move it'
   assert.equal(json.holder.kind, 'my_payment_followup');
   assert.equal(json.mayMove, true, 'the marketing person may');
 
-  const production = await api(`/api/enquiries/${enquiryId}/handoffs`, { token: siva });
-  assert.equal(production.status, 200, 'production worked on it, so may read it');
-  assert.equal(production.json.mayMove, false, 'but does not have it now');
+  const toolRoom = await api(`/api/enquiries/${enquiryId}/handoffs`, { token: murugan });
+  assert.equal(toolRoom.status, 200, 'the Mould department worked on it, so may read it');
+  assert.equal(toolRoom.json.mayMove, false, 'but does not have it now');
 
   /* Through all of that, never more than one department held it. */
   assert.equal(await Todo.countDocuments({ enquiry: enquiryId, holds: true, completed: false }), 1);
@@ -570,7 +573,7 @@ test('Admin sees every department side by side; nobody else does', async () => {
   assert.equal(refused.status, 403);
   const { status, json } = await api('/api/departments/overview', { token: admin });
   assert.equal(status, 200);
-  assert.equal(json.data.length, 12);
+  assert.equal(json.data.length, 13);
   const production = json.data.find((row) => row.department === 'production');
   assert.ok(production.late >= 1);
   assert.equal(json.data[0].label, 'Admin');

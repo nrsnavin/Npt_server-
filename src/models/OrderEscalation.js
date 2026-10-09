@@ -44,7 +44,7 @@ const DEPARTMENT_KEYS = DEPARTMENTS.map((department) => department.key);
  */
 export const ESCALATION_KINDS = [
   { key: 'material_short', label: 'Material not available', department: 'production' },
-  { key: 'mould_problem', label: 'Tool problem', department: 'production' },
+  { key: 'mould_problem', label: 'Tool problem', department: 'mould' },
   { key: 'machine_down', label: 'Machine down', department: 'production' },
   { key: 'manpower_short', label: 'Not enough people', department: 'production' },
   { key: 'quality_problem', label: 'Quality problem', department: 'quality' },
