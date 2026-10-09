@@ -710,6 +710,59 @@ export async function departmentDashboard(department, { now = new Date() } = {})
 }
 
 /**
+ * The enquiries a department holds right now — its desk [web: DepartmentDashboard].
+ *
+ * One row per holding task: the enquiry, how long it has been here, whether it is late, and the
+ * work records behind it (its open sample, quotation and order) so a row can take the reader
+ * straight to the thing they work on. Late first, then by due time. A marketing person sees the
+ * enquiries they own; everybody else sees the department's.
+ */
+export async function enquiriesHeldBy(department, user, { now = new Date(), limit = 200 } = {}) {
+  const filter = { holds: true, completed: false, department };
+  if (isOwnershipScoped(user)) filter.user = user._id;
+
+  const tasks = await Todo.find(filter)
+    .sort({ dueDate: 1, createdAt: 1 })
+    .limit(limit)
+    .populate([
+      ...LIST_POPULATE.filter((entry) => entry.path !== 'enquiry'),
+      {
+        path: 'enquiry',
+        select: 'number stage status customer assignedTo requirement.modelNumber requirement.colour items.modelNumber nextFollowUpDate nextAction targetPrice',
+        populate: [{ path: 'customer', select: 'code name' }, { path: 'assignedTo', select: 'name' }],
+      },
+    ]);
+
+  const ids = tasks.map((task) => task.enquiry?._id).filter(Boolean);
+  const [{ default: Sample }, { default: Quotation }, { default: SalesOrder }] = await Promise.all([
+    import('../models/Sample.js'), import('../models/Quotation.js'), import('../models/SalesOrder.js'),
+  ]);
+  /* The newest of each per enquiry. */
+  const newest = async (Model, select) => {
+    const rows = await Model.find({ enquiry: { $in: ids } }).select(`enquiry number status ${select}`).sort({ createdAt: -1 }).lean();
+    const byEnquiry = new Map();
+    for (const row of rows) if (!byEnquiry.has(String(row.enquiry))) byEnquiry.set(String(row.enquiry), row);
+    return byEnquiry;
+  };
+  const [samples, quotations, orders] = ids.length
+    ? await Promise.all([newest(Sample, ''), newest(Quotation, ''), newest(SalesOrder, '')])
+    : [new Map(), new Map(), new Map()];
+
+  return tasks.filter((task) => task.enquiry).map((task) => {
+    const key = String(task.enquiry._id);
+    const pick = (row) => (row ? { _id: row._id, number: row.number, status: row.status } : null);
+    return {
+      task,
+      enquiry: { ...task.enquiry.toObject(), stageLabel: stageLabel(task.enquiry.stage) },
+      since: task.createdAt,
+      late: Boolean(task.dueDate && task.dueDate < now),
+      dueToday: Boolean(task.dueDate && task.dueDate >= now && task.dueDate <= endOfDayIST(now)),
+      records: { sample: pick(samples.get(key)), quotation: pick(quotations.get(key)), order: pick(orders.get(key)) },
+    };
+  });
+}
+
+/**
  * How many enquiries sit at each of a department's stages right now — Sales / SO's "approved
  * enquiries" are the ones at PO & SO, Dispatch's are at Invoice & Dispatch and LR Copy.
  * `scope` is the viewer's ownership filter, so a marketing person counts only their own.

@@ -7,7 +7,7 @@ import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
 import { HANDOFFS, movesEnquiry } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
-  allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesAtStages, mayHandOff, mayMove,
+  allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   rescheduleHandoff, returnHandoff, sendHandoff, updateHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
@@ -127,9 +127,14 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
     throw ApiError.forbidden('That is another department\'s dashboard');
   }
   /* The enquiries at this department's stages — only for someone who may open enquiries. */
-  const [dashboard, atStages] = await Promise.all([
+  const [dashboard, atStages, held] = await Promise.all([
     departmentDashboard(key),
     canRead(req.user, 'enquiries') ? enquiriesAtStages(key, ownershipFilter(req.user)) : [],
+    /* The enquiries this department holds — its desk. */
+    enquiriesHeldBy(key, req.user),
   ]);
-  res.json({ success: true, data: { ...dashboard, atStages } });
+  /* The queue less the enquiries themselves: side requests, like a PRT visit or photos sent. */
+  const heldIds = new Set(held.map((row) => String(row.task._id)));
+  const requests = dashboard.queue.filter((task) => !heldIds.has(String(task._id)));
+  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held } });
 });

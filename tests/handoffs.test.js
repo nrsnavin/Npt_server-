@@ -543,6 +543,27 @@ test('a department sees the enquiries at its own stages; the enquiry list filter
   assert.ok(unknown.json.data.length > listed.json.data.length, 'an unknown stage is ignored, not matched');
 });
 
+test('a department’s desk lists the enquiries it holds, late first, with the records behind them', async () => {
+  const production = await api('/api/departments/mine/dashboard', { token: siva });
+  assert.equal(production.status, 200, production.json.message);
+  const { enquiries, requests, queue } = production.json.data;
+  assert.ok(enquiries.length >= 1, 'production holds an enquiry');
+  for (const row of enquiries) {
+    assert.equal(row.task.department, 'production');
+    assert.equal(row.task.holds, true, 'only the enquiries it holds, not side requests');
+    assert.ok(row.enquiry.number && row.enquiry.stageLabel, 'named, with its stage in words');
+    assert.ok('sample' in row.records && 'quotation' in row.records && 'order' in row.records);
+  }
+  const lates = enquiries.map((row) => row.late);
+  assert.deepEqual(lates, [...lates].sort((a, b) => Number(b) - Number(a)), 'late first');
+  assert.equal(enquiries.length + requests.length, queue.length, 'the rest of the queue is requests');
+
+  /* A marketing person's desk is their own enquiries, not a colleague's. */
+  const marketing = await api('/api/departments/mine/dashboard', { token: nandhini });
+  const nandhiniId = await me(nandhini);
+  assert.ok(marketing.json.data.enquiries.every((row) => String(row.enquiry.assignedTo?._id) === nandhiniId));
+});
+
 test('Admin sees every department side by side; nobody else does', async () => {
   const refused = await api('/api/departments/overview', { token: nandhini });
   assert.equal(refused.status, 403);
