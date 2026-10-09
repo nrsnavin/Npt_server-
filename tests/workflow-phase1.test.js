@@ -115,6 +115,7 @@ test.before(async () => {
     ['nandhini', 'Nandhini S', 'marketing'], ['priya', 'Priya Orders', 'order_confirmation'],
     ['siva', 'Sivakumar', 'production'], ['asha', 'Asha Assembly', 'assembling'],
     ['kavitha', 'Kavitha D', 'quality'], ['anita', 'Anita Despatch', 'despatch'], ['kiran', 'Kiran Accounts', 'accounts'],
+    ['vijay', 'Vijay Collections', 'payment_collection'],
   ]) {
     const made = await raw('/api/users', { name, email: `${key}@np.com`, password: 'Pass@123456', department }, token.admin);
     assert.ok(made.data, made.message);
@@ -134,18 +135,18 @@ test.after(async () => {
 
 /* ------------------------------ 1. Payment follow-up ------------------------------ */
 
-test('team payment follow-up asks Accounts without taking the enquiry from Production', async () => {
+test('team payment follow-up asks Payment Collection without taking the enquiry from Production', async () => {
   const enquiry = await inProduction();
   const asked = await send(enquiry, 'team_payment_followup', 'siva');
   assert.equal(asked.status, 201, asked.json.message);
-  assert.equal(asked.json.data.task.department, 'accounts');
+  assert.equal(asked.json.data.task.department, 'payment_collection');
   assert.equal(asked.json.data.task.holds, undefined, 'a side request, not the enquiry');
 
   const still = await holder(enquiry);
   assert.equal(still.department, 'production', 'Production still has it');
   assert.equal((await Enquiry.findById(enquiry)).stage, 'production_edd');
 
-  const finished = await done(asked.json.data.task, 'kiran', { note: 'Advance received', fields: { paymentStatus: 'Paid', commitmentDate: '2026-10-10' } });
+  const finished = await done(asked.json.data.task, 'vijay', { note: 'Advance received', fields: { paymentStatus: 'Paid', commitmentDate: '2026-10-10' } });
   assert.equal(finished.status, 200, finished.json.message);
   assert.ok(await Todo.exists({ user: id.siva, title: /^Done: Team Payment Follow-up/ }), 'the asker hears it is done');
   assert.equal((await holder(enquiry)).department, 'production');

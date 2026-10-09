@@ -50,10 +50,19 @@ const VOCABULARY = {
     'colour approval', 'color approval', 'print approval', 'development',
   ],
   accounts: [
-    'invoice', 'payment', 'receipt', 'outstanding', 'overdue payment', 'advance',
+    'invoice', 'payment', 'receipt', 'advance',
     'credit note', 'debit note', '\\bTDS\\b', '\\bGST\\b', 'reconcile', 'ledger',
-    'cheque', '\\bRTGS\\b', '\\bNEFT\\b', 'disputing the invoice',
+    'disputing the invoice',
     'accounts', 'accounts team',
+  ],
+  /* Ringing the buyer for the money — the chase, not the books. */
+  payment_collection: [
+    'chase', 'collect', 'collection', 'outstanding', 'overdue payment', 'promised to pay',
+    'promise to pay', 'payment follow', 'cheque', '\\bRTGS\\b', '\\bNEFT\\b',
+    'payment collection',
+  ],
+  audit: [
+    'audit', 'auditor', 'invoice audit', 'gst audit', 'audit team', 'cross-?check the (gst|invoice)',
   ],
   marketing: [
     'buyer', 'customer wants', 'quotation', 'quote', 'enquiry', 'price', 'pricing',

@@ -17,13 +17,15 @@ export const STAGES = [
   { key: 'po_so', number: 4, label: 'PO & SO', department: 'order_confirmation' },
   { key: 'production_edd', number: 5, label: 'Production / EDD', department: 'production' },
   /* Not on the plant's original screen: Assembling's own stage, so its work is counted as its own. */
-  { key: 'assembling', number: '5A', label: 'Assembling', department: 'assembling' },
+  { key: 'assembling', number: '5A', label: 'Assembly', department: 'assembling' },
   { key: 'mould', number: 6, label: 'Mould', department: 'production' },
-  { key: 'team_payment_followup', number: 7, label: 'Team Payment Follow-up', department: 'accounts' },
+  { key: 'team_payment_followup', number: 7, label: 'Team Payment Follow-up', department: 'payment_collection' },
   { key: 'invoice_dispatch', number: 8, label: 'Invoice & Dispatch', department: 'despatch' },
   { key: 'lr_copy', number: 9, label: 'LR Copy', department: 'despatch' },
   { key: 'quality', number: 10, label: 'Quality', department: 'quality' },
   { key: 'ac_clarify', number: 11, label: 'A/C Clarify', department: 'accounts' },
+  /* Not on the plant's original screen: the Audit team's own stage, for the GST / invoice check. */
+  { key: 'audit', number: '11A', label: 'Audit', department: 'audit' },
   { key: 'my_payment_followup', number: 12, label: 'My Payment Follow-up', department: 'marketing' },
 ];
 

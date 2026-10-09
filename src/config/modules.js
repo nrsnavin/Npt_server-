@@ -449,10 +449,13 @@ const DEPARTMENT_LIST = [
       announcements: 'read',
     },
   },
-  /* Assembling instructions, completed and pending work (role requirements §8). */
+  /*
+   * Assembly: assembling instructions, completed and pending work (role requirements §8). The
+   * key stays `assembling` because users and tasks already store it; the plant calls it Assembly.
+   */
   {
     key: 'assembling',
-    label: 'Assembling',
+    label: 'Assembly',
     defaultAccess: {
       queries: 'write',
       tasks: 'write',
@@ -477,9 +480,10 @@ const DEPARTMENT_LIST = [
       announcements: 'read',
     },
   },
+  /* Invoices, GST and A/C Clarify. Chasing the money is Payment Collection's, below. */
   {
     key: 'accounts',
-    label: 'Accounts / Payment Follow-up',
+    label: 'Accounts',
     defaultAccess: {
       queries: 'write',
       payments: 'write',
@@ -490,6 +494,39 @@ const DEPARTMENT_LIST = [
       announcements: 'read',
     },
   },
+  /*
+   * Payment Collection: the people who ring the buyer for the money. They hold the receivables
+   * and their promises (callback, commitment, next follow-up), take Team Payment Follow-up, and
+   * are told when an invoice goes overdue [services/receivable.service.js].
+   */
+  {
+    key: 'payment_collection',
+    label: 'Payment Collection',
+    defaultAccess: {
+      queries: 'write',
+      payments: 'write',
+      tasks: 'write',
+      customers: 'read',
+      orders: 'read',
+      dispatch: 'read',
+      enquiries: 'read',
+      announcements: 'read',
+    },
+  },
+  /*
+   * Audit: checks the GST and invoices, and may look at anything to do it — read on every module
+   * except who has access, which stays Admin's. The cost behind a quotation stays redacted, as for
+   * every reader without costing rights [services/pricingVisibility.js].
+   */
+  {
+    key: 'audit',
+    label: 'Audit',
+    defaultAccess: {
+      ...Object.fromEntries(MODULE_KEYS.filter((key) => key !== 'users').map((key) => [key, 'read'])),
+      queries: 'write',
+      tasks: 'write',
+    },
+  },
   {
     key: 'management',
     label: 'Admin',
@@ -498,13 +535,14 @@ const DEPARTMENT_LIST = [
 ];
 
 /**
- * The ten departments, in the order the plant lists them (role requirements, 7 Oct 2026). The
- * keys are older than some of the names — `management` is Admin, `order_confirmation` is
- * Sales / SO, `despatch` is Dispatch — and are kept, because every user and task stores them.
+ * The departments, in the order the plant lists them (role requirements, 7 Oct 2026), with
+ * Payment Collection and Audit after Accounts. The keys are older than some of the names —
+ * `management` is Admin, `order_confirmation` is Sales / SO, `assembling` is Assembly,
+ * `despatch` is Dispatch — and are kept, because every user and task stores them.
  */
 const DEPARTMENT_ORDER = [
   'management', 'marketing', 'order_confirmation', 'quotation', 'sampling',
-  'production', 'quality', 'assembling', 'despatch', 'accounts',
+  'production', 'quality', 'assembling', 'despatch', 'accounts', 'payment_collection', 'audit',
 ];
 
 export const DEPARTMENTS = DEPARTMENT_ORDER.map((key) => DEPARTMENT_LIST.find((department) => department.key === key));

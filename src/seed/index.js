@@ -44,6 +44,9 @@ const PEOPLE = [
   { name: 'Sunil Quality', email: 'quality@npthangers.com', password: 'Qual@123456', department: 'quality', phone: '9876500007' },
   { name: 'Anita Despatch', email: 'despatch@npthangers.com', password: 'Desp@123456', department: 'despatch', phone: '9876500008' },
   { name: 'Kiran Accounts', email: 'accounts@npthangers.com', password: 'Accts@12345', department: 'accounts', phone: '9876500009' },
+  { name: 'Lakshmi Assembly', email: 'assembly@npthangers.com', password: 'Assem@12345', department: 'assembling', phone: '9876500010' },
+  { name: 'Vijay Collections', email: 'collections@npthangers.com', password: 'Collect@1234', department: 'payment_collection', phone: '9876500011' },
+  { name: 'Revathi Audit', email: 'audit@npthangers.com', password: 'Audit@12345', department: 'audit', phone: '9876500012' },
 ];
 
 async function seed() {
