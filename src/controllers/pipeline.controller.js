@@ -3,6 +3,9 @@ import { customerSummaries } from '../services/customerSummary.service.js';
 import { customerMap } from '../services/customerMap.service.js';
 import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import Customer from '../models/Customer.js';
+import {
+  MARKETING_STATUSES, MARKETING_STATUS_KEYS, marketingStatusLabel, marketingStatusOf, salesStatusesFor,
+} from '../config/marketingStatuses.js';
 import Enquiry, {
   CLOSED_STATUSES, ENQUIRY_STAGE_ORDER, ENQUIRY_STATUSES, fallsBack, furthestStage, stageLabel,
 } from '../models/Enquiry.js';
@@ -832,6 +835,18 @@ async function enquiryFilters(req, { withStatus = true } = {}) {
   /* Where it came from — the IndiaMART screen links to what its feed has raised. */
   if (req.query.source) filter.source = String(req.query.source);
   if (req.query.groupRef) filter.groupRef = req.query.groupRef;
+  /* Marketing's own status. An enquiry never given one reads as its sales status says. */
+  if (req.query.marketingStatus) {
+    const keys = String(req.query.marketingStatus).split(',').filter((key) => MARKETING_STATUS_KEYS.includes(key));
+    if (keys.length) {
+      filter.$and = [...(filter.$and || []), {
+        $or: [
+          { marketingStatus: { $in: keys } },
+          { marketingStatus: null, status: { $in: salesStatusesFor(keys) } },
+        ],
+      }];
+    }
+  }
   /*
    * Where it sits on the plant's twelve stages — what a department's workspace links to
    * ("the enquiries at PO & SO"). Unknown keys are dropped rather than matching nothing.
@@ -1266,6 +1281,44 @@ export const setEnquiryStatus = asyncHandler(async (req, res) => {
 
   await moveEnquiry(enquiry, req.body, req.user);
   res.json({ success: true, data: enquiry });
+});
+
+/**
+ * Setting the enquiry's marketing status [config/marketingStatuses.js] — the "Current Marketing
+ * Status" dropdown on the enquiry and on each row of the list.
+ *
+ * Marketing's own words, so any of them may be chosen in any order: a correction backwards is
+ * a correction. Two of them start work as well — "Sample requested" asks the sampling team and
+ * "Quotation preparing" opens the quotation — by moving the sales status through the same door
+ * a stage move uses. Only forward: an enquiry already further on is not pulled back.
+ */
+export const setEnquiryMarketingStatus = asyncHandler(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id);
+  if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+
+  const { status, note } = req.body;
+  const from = marketingStatusOf(enquiry);
+  if (status === from && enquiry.marketingStatus) throw ApiError.badRequest(`Already ${marketingStatusLabel(status)}`);
+
+  enquiry.marketingStatus = status;
+  enquiry.marketingStatusHistory = [
+    ...(enquiry.marketingStatusHistory || []),
+    { from, to: status, at: new Date(), by: req.user._id, note: note || undefined },
+  ];
+
+  const salesMove = MARKETING_STATUSES.find((entry) => entry.key === status)?.salesMove;
+  const moves = salesMove &&
+    enquiry.status !== salesMove &&
+    !CLOSED_STATUSES.includes(enquiry.status) &&
+    !fallsBack(enquiry, salesMove);
+
+  if (moves) {
+    await moveEnquiry(enquiry, { status: salesMove, note: `Marketing status: ${marketingStatusLabel(status)}` }, req.user);
+  } else {
+    await enquiry.save();
+  }
+
+  res.json({ success: true, data: enquiry, meta: { movedTo: moves ? salesMove : null } });
 });
 
 /**
