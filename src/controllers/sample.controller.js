@@ -586,8 +586,10 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
 
   expectVersion(sample, req.body);
 
-  const { status, note, courier, awbNumber, dispatchedAt, dispatchedQuantity, dispatchedColour } =
-    req.body;
+  const {
+    status, note, courier, awbNumber, dispatchedAt, dispatchedQuantity, dispatchedColour,
+    deliveryMethod, handedTo, recipientPhone,
+  } = req.body;
 
   if (status === sample.status) throw ApiError.badRequest(`Already at ${status}`);
   if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) {
@@ -619,7 +621,10 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
    * marketing to tell the buyer — and then satisfied the feedback action, which accepts any
    * with-customer status. One dropdown click removed the whole promise of §6.
    */
-  if (WITH_CUSTOMER_STATUSES.includes(sample.status) && ON_THE_BENCH_STATUSES.includes(status)) {
+  if (
+    WITH_CUSTOMER_STATUSES.includes(sample.status) &&
+    (ON_THE_BENCH_STATUSES.includes(status) || status === 'not_available')
+  ) {
     throw ApiError.badRequest(
       `${sample.number} has already gone to the customer, so it cannot go back to the bench. ` +
         'Cancel the request if it should not have been sent, or record what the customer said.'
@@ -665,6 +670,13 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
     );
   }
 
+  /* Not available goes back to whoever asked, and they have to tell the buyer why. */
+  if (status === 'not_available' && (note || '').trim().length < BACKWARD_REASON_MIN) {
+    throw ApiError.badRequest(
+      `Say why ${sample.number} is not available, so marketing can tell the buyer.`
+    );
+  }
+
   if (isBackwardSampleMove(sample.status, status) && (note || '').trim().length < BACKWARD_REASON_MIN) {
     throw ApiError.badRequest(
       `Moving ${sample.number} back from ${stageWords(sample.status)} to ${stageWords(status)} ` +
@@ -675,9 +687,16 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
   if (status === 'dispatched') {
     // Whatever was arranged earlier stands unless this call overrides it, so details entered
     // in advance do not have to be typed a second time to get the sample out of the door.
+    const method = deliveryMethod || sample.deliveryMethod || 'courier';
+    const direct = method === 'direct';
     const details = {
-      courier: courier ?? sample.courier,
-      awbNumber: awbNumber ?? sample.awbNumber,
+      deliveryMethod: method,
+      /* A direct handover has no courier or AWB; one entered earlier for a courier is dropped
+         so the buyer is not told about a tracking number that never existed. */
+      courier: direct ? undefined : courier ?? sample.courier,
+      awbNumber: direct ? undefined : awbNumber ?? sample.awbNumber,
+      handedTo: direct ? (handedTo ?? sample.handedTo) || undefined : undefined,
+      recipientPhone: direct ? (recipientPhone ?? sample.recipientPhone) || undefined : undefined,
       dispatchedQuantity: dispatchedQuantity ?? sample.dispatchedQuantity,
       /* Defaults to the shade asked for, so the ordinary case — it went out as requested —
          is not a field somebody has to retype to get the sample out of the door. */
@@ -685,8 +704,9 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
     };
 
     const missing = [
-      !details.courier && 'courier',
-      !details.awbNumber && 'AWB number',
+      !direct && !details.courier && 'courier',
+      !direct && !details.awbNumber && 'AWB number',
+      direct && !details.handedTo && !details.recipientPhone && 'contact person or phone number it was handed to',
       !(details.dispatchedQuantity > 0) && 'dispatched quantity',
       /* Only where a colour was named. A request that never asked for one has no answer to
          give, and demanding it would be inventing a field for the bench to make up. */
@@ -740,6 +760,46 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
   await publish(EVENTS.SAMPLE_STATUS_CHANGED, { sample, from, to: status, by: req.user });
   const specific = sampleStatusEvent(status);
   if (specific) await publish(specific, { sample, from, by: req.user });
+
+  res.json({ success: true, data: await withRefs(sample) });
+});
+
+/**
+ * The sample team closing its task on a request [the sampling work queue].
+ *
+ * Once the bag has gone — or the bench has said it cannot be done — the bench is finished
+ * with it even though the request is not: what the buyer says is marketing's to chase. This
+ * takes the row off the queue and leaves the request as it is.
+ *
+ * Closing one that never went out is ending it, so it cancels the request and says why —
+ * the same rule a cancel by hand has, because whoever asked for it will ask what happened.
+ */
+export const closeSampleTask = asyncHandler(async (req, res) => {
+  const sample = await Sample.findById(req.params.id);
+  if (!sample) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
+  if (sample.benchClosedAt) throw ApiError.badRequest(`The task on ${sample.number} is already closed`);
+
+  const note = req.body.note?.trim();
+  /* Not available is unsent too: closing it ends the request, so it says why. */
+  const unsent = ON_THE_BENCH_STATUSES.includes(sample.status) || sample.status === 'not_available';
+
+  if (unsent && (note || '').length < BACKWARD_REASON_MIN) {
+    throw ApiError.badRequest(
+      `${sample.number} has not gone out, so closing the task cancels it. Say why, so whoever asked knows.`
+    );
+  }
+
+  const from = sample.status;
+  if (unsent) {
+    sample.status = 'cancelled';
+    sample.statusHistory.push({ from, to: 'cancelled', by: req.user._id, note });
+  }
+  sample.benchClosedAt = new Date();
+  sample.benchClosedBy = req.user._id;
+  await sample.save();
+
+  if (unsent) await publish(EVENTS.SAMPLE_STATUS_CHANGED, { sample, from, to: 'cancelled', by: req.user });
 
   res.json({ success: true, data: await withRefs(sample) });
 });

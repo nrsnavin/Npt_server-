@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   listSamples, listStalledSamples, getSample, createSample, updateSample, assignSample,
-  setSampleStatus, setDispatchDetails, recordFeedback, resample, samplePipeline, sampleBoard,
+  setSampleStatus, closeSampleTask, setDispatchDetails, recordFeedback, resample, samplePipeline, sampleBoard,
   linkEnquiry, linkCustomer,
   previewCustomerMessage, sendCustomerMessage, listCustomerMessages,
 } from '../controllers/sample.controller.js';
@@ -10,7 +10,7 @@ import {
   downloadAttachment, setReferencePhoto, clearReferencePhoto,
 } from '../controllers/sampleLog.controller.js';
 import {
-  sampleDashboard, sampleDay, sampleAnalyticsReport,
+  sampleDashboard, sampleDay, sampleQueue, sampleAnalyticsReport,
 } from '../controllers/sampleDashboard.controller.js';
 import { adminOnly, authenticate, requireAnyModule, requireModule } from '../middleware/auth.js';
 import { singleImage } from '../middleware/upload.js';
@@ -18,7 +18,7 @@ import { validate } from '../middleware/validate.js';
 import {
   sampleSchema, sampleUpdateSchema, sampleAssignSchema,
   sampleStatusSchema, sampleFeedbackSchema, resampleSchema, customerMessageSchema,
-  dispatchDetailsSchema, sampleLogSchema, logCommentSchema, linkEnquirySchema, linkCustomerSchema,
+  dispatchDetailsSchema, sampleCloseTaskSchema, sampleLogSchema, logCommentSchema, linkEnquirySchema, linkCustomerSchema,
 } from '../validators/sample.schemas.js';
 
 const router = Router();
@@ -42,6 +42,8 @@ router.get('/dashboard', requireModule('samples'), sampleDashboard);
    next. A different question from the dashboard beside it — see the controller. */
 router.get('/day', requireModule('samples'), sampleDay);
 router.get('/analytics', requireModule('samples'), sampleAnalyticsReport);
+/* The sampling department's work queue: every request with its status, priority and handover. */
+router.get('/queue', requireModule('samples'), sampleQueue);
 router.get('/', requireModule('samples'), listSamples);
 /*
  * Raising a request is not the same as working one. A buyer asking at the counter is
@@ -58,6 +60,7 @@ router.get('/:id', requireModule('samples'), getSample);
 router.patch('/:id', requireModule('samples', 'write'), validate(sampleUpdateSchema), updateSample);
 router.post('/:id/assign', requireModule('samples', 'write'), validate(sampleAssignSchema), assignSample);
 router.post('/:id/status', requireModule('samples', 'write'), validate(sampleStatusSchema), setSampleStatus);
+router.post('/:id/close-task', requireModule('samples', 'write'), validate(sampleCloseTaskSchema), closeSampleTask);
 router.patch(
   '/:id/dispatch-details',
   requireModule('samples', 'write'),

@@ -164,10 +164,31 @@ export function registerSamplingSubscribers() {
       await raiseTask({
         user: sample.requestedBy,
         title: `Chase feedback on sample ${sample.number}`,
-        notes: sample.awbNumber ? `Sent by ${sample.courier} · ${sample.awbNumber}` : undefined,
+        notes: sample.deliveryMethod === 'direct'
+          ? `Handed over to ${[sample.handedTo, sample.recipientPhone].filter(Boolean).join(' · ')}`
+          : sample.awbNumber ? `Sent by ${sample.courier} · ${sample.awbNumber}` : undefined,
         priority: 'normal',
         link: `/samples/${sample._id}`,
         originKey: key(sample, 'feedback'),
+      });
+    })
+  );
+
+  /*
+   * The bench cannot supply it. Not the customer's to hear from a status change [§42] — the
+   * person who asked tells them, with an alternative — so it goes to marketing, urgently.
+   */
+  subscribe(
+    EVENTS.SAMPLE_NOT_AVAILABLE,
+    safely('not available notice', async ({ sample }) => {
+      const reason = [...(sample.statusHistory || [])].reverse().find((entry) => entry.to === 'not_available')?.note;
+      await raiseTask({
+        user: sample.requestedBy,
+        title: `Sample ${sample.number} is not available`,
+        notes: [reason, 'Tell the buyer and decide: another model, wait for a run, or cancel.'].filter(Boolean).join(' — '),
+        priority: 'high',
+        link: `/samples/${sample._id}`,
+        originKey: key(sample, 'not-available'),
       });
     })
   );

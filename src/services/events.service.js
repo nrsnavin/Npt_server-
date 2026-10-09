@@ -60,6 +60,7 @@ export const EVENTS = {
   SAMPLE_READY: 'sample.ready',
   /** Moves the enquiry to sample feedback pending [§6]. */
   SAMPLE_DISPATCHED: 'sample.dispatched',
+  SAMPLE_NOT_AVAILABLE: 'sample.not_available',
   SAMPLE_APPROVED: 'sample.approved',
   SAMPLE_MODIFICATION_REQUIRED: 'sample.modification_required',
   SAMPLE_REJECTED: 'sample.rejected',
@@ -126,6 +127,7 @@ export const sampleStatusEvent = (status) =>
   ({
     sample_ready: EVENTS.SAMPLE_READY,
     dispatched: EVENTS.SAMPLE_DISPATCHED,
+    not_available: EVENTS.SAMPLE_NOT_AVAILABLE,
     approved: EVENTS.SAMPLE_APPROVED,
     modification_required: EVENTS.SAMPLE_MODIFICATION_REQUIRED,
     rejected: EVENTS.SAMPLE_REJECTED,

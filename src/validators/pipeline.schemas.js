@@ -281,3 +281,15 @@ export const buyerCardConfirmSchema = z.object({
   estimatedValue: z.number().nonnegative().nullable().optional(),
   assignedTo: objectId.optional(),
 });
+
+/** A message to the buyer from the enquiry: WhatsApp, or an email with a subject. */
+export const enquiryMessageSchema = z
+  .object({
+    channel: z.enum(['whatsapp', 'email']),
+    subject: z.string().trim().max(200).optional(),
+    body: z.string().trim().min(1, 'Write the message first').max(4000),
+  })
+  .refine((value) => value.channel !== 'email' || (value.subject || '').length > 0, {
+    message: 'An email needs a subject',
+    path: ['subject'],
+  });

@@ -48,8 +48,12 @@ export function contextFor({ sample, enquiry, customer }) {
     colour: sample.colour,
     quantity: sample.quantity,
     description: describe(sample),
-    courier: sample.courier,
-    awbNumber: sample.awbNumber,
+    /* A direct handover has no courier; the template's two slots carry who took it instead. */
+    direct: sample.deliveryMethod === 'direct',
+    courier: sample.deliveryMethod === 'direct' ? 'Handed over in person' : sample.courier,
+    awbNumber: sample.deliveryMethod === 'direct'
+      ? [sample.handedTo, sample.recipientPhone].filter(Boolean).join(', ')
+      : sample.awbNumber,
     dispatchedQuantity: sample.dispatchedQuantity,
     courierLine: courierLine(sample),
     company: 'Navin Plastic Tech',
@@ -90,9 +94,9 @@ export const TEMPLATES = {
     subject: (ctx) => `Your sample ${ctx.sampleNumber} is on its way — ${ctx.company}`,
     body: (ctx) =>
       `Hello ${ctx.customerName},\n\n` +
-      `Your sample ${ctx.sampleNumber} — ${ctx.description} — has been dispatched.\n\n` +
-      `Courier: ${ctx.courier}\n` +
-      `Tracking number: ${ctx.awbNumber}\n` +
+      `Your sample ${ctx.sampleNumber} — ${ctx.description} — has been ` +
+      (ctx.direct ? `handed over to ${ctx.awbNumber}.\n\n` : 'dispatched.\n\n') +
+      (ctx.direct ? '' : `Courier: ${ctx.courier}\nTracking number: ${ctx.awbNumber}\n`) +
       `Quantity sent: ${formatNumber.format(ctx.dispatchedQuantity ?? ctx.quantity)} pc\n\n` +
       `Please let us know your feedback once it reaches you.\n\n` +
       `${ctx.company}`,
