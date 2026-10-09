@@ -406,12 +406,14 @@ async function replyWith(res, quotation, user, status = 200) {
 export async function newQuotation(fields, user, { system = false } = {}) {
   assertValidityAhead(fields.validUntil);
 
-  const enquiry = await requireEnquiry(fields.enquiry, null, { what: 'quotation', customer: fields.customer });
+  /*
+   * Whoever may work the enquiry may quote on it. Decided by the enquiry rather than the buyer:
+   * an enquiry handed to a colleague [services/delegation.service.js] stays on a buyer its first
+   * owner still holds, and the colleague is the one who has to send the price.
+   */
+  const enquiry = await requireEnquiry(fields.enquiry, system ? null : user, { what: 'quotation', customer: fields.customer });
   const customer = await Customer.findById(enquiry.customer);
   if (!customer) throw ApiError.badRequest('That customer does not exist');
-  if (!system && !ownsRecord(user, customer)) {
-    throw ApiError.forbidden('That customer belongs to another marketing person');
-  }
   const owner = enquiry.assignedTo || customer.assignedTo || user?._id;
   if (!system) {
     await assertQuotationLinks(user, { customerId: customer._id, enquiryId: enquiry._id, assignedTo: fields.assignedTo, owner });

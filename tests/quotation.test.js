@@ -531,14 +531,30 @@ test('a quotation is a customer conversation, and is scoped like one', async () 
   assert.equal(management.status, 200, 'management is not ownership-scoped');
 });
 
-test('a quote cannot be raised against another marketing person’s customer', async () => {
+test('a quote cannot be raised on another marketing person’s enquiry', async () => {
+  /* The fixture raises the enquiry for the buyer's owner, Nandhini — not Kavitha's to quote on. */
   const attempt = await api('/api/quotations', {
     method: 'POST',
     token: kavitha,
     body: { customer, lines: [{ quantity: 100, unitPrice: 5 }] },
   });
 
-  assert.equal(attempt.status, 403);
+  assert.equal(attempt.status, 404);
+});
+
+test('an enquiry handed to a colleague can be quoted by that colleague', async () => {
+  /* The buyer stays Nandhini's; the enquiry is Kavitha's now, so the price is hers to send. */
+  const { raiseEnquiryFor } = await import('./support/onEnquiry.js');
+  const enquiry = await raiseEnquiryFor({ customer });
+  const kavithaId = (await api('/api/auth/me', { token: kavitha })).json.data.id;
+  const handed = await api(`/api/enquiries/${enquiry._id}/delegate`, { method: 'POST', token: nandhini, body: { to: kavithaId } });
+  assert.equal(handed.status, 200, handed.json.message);
+
+  const made = await api('/api/quotations', {
+    method: 'POST', token: kavitha, body: { enquiry: String(enquiry._id), lines: [{ modelNumber: 'NH-400', unitPrice: 5 }] },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  assert.equal(String(made.json.data.assignedTo?._id || made.json.data.assignedTo), kavithaId, 'and it is hers');
 });
 
 /* --------------------------------- Figures --------------------------------- */
@@ -1093,8 +1109,9 @@ test('a quotation can only name an enquiry of its own buyer', async () => {
       lines: [{ quantity: 20000, unitPrice: 7.5, modelNumber: 'NH-400' }],
     },
   });
-  assert.equal(raised.status, 400);
-  assert.match(raised.json.message, /different customer/);
+  /* Refused before the buyer is even compared: a colleague's enquiry is not hers to quote on. */
+  assert.equal(raised.status, 404);
+  assert.match(raised.json.message, /not found/i);
 
   const made = await quote();
   const moved = await api(`/api/quotations/${made._id}`, {
