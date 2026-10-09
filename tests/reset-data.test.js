@@ -205,11 +205,12 @@ test('--keep-registers spares the model masters and nothing else', async () => {
 
   const after = await countsByModel(others);
   /* §28's masters: measured facts about tooling and bought-in parts, which are days of work
-     with a vernier to re-enter. */
-  for (const register of ['Mould', 'Material', 'Component']) {
+     with a vernier to re-enter — and the trading master, a supplier's price list. */
+  const REGISTERS = ['Mould', 'Material', 'Component', 'TradedItem'];
+  for (const register of REGISTERS) {
     assert.equal(after[register], 1, `${register} should have been spared`);
   }
-  const workingData = others.filter((name) => !['Mould', 'Material', 'Component'].includes(name));
+  const workingData = others.filter((name) => !REGISTERS.includes(name));
   const left = workingData.filter((name) => after[name] > 0);
   assert.deepEqual(left, [], `these are not registers and should have gone:\n  ${left.join('\n  ')}`);
 });

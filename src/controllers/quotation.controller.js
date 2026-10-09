@@ -7,6 +7,7 @@ import Customer from '../models/Customer.js';
 import Mould, { MATERIALS, mouldWithPhoto } from '../models/Mould.js';
 import Material, { grammageFrom } from '../models/Material.js';
 import Component from '../models/Component.js';
+import TradedItem, { modelKeyOf } from '../models/TradedItem.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { fileSafeNumber, nextQuoteNumber } from '../services/numbering.service.js';
@@ -73,6 +74,7 @@ const POPULATE = [
   { path: 'requestedBy', select: 'name' },
   { path: 'costedBy', select: 'name' },
   { path: 'lines.approvedBy', select: 'name' },
+  { path: 'lines.tradedItem', select: 'modelNumber code description supplier colour inwardPrice priceUpdatedAt isActive' },
 ];
 
 const isAdmin = isManagement;
@@ -129,6 +131,9 @@ async function lineFrom(input = {}, { fallbackModel } = {}) {
   const mould = mouldId ? await Mould.findById(mouldId) : null;
   if (mouldId && !mould) throw ApiError.badRequest('That mould is not on the register');
 
+  /* A bought-in item: named, or recognised by its model when there is no tool behind it. */
+  const traded = await tradedItemFor(input, { mould, fallbackModel });
+
   const material = input.materialRef ? await Material.findById(input.materialRef) : null;
   if (input.materialRef && !material) throw ApiError.badRequest('That material is not on the register');
 
@@ -140,15 +145,16 @@ async function lineFrom(input = {}, { fallbackModel } = {}) {
     hookRef: parts.hook?._id,
     clipRef: parts.clip?._id,
     printRef: parts.print?._id,
-    modelNumber: String(input.modelNumber || fallbackModel || mould?.mouldCode || '').trim() || undefined,
+    tradedItem: traded?._id,
+    modelNumber: String(input.modelNumber || fallbackModel || mould?.mouldCode || traded?.modelNumber || '').trim() || undefined,
     material: input.material || (MATERIALS.includes(material?.type) ? material.type : undefined) || mould?.material,
-    procurement: input.procurement,
+    procurement: traded ? 'trade' : input.procurement,
     printing: input.printing,
     markupPercent: input.markupPercent,
-    cost: costingFrom(mould, material, parts),
+    cost: { ...costingFrom(mould, material, parts), ...(traded ? { inwardPrice: traded.inwardPrice } : {}) },
     quantity: input.quantity,
-    moq: input.moq ?? mould?.moq ?? 0,
-    colour: input.colour,
+    moq: input.moq ?? mould?.moq ?? traded?.moq ?? 0,
+    colour: input.colour ?? traded?.colour,
     remarks: input.remarks,
     unitPrice: input.unitPrice ?? undefined,
     status: 'requested',
@@ -157,6 +163,23 @@ async function lineFrom(input = {}, { fallbackModel } = {}) {
     throw ApiError.badRequest('Name the model on every line — a mould or a model number');
   }
   return line;
+}
+
+/**
+ * The trading-master row a line is for: the one it names, or — for a line with no tool — the
+ * active item whose model it is, so an enquiry for a traded model is costed at its inward price
+ * without anybody having to look it up. A line asked to be made here is never matched.
+ */
+async function tradedItemFor(input, { mould, fallbackModel } = {}) {
+  if (input.tradedItem) {
+    const item = await TradedItem.findById(input.tradedItem);
+    if (!item) throw ApiError.badRequest('That item is not on the trading master');
+    return item;
+  }
+  if (mould || input.procurement === 'manufacture') return null;
+  const model = input.modelNumber || fallbackModel;
+  if (!model) return null;
+  return TradedItem.findOne({ modelKey: modelKeyOf(model), isActive: { $ne: false } });
 }
 
 /** A model named only by its tool counts — "the 420, same as last time". */
@@ -379,6 +402,7 @@ const loadDetail = (id) =>
     ))
     .populate(Object.entries(REGISTER_FIELDS).map(([ref, select]) => ({ path: `lines.${ref}`, select })))
     .populate('lines.approvedBy', 'name')
+    .populate('lines.tradedItem', 'modelNumber code description supplier colour inwardPrice priceUpdatedAt isActive')
     .populate('requestedBy', 'name')
     .populate('costedBy', 'name')
     .populate('revisions.by', 'name')
@@ -490,7 +514,7 @@ export const costLine = asyncHandler(async (req, res) => {
 
   const {
     cost, markupPercent, unitPrice, minimumOverride, printing, procurement, mould,
-    materialRef, hookRef, clipRef, printRef, remarks,
+    materialRef, hookRef, clipRef, printRef, remarks, tradedItem,
   } = withoutVersion(req.body);
 
   if (sent && unitPrice !== undefined && unitPrice !== line.unitPrice) {
@@ -520,6 +544,19 @@ export const costLine = asyncHandler(async (req, res) => {
     line.cost = { ...line.cost?.toObject?.(), ...costingFrom(tool, resin, held) };
     if (materialRef && resin && MATERIALS.includes(resin.type)) line.material = resin.type;
     if (mould && tool && !line.modelNumber) line.modelNumber = tool.mouldCode;
+  }
+
+  /* Picking a bought-in item takes its inward price as the cost; clearing it clears that. */
+  if (tradedItem === null) {
+    line.tradedItem = undefined;
+    line.cost = { ...line.cost?.toObject?.(), inwardPrice: undefined };
+  } else if (tradedItem) {
+    const item = await TradedItem.findById(tradedItem);
+    if (!item) throw ApiError.badRequest('That item is not on the trading master');
+    line.tradedItem = item._id;
+    line.procurement = 'trade';
+    line.cost = { ...line.cost?.toObject?.(), inwardPrice: item.inwardPrice };
+    if (!line.modelNumber) line.modelNumber = item.modelNumber;
   }
 
   if (cost) line.cost = { ...line.cost?.toObject?.(), ...cost };

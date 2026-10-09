@@ -20,6 +20,7 @@ import { seedPricing } from './pricing.js';
 import { seedRegisterCostings } from './registerCostings.js';
 import { seedOrders } from './orders.js';
 import { seedQueries } from './queries.js';
+import { seedTradedItems } from './tradedItems.js';
 import { FULL, few } from './size.js';
 
 /** Dates relative to today, so the reminder feed always has something to show. */
@@ -257,6 +258,9 @@ async function seed() {
     admin: byEmail['rsnavin1@gmail.com'],
   });
 
+  /* After the quotations: see seed/tradedItems.js. */
+  const tradedItems = await seedTradedItems();
+
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));
 
   console.log(
@@ -326,6 +330,7 @@ async function seed() {
       `answered yet and ${asked.closed} settled and closed — opening those buyers to ` +
       `${asked.grants} people who do not own them.`
   );
+  console.log(`  Trading master: ${tradedItems.created} bought-in items, priced from the sheet for demonstration.`);
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');
 

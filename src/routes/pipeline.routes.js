@@ -29,8 +29,8 @@ import {
 } from '../controllers/component.controller.js';
 import { marketingDashboard } from '../controllers/marketingDashboard.controller.js';
 import { addDocument, listDocuments, removeDocument } from '../controllers/document.controller.js';
-import { singleDocument, singleImage } from '../middleware/upload.js';
-import { adminOnly, authenticate, requireModule } from '../middleware/auth.js';
+import { singleDocument, singleImage, singleSheet } from '../middleware/upload.js';
+import { adminOnly, authenticate, requireAnyModule, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
   customerSchema, customerUpdateSchema,
@@ -40,6 +40,11 @@ import {
 } from '../validators/pipeline.schemas.js';
 import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validators/mould.schemas.js';
 import { materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
+import { tradedItemSchema, tradedItemUpdateSchema } from '../validators/tradedItem.schemas.js';
+import {
+  createTradedItem, exportTradedItems, getTradedItem, importTradedItems, listTradedItems,
+  tradedItemQuotations, tradedTemplate, updateTradedItem,
+} from '../controllers/tradedItem.controller.js';
 import { componentSchema, componentUpdateSchema } from '../validators/component.schemas.js';
 import { customerTimeline } from '../controllers/timeline.controller.js';
 import {
@@ -91,6 +96,21 @@ router.post('/materials', requireModule('materials', 'write'), validate(material
 router.get('/materials/:id', requireModule('materials'), getMaterial);
 router.get('/materials/:id/pricings', requireModule('materials'), materialPricings);
 router.patch('/materials/:id', requireModule('materials', 'write'), validate(materialUpdateSchema), updateMaterial);
+
+/*
+ * The trading master: bought-in items and their inward price. Read by anyone who works with
+ * the registers or quotes; kept, and priced, by the Quotation department and Admin — the
+ * controller checks that, because the price is cost [services/pricingVisibility.js].
+ */
+const tradingRead = requireAnyModule(['materials', 'read'], ['pricing', 'read']);
+router.get('/traded-items/export', tradingRead, exportTradedItems);
+router.get('/traded-items/template', tradingRead, tradedTemplate);
+router.post('/traded-items/import', tradingRead, singleSheet('file'), importTradedItems);
+router.get('/traded-items', tradingRead, listTradedItems);
+router.post('/traded-items', tradingRead, validate(tradedItemSchema), createTradedItem);
+router.get('/traded-items/:id', tradingRead, getTradedItem);
+router.get('/traded-items/:id/quotations', tradingRead, tradedItemQuotations);
+router.patch('/traded-items/:id', tradingRead, validate(tradedItemUpdateSchema), updateTradedItem);
 
 /*
  * Hooks, clips and printing — three registers over one collection, told apart by `kind`.

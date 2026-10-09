@@ -24,6 +24,8 @@ const quotationLine = z.object({
   hookRef: objectId.optional(),
   clipRef: objectId.optional(),
   printRef: objectId.optional(),
+  /* A bought-in item from the trading master; its inward price becomes the line's cost. */
+  tradedItem: objectId.optional(),
   material: z.enum(MATERIALS).optional(),
   procurement: z.enum(['manufacture', 'trade']).optional(),
   printing: z.string().optional(),
@@ -89,6 +91,8 @@ export const quotationCostSchema = z
         printingCost: money.optional(),
         packingCost: money.optional(),
         otherCost: money.optional(),
+        /* What the supplier is paid, typed for an item that is not on the trading master. */
+        inwardPrice: money.optional(),
       })
       .optional(),
     markupPercent: z.number().min(0).max(500).optional(),
@@ -101,6 +105,7 @@ export const quotationCostSchema = z
     hookRef: objectId.nullable().optional(),
     clipRef: objectId.nullable().optional(),
     printRef: objectId.nullable().optional(),
+    tradedItem: objectId.nullable().optional(),
     remarks: z.string().optional(),
   })
   .extend(versioned);

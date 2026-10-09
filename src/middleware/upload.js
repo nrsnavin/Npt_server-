@@ -62,3 +62,31 @@ export const singleDocument = (field = 'file') => (req, res, next) =>
     }
     return next(error);
   });
+
+/**
+ * A spreadsheet for a register import — .xlsx or .csv, read in memory and never stored. Told
+ * apart by content in services/sheetRows.js, because browsers send CSV under four different
+ * types depending on the machine.
+ */
+const SHEET_TYPES = [
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/csv', 'application/csv', 'text/plain', 'application/vnd.ms-excel', 'application/octet-stream',
+];
+const sheets = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    if (SHEET_TYPES.includes(file.mimetype) && /\.(xlsx|csv)$/i.test(file.originalname || '')) return callback(null, true);
+    callback(ApiError.badRequest('Upload the list as an Excel (.xlsx) or CSV file'));
+  },
+});
+
+export const singleSheet = (field = 'file') => (req, res, next) =>
+  sheets.single(field)(req, res, (error) => {
+    if (!error) return next();
+    if (error.code === 'LIMIT_FILE_SIZE') return next(ApiError.badRequest('That file is too large — the limit is 5MB'));
+    if (error.code === 'LIMIT_FILE_COUNT' || error.code === 'LIMIT_UNEXPECTED_FILE') {
+      return next(ApiError.badRequest('Upload one file at a time'));
+    }
+    return next(error);
+  });
