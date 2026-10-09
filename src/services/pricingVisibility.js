@@ -115,6 +115,11 @@ export function visibleTo(quotation, user) {
         seen[ref] = rest;
       }
     }
+    /* A bought-in item carries what we pay for it. */
+    if (seen.tradedItem && typeof seen.tradedItem === 'object') {
+      const { inwardPrice: _in, priceHistory: _history, priceUpdatedAt: _at, ...rest } = seen.tradedItem;
+      seen.tradedItem = rest;
+    }
 
     /* Whether, not where: a price under its minimum, and whether it waits on Admin. */
     seen.belowMinimum = Boolean(line.belowMinimum);
@@ -317,3 +322,23 @@ export function dispatchVisibleTo(dispatch, user) {
 }
 
 export const allDispatchesVisibleTo = (rows, user) => rows.map((row) => dispatchVisibleTo(row, user));
+
+/* ------------------------------ The trading master ------------------------------ */
+
+/**
+ * What a bought-in item costs us is cost [§8], the same as a resin rate on a quotation line:
+ * the Quotation department and Admin see it, everyone else sees the item.
+ */
+export const TRADED_CONFIDENTIAL = ['inwardPrice', 'priceHistory', 'priceUpdatedAt'];
+
+export const seesInwardPrice = (user) => seesCosting(user);
+
+export function tradedItemVisibleTo(item, user) {
+  const plain = typeof item?.toJSON === 'function' ? item.toJSON() : { ...item };
+  if (seesInwardPrice(user)) return plain;
+  for (const field of TRADED_CONFIDENTIAL) delete plain[field];
+  plain.priceHidden = true;
+  return plain;
+}
+
+export const allTradedItemsVisibleTo = (rows, user) => rows.map((row) => tradedItemVisibleTo(row, user));

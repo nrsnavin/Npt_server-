@@ -423,7 +423,7 @@ async function moneyFindings() {
 
   const findings = [{
     kind: 'money_overdue',
-    department: 'accounts',
+    department: 'payment_collection',
     headline: `${lakh(owed)} is overdue across ${plural(overdue.length, 'invoice', 'invoices')}`,
     detail:
       `The largest is ${worst.number}, ${lakh(worst.balance)} from ` +
@@ -437,7 +437,7 @@ async function moneyFindings() {
   if (broken.length) {
     findings.push({
       kind: 'money_promise_broken',
-      department: 'accounts',
+      department: 'payment_collection',
       headline: `${plural(broken.length, 'buyer has', 'buyers have')} broken a promise to pay`,
       detail:
         'They named a date and it has gone. This is the only kind of chase with something to ' +

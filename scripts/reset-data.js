@@ -10,7 +10,7 @@
  * Options:
  *   --keep=<email>    the one account to survive (default: rsnavin1@gmail.com)
  *   --confirm         required to delete anything; without it this is a dry run
- *   --keep-registers  leave the model masters alone — moulds, materials, hooks/clips/print
+ *   --keep-registers  leave the model masters alone — moulds, materials, hooks/clips/print, the trading master
  *                     [§28]. `--keep-catalogue` is accepted as the old name for this.
  *
  * Reads MONGO_URI from .env, like the server does. Nothing is read from the command line but
@@ -59,7 +59,7 @@ const DEFAULT_KEEP = 'rsnavin1@gmail.com';
  * exactly them, which is what somebody clearing a year of transactions before a fresh start
  * actually wants.
  */
-const REGISTERS = ['Mould', 'Material', 'Component'];
+const REGISTERS = ['Mould', 'Material', 'Component', 'TradedItem'];
 
 /**
  * Handled separately, not skipped. Listed here so a reader can see there is no third category.
@@ -118,6 +118,7 @@ const LABELS = {
   AuditLog: 'Audit log',
   Component: 'Hook / clip / print register',
   Material: 'Material register',
+  TradedItem: 'Trading master',
   Mould: 'Mould register',
   /*
    * In the list on purpose. It holds the running numbers behind ENQ-2026-0001 and friends, and

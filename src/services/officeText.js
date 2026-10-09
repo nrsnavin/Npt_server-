@@ -14,7 +14,7 @@ const MAX_PART_BYTES = 8 * 1024 * 1024;
 /** More than a model needs to say what a document is and what it states. */
 export const MAX_TEXT = 12000;
 
-function entriesOf(buffer) {
+export function entriesOf(buffer) {
   /* The end-of-central-directory record: within the last 64 KB + 22 bytes. */
   const floor = Math.max(0, buffer.length - 65557);
   let end = -1;
@@ -42,7 +42,7 @@ function entriesOf(buffer) {
   return entries;
 }
 
-function partOf(buffer, entry) {
+export function partOf(buffer, entry) {
   if (!entry || entry.size > MAX_PART_BYTES) return null;
   const at = entry.local;
   if (at + 30 > buffer.length || buffer.readUInt32LE(at) !== 0x04034b50) return null;
@@ -57,7 +57,7 @@ function partOf(buffer, entry) {
   return null;
 }
 
-const decode = (text) =>
+export const decode = (text) =>
   text
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')

@@ -196,7 +196,14 @@ export async function runPaymentEscalations({ now = new Date() } = {}) {
     $or: [{ role: 'admin' }, { department: 'management' }],
   }).select('_id');
 
-  const accounts = await User.find({ isActive: { $ne: false }, department: 'accounts' }).select('_id');
+  /* Payment Collection rings the buyer; Accounts keeps the books. Both hear about a late invoice. */
+  const accounts = await User.find({
+    isActive: { $ne: false },
+    $or: [
+      { department: { $in: ['accounts', 'payment_collection'] } },
+      { extraDepartments: { $in: ['accounts', 'payment_collection'] } },
+    ],
+  }).select('_id');
 
   let raised = 0;
 

@@ -89,6 +89,11 @@ const costSchema = new mongoose.Schema(
     printingCost: { type: Number, min: 0, default: 0 },
     packingCost: { type: Number, min: 0, default: 0 },
     otherCost: { type: Number, min: 0, default: 0 },
+    /**
+     * ₹ per piece paid to the supplier, for a bought-in item — copied from the trading master
+     * when the item is picked, so a later price change cannot reach back into a sent quote.
+     */
+    inwardPrice: { type: Number, min: 0 },
   },
   { _id: false }
 );
@@ -112,6 +117,8 @@ const lineSchema = new mongoose.Schema(
     clipRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
     printRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
     material: { type: String, enum: MATERIALS },
+    /** The trading master's row, for a bought-in item; its inward price is copied onto `cost`. */
+    tradedItem: { type: mongoose.Schema.Types.ObjectId, ref: 'TradedItem' },
     /** Made here, or bought in and resold. */
     procurement: { type: String, enum: ['manufacture', 'trade'], default: 'manufacture' },
     /** What is printed, in the sheet's words — "1 COLOUR", "2 COLOUR". */
@@ -167,7 +174,8 @@ lineSchema.virtual('totalCost').get(function totalCost() {
     (cost.metalClipsCost || 0) +
     (cost.printingCost || 0) +
     (cost.packingCost || 0) +
-    (cost.otherCost || 0)
+    (cost.otherCost || 0) +
+    (cost.inwardPrice || 0)
   );
 });
 

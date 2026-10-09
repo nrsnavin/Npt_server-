@@ -103,26 +103,27 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-test('the ten departments, in the plant\'s order', async () => {
+test('the departments, in the plant\'s order', async () => {
   const { DEPARTMENTS } = await import('../src/config/modules.js');
   assert.deepEqual(DEPARTMENTS.map((department) => department.label), [
     'Admin', 'Marketing', 'Sales / SO', 'Quotation', 'Sampling',
-    'Production', 'Quality', 'Assembling', 'Dispatch', 'Accounts / Payment Follow-up',
+    'Production', 'Quality', 'Assembly', 'Dispatch', 'Accounts', 'Payment Collection', 'Audit',
   ]);
 });
 
 test('the buttons and the stages come from the server', async () => {
   const { status, json } = await api('/api/handoffs', { token: arun });
   assert.equal(status, 200);
-  /* The plant's twelve, plus Assembling's own (5A). */
-  assert.equal(json.data.stages.filter((stage) => stage.number).length, 13);
+  /* The plant's twelve, plus Assembly's own (5A) and Audit's (11A). */
+  assert.equal(json.data.stages.filter((stage) => stage.number).length, 14);
   assert.equal(json.data.stages.find((stage) => stage.key === 'assembling').number, '5A');
+  assert.equal(json.data.stages.find((stage) => stage.key === 'audit').department, 'audit');
   assert.deepEqual(json.data.stages.slice(0, 4).map((stage) => stage.label), ['Enquiry', 'Sample', 'Pricing / Quote', 'PO & SO']);
   const drawn = json.data.buttons.filter((button) => !button.hidden);
   assert.deepEqual(drawn.map((button) => button.label), [
     'Photos Sent', 'Create Quotation', 'Sample Request', 'Price Negotiation', 'PO & SO', 'Ask EDD',
-    'Ask Assembling EDD', 'Mould Issue', 'Team Payment Follow-up', 'Invoice & Dispatch', 'LR Copy',
-    'Quality Check', 'Quality Issue', 'GST / Invoice Audit', 'Request PRT Visit', 'My Payment Follow-up', 'Back to Marketing', 'Task Closed',
+    'Ask Assembly EDD', 'Mould Issue', 'Team Payment Follow-up', 'Invoice & Dispatch', 'LR Copy',
+    'Quality Check', 'Quality Issue', 'GST / Invoice Audit', 'A/C Clarify', 'Request PRT Visit', 'My Payment Follow-up', 'Back to Marketing', 'Task Closed',
   ]);
   /* Which of them hand the enquiry over, and which only record or ask on the side. */
   const moves = Object.fromEntries(json.data.buttons.map((button) => [button.key, button.moves]));
@@ -569,7 +570,7 @@ test('Admin sees every department side by side; nobody else does', async () => {
   assert.equal(refused.status, 403);
   const { status, json } = await api('/api/departments/overview', { token: admin });
   assert.equal(status, 200);
-  assert.equal(json.data.length, 10);
+  assert.equal(json.data.length, 12);
   const production = json.data.find((row) => row.department === 'production');
   assert.ok(production.late >= 1);
   assert.equal(json.data[0].label, 'Admin');

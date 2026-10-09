@@ -58,8 +58,8 @@ export const HANDOFFS = [
     records: [{ key: 'edd', label: 'Expected date', type: 'date' }, { key: 'pending', label: 'Pending quantity' }],
   },
   {
-    key: 'ask_assembling_edd', label: 'Ask Assembling EDD', department: 'assembling', stage: 'assembling',
-    hint: 'When will assembling finish?',
+    key: 'ask_assembling_edd', label: 'Ask Assembly EDD', department: 'assembling', stage: 'assembling',
+    hint: 'When will assembly finish?',
     records: [{ key: 'edd', label: 'Expected date', type: 'date' }, { key: 'pending', label: 'Pending quantity' }],
   },
   {
@@ -68,12 +68,13 @@ export const HANDOFFS = [
     records: [{ key: 'readyBy', label: 'Fixed by', type: 'date' }],
   },
   {
-    key: 'team_payment_followup', label: 'Team Payment Follow-up', department: 'accounts', stage: null,
+    key: 'team_payment_followup', label: 'Team Payment Follow-up', department: 'payment_collection', stage: null,
     /*
-     * A side request, not a move: Accounts chases the money while Production or Dispatch keeps
-     * the enquiry — two departments at once on one job, which a stage move cannot express.
+     * A side request, not a move: Payment Collection chases the money while Production or
+     * Dispatch keeps the enquiry — two departments at once on one job, which a stage move
+     * cannot express.
      */
-    hint: 'Accounts to chase the payment',
+    hint: 'Payment Collection to chase the payment',
     records: [
       { key: 'paymentStatus', label: 'Payment status' },
       { key: 'commitmentDate', label: 'Commitment date', type: 'date' },
@@ -113,8 +114,16 @@ export const HANDOFFS = [
     records: [{ key: 'result', label: 'Finding' }, { key: 'correction', label: 'Correction needed' }],
   },
   {
-    key: 'gst_invoice_audit', label: 'GST / Invoice Audit', department: 'accounts', stage: 'ac_clarify',
-    hint: 'Check the GST or the invoice',
+    key: 'gst_invoice_audit', label: 'GST / Invoice Audit', department: 'audit', stage: 'audit',
+    hint: 'The Audit team checks the GST or the invoice',
+    records: [
+      { key: 'result', label: 'Result', type: 'choice', options: ['Correct', 'Correction needed'] },
+      { key: 'correction', label: 'What to correct' },
+    ],
+  },
+  {
+    key: 'ac_clarify', label: 'A/C Clarify', department: 'accounts', stage: 'ac_clarify',
+    hint: 'Accounts to clarify the account',
   },
   {
     key: 'request_prt_visit', label: 'Request PRT Visit', department: 'management', stage: null,
@@ -165,6 +174,7 @@ export const KIND_FOR_STAGE = {
   invoice_dispatch: 'invoice_dispatch',
   lr_copy: 'lr_copy',
   quality: 'quality_issue',
-  ac_clarify: 'gst_invoice_audit',
+  ac_clarify: 'ac_clarify',
+  audit: 'gst_invoice_audit',
   my_payment_followup: 'my_payment_followup',
 };

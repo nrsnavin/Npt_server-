@@ -20,6 +20,7 @@ import { seedPricing } from './pricing.js';
 import { seedRegisterCostings } from './registerCostings.js';
 import { seedOrders } from './orders.js';
 import { seedQueries } from './queries.js';
+import { seedTradedItems } from './tradedItems.js';
 import { FULL, few } from './size.js';
 
 /** Dates relative to today, so the reminder feed always has something to show. */
@@ -43,6 +44,9 @@ const PEOPLE = [
   { name: 'Sunil Quality', email: 'quality@npthangers.com', password: 'Qual@123456', department: 'quality', phone: '9876500007' },
   { name: 'Anita Despatch', email: 'despatch@npthangers.com', password: 'Desp@123456', department: 'despatch', phone: '9876500008' },
   { name: 'Kiran Accounts', email: 'accounts@npthangers.com', password: 'Accts@12345', department: 'accounts', phone: '9876500009' },
+  { name: 'Lakshmi Assembly', email: 'assembly@npthangers.com', password: 'Assem@12345', department: 'assembling', phone: '9876500010' },
+  { name: 'Vijay Collections', email: 'collections@npthangers.com', password: 'Collect@1234', department: 'payment_collection', phone: '9876500011' },
+  { name: 'Revathi Audit', email: 'audit@npthangers.com', password: 'Audit@12345', department: 'audit', phone: '9876500012' },
 ];
 
 async function seed() {
@@ -257,6 +261,9 @@ async function seed() {
     admin: byEmail['rsnavin1@gmail.com'],
   });
 
+  /* After the quotations: see seed/tradedItems.js. */
+  const tradedItems = await seedTradedItems();
+
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));
 
   console.log(
@@ -326,6 +333,7 @@ async function seed() {
       `answered yet and ${asked.closed} settled and closed — opening those buyers to ` +
       `${asked.grants} people who do not own them.`
   );
+  console.log(`  Trading master: ${tradedItems.created} bought-in items, priced from the sheet for demonstration.`);
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');
 
