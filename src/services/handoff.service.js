@@ -5,6 +5,7 @@ import { findDepartment } from '../config/modules.js';
 import { KIND_FOR_STAGE, findHandoff, movesEnquiry } from '../config/handoffs.js';
 import { canRead } from './access.service.js';
 import { isOwnershipScoped, ownsRecord } from './ownership.service.js';
+import { departmentsOf, inDepartment, isManagement } from '../utils/departments.js';
 import { EVENTS, publish } from './events.service.js';
 import ApiError from '../utils/ApiError.js';
 import { describeBalance, dispatchBalance, qualityPassed } from './enquiryGates.service.js';
@@ -46,7 +47,13 @@ const departmentName = (key) => findDepartment(key)?.label || String(key || '').
 const fail = (message) => { throw ApiError.badRequest(message); };
 
 /** Admin, or the Admin department: sees and may act on everything. */
-const isAdmin = (user) => user?.role === 'admin' || user?.department === 'management';
+const isAdmin = isManagement;
+
+/*
+ * The department a person is acting for: the one the task is on when they work in it (their
+ * main department or an extra one), else their main department.
+ */
+const actingFor = (user, task) => (task && inDepartment(user, task.department) ? task.department : user?.department);
 
 const idOf = (value) => String(value?._id || value || '');
 
@@ -58,7 +65,7 @@ export const holderOf = (enquiryId) =>
 export function mayWorkOnHandoff(user, task) {
   if (isAdmin(user)) return true;
   if (task.user && idOf(task.user) === idOf(user._id)) return true;
-  return Boolean(task.department && task.department === user.department);
+  return inDepartment(user, task.department);
 }
 
 /**
@@ -81,8 +88,9 @@ export async function mayHandOff(user, enquiry) {
   if (await mayMove(user, enquiry)) return true;
   if (isOwnershipScoped(user)) return false;
   if (canRead(user, 'enquiries') && ownsRecord(user, enquiry)) return true;
-  return Boolean(user.department && (await Todo.exists({
-    enquiry: enquiry._id, department: user.department, kind: { $exists: true },
+  const mine = departmentsOf(user);
+  return Boolean(mine.length && (await Todo.exists({
+    enquiry: enquiry._id, department: { $in: mine }, kind: { $exists: true },
   })));
 }
 
@@ -181,7 +189,7 @@ function keptFields(kind, fields = {}) {
 }
 
 /** Opens the holding task: this department now has the enquiry. Saves nothing on the enquiry. */
-async function openHolder({ enquiry, kind, note, user, title }) {
+async function openHolder({ enquiry, kind, note, user, title, from }) {
   const handoff = findHandoff(kind);
   /* The buyer's name goes in the title; a freshly created enquiry carries only its id. */
   let about = aboutOf(enquiry);
@@ -201,7 +209,7 @@ async function openHolder({ enquiry, kind, note, user, title }) {
     holds: true,
     department,
     user: assignee || undefined,
-    fromDepartment: user?.department || undefined,
+    fromDepartment: from || user?.department || undefined,
     createdBy: user?._id,
     system: !user,
     title: title || `${handoff.label} — ${about}`,
@@ -320,7 +328,7 @@ export async function moveEnquiry({ enquiry, kind, note, fields, user, system = 
     closed = await Todo.findById(current._id);
   }
 
-  const task = await openHolder({ enquiry, kind, note: text, user });
+  const task = await openHolder({ enquiry, kind, note: text, user, from: actingFor(user, current) });
   await moveStage(enquiry, handoff.stage, { user, task, note: text || handoff.label, heldBy: task.department });
   if (openRecords) await openWorkRecord(kind, enquiry);
 
@@ -334,7 +342,7 @@ export async function moveEnquiry({ enquiry, kind, note, fields, user, system = 
 
 /** Admin moving a department's enquiry is taking it, not doing it — unless Admin is the holder. */
 const isAdminOverride = (user, task) =>
-  isAdmin(user) && task.department !== user.department && idOf(task.user) !== idOf(user._id);
+  isAdmin(user) && !inDepartment(user, task.department) && idOf(task.user) !== idOf(user._id);
 
 /** Closing ends everything still open on the enquiry, the holding task included, and says so. */
 async function closeOpenTasks(enquiryId, why, user) {
@@ -389,11 +397,13 @@ export async function sendHandoff({ enquiry, kind, note, fields, user }) {
 
   if (!(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
 
+  /* Sent for the department that has the enquiry when the sender works there too. */
+  const sender = actingFor(user, await holderOf(enquiry._id));
   const base = {
     enquiry: enquiry._id,
     customer: enquiry.customer?._id || enquiry.customer,
     kind,
-    fromDepartment: user.department || undefined,
+    fromDepartment: sender || undefined,
     createdBy: user._id,
     link: `/enquiries/${enquiry._id}`,
   };
@@ -406,7 +416,7 @@ export async function sendHandoff({ enquiry, kind, note, fields, user }) {
     }
     const record = await Todo.create({
       ...base,
-      department: user.department || 'management',
+      department: sender || 'management',
       user: user._id,
       title: `${handoff.label} — ${aboutOf(enquiry)}`,
       notes: text || undefined,
@@ -719,7 +729,8 @@ export async function departmentDashboard(department, { now = new Date() } = {})
  */
 export async function enquiriesHeldBy(department, user, { now = new Date(), limit = 200 } = {}) {
   const filter = { holds: true, completed: false, department };
-  if (isOwnershipScoped(user)) filter.user = user._id;
+  /* Marketing's desk is each person's own buyers; any other desk is the department's. */
+  if (department === 'marketing' && isOwnershipScoped(user)) filter.user = user._id;
 
   const tasks = await Todo.find(filter)
     .sort({ dueDate: 1, createdAt: 1 })

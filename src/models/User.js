@@ -34,6 +34,12 @@ const userSchema = new mongoose.Schema(
     role: { type: String, enum: ROLES, default: 'member' },
     department: { type: String, enum: DEPARTMENT_KEYS },
     /**
+     * Other departments this person also works in — their queues, hand-overs and desks follow
+     * them there [utils/departments.js]. The main department above stays the one that decides
+     * whose buyers a marketing person sees.
+     */
+    extraDepartments: { type: [{ type: String, enum: DEPARTMENT_KEYS }], default: () => [] },
+    /**
      * Explicit per-module grants. Absent means no access. Stored on the user rather than
      * derived from the department, so access is auditable and changing someone's
      * department never silently changes what they can already do.

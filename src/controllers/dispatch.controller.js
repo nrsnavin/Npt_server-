@@ -1,4 +1,5 @@
 import { withOrderLock } from '../services/operationLock.service.js';
+import { inDepartment, isManagement } from '../utils/departments.js';
 import Dispatch, {
   ARRIVED_DISPATCH_STATUSES,
   DISPATCH_STATUSES,
@@ -960,8 +961,8 @@ export const setDispatchPromise = asyncHandler(async (req, res) => {
    * broken and ring marketing to ask, which is the phone call this whole feature removes.
    */
   const owner = String(dispatch.assignedTo) === String(req.user._id);
-  const oversees = req.user.role === 'admin' || req.user.department === 'management';
-  const sells = req.user.department === 'marketing';
+  const oversees = isManagement(req.user);
+  const sells = inDepartment(req.user, 'marketing');
   if (!owner && !oversees && !sells) {
     throw ApiError.forbidden(
       'Only marketing can record what the customer was promised — it is what was said to them'

@@ -1,3 +1,4 @@
+import { isManagement } from '../utils/departments.js';
 import Quotation, {
   CLOSED_QUOTATION_STATUSES, UNSENT_STATUSES, settleLine,
 } from '../models/Quotation.js';
@@ -74,7 +75,7 @@ const POPULATE = [
   { path: 'lines.approvedBy', select: 'name' },
 ];
 
-const isAdmin = (user) => user?.role === 'admin' || user?.department === 'management';
+const isAdmin = isManagement;
 
 /* ------------------------------ Building a line ------------------------------ */
 

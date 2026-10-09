@@ -1,4 +1,5 @@
 import Query, { roomFilter, seesEveryQuery } from '../models/Query.js';
+import { isManagement } from '../utils/departments.js';
 import QueryRead from '../models/QueryRead.js';
 import Quotation from '../models/Quotation.js';
 import Sample from '../models/Sample.js';
@@ -60,7 +61,7 @@ async function queryItems(user) {
 
 /* Prices under their minimum, waiting on Admin's signature [§9]. */
 async function approvalItems(user) {
-  if (!(user?.role === 'admin' || user?.department === 'management')) return [];
+  if (!isManagement(user)) return [];
   const sheets = await Quotation.find({ 'lines.status': 'approval_pending' })
     .select('number customer lines.status lines.modelNumber updatedAt')
     .populate('customer', 'name')

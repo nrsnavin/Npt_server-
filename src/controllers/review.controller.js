@@ -1,4 +1,5 @@
 import ApiError from '../utils/ApiError.js';
+import { inDepartment, isManagement } from '../utils/departments.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { gatherFindings } from '../services/plantFindings.service.js';
 import { reviewFindings, reviewModelConfigured } from '../services/plantReview.llm.js';
@@ -27,7 +28,7 @@ import { DEPARTMENT_KEYS } from '../config/modules.js';
  * wider view deliberately; it is not what their screen loads.
  */
 function scopeFor(req) {
-  const wide = req.user.role === 'admin' || req.user.department === 'management';
+  const wide = isManagement(req.user);
   /* Asking for the whole plant is for somebody an administrator has placed. An account with no
      department has no screens that show these figures, which is what the argument below rests
      on — it read the whole plant here all the same. */
@@ -59,8 +60,8 @@ function scopeFor(req) {
  * which makes it a decision about presentation rather than about authority.
  */
 function mayRaiseTo(req, department) {
-  if (req.user.role === 'admin' || req.user.department === 'management') return true;
-  return Boolean(req.user.department) && req.user.department === department;
+  if (isManagement(req.user)) return true;
+  return inDepartment(req.user, department);
 }
 
 export const plantReview = asyncHandler(async (req, res) => {

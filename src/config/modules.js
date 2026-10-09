@@ -41,7 +41,7 @@
  */
 export const ACCESS_LEVELS = ['read', 'quote', 'write'];
 
-const LEVEL_RANK = { read: 1, quote: 2, write: 3 };
+export const LEVEL_RANK = { read: 1, quote: 2, write: 3 };
 
 /** What a module without its own opinion offers. */
 const DEFAULT_LEVELS = ['read', 'write'];
@@ -551,6 +551,20 @@ export const levelsFor = (moduleKey) => findModule(moduleKey)?.levels || DEFAULT
 export const RETIRED_MODULES = {
   quotations: { module: 'pricing', levels: { read: 'read', write: 'quote' } },
 };
+
+/**
+ * The grants several departments suggest together — the higher level wins where two name the
+ * same module. For a person who works in more than one [models/User.js `extraDepartments`].
+ */
+export function defaultAccessForAll(departmentKeys = []) {
+  const best = new Map();
+  for (const key of departmentKeys) {
+    for (const { module, level } of defaultAccessFor(key)) {
+      if (!best.has(module) || LEVEL_RANK[level] > LEVEL_RANK[best.get(module)]) best.set(module, level);
+    }
+  }
+  return [...best].map(([module, level]) => ({ module, level }));
+}
 
 /** The grants a department suggests, as a storable array. */
 export function defaultAccessFor(departmentKey) {

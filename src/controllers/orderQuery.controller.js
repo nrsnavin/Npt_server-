@@ -1,4 +1,5 @@
 import OrderQuery, { dueFrom } from '../models/OrderQuery.js';
+import { departmentsOf } from '../utils/departments.js';
 import SalesOrder from '../models/SalesOrder.js';
 import Dispatch from '../models/Dispatch.js';
 import ApiError from '../utils/ApiError.js';
@@ -104,7 +105,7 @@ export const listQueryQueue = asyncHandler(async (req, res) => {
    * buyer, and they were the only party to the conversation who could not see it.
    */
   const onMyOrders = req.query.mine === 'true';
-  if (!onMyOrders) filter.askedOf = req.query.askedOf || req.user.department;
+  if (!onMyOrders) filter.askedOf = req.query.askedOf || { $in: departmentsOf(req.user) };
 
   /*
    * Scoped to what the reader may see, through the order behind each question [§29].
