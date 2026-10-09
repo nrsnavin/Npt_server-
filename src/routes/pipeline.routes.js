@@ -10,7 +10,7 @@ import {
   enquiryOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, applyEnquiryAction, listEnquiryActions,
-  logEnquiryActivity, listEnquiryActivities, enquiryActivityTypes, delegateEnquiryTo, listDelegationTargets, promoteToMould, enquiryPipeline,
+  logEnquiryActivity, setEnquiryMarketingStatus, listEnquiryActivities, enquiryActivityTypes, delegateEnquiryTo, listDelegationTargets, promoteToMould, enquiryPipeline,
   enquiryBoard,
   exportCustomers,
   exportEnquiries,
@@ -35,7 +35,7 @@ import { validate } from '../middleware/validate.js';
 import {
   customerSchema, customerUpdateSchema,
   buyerCardConfirmSchema,
-  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema, enquiryActivitySchema, enquiryDelegateSchema, enquiryMessageSchema,
+  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema, enquiryActivitySchema, enquiryDelegateSchema, enquiryMessageSchema, enquiryMarketingStatusSchema,
   bulkReassignSchema,
 } from '../validators/pipeline.schemas.js';
 import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validators/mould.schemas.js';
@@ -206,6 +206,8 @@ router.post('/enquiries/:id/activities', requireModule('enquiries', 'write'), va
 /* Writing to the buyer from the company number and mail; the conversation is the owner's. */
 router.get('/enquiries/:id/messages', listEnquiryMessages);
 router.post('/enquiries/:id/messages', requireModule('enquiries', 'write'), validate(enquiryMessageSchema), sendEnquiryMessage);
+/* Marketing's own status for the enquiry — the dropdown on the enquiry and the list. */
+router.post('/enquiries/:id/marketing-status', requireModule('enquiries', 'write'), validate(enquiryMarketingStatusSchema), setEnquiryMarketingStatus);
 /* Everything that happened on the enquiry, for whoever may open it. */
 router.get('/enquiries/:id/timeline', enquiryTimeline);
 /* Handing it to another marketing person, at any stage — the owner or Admin [services/delegation.service.js]. */

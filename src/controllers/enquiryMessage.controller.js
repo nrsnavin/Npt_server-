@@ -12,6 +12,7 @@ import { sendEmail } from '../services/notification.service.js';
 import { isWhatsAppConfigured, sendWhatsApp } from '../providers/whatsapp.js';
 import { isProduction } from '../config/env.js';
 import { QUEUE_STATUSES } from './sampleDashboard.controller.js';
+import { marketingStatusLabel } from '../config/marketingStatuses.js';
 
 /**
  * Writing to the buyer from the enquiry, on the company's WhatsApp number and the company's
@@ -187,6 +188,7 @@ export const enquiryTimeline = asyncHandler(async (req, res) => {
   await enquiry.populate([
     { path: 'activities.by', select: 'name' },
     { path: 'statusHistory.by', select: 'name' },
+    { path: 'marketingStatusHistory.by', select: 'name' },
     { path: 'handovers.from handovers.to handovers.by', select: 'name' },
   ]);
 
@@ -211,6 +213,12 @@ export const enquiryTimeline = asyncHandler(async (req, res) => {
     entries.push({
       kind: 'activity', at: activity.at, type: activity.type, note: activity.note,
       spokeTo: activity.spokeTo || null, by: activity.by?.name || null,
+    });
+  }
+  for (const move of enquiry.marketingStatusHistory || []) {
+    entries.push({
+      kind: 'marketing', at: move.at, from: move.from || null, to: move.to,
+      title: marketingStatusLabel(move.to), note: move.note || null, by: move.by?.name || null,
     });
   }
   for (const handover of enquiry.handovers || []) {

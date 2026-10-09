@@ -8,6 +8,9 @@ import { withConversationRef } from './conversationRef.js';
 import { ENQUIRY_NEXT_ACTION_TYPES } from '../services/enquiryActions.js';
 import { ENQUIRY_ACTIVITY_KEYS } from '../config/enquiryActivities.js';
 import {
+  FROM_SALES_STATUS, MARKETING_STATUS_KEYS, marketingRank, marketingStatusOf,
+} from '../config/marketingStatuses.js';
+import {
   hasRequirement, requirementFields, requirementSchema as requirementShape,
 } from './requirement.schema.js';
 
@@ -289,6 +292,18 @@ const activitySchema = new mongoose.Schema({
   by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 });
 
+/** One move of the marketing status [config/marketingStatuses.js]. Empty `by`: the automation. */
+const marketingMoveSchema = new mongoose.Schema(
+  {
+    from: String,
+    to: { type: String, required: true },
+    at: { type: Date, default: Date.now },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    note: { type: String, trim: true },
+  },
+  { _id: false }
+);
+
 /** The enquiry handed from one marketing person to another [services/delegation.service.js]. */
 const handoverSchema = new mongoose.Schema(
   {
@@ -363,6 +378,14 @@ const enquirySchema = new mongoose.Schema(
     statusHistory: [statusChangeSchema],
 
     /**
+     * Where the conversation with the buyer stands, in marketing's words — see
+     * config/marketingStatuses.js. Unset on enquiries from before it existed; those read their
+     * sales status through `currentMarketingStatus`.
+     */
+    marketingStatus: { type: String, enum: MARKETING_STATUS_KEYS, index: true },
+    marketingStatusHistory: { type: [marketingMoveSchema], default: undefined },
+
+    /**
      * Where it is now — the twelve stages on the plant's own screen [config/enquiryStages.js].
      * Moved by department tasks, and by the sales status while it is in the first four.
      */
@@ -425,6 +448,31 @@ enquirySchema.pre('save', function followStatus() {
   if (!this.isNew) return;
   const next = stageForStatus(this.status, null);
   if (next) this.stage = next;
+});
+
+/*
+ * The marketing status follows the sales status forward: a sample dispatched, a quote sent, an
+ * order booked move the sales status, and marketing's words move with it — never back, so a
+ * status marketing set further on by hand is not undone by a late event.
+ */
+enquirySchema.pre('save', function followMarketingStatus() {
+  if (!this.isNew && !this.isModified('status')) return;
+  const follows = FROM_SALES_STATUS[this.status];
+  if (!follows) return;
+  if (this.isNew) {
+    if (!this.marketingStatus) this.marketingStatus = follows;
+    return;
+  }
+  /* Never set: it read as the status it is leaving, which the history's last move names. */
+  const current = this.marketingStatus || FROM_SALES_STATUS[this.statusHistory?.at(-1)?.from] || 'enquiry_received';
+  if (marketingRank(follows) <= marketingRank(current)) return;
+  const from = this.marketingStatus || null;
+  this.marketingStatus = follows;
+  this.marketingStatusHistory = [...(this.marketingStatusHistory || []), { from, to: follows, at: new Date() }];
+});
+
+enquirySchema.virtual('currentMarketingStatus').get(function currentMarketingStatus() {
+  return marketingStatusOf(this);
 });
 
 /*

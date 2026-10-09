@@ -1,3 +1,4 @@
+import { MARKETING_STATUS_KEYS } from '../config/marketingStatuses.js';
 import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS } from '../models/Mould.js';
 import { CUSTOMER_TYPES, RATINGS, CUSTOMER_SOURCES } from '../models/Customer.js';
@@ -293,3 +294,9 @@ export const enquiryMessageSchema = z
     message: 'An email needs a subject',
     path: ['subject'],
   });
+
+/** The enquiry's marketing status [config/marketingStatuses.js]. */
+export const enquiryMarketingStatusSchema = z.object({
+  status: z.enum(MARKETING_STATUS_KEYS),
+  note: z.string().trim().max(500).optional(),
+});
