@@ -477,6 +477,21 @@ const salesOrderSchema = new mongoose.Schema(
     gstPercent: { type: Number, min: 0, max: 100 },
     isExport: { type: Boolean, default: false },
     paymentTerms: String,
+    /**
+     * The payment terms as two numbers the plant acts on [services/paymentGates.service.js]:
+     * the share of the order's value that must be received before production starts, and the
+     * share (in total) received before the goods may leave. "50% advance, 50% against delivery"
+     * is 50 / 50; "100% against dispatch" is 0 / 100; credit is 0 / 0.
+     */
+    paymentPlan: {
+      advancePercent: { type: Number, min: 0, max: 100, default: 0 },
+      beforeDispatchPercent: { type: Number, min: 0, max: 100, default: 0 },
+    },
+    /** Admin letting production start, or the goods go, before the money is in — with why. */
+    paymentWaivers: {
+      production: { by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, at: Date, reason: String },
+      dispatch: { by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, at: Date, reason: String },
+    },
     deliveryTerms: String,
     freightTerms: { type: String, trim: true },
     remarks: String,
@@ -629,6 +644,14 @@ salesOrderSchema.index(
 salesOrderSchema.index({ number: 'text', 'customerPo.number': 'text' });
 /** "What is running on this tool?" — the question the mould register's screen will ask. */
 salesOrderSchema.index({ 'lines.mould': 1 });
+
+/* Money before dispatch is never less than money before production: the advance is part of it. */
+salesOrderSchema.pre('validate', function keepPaymentPlanInStep() {
+  const plan = this.paymentPlan;
+  if (plan && (plan.beforeDispatchPercent || 0) < (plan.advancePercent || 0)) {
+    plan.beforeDispatchPercent = plan.advancePercent;
+  }
+});
 
 /** What the order is worth before tax. */
 salesOrderSchema.virtual('netValue').get(function netValue() {

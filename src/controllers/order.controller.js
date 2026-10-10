@@ -29,6 +29,9 @@ import { put, remove } from '../services/storage.service.js';
 import { requireEnquiry } from '../services/enquiryLink.service.js';
 import { collect, sendCsv } from '../utils/csv.js';
 import { transactional } from '../utils/transaction.js';
+import {
+  PAYMENT_PRESETS, PAYMENT_STAGES, assertPaidFor, paymentStanding, planCollection,
+} from '../services/paymentGates.service.js';
 
 /**
  * Sales orders [BLUEPRINT §12–13], and the release gate in front of production.
@@ -442,6 +445,9 @@ export const createOrder = asyncHandler(transactional(async (req, res) => {
     statusHistory: [{ to: 'po_received', by: req.user._id }],
   });
 
+  /* The terms say what is collected before production and dispatch: raise it and ask for it. */
+  await planCollection(order, { by: req.user });
+
   await order.populate(POPULATE);
   res.status(201).json({ success: true, data: orderVisibleTo(order, req.user) });
 }));
@@ -542,11 +548,15 @@ export const orderFromQuotation = asyncHandler(transactional(async (req, res) =>
     gstPercent: req.body.gstPercent ?? quotation.gstPercent,
     isExport: req.body.isExport ?? quotation.isExport,
     paymentTerms: req.body.paymentTerms || quotation.paymentTerms,
+    paymentPlan: req.body.paymentPlan,
     deliveryTerms: req.body.deliveryTerms || quotation.deliveryTerms,
     freightTerms: req.body.freightTerms || quotation.freightTerms,
     remarks: req.body.remarks,
     statusHistory: [{ to: 'po_received', by: req.user._id, note: `From ${quotation.number}` }],
   });
+
+  /* The terms say what is collected before production and dispatch: raise it and ask for it. */
+  await planCollection(order, { by: req.user });
 
   await order.populate(POPULATE);
   res.status(201).json({ success: true, data: orderVisibleTo(order, req.user) });
@@ -610,6 +620,7 @@ export const updateOrder = asyncHandler(withOrderLock(req => req.params.id, asyn
   Object.assign(order, patch);
   await order.save();
   await recordChange({ model: 'SalesOrder', doc: order, before, by: req.user });
+  if (patch.paymentPlan || patch.lines) await planCollection(order, { by: req.user });
 
   await order.populate(POPULATE);
   res.json({ success: true, data: orderVisibleTo(order, req.user) });
@@ -722,6 +733,9 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
   for (const field of recipe.needs) {
     if (!rest[field]) throw ApiError.badRequest(`“${recipe.label}” needs ${field}`);
   }
+
+  /* Production starts only once the advance its terms ask for is in [services/paymentGates]. */
+  if (action === 'release') await assertPaidFor(order, 'production', { by: req.user });
 
   const before = snapshot(order);
 
@@ -996,4 +1010,35 @@ export const setLinePromisedDate = asyncHandler(withOrderLock(req => req.params.
     data: orderVisibleTo(order, req.user),
     line: order.lines.id(req.params.lineId),
   });
+}));
+
+/**
+ * Where the order stands against its payment terms — the order screen's "money before work".
+ */
+export const orderPaymentStanding = asyncHandler(async (req, res) => {
+  const order = await SalesOrder.findById(req.params.id);
+  if (!order || !ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+  res.json({ success: true, data: await paymentStanding(order), meta: { presets: PAYMENT_PRESETS } });
+});
+
+/**
+ * Admin lets production start, or the goods go, before the money is in. Recorded with who and
+ * why, so the exception is visible on the order rather than a phone call nobody remembers.
+ */
+export const waiveOrderPayment = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
+  if (!isManagement(req.user)) throw ApiError.forbidden('Only Admin can let an order go on without the payment');
+  const order = await SalesOrder.findById(req.params.id);
+  if (!order) throw ApiError.notFound('Order not found');
+  const { stage, reason } = req.body;
+  if (!PAYMENT_STAGES.includes(stage)) throw ApiError.badRequest('Say whether this is for production or dispatch');
+  const before = snapshot(order);
+  order.paymentWaivers = order.paymentWaivers || {};
+  order.paymentWaivers[stage] = { by: req.user._id, at: new Date(), reason: reason.trim() };
+  order.markModified('paymentWaivers');
+  await order.save();
+  await recordChange({
+    model: 'SalesOrder', doc: order, before, by: req.user,
+    note: `Allowed ${stage} without the payment: ${reason.trim()}`,
+  });
+  res.json({ success: true, data: await paymentStanding(order) });
 }));

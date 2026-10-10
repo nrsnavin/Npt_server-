@@ -12,7 +12,8 @@ import { recordChange, snapshot } from '../services/audit.service.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { raiseTask } from '../services/task.service.js';
 import { dueDateFor, orderPosition } from '../services/receivable.service.js';
-import { transactional } from '../utils/transaction.js';
+import { afterCommit, transactional } from '../utils/transaction.js';
+import { afterPayment } from '../services/paymentGates.service.js';
 import { FOLLOW_UP_MODES, FOLLOW_UP_STATUSES } from '../config/paymentFollowUp.js';
 import { endOfDayIST } from '../services/handoff.service.js';
 
@@ -529,6 +530,9 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
       originKey: `payment-settled:${receivable._id}`,
     }).catch(() => null);
   }
+
+  /* Money in may open production or dispatch on the order's terms: close the chase, tell marketing. */
+  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order));
 
   await receivable.populate(POPULATE);
   res.status(201).json({ success: true, data: receivable });

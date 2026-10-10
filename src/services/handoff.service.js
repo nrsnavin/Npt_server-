@@ -9,6 +9,7 @@ import { departmentsOf, inDepartment, isManagement } from '../utils/departments.
 import { EVENTS, publish } from './events.service.js';
 import ApiError from '../utils/ApiError.js';
 import { describeBalance, dispatchBalance, qualityPassed } from './enquiryGates.service.js';
+import { assertEnquiryPaidFor } from './paymentGates.service.js';
 
 /**
  * One department asking another for something about an enquiry — the buttons on the enquiry
@@ -289,6 +290,17 @@ export async function moveEnquiry({ enquiry, kind, note, fields, user, system = 
   if (kind === 'invoice_dispatch' && current?.department !== 'despatch'
       && !(await qualityPassed(enquiry._id, { closing: current, fields: kept }))) {
     fail('Quality has not passed this job yet. Send it to Quality Check first; Quality moves it on to Invoice & Dispatch once it passes.');
+  }
+  /*
+   * Money before work, on the order's payment terms [services/paymentGates.service.js]: into
+   * Production only once the advance is in, into Invoice & Dispatch only once the money due
+   * before dispatch is in. Refused with the shortfall, and Payment Collection is asked for it.
+   */
+  if (kind === 'ask_edd' && current?.department !== 'production') {
+    await assertEnquiryPaidFor(enquiry._id, 'production', { by: user });
+  }
+  if (kind === 'invoice_dispatch' && current?.department !== 'despatch') {
+    await assertEnquiryPaidFor(enquiry._id, 'dispatch', { by: user });
   }
   if (current?.department === 'despatch' && target !== 'despatch' && kind !== 'quality_issue') {
     const left = await dispatchBalance(enquiry._id);

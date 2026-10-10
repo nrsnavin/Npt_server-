@@ -8,6 +8,7 @@ import Dispatch, {
   MIN_OVERRIDE_REASON,
 } from '../models/Dispatch.js';
 import SalesOrder, { PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
+import { assertPaidFor } from '../services/paymentGates.service.js';
 import Attachment from '../models/Attachment.js';
 import ApiError from '../utils/ApiError.js';
 import { EVENTS, publish } from '../services/events.service.js';
@@ -694,6 +695,12 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
     });
   }
   expectVersion(dispatch, req.body);
+
+  /* The goods leave only once the money the order's terms ask for before dispatch is in. */
+  if (action === 'dispatch') {
+    const order = await SalesOrder.findById(dispatch.order);
+    if (order) await assertPaidFor(order, 'dispatch', { by: req.user });
+  }
 
   if (!dispatchActionsFrom(dispatch.status).includes(action)) {
     throw ApiError.badRequest(
