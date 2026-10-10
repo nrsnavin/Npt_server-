@@ -81,6 +81,13 @@ const terms = {
   gstPercent: z.number().min(0).max(100).optional(),
   isExport: z.boolean().optional(),
   paymentTerms: z.string().optional(),
+  /* What must be in before production and before dispatch, as % of the order [paymentGates]. */
+  paymentPlan: z
+    .object({
+      advancePercent: z.number().min(0).max(100).optional(),
+      beforeDispatchPercent: z.number().min(0).max(100).optional(),
+    })
+    .optional(),
   deliveryTerms: z.string().optional(),
   freightTerms: z.string().optional(),
   remarks: z.string().optional(),
@@ -315,4 +322,10 @@ export const linePromiseSchema = z.strictObject({
     .trim()
     .min(10, 'Say what the buyer agreed to, in a sentence — this is the promise the plant is held to')
     .max(500),
+});
+
+/** Admin letting production or dispatch go on before the money is in. */
+export const orderPaymentWaiverSchema = z.object({
+  stage: z.enum(['production', 'dispatch']),
+  reason: z.string().trim().min(5, 'Say why it can go on without the payment').max(300),
 });

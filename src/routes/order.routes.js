@@ -3,7 +3,7 @@ import {
   listOrders, orderBoard, getOrder, exportOrders,
   createOrder, orderFromQuotation, updateOrder,
   setOrderCheck, applyOrderAction, listOrderActions, setOrderPo, setOrderPriority,
-  setLinePromisedDate,
+  setLinePromisedDate, orderPaymentStanding, waiveOrderPayment,
 } from '../controllers/order.controller.js';
 import {
   listOrderQueries, listQueryQueue, raiseOrderQuery, answerOrderQuery, closeOrderQuery,
@@ -39,7 +39,7 @@ import { validate } from '../middleware/validate.js';
 import { singleDocument } from '../middleware/upload.js';
 import {
   orderSchema, orderUpdateSchema, orderFromQuotationSchema,
-  orderCheckSchema, orderActionSchema,
+  orderCheckSchema, orderActionSchema, orderPaymentWaiverSchema,
   orderQuerySchema, orderAnswerSchema, orderQueryCloseSchema,
   orderEscalationSchema, escalationUpdateSchema, escalationResolveSchema,
   productionLineSchema, orderPrioritySchema, linePromiseSchema,
@@ -150,6 +150,9 @@ router.post(
 router.post('/orders/:id/checks', requireModule('orders', 'write'), validate(orderCheckSchema), setOrderCheck);
 router.get('/orders/:id/actions', requireModule('orders'), listOrderActions);
 router.post('/orders/:id/actions', requireModule('orders', 'write'), validate(orderActionSchema), applyOrderAction);
+/* Money before work: where the order stands against its payment terms, and Admin's exception. */
+router.get('/orders/:id/payment', requireModule('orders'), orderPaymentStanding);
+router.post('/orders/:id/payment-waiver', requireModule('orders'), validate(orderPaymentWaiverSchema), waiveOrderPayment);
 
 /*
  * Questions about an order [§25 for the clock].
