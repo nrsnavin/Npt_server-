@@ -1,3 +1,5 @@
+import { TASK_FORMS, formFor } from './departmentTaskForms.js';
+
 /**
  * The buttons on an enquiry that send work to a department — the plant's own list, in the
  * plant's own order (the enquiry screen it already uses).
@@ -10,10 +12,9 @@
  *                [config/enquiryStages.js]; null leaves it. The enquiry itself stays with its
  *                marketing person whatever is raised — departments get tasks, not the enquiry.
  *   hidden       not offered as a button (the task every new enquiry starts with).
- *   asks         THE QUESTIONS A DEPARTMENT TASK ASKS when it is raised — what whoever clicks the
- *                department answers, kept on the task as its brief and shown to the department.
- *                `required` ones must be answered; `type` as for `records`. Each department's
- *                list is defined here as the plant settles it (Sampling's first, 11 Oct 2026).
+ *   asks / form  the form a department task opens with when it is raised — the questions
+ *                whoever clicks the department answers, filled from the enquiry, kept on the
+ *                task as its brief. Defined per department in config/departmentTaskForms.js.
  *   records      what the department fills in when it is done, beside the note — all optional,
  *                because the note is what is required and these are the details worth keeping.
  *                `type` is `date`, `choice` (with `options`) or plain text.
@@ -22,7 +23,7 @@
  * These are a first reading of the role requirements (7 Oct 2026); what each department records
  * is meant to be corrected here as the departments say what they need.
  */
-export const HANDOFFS = [
+const BUTTONS = [
   {
     key: 'photos_sent', label: 'Photos Sent', department: null, stage: null,
     hint: 'Record that sample photos went to the buyer',
@@ -36,15 +37,6 @@ export const HANDOFFS = [
   {
     key: 'sample_request', label: 'Sample Request', department: 'sampling', stage: 'sample',
     hint: 'Make the sample and send it out',
-    asks: [
-      { key: 'mould', label: 'Mould / model', required: true },
-      {
-        key: 'material', label: 'Material', type: 'choice', required: true,
-        options: ['PP', 'HIPS', 'Plastic', 'Wood', 'Metal', 'Velvet', 'Acrylic', 'Recycled PP'],
-      },
-      { key: 'colour', label: 'Colour', required: true },
-      { key: 'colourType', label: 'Colour is', type: 'choice', required: true, options: ['Preferred colour', 'Compulsory colour'] },
-    ],
     records: [
       { key: 'courier', label: 'Courier' },
       { key: 'awbNumber', label: 'AWB number' },
@@ -164,6 +156,11 @@ export const HANDOFFS = [
     hint: 'Everything on this enquiry is done',
   },
 ];
+
+/* Each button that names a department carries its task form [config/departmentTaskForms.js]. */
+export const HANDOFFS = BUTTONS.map((button) => (button.department
+  ? { ...button, form: formFor(button.key), asks: TASK_FORMS[button.key]?.asks || [] }
+  : button));
 
 export const HANDOFF_KEYS = HANDOFFS.map((handoff) => handoff.key);
 export const findHandoff = (key) => HANDOFFS.find((handoff) => handoff.key === key);

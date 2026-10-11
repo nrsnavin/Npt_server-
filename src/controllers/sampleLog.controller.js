@@ -213,6 +213,16 @@ export const downloadAttachment = asyncHandler(async (req, res) => {
    */
   if (attachment.mould) {
     if (!canRead(req.user, 'moulds')) throw ApiError.notFound('File not found');
+  } else if (attachment.task) {
+    /* A department task's PDF: whoever may work the task, whoever raised it, the enquiry's owner, Admin. */
+    const { default: Todo } = await import('../models/Todo.js');
+    const { inDepartment } = await import('../utils/departments.js');
+    const task = await Todo.findById(attachment.task).select('department user createdBy enquiry');
+    const me = String(req.user._id);
+    const enquiry = task?.enquiry ? await Enquiry.findById(task.enquiry).select('assignedTo') : null;
+    const mayRead = task && (req.user.role === 'admin' || inDepartment(req.user, task.department)
+      || [task.user, task.createdBy, enquiry?.assignedTo].some((id) => id && String(id) === me));
+    if (!mayRead) throw ApiError.notFound('File not found');
   } else if (attachment.query) {
     /* A file posted in a query thread is exactly as readable as the thread. */
     const query = await Query.findById(attachment.query).select('raisedBy participants');

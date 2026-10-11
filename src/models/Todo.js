@@ -80,8 +80,13 @@ const todoSchema = new mongoose.Schema(
      * Moving the enquiry on closes this one and opens the next department's.
      */
     holds: { type: Boolean, default: undefined },
-    /** The answers to the questions the department task asked when it was raised [config/handoffs.js `asks`]. */
-    brief: { type: Map, of: String, default: undefined },
+    /**
+     * The answers to the form the department task opened with [config/departmentTaskForms.js]:
+     * plain answers by question, and a table (a sample's model rows) as a list of rows.
+     */
+    brief: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    /** The PDF sent with the task, if one was [routes: POST /enquiries/:id/handoffs/:taskId/attachment]. */
+    attachment: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
     /** Done (with what they recorded) or sent back (with why), by whom and when, and where it went next. */
     outcome: {
       result: { type: String, enum: ['done', 'returned', 'moved'] },

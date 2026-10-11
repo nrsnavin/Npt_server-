@@ -64,6 +64,30 @@ export const singleDocument = (field = 'file') => (req, res, next) =>
   });
 
 /**
+ * The PDF sent with a department task — a drawing, a PO, a PI. PDF only and one megabyte at most,
+ * as the task form says: it travels to the department's phones, not into a document archive.
+ */
+export const TASK_PDF_BYTES = 1024 * 1024;
+const taskPdfs = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: TASK_PDF_BYTES, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    if (file.mimetype === 'application/pdf') return callback(null, true);
+    callback(ApiError.badRequest('Attach a PDF'));
+  },
+});
+
+export const singlePdf = (field = 'file') => (req, res, next) =>
+  taskPdfs.single(field)(req, res, (error) => {
+    if (!error) return next();
+    if (error.code === 'LIMIT_FILE_SIZE') return next(ApiError.badRequest('That PDF is too large — the limit is 1 MB'));
+    if (error.code === 'LIMIT_FILE_COUNT' || error.code === 'LIMIT_UNEXPECTED_FILE') {
+      return next(ApiError.badRequest('Attach one PDF'));
+    }
+    return next(error);
+  });
+
+/**
  * A spreadsheet for a register import — .xlsx or .csv, read in memory and never stored. Told
  * apart by content in services/sheetRows.js, because browsers send CSV under four different
  * types depending on the machine.

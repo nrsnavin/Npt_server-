@@ -30,6 +30,8 @@ const attachmentSchema = new mongoose.Schema(
     salesOrder: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder', index: true },
     /* A photo or document posted into a query thread; readable by whoever can read the thread. */
     query: { type: mongoose.Schema.Types.ObjectId, ref: 'Query', index: true },
+    /* The PDF sent with a department task; readable by whoever may work the task or sent it. */
+    task: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo', index: true },
 
     /** What the file is, in the reader's words: "Buyer drawing", "Signed approval". */
     title: { type: String, trim: true },

@@ -9,8 +9,11 @@ export const handoffSchema = z.object({
   note: z.string().trim().max(2000).optional(),
   /** What the department that had it records about its work, when this moves it on. */
   fields,
-  /** The answers to the questions the department task asks [config/handoffs.js `asks`]. */
-  brief: fields,
+  /** The answers to the form the department task opens with [config/departmentTaskForms.js]; checked by the service. */
+  brief: z.record(z.string(), z.unknown()).optional(),
+  priority: z.enum(['low', 'normal', 'high']).optional(),
+  /** The task's due date, when the person raising it names one. */
+  requiredDate: z.string().trim().max(40).optional().or(z.literal('')),
 });
 
 /** Done: what was done, and the details the button asks for [config/handoffs.js]. */
