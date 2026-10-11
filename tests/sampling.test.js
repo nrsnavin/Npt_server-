@@ -426,24 +426,24 @@ test('re-applying sample required does not raise a second request', async () => 
   assert.equal(json.data.length, 1);
 });
 
-test('raising a sample hands the enquiry to the sample team: the enquiry is their task', async () => {
+test('raising a sample gives the sample team one task; the enquiry stays with marketing', async () => {
   const enquiry = await raiseEnquiry();
   await requestSample(enquiry._id);
 
-  /* One task, on Sampling's queue, holding the enquiry — not a copy per person on the bench. */
+  /* One task, on Sampling's queue — not a copy per person on the bench. */
   let queued;
   for (let i = 0; i < 160 && !queued; i += 1) {
     const forSampling = await api('/api/workspace/todos?scope=department', { token: meera });
-    queued = (forSampling.json.data || []).find((todo) => String(todo.enquiry?._id || todo.enquiry) === String(enquiry._id) && todo.holds);
+    queued = (forSampling.json.data || []).find((todo) => String(todo.enquiry?._id || todo.enquiry) === String(enquiry._id) && todo.kind === 'sample_request');
     if (!queued) await new Promise((resolve) => setTimeout(resolve, 60));
   }
-  assert.ok(queued, 'the enquiry is on the sample team\'s queue');
-  assert.equal(queued.kind, 'sample_request');
+  assert.ok(queued, 'the task is on the sample team\'s queue');
   assert.equal(queued.department, 'sampling');
+  assert.notEqual(queued.holds, true);
 
-  /* Marketing sees who has it on the enquiry itself. */
+  /* Marketing still has the enquiry itself. */
   const handoffs = await api(`/api/enquiries/${enquiry._id}/handoffs`, { token: nandhini });
-  assert.equal(handoffs.json.holder?.department, 'sampling');
+  assert.equal(handoffs.json.holder?.department, 'marketing');
 });
 
 /* ----------------------------- The stage machine ----------------------------- */

@@ -44,7 +44,6 @@ const api = async (path, { method = 'GET', body, as = 'nandhini' } = {}) => {
 };
 const send = (enquiry, kind, as = 'nandhini', extra = {}) =>
   api(`/api/enquiries/${enquiry}/handoffs`, { method: 'POST', as, body: { kind, note: `${kind} please`, ...extra } });
-const holder = (enquiry) => Todo.findOne({ enquiry, holds: true, completed: false });
 const done = (task, as, body) => api(`/api/workspace/todos/${task._id}/done`, { method: 'POST', as, body });
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
 async function until(check) {
@@ -203,8 +202,9 @@ test('100% against dispatch: production runs, but nothing goes to dispatch until
   assert.equal((await send(enquiry, 'ask_edd')).status, 201, 'no advance asked for');
   const check = await send(enquiry, 'quality_check', 'siva');
   assert.equal(check.status, 201, check.json.message);
-  const task = await holder(enquiry);
-  const blocked = await done(task, 'kavitha', { note: 'All good', fields: { result: 'Passed' }, next: 'invoice_dispatch' });
+  const passed = await done(check.json.data.task, 'kavitha', { note: 'All good', fields: { result: 'Passed' } });
+  assert.equal(passed.status, 200, passed.json.message);
+  const blocked = await send(enquiry, 'invoice_dispatch', 'siva');
   assert.equal(blocked.status, 400);
   assert.match(blocked.json.message, /needs 100% \(₹7,500\) received before dispatch/);
 
@@ -214,8 +214,9 @@ test('100% against dispatch: production runs, but nothing goes to dispatch until
   assert.equal(waived.status, 200, waived.json.message);
   assert.equal(waived.json.data.dispatch.waived, true);
 
-  const through = await done(task, 'kavitha', { note: 'All good', fields: { result: 'Passed' }, next: 'invoice_dispatch' });
-  assert.equal(through.status, 200, through.json.message);
+  const through = await send(enquiry, 'invoice_dispatch', 'siva');
+  assert.equal(through.status, 201, through.json.message);
+  assert.equal(through.json.data.task.department, 'despatch');
   assert.equal((await Enquiry.findById(enquiry)).stage, 'invoice_dispatch');
 });
 

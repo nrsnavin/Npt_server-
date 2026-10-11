@@ -9,6 +9,8 @@ export const handoffSchema = z.object({
   note: z.string().trim().max(2000).optional(),
   /** What the department that had it records about its work, when this moves it on. */
   fields,
+  /** The answers to the questions the department task asks [config/handoffs.js `asks`]. */
+  brief: fields,
 });
 
 /** Done: what was done, and the details the button asks for [config/handoffs.js]. */

@@ -1,12 +1,14 @@
 /**
  * Workflow phase 1 [Enquiry Workflow Plan, decisions 1–5]:
  *
- *   1  Team Payment Follow-up is a side request — Accounts chases money, the enquiry stays put.
- *   2  Quality before Dispatch — Invoice & Dispatch is refused until Quality passes the job.
+ *   1  Team Payment Follow-up is a department task — Payment Collection chases money.
+ *   2  Quality before Dispatch — Dispatch's task is refused until Quality passes the job.
  *   3  Assembling has its own stage.
- *   4  Dispatch keeps the enquiry while a sales order on it still has pieces to send.
- *   5  Records move it on: a released order → Production, goods gone → LR Copy, paid in full
- *      with nothing left to send → closed.
+ *   4  Dispatch's task stays open while a sales order on it still has pieces to send.
+ *   5  Records finish the work: a released order → Production's task, goods gone → LR Copy,
+ *      paid in full with nothing left to send → closed.
+ *
+ * The enquiry itself stays with its marketing person throughout; departments get tasks.
  *
  *   node --test tests/workflow-phase1.test.js
  */
@@ -135,21 +137,22 @@ test.after(async () => {
 
 /* ------------------------------ 1. Payment follow-up ------------------------------ */
 
-test('team payment follow-up asks Payment Collection without taking the enquiry from Production', async () => {
+const openTask = (enquiry, kind) => Todo.findOne({ enquiry, kind, completed: false });
+
+test('team payment follow-up asks Payment Collection; the enquiry stays with marketing', async () => {
   const enquiry = await inProduction();
   const asked = await send(enquiry, 'team_payment_followup', 'siva');
   assert.equal(asked.status, 201, asked.json.message);
   assert.equal(asked.json.data.task.department, 'payment_collection');
-  assert.equal(asked.json.data.task.holds, undefined, 'a side request, not the enquiry');
+  assert.equal(asked.json.data.task.holds, undefined, 'a department task, not the enquiry');
 
-  const still = await holder(enquiry);
-  assert.equal(still.department, 'production', 'Production still has it');
+  assert.equal((await holder(enquiry)).department, 'marketing', 'marketing still has the enquiry');
+  assert.ok(await openTask(enquiry, 'ask_edd'), 'and Production still has its task');
   assert.equal((await Enquiry.findById(enquiry)).stage, 'production_edd');
 
   const finished = await done(asked.json.data.task, 'vijay', { note: 'Advance received', fields: { paymentStatus: 'Paid', commitmentDate: '2026-10-10' } });
   assert.equal(finished.status, 200, finished.json.message);
   assert.ok(await Todo.exists({ user: id.siva, title: /^Done: Team Payment Follow-up/ }), 'the asker hears it is done');
-  assert.equal((await holder(enquiry)).department, 'production');
 });
 
 /* -------------------------------- 3. Assembling -------------------------------- */
@@ -169,7 +172,7 @@ test('Assembling has its own stage, and counts its own enquiries', async () => {
 
 /* ------------------------------ 2. Quality first ------------------------------ */
 
-test('Dispatch cannot take an enquiry Quality has not passed', async () => {
+test('Dispatch cannot be asked until Quality has passed the job', async () => {
   const enquiry = await inProduction();
   const early = await send(enquiry, 'invoice_dispatch', 'siva');
   assert.equal(early.status, 400);
@@ -180,18 +183,22 @@ test('Dispatch cannot take an enquiry Quality has not passed', async () => {
   const check = toQuality.json.data.task;
   assert.equal(check.department, 'quality');
 
-  const notAChoice = await done(check, 'kavitha', { note: 'Looked', next: 'invoice_dispatch', fields: { result: 'Maybe' } });
+  const notAChoice = await done(check, 'kavitha', { note: 'Looked', fields: { result: 'Maybe' } });
   assert.equal(notAChoice.status, 400);
   assert.match(notAChoice.json.message, /Result is one of: Passed, Failed/);
 
-  const failed = await done(check, 'kavitha', { note: 'Flash on the hook', next: 'invoice_dispatch', fields: { result: 'Failed' } });
-  assert.equal(failed.status, 400, 'a failed check cannot go to Dispatch');
-  assert.equal((await holder(enquiry)).kind, 'quality_check', 'still with Quality');
+  const failed = await done(check, 'kavitha', { note: 'Flash on the hook', fields: { result: 'Failed' } });
+  assert.equal(failed.status, 200, failed.json.message);
+  assert.equal((await send(enquiry, 'invoice_dispatch', 'siva')).status, 400, 'a failed check does not open Dispatch');
 
-  const passed = await done(check, 'kavitha', { note: '3 pcs per carton checked', next: 'invoice_dispatch', fields: { result: 'Passed', passedQty: '1000' } });
+  const again = (await send(enquiry, 'quality_check', 'siva')).json.data.task;
+  const passed = await done(again, 'kavitha', { note: '3 pcs per carton checked', fields: { result: 'Passed', passedQty: '1000' } });
   assert.equal(passed.status, 200, passed.json.message);
-  assert.equal((await holder(enquiry)).department, 'despatch');
+  const toDispatch = await send(enquiry, 'invoice_dispatch', 'siva');
+  assert.equal(toDispatch.status, 201, toDispatch.json.message);
+  assert.equal(toDispatch.json.data.task.department, 'despatch');
   assert.equal((await Enquiry.findById(enquiry)).stage, 'invoice_dispatch');
+  assert.equal((await holder(enquiry)).department, 'marketing');
 });
 
 test('a pass in the Quality module counts too — and rework means checking again', async () => {
@@ -202,43 +209,43 @@ test('a pass in the Quality module counts too — and rework means checking agai
   });
   const ok = await send(enquiry, 'invoice_dispatch', 'siva');
   assert.equal(ok.status, 201, ok.json.message);
-  assert.equal((await holder(enquiry)).department, 'despatch');
+  assert.equal(ok.json.data.task.department, 'despatch');
 
-  /* A failed check sent back to Production for rework: the old pass no longer counts. */
+  /* Made again after the pass (Production asked once more): the old pass no longer counts. */
   const fresh = await inProduction();
   const check = (await send(fresh, 'quality_check', 'siva')).json.data.task;
-  await done(check, 'kavitha', { note: 'Fine', next: 'ask_edd', fields: { result: 'Passed' } });
+  await done(check, 'kavitha', { note: 'Fine', fields: { result: 'Passed' } });
+  await done(await openTask(fresh, 'ask_edd'), 'siva', { note: 'First run done' });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal((await send(fresh, 'ask_edd')).status, 201);
   const reworked = await send(fresh, 'invoice_dispatch', 'siva');
   assert.equal(reworked.status, 400, 'made again after the pass, so Quality looks again');
 });
 
 /* ---------------------------- 4. Dispatch keeps the balance ---------------------------- */
 
-test('Dispatch keeps the enquiry while an order on it still has pieces to send', async () => {
+test('Dispatch’s task stays open while an order on it still has pieces to send', async () => {
   const enquiry = await inProduction();
   const check = (await send(enquiry, 'quality_check', 'siva')).json.data.task;
-  await done(check, 'kavitha', { note: 'Passed', next: 'invoice_dispatch', fields: { result: 'Passed' } });
+  await done(check, 'kavitha', { note: 'Passed', fields: { result: 'Passed' } });
+  const dispatchTask = (await send(enquiry, 'invoice_dispatch')).json.data.task;
   const order = await orderOn(enquiry, { quantity: 1000 });
   await consignment(order, 400);
 
-  const leaving = await done(await holder(enquiry), 'anita', { note: 'First lot gone', next: 'my_payment_followup' });
+  const leaving = await done(dispatchTask, 'anita', { note: 'First lot gone' });
   assert.equal(leaving.status, 400);
   assert.match(leaving.json.message, new RegExp(`${order.number} has 600 pcs still to send`));
-  assert.match(leaving.json.message, /post each lot as an Update/);
-
-  /* Within Dispatch it moves freely, and Quality can still be called in. */
-  const lr = await done(await holder(enquiry), 'anita', { note: 'LR for the first lot', next: 'lr_copy' });
-  assert.equal(lr.status, 200, lr.json.message);
+  assert.match(leaving.json.message, /Post each lot as an Update/);
 
   await consignment(order, 600);
-  const gone = await done(await holder(enquiry), 'anita', { note: 'Balance sent', next: 'my_payment_followup' });
+  const gone = await done(dispatchTask, 'anita', { note: 'Balance sent' });
   assert.equal(gone.status, 200, gone.json.message);
   assert.equal((await holder(enquiry)).department, 'marketing');
 });
 
-/* ------------------------------ 5. Records move it ------------------------------ */
+/* ------------------------------ 5. Records finish the work ------------------------------ */
 
-test('releasing the sales order hands the enquiry from Sales / SO to Production', async () => {
+test('releasing the sales order finishes Sales / SO’s task and gives Production its task', async () => {
   const enquiry = await freshEnquiry();
   assert.equal((await send(enquiry, 'po_so')).status, 201);
 
@@ -254,33 +261,38 @@ test('releasing the sales order hands the enquiry from Sales / SO to Production'
   const released = await api(`/api/orders/${made.json.data._id}/actions`, { method: 'POST', as: 'priya', body: { action: 'release' } });
   assert.equal(released.status, 200, released.json.message);
 
-  const now = await until(async () => (await holder(enquiry))?.kind === 'ask_edd');
-  assert.ok(now, 'Production has it');
+  const now = await until(async () => Boolean(await openTask(enquiry, 'ask_edd')));
+  assert.ok(now, 'Production has its task');
+  assert.equal((await openTask(enquiry, 'ask_edd')).department, 'production');
   assert.equal((await Enquiry.findById(enquiry)).stage, 'production_edd');
-  const sales = await Todo.findOne({ enquiry, kind: 'po_so', holds: true }).lean();
+  const sales = await Todo.findOne({ enquiry, kind: 'po_so' }).lean();
+  assert.equal(sales.completed, true, 'Sales / SO is done');
   assert.equal(sales.outcome.fields.soNumber, made.json.data.number, 'the SO number is recorded for Sales');
   assert.equal(sales.outcome.fields.poNumber, 'PO/SCM/4471');
+  assert.equal((await holder(enquiry)).department, 'marketing');
 });
 
-test('goods leaving the plant move the enquiry from Invoice & Dispatch to LR Copy', async () => {
+test('goods leaving the plant finish Dispatch’s task and ask for the LR copy', async () => {
   const enquiry = await inProduction();
   const check = (await send(enquiry, 'quality_check', 'siva')).json.data.task;
-  await done(check, 'kavitha', { note: 'Passed', next: 'invoice_dispatch', fields: { result: 'Passed' } });
+  await done(check, 'kavitha', { note: 'Passed', fields: { result: 'Passed' } });
+  assert.equal((await send(enquiry, 'invoice_dispatch')).status, 201);
   const order = await orderOn(enquiry, { quantity: 500 });
   const lorry = await consignment(order, 500);
 
   await publish(EVENTS.DISPATCH_LEFT, { dispatchId: lorry._id });
-  assert.ok(await until(async () => (await holder(enquiry))?.kind === 'lr_copy'));
-  const invoiced = await Todo.findOne({ enquiry, kind: 'invoice_dispatch', holds: true }).lean();
+  assert.ok(await until(async () => Boolean(await openTask(enquiry, 'lr_copy'))));
+  const invoiced = await Todo.findOne({ enquiry, kind: 'invoice_dispatch' }).lean();
+  assert.equal(invoiced.completed, true);
   assert.equal(invoiced.outcome.fields.quantitySent, '500');
   assert.equal(invoiced.outcome.fields.transporter, 'VRL Logistics');
 
-  /* Only from Invoice & Dispatch: an enquiry already elsewhere is left where it is. */
+  /* Only from Invoice & Dispatch: an enquiry whose work is elsewhere is left alone. */
   const elsewhere = await freshEnquiry();
   const other = await orderOn(elsewhere);
   await publish(EVENTS.DISPATCH_LEFT, { dispatchId: (await consignment(other, 100))._id });
   await settle(); await settle();
-  assert.equal((await holder(elsewhere)).kind, 'new_enquiry');
+  assert.equal(await openTask(elsewhere, 'lr_copy'), null);
 });
 
 test('paid in full with nothing left to send closes the enquiry; a balance keeps it open', async () => {

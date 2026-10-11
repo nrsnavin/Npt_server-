@@ -80,6 +80,8 @@ const todoSchema = new mongoose.Schema(
      * Moving the enquiry on closes this one and opens the next department's.
      */
     holds: { type: Boolean, default: undefined },
+    /** The answers to the questions the department task asked when it was raised [config/handoffs.js `asks`]. */
+    brief: { type: Map, of: String, default: undefined },
     /** Done (with what they recorded) or sent back (with why), by whom and when, and where it went next. */
     outcome: {
       result: { type: String, enum: ['done', 'returned', 'moved'] },

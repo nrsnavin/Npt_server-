@@ -2,7 +2,7 @@ import Todo from '../models/Todo.js';
 import Enquiry from '../models/Enquiry.js';
 import { CLOSED_STAGE, STAGES, stageLabel } from '../config/enquiryStages.js';
 import { findDepartment } from '../config/modules.js';
-import { KIND_FOR_STAGE, findHandoff, movesEnquiry } from '../config/handoffs.js';
+import { findHandoff } from '../config/handoffs.js';
 import { canRead } from './access.service.js';
 import { isOwnershipScoped, ownsRecord } from './ownership.service.js';
 import { departmentsOf, inDepartment, isManagement } from '../utils/departments.js';
@@ -10,13 +10,15 @@ import { EVENTS, publish } from './events.service.js';
 import ApiError from '../utils/ApiError.js';
 import { describeBalance, dispatchBalance, qualityPassed } from './enquiryGates.service.js';
 import { assertEnquiryPaidFor } from './paymentGates.service.js';
+import { MATERIALS } from '../models/Mould.js';
 
 /**
  * One department asking another for something about an enquiry — the buttons on the enquiry
  * screen [config/handoffs.js].
  *
- *   send       a task lands on the department's queue, due by the end of today, and anyone in
- *              the department may pick it up. The enquiry moves to the button's stage.
+ *   send       a department task lands on the department's queue, due by the end of today,
+ *              with the answers to the questions it asks; anyone in the department may pick
+ *              it up. The enquiry stays with its marketing person; its stage label follows.
  *   done       whoever did it says what they did; the sender gets a task back to take the next
  *              step, so the enquiry is never left with nobody holding it.
  *   send back  the department returns it with a reason; the sender gets that as a task too.
@@ -78,6 +80,8 @@ export async function mayMove(user, enquiry, holder) {
   if (isAdmin(user)) return true;
   if (idOf(enquiry.assignedTo) === idOf(user._id)) return true;
   const current = holder === undefined ? await holderOf(enquiry._id) : holder;
+  /* Marketing's holding task is its marketing person's by name — not every marketing colleague's. */
+  if (current && findHandoff(current.kind)?.department === 'owner') return false;
   return Boolean(current && mayWorkOnHandoff(user, current));
 }
 
@@ -222,15 +226,36 @@ async function openHolder({ enquiry, kind, note, user, title, from }) {
   return task;
 }
 
+/** What the Sample Request's questions say, in the sample's own fields [models/Sample.js]. */
+function sampleFromBrief(brief = {}) {
+  const said = {};
+  if (brief.mould) said.modelNumber = brief.mould;
+  const material = brief.material && brief.material.toLowerCase().replace(/\s+/g, '_');
+  if (material && MATERIALS.includes(material)) said.material = material;
+  if (brief.colour) said.colour = brief.colour;
+  if (brief.colourType) said.colourMandatory = brief.colourType === 'Compulsory colour';
+  return said;
+}
+
+/** "ENQ-2026-0012 · SCM Garments", reading the buyer's name when only its id is in hand. */
+async function aboutWithName(enquiry) {
+  if (enquiry.customer && !enquiry.customer.name) {
+    const { default: Customer } = await import('../models/Customer.js');
+    const buyer = await Customer.findById(idOf(enquiry.customer)).select('name');
+    if (buyer?.name) return `${enquiry.number} · ${buyer.name}`;
+  }
+  return aboutOf(enquiry);
+}
+
 /**
  * The work record a button opens, so the department finds it waiting: Sample Request raises the
  * sample, Create Quotation the costing sheet. Both are one-per-enquiry, so pressing again (or a
  * status change doing the same) reuses the open one.
  */
-async function openWorkRecord(kind, enquiry) {
+async function openWorkRecord(kind, enquiry, brief = {}) {
   if (kind === 'sample_request') {
     const { createSampleForEnquiry } = await import('./sampling.service.js');
-    await createSampleForEnquiry(enquiry, {}, { autoCreated: true });
+    await createSampleForEnquiry(enquiry, sampleFromBrief(brief), { autoCreated: true });
   }
   if (kind === 'create_quotation') {
     const { ensureCostingFor } = await import('./costingRequest.service.js');
@@ -239,122 +264,165 @@ async function openWorkRecord(kind, enquiry) {
 }
 
 /**
- * The first holding task, for a new enquiry (and for one that has none — see the migration).
- * Marketing holds it at Enquiry unless it is already somewhere else.
+ * The holding task, for a new enquiry (and for one that has none — see the migration): the
+ * enquiry is its marketing person's, wherever its work is. Departments get tasks, not the enquiry.
  */
 export async function ensureHolder(enquiry, { user } = {}) {
   if (enquiry.stage === CLOSED_STAGE) return null;
   const existing = await holderOf(enquiry._id);
   if (existing) return existing;
-  const kind = KIND_FOR_STAGE[enquiry.stage] || 'new_enquiry';
-  const task = await openHolder({ enquiry, kind, user });
+  const task = await openHolder({ enquiry, kind: 'new_enquiry', user });
   await moveStage(enquiry, null, { heldBy: task.department });
   return task;
 }
 
 /**
- * Moves the enquiry on: the department that had it is done with it, and the button's department
- * has it now, at the button's stage. The one door every stage change goes through.
- *
- * `fields` are what the department that had it records about its work (the courier and AWB
- * when a sample goes out), kept on its task. `system` skips the who-may check (the caller has
- * already made it, or it is moving on someone's behalf). `openRecords: false` is for the moves
- * made by the automations, which raise the sample or costing themselves.
+ * The questions a department task asks when it is raised [config/handoffs.js `asks`]: kept as
+ * the task's brief. Only the questions the button asks are kept; a choice must be one of its
+ * options; a required one must be answered — unless the system raises it (a status change),
+ * when there is nobody to ask and the department reads the enquiry instead.
  */
-export async function moveEnquiry({ enquiry, kind, note, fields, user, system = false, openRecords = true }) {
-  const handoff = findHandoff(kind);
-  if (!movesEnquiry(handoff)) fail('That button does not move the enquiry');
-  if (enquiry.stage === CLOSED_STAGE) fail('This enquiry is closed. Nothing more can be sent on it.');
-
-  const current = await holderOf(enquiry._id);
-  if (!system && !(await mayMove(user, enquiry, current))) {
-    throw ApiError.forbidden(current
-      ? `${departmentName(current.department)} has this enquiry. Only they, the marketing person or Admin can move it on.`
-      : 'Only the marketing person or Admin can move this enquiry on.');
-  }
-  if (current && current.kind === kind) {
-    const who = current.user ? await current.populate('user', 'name') : current;
-    throw ApiError.conflict(
-      `${handoff.label} is already with ${departmentName(current.department)}`
-        + `${who.user?.name ? ` (${who.user.name})` : ''}. Add to that one, or wait for it to come back.`
-    );
-  }
-
-  /*
-   * The two gates [services/enquiryGates.service.js]. Into Dispatch only once Quality has passed
-   * the job; out of Dispatch only once nothing is left to send.
-   */
-  /* What the department that had it records — checked first, so a bad value is named as such. */
-  const kept = current ? keptFields(current.kind, fields) : {};
-  const target = handoff.department === 'owner' ? 'marketing' : handoff.department;
-  if (kind === 'invoice_dispatch' && current?.department !== 'despatch'
-      && !(await qualityPassed(enquiry._id, { closing: current, fields: kept }))) {
-    fail('Quality has not passed this job yet. Send it to Quality Check first; Quality moves it on to Invoice & Dispatch once it passes.');
-  }
-  /*
-   * Money before work, on the order's payment terms [services/paymentGates.service.js]: into
-   * Production only once the advance is in, into Invoice & Dispatch only once the money due
-   * before dispatch is in. Refused with the shortfall, and Payment Collection is asked for it.
-   */
-  if (kind === 'ask_edd' && current?.department !== 'production') {
-    await assertEnquiryPaidFor(enquiry._id, 'production', { by: user });
-  }
-  if (kind === 'invoice_dispatch' && current?.department !== 'despatch') {
-    await assertEnquiryPaidFor(enquiry._id, 'dispatch', { by: user });
-  }
-  if (current?.department === 'despatch' && target !== 'despatch' && kind !== 'quality_issue') {
-    const left = await dispatchBalance(enquiry._id);
-    if (left.length) {
-      fail(`${describeBalance(left)} still to send. Dispatch keeps the enquiry until the balance has gone — post each lot as an Update. If the order is being short-closed, close it on the order first.`);
+function keptBrief(kind, brief = {}, { strict = true } = {}) {
+  const asks = findHandoff(kind)?.asks || [];
+  const kept = {};
+  for (const field of asks) {
+    const text = String(brief?.[field.key] ?? '').trim().slice(0, 200);
+    if (!text) {
+      if (strict && field.required) fail(`${field.label} is needed for this task`);
+      continue;
     }
+    if (field.type === 'choice' && !field.options.includes(text)) fail(`${field.label} is one of: ${field.options.join(', ')}`);
+    kept[field.key] = text;
   }
+  return kept;
+}
 
-  const text = String(note || '').trim();
+/** The open department tasks of these kinds on an enquiry, finished with what the record says. */
+async function finishOpenTasks(enquiryId, kinds, { fields = {}, note, user }) {
+  const open = await Todo.find({ enquiry: enquiryId, kind: { $in: kinds }, completed: false, holds: { $ne: true } });
   const now = new Date();
-  let closedAsDone = false;
-  let closed = null;
-  if (current) {
-    /* Done when the department that had it moves it on; "moved" when someone else took it. */
-    closedAsDone = Boolean(user && mayWorkOnHandoff(user, current) && !isAdminOverride(user, current));
-    /*
-     * Claimed, not saved: two moves at once (a status change and the sample it raised, or two
-     * people pressing) must not both close it — the second finds it already closed and stops.
-     */
-    const claimed = await Todo.updateOne({ _id: current._id, completed: false }, {
+  for (const task of open) {
+    if (task.kind === 'invoice_dispatch' && (await dispatchBalance(enquiryId)).length) continue;
+    const kept = keptFields(task.kind, fields);
+    const claimed = await Todo.updateOne({ _id: task._id, completed: false }, {
       $set: {
         completed: true,
         completedAt: now,
         ...(user ? { completedBy: user._id } : {}),
-        ...(!current.user && user && closedAsDone ? { user: user._id } : {}),
         outcome: {
-          result: closedAsDone ? 'done' : 'moved',
-          note: text || 'Moved on',
-          ...(Object.keys(kept).length ? { fields: kept } : {}),
-          ...(user ? { by: user._id } : {}),
-          at: now,
-          next: kind,
+          result: 'done', note: note || 'Done', ...(Object.keys(kept).length ? { fields: kept } : {}),
+          ...(user ? { by: user._id } : {}), at: now,
         },
       },
     });
-    if (!claimed.modifiedCount) throw ApiError.conflict('Someone has just moved this enquiry on. Reload to see where it is.');
-    closed = await Todo.findById(current._id);
+    if (claimed.modifiedCount) await publish(EVENTS.HANDOFF_DONE, { task: await Todo.findById(task._id), by: user });
   }
+}
 
-  const task = await openHolder({ enquiry, kind, note: text, user, from: actingFor(user, current) });
-  await moveStage(enquiry, handoff.stage, { user, task, note: text || handoff.label, heldBy: task.department });
-  if (openRecords) await openWorkRecord(kind, enquiry);
+/**
+ * Raises a department task on the enquiry — what clicking a department does. The enquiry stays
+ * with its marketing person (Admin sees every one); the department gets a task on its queue,
+ * due by the end of today, with the answers to the questions the task asks (its brief), and
+ * that task is what the department's dashboard shows. The enquiry's stage follows the latest
+ * department asked, as a label of where the work is.
+ *
+ * Named for what it used to do, because every door that hands work on comes through here: the
+ * buttons, a department's "done, and next", and the automations (a status change, an order
+ * released, goods gone). `finishes` closes the open tasks of those kinds first, with `fields`
+ * — Sales / SO's task is done when the order is released. `system` skips the who-may check and
+ * the required questions. `openRecords: false` is for the automations, which raise the sample
+ * or costing themselves.
+ */
+export async function moveEnquiry({
+  enquiry, kind, note, fields, brief, user, system = false, openRecords = true, finishes = [],
+}) {
+  const handoff = findHandoff(kind);
+  if (!handoff?.department || handoff.stage === CLOSED_STAGE) fail('That button does not raise a department task');
+  if (enquiry.stage === CLOSED_STAGE) fail('This enquiry is closed. Nothing more can be sent on it.');
+  if (kind === 'back_to_marketing') return returnToMarketing({ enquiry, note, fields, user, system });
+  if (!system && !(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
+
+  const already = await Todo.findOne({ enquiry: enquiry._id, kind, completed: false }).populate('user', 'name');
+  if (already) {
+    throw ApiError.conflict(
+      `${handoff.label} is already with ${departmentName(already.department)}`
+        + `${already.user?.name ? ` (${already.user.name})` : ''}. Add to that one, or wait for it to come back.`
+    );
+  }
+  const asked = keptBrief(kind, brief, { strict: !system });
+
+  /*
+   * The gates [services/enquiryGates.service.js, services/paymentGates.service.js]. Dispatch only
+   * once Quality has passed the job; Production only once the advance is in, Dispatch only once
+   * the money due before dispatch is in — refused with the shortfall, and Payment Collection is
+   * asked for it.
+   */
+  if (kind === 'invoice_dispatch' && !(await qualityPassed(enquiry._id, {}))) {
+    fail('Quality has not passed this job yet. Send it to Quality Check first; Dispatch can be asked once it passes.');
+  }
+  if (kind === 'ask_edd') await assertEnquiryPaidFor(enquiry._id, 'production', { by: user });
+  if (kind === 'invoice_dispatch') await assertEnquiryPaidFor(enquiry._id, 'dispatch', { by: user });
+
+  const text = String(note || '').trim();
+  if (finishes.length) await finishOpenTasks(enquiry._id, finishes, { fields, note: text, user });
+
+  let department = handoff.department;
+  let assignee;
+  if (department === 'owner') ({ userId: assignee, department } = await ownerOf(enquiry));
+  const holder = await holderOf(enquiry._id);
+  const task = await Todo.create({
+    enquiry: enquiry._id,
+    customer: enquiry.customer?._id || enquiry.customer,
+    kind,
+    department,
+    user: assignee || undefined,
+    fromDepartment: actingFor(user, holder) || undefined,
+    createdBy: user?._id,
+    system: !user,
+    title: `${handoff.label} — ${await aboutWithName(enquiry)}`,
+    notes: text || undefined,
+    ...(Object.keys(asked).length ? { brief: asked } : {}),
+    dueDate: dueFor(handoff, enquiry),
+    priority: 'normal',
+    link: `/enquiries/${enquiry._id}`,
+  });
+  await moveStage(enquiry, handoff.stage, { user, task, note: text || handoff.label });
+  if (openRecords) await openWorkRecord(kind, enquiry, asked);
 
   await publish(EVENTS.HANDOFF_SENT, { task, enquiry, by: user });
-  /* The sender hears it was done — unless the next task is theirs, which already says so. */
-  if (closed && closedAsDone && idOf(closed.createdBy) !== idOf(task.user)) {
-    await publish(EVENTS.HANDOFF_DONE, { task: closed, by: user });
-  }
   return task;
 }
 
-/** Admin moving a department's enquiry is taking it, not doing it — unless Admin is the holder. */
-const isAdminOverride = (user, task) =>
-  isAdmin(user) && !inDepartment(user, task.department) && idOf(task.user) !== idOf(user._id);
+/**
+ * Hands an enquiry a department still holds (from before department tasks) back to its
+ * marketing person: that department is done with it.
+ */
+async function returnToMarketing({ enquiry, note, fields, user, system }) {
+  const current = await holderOf(enquiry._id);
+  const owners = current && findHandoff(current.kind)?.department === 'owner';
+  if (!current || owners) fail('The enquiry is already with its marketing person');
+  if (!system && !(await mayMove(user, enquiry, current))) {
+    throw ApiError.forbidden('Only the marketing person, the department that has it or Admin can hand it back.');
+  }
+  const text = String(note || '').trim();
+  const kept = keptFields(current.kind, fields);
+  const claimed = await Todo.updateOne({ _id: current._id, completed: false }, {
+    $set: {
+      completed: true,
+      completedAt: new Date(),
+      ...(user ? { completedBy: user._id } : {}),
+      outcome: {
+        result: 'done', note: text || 'Back to marketing', ...(Object.keys(kept).length ? { fields: kept } : {}),
+        ...(user ? { by: user._id } : {}), at: new Date(), next: 'back_to_marketing',
+      },
+    },
+  });
+  if (!claimed.modifiedCount) throw ApiError.conflict('Someone has just changed this enquiry. Reload to see where it is.');
+  const task = await openHolder({ enquiry, kind: 'back_to_marketing', note: text, user, from: actingFor(user, current) });
+  await moveStage(enquiry, 'enquiry', { user, task, note: text || 'Back to marketing', heldBy: task.department });
+  await publish(EVENTS.HANDOFF_SENT, { task, enquiry, by: user });
+  return task;
+}
 
 /** Closing ends everything still open on the enquiry, the holding task included, and says so. */
 async function closeOpenTasks(enquiryId, why, user) {
@@ -396,7 +464,7 @@ export async function closeEnquiryAutomatically({ enquiry, note }) {
  * One button pressed on the enquiry screen. Returns the task (or the record, for the buttons
  * that only record). `enquiry` must be a document with `customer` populated or an id.
  */
-export async function sendHandoff({ enquiry, kind, note, fields, user }) {
+export async function sendHandoff({ enquiry, kind, note, fields, brief, user }) {
   const handoff = findHandoff(kind);
   if (!handoff || handoff.hidden) fail('That is not one of the buttons');
 
@@ -405,7 +473,8 @@ export async function sendHandoff({ enquiry, kind, note, fields, user }) {
     fail('This enquiry is closed. Nothing more can be sent on it.');
   }
 
-  if (movesEnquiry(handoff)) return moveEnquiry({ enquiry, kind, note: text, fields, user });
+  /* Every button that names a department raises that department's task. */
+  if (handoff.department) return moveEnquiry({ enquiry, kind, note: text, fields, brief, user });
 
   if (!(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
 
@@ -421,48 +490,27 @@ export async function sendHandoff({ enquiry, kind, note, fields, user }) {
   };
 
   /* The buttons that record rather than ask: nothing lands on anybody's queue. */
-  if (!handoff.department) {
-    if (kind === 'task_closed') {
-      if (text.length < 3) fail('Say why it is being closed');
-      if (!(await mayMove(user, enquiry))) throw ApiError.forbidden('Only whoever has the enquiry, its marketing person or Admin can close it.');
-    }
-    const record = await Todo.create({
-      ...base,
-      department: sender || 'management',
-      user: user._id,
-      title: `${handoff.label} — ${aboutOf(enquiry)}`,
-      notes: text || undefined,
-      completed: true,
-      completedAt: new Date(),
-      completedBy: user._id,
-      outcome: { result: 'done', note: text || undefined, by: user._id, at: new Date() },
-    });
-
-    if (kind === 'task_closed') await closeOpenTasks(enquiry._id, text, user);
-    await moveStage(enquiry, handoff.stage, {
-      user, task: record, note: text || handoff.label, heldBy: kind === 'task_closed' ? null : undefined,
-    });
-    return record;
+  if (kind === 'task_closed') {
+    if (text.length < 3) fail('Say why it is being closed');
+    if (!(await mayMove(user, enquiry))) throw ApiError.forbidden('Only whoever has the enquiry, its marketing person or Admin can close it.');
   }
-
-  /* A side request (a PRT visit): asked of a department without moving the enquiry. */
-  const already = await Todo.findOne({ enquiry: enquiry._id, kind, completed: false }).populate('user', 'name');
-  if (already) {
-    throw ApiError.conflict(
-      `${handoff.label} is already with ${departmentName(already.department)}`
-        + `${already.user?.name ? ` (${already.user.name})` : ''}. Add to that one, or wait for it to come back.`
-    );
-  }
-  const task = await Todo.create({
+  const record = await Todo.create({
     ...base,
-    department: handoff.department,
+    department: sender || 'management',
+    user: user._id,
     title: `${handoff.label} — ${aboutOf(enquiry)}`,
     notes: text || undefined,
-    dueDate: endOfDayIST(),
-    priority: 'normal',
+    completed: true,
+    completedAt: new Date(),
+    completedBy: user._id,
+    outcome: { result: 'done', note: text || undefined, by: user._id, at: new Date() },
   });
-  await publish(EVENTS.HANDOFF_SENT, { task, enquiry, by: user });
-  return task;
+
+  if (kind === 'task_closed') await closeOpenTasks(enquiry._id, text, user);
+  await moveStage(enquiry, handoff.stage, {
+    user, task: record, note: text || handoff.label, heldBy: kind === 'task_closed' ? null : undefined,
+  });
+  return record;
 }
 
 function openHandoff(task, user) {
@@ -489,12 +537,28 @@ export async function completeHandoff(task, user, { note, fields = {}, next }) {
   const text = String(note || '').trim();
   if (text.length < 2) fail('Say what was done');
 
+  /*
+   * A department that still holds an enquiry (from before department tasks) is done with it: it
+   * goes back to its marketing person — and on to the next department's task, when one is named.
+   * Marketing's own holding task is the enquiry itself; it ends with Task Closed.
+   */
   if (task.holds) {
-    if (!next) fail('Say where it goes next');
-    if (!movesEnquiry(findHandoff(next)) || findHandoff(next).hidden) fail('That is not a next step');
+    if (findHandoff(task.kind)?.department === 'owner') {
+      fail('The enquiry stays with its marketing person. Raise a department task, or close it with Task Closed.');
+    }
+    if (next && (!findHandoff(next)?.department || findHandoff(next).hidden)) fail('That is not a next step');
     const enquiry = await enquiryOfTask(task);
-    await moveEnquiry({ enquiry, kind: next, note: text, fields, user, system: true });
+    await returnToMarketing({ enquiry, note: text, fields, user, system: true });
+    if (next && next !== 'back_to_marketing') await moveEnquiry({ enquiry, kind: next, note: text, user, system: true });
     return Todo.findById(task._id);
+  }
+
+  /* Dispatch's task is done when the balance has gone, lot by lot as Updates until then. */
+  if (task.kind === 'invoice_dispatch') {
+    const left = await dispatchBalance(task.enquiry?._id || task.enquiry);
+    if (left.length) {
+      fail(`${describeBalance(left)} still to send. Post each lot as an Update and mark it done once the balance has gone — or short-close the order first.`);
+    }
   }
 
   const handoff = findHandoff(task.kind);
@@ -553,22 +617,13 @@ export async function returnHandoff(task, user, { reason }) {
   await task.save();
 
   if (task.holds) {
+    /* An enquiry a department still held goes back to its marketing person, with why. */
     const enquiry = await enquiryOfTask(task);
-    const previous = await Todo.findOne({
-      enquiry: enquiry._id, holds: true, completed: true, _id: { $ne: task._id }, createdAt: { $lte: task.createdAt },
-    }).sort({ createdAt: -1 });
-    const kind = previous?.kind && movesEnquiry(findHandoff(previous.kind)) ? previous.kind : 'back_to_marketing';
     const back = await openHolder({
-      enquiry, kind, user, note: `${user.name}: ${why}`,
-      title: `Sent back: ${findHandoff(kind).label} — ${aboutOf(enquiry)}`,
+      enquiry, kind: 'back_to_marketing', user, note: `${user.name}: ${why}`,
+      title: `Sent back: ${findHandoff('back_to_marketing').label} — ${aboutOf(enquiry)}`,
     });
-    /* The same department, and the same person if it was theirs by name. */
-    if (previous && previous.department && previous.kind === kind) {
-      back.department = previous.department;
-      back.user = previous.user || undefined;
-      await back.save();
-    }
-    await moveStage(enquiry, findHandoff(kind).stage, { user, task: back, note: `Sent back: ${why}`, heldBy: back.department });
+    await moveStage(enquiry, 'enquiry', { user, task: back, note: `Sent back: ${why}`, heldBy: back.department });
   } else {
     await backToSender(task, { user, title: `Sent back: ${task.title}`, notes: `${user.name}: ${why}` });
   }
@@ -646,12 +701,18 @@ export async function runLateTaskSweep({ now = new Date(), limit = 200 } = {}) {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Marketing's holding task is the enquiry itself, not a task anybody was asked to do: it is left
+ * out of the department-task lists and counts, which the marketing person reads as "My enquiries".
+ */
+const NOT_THE_ENQUIRY = { $nor: [{ holds: true, kind: { $in: ['new_enquiry', 'back_to_marketing', 'my_payment_followup'] } }] };
+
 /** The numbers a department is run by, from its own tasks. */
 export async function departmentFigures(department, { now = new Date() } = {}) {
   const tonight = endOfDayIST(now);
   const week = new Date(now.getTime() - 7 * DAY_MS);
   const month = new Date(now.getTime() - 30 * DAY_MS);
-  const mine = { kind: { $exists: true }, department };
+  const mine = { kind: { $exists: true }, department, ...NOT_THE_ENQUIRY };
   const open = { ...mine, completed: false };
 
   const [counts] = await Todo.aggregate([
@@ -732,15 +793,16 @@ export async function departmentDashboard(department, { now = new Date() } = {})
 }
 
 /**
- * The enquiries a department holds right now — its desk [web: DepartmentDashboard].
+ * The department tasks open on a department's queue — its dashboard [web: DepartmentDashboard].
  *
- * One row per holding task: the enquiry, how long it has been here, whether it is late, and the
- * work records behind it (its open sample, quotation and order) so a row can take the reader
- * straight to the thing they work on. Late first, then by due time. A marketing person sees the
- * enquiries they own; everybody else sees the department's.
+ * One row per task: the enquiry it is about, what was asked (its brief), how long it has been
+ * here, whether it is late, and the work records behind it (the enquiry's sample, quotation and
+ * order) so a row can take the reader straight to the thing they work on. Late first, then by
+ * due time. A marketing person sees the tasks for their own buyers; everybody else sees the
+ * department's.
  */
 export async function enquiriesHeldBy(department, user, { now = new Date(), limit = 200 } = {}) {
-  const filter = { holds: true, completed: false, department };
+  const filter = { kind: { $exists: true }, completed: false, department, ...NOT_THE_ENQUIRY };
   /* Marketing's desk is each person's own buyers; any other desk is the department's. */
   if (department === 'marketing' && isOwnershipScoped(user)) filter.user = user._id;
 

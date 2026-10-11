@@ -214,3 +214,18 @@ test('--keep-registers spares the model masters and nothing else', async () => {
   const left = workingData.filter((name) => after[name] > 0);
   assert.deepEqual(left, [], `these are not registers and should have gone:\n  ${left.join('\n  ')}`);
 });
+
+test('--keep-users keeps every login and clears everything else', async () => {
+  const names = Object.keys(mongoose.models).sort();
+  const others = names.filter((name) => name !== 'User');
+  await makeUsers();
+  await seedEverything(others);
+
+  reset(['--keep-users', '--confirm']);
+
+  const left = Object.entries(await countsByModel(others)).filter(([, count]) => count > 0).map(([name]) => name);
+  assert.deepEqual(left, [], `these should have gone:\n  ${left.join('\n  ')}`);
+  const users = await mongoose.models.User.find().select('email role').sort('email').lean();
+  assert.deepEqual(users.map((user) => user.email), ['nandhini@np.com', 'rsnavin1@gmail.com'], 'every account stays');
+  assert.equal(users.find((user) => user.email === 'nandhini@np.com').role, 'member', 'nobody is promoted');
+});

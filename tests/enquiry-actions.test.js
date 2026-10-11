@@ -77,15 +77,16 @@ const raise = async (extra = {}) => {
   return json.data;
 };
 
-/** The department that has the enquiry now, once the move made on its behalf has landed. */
+/** The department's open task on the enquiry, once the one raised on its behalf has landed. */
 async function heldBy(id, department) {
-  let holder;
+  let task;
   for (let i = 0; i < 160; i += 1) {
-    holder = (await api(`/api/enquiries/${id}/handoffs`, { token: nandhini })).json.holder;
-    if (holder?.department === department) break;
+    const { data = [] } = (await api(`/api/enquiries/${id}/handoffs`, { token: nandhini })).json;
+    task = data.find((row) => row.department === department && !row.completed && !row.holds);
+    if (task) break;
     await new Promise((resolve) => setTimeout(resolve, 60));
   }
-  return holder;
+  return task;
 }
 
 const act = (id, body, token = nandhini) =>
@@ -222,14 +223,14 @@ test('the written next step is a default, not a cage', async () => {
 
 /* -------------------------------- Asking a price -------------------------------- */
 
-test('asking for a price hands the enquiry to Quotation, with the costing sheet waiting', async () => {
+test('asking for a price gives Quotation its task, with the costing sheet waiting', async () => {
   const enquiry = await raise();
   const done = await act(enquiry._id, { action: 'request_pricing' });
 
   assert.equal(done.status, 200, done.json.message);
   assert.equal(done.json.data.status, 'pricing_required');
   const holder = await heldBy(enquiry._id, 'quotation');
-  assert.equal(holder?.department, 'quotation', 'Quotation has the enquiry');
+  assert.equal(holder?.department, 'quotation', 'Quotation has its task');
   assert.equal(holder.kind, 'create_quotation');
 
   const sheets = await api(`/api/pricings?enquiry=${enquiry._id}`, { token: admin });
@@ -238,7 +239,7 @@ test('asking for a price hands the enquiry to Quotation, with the costing sheet 
 
 /* ------------------------------ Confirming an order ------------------------------ */
 
-test('confirming an order needs the figure, then hands it to order confirmation', async () => {
+test('confirming an order needs the figure, then gives order confirmation its task', async () => {
   /*
    * `ENQUIRY_WON` was published and nobody was listening: the enquiry went green and the sales
    * order got raised because somebody remembered. That is the one place in the chain where
@@ -257,7 +258,7 @@ test('confirming an order needs the figure, then hands it to order confirmation'
   assert.equal(done.json.data.nextAction, undefined, 'winning clears the chase');
 
   const holder = await heldBy(enquiry._id, 'order_confirmation');
-  assert.equal(holder?.department, 'order_confirmation', 'Sales / SO has the enquiry');
+  assert.equal(holder?.department, 'order_confirmation', 'Sales / SO has its task');
   assert.equal(holder.kind, 'po_so');
 });
 
