@@ -50,7 +50,7 @@ test.before(async () => {
 
   await api('/api/auth/register', { method: 'POST', body: { name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', department: 'management' } });
   token.admin = (await api('/api/auth/login', { method: 'POST', body: { email: 'admin@np.com', password: 'Admin@12345' } })).json.data.token;
-  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['arun', 'Arun K', 'marketing'], ['siva', 'Sivakumar', 'production'], ['kavi', 'Kavitha', 'quality'], ['ravi', 'Ravi Despatch', 'despatch'], ['anand', 'Anand Assembly', 'assembling'], ['meera', 'Meera Sampling', 'sampling']]) {
+  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['arun', 'Arun K', 'marketing'], ['siva', 'Sivakumar', 'production'], ['kavi', 'Kavitha', 'quality'], ['ravi', 'Ravi Despatch', 'despatch'], ['anand', 'Anand Assembly', 'assembling'], ['meera', 'Meera Sampling', 'sampling'], ['raja', 'Raja Recovery', 'payment_collection']]) {
     const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department } });
     assert.equal(made.status, 201, made.json.message);
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
@@ -542,4 +542,31 @@ test('a quotation sent closes the Create Quotation and Price Negotiation tasks w
   assert.deepEqual(Object.fromEntries(created.outcome.fields), { quotationNumber: 'NP/26-27/007', price: '7.4' });
   assert.deepEqual(Object.fromEntries(tasks.find((task) => task.kind === 'price_negotiation').outcome.fields), { price: '7.4' });
   assert.equal(await Todo.countDocuments({ title: /^Done: (Create Quotation|Price Negotiation)/ }), 0, 'marketing follows up from the quotation');
+});
+
+/* ------------------------------ PRT: the Payment Recovery Team ------------------------------ */
+
+test('marketing assigns a PRT visit to a Payment Recovery Team member they pick, due on the visit date', async () => {
+  const prefill = (await api(`/api/enquiries/${enquiry._id}/handoffs/prefill`, { as: 'nandhini' })).json.data;
+  const members = prefill.members.payment_collection;
+  const raja = members.find((person) => person.name === 'Raja Recovery');
+  assert.ok(raja, 'the PRT members are offered');
+  assert.ok(!members.some((person) => person.name === 'Sivakumar'), 'only the recovery team');
+
+  const visit = (brief) => api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', as: 'nandhini', body: { kind: 'request_prt_visit', note: 'Collect ₹42,000 against INV-0412', brief },
+  });
+  assert.match((await visit({ visitDate: indiaDay(3) })).json.message, /PRT member to visit/, 'who goes has to be picked');
+  const siva = (await api('/api/auth/me', { as: 'siva' })).json.data.id;
+  assert.match((await visit({ visitor: siva, visitDate: indiaDay(3) })).json.message, /pick someone from Payment Collection/);
+
+  const sent = await visit({ visitor: raja._id, visitDate: indiaDay(3) });
+  assert.equal(sent.status, 201, sent.json.message);
+  const task = await Todo.findById(sent.json.data.task._id);
+  assert.equal(task.department, 'payment_collection');
+  assert.equal(String(task.user), raja._id, 'Raja’s by name');
+  assert.equal(task.brief.visitor, 'Raja Recovery');
+  assert.equal(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(task.dueDate), indiaDay(3), 'due on the visit day');
+  const mine = (await api('/api/workspace/todos?scope=mine&status=open', { as: 'raja' })).json.data;
+  assert.ok(mine.some((entry) => entry._id === String(task._id)), 'on Raja’s own tasks');
 });

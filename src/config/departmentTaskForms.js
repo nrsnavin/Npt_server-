@@ -15,7 +15,8 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
  *   key, label     how it is stored on the task (its brief) and what the form says
  *   type           text · number · date · choice (with `options`) · check · items · info · kind
  *                  `items` is a table of rows (`columns`, each a question of its own);
- *                  `info` is shown, never asked; `kind` switches between two buttons
+ *                  `info` is shown, never asked; `member` picks a person of `department`
+ *                  (the task becomes theirs by name); `kind` switches between two buttons
  *                  (My / Team Payment Follow-up) and is not stored
  *   required       must be answered (a person raising it; the automations are not asked)
  *   from           where the answer is filled from — a path into the enquiry's prefill
@@ -319,7 +320,20 @@ export const TASK_FORMS = {
       { key: 'closed', label: 'Task Closed', done: true },
     ],
   },
-  request_prt_visit: { team: 'Admin', asks: [{ key: 'visitDate', label: 'Visit date', type: 'date' }] },
+  request_prt_visit: {
+    team: 'PRT — Payment Recovery Team',
+    title: 'Request PRT Visit',
+    submit: 'Assign PRT Visit',
+    note: { label: 'What to collect / discuss', placeholder: 'Amount due, invoices, what the buyer promised last time' },
+    /* Due on the day of the visit. */
+    dueFrom: 'visitDate',
+    asks: [
+      /* The member is picked by the person assigning it; the task is theirs by name. */
+      { key: 'visitor', label: 'PRT member to visit', type: 'member', department: 'payment_collection', required: true },
+      { key: 'visitDate', label: 'Visit date', type: 'date', required: true },
+      { key: 'address', label: 'Where', type: 'info', from: 'customer.delivery' },
+    ],
+  },
 };
 
 /** A button's form, with the common fields' defaults. */

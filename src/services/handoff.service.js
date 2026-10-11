@@ -297,6 +297,34 @@ export async function ensureHolder(enquiry, { user } = {}) {
   return task;
 }
 
+/**
+ * The person a `member` question names — an active member of its department — and the brief with
+ * their name in place of their id. Refused when it names anyone else.
+ */
+async function pickedMember(kind, brief = {}) {
+  const field = (findHandoff(kind)?.asks || []).find((entry) => entry.type === 'member');
+  const id = field && brief?.[field.key];
+  if (!field || !id) return { brief, member: null };
+  const { default: User } = await import('../models/User.js');
+  const member = /^[0-9a-f]{24}$/i.test(String(id))
+    ? await User.findOne({ _id: id, isActive: { $ne: false }, $or: [{ department: field.department }, { extraDepartments: field.department }] }).select('name department')
+    : null;
+  if (!member) fail(`${field.label}: pick someone from ${departmentName(field.department)}`);
+  return { brief: { ...brief, [field.key]: member.name }, member };
+}
+
+/** Who a form may pick for each `member` question: the active people of that department. */
+export async function membersFor(departments) {
+  const keys = [...new Set(departments)].filter(Boolean);
+  if (!keys.length) return {};
+  const { default: User } = await import('../models/User.js');
+  const people = await User.find({ isActive: { $ne: false }, $or: [{ department: { $in: keys } }, { extraDepartments: { $in: keys } }] })
+    .select('name department extraDepartments').sort({ name: 1 }).lean();
+  return Object.fromEntries(keys.map((key) => [key, people
+    .filter((person) => person.department === key || (person.extraDepartments || []).includes(key))
+    .map((person) => ({ _id: String(person._id), name: person.name }))]));
+}
+
 /** One answer, checked against its question: a number is a number, a date a date, a choice one of its options. */
 function keptAnswer(field, value) {
   if (field.type === 'check') return value === true || value === 'true' || value === 'Yes' ? 'Yes' : '';
@@ -420,7 +448,9 @@ export async function moveEnquiry({
         + `${already.user?.name ? ` (${already.user.name})` : ''}. Add to that one, or wait for it to come back.`
     );
   }
-  const asked = keptBrief(kind, brief, { strict: !system });
+  /* A member picked on the form (the PRT visitor): theirs by name, kept on the brief by name. */
+  const picked = await pickedMember(kind, brief);
+  const asked = keptBrief(kind, picked.brief, { strict: !system });
   if (!system) assertNote(kind, asked, note);
   if (already) return addToOpenTask(already, { handoff, note, asked, priority, requiredDate, user });
   const form = handoff.form || {};
@@ -439,7 +469,7 @@ export async function moveEnquiry({
   if (finishes.length) await finishOpenTasks(enquiry._id, finishes, { fields, note: text, user });
 
   let department = handoff.department;
-  let assignee;
+  let assignee = picked.member?._id;
   if (department === 'owner') {
     /* My Payment Follow-up is the raiser's own; anything else for the owner is the enquiry's marketing person's. */
     ({ userId: assignee, department } = handoff.toRaiser && user?._id
@@ -1283,6 +1313,8 @@ export async function taskPrefill(enquiryId) {
     order: order
       ? { number: order.number, paymentTerms: termsWords(order), invoiceNumber: consignment?.invoice?.number || '' }
       : { paymentTerms: '', invoiceNumber: '' },
+    /* The people each `member` question may pick — the PRT members for a visit. */
+    members: await membersFor(HANDOFFS.flatMap((handoff) => (handoff.asks || []).filter((field) => field.type === 'member').map((field) => field.department))),
   };
 }
 

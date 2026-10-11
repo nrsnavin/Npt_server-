@@ -61,8 +61,11 @@ test('with --replace: every login kept, registers filled, every department given
   const senthil = kept.find((user) => user.email === 'senthil@plant.in');
   assert.ok(await db.collection('enquiries').countDocuments({ assignedTo: senthil._id }) > 0, 'marketing’s records are the real marketing person’s');
   const departments = await db.collection('todos').distinct('department', { kind: { $exists: true }, holds: { $ne: true } });
-  for (const department of ['sampling', 'quotation', 'order_confirmation', 'production', 'mould', 'quality', 'assembling', 'despatch', 'accounts', 'payment_collection', 'audit', 'management']) {
+  for (const department of ['sampling', 'quotation', 'order_confirmation', 'production', 'mould', 'quality', 'assembling', 'despatch', 'accounts', 'payment_collection', 'audit']) {
     assert.ok(departments.includes(department), `${department} has a department task`);
   }
   assert.ok(await db.collection('enquiries').countDocuments({ 'items.hookRef': { $exists: true } }) > 0, 'enquiry rows name a hook');
+  const prt = await db.collection('todos').findOne({ kind: 'request_prt_visit' });
+  assert.equal(prt?.department, 'payment_collection', 'a PRT visit, with the Payment Recovery Team');
+  assert.ok(prt?.user && prt?.brief?.visitor, 'assigned to a member by name');
 });
