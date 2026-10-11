@@ -15,8 +15,8 @@ import { sendPush } from './push.service.js';
 /**
  * Handing an enquiry to another marketing person, an Admin, or taking it yourself, at any stage.
  *
- * The owner does it themselves (going on leave, a buyer in a colleague's area, too much on) or
- * Admin does it for them. What moves is everything that decides whose queue the work sits in:
+ * Admin does it — for an owner going on leave, a buyer in a colleague's area, too much on one
+ * desk. The owner asks Admin; they cannot pass it on themselves. What moves is everything that decides whose queue the work sits in:
  *
  * - the enquiry's owner, and a line in its `handovers` saying who passed it, to whom and why;
  * - the open tasks about it that were the old owner's (marketing's holding task among them);
@@ -33,9 +33,8 @@ import { sendPush } from './push.service.js';
 const isAdmin = isManagement;
 const idOf = (value) => String(value?._id || value || '');
 
-/** The owner, or Admin. */
-export const mayDelegate = (user, enquiry) =>
-  isAdmin(user) || idOf(enquiry.assignedTo) === idOf(user?._id);
+/** Admin only: handing an enquiry to someone else is Admin's decision, not its owner's. */
+export const mayDelegate = (user) => isAdmin(user);
 
 /**
  * Who an enquiry may go to: everyone on the marketing team, every Admin, and the person handing
@@ -62,7 +61,7 @@ export async function delegationTargets(enquiry, user) {
 
 export async function delegateEnquiry({ enquiry, to, note, user }) {
   if (!mayDelegate(user, enquiry)) {
-    throw ApiError.forbidden('Only the enquiry’s owner or Admin can hand it to someone else');
+    throw ApiError.forbidden('Only Admin can hand an enquiry to someone else');
   }
   const from = idOf(enquiry.assignedTo);
   if (idOf(to) === from) throw ApiError.badRequest('It is already theirs');

@@ -1515,7 +1515,7 @@ export const listEnquiryActivities = asyncHandler(async (req, res) => {
 
 /**
  * Handing the enquiry to another marketing person, at any stage [services/delegation.service.js].
- * The owner or Admin; its open tasks and its samples, quotes and orders go with it.
+ * Admin only; its open tasks and its samples, quotes and orders go with it.
  */
 export const delegateEnquiryTo = asyncHandler(transactional(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);
