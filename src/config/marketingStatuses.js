@@ -29,6 +29,13 @@ export const MARKETING_STATUSES = [
   { key: 'po_awaiting', label: 'PO awaiting' },
   { key: 'po_received', label: 'PO received' },
   { key: 'sales_order_sent', label: 'Sales order sent' },
+  /* With the plant — followed from the department asked (`FROM_STAGE`), or chosen by hand. */
+  { key: 'production', label: 'Production' },
+  { key: 'mould', label: 'Mould' },
+  { key: 'assembling', label: 'Assembling' },
+  { key: 'qc', label: 'QC' },
+  { key: 'dispatch', label: 'Dispatch' },
+  { key: 'lr_copy', label: 'LR Copy' },
   { key: 'task_closed', label: 'Task Closed' },
 ];
 
@@ -53,6 +60,36 @@ export const FROM_SALES_STATUS = {
   won: 'po_received',
   lost: 'task_closed',
 };
+
+/**
+ * The department task raised, in marketing's words [services/handoff.service `moveStage`]. The
+ * sales ones only ever move the marketing status forward, as the sales status does. The plant's
+ * six follow whichever task was raised last, in any order — a mould raised during production
+ * reads Mould — but never pull an enquiry back out of Task Closed or into the sales ones.
+ */
+export const FROM_TASK = {
+  sample_request: 'sample_requested',
+  create_quotation: 'quotation_preparing',
+  price_negotiation: 'pricing_discussion',
+  po_so: 'po_received',
+  ask_edd: 'production',
+  mould_issue: 'mould',
+  ask_assembling_edd: 'assembling',
+  quality_check: 'qc',
+  invoice_dispatch: 'dispatch',
+  lr_copy: 'lr_copy',
+};
+export const PLANT_STATUSES = ['production', 'mould', 'assembling', 'qc', 'dispatch', 'lr_copy'];
+
+/** The marketing status a task raised moves the enquiry to, or null when it stays. */
+export function followTask(kind, current) {
+  const follows = FROM_TASK[kind];
+  if (!follows || follows === current) return null;
+  if (marketingRank(follows) > marketingRank(current)) return follows;
+  /* Back and forth inside the plant's six, by whichever department was asked last. */
+  if (PLANT_STATUSES.includes(follows) && PLANT_STATUSES.includes(current)) return follows;
+  return null;
+}
 
 /** The sales statuses that read as one of these marketing statuses, for a list filter. */
 export const salesStatusesFor = (keys) =>

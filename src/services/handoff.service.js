@@ -1,6 +1,7 @@
 import Todo, { PRIORITIES } from '../models/Todo.js';
 import Enquiry from '../models/Enquiry.js';
 import { CLOSED_STAGE, STAGES, stageLabel } from '../config/enquiryStages.js';
+import { followTask, marketingStatusOf } from '../config/marketingStatuses.js';
 import { findDepartment } from '../config/modules.js';
 import { HANDOFFS, findHandoff } from '../config/handoffs.js';
 import { canRead } from './access.service.js';
@@ -140,6 +141,15 @@ async function moveStage(enquiry, to, { user, task, note, heldBy }) {
   if (Object.keys(set).length) update.$set = set;
   if (Object.keys(unset).length) update.$unset = unset;
   if (entry) update.$push = { stageHistory: entry };
+  /* Marketing's words follow the task raised — Sample requested … Production, Mould, QC, LR Copy. */
+  const follows = task?.kind && followTask(task.kind, marketingStatusOf(enquiry));
+  const marketing = follows
+    ? { from: enquiry.marketingStatus || null, to: follows, at: new Date(), by: user?._id, note: task.title }
+    : null;
+  if (marketing) {
+    update.$set = { ...(update.$set || {}), marketingStatus: follows };
+    update.$push = { ...(update.$push || {}), marketingStatusHistory: marketing };
+  }
   if (!Object.keys(update).length) return;
   await Enquiry.updateOne({ _id: enquiry._id }, update, { timestamps: false, keepVersion: true });
 
@@ -147,6 +157,10 @@ async function moveStage(enquiry, to, { user, task, note, heldBy }) {
   if (entry) {
     enquiry.stage = to;
     enquiry.unmarkModified('stage');
+  }
+  if (marketing) {
+    enquiry.marketingStatus = marketing.to;
+    enquiry.unmarkModified('marketingStatus');
   }
   if (heldBy !== undefined) {
     enquiry.heldBy = heldBy || undefined;
