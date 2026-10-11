@@ -663,6 +663,8 @@ async function answerParent(clarification, user, text) {
   if (!parent || parent.completed) return;
   const asking = statusesOf(parent).find((entry) => entry.raises === clarification.kind);
   parent.updates = [...(parent.updates || []), { note: `Clarified by ${user.name}: ${text}`, by: user._id, at: new Date() }];
+  /* At the top of the asking department's dashboard until somebody there acts on it. */
+  parent.attention = { kind: 'reply', note: text, by: user._id, at: new Date() };
   if (asking && parent.status === asking.key) {
     /* Back to whatever it was before the question was asked. */
     const before = [...(parent.statusHistory || [])].reverse().find((entry) => entry.status !== asking.key)?.status
@@ -697,6 +699,7 @@ export async function setTaskStatus(task, user, { status, note }) {
     });
   }
   task.status = status;
+  task.attention = undefined;
   task.statusHistory = [...(task.statusHistory || []), { status, note: text || undefined, by: user._id, at: new Date() }];
   task.updates = [...(task.updates || []), { note: text ? `${step.label}: ${text}` : step.label, by: user._id, at: new Date() }];
   if (!task.user) task.user = user._id;
@@ -722,6 +725,7 @@ export function resultStepFor(task, user) {
 export async function finishWithResult(task, user, { attachmentId, note }) {
   const step = resultStepFor(task, user);
   task.resultFile = attachmentId;
+  task.attention = undefined;
   task.status = step.key;
   task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: note || undefined, by: user._id, at: new Date() }];
   await task.save();
@@ -742,6 +746,38 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
   return { task: done, next, nextProblem };
 }
 
+/** "Got it": the department has seen the answer on its task, and the highlight goes. */
+export async function markAttentionSeen(task, user) {
+  openHandoff(task, user);
+  if (!task.attention?.kind) return task;
+  task.attention = undefined;
+  await task.save();
+  return task;
+}
+
+/**
+ * What needs this person now, at the top of their dashboard: the questions other departments
+ * asked them (a clarification — answered right there), and the answers that came back on their
+ * department's tasks. The first is theirs by name, or their department's when nobody is named.
+ */
+export async function attentionFor(user, department) {
+  const populate = [
+    { path: 'createdBy', select: 'name department' },
+    { path: 'attention.by', select: 'name department' },
+    { path: 'customer', select: 'code name' },
+    { path: 'enquiry', select: 'number requirement.modelNumber' },
+    { path: 'parentTask', select: 'kind department title status' },
+  ];
+  const [questions, replies] = await Promise.all([
+    Todo.find({
+      parentTask: { $exists: true }, completed: false,
+      $or: [{ user: user._id }, { department: { $in: departmentsOf(user) }, user: null }],
+    }).sort({ createdAt: 1 }).limit(50).populate(populate),
+    Todo.find({ 'attention.kind': 'reply', completed: false, department }).sort({ 'attention.at': -1 }).limit(50).populate(populate),
+  ]);
+  return { questions, replies };
+}
+
 /** The department corrects what it was told — the questions marked `editable` (contact details). */
 export async function editTaskBrief(task, user, { brief = {} }) {
   openHandoff(task, user);
@@ -759,6 +795,7 @@ export async function editTaskBrief(task, user, { brief = {} }) {
   }
   if (!changed.length) return task;
   task.brief = current;
+  task.attention = undefined;
   task.markModified('brief');
   task.updates = [...(task.updates || []), { note: `Corrected: ${changed.join(', ')}`, by: user._id, at: new Date() }];
   await task.save();
@@ -777,6 +814,7 @@ export async function updateHandoff(task, user, { note, fields = {} }) {
   task.updates = [...(task.updates || []), {
     note: text, fields: Object.keys(kept).length ? kept : undefined, by: user._id, at: new Date(),
   }];
+  task.attention = undefined;
   if (!task.user) task.user = user._id;
   await task.save();
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
