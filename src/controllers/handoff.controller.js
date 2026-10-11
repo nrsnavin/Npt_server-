@@ -101,7 +101,7 @@ export const createTeamTask = asyncHandler(transactional(async (req, res) => {
 
 /** The team task form's answers without an enquiry: members to pick, the named customer's contact. */
 export const teamTaskFormPrefill = asyncHandler(async (req, res) => {
-  res.json({ success: true, data: await teamTaskPrefill(req.query.customer) });
+  res.json({ success: true, data: await teamTaskPrefill(req.query.customer, req.user) });
 });
 
 async function storeTaskPdf(req, res, task) {
