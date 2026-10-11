@@ -50,7 +50,7 @@ test.before(async () => {
 
   await api('/api/auth/register', { method: 'POST', body: { name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', department: 'management' } });
   token.admin = (await api('/api/auth/login', { method: 'POST', body: { email: 'admin@np.com', password: 'Admin@12345' } })).json.data.token;
-  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['arun', 'Arun K', 'marketing'], ['siva', 'Sivakumar', 'production'], ['kavi', 'Kavitha', 'quality'], ['ravi', 'Ravi Despatch', 'despatch'], ['anand', 'Anand Assembly', 'assembling']]) {
+  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['arun', 'Arun K', 'marketing'], ['siva', 'Sivakumar', 'production'], ['kavi', 'Kavitha', 'quality'], ['ravi', 'Ravi Despatch', 'despatch'], ['anand', 'Anand Assembly', 'assembling'], ['meera', 'Meera Sampling', 'sampling']]) {
     const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department } });
     assert.equal(made.status, 201, made.json.message);
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
@@ -478,4 +478,38 @@ test('any department’s issue status shows on the enquiry list — Dispatch’s
   } finally {
     await dispatch.deleteOne();
   }
+});
+
+/* ------------------------------ Sampling: sent closes the task ------------------------------ */
+
+test('a sample sent closes the Sample Request task with the despatch details the sample team entered', async () => {
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', as: 'nandhini', body: { kind: 'sample_request', note: 'Two pieces for the store trial', brief: { items: [{ model: 'UTJRSH-0', quantity: '2' }] } },
+  });
+  assert.equal(sent.status, 201, sent.json.message);
+  const taskId = sent.json.data.task._id;
+  const { default: Sample } = await import('../src/models/Sample.js');
+  const sample = await Sample.findOne({ enquiry: enquiry._id, status: { $nin: ['dispatched', 'cancelled'] } }).sort({ createdAt: -1 });
+  assert.ok(sample, 'the request opened a sample on the bench');
+
+  for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
+    const moved = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status } });
+    assert.equal(moved.status, 200, `${status}: ${moved.json.message}`);
+  }
+  assert.equal((await Todo.findById(taskId)).completed, false, 'ready is not sent');
+  const out = await api(`/api/samples/${sample._id}/status`, {
+    method: 'POST', as: 'meera', body: { status: 'dispatched', deliveryMethod: 'courier', courier: 'DTDC', awbNumber: 'D1234567', dispatchedQuantity: 2 },
+  });
+  assert.equal(out.status, 200, out.json.message);
+
+  let task;
+  for (let i = 0; i < 100; i += 1) {
+    task = await Todo.findById(taskId);
+    if (task.completed) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(task.completed, true, 'the task closes once the sample has gone');
+  assert.equal(task.outcome.note, `Sample ${sample.number} sent by DTDC · AWB D1234567 · 2 pcs`);
+  assert.deepEqual(Object.fromEntries(task.outcome.fields), { courier: 'DTDC', awbNumber: 'D1234567', pieces: '2' });
+  assert.equal(await Todo.countDocuments({ title: /^Done: Sample Request/ }), 0, 'no second "next step?" task — marketing chases feedback from the sample');
 });

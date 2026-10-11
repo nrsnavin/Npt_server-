@@ -3,7 +3,7 @@ import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
 import { env } from '../config/env.js';
 import { EVENTS, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
-import { describeHandoff, holderOf, moveEnquiry } from '../services/handoff.service.js';
+import { describeHandoff, finishSampleTasks, holderOf, moveEnquiry } from '../services/handoff.service.js';
 import { sendPush } from '../services/push.service.js';
 import { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } from '../providers/whatsapp.js';
 
@@ -251,6 +251,14 @@ export function registerHandoffSubscribers() {
         fields: { invoiceNumber: dispatch.invoice?.number, quantitySent: sent ? String(sent) : undefined, transporter: dispatch.transporter },
         note: `${dispatch.number} has left the plant`,
       });
+    })
+  );
+
+  /* The sample has gone out: Sampling's task on the enquiry is done, with the despatch details. */
+  subscribe(
+    EVENTS.SAMPLE_DISPATCHED,
+    safely('close the sample task', async ({ sample, by }) => {
+      await finishSampleTasks(sample, by);
     })
   );
 
