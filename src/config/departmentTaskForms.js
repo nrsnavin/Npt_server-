@@ -98,7 +98,7 @@ const paymentFollowUp = {
     {
       key: 'owner', label: 'Follow-up owner', type: 'kind',
       options: [
-        { kind: 'my_payment_followup', label: 'My Payment Follow-up — Marketing person' },
+        { kind: 'my_payment_followup', label: 'My Payment Follow-up — on my tasks' },
         { kind: 'team_payment_followup', label: 'Team Payment Follow-up — Payment Collection' },
       ],
     },
@@ -231,6 +231,20 @@ export const TASK_FORMS = {
   quality_issue: {
     team: 'Quality Team',
     asks: [...modelAndQuantity, { key: 'problem', label: 'The problem', required: true }],
+    remarkRequired: true,
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'What was found, what was done for the buyer' },
+    /* A complaint is an issue on the enquiry until it is resolved. */
+    statuses: [
+      { key: 'received', label: 'Complaint Received', issue: true },
+      { key: 'checking', label: 'Under Checking', issue: true },
+      { key: 'attended', label: 'Attended', issue: true },
+      { key: 'corrective_action', label: 'Corrective Action', issue: true },
+      { key: 'replacement', label: 'Replacement In Progress', issue: true },
+      { key: 'replaced', label: 'Replaced', issue: true },
+      { key: 'resolved', label: 'Resolved' },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
   },
   invoice_dispatch: {
     title: 'Send Dispatch Request',
@@ -288,7 +302,23 @@ export const TASK_FORMS = {
   team_payment_followup: paymentFollowUp,
   my_payment_followup: paymentFollowUp,
   gst_invoice_audit: { team: 'Audit Team', asks: [{ key: 'invoiceNumber', label: 'Invoice number', from: 'order.invoiceNumber' }] },
-  ac_clarify: { team: 'Accounts Team' },
+  ac_clarify: {
+    team: 'Accounts Team',
+    remarkRequired: true,
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'Amount, reference, what the account shows' },
+    statuses: [
+      { key: 'approval_required', label: 'Payment Approval Required' },
+      { key: 'confirmation_pending', label: 'Payment Confirmation Pending' },
+      { key: 'confirmed', label: 'Payment Confirmed' },
+      { key: 'credit_approved', label: 'Credit Approved' },
+      { key: 'statement_required', label: 'Statement Required' },
+      { key: 'clarified', label: 'Account Clarified' },
+      /* An account on hold holds the enquiry up — marketing's list shows it. */
+      { key: 'hold', label: 'Hold', issue: true },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+  },
   request_prt_visit: { team: 'Admin', asks: [{ key: 'visitDate', label: 'Visit date', type: 'date' }] },
 };
 

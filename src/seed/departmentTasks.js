@@ -129,8 +129,8 @@ export async function seedDepartmentTasks(people) {
   }
 
   /*
-   * Quality passes one job, and Dispatch is asked for it — the gate the app enforces, walked the
-   * way the plant walks it. Then one task done this week, and one sent back, for those tabs.
+   * Quality passes one job, and Dispatch is asked for it — the way the plant walks it. Then one
+   * task done this week, and one sent back, for those tabs.
    */
   const check = raised.find((task) => task.kind === 'quality_check');
   if (check) {

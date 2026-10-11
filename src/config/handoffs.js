@@ -103,10 +103,7 @@ const BUTTONS = [
     records: [{ key: 'lrNumber', label: 'LR / docket number' }],
   },
   {
-    /*
-     * The check before goods go. Invoice & Dispatch is refused until Quality has passed the job
-     * here (or by a final inspection in the Quality module) [services/handoff.service.js].
-     */
+    /* The check before goods go — asked when the plant wants it; it does not lock Dispatch. */
     key: 'quality_check', label: 'Quality Check', department: 'quality', stage: 'quality',
     hint: 'Check the goods before they are invoiced and sent',
     records: [
@@ -147,7 +144,9 @@ const BUTTONS = [
   },
   {
     key: 'my_payment_followup', label: 'My Payment Follow-up', department: 'owner', stage: 'my_payment_followup',
-    hint: 'A payment reminder for whoever holds the enquiry',
+    /* "My": it goes on the To-do of whoever raises it — the marketing person, or Admin following up themselves. */
+    toRaiser: true,
+    hint: 'A payment reminder on your own tasks',
     records: [{ key: 'promisedDate', label: 'Promised payment date', type: 'date' }],
   },
   {
