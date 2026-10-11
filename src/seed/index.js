@@ -1,8 +1,16 @@
 /**
  * Seeds one account per department, each with that department's default module access,
- * plus an admin. Enough to exercise sign-in, the profile and user administration.
+ * plus an admin — and the registers, customers, enquiries, quotations, orders, consignments,
+ * payments, queries and a department task on every department's dashboard.
  *
- * Usage: npm run seed
+ *   npm run seed                     # a fresh demo database — DELETES EVERYTHING, users included
+ *   npm run seed:demo                # the same demo records, KEEPING every existing login
+ *   npm run seed:demo -- --replace   # …and clearing the working data already there first
+ *
+ * `seed:demo` refuses to run on a database that already has customers, enquiries, moulds,
+ * quotations or orders unless `--replace` is given: the seed clears those collections as it
+ * fills them. Existing people are kept with their passwords; a department nobody works in yet
+ * gets the demo account below, and the records land on the people already there.
  */
 import mongoose from 'mongoose';
 import { connectDatabase, disconnectDatabase } from '../config/db.js';
@@ -22,6 +30,15 @@ import { seedOrders } from './orders.js';
 import { seedQueries } from './queries.js';
 import { seedTradedItems } from './tradedItems.js';
 import { FULL, few } from './size.js';
+import { seedDepartmentTasks } from './departmentTasks.js';
+import Customer from '../models/Customer.js';
+import Enquiry from '../models/Enquiry.js';
+import Mould from '../models/Mould.js';
+import Quotation from '../models/Quotation.js';
+import SalesOrder from '../models/SalesOrder.js';
+
+const KEEP_USERS = process.argv.includes('--keep-users');
+const REPLACE = process.argv.includes('--replace');
 
 /** Dates relative to today, so the reminder feed always has something to show. */
 const days = (offset, hour = 17) => {
@@ -50,28 +67,84 @@ const PEOPLE = [
   { name: 'Revathi Audit', email: 'audit@npthangers.com', password: 'Audit@12345', department: 'audit', phone: '9876500012' },
 ];
 
+const asAccount = (person) => ({
+  ...person,
+  role: person.role || 'member',
+  emailVerified: true,
+  // Admins need no grants; everyone else starts on their department's template.
+  moduleAccess: person.role === 'admin' ? [] : defaultAccessFor(person.department),
+});
+
+/**
+ * `seed:demo`: the people already there do the work. Each demo role is the existing account
+ * with that email, else someone already in that department (a different one for the second
+ * marketing person where there are two), else the demo account is created. Nobody's password
+ * or grants are touched.
+ */
+async function existingPeople() {
+  const used = new Set();
+  const made = [];
+  const byEmail = {};
+  for (const person of PEOPLE) {
+    let user = await User.findOne({ email: person.email });
+    if (!user) {
+      const query = person.role === 'admin'
+        ? { role: 'admin', isActive: { $ne: false } }
+        : { department: person.department, isActive: { $ne: false } };
+      const candidates = await User.find(query).sort({ createdAt: 1 });
+      user = candidates.find((candidate) => !used.has(String(candidate._id))) || candidates[0] || null;
+    }
+    if (!user) {
+      user = await User.create(asAccount(person));
+      made.push(person);
+    }
+    used.add(String(user._id));
+    byEmail[person.email] = user;
+  }
+  return { byEmail, made };
+}
+
+/** What `seed:demo` would overwrite: refuse rather than clear somebody's real records. */
+async function workingData() {
+  const counts = await Promise.all([Customer, Enquiry, Mould, Quotation, SalesOrder].map((Model) => Model.countDocuments()));
+  return counts.reduce((sum, count) => sum + count, 0);
+}
+
 async function seed() {
   await connectDatabase();
-  console.log('Connected. Clearing existing data...');
-  await Promise.all([
-    User.deleteMany({}),
-    OtpToken.deleteMany({}),
-    Todo.deleteMany({}),
-    StickyNote.deleteMany({}),
-    Announcement.deleteMany({}),
-  ]);
-
-  const created = await User.create(
-    PEOPLE.map((person) => ({
-      ...person,
-      role: person.role || 'member',
-      emailVerified: true,
-      // Admins need no grants; everyone else starts on their department's template.
-      moduleAccess: person.role === 'admin' ? [] : defaultAccessFor(person.department),
-    }))
-  );
-
-  const byEmail = Object.fromEntries(created.map((user) => [user.email, user]));
+  let byEmail;
+  let made = [];
+  if (KEEP_USERS) {
+    const existing = await workingData();
+    if (existing && !REPLACE) {
+      console.error(`\n"${mongoose.connection.name}" already has ${existing} customers, enquiries, moulds, quotations or orders.`);
+      console.error('Nothing was changed. Clear them first, keeping every login:');
+      console.error('  npm run reset-data -- --keep-users --confirm');
+      console.error('or let the seed clear the working data itself:');
+      console.error('  npm run seed:demo -- --replace\n');
+      process.exitCode = 1;
+      await disconnectDatabase();
+      return;
+    }
+    console.log(`Connected to "${mongoose.connection.name}". Keeping every login; ${REPLACE ? 'clearing the working data' : 'the working data is empty'}...`);
+    if (REPLACE) {
+      for (const collection of await mongoose.connection.db.collections()) {
+        if (collection.collectionName !== 'users') await collection.deleteMany({});
+      }
+    }
+    ({ byEmail, made } = await existingPeople());
+  } else {
+    console.log('Connected. Clearing existing data...');
+    await Promise.all([
+      User.deleteMany({}),
+      OtpToken.deleteMany({}),
+      Todo.deleteMany({}),
+      StickyNote.deleteMany({}),
+      Announcement.deleteMany({}),
+    ]);
+    const created = await User.create(PEOPLE.map(asAccount));
+    byEmail = Object.fromEntries(created.map((user) => [user.email, user]));
+  }
   const admin = byEmail['rsnavin1@gmail.com'];
   const despatch = byEmail['despatch@npthangers.com'];
 
@@ -265,6 +338,17 @@ async function seed() {
   /* After the quotations: see seed/tradedItems.js. */
   const tradedItems = await seedTradedItems();
 
+  /* Last: every department's dashboard, raised the way the enquiry screen raises it. */
+  console.log('Raising department tasks for every department...');
+  const accounts = await User.find().select('name department role');
+  const byId = new Map(accounts.map((user) => [String(user._id), user]));
+  const departmentWork = await seedDepartmentTasks({
+    ownerOf: (enquiry) => byId.get(String(enquiry.assignedTo?._id || enquiry.assignedTo)) || byEmail['rsnavin1@gmail.com'],
+    quality: byEmail['quality@npthangers.com'],
+    quotation: byEmail['rsnavin1@gmail.com'],
+    audit: byEmail['audit@npthangers.com'],
+  });
+
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));
 
   console.log(
@@ -274,11 +358,23 @@ async function seed() {
         '\nRun SEED_FULL=true npm run seed for the whole register and all nine enquiries.' +
         '\n\nSign in with a password:\n'
   );
-  for (const person of PEOPLE) {
-    const grants = person.role === 'admin' ? 'all modules' : `${defaultAccessFor(person.department).length} modules`;
-    console.log(
-      `  ${person.email.padEnd(28)} ${person.password.padEnd(13)} ${(labels[person.department] || '').padEnd(26)} ${grants}`
-    );
+  if (KEEP_USERS) {
+    console.log('  Your existing accounts are unchanged — sign in as before. The records are theirs:');
+    for (const person of PEOPLE) {
+      const user = byEmail[person.email];
+      console.log(`  ${(labels[person.department] || '').padEnd(20)} ${user.name} <${user.email}>`);
+    }
+    if (made.length) {
+      console.log('\n  Departments nobody worked in got a demo login:');
+      for (const person of made) console.log(`  ${person.email.padEnd(28)} ${person.password.padEnd(13)} ${labels[person.department] || ''}`);
+    }
+  } else {
+    for (const person of PEOPLE) {
+      const grants = person.role === 'admin' ? 'all modules' : `${defaultAccessFor(person.department).length} modules`;
+      console.log(
+        `  ${person.email.padEnd(28)} ${person.password.padEnd(13)} ${(labels[person.department] || '').padEnd(26)} ${grants}`
+      );
+    }
   }
   /* Counted rather than stated: the numbers move with the size flag, and a hard-coded
      summary that disagrees with the database is worse than no summary. */
@@ -335,6 +431,11 @@ async function seed() {
       `${asked.grants} people who do not own them.`
   );
   console.log(`  Trading master: ${tradedItems.created} bought-in items, priced from the sheet for demonstration.`);
+  console.log(
+    `  Departments: ${departmentWork.tasks} department tasks across ${departmentWork.departments} departments, ` +
+      `filled from the enquiries — ${departmentWork.linked} enquiries linked to a resin, hook, clip and print.`
+  );
+  for (const reason of departmentWork.skipped) console.log(`    (not raised — ${reason})`);
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');
 

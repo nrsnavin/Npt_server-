@@ -2,7 +2,7 @@
   "name": "npt-server",
   "version": "1.0.0",
   "private": true,
-  "description": "NPT CRM + ERP API \u2014 CRM, manufacturing, inventory and accounts for a hanger manufacturing business",
+  "description": "NPT CRM + ERP API — CRM, manufacturing, inventory and accounts for a hanger manufacturing business",
   "type": "module",
   "main": "src/server.js",
   "engines": {
@@ -35,7 +35,9 @@
     "delete:leads": "node scripts/delete-leads.js",
     "migrate:enquiry-stages": "node scripts/migrate-enquiry-stages.js",
     "migrate:enquiry-holders": "node scripts/migrate-enquiry-holders.js",
-    "migrate:merge-costing": "node scripts/migrate-merge-costing.js"
+    "migrate:merge-costing": "node scripts/migrate-merge-costing.js",
+    "migrate:all": "node scripts/migrate-all.js",
+    "seed:demo": "node src/seed/index.js --keep-users --full"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",

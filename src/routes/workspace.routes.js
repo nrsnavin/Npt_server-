@@ -35,8 +35,13 @@ import {
 } from '../validators/schemas.js';
 import { pushKey, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
-import { handoffDone, handoffUpdate, handoffReschedule, handoffSendBack } from '../controllers/handoff.controller.js';
-import { handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema } from '../validators/handoff.schemas.js';
+import {
+  handoffBrief, handoffDone, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate,
+} from '../controllers/handoff.controller.js';
+import {
+  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, taskBriefSchema, taskStatusSchema,
+} from '../validators/handoff.schemas.js';
+import { singlePdf } from '../middleware/upload.js';
 
 const router = Router();
 
@@ -72,6 +77,9 @@ router.post('/todos/:id/done', validate(handoffDoneSchema), handoffDone);
 router.post('/todos/:id/update', validate(handoffUpdateSchema), handoffUpdate);
 router.post('/todos/:id/send-back', validate(handoffReturnSchema), handoffSendBack);
 router.post('/todos/:id/reschedule', validate(handoffRescheduleSchema), handoffReschedule);
+router.post('/todos/:id/status', validate(taskStatusSchema), handoffStatus);
+router.post('/todos/:id/brief', validate(taskBriefSchema), handoffBrief);
+router.post('/todos/:id/result', singlePdf('file'), handoffResult);
 router.delete('/todos/:id', deleteTodo);
 
 /*

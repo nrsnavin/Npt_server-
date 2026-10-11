@@ -21,7 +21,8 @@
  */
 
 /** The full set is opt-in, so an unconfigured `npm run seed` gives the small one. */
-export const FULL = process.env.SEED_FULL === 'true';
+/* `--full` too, so `npm run seed:demo` gives the whole set on Windows, where `SEED_FULL=true npm …` does not parse. */
+export const FULL = process.env.SEED_FULL === 'true' || process.argv.includes('--full');
 
 /** Three or four of a thing. Named for what it means rather than for the number. */
 export const PER_MODEL = Number(process.env.SEED_PER_MODEL || 4);

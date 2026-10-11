@@ -11,7 +11,8 @@ import { HANDOFFS, TILE_KIND } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  rescheduleHandoff, returnHandoff, sendHandoff, taskPrefill, updateHandoff,
+  editTaskBrief, finishWithResult, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
+  updateHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -25,6 +26,7 @@ import { ownershipFilter } from '../services/ownership.service.js';
 
 const TASK_POPULATE = [
   { path: 'attachment', select: 'key filename size' },
+  { path: 'resultFile', select: 'key filename size' },
   { path: 'createdBy', select: 'name department' },
   { path: 'user', select: 'name department' },
   { path: 'completedBy', select: 'name' },
@@ -149,6 +151,41 @@ export const handoffSendBack = asyncHandler(transactional(async (req, res) => {
   const task = await returnHandoff(await taskFor(req), req.user, req.body);
   await answer(res, task);
 }));
+
+/** The department's own status on its task — SO Waiting, Preparing, Needs Clarification. */
+export const handoffStatus = asyncHandler(transactional(async (req, res) => {
+  const task = await setTaskStatus(await taskFor(req), req.user, req.body);
+  await answer(res, task);
+}));
+
+/** The contact details the department corrects on its task. */
+export const handoffBrief = asyncHandler(async (req, res) => {
+  const task = await editTaskBrief(await taskFor(req), req.user, req.body);
+  await answer(res, task);
+});
+
+/**
+ * The work as a PDF — the sales order — which finishes the task and raises the next department's
+ * (Production). Checked before the file is stored, so a refusal leaves nothing behind.
+ */
+export const handoffResult = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  resultStepFor(task, req.user);
+  if (!req.file) throw ApiError.badRequest('Attach the PDF');
+  const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+  let attachment;
+  try {
+    attachment = await Attachment.create({
+      key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size, uploadedBy: req.user._id, task: task._id,
+    });
+    const { task: done, next, nextProblem } = await finishWithResult(task, req.user, { attachmentId: attachment._id, note: req.body?.note });
+    res.json({ success: true, data: await done.populate(TASK_POPULATE), next: next ? { _id: next._id, title: next.title, department: next.department } : null, nextProblem });
+  } catch (error) {
+    await remove(key);
+    if (attachment) await attachment.deleteOne();
+    throw error;
+  }
+});
 
 export const handoffReschedule = asyncHandler(async (req, res) => {
   const task = await rescheduleHandoff(await taskFor(req), req.user, req.body);
