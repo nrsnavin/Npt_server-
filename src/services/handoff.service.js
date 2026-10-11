@@ -631,8 +631,11 @@ const enquiryOfTask = async (task) => {
  * goes next — the next department has it from here. A side request is simply done, and the
  * sender gets it back.
  */
-export async function completeHandoff(task, user, { note, fields = {}, next }) {
-  openHandoff(task, user);
+export async function completeHandoff(task, user, { note, fields = {}, next, system = false, quiet = false }) {
+  /* `system`: the app closing it because the work is recorded elsewhere (the sample sent). */
+  if (system) {
+    if (task.completed) return task;
+  } else openHandoff(task, user);
   const text = String(note || '').trim();
   if (text.length < 2) fail('Say what was done');
 
@@ -668,7 +671,8 @@ export async function completeHandoff(task, user, { note, fields = {}, next }) {
   const details = (handoff?.records || []).filter((field) => kept[field.key]).map((field) => `${field.label}: ${kept[field.key]}`);
   /* A clarification's answer goes back onto the task that asked; anything else, to its sender. */
   if (task.parentTask) await answerParent(task, user, text);
-  else {
+  /* `quiet`: whoever asked is already told another way (the sample's own feedback task). */
+  else if (!quiet) {
     await backToSender(task, {
       user,
       title: `Done: ${task.title} — next step?`,
@@ -692,6 +696,57 @@ async function assertMayFinish(task) {
       fail(`${describeBalance(left)} still to send. Post each lot as an Update and mark it done once the balance has gone — or short-close the order first.`);
     }
   }
+}
+
+/**
+ * The sample has gone out [sample.dispatched]: the Sample Request task on its enquiry is done,
+ * with the despatch details the sample team entered — the courier and AWB, or who it was
+ * handed to, and how many pieces. Marketing already gets "Chase feedback" from the sample
+ * itself, so no second "done — next step?" task.
+ */
+export async function finishSampleTasks(sample, by) {
+  const enquiryId = sample?.enquiry?._id || sample?.enquiry;
+  if (!enquiryId) return [];
+  const tasks = await Todo.find({ enquiry: enquiryId, kind: 'sample_request', completed: false, holds: { $ne: true } });
+  if (!tasks.length) return [];
+  const direct = sample.deliveryMethod === 'direct';
+  const count = sample.dispatchedQuantity || sample.piecesToMake;
+  const pieces = count ? String(count) : undefined;
+  const fields = direct
+    ? { courier: 'Direct handover', pieces }
+    : { courier: sample.courier, awbNumber: sample.awbNumber, pieces };
+  const how = direct
+    ? `handed over to ${[sample.handedTo, sample.recipientPhone].filter(Boolean).join(' · ') || 'the buyer'}`
+    : `by ${sample.courier || 'courier'}${sample.awbNumber ? ` · AWB ${sample.awbNumber}` : ''}`;
+  const note = `Sample ${sample.number} sent ${how}${pieces ? ` · ${pieces} pcs` : ''}`;
+  return finishAll(tasks, by, { note, fields });
+}
+
+/** Each task done by the app, with what was recorded elsewhere; whoever asked hears it as done. */
+async function finishAll(tasks, by, { note, fields }) {
+  const done = [];
+  for (const task of tasks) {
+    done.push(await completeHandoff(task, by || {}, { note, fields, system: true, quiet: true }));
+  }
+  return done;
+}
+
+/**
+ * The quotation has gone to the buyer [quotation.sent]: the pricing tasks on its enquiry — Create
+ * Quotation and Price Negotiation — are done, with the quotation's number and price. Marketing
+ * already gets "Follow up on …" from the quotation itself.
+ */
+export async function finishQuotationTasks(quotation, by) {
+  const enquiryId = quotation?.enquiry?._id || quotation?.enquiry;
+  if (!enquiryId) return [];
+  const tasks = await Todo.find({
+    enquiry: enquiryId, kind: { $in: ['create_quotation', 'price_negotiation'] }, completed: false, holds: { $ne: true },
+  });
+  if (!tasks.length) return [];
+  const price = quotation.soleLine?.unitPrice;
+  const fields = { quotationNumber: quotation.number, ...(price != null ? { price: String(price) } : {}) };
+  const note = `${quotation.number}${quotation.revision ? ` rev ${quotation.revision}` : ''} sent to the buyer${price != null ? ` at ₹${price}` : ''}`;
+  return finishAll(tasks, by, { note, fields });
 }
 
 /* ------------------------------ A department's own workflow ------------------------------ */
