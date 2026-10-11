@@ -60,6 +60,7 @@ const PEOPLE = [
   { name: 'Ramesh Plant', email: 'production@npthangers.com', password: 'Prod@123456', department: 'production', phone: '9876500006' },
   { name: 'Sunil Quality', email: 'quality@npthangers.com', password: 'Qual@123456', department: 'quality', phone: '9876500007' },
   { name: 'Anita Despatch', email: 'despatch@npthangers.com', password: 'Desp@123456', department: 'despatch', phone: '9876500008' },
+  { name: 'Rekha Reception', email: 'reception@npthangers.com', password: 'Recep@12345', department: 'reception', phone: '9876500014' },
   { name: 'Kiran Accounts', email: 'accounts@npthangers.com', password: 'Accts@12345', department: 'accounts', phone: '9876500009' },
   { name: 'Murugan Mould', email: 'mould@npthangers.com', password: 'Mould@12345', department: 'mould', phone: '9876500013' },
   { name: 'Lakshmi Assembly', email: 'assembly@npthangers.com', password: 'Assem@12345', department: 'assembling', phone: '9876500010' },

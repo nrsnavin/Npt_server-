@@ -499,6 +499,23 @@ const DEPARTMENT_LIST = [
       announcements: 'read',
     },
   },
+  /*
+   * Reception: once the goods have gone, the LR copy — uploaded and sent to the buyer — and the
+   * dispatch details after fulfilment (invoice, LR, transporter, vehicle, delivered or not).
+   */
+  {
+    key: 'reception',
+    label: 'Reception',
+    defaultAccess: {
+      queries: 'write',
+      tasks: 'write',
+      dispatch: 'read',
+      orders: 'read',
+      customers: 'read',
+      enquiries: 'read',
+      announcements: 'read',
+    },
+  },
   /* Invoices, GST and A/C Clarify. Chasing the money is Payment Collection's, below. */
   {
     key: 'accounts',
@@ -555,13 +572,13 @@ const DEPARTMENT_LIST = [
 
 /**
  * The departments, in the order the plant lists them (role requirements, 7 Oct 2026), with
- * Mould after Production, and Payment Collection and Audit after Accounts. The keys are older than some of the names —
+ * Mould after Production, Reception after Dispatch, and Payment Collection and Audit after Accounts. The keys are older than some of the names —
  * `management` is Admin, `order_confirmation` is Sales / SO, `assembling` is Assembly,
  * `despatch` is Dispatch — and are kept, because every user and task stores them.
  */
 const DEPARTMENT_ORDER = [
   'management', 'marketing', 'order_confirmation', 'quotation', 'sampling',
-  'production', 'mould', 'quality', 'assembling', 'despatch', 'accounts', 'payment_collection', 'audit',
+  'production', 'mould', 'quality', 'assembling', 'despatch', 'reception', 'accounts', 'payment_collection', 'audit',
 ];
 
 export const DEPARTMENTS = DEPARTMENT_ORDER.map((key) => DEPARTMENT_LIST.find((department) => department.key === key));

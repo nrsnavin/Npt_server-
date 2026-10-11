@@ -50,7 +50,7 @@ test.before(async () => {
 
   await api('/api/auth/register', { method: 'POST', body: { name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', department: 'management' } });
   token.admin = (await api('/api/auth/login', { method: 'POST', body: { email: 'admin@np.com', password: 'Admin@12345' } })).json.data.token;
-  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['arun', 'Arun K', 'marketing'], ['siva', 'Sivakumar', 'production'], ['kavi', 'Kavitha', 'quality'], ['ravi', 'Ravi Despatch', 'despatch'], ['anand', 'Anand Assembly', 'assembling'], ['meera', 'Meera Sampling', 'sampling'], ['raja', 'Raja Recovery', 'payment_collection']]) {
+  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['arun', 'Arun K', 'marketing'], ['siva', 'Sivakumar', 'production'], ['kavi', 'Kavitha', 'quality'], ['ravi', 'Ravi Despatch', 'despatch'], ['anand', 'Anand Assembly', 'assembling'], ['meera', 'Meera Sampling', 'sampling'], ['raja', 'Raja Recovery', 'payment_collection'], ['rekha', 'Rekha Reception', 'reception']]) {
     const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department } });
     assert.equal(made.status, 201, made.json.message);
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
@@ -347,19 +347,21 @@ test('the LR task moves LR Copy Awaiting → Received → Sent to Customer → T
   assert.equal(sent.status, 201, sent.json.message);
   lrTask = await Todo.findById(sent.json.data.task._id);
   assert.equal(lrTask.status, 'awaiting');
-  const { buttons } = (await api('/api/handoffs', { as: 'ravi' })).json.data;
+  const { buttons } = (await api('/api/handoffs', { as: 'rekha' })).json.data;
   const form = buttons.find((button) => button.key === 'lr_copy').form;
-  assert.deepEqual(form.statuses.map((entry) => entry.label), ['LR Copy Awaiting', 'LR Copy Received', 'LR Copy Sent to Customer', 'Task Closed']);
+  assert.deepEqual(form.statuses.map((entry) => entry.label), ['LR Copy Awaiting', 'LR Copy Received', 'LR Copy Sent to Customer', 'In Transit', 'Delivered', 'Task Closed']);
+  assert.equal(lrTask.department, 'reception', 'Reception’s, not Dispatch’s');
   assert.equal(form.resultLabel, 'Upload LR Copy');
-  const chosen = await api(`/api/workspace/todos/${lrTask._id}/status`, { method: 'POST', as: 'ravi', body: { status: 'received', note: 'Got it from VRL' } });
+  const chosen = await api(`/api/workspace/todos/${lrTask._id}/status`, { method: 'POST', as: 'rekha', body: { status: 'received', note: 'Got it from VRL' } });
   assert.equal(chosen.status, 400, 'Received is reached by uploading the LR');
 });
 
 test('uploading the LR (a photo will do) sends it to the buyer by email and WhatsApp, and the task says so', async () => {
-  assert.equal((await uploadResult('ravi', lrTask._id, { bytes: Buffer.from('hello'), type: 'text/plain', name: 'lr.txt' })).status, 400, 'not a PDF or photo');
-  assert.equal((await uploadResult('nandhini', lrTask._id)).status, 403, 'Dispatch uploads it');
+  assert.equal((await uploadResult('rekha', lrTask._id, { bytes: Buffer.from('hello'), type: 'text/plain', name: 'lr.txt' })).status, 400, 'not a PDF or photo');
+  assert.equal((await uploadResult('nandhini', lrTask._id)).status, 403, 'Reception uploads it');
+  assert.equal((await uploadResult('ravi', lrTask._id)).status, 403, 'not Dispatch any more');
 
-  const uploaded = await uploadResult('ravi', lrTask._id);
+  const uploaded = await uploadResult('rekha', lrTask._id);
   assert.equal(uploaded.status, 200, uploaded.json.message);
   assert.deepEqual(uploaded.json.sent.map((entry) => [entry.channel, entry.status]), [['email', 'sent'], ['whatsapp', 'sent']]);
   assert.equal(uploaded.json.sent[0].recipient, 'accounts@rrjain.in');
@@ -706,4 +708,59 @@ test('a team task’s form offers the registers: hanger models from the mould re
   assert.deepEqual((await Todo.findById(sent.json.data.task._id)).brief.items[0], {
     model: 'NPT-400S · Shirt hanger 400', material: 'PP Black', hook: 'Chrome hook 45 mm', clip: 'Pinch clip', print: 'Logo print 1 colour', quantity: '3',
   });
+});
+
+/* ------------------------------ Reception ------------------------------ */
+
+test('Dispatch marking it Dispatched hands Reception the LR copy, with the dispatch details to keep', async () => {
+  const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
+  const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'Kavya Prints', mobile: '9840011223', assignedTo: me } })).json.data;
+  const fresh = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customer._id, requirement: { modelNumber: 'UTJRSH-0' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const sent = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Send the lot', brief: { quantity: '4000', schedule: 'Today Dispatch' } } });
+  assert.equal(sent.status, 201, sent.json.message);
+  const dispatchId = sent.json.data.task._id;
+  const move = (status, note) => api(`/api/workspace/todos/${dispatchId}/status`, { method: 'POST', as: 'ravi', body: { status, note } });
+
+  assert.equal((await move('dispatched', 'Left with VRL, vehicle TN39 AB 1234')).status, 200);
+  const lr = await Todo.findOne({ enquiry: fresh._id, kind: 'lr_copy', completed: false });
+  assert.ok(lr, 'Reception has the LR copy task');
+  assert.equal(lr.department, 'reception');
+  assert.equal(lr.brief.quantity, '4000', 'the quantity sent, from the dispatch');
+  assert.equal(lr.brief.dispatchedOn, indiaDay(0), 'dispatched today');
+  assert.match(lr.notes, /Dispatched by Ravi Despatch — Left with VRL/);
+  assert.equal((await api(`/api/enquiries/${fresh._id}`, { as: 'nandhini' })).json.data.marketingStatus, 'lr_copy', 'marketing reads LR Copy');
+
+  assert.equal((await move('fully_dispatched', 'Balance gone too')).status, 200);
+  assert.equal(await Todo.countDocuments({ enquiry: fresh._id, kind: 'lr_copy' }), 1, 'one LR task, however many times it is marked dispatched');
+
+  /* Reception keeps the details after fulfilment: LR, transporter, vehicle — and the delivery. */
+  const edited = await api(`/api/workspace/todos/${lr._id}/brief`, {
+    method: 'POST', as: 'rekha', body: { brief: { lrNumber: 'VRL-55021', transporter: 'VRL Logistics', vehicleNumber: 'TN39 AB 1234' } },
+  });
+  assert.equal(edited.status, 200, edited.json.message);
+  assert.deepEqual([edited.json.data.brief.lrNumber, edited.json.data.brief.transporter], ['VRL-55021', 'VRL Logistics']);
+  assert.equal((await api(`/api/workspace/todos/${lr._id}/brief`, { method: 'POST', as: 'ravi', body: { brief: { lrNumber: 'X' } } })).status, 403, 'Reception’s to keep');
+  const transit = await api(`/api/workspace/todos/${lr._id}/status`, { method: 'POST', as: 'rekha', body: { status: 'in_transit', note: 'Docket shows Coimbatore hub' } });
+  assert.equal(transit.status, 200, transit.json.message);
+  const delivered = await api(`/api/workspace/todos/${lr._id}/status`, { method: 'POST', as: 'rekha', body: { status: 'delivered', note: 'Buyer confirmed receipt' } });
+  assert.equal(delivered.status, 200);
+  const [notice] = await noticesOf('nandhini');
+  assert.equal(notice.statusLabel, 'Delivered');
+  assert.equal(notice.department, 'reception');
+});
+
+test('the migration hands open LR Copy tasks from Dispatch to Reception, and leaves finished ones', async () => {
+  const { moveLrTasks } = await import('../scripts/migrate-lr-to-reception.js');
+  const open = await Todo.create({ kind: 'lr_copy', department: 'despatch', title: 'LR Copy — old open one' });
+  const done = await Todo.create({ kind: 'lr_copy', department: 'despatch', title: 'LR Copy — old finished one', completed: true });
+  const dry = await moveLrTasks({ write: false, log: () => {} });
+  assert.ok(dry.wouldMove >= 1);
+  assert.equal((await Todo.findById(open._id)).department, 'despatch', 'a dry run changes nothing');
+  await moveLrTasks({ write: true, log: () => {} });
+  assert.equal((await Todo.findById(open._id)).department, 'reception');
+  assert.equal((await Todo.findById(done._id)).department, 'despatch', 'the record of who did it stays');
+  assert.equal((await moveLrTasks({ write: true, log: () => {} })).moved, 0, 'run twice, nothing more to do');
 });

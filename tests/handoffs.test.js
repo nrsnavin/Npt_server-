@@ -115,7 +115,7 @@ test('the departments, in the plant\'s order', async () => {
   const { DEPARTMENTS } = await import('../src/config/modules.js');
   assert.deepEqual(DEPARTMENTS.map((department) => department.label), [
     'Admin', 'Marketing', 'Sales / SO', 'Quotation', 'Sampling',
-    'Production', 'Mould', 'Quality', 'Assembly', 'Dispatch', 'Accounts', 'Payment Collection', 'Audit',
+    'Production', 'Mould', 'Quality', 'Assembly', 'Dispatch', 'Reception', 'Accounts', 'Payment Collection', 'Audit',
   ]);
 });
 
@@ -579,7 +579,7 @@ test('Admin sees every department side by side; nobody else does', async () => {
   assert.equal(refused.status, 403);
   const { status, json } = await api('/api/departments/overview', { token: admin });
   assert.equal(status, 200);
-  assert.equal(json.data.length, 13);
+  assert.equal(json.data.length, 14);
   const production = json.data.find((row) => row.department === 'production');
   assert.ok(production.late >= 1);
   assert.equal(json.data[0].label, 'Admin');

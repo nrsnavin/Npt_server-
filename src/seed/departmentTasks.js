@@ -91,6 +91,7 @@ const PLAN = [
   ['quality_issue', 'Buyer reported loose hooks in the last lot', { brief: { problem: 'Hooks pulling out under 2 kg' } }],
   ['team_payment_followup', 'Invoice is 12 days over the credit period', { brief: { status: 'Promised to pay', commitment: 'This Week', vigorous: true } }],
   ['my_payment_followup', 'Call the buyer’s accounts about the advance', { brief: { status: 'Asked us to call back', commitment: 'Next Week' } }],
+  ['lr_copy', 'Lot left with VRL this morning — upload the LR and send it to the buyer'],
   ['gst_invoice_audit', 'GSTIN on the invoice does not match the PO'],
   ['gst_invoice_audit', 'Check the GST rate on the export invoice before it goes'],
   ['ac_clarify', 'Two receipts against one invoice — which order is the second for?'],

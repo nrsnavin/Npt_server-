@@ -955,6 +955,8 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   await task.save();
   if (form.notifyStatus) await noticeStatus(task, user, { step, note: text, date: readyDate });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
+  if (step.next && !step.pdf && task.enquiry) await raiseNextFrom(task, user, step, text);
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
   if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { [dateField]: readyDate } : {} });
   return task;
@@ -992,6 +994,38 @@ export async function askFromTask(task, user, { kind, note, brief, priority, req
   if (step && form.notifyStatus) await noticeStatus(task, user, { step, note: said });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   return { task, raised, addedTo: Boolean(raised.$locals?.addedTo) };
+}
+
+/**
+ * The next department's task, raised from a status (Dispatch marking it Dispatched gives
+ * Reception the LR copy) — filled from the enquiry the way the form is, with what this task
+ * knows on top: the quantity sent, and today as the dispatch date. Once only: a second
+ * Dispatched does not raise a second LR task. A refusal (a payment gate) is left as a note.
+ */
+async function raiseNextFrom(task, user, step, text) {
+  const enquiryId = task.enquiry?._id || task.enquiry;
+  if (await Todo.exists({ enquiry: enquiryId, kind: step.next, completed: false })) return null;
+  const enquiry = await enquiryOfTask(task);
+  const prefill = await taskPrefill(enquiryId);
+  const read = (path) => path?.split('.').reduce((value, key) => (value == null ? undefined : value[key]), prefill);
+  const brief = {};
+  for (const field of findHandoff(step.next)?.asks || []) {
+    if (['info', 'kind', 'items', 'member'].includes(field.type)) continue;
+    const value = read(field.from);
+    if (value != null && value !== '') brief[field.key] = value;
+  }
+  if (task.brief?.quantity) brief.quantity = task.brief.quantity;
+  if (findHandoff(step.next)?.asks?.some((field) => field.key === 'dispatchedOn')) brief.dispatchedOn = indiaDay(new Date());
+  try {
+    return await moveEnquiry({
+      enquiry, kind: step.next, note: `${step.label} by ${user.name}${text ? ` — ${text}` : ''}`, user, system: true, openRecords: false, brief,
+    });
+  } catch (error) {
+    if (error?.statusCode !== 400 && error?.statusCode !== 409) throw error;
+    task.updates = [...(task.updates || []), { note: `${findHandoff(step.next)?.label || 'Next task'} not raised: ${error.message}`, by: user._id, at: new Date() }];
+    await task.save();
+    return null;
+  }
 }
 
 const indiaDay = (date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(date);
