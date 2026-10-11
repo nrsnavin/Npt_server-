@@ -1,3 +1,4 @@
+import { dashboardOverview, dashboardParties, dashboardTasks } from '../controllers/overview.controller.js';
 import { Router } from 'express';
 import { enquiryTimeline, listEnquiryMessages, sendEnquiryMessage } from '../controllers/enquiryMessage.controller.js';
 import {
@@ -207,6 +208,10 @@ router.get('/enquiries/owners', requireModule('enquiries'), enquiryOwners);
 // Marketing's own dashboard [§21]. On the enquiries grant, since that is the module it is
 // mostly built from; ownership then decides whose figures it shows.
 router.get('/dashboard/marketing', requireModule('enquiries'), marketingDashboard);
+/* The overview dashboard — Admin's company-wide, a marketing person's own [services/overview.service.js]. */
+router.get('/dashboard/overview', requireModule('enquiries'), dashboardOverview);
+router.get('/dashboard/tasks', dashboardTasks);
+router.get('/dashboard/parties', requireModule('customers'), dashboardParties);
 /* Calls, WhatsApps, emails, visits and meetings across the book — marketing's Activities page. */
 router.get('/enquiries/activities', requireModule('enquiries'), listEnquiryActivities);
 router.get('/enquiries/activity-types', requireModule('enquiries'), enquiryActivityTypes);
