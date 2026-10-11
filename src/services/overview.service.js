@@ -7,6 +7,8 @@ import { marketingStatusLabel, marketingStatusOf } from '../config/marketingStat
 import { customerScope, isOwnershipScoped, ownershipFilter } from './ownership.service.js';
 import { departmentsOf, isManagement } from '../utils/departments.js';
 import { endOfDayIST } from './handoff.service.js';
+import { DEPARTMENT_KEYS } from '../config/modules.js';
+import ApiError from '../utils/ApiError.js';
 
 /**
  * The overview dashboard [web: pages/OverviewDashboard.jsx] — Admin's company-wide, a marketing
@@ -54,12 +56,22 @@ export async function overviewFor(user) {
 /** Marketing's holding task is the enquiry itself, not a task anybody was asked to do. */
 const NOT_THE_ENQUIRY = { $nor: [{ holds: true, kind: { $in: ['new_enquiry', 'back_to_marketing', 'my_payment_followup'] } }] };
 
+export const TASK_STATES = ['open', 'done', 'all'];
+
 /**
- * The open department tasks this person follows: Admin every one; a marketing person those on
- * their own enquiries and customers, and the ones they raised; anyone else their department's.
+ * The department tasks this person follows: Admin every one; a marketing person those on their
+ * own enquiries and customers, and the ones they raised; anyone else their department's.
+ *
+ * Filtered by department and by state — open (the default), done, or all — so Admin can read
+ * any one department's tasks, finished ones included. A department outside what this person
+ * may see returns nothing rather than widening the scope.
  */
-export async function trackedTasks(user, { limit = 200 } = {}) {
-  const filter = { kind: { $exists: true }, completed: false, ...NOT_THE_ENQUIRY };
+export async function trackedTasks(user, { department, state = 'open', limit = 300 } = {}) {
+  if (!TASK_STATES.includes(state)) throw new ApiError(400, `State must be one of ${TASK_STATES.join(', ')}`);
+  if (department && !DEPARTMENT_KEYS.includes(department)) throw new ApiError(400, `Unknown department “${department}”`);
+  const filter = { kind: { $exists: true }, ...NOT_THE_ENQUIRY };
+  if (state === 'open') filter.completed = false;
+  if (state === 'done') filter.completed = true;
   if (!isManagement(user)) {
     if (isOwnershipScoped(user)) {
       const [enquiries, customers] = await Promise.all([
@@ -71,16 +83,20 @@ export async function trackedTasks(user, { limit = 200 } = {}) {
       filter.department = { $in: departmentsOf(user) };
     }
   }
+  if (department) {
+    if (filter.department && !filter.department.$in.includes(department)) return [];
+    filter.department = department;
+  }
   const tasks = await Todo.find(filter)
-    .select('kind department title notes brief status dueDate priority user createdBy customer enquiry createdAt updates attention')
+    .select('kind department title notes brief status dueDate priority user createdBy customer enquiry createdAt updates attention completed completedAt')
     .populate([
       { path: 'customer', select: 'name code' },
       { path: 'enquiry', select: 'number requirement.modelNumber items.modelNumber' },
       { path: 'createdBy', select: 'name' },
       { path: 'user', select: 'name' },
     ])
-    .sort({ dueDate: 1, createdAt: 1 })
-    .limit(limit)
+    .sort(state === 'open' ? { dueDate: 1, createdAt: 1 } : { completed: 1, completedAt: -1, createdAt: -1 })
+    .limit(Math.min(Math.max(Number(limit) || 300, 1), 500))
     .lean();
   return tasks.map((task) => {
     const handoff = findHandoff(task.kind);

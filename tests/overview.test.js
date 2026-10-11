@@ -138,3 +138,25 @@ test('a party is due today, or new, when any live enquiry of theirs is — not j
   assert.equal(json.data.rows[0].isNew, true, 'the older one is still waiting to be verified');
   assert.equal(json.data.counts.new_enquiry, 1);
 });
+
+test('Admin reads any department’s tasks, open or done; nobody widens their own scope', async () => {
+  const listed = async (as, query) => api(`/api/dashboard/tasks${query}`, { as });
+  const ids_ = (response) => response.json.data.map((task) => task._id);
+  assert.ok(ids_(await listed('admin', '?department=production')).includes(ids.task));
+  assert.deepEqual(ids_(await listed('admin', '?department=sampling')).filter((id) => id === ids.task), []);
+  assert.deepEqual(ids_(await listed('siva', '?department=sampling')), [], 'Production asking for Sampling’s gets nothing');
+  assert.ok(ids_(await listed('siva', '?department=production')).includes(ids.task));
+
+  const { default: Todo } = await import('../src/models/Todo.js');
+  await Todo.updateOne({ _id: ids.task }, { $set: { completed: true, completedAt: new Date() } });
+  assert.equal(ids_(await listed('admin', '?department=production')).includes(ids.task), false, 'open by default');
+  const done = await listed('admin', '?department=production&state=done');
+  assert.ok(ids_(done).includes(ids.task));
+  assert.equal(done.json.data.find((task) => task._id === ids.task).completed, true);
+  assert.ok(ids_(await listed('admin', '?state=all')).includes(ids.task));
+  assert.ok(ids_(await listed('nandhini', '?state=done')).includes(ids.task), 'marketing sees their own enquiry’s finished task');
+  assert.equal(ids_(await listed('arun', '?state=done')).includes(ids.task), false, 'not another marketing person’s');
+
+  assert.equal((await listed('admin', '?state=later')).status, 400);
+  assert.equal((await listed('admin', '?department=nowhere')).status, 400);
+});
