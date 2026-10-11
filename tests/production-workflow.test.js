@@ -570,3 +570,67 @@ test('marketing assigns a PRT visit to a Payment Recovery Team member they pick,
   const mine = (await api('/api/workspace/todos?scope=mine&status=open', { as: 'raja' })).json.data;
   assert.ok(mine.some((entry) => entry._id === String(task._id)), 'on Raja’s own tasks');
 });
+
+/* ------------------------------ Team tasks without an enquiry ------------------------------ */
+
+const teamTask = (as, body) => api('/api/workspace/team-tasks', { method: 'POST', as, body });
+
+test('Admin and marketing raise a department task with no enquiry; it lands on the team’s queue and works the same', async () => {
+  assert.equal((await teamTask('siva', { kind: 'mould_issue', note: 'Check the spare tool', brief: { problem: 'Worn core' } })).status, 403, 'Production does not raise team tasks');
+  assert.equal((await teamTask('nandhini', { kind: 'ask_edd' })).status, 400, 'says what the team should do');
+
+  const customer = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data.customer;
+  const sent = await teamTask('nandhini', {
+    kind: 'ask_edd', note: 'Stock run of 5,000 NPT-400S for the showroom', brief: { model: 'NPT-400S', quantity: '5000' }, priority: 'high', customer: customer._id || customer,
+  });
+  assert.equal(sent.status, 201, sent.json.message);
+  const task = await Todo.findById(sent.json.data.task._id);
+  assert.equal(task.enquiry, undefined, 'no enquiry');
+  assert.equal(task.department, 'production');
+  assert.equal(task.status, 'received', 'Production’s workflow, from its first status');
+  assert.match(task.title, /^Ask EDD — RR Jain Utjrsh/);
+  assert.equal(task.priority, 'high');
+
+  const board = (await api('/api/departments/production/dashboard', { as: 'siva' })).json.data;
+  assert.ok(board.queue.some((row) => String(row._id) === String(task._id)), 'on Production’s queue');
+  const desk = board.enquiries.find((row) => String(row.task._id) === String(task._id));
+  assert.ok(desk, 'on the Department tasks tab with the rest');
+  assert.equal(desk.enquiry, null);
+
+  const moved = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'planning', note: 'Slotted on M2 after the current run' } });
+  assert.equal(moved.status, 200, moved.json.message);
+  const [notice] = await noticesOf('nandhini');
+  assert.equal(notice.statusLabel, 'Planning', 'whoever raised it is told, with no enquiry to own it');
+  assert.ok(!notice.enquiry, 'no enquiry on it');
+  assert.ok((await noticesOf('admin')).some((entry) => entry.task === String(task._id)), 'and Admin');
+
+  const prefill = (await api('/api/workspace/team-tasks/prefill', { as: 'nandhini' })).json.data;
+  const raja = prefill.members.payment_collection.find((person) => person.name === 'Raja Recovery');
+  const prt = await teamTask('admin', { kind: 'request_prt_visit', note: 'Old balance from last year', brief: { visitor: raja._id, visitDate: indiaDay(4) } });
+  assert.equal(prt.status, 201, prt.json.message);
+  assert.equal(String((await Todo.findById(prt.json.data.task._id)).user), raja._id, 'the picked PRT member’s');
+
+  const form = new FormData();
+  form.append('file', new Blob(['%PDF-1.4 plan'], { type: 'application/pdf' }), 'plan.pdf');
+  const attached = await fetch(`${baseUrl}/api/workspace/team-tasks/${task._id}/attachment`, { method: 'POST', headers: { Authorization: `Bearer ${token.nandhini}` }, body: form });
+  assert.equal(attached.status, 201);
+  assert.ok((await Todo.findById(task._id)).attachment, 'the PDF is on the task');
+});
+
+test('a team task’s enquiry-only steps say so; the rest finish normally', async () => {
+  const dispatch = await teamTask('admin', { kind: 'invoice_dispatch', note: 'Send the trade samples to the fair', brief: { schedule: 'Today Dispatch' } });
+  assert.equal(dispatch.status, 201, dispatch.json.message);
+  const id = dispatch.json.data.task._id;
+  const asked = await api(`/api/workspace/todos/${id}/ask`, { method: 'POST', as: 'ravi', body: { kind: 'ask_edd', note: 'Ready?' } });
+  assert.equal(asked.status, 400);
+  assert.match(asked.json.message, /has no enquiry/);
+
+  const so = await teamTask('nandhini', { kind: 'po_so', note: 'Sales order for the walk-in buyer' });
+  const clarify = await api(`/api/workspace/todos/${so.json.data.task._id}/status`, { method: 'POST', as: 'admin', body: { status: 'clarification', note: 'Which GSTIN?' } });
+  assert.equal(clarify.status, 400);
+  assert.match(clarify.json.message, /no enquiry/);
+
+  const closed = await api(`/api/workspace/todos/${id}/status`, { method: 'POST', as: 'ravi', body: { status: 'closed', note: 'Handed to the courier' } });
+  assert.equal(closed.status, 200, closed.json.message);
+  assert.equal((await Todo.findById(id)).completed, true);
+});

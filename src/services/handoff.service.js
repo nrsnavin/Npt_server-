@@ -505,6 +505,77 @@ export async function moveEnquiry({
 }
 
 /**
+ * A department task with no enquiry behind it — Admin or a marketing person asking a team for
+ * something on its own (a mould trial, a statement for a buyer, a PRT visit on an old balance).
+ * The same form as from an enquiry, without the enquiry's answers to fill it: a customer may be
+ * named, a member picked, a priority and date set; it lands on the team's queue and works the
+ * same way, except for the steps that only make sense on an enquiry (asking its marketing
+ * person, raising the next department's task on it), which say so.
+ */
+export async function raiseTeamTask({ kind, note, brief, priority, requiredDate, customer, user }) {
+  if (!(isAdmin(user) || inDepartment(user, 'marketing'))) {
+    throw ApiError.forbidden('Only Admin and the marketing team raise team tasks without an enquiry');
+  }
+  const handoff = findHandoff(kind);
+  if (!handoff?.department || handoff.hidden) fail('That is not a department task');
+  const picked = await pickedMember(kind, brief);
+  const asked = keptBrief(kind, picked.brief, { strict: true });
+  assertNote(kind, asked, note);
+  const text = String(note || '').trim();
+  if (text.length < 3) fail('Say what the team should do');
+  const form = handoff.form || {};
+  const due = requiredDue(requiredDate) || (form.dueFrom && requiredDue(asked[form.dueFrom], 'That date')) || endOfDayIST(new Date());
+
+  let buyer = null;
+  if (customer) {
+    const { default: Customer } = await import('../models/Customer.js');
+    buyer = /^[0-9a-f]{24}$/i.test(String(customer)) ? await Customer.findById(customer).select('code name') : null;
+    if (!buyer) fail('That customer is not on the register');
+  }
+  let department = handoff.department;
+  let assignee = picked.member?._id;
+  if (department === 'owner') ({ userId: assignee, department } = { userId: user._id, department: user.department || 'marketing' });
+
+  const task = await Todo.create({
+    customer: buyer?._id,
+    kind,
+    department,
+    user: assignee || undefined,
+    fromDepartment: user.department || undefined,
+    createdBy: user._id,
+    title: `${handoff.label} — ${buyer ? buyer.name : 'team task'}`,
+    notes: text,
+    ...(Object.keys(asked).length ? { brief: asked } : {}),
+    ...(form.statuses?.length ? { status: form.statuses[0].key, statusHistory: [{ status: form.statuses[0].key, by: user._id, at: new Date() }] } : {}),
+    dueDate: due,
+    priority: PRIORITIES.includes(priority) ? priority : 'normal',
+    link: '/departments/mine',
+  });
+  await publish(EVENTS.HANDOFF_SENT, { task, enquiry: null, by: user });
+  return task;
+}
+
+/** What a team task's form can fill without an enquiry: the members to pick, and the named customer's contact. */
+export async function teamTaskPrefill(customerId) {
+  const members = await membersFor(HANDOFFS.flatMap((handoff) => (handoff.asks || []).filter((field) => field.type === 'member').map((field) => field.department)));
+  let customer = { name: '', contactPerson: '', mobile: '', whatsapp: '', delivery: '' };
+  if (customerId && /^[0-9a-f]{24}$/i.test(String(customerId))) {
+    const { default: Customer } = await import('../models/Customer.js');
+    const found = await Customer.findById(customerId).lean();
+    if (found) {
+      const primary = found.contacts?.find((contact) => contact.isPrimary) || found.contacts?.[0];
+      const phone = primary?.mobile || found.mobile || '';
+      const place = [found.address, found.city, found.state, found.pincode].filter(Boolean).join(', ');
+      customer = {
+        name: found.name, contactPerson: primary?.name || '', mobile: phone, whatsapp: primary?.whatsapp || found.whatsapp || phone,
+        delivery: `${primary?.name || 'Not added'} · ${phone || 'No number'} · ${place || 'Road not selected'}`,
+      };
+    }
+  }
+  return { customer, items: [], modelList: [], models: '', materials: '', quantity: '', targetPrice: '', order: { paymentTerms: '', invoiceNumber: '' }, members };
+}
+
+/**
  * Somebody raises a task the department already has open (Production asked for the EDD by the
  * SO going through, then marketing asks again): the new request goes onto the open task as an
  * update — the note, the answers, an earlier date or a higher priority — and the department is
@@ -657,7 +728,8 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
 }
 
 function openHandoff(task, user) {
-  if (!task.kind || !task.enquiry) fail('That is not a task sent about an enquiry');
+  /* A department task — about an enquiry, or raised for the team without one [raiseTeamTask]. */
+  if (!task.kind) fail('That is not a department task');
   if (task.completed) throw ApiError.conflict('That task is already finished');
   if (!mayWorkOnHandoff(user, task)) {
     throw ApiError.forbidden(`This task is on the ${departmentName(task.department)} queue`);
@@ -734,7 +806,7 @@ async function assertMayFinish(task) {
   if (byUpload && !task.resultFile) fail(`Upload the PDF to finish this task — it is marked ${byUpload.label} then`);
 
   /* Dispatch's task is done when the balance has gone, lot by lot as Updates until then. */
-  if (task.kind === 'invoice_dispatch') {
+  if (task.kind === 'invoice_dispatch' && task.enquiry) {
     const left = await dispatchBalance(task.enquiry?._id || task.enquiry);
     if (left.length) {
       fail(`${describeBalance(left)} still to send. Post each lot as an Update and mark it done once the balance has gone — or short-close the order first.`);
@@ -837,6 +909,7 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   if (step.done) await assertMayFinish(task);
 
   if (step.raises) {
+    if (!task.enquiry) fail(`${step.label} asks the enquiry's marketing person — this task has no enquiry. Ask whoever raised it instead.`);
     const enquiry = await enquiryOfTask(task);
     await moveEnquiry({
       enquiry, kind: step.raises, note: `${user.name}: ${text}`, user, system: true, openRecords: false,
@@ -874,6 +947,7 @@ export async function askFromTask(task, user, { kind, note, brief, priority, req
   if (!action) fail('This task does not ask that department');
   const text = String(note || '').trim();
   if (text.length < 3) fail(`Say what you need — ${action.label}`);
+  if (!task.enquiry) fail(`${action.label} raises a task on the enquiry — this task has no enquiry. Raise a team task instead.`);
   const enquiry = await enquiryOfTask(task);
   const asking = departmentName(task.department);
   const raised = await moveEnquiry({
@@ -918,9 +992,11 @@ async function noticeStatus(task, user, { step, note, date }) {
   const [{ default: TaskNotice }, { default: User }] = await Promise.all([
     import('../models/TaskNotice.js'), import('../models/User.js'),
   ]);
-  const enquiry = await Enquiry.findById(task.enquiry?._id || task.enquiry).select('assignedTo customer').lean();
+  const enquiry = task.enquiry ? await Enquiry.findById(task.enquiry?._id || task.enquiry).select('assignedTo customer').lean() : null;
   const admins = await User.find({ role: 'admin', isActive: { $ne: false } }).select('_id').lean();
-  const recipients = new Set([enquiry?.assignedTo, ...admins.map((person) => person._id)].filter(Boolean).map(String));
+  /* The enquiry's marketing person — or, on a team task with no enquiry, whoever raised it. */
+  const asker = enquiry ? enquiry.assignedTo : task.createdBy;
+  const recipients = new Set([asker, ...admins.map((person) => person._id)].filter(Boolean).map(String));
   recipients.delete(String(user._id));
   if (!recipients.size) return;
   await TaskNotice.insertMany([...recipients].map((recipient) => ({
@@ -1001,7 +1077,9 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
     : task;
   let next = null;
   let nextProblem = null;
-  if (step.next) {
+  if (step.next && !task.enquiry) {
+    nextProblem = `No enquiry on this task, so ${findHandoff(step.next)?.label || 'the next step'} was not raised.`;
+  } else if (step.next) {
     const enquiry = await enquiryOfTask(task);
     try {
       next = await moveEnquiry({ enquiry, kind: step.next, note: `${step.label} by ${user.name}`, user, system: true });
@@ -1591,7 +1669,16 @@ export async function enquiriesHeldBy(department, user, { now = new Date(), limi
     ? await Promise.all([newest(Sample, ''), newest(Quotation, ''), newest(SalesOrder, '')])
     : [new Map(), new Map(), new Map()];
 
-  return tasks.filter((task) => task.enquiry).map((task) => {
+  return tasks.map((task) => {
+    /* A team task raised without an enquiry [raiseTeamTask]: on the desk with the rest. */
+    if (!task.enquiry) {
+      return {
+        task, enquiry: null, since: task.createdAt,
+        late: Boolean(task.dueDate && task.dueDate < now),
+        dueToday: Boolean(task.dueDate && task.dueDate >= now && task.dueDate <= endOfDayIST(now)),
+        records: { sample: null, quotation: null, order: null },
+      };
+    }
     const key = String(task.enquiry._id);
     const pick = (row) => (row ? { _id: row._id, number: row.number, status: row.status } : null);
     return {

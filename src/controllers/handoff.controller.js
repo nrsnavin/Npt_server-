@@ -13,7 +13,7 @@ import { HANDOFFS, TILE_KIND, findHandoff } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  askFromTask, attentionFor, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
+  askFromTask, attentionFor, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
   updateHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
@@ -83,6 +83,28 @@ export const attachTaskPdf = asyncHandler(async (req, res) => {
   const enquiry = await enquiryFor(req);
   const task = await Todo.findOne({ _id: req.params.taskId, enquiry: enquiry._id, kind: { $exists: true } });
   if (!task) throw ApiError.notFound('Task not found');
+  await storeTaskPdf(req, res, task);
+});
+
+/** A team task's PDF — one raised without an enquiry [raiseTeamTask]. */
+export const attachTeamTaskPdf = asyncHandler(async (req, res) => {
+  const task = await Todo.findOne({ _id: req.params.id, kind: { $exists: true }, enquiry: { $exists: false } });
+  if (!task) throw ApiError.notFound('Task not found');
+  await storeTaskPdf(req, res, task);
+});
+
+/** Raising a department task for a team with no enquiry behind it — Admin and marketing. */
+export const createTeamTask = asyncHandler(transactional(async (req, res) => {
+  const task = await raiseTeamTask({ ...req.body, user: req.user });
+  res.status(201).json({ success: true, data: { task: await task.populate(TASK_POPULATE) } });
+}));
+
+/** The team task form's answers without an enquiry: members to pick, the named customer's contact. */
+export const teamTaskFormPrefill = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await teamTaskPrefill(req.query.customer) });
+});
+
+async function storeTaskPdf(req, res, task) {
   if (String(task.createdBy) !== String(req.user._id) && req.user.role !== 'admin') {
     throw ApiError.forbidden('Only whoever raised the task can attach its PDF');
   }
@@ -105,7 +127,7 @@ export const attachTaskPdf = asyncHandler(async (req, res) => {
     throw error;
   }
   res.status(201).json({ success: true, data: await task.populate(TASK_POPULATE) });
-});
+}
 
 /** What a department task's form is filled from — the enquiry, its buyer and its order. */
 export const enquiryTaskPrefill = asyncHandler(async (req, res) => {
