@@ -513,3 +513,33 @@ test('a sample sent closes the Sample Request task with the despatch details the
   assert.deepEqual(Object.fromEntries(task.outcome.fields), { courier: 'DTDC', awbNumber: 'D1234567', pieces: '2' });
   assert.equal(await Todo.countDocuments({ title: /^Done: Sample Request/ }), 0, 'no second "next step?" task — marketing chases feedback from the sample');
 });
+
+/* ------------------------------ Pricing: a quote sent closes the task ------------------------------ */
+
+test('a quotation sent closes the Create Quotation and Price Negotiation tasks with its number and price', async () => {
+  const quote = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'create_quotation', note: 'Cost it at 10,000 pcs' } });
+  assert.equal(quote.status, 201, quote.json.message);
+  const haggle = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'price_negotiation', note: 'Buyer wants ₹0.30 off' } });
+  assert.equal(haggle.status, 201, haggle.json.message);
+
+  /* What the send route publishes once the quotation has gone [quotation.controller `sendQuotation`]. */
+  const { EVENTS, publish } = await import('../src/services/events.service.js');
+  const { default: User } = await import('../src/models/User.js');
+  const by = await User.findOne({ email: 'nandhini@np.com' });
+  await publish(EVENTS.QUOTATION_SENT, {
+    quotation: { _id: new mongoose.Types.ObjectId(), enquiry: enquiry._id, number: 'NP/26-27/007', revision: 1, soleLine: { unitPrice: 7.4 } }, by,
+  });
+
+  let tasks;
+  for (let i = 0; i < 100; i += 1) {
+    tasks = await Todo.find({ _id: { $in: [quote.json.data.task._id, haggle.json.data.task._id] } });
+    if (tasks.every((task) => task.completed)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok(tasks.every((task) => task.completed), 'both pricing tasks close');
+  const created = tasks.find((task) => task.kind === 'create_quotation');
+  assert.equal(created.outcome.note, 'NP/26-27/007 rev 1 sent to the buyer at ₹7.4');
+  assert.deepEqual(Object.fromEntries(created.outcome.fields), { quotationNumber: 'NP/26-27/007', price: '7.4' });
+  assert.deepEqual(Object.fromEntries(tasks.find((task) => task.kind === 'price_negotiation').outcome.fields), { price: '7.4' });
+  assert.equal(await Todo.countDocuments({ title: /^Done: (Create Quotation|Price Negotiation)/ }), 0, 'marketing follows up from the quotation');
+});

@@ -719,11 +719,34 @@ export async function finishSampleTasks(sample, by) {
     ? `handed over to ${[sample.handedTo, sample.recipientPhone].filter(Boolean).join(' · ') || 'the buyer'}`
     : `by ${sample.courier || 'courier'}${sample.awbNumber ? ` · AWB ${sample.awbNumber}` : ''}`;
   const note = `Sample ${sample.number} sent ${how}${pieces ? ` · ${pieces} pcs` : ''}`;
+  return finishAll(tasks, by, { note, fields });
+}
+
+/** Each task done by the app, with what was recorded elsewhere; whoever asked hears it as done. */
+async function finishAll(tasks, by, { note, fields }) {
   const done = [];
   for (const task of tasks) {
     done.push(await completeHandoff(task, by || {}, { note, fields, system: true, quiet: true }));
   }
   return done;
+}
+
+/**
+ * The quotation has gone to the buyer [quotation.sent]: the pricing tasks on its enquiry — Create
+ * Quotation and Price Negotiation — are done, with the quotation's number and price. Marketing
+ * already gets "Follow up on …" from the quotation itself.
+ */
+export async function finishQuotationTasks(quotation, by) {
+  const enquiryId = quotation?.enquiry?._id || quotation?.enquiry;
+  if (!enquiryId) return [];
+  const tasks = await Todo.find({
+    enquiry: enquiryId, kind: { $in: ['create_quotation', 'price_negotiation'] }, completed: false, holds: { $ne: true },
+  });
+  if (!tasks.length) return [];
+  const price = quotation.soleLine?.unitPrice;
+  const fields = { quotationNumber: quotation.number, ...(price != null ? { price: String(price) } : {}) };
+  const note = `${quotation.number}${quotation.revision ? ` rev ${quotation.revision}` : ''} sent to the buyer${price != null ? ` at ₹${price}` : ''}`;
+  return finishAll(tasks, by, { note, fields });
 }
 
 /* ------------------------------ A department's own workflow ------------------------------ */
