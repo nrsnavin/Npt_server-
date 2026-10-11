@@ -27,6 +27,8 @@ const customerMessageSchema = new mongoose.Schema(
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
     /** The record the update is about. One per module as later phases land. */
     sample: { type: mongoose.Schema.Types.ObjectId, ref: 'Sample', index: true },
+    /** A department task's work sent to the customer — Dispatch's LR copy. */
+    task: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo', index: true },
     /** A quotation sent to the customer, when that is what this message carried. */
     quotation: { type: mongoose.Schema.Types.ObjectId, ref: 'Quotation', index: true },
 

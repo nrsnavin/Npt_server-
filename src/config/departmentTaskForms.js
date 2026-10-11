@@ -34,15 +34,20 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
  *   raises     a task it raises for the enquiry's marketing person, with the comment — their
  *              reply comes back onto this task and the status returns to where it was
  *   pdf        it is reached only by uploading the PDF of the work (the sales order)
+ *   sent       it is reached when the uploaded work has gone to the customer (`sendResult`)
  *   done       reaching it finishes the task
  *   next       the department task raised once it is done (the enquiry moves on to it)
+ *   issue      while the task is at it, the enquiry shows it as an issue (marketing's list)
  *   date       `required` — a ready date must be given with it; `tomorrow` — it is tomorrow
  *              unless another is given. Any other status takes the date if one is given.
  * With the statuses, a form may say:
  *   remarkRequired  every move along them needs a remark (`remark` labels the box)
- *   statusDate      a ready date may go with a move (`label`); it becomes the enquiry's EDD
+ *   statusDate      a ready date may go with a move (`label`); `field` says what it is on the
+ *                   enquiry — `edd` (Production's) or `erd` (the mould's ready date)
  *   notifyStatus    every move is shown to the enquiry's marketing person and every Admin,
  *                   under "Needs your action" [models/TaskNotice.js]
+ *   actions         buttons on the task that raise another department's task on the enquiry
+ *                   (Dispatch's Ask Production) — `kind`, `label`, and the `status` it moves to
  * A question marked `editable` may be corrected by the department working the task.
  */
 
@@ -71,6 +76,8 @@ const PAYMENT_TERMS = [
   'Credit — nothing before dispatch', '100% advance', '50% advance, 50% against delivery',
   '50% advance, 50% before dispatch', '30% advance, 70% before dispatch', '100% against dispatch',
 ];
+
+const DISPATCH_SCHEDULES = ['Today Dispatch', 'Today Evening Dispatch', 'Tomorrow Dispatch', 'Tomorrow First Dispatch', 'Top Most Urgent Dispatch'];
 
 const paymentFollowUp = {
   title: 'Payment Follow-up Tracker',
@@ -160,7 +167,8 @@ export const TASK_FORMS = {
     /* Every move says why, and the enquiry's marketing person and Admin are told of it. */
     remarkRequired: true,
     notifyStatus: true,
-    statusDate: { label: 'ERD / Ready date' },
+    /* Production's ready date — the enquiry's EDD [handoff.service `productionDates`]. */
+    statusDate: { label: 'ERD / Ready date', field: 'edd' },
     remark: { label: 'Remarks', placeholder: 'Add production / assembling remark' },
     statuses: [
       { key: 'received', label: 'EDD Request Received' },
@@ -171,18 +179,48 @@ export const TASK_FORMS = {
       { key: 'started', label: 'Production Started' },
       { key: 'part1_ready', label: 'Part 1 Ready' },
       { key: 'part2_ready', label: 'Part 2 Ready' },
-      { key: 'mould_issue', label: 'Mould Issue' },
-      { key: 'machine_not_allotted', label: 'Machine Not Allotted / Alternate Required' },
-      { key: 'raw_material', label: 'Raw Material Not Available' },
+      { key: 'mould_issue', label: 'Mould Issue', issue: true },
+      { key: 'machine_not_allotted', label: 'Machine Not Allotted / Alternate Required', issue: true },
+      { key: 'raw_material', label: 'Raw Material Not Available', issue: true },
       { key: 'completed', label: 'Production Completed' },
       { key: 'assembling', label: 'Assembling' },
       { key: 'ready_dispatch', label: 'Ready for Dispatch' },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
   },
-  ask_assembling_edd: { team: 'Assembly Team', asks: modelAndQuantity },
+  ask_assembling_edd: {
+    team: 'Assembly Team',
+    asks: modelAndQuantity,
+    remarkRequired: true,
+    notifyStatus: true,
+    /* Assembly's ready date is the enquiry's EDD, as Production's is. */
+    statusDate: { label: 'ERD / Ready date', field: 'edd' },
+    remark: { label: 'Remarks', placeholder: 'Add assembling / printing remark' },
+    statuses: [
+      { key: 'asked', label: 'Asked Assembling Readiness' },
+      { key: 'started', label: 'Started' },
+      { key: 'spares_ready', label: 'Spares Ready' },
+      { key: 'part_ready', label: 'Part Quantity Ready' },
+      { key: 'full_ready', label: 'Full Quantity Ready' },
+      { key: 'ready_dispatch', label: 'Ready for Dispatch' },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+  },
   mould_issue: {
     team: 'Mould Team',
+    remarkRequired: true,
+    notifyStatus: true,
+    /* The mould's expected ready date — the enquiry's ERD. */
+    statusDate: { label: 'EDR / Mould ready date', field: 'erd' },
+    remark: { label: 'Remarks', placeholder: 'Add mould development / rework remark' },
+    statuses: [
+      { key: 'development', label: 'Development' },
+      { key: 'development_edr', label: 'Development EDR', date: 'required' },
+      { key: 'rework', label: 'Rework', issue: true },
+      { key: 'rework_edr', label: 'Rework EDR', date: 'required', issue: true },
+      { key: 'mould_ready', label: 'Mould Ready' },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
     asks: [
       { key: 'model', label: 'Model / mould', type: 'choice', optionsFrom: 'modelList', from: 'modelList.0', placeholder: 'Select the model' },
       { key: 'material', label: 'Material / colour', from: 'materials' },
@@ -200,17 +238,52 @@ export const TASK_FORMS = {
     team: 'Dispatch Team',
     priority: false,
     note: { label: 'Dispatch instruction / vehicle details', placeholder: 'Transport, delivery point or special dispatch instruction' },
+    remarkRequired: true,
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'Vehicle, LR, quantity sent or what is holding it' },
+    statuses: [
+      { key: 'received', label: 'Dispatch Request Received' },
+      ...DISPATCH_SCHEDULES.map((label) => ({ key: label.toLowerCase().replace(/[^a-z]+/g, '_'), label })),
+      { key: 'asked_production', label: 'Asked Production Readiness' },
+      { key: 'not_ready', label: 'Goods Not Yet Ready', issue: true },
+      { key: 'waiting_vehicle', label: 'Goods Ready — Waiting for Vehicle' },
+      { key: 'party_collect', label: 'Party Will Collect' },
+      { key: 'part_dispatched', label: 'Part Quantity Dispatched' },
+      { key: 'fully_dispatched', label: 'Fully Dispatched' },
+      { key: 'dispatched', label: 'Dispatched' },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+    /* Asked from the dispatch task itself: each raises that department's task on the enquiry. */
+    actions: [
+      { kind: 'ask_edd', label: 'Ask Production', status: 'asked_production' },
+      { kind: 'ask_assembling_edd', label: 'Ask Assembling Readiness' },
+    ],
     asks: [
       ...modelAndQuantity,
-      { key: 'schedule', label: 'Dispatch schedule', type: 'choice', options: ['Today Dispatch', 'Tomorrow Dispatch', 'This Week', 'On the required date'] },
-      { key: 'booking', label: 'Booking / Collection', type: 'choice', options: ['Normal Booking', 'Door Delivery', 'Customer Collection', 'Courier'] },
-      { key: 'piNumber', label: 'PI Number', placeholder: 'Enter PI number' },
+      { key: 'schedule', label: 'Dispatch schedule', type: 'choice', options: DISPATCH_SCHEDULES },
+      { key: 'booking', label: 'Booking / Collection', type: 'choice', options: ['Normal Booking', 'Book Before 4 PM', 'Book Before 7 PM', 'Party Will Collect', 'Local Delivery'] },
+      { key: 'piNumber', label: 'PI Number (optional)', placeholder: 'Enter PI number' },
       { key: 'delivery', label: 'Delivery contact & vehicle route', type: 'info', from: 'customer.delivery' },
     ],
   },
   lr_copy: {
     team: 'Dispatch Team — LR Copy',
     asks: [{ key: 'invoiceNumber', label: 'Invoice number', from: 'order.invoiceNumber' }],
+    remarkRequired: true,
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'LR number, transporter, anything the buyer asked' },
+    statuses: [
+      { key: 'awaiting', label: 'LR Copy Awaiting' },
+      { key: 'received', label: 'LR Copy Received', pdf: true },
+      { key: 'sent', label: 'LR Copy Sent to Customer', sent: true },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+    resultLabel: 'Upload LR Copy',
+    resultTitle: 'LR copy',
+    /* A PDF or a photo of the LR, 1 MB at most. */
+    resultTypes: ['application/pdf', 'image/jpeg', 'image/png'],
+    /* Uploaded, it goes to the buyer by email and WhatsApp, and the task moves to the `sent` status. */
+    sendResult: { whatsappTemplate: 'lr_copy' },
   },
   team_payment_followup: paymentFollowUp,
   my_payment_followup: paymentFollowUp,

@@ -391,7 +391,7 @@ async function finishOpenTasks(enquiryId, kinds, { fields = {}, note, user }) {
  * or costing themselves.
  */
 export async function moveEnquiry({
-  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask, addToOpen = false,
+  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask, addToOpen = false, keepStage = false,
 }) {
   const handoff = findHandoff(kind);
   if (!handoff?.department || handoff.stage === CLOSED_STAGE) fail('That button does not raise a department task');
@@ -450,7 +450,8 @@ export async function moveEnquiry({
     priority: PRIORITIES.includes(priority) ? priority : 'normal',
     link: `/enquiries/${enquiry._id}`,
   });
-  await moveStage(enquiry, handoff.stage, { user, task, note: text || handoff.label });
+  /* Asked from another department's task (Dispatch asking Production), the enquiry stays where it is. */
+  if (!keepStage) await moveStage(enquiry, handoff.stage, { user, task, note: text || handoff.label });
   if (openRecords) await openWorkRecord(kind, enquiry, asked);
 
   await publish(EVENTS.HANDOFF_SENT, { task, enquiry, by: user });
@@ -649,17 +650,7 @@ export async function completeHandoff(task, user, { note, fields = {}, next }) {
     return Todo.findById(task._id);
   }
 
-  /* A task finished by uploading the work (the sales order) is not ticked off without it. */
-  const byUpload = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.pdf && entry.done);
-  if (byUpload && !task.resultFile) fail(`Upload the PDF to finish this task — it is marked ${byUpload.label} then`);
-
-  /* Dispatch's task is done when the balance has gone, lot by lot as Updates until then. */
-  if (task.kind === 'invoice_dispatch') {
-    const left = await dispatchBalance(task.enquiry?._id || task.enquiry);
-    if (left.length) {
-      fail(`${describeBalance(left)} still to send. Post each lot as an Update and mark it done once the balance has gone — or short-close the order first.`);
-    }
-  }
+  await assertMayFinish(task);
 
   const handoff = findHandoff(task.kind);
   const kept = keptFields(task.kind, fields);
@@ -684,6 +675,21 @@ export async function completeHandoff(task, user, { note, fields = {}, next }) {
   }
   await publish(EVENTS.HANDOFF_DONE, { task, by: user });
   return task;
+}
+
+/** What has to be true before a task is finished — checked before anything about it changes. */
+async function assertMayFinish(task) {
+  /* A task finished by uploading the work (the sales order) is not ticked off without it. */
+  const byUpload = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.pdf && entry.done);
+  if (byUpload && !task.resultFile) fail(`Upload the PDF to finish this task — it is marked ${byUpload.label} then`);
+
+  /* Dispatch's task is done when the balance has gone, lot by lot as Updates until then. */
+  if (task.kind === 'invoice_dispatch') {
+    const left = await dispatchBalance(task.enquiry?._id || task.enquiry);
+    if (left.length) {
+      fail(`${describeBalance(left)} still to send. Post each lot as an Update and mark it done once the balance has gone — or short-close the order first.`);
+    }
+  }
 }
 
 /* ------------------------------ A department's own workflow ------------------------------ */
@@ -726,6 +732,8 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   if (form.remarkRequired && text.length < 3) fail(`Add a remark to move it to ${step.label}`);
   const readyDate = statusDate(form, step, date);
   if (task.status === status && !readyDate) return task;
+  /* Refused before the status moves, so a refusal leaves the task where it was. */
+  if (step.done) await assertMayFinish(task);
 
   if (step.raises) {
     const enquiry = await enquiryOfTask(task);
@@ -738,17 +746,51 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   task.attention = undefined;
   task.statusHistory = [...(task.statusHistory || []), { status, note: text || undefined, date: readyDate || undefined, by: user._id, at: new Date() }];
   const said = [step.label, readyDate && `${form.statusDate?.label || 'Ready date'} ${readyDate}`].filter(Boolean).join(' · ');
-  /* A ready date is the enquiry's EDD from here on [productionDates]. */
+  /* A ready date is the enquiry's EDD (Production) or ERD (the mould) from here on [enquiryProgress]. */
+  const dateField = form.statusDate?.field || 'edd';
   task.updates = [...(task.updates || []), {
-    note: text ? `${said}: ${text}` : said, ...(readyDate ? { fields: { edd: readyDate } } : {}), by: user._id, at: new Date(),
+    note: text ? `${said}: ${text}` : said, ...(readyDate ? { fields: { [dateField]: readyDate } } : {}), by: user._id, at: new Date(),
   }];
   if (!task.user) task.user = user._id;
   await task.save();
   if (form.notifyStatus) await noticeStatus(task, user, { step, note: text, date: readyDate });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
-  if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { edd: readyDate } : {} });
+  if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { [dateField]: readyDate } : {} });
   return task;
+}
+
+/**
+ * A department asks another from its own task — Dispatch's "Ask Production" [config/
+ * departmentTaskForms.js `actions`]: that department's task is raised on the enquiry (or the
+ * request added to the one it already has), this task says so, and — where the action names a
+ * status — moves to it, with the enquiry's marketing person and Admin told as for any move.
+ */
+export async function askFromTask(task, user, { kind, note, brief, priority, requiredDate }) {
+  openHandoff(task, user);
+  const form = findHandoff(task.kind)?.form || {};
+  const action = (form.actions || []).find((entry) => entry.kind === kind);
+  if (!action) fail('This task does not ask that department');
+  const text = String(note || '').trim();
+  if (text.length < 3) fail(`Say what you need — ${action.label}`);
+  const enquiry = await enquiryOfTask(task);
+  const asking = departmentName(task.department);
+  const raised = await moveEnquiry({
+    enquiry, kind, note: `${asking} asks (${user.name}): ${text}`, user, system: true, openRecords: false,
+    brief, priority, requiredDate, addToOpen: true, keepStage: true,
+  });
+  const step = action.status && statusesOf(task).find((entry) => entry.key === action.status);
+  const said = `${action.label}: ${text}`;
+  task.updates = [...(task.updates || []), { note: said, by: user._id, at: new Date() }];
+  if (step) {
+    task.status = step.key;
+    task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: said, by: user._id, at: new Date() }];
+  }
+  if (!task.user) task.user = user._id;
+  await task.save();
+  if (step && form.notifyStatus) await noticeStatus(task, user, { step, note: said });
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  return { task, raised, addedTo: Boolean(raised.$locals?.addedTo) };
 }
 
 const indiaDay = (date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(date);
@@ -847,7 +889,12 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
   task.attention = undefined;
   task.status = step.key;
   task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: note || undefined, by: user._id, at: new Date() }];
+  if (!step.done) {
+    task.updates = [...(task.updates || []), { note: [step.label, String(note || '').trim()].filter(Boolean).join(': '), by: user._id, at: new Date() }];
+    if (!task.user) task.user = user._id;
+  }
   await task.save();
+  if (findHandoff(task.kind)?.form?.notifyStatus) await noticeStatus(task, user, { step, note: String(note || '').trim() });
   const done = step.done
     ? await completeHandoff(task, user, { note: String(note || '').trim() || `${step.label} — PDF uploaded` })
     : task;
@@ -863,6 +910,33 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
     }
   }
   return { task: done, next, nextProblem };
+}
+
+/**
+ * The uploaded work has gone to the customer [services/taskResultMessage.service.js]: the task
+ * moves to its `sent` status, saying on which channels — when at least one went. The enquiry's
+ * marketing person and Admin are told, as for any move.
+ */
+export async function markResultSent(task, user, results) {
+  const sent = results.filter((entry) => entry.status === 'sent');
+  const step = statusesOf(task).find((entry) => entry.sent);
+  const said = results.map((entry) => (entry.status === 'sent'
+    ? `${entry.channel === 'email' ? 'Email' : 'WhatsApp'} to ${entry.recipient}`
+    : `${entry.channel === 'email' ? 'Email' : 'WhatsApp'} not sent (${entry.skipReason || entry.error || entry.status})`)).join(' · ');
+  if (!step || !sent.length) {
+    if (said) {
+      task.updates = [...(task.updates || []), { note: `Not sent to the customer — ${said}`, by: user._id, at: new Date() }];
+      await task.save();
+    }
+    return task;
+  }
+  task.status = step.key;
+  task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: said, by: user._id, at: new Date() }];
+  task.updates = [...(task.updates || []), { note: `${step.label}: ${said}`, by: user._id, at: new Date() }];
+  await task.save();
+  if (findHandoff(task.kind)?.form?.notifyStatus) await noticeStatus(task, user, { step, note: said });
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  return task;
 }
 
 /** "Got it": the department has seen the answer on its task, and the highlight goes. */
@@ -1144,6 +1218,43 @@ export async function taskPrefill(enquiryId) {
 /* ------------------------------ Production's dates ------------------------------ */
 
 const EDD_KINDS = ['ask_edd', 'ask_assembling_edd'];
+
+/** Kinds whose tasks a problem is, whatever their status, while they are open. */
+const ISSUE_KINDS = ['quality_issue'];
+const MOULD_KINDS = ['mould_issue'];
+
+/**
+ * Where each enquiry is, for marketing's list [web: pages/Enquiries.jsx]: the mould's ready date
+ * (ERD), Production's date (EDD) and the issues open on it — a department task at a problem
+ * status (Mould Issue, Raw Material Not Available, Rework …) or a Quality issue still open.
+ * One query for the page of enquiries, not one per row.
+ */
+export async function enquiryProgress(enquiryIds) {
+  const ids = enquiryIds.filter(Boolean);
+  const progress = new Map(ids.map((id) => [String(id), { erd: null, edd: null, issues: [] }]));
+  if (!ids.length) return progress;
+  const tasks = await Todo.find({ enquiry: { $in: ids }, kind: { $in: [...EDD_KINDS, ...MOULD_KINDS, ...ISSUE_KINDS] } })
+    .select('enquiry kind department status completed updates.fields updates.at outcome.fields outcome.at')
+    .lean();
+  const latest = (row, field, date, at, department) => {
+    if (!date || (row[field] && new Date(row[field].at || 0) >= new Date(at || 0))) return;
+    row[field] = { date, at, department };
+  };
+  for (const task of tasks) {
+    const row = progress.get(String(task.enquiry));
+    if (!row) continue;
+    const said = [...(task.updates || []), ...(task.outcome ? [task.outcome] : [])];
+    for (const entry of said) {
+      latest(row, 'edd', entry.fields?.edd, entry.at, task.department);
+      latest(row, 'erd', entry.fields?.erd, entry.at, task.department);
+    }
+    if (task.completed) continue;
+    const step = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status);
+    if (step?.issue) row.issues.push({ department: task.department, label: step.label });
+    else if (ISSUE_KINDS.includes(task.kind)) row.issues.push({ department: task.department, label: findHandoff(task.kind)?.label || 'Issue' });
+  }
+  return progress;
+}
 
 /**
  * When the goods will be ready — what the enquiry page shows while it is in Production

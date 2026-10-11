@@ -88,6 +88,31 @@ export const singlePdf = (field = 'file') => (req, res, next) =>
   });
 
 /**
+ * The work a department uploads to finish a step — the sales order (a PDF), the LR copy (a PDF or
+ * a photo of it). One megabyte at most, like every task file; which types a step takes is the
+ * workflow's [config/departmentTaskForms.js `resultTypes`], checked by the controller.
+ */
+export const TASK_RESULT_TYPES = ['application/pdf', 'image/jpeg', 'image/png'];
+const taskResults = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: TASK_PDF_BYTES, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    if (TASK_RESULT_TYPES.includes(file.mimetype)) return callback(null, true);
+    callback(ApiError.badRequest('Attach a PDF, or a JPEG / PNG photo'));
+  },
+});
+
+export const singleTaskResult = (field = 'file') => (req, res, next) =>
+  taskResults.single(field)(req, res, (error) => {
+    if (!error) return next();
+    if (error.code === 'LIMIT_FILE_SIZE') return next(ApiError.badRequest('That file is too large — the limit is 1 MB'));
+    if (error.code === 'LIMIT_FILE_COUNT' || error.code === 'LIMIT_UNEXPECTED_FILE') {
+      return next(ApiError.badRequest('Attach one file'));
+    }
+    return next(error);
+  });
+
+/**
  * A spreadsheet for a register import — .xlsx or .csv, read in memory and never stored. Told
  * apart by content in services/sheetRows.js, because browsers send CSV under four different
  * types depending on the machine.

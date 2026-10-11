@@ -1,17 +1,19 @@
 import Enquiry from '../models/Enquiry.js';
 import Todo from '../models/Todo.js';
 import Attachment from '../models/Attachment.js';
-import { put, remove } from '../services/storage.service.js';
+import { bufferOf, put, remove } from '../services/storage.service.js';
+import { sendResultToCustomer } from '../services/taskResultMessage.service.js';
+import { signatureValid } from '../utils/signedLink.js';
 import ApiError from '../utils/ApiError.js';
 import { inDepartment, isManagement } from '../utils/departments.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { transactional } from '../utils/transaction.js';
 import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
-import { HANDOFFS, TILE_KIND } from '../config/handoffs.js';
+import { HANDOFFS, TILE_KIND, findHandoff } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  attentionFor, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
+  askFromTask, attentionFor, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
   updateHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
@@ -161,6 +163,31 @@ export const handoffStatus = asyncHandler(transactional(async (req, res) => {
   await answer(res, task);
 }));
 
+/** A task's uploaded work behind a signed link — what WhatsApp fetches. No session: the signature is the permission. */
+export const publicTaskFile = asyncHandler(async (req, res) => {
+  const { id, expires, signature } = req.params;
+  if (!signatureValid('task-file', id, expires, signature)) throw ApiError.notFound('This link has expired.');
+  const attachment = await Attachment.findById(id).catch(() => null);
+  if (!attachment?.task) throw ApiError.notFound('This link has expired.');
+  const buffer = await bufferOf(attachment.key);
+  if (!buffer) throw ApiError.notFound('This link has expired.');
+  res.setHeader('Content-Type', attachment.mimeType);
+  res.setHeader('Content-Length', buffer.length);
+  res.setHeader('Content-Disposition', `inline; filename="${String(attachment.filename || 'document').replace(/"/g, '')}"`);
+  res.send(buffer);
+});
+
+/* Dispatch's "Ask Production": that department's task, raised from this one. */
+export const handoffAsk = asyncHandler(transactional(async (req, res) => {
+  const { task, raised, addedTo } = await askFromTask(await taskFor(req), req.user, req.body);
+  res.json({
+    success: true,
+    data: await task.populate(TASK_POPULATE),
+    raised: { _id: raised._id, title: raised.title, department: raised.department },
+    addedTo,
+  });
+}));
+
 /* A department's moves on this person's enquiries [handoff.service `noticeStatus`]. */
 export const listNotices = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await noticesFor(req.user) });
@@ -193,15 +220,33 @@ export const handoffBrief = asyncHandler(async (req, res) => {
 export const handoffResult = asyncHandler(async (req, res) => {
   const task = await taskFor(req);
   resultStepFor(task, req.user);
-  if (!req.file) throw ApiError.badRequest('Attach the PDF');
+  const form = findHandoff(task.kind)?.form || {};
+  if (!req.file) throw ApiError.badRequest(form.resultTypes ? 'Attach the file' : 'Attach the PDF');
+  /* The SO is a PDF; the LR copy may be a photo of it [config/departmentTaskForms.js `resultTypes`]. */
+  if (!(form.resultTypes || ['application/pdf']).includes(req.file.mimetype)) {
+    throw ApiError.badRequest(form.resultTypes ? 'Attach a PDF, or a JPEG / PNG photo' : 'Attach a PDF');
+  }
   const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
   let attachment;
   try {
     attachment = await Attachment.create({
       key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size, uploadedBy: req.user._id, task: task._id,
     });
-    const { task: done, next, nextProblem } = await finishWithResult(task, req.user, { attachmentId: attachment._id, note: req.body?.note });
-    res.json({ success: true, data: await done.populate(TASK_POPULATE), next: next ? { _id: next._id, title: next.title, department: next.department } : null, nextProblem });
+    let { task: done, next, nextProblem } = await finishWithResult(task, req.user, { attachmentId: attachment._id, note: req.body?.note });
+    /* The LR copy goes on to the buyer, by email and WhatsApp, and the task says it went. */
+    let sent = null;
+    if (form.sendResult) {
+      const baseUrl = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
+      sent = await sendResultToCustomer({ task: done, attachment, user: req.user, baseUrl });
+      done = await markResultSent(done, req.user, sent);
+    }
+    res.json({
+      success: true,
+      data: await done.populate(TASK_POPULATE),
+      next: next ? { _id: next._id, title: next.title, department: next.department } : null,
+      nextProblem,
+      ...(sent ? { sent: sent.map((entry) => ({ channel: entry.channel, status: entry.status, recipient: entry.recipient, reason: entry.skipReason || entry.error })) } : {}),
+    });
   } catch (error) {
     await remove(key);
     if (attachment) await attachment.deleteOne();

@@ -36,12 +36,12 @@ import {
 import { pushKey, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice,
+  handoffBrief, handoffDone, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk,
 } from '../controllers/handoff.controller.js';
 import {
-  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, taskBriefSchema, taskStatusSchema,
+  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, taskAskSchema, taskBriefSchema, taskStatusSchema,
 } from '../validators/handoff.schemas.js';
-import { singlePdf } from '../middleware/upload.js';
+import { singleTaskResult } from '../middleware/upload.js';
 
 const router = Router();
 
@@ -80,11 +80,12 @@ router.post('/todos/:id/reschedule', validate(handoffRescheduleSchema), handoffR
 router.post('/todos/:id/status', validate(taskStatusSchema), handoffStatus);
 router.post('/todos/:id/brief', validate(taskBriefSchema), handoffBrief);
 router.post('/todos/:id/seen', handoffSeen);
+router.post('/todos/:id/ask', validate(taskAskSchema), handoffAsk);
 /* What departments did on my enquiries — read, then dismissed (or cleared a day after reading). */
 router.get('/notices', listNotices);
 router.post('/notices/:id/read', markNoticeRead);
 router.delete('/notices/:id', removeNotice);
-router.post('/todos/:id/result', singlePdf('file'), handoffResult);
+router.post('/todos/:id/result', singleTaskResult('file'), handoffResult);
 router.delete('/todos/:id', deleteTodo);
 
 /*

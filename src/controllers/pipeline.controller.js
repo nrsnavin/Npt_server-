@@ -34,7 +34,7 @@ import { applySpec, buildSpec } from '../services/registers.service.js';
 import { hasRequirement } from '../models/requirement.schema.js';
 import { transactional } from '../utils/transaction.js';
 import { STAGE_KEYS } from '../config/enquiryStages.js';
-import { ensureHolder, mayHandOff } from '../services/handoff.service.js';
+import { enquiryProgress, ensureHolder, mayHandOff } from '../services/handoff.service.js';
 import { delegateEnquiry, delegationTargets, mayDelegate } from '../services/delegation.service.js';
 import { canRead } from '../services/access.service.js';
 import { ENQUIRY_ACTIVITY_KEYS, ENQUIRY_ACTIVITY_TYPES } from '../config/enquiryActivities.js';
@@ -937,7 +937,11 @@ export const listEnquiries = asyncHandler(async (req, res) => {
     stages.map((row) => [row._id, { leads: row.leads, value: row.value || 0 }])
   );
 
-  paginated(res, data, { page, limit, total }, { stageCounts });
+  /* Where each one is with the departments: the mould's ERD, Production's EDD, open issues. */
+  const progress = await enquiryProgress(data.map((enquiry) => enquiry._id));
+  const rows = data.map((enquiry) => ({ ...enquiry.toJSON(), progress: progress.get(String(enquiry._id)) }));
+
+  paginated(res, rows, { page, limit, total }, { stageCounts });
 });
 
 /**
