@@ -70,3 +70,26 @@ export async function withOwnerLocks(ids, work) {
     return await work();
   } finally { for (const release of releases.reverse()) await release(); }
 }
+
+/**
+ * One at a time for a check-then-create: "is there one already? no — make it". Two requests that
+ * arrive together both see "no" and both make one; this queues the second behind the first, so
+ * it finds what the first made and gets the ordinary "already exists" answer instead of a twin.
+ *
+ * The keys name what must be unique (a phone number, an enquiry's open task of one kind) and are
+ * taken in sorted order, so two requests sharing several keys cannot each hold half. A create
+ * holds them for milliseconds, so one older than `staleMs` was left by a crash and is cleared —
+ * unlike the record locks above, nothing here is worth an operator's visit to release.
+ */
+export async function withCreateLocks(keys, work, { waitMs = 5000, staleMs = 30000 } = {}) {
+  const sorted = [...new Set(keys.filter(Boolean).map(String))].sort();
+  if (!sorted.length) return work();
+  await OperationLock.deleteMany({ _id: { $in: sorted }, acquiredAt: { $lt: new Date(Date.now() - staleMs) } }).session(null);
+  const releases = [];
+  try {
+    for (const key of sorted) releases.push(await acquireOperationLock(key, { retryMs: waitMs }));
+    return await work();
+  } finally {
+    for (const release of releases.reverse()) await release();
+  }
+}

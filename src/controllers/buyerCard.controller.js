@@ -87,7 +87,7 @@ export const confirmBuyerCard = asyncHandler(transactional(async (req, res) => {
   } catch (error) {
     throw asApi(error);
   }
-  res.json({ success: true, data: { card: await card.populate(POPULATE), ...made } });
+  res.json({ success: true, data: { ...made, card: await (made.card || card).populate(POPULATE) } });
 }));
 
 export const discardBuyerCard = asyncHandler(async (req, res) => {

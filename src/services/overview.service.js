@@ -1,6 +1,6 @@
 import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
-import Quotation from '../models/Quotation.js';
+import Quotation, { CLOSED_QUOTATION_STATUSES, QUOTATION_STATUSES } from '../models/Quotation.js';
 import Todo from '../models/Todo.js';
 import { findHandoff } from '../config/handoffs.js';
 import { marketingStatusLabel, marketingStatusOf } from '../config/marketingStatuses.js';
@@ -27,7 +27,8 @@ const activeEnquiries = (user) => ({ ...ownershipFilter(user), stage: { $ne: 'cl
 /** Marketing's first step — an enquiry nobody has verified and moved on yet. */
 const isNew = { $or: [{ marketingStatus: 'enquiry_received' }, { marketingStatus: null, status: { $in: ['new', 'requirement_clarification'] } }] };
 
-const LIVE_QUOTES = ['costing', 'draft', 'approval_pending', 'approved', 'sent', 'revised'];
+/* Every status but the buyer's answer — from the model, so a new status is counted, not lost. */
+const LIVE_QUOTES = QUOTATION_STATUSES.filter((status) => !CLOSED_QUOTATION_STATUSES.includes(status));
 
 export async function overviewFor(user) {
   const tonight = endOfDayIST(new Date());

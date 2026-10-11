@@ -1,3 +1,5 @@
+import { withCreateLocks } from './operationLock.service.js';
+import { customerKeys } from '../utils/customerKeys.js';
 import Customer from '../models/Customer.js';
 import User from '../models/User.js';
 import BuyerCard, { OPEN_CARD_STATUSES } from '../models/BuyerCard.js';
@@ -229,7 +231,22 @@ export function confirmProblem(fields) {
  * clarification carrying what the buyer wants and the salesperson's next step. Refuses a buyer
  * the plant already has, and a card already decided.
  */
-export async function confirmCard(card, user, edits = {}, { owner } = {}) {
+export async function confirmCard(card, user, edits = {}, options = {}) {
+  /*
+   * One confirm per card, and per buyer's number, at a time. A double tap on Confirm passed the
+   * "still open?" check on every tap and made a customer each time; the later taps were then
+   * refused, but where the database cannot roll back their customers stayed. Inside, the card is
+   * read again, so the second tap sees the first one's decision and makes nothing.
+   */
+  const fields = { ...(card.reading?.toObject?.() || card.reading || {}), ...edits };
+  return withCreateLocks([`card:${card._id}`, ...customerKeys(fields)], async () => {
+    const current = (typeof card.constructor?.findById === 'function' && await card.constructor.findById(card._id)) || card;
+    /* The card as decided, for the reply — the one passed in was read before the wait. */
+    return { ...(await confirmCardChecked(current, user, edits, options)), card: current };
+  });
+}
+
+async function confirmCardChecked(card, user, edits = {}, { owner } = {}) {
   if (!OPEN_CARD_STATUSES.includes(card.status) || card.status === 'reading') {
     const error = new Error(card.status === 'reading' ? 'This card is still being read.' : `This card was already ${card.status}.`);
     error.status = 409;

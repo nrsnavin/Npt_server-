@@ -27,7 +27,8 @@ import { withEnquiries } from './support/onEnquiry.js';
 process.env.JWT_SECRET = 'dispatch-test-secret-value';
 
 const DAY = 24 * 60 * 60 * 1000;
-const inDays = (days) => new Date(Date.now() + days * DAY).toISOString().slice(0, 10);
+/* India's day, as the plant's date picker sends it — not Greenwich's, which is a day behind until 05:30. */
+const inDays = (days) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(Date.now() + days * DAY));
 
 let mongo;
 let server;

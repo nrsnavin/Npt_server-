@@ -24,6 +24,8 @@ import {
 } from '../services/assignment.service.js';
 import { EVENTS, publish, statusEvent } from '../services/events.service.js';
 import { normalisePhone } from '../utils/phone.js';
+import { withCreateLocks } from '../services/operationLock.service.js';
+import { customerKeys } from '../utils/customerKeys.js';
 import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
@@ -355,7 +357,11 @@ export const getCustomer = asyncHandler(async (req, res) => {
   });
 });
 
-export const createCustomer = asyncHandler(transactional(async (req, res) => {
+export const createCustomer = asyncHandler(transactional((req, res) =>
+  /* One create per GST / number at a time: two at once both passed the check and made twins. */
+  withCreateLocks(customerKeys(req.body), () => createCustomerChecked(req, res))));
+
+async function createCustomerChecked(req, res) {
   const duplicate = await findDuplicateCustomer(req.body);
   if (duplicate) {
     throw ApiError.conflict(
@@ -380,7 +386,7 @@ export const createCustomer = asyncHandler(transactional(async (req, res) => {
   });
 
   res.status(201).json({ success: true, data: customer });
-}));
+}
 
 export const updateCustomer = asyncHandler(async (req, res) => {
   const customer = await Customer.findById(req.params.id);
