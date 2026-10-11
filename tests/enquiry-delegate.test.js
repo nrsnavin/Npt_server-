@@ -96,7 +96,7 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-test('the owner hands it on; the enquiry, its open task and its sample go with it, and the buyer opens for them', async () => {
+test('Admin hands it on; the enquiry, its open task and its sample go with it, and the buyer opens for them', async () => {
   const enquiry = await raise();
   const acted = await api(`/api/enquiries/${enquiry._id}/actions`, { method: 'POST', token: nandhini, body: { action: 'raise_sample' } });
   assert.equal(acted.status, 200, acted.json.message);
@@ -104,11 +104,19 @@ test('the owner hands it on; the enquiry, its open task and its sample go with i
   const sample = await until(() => Sample.findOne({ enquiry: new mongoose.Types.ObjectId(enquiry._id) }), Boolean);
   assert.ok(sample, 'the sample was raised');
 
-  const targets = await api(`/api/enquiries/${enquiry._id}/delegate`, { token: nandhini });
+  const asOwner = await api(`/api/enquiries/${enquiry._id}/delegate`, { token: nandhini });
+  assert.equal(asOwner.json.mayDelegate, false, 'the owner cannot hand it on — only Admin');
+  assert.deepEqual(asOwner.json.data, []);
+  const targets = await api(`/api/enquiries/${enquiry._id}/delegate`, { token: admin });
   assert.equal(targets.json.mayDelegate, true);
-  assert.deepEqual(targets.json.data.map((row) => row.name).sort(), ['Arun K', 'Priya K'], 'marketing only, not the owner');
+  assert.deepEqual(targets.json.data.map((row) => row.name).sort(), ['Arun K', 'Navin R', 'Priya K'], 'marketing and Admin (themselves), not the owner');
+  assert.equal(targets.json.data.find((row) => row.name === 'Navin R').group, 'admin');
+  assert.ok(targets.json.data.filter((row) => row.name !== 'Navin R').every((row) => row.group === 'marketing'));
 
-  const handed = await delegate(enquiry._id, { to: ids.priya, note: 'On leave till Monday' });
+  const refused = await delegate(enquiry._id, { to: ids.priya, note: 'On leave till Monday' });
+  assert.equal(refused.status, 403, 'not even the owner');
+  assert.match(refused.json.message, /Only Admin can hand an enquiry/);
+  const handed = await delegate(enquiry._id, { to: ids.priya, note: 'On leave till Monday' }, admin);
   assert.equal(handed.status, 200, handed.json.message);
   assert.equal(handed.json.data.to.name, 'Priya K');
   assert.equal(handed.json.data.moved.samples, 1);
@@ -132,10 +140,11 @@ test('who may hand it on, and to whom', async () => {
   assert.equal((await delegate(enquiry._id, { to: ids.arun }, priya)).status, 404, 'not another marketing person’s to give');
   assert.equal((await delegate(enquiry._id, { to: ids.arun }, production)).status, 403);
 
-  const notMarketing = await delegate(enquiry._id, { to: ids.production });
+  const notMarketing = await delegate(enquiry._id, { to: ids.production }, admin);
   assert.equal(notMarketing.status, 400);
-  assert.match(notMarketing.json.message, /active marketing person/);
-  assert.equal((await delegate(enquiry._id, { to: ids.nandhini })).status, 400, 'already theirs');
+  assert.match(notMarketing.json.message, /active marketing person, an Admin, or yourself/);
+  assert.equal((await delegate(enquiry._id, { to: ids.nandhini }, admin)).status, 400, 'already theirs');
+  assert.equal((await delegate(enquiry._id, { to: ids.arun })).status, 403, 'the owner asks Admin');
 
   const holder = () => mongoose.connection.collection('todos')
     .findOne({ enquiry: new mongoose.Types.ObjectId(enquiry._id), holds: true, completed: false });
@@ -144,8 +153,9 @@ test('who may hand it on, and to whom', async () => {
   const byAdmin = await delegate(enquiry._id, { to: ids.arun }, admin);
   assert.equal(byAdmin.status, 200, 'Admin hands on anyone’s');
   assert.equal(String((await holder()).user), ids.arun, 'the holding task moved to the new owner’s list');
-  const back = await delegate(enquiry._id, { to: ids.nandhini }, arun);
-  assert.equal(back.status, 200, 'and the new owner may pass it on again, at any time');
+  assert.equal((await delegate(enquiry._id, { to: ids.nandhini }, arun)).status, 403, 'the new owner cannot pass it on either');
+  const back = await delegate(enquiry._id, { to: ids.nandhini }, admin);
+  assert.equal(back.status, 200, 'Admin may move it again, at any time');
   const read = await api(`/api/enquiries/${enquiry._id}`, { token: nandhini });
   assert.equal(read.json.data.handovers.length, 2);
 });
@@ -153,5 +163,26 @@ test('who may hand it on, and to whom', async () => {
 test('a closed enquiry can still be handed on', async () => {
   const enquiry = await raise();
   await api(`/api/enquiries/${enquiry._id}/actions`, { method: 'POST', token: nandhini, body: { action: 'mark_lost', lostReason: 'price' } });
-  assert.equal((await delegate(enquiry._id, { to: ids.priya })).status, 200);
+  assert.equal((await delegate(enquiry._id, { to: ids.priya }, admin)).status, 200);
+});
+
+test('Admin may take an enquiry themselves, or hand it to another Admin', async () => {
+  const enquiry = await raise();
+  const adminId = await me(admin);
+  const offered = (await api(`/api/enquiries/${enquiry._id}/delegate`, { token: admin })).json.data;
+  const self = offered.find((row) => row._id === adminId);
+  assert.ok(self, 'Admin sees themselves');
+  assert.equal(self.self, true);
+  assert.equal(self.group, 'admin');
+
+  const taken = await delegate(enquiry._id, { to: adminId, note: 'I will deal with this buyer myself' }, admin);
+  assert.equal(taken.status, 200, taken.json.message);
+  const read = await api(`/api/enquiries/${enquiry._id}`, { token: admin });
+  assert.equal(read.json.data.assignedTo.name, 'Navin R');
+  const holder = await mongoose.connection.collection('todos')
+    .findOne({ enquiry: new mongoose.Types.ObjectId(enquiry._id), holds: true, completed: false });
+  assert.equal(String(holder.user), adminId, 'the enquiry is on Admin’s own list now');
+
+  const back = await delegate(enquiry._id, { to: ids.nandhini }, admin);
+  assert.equal(back.status, 200, 'and back to marketing when done');
 });

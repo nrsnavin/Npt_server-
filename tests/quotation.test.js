@@ -547,7 +547,7 @@ test('an enquiry handed to a colleague can be quoted by that colleague', async (
   const { raiseEnquiryFor } = await import('./support/onEnquiry.js');
   const enquiry = await raiseEnquiryFor({ customer });
   const kavithaId = (await api('/api/auth/me', { token: kavitha })).json.data.id;
-  const handed = await api(`/api/enquiries/${enquiry._id}/delegate`, { method: 'POST', token: nandhini, body: { to: kavithaId } });
+  const handed = await api(`/api/enquiries/${enquiry._id}/delegate`, { method: 'POST', token: admin, body: { to: kavithaId } });
   assert.equal(handed.status, 200, handed.json.message);
 
   const made = await api('/api/quotations', {

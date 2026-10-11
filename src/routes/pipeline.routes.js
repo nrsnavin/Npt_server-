@@ -233,7 +233,7 @@ router.post('/enquiries/:id/messages', requireModule('enquiries', 'write'), vali
 router.post('/enquiries/:id/marketing-status', requireModule('enquiries', 'write'), validate(enquiryMarketingStatusSchema), setEnquiryMarketingStatus);
 /* Everything that happened on the enquiry, for whoever may open it. */
 router.get('/enquiries/:id/timeline', enquiryTimeline);
-/* Handing it to another marketing person, at any stage — the owner or Admin [services/delegation.service.js]. */
+/* Handing it to another marketing person or an Admin, at any stage — Admin only [services/delegation.service.js]. */
 router.get('/enquiries/:id/delegate', requireModule('enquiries', 'write'), listDelegationTargets);
 router.post('/enquiries/:id/delegate', requireModule('enquiries', 'write'), validate(enquiryDelegateSchema), delegateEnquiryTo);
 /*
