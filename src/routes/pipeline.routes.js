@@ -29,7 +29,7 @@ import {
 } from '../controllers/component.controller.js';
 import { marketingDashboard } from '../controllers/marketingDashboard.controller.js';
 import { addDocument, listDocuments, removeDocument } from '../controllers/document.controller.js';
-import { singleDocument, singleImage, singleSheet } from '../middleware/upload.js';
+import { singleDocument, singleImage, singlePdf, singleSheet } from '../middleware/upload.js';
 import { adminOnly, authenticate, requireAnyModule, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -48,7 +48,8 @@ import {
 import { componentSchema, componentUpdateSchema } from '../validators/component.schemas.js';
 import { customerTimeline } from '../controllers/timeline.controller.js';
 import {
-  departmentDashboardFor, departmentsOverview, handoffCatalogue, listEnquiryHandoffs, sendEnquiryHandoff,
+  attachTaskPdf, departmentDashboardFor, departmentsOverview, enquiryTaskPrefill, handoffCatalogue, listEnquiryHandoffs,
+  sendEnquiryHandoff,
 } from '../controllers/handoff.controller.js';
 import { handoffSchema } from '../validators/handoff.schemas.js';
 
@@ -170,6 +171,8 @@ router.post('/buyer-cards/:id/discard', requireModule('customers', 'write'), dis
 router.get('/handoffs', handoffCatalogue);
 router.get('/enquiries/:id/handoffs', listEnquiryHandoffs);
 router.post('/enquiries/:id/handoffs', validate(handoffSchema), sendEnquiryHandoff);
+router.get('/enquiries/:id/handoffs/prefill', enquiryTaskPrefill);
+router.post('/enquiries/:id/handoffs/:taskId/attachment', singlePdf('file'), attachTaskPdf);
 /* Department dashboards: Admin's overview of all ten, and each department's own. */
 router.get('/departments/overview', departmentsOverview);
 router.get('/departments/:key/dashboard', departmentDashboardFor);

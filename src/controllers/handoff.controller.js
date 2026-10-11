@@ -1,5 +1,7 @@
 import Enquiry from '../models/Enquiry.js';
 import Todo from '../models/Todo.js';
+import Attachment from '../models/Attachment.js';
+import { put, remove } from '../services/storage.service.js';
 import ApiError from '../utils/ApiError.js';
 import { inDepartment, isManagement } from '../utils/departments.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -9,7 +11,7 @@ import { HANDOFFS, TILE_KIND } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  rescheduleHandoff, returnHandoff, sendHandoff, updateHandoff,
+  rescheduleHandoff, returnHandoff, sendHandoff, taskPrefill, updateHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -22,6 +24,7 @@ import { ownershipFilter } from '../services/ownership.service.js';
  */
 
 const TASK_POPULATE = [
+  { path: 'attachment', select: 'key filename size' },
   { path: 'createdBy', select: 'name department' },
   { path: 'user', select: 'name department' },
   { path: 'completedBy', select: 'name' },
@@ -58,13 +61,52 @@ async function enquiryFor(req) {
 export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) => {
   const enquiry = await enquiryFor(req);
   const task = await sendHandoff({
-    enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, brief: req.body.brief, user: req.user,
+    enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, brief: req.body.brief,
+    priority: req.body.priority, requiredDate: req.body.requiredDate || undefined, user: req.user,
   });
   res.status(201).json({
     success: true,
     data: { task: await task.populate(TASK_POPULATE), stage: enquiry.stage },
   });
 }));
+
+/**
+ * The PDF sent with a department task, uploaded right after the task is raised. Only whoever
+ * raised it (or Admin), and once: the file is part of what was asked.
+ */
+export const attachTaskPdf = asyncHandler(async (req, res) => {
+  const enquiry = await enquiryFor(req);
+  const task = await Todo.findOne({ _id: req.params.taskId, enquiry: enquiry._id, kind: { $exists: true } });
+  if (!task) throw ApiError.notFound('Task not found');
+  if (String(task.createdBy) !== String(req.user._id) && req.user.role !== 'admin') {
+    throw ApiError.forbidden('Only whoever raised the task can attach its PDF');
+  }
+  if (task.attachment) throw ApiError.conflict('This task already has its PDF');
+  if (!req.file) throw ApiError.badRequest('Attach a PDF');
+
+  const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+  let attachment;
+  try {
+    attachment = await Attachment.create({
+      key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
+      uploadedBy: req.user._id, task: task._id,
+    });
+    task.attachment = attachment._id;
+    await task.save();
+  } catch (error) {
+    /* A file with no row pointing at it is a file nobody can reach or delete. */
+    await remove(key);
+    if (attachment) await attachment.deleteOne();
+    throw error;
+  }
+  res.status(201).json({ success: true, data: await task.populate(TASK_POPULATE) });
+});
+
+/** What a department task's form is filled from — the enquiry, its buyer and its order. */
+export const enquiryTaskPrefill = asyncHandler(async (req, res) => {
+  const enquiry = await enquiryFor(req);
+  res.json({ success: true, data: await taskPrefill(enquiry._id) });
+});
 
 /** Everything asked about this enquiry, newest first, with what came of each. */
 export const listEnquiryHandoffs = asyncHandler(async (req, res) => {

@@ -53,7 +53,8 @@ const me = async (token) => (await api('/api/auth/me', { token })).json.data.id;
 const send = (kind, note, token = nandhini, id = enquiryId, brief) => api(`/api/enquiries/${id}/handoffs`, {
   method: 'POST', token, body: { kind, ...(note ? { note } : {}), ...(brief ? { brief } : {}) },
 });
-const SAMPLE_BRIEF = { mould: 'NH-400', material: 'PP', colour: 'Black', colourType: 'Compulsory colour' };
+const SAMPLE_ROW = { model: 'NH-400', material: 'PP', colour: 'Black', colourType: 'Compulsory colour', quantity: '3' };
+const SAMPLE_BRIEF = { items: [SAMPLE_ROW] };
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
 /* Up to ten seconds for the outbox to deliver — returns as soon as it has, so it costs nothing
  * when the machine is quick, and a cold first run no longer reads as a missing notice. */
@@ -132,11 +133,11 @@ test('the buttons and the stages come from the server', async () => {
     'Ask Assembly EDD', 'Mould Issue', 'Team Payment Follow-up', 'Invoice & Dispatch', 'LR Copy',
     'Quality Check', 'Quality Issue', 'GST / Invoice Audit', 'A/C Clarify', 'Request PRT Visit', 'My Payment Follow-up', 'Task Closed',
   ]);
-  /* The questions a Sample Request asks whoever raises it. */
-  const asks = json.data.buttons.find((button) => button.key === 'sample_request').asks;
-  assert.deepEqual(asks.map((field) => field.label), ['Mould / model', 'Material', 'Colour', 'Colour is']);
-  assert.deepEqual(asks.find((field) => field.key === 'colourType').options, ['Preferred colour', 'Compulsory colour']);
-  assert.ok(asks.every((field) => field.required));
+  /* The form a Sample Request asks whoever raises it: a row per model [config/departmentTaskForms.js]. */
+  const [rows] = json.data.buttons.find((button) => button.key === 'sample_request').asks;
+  assert.equal(rows.type, 'items');
+  assert.deepEqual(rows.columns.map((field) => field.label), ['Mould / model', 'Material', 'Colour', 'Hook', 'Clip', 'Print', 'Colour is', 'Pcs']);
+  assert.deepEqual(rows.columns.find((field) => field.key === 'colourType').options, ['Preferred colour', 'Compulsory colour']);
 });
 
 const holder = (id = enquiryId) => Todo.findOne({ enquiry: id, holds: true, completed: false });
@@ -170,12 +171,12 @@ test('sample request: sampling gets a task with the answers; the enquiry stays w
   const first = await holder();
   const unanswered = await send('sample_request', 'Buyer wants it by Friday');
   assert.equal(unanswered.status, 400, 'the questions are answered first');
-  assert.match(unanswered.json.message, /Mould \/ model is needed/);
-  const wrongChoice = await send('sample_request', 'x', nandhini, enquiryId, { ...SAMPLE_BRIEF, colourType: 'Any' });
+  assert.match(unanswered.json.message, /Sample models & colour instruction: add at least one row/);
+  const wrongChoice = await send('sample_request', 'x', nandhini, enquiryId, { items: [{ ...SAMPLE_ROW, colourType: 'Any' }] });
   assert.equal(wrongChoice.status, 400);
   assert.match(wrongChoice.json.message, /Colour is is one of: Preferred colour, Compulsory colour/);
 
-  const { status, json } = await send('sample_request', 'Black, 3 pcs, buyer wants it by Friday', nandhini, enquiryId, { ...SAMPLE_BRIEF, notAQuestion: 'x' });
+  const { status, json } = await send('sample_request', 'Black, 3 pcs, buyer wants it by Friday', nandhini, enquiryId, { items: [{ ...SAMPLE_ROW, notAQuestion: 'x' }] });
   assert.equal(status, 201, json.message);
   sampleTask = json.data.task;
 
@@ -327,13 +328,13 @@ test('a department not asked about an enquiry cannot raise tasks on it; one that
   const before = await send('quality_issue', 'Flash on the hook', kavitha);
   assert.equal(before.status, 404, 'quality has not been asked about this enquiry');
 
-  const mould = await send('mould_issue', 'Cavity 3 short', nandhini);
+  const mould = await send('mould_issue', 'Cavity 3 short', nandhini, enquiryId, { problem: 'Cavity 3 fills short' });
   assert.equal(mould.status, 201);
   assert.equal(mould.json.data.task.department, 'mould');
   assert.equal((await Enquiry.findById(enquiryId)).stage, 'mould');
 
   /* The Mould department, asked about it, raises Quality's task — any department may ask another. */
-  const onward = await send('quality_issue', 'Check cavity 3 parts', murugan);
+  const onward = await send('quality_issue', 'Check cavity 3 parts', murugan, enquiryId, { problem: 'Short shots from cavity 3' });
   assert.equal(onward.status, 201, onward.json.message);
   assert.equal(onward.json.data.task.department, 'quality');
   assert.equal(onward.json.data.task.fromDepartment, 'mould');

@@ -84,7 +84,10 @@ test('clicking a department raises its task; the enquiry stays with its marketin
   })).json.data;
   const { stages } = (await api('/api/handoffs', { token: admin })).json.data;
   const tile = (key) => stages.find((item) => item.key === key);
-  const briefs = { sample: { mould: 'NH-400', material: 'PP', colour: 'White', colourType: 'Preferred colour' } };
+  const briefs = {
+    sample: { items: [{ model: 'NH-400', material: 'PP', colour: 'White', colourType: 'Preferred colour', quantity: '3' }] },
+    mould: { problem: 'Cavity 2 flashes' },
+  };
 
   for (const key of ['sample', 'mould', 'audit', 'assembling']) {
     const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, {

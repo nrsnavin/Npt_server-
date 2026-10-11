@@ -1,4 +1,4 @@
-import Todo from '../models/Todo.js';
+import Todo, { PRIORITIES } from '../models/Todo.js';
 import Enquiry from '../models/Enquiry.js';
 import { CLOSED_STAGE, STAGES, stageLabel } from '../config/enquiryStages.js';
 import { findDepartment } from '../config/modules.js';
@@ -9,6 +9,7 @@ import { departmentsOf, inDepartment, isManagement } from '../utils/departments.
 import { EVENTS, publish } from './events.service.js';
 import ApiError from '../utils/ApiError.js';
 import { describeBalance, dispatchBalance, qualityPassed } from './enquiryGates.service.js';
+import * as paymentPresets from './paymentGates.service.js';
 import { assertEnquiryPaidFor } from './paymentGates.service.js';
 import { MATERIALS } from '../models/Mould.js';
 
@@ -226,14 +227,20 @@ async function openHolder({ enquiry, kind, note, user, title, from }) {
   return task;
 }
 
-/** What the Sample Request's questions say, in the sample's own fields [models/Sample.js]. */
+/**
+ * What the Sample Request's first row says, in the sample's own fields [models/Sample.js]. The
+ * sample inherits the enquiry's models, hooks, clips and prints itself; the task adds what only
+ * the person asking knows — the colour rule and how many pieces.
+ */
 function sampleFromBrief(brief = {}) {
+  const row = brief.items?.[0];
+  if (!row) return {};
   const said = {};
-  if (brief.mould) said.modelNumber = brief.mould;
-  const material = brief.material && brief.material.toLowerCase().replace(/\s+/g, '_');
+  const material = row.material && row.material.toLowerCase().replace(/\s+/g, '_');
   if (material && MATERIALS.includes(material)) said.material = material;
-  if (brief.colour) said.colour = brief.colour;
-  if (brief.colourType) said.colourMandatory = brief.colourType === 'Compulsory colour';
+  if (row.colour) said.colour = row.colour;
+  if (row.colourType) said.colourMandatory = row.colourType === 'Compulsory colour';
+  if (Number(row.quantity) > 0) said.quantity = Number(row.quantity);
   return said;
 }
 
@@ -276,25 +283,75 @@ export async function ensureHolder(enquiry, { user } = {}) {
   return task;
 }
 
+/** One answer, checked against its question: a number is a number, a date a date, a choice one of its options. */
+function keptAnswer(field, value) {
+  if (field.type === 'check') return value === true || value === 'true' || value === 'Yes' ? 'Yes' : '';
+  const text = String(value ?? '').trim().slice(0, 300);
+  if (!text) return '';
+  if (field.type === 'number') {
+    const number = Number(text.replace(/,/g, ''));
+    if (!Number.isFinite(number) || number < 0) fail(`${field.label} must be a number`);
+    return String(number);
+  }
+  if (field.type === 'date' && Number.isNaN(new Date(text).getTime())) fail(`${field.label} is not a date`);
+  if (field.type === 'choice' && field.options && !field.options.includes(text)) {
+    fail(`${field.label} is one of: ${field.options.join(', ')}`);
+  }
+  return text;
+}
+
 /**
- * The questions a department task asks when it is raised [config/handoffs.js `asks`]: kept as
- * the task's brief. Only the questions the button asks are kept; a choice must be one of its
- * options; a required one must be answered — unless the system raises it (a status change),
- * when there is nobody to ask and the department reads the enquiry instead.
+ * The answers to the form a department task opens with [config/departmentTaskForms.js]: kept as
+ * the task's brief. Only the questions the form asks are kept, each checked by its type; a table
+ * keeps its rows (twenty at most) and the columns it asks; a required one must be answered —
+ * unless the system raises it (a status change), when there is nobody to ask and the department
+ * reads the enquiry instead.
  */
 function keptBrief(kind, brief = {}, { strict = true } = {}) {
   const asks = findHandoff(kind)?.asks || [];
   const kept = {};
   for (const field of asks) {
-    const text = String(brief?.[field.key] ?? '').trim().slice(0, 200);
-    if (!text) {
+    if (field.type === 'info' || field.type === 'kind') continue;
+    if (field.type === 'items') {
+      const rows = (Array.isArray(brief?.[field.key]) ? brief[field.key] : []).slice(0, 20)
+        .map((row) => Object.fromEntries(field.columns
+          .map((column) => [column.key, keptAnswer(column, row?.[column.key])])
+          .filter(([, value]) => value)))
+        .filter((row) => Object.keys(row).length);
+      if (strict) {
+        if (field.required && !rows.length) fail(`${field.label}: add at least one row`);
+        for (const column of field.columns.filter((entry) => entry.required)) {
+          if (rows.some((row) => !row[column.key])) fail(`${column.label} is needed on every row of ${field.label}`);
+        }
+      }
+      if (rows.length) kept[field.key] = rows;
+      continue;
+    }
+    const answer = keptAnswer(field, brief?.[field.key]);
+    if (!answer) {
       if (strict && field.required) fail(`${field.label} is needed for this task`);
       continue;
     }
-    if (field.type === 'choice' && !field.options.includes(text)) fail(`${field.label} is one of: ${field.options.join(', ')}`);
-    kept[field.key] = text;
+    kept[field.key] = answer;
   }
   return kept;
+}
+
+/** A form that needs the instruction filled in some cases — Sampling, beyond three pieces. */
+function assertNote(kind, asked, note) {
+  const rule = findHandoff(kind)?.form?.noteRequired;
+  if (!rule || String(note || '').trim().length >= 3) return;
+  const rows = asked[rule.items] || [];
+  if (rows.some((row) => Number(row[rule.column]) > rule.above)) fail(rule.message);
+}
+
+/** The due date a person asked for — the end of that day in India, never in the past. */
+function requiredDue(value, label = 'The required date') {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) fail(`${label} is not a date`);
+  if (date < startOfDayIST()) fail(`${label} cannot be in the past`);
+  return endOfDayIST(date);
 }
 
 /** The open department tasks of these kinds on an enquiry, finished with what the record says. */
@@ -334,7 +391,7 @@ async function finishOpenTasks(enquiryId, kinds, { fields = {}, note, user }) {
  * or costing themselves.
  */
 export async function moveEnquiry({
-  enquiry, kind, note, fields, brief, user, system = false, openRecords = true, finishes = [],
+  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [],
 }) {
   const handoff = findHandoff(kind);
   if (!handoff?.department || handoff.stage === CLOSED_STAGE) fail('That button does not raise a department task');
@@ -350,6 +407,9 @@ export async function moveEnquiry({
     );
   }
   const asked = keptBrief(kind, brief, { strict: !system });
+  if (!system) assertNote(kind, asked, note);
+  const form = handoff.form || {};
+  const due = requiredDue(requiredDate) || (form.dueFrom && requiredDue(asked[form.dueFrom], 'That date'));
 
   /*
    * The gates [services/enquiryGates.service.js, services/paymentGates.service.js]. Dispatch only
@@ -382,8 +442,8 @@ export async function moveEnquiry({
     title: `${handoff.label} — ${await aboutWithName(enquiry)}`,
     notes: text || undefined,
     ...(Object.keys(asked).length ? { brief: asked } : {}),
-    dueDate: dueFor(handoff, enquiry),
-    priority: 'normal',
+    dueDate: due || dueFor(handoff, enquiry),
+    priority: PRIORITIES.includes(priority) ? priority : 'normal',
     link: `/enquiries/${enquiry._id}`,
   });
   await moveStage(enquiry, handoff.stage, { user, task, note: text || handoff.label });
@@ -464,7 +524,7 @@ export async function closeEnquiryAutomatically({ enquiry, note }) {
  * One button pressed on the enquiry screen. Returns the task (or the record, for the buttons
  * that only record). `enquiry` must be a document with `customer` populated or an id.
  */
-export async function sendHandoff({ enquiry, kind, note, fields, brief, user }) {
+export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, user }) {
   const handoff = findHandoff(kind);
   if (!handoff || handoff.hidden) fail('That is not one of the buttons');
 
@@ -474,7 +534,7 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, user }) 
   }
 
   /* Every button that names a department raises that department's task. */
-  if (handoff.department) return moveEnquiry({ enquiry, kind, note: text, fields, brief, user });
+  if (handoff.department) return moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, user });
 
   if (!(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
 
@@ -668,6 +728,98 @@ export const describeHandoff = (task) => {
   };
 };
 
+/* ------------------------------ Task forms ------------------------------ */
+
+const MATERIAL_WORDS = { pp: 'PP', hips: 'HIPS', recycled_pp: 'Recycled PP' };
+const materialWord = (value) => (value ? MATERIAL_WORDS[value] || value.charAt(0).toUpperCase() + value.slice(1) : '');
+const PRESET_WORDS = {
+  credit: 'Credit — nothing before dispatch', advance_100: '100% advance',
+  advance_50_delivery_50: '50% advance, 50% against delivery', advance_50_dispatch_50: '50% advance, 50% before dispatch',
+  advance_30_dispatch_70: '30% advance, 70% before dispatch', dispatch_100: '100% against dispatch',
+};
+
+/** An order's payment plan in the words the SO form offers, when it is one of them. */
+function termsWords(order) {
+  const plan = order?.paymentPlan;
+  if (plan && plan.advancePercent != null) {
+    const { PAYMENT_PRESETS } = paymentPresets;
+    const preset = PAYMENT_PRESETS.find((entry) => entry.advancePercent === plan.advancePercent
+      && entry.beforeDispatchPercent === plan.beforeDispatchPercent);
+    if (preset) return PRESET_WORDS[preset.key] || '';
+  }
+  return Object.values(PRESET_WORDS).includes(order?.paymentTerms) ? order.paymentTerms : '';
+}
+
+/**
+ * What a department task's form is filled from [config/departmentTaskForms.js `from`]: the
+ * enquiry's models with their mould, material, hook, clip and print by name, the buyer's contact
+ * and delivery details, and the order on it — so nobody types again what the enquiry already
+ * says. Every answer stays editable on the form.
+ */
+export async function taskPrefill(enquiryId) {
+  const [{ default: Customer }, { default: SalesOrder }, { default: Dispatch }] = await Promise.all([
+    import('../models/Customer.js'), import('../models/SalesOrder.js'), import('../models/Dispatch.js'),
+  ]);
+  const enquiry = await Enquiry.findById(enquiryId)
+    .populate([
+      { path: 'items.mould', select: 'mouldCode name' },
+      { path: 'items.materialRef', select: 'name' },
+      { path: 'items.hookRef', select: 'name' },
+      { path: 'items.clipRef', select: 'name' },
+      { path: 'items.printRef', select: 'name' },
+    ])
+    .lean();
+  if (!enquiry) return null;
+  const customer = enquiry.customer
+    ? await Customer.findById(enquiry.customer).select('name mobile whatsapp contacts address city state pincode').lean()
+    : null;
+  const order = await SalesOrder.findOne({ enquiry: enquiry._id }).sort({ createdAt: -1 })
+    .select('number lines.quantity paymentTerms paymentPlan').lean();
+  const consignment = order
+    ? await Dispatch.findOne({ order: order._id, 'invoice.number': { $exists: true } }).sort({ createdAt: -1 }).select('invoice.number').lean()
+    : null;
+
+  const source = enquiry.items?.length ? enquiry.items : [enquiry.requirement || {}];
+  const items = source.map((row) => ({
+    model: row.modelNumber || row.mould?.mouldCode || '',
+    material: row.materialRef?.name || materialWord(row.material),
+    colour: row.colour || '',
+    hook: row.hookRef?.name || '',
+    clip: row.clipRef?.name || '',
+    print: row.printRef?.name || row.printing || '',
+    colourType: row.colour ? (row.colourMandatory ? 'Compulsory colour' : 'Preferred colour') : '',
+    /* A sample is three pieces unless somebody says why it is more. */
+    quantity: '3',
+  })).filter((row) => row.model || row.material || row.colour);
+  const modelList = [...new Set(items.map((row) => row.model).filter(Boolean))];
+  const enquiryQuantity = source.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0);
+  const orderQuantity = (order?.lines || []).reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
+
+  const primary = customer?.contacts?.find((contact) => contact.isPrimary) || customer?.contacts?.[0];
+  const phone = primary?.mobile || customer?.mobile || '';
+  const place = [customer?.address, customer?.city, customer?.state, customer?.pincode].filter(Boolean).join(', ');
+
+  return {
+    customer: {
+      name: customer?.name || '',
+      contactPerson: primary?.name || '',
+      mobile: phone,
+      whatsapp: primary?.whatsapp || customer?.whatsapp || phone,
+      delivery: `${primary?.name || 'Not added'} · ${phone || 'No number'} · ${place || 'Road not selected'}`,
+    },
+    items,
+    modelList,
+    models: modelList.join(', '),
+    materials: items.map((row) => [row.material, row.colour].filter(Boolean).join(' ')).filter(Boolean).join(', '),
+    /* Enquiries carry no quantity; the order on it does. */
+    quantity: String(orderQuantity || enquiryQuantity || ''),
+    targetPrice: enquiry.targetPrice != null ? String(enquiry.targetPrice) : '',
+    order: order
+      ? { number: order.number, paymentTerms: termsWords(order), invoiceNumber: consignment?.invoice?.number || '' }
+      : { paymentTerms: '', invoiceNumber: '' },
+  };
+}
+
 /* ------------------------------ Late tasks ------------------------------ */
 
 /**
@@ -759,6 +911,7 @@ export async function departmentFigures(department, { now = new Date() } = {}) {
 }
 
 const LIST_POPULATE = [
+  { path: 'attachment', select: 'key filename size' },
   { path: 'createdBy', select: 'name department' },
   { path: 'user', select: 'name' },
   { path: 'outcome.by', select: 'name' },
