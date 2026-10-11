@@ -361,10 +361,17 @@ test('a task passed to another department goes with its own queue, and tells tha
   assert.match(sent.find((line) => line.includes(PHONES.kavitha)), /New task for Quality: Ask EDD/);
 });
 
-test('my payment follow-up is for the marketing person, personally', async () => {
+test('my payment follow-up goes on the To-do of whoever raises it', async () => {
+  const own = await send('my_payment_followup', 'Call their accounts on Monday', nandhini);
+  assert.equal(own.json.data.task.user?._id, await me(nandhini), 'the marketing person’s own');
+  assert.equal(own.json.data.task.department, 'marketing');
+  await api(`/api/workspace/todos/${own.json.data.task._id}/done`, { method: 'POST', token: nandhini, body: { note: 'Called — paying Friday' } });
+
   const { json } = await send('my_payment_followup', 'Promised by the 20th', admin);
-  assert.equal(json.data.task.user?._id, await me(nandhini));
-  assert.equal(json.data.task.department, 'marketing');
+  assert.equal(json.data.task.user?._id, await me(admin), 'Admin following up themselves');
+  assert.equal(json.data.task.department, 'management');
+  const mine = (await api('/api/workspace/todos?scope=mine&status=open', { token: admin })).json.data;
+  assert.ok(mine.some((task) => task._id === json.data.task._id), 'on Admin’s own tasks');
   assert.equal((await Enquiry.findById(enquiryId)).stage, 'my_payment_followup');
 });
 

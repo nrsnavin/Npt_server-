@@ -429,7 +429,12 @@ export async function moveEnquiry({
 
   let department = handoff.department;
   let assignee;
-  if (department === 'owner') ({ userId: assignee, department } = await ownerOf(enquiry));
+  if (department === 'owner') {
+    /* My Payment Follow-up is the raiser's own; anything else for the owner is the enquiry's marketing person's. */
+    ({ userId: assignee, department } = handoff.toRaiser && user?._id
+      ? { userId: user._id, department: user.department || 'marketing' }
+      : await ownerOf(enquiry));
+  }
   const holder = await holderOf(enquiry._id);
   const task = await Todo.create({
     enquiry: enquiry._id,

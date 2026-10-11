@@ -98,7 +98,7 @@ const paymentFollowUp = {
     {
       key: 'owner', label: 'Follow-up owner', type: 'kind',
       options: [
-        { kind: 'my_payment_followup', label: 'My Payment Follow-up — Marketing person' },
+        { kind: 'my_payment_followup', label: 'My Payment Follow-up — on my tasks' },
         { kind: 'team_payment_followup', label: 'Team Payment Follow-up — Payment Collection' },
       ],
     },

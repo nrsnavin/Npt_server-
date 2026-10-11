@@ -147,7 +147,9 @@ const BUTTONS = [
   },
   {
     key: 'my_payment_followup', label: 'My Payment Follow-up', department: 'owner', stage: 'my_payment_followup',
-    hint: 'A payment reminder for whoever holds the enquiry',
+    /* "My": it goes on the To-do of whoever raises it — the marketing person, or Admin following up themselves. */
+    toRaiser: true,
+    hint: 'A payment reminder on your own tasks',
     records: [{ key: 'promisedDate', label: 'Promised payment date', type: 'date' }],
   },
   {
