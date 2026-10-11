@@ -391,7 +391,7 @@ async function finishOpenTasks(enquiryId, kinds, { fields = {}, note, user }) {
  * or costing themselves.
  */
 export async function moveEnquiry({
-  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask,
+  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask, addToOpen = false,
 }) {
   const handoff = findHandoff(kind);
   if (!handoff?.department || handoff.stage === CLOSED_STAGE) fail('That button does not raise a department task');
@@ -400,7 +400,7 @@ export async function moveEnquiry({
   if (!system && !(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
 
   const already = await Todo.findOne({ enquiry: enquiry._id, kind, completed: false }).populate('user', 'name');
-  if (already) {
+  if (already && !addToOpen) {
     throw ApiError.conflict(
       `${handoff.label} is already with ${departmentName(already.department)}`
         + `${already.user?.name ? ` (${already.user.name})` : ''}. Add to that one, or wait for it to come back.`
@@ -408,6 +408,7 @@ export async function moveEnquiry({
   }
   const asked = keptBrief(kind, brief, { strict: !system });
   if (!system) assertNote(kind, asked, note);
+  if (already) return addToOpenTask(already, { handoff, note, asked, priority, requiredDate, user });
   const form = handoff.form || {};
   const due = requiredDue(requiredDate) || (form.dueFrom && requiredDue(asked[form.dueFrom], 'That date'));
 
@@ -454,6 +455,38 @@ export async function moveEnquiry({
 
   await publish(EVENTS.HANDOFF_SENT, { task, enquiry, by: user });
   return task;
+}
+
+/**
+ * Somebody raises a task the department already has open (Production asked for the EDD by the
+ * SO going through, then marketing asks again): the new request goes onto the open task as an
+ * update — the note, the answers, an earlier date or a higher priority — and the department is
+ * told again, rather than refusing or opening a second task for the same work.
+ */
+async function addToOpenTask(task, { handoff, note, asked, priority, requiredDate, user }) {
+  const answers = describeAnswers(handoff, asked);
+  const text = [String(note || '').trim(), answers].filter(Boolean).join(' — ') || 'Asked again';
+  task.updates = [...(task.updates || []), { note: `${user?.name || 'Someone'} asked again: ${text}`, by: user?._id, at: new Date() }];
+  if (Object.keys(asked).length) {
+    task.brief = { ...(task.brief || {}), ...asked };
+    task.markModified('brief');
+  }
+  const due = requiredDue(requiredDate);
+  if (due && (!task.dueDate || due < task.dueDate)) task.dueDate = due;
+  const rank = { low: 0, normal: 1, high: 2 };
+  if (PRIORITIES.includes(priority) && rank[priority] > rank[task.priority || 'normal']) task.priority = priority;
+  await task.save();
+  task.$locals.addedTo = true;
+  await publish(EVENTS.HANDOFF_SENT, { task, enquiry: task.enquiry, by: user });
+  return task;
+}
+
+/** The form's answers in a line, for an update: "Model name: NPT-410V · Quantity: 5000". */
+function describeAnswers(handoff, asked) {
+  return (handoff.asks || [])
+    .filter((field) => asked[field.key] != null && !Array.isArray(asked[field.key]))
+    .map((field) => `${field.label}: ${asked[field.key]}`)
+    .join(' · ');
 }
 
 /**
@@ -527,7 +560,7 @@ export async function closeEnquiryAutomatically({ enquiry, note }) {
  * One button pressed on the enquiry screen. Returns the task (or the record, for the buttons
  * that only record). `enquiry` must be a document with `customer` populated or an id.
  */
-export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, user }) {
+export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, addToOpen, user }) {
   const handoff = findHandoff(kind);
   if (!handoff || handoff.hidden) fail('That is not one of the buttons');
 
@@ -537,7 +570,7 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
   }
 
   /* Every button that names a department raises that department's task. */
-  if (handoff.department) return moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, user });
+  if (handoff.department) return moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, user });
 
   if (!(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
 
@@ -1018,6 +1051,62 @@ export async function taskPrefill(enquiryId) {
     order: order
       ? { number: order.number, paymentTerms: termsWords(order), invoiceNumber: consignment?.invoice?.number || '' }
       : { paymentTerms: '', invoiceNumber: '' },
+  };
+}
+
+/* ------------------------------ Production's dates ------------------------------ */
+
+const EDD_KINDS = ['ask_edd', 'ask_assembling_edd'];
+
+/**
+ * When the goods will be ready — what the enquiry page shows while it is in Production
+ * [web: components/DepartmentDesk.jsx]. Two answers, both kept:
+ *
+ *   edd     the latest date Production (or Assembly) gave on its task — in an update or when
+ *           it said it was done — with who said it, when, and what was still pending
+ *   lines   each sales order line's own expected completion, as the production board keeps it,
+ *           beside what the buyer was promised and how much is made
+ *
+ * `asked` is the open Production / Assembly task, so the page can say a date has been asked
+ * for and not given yet.
+ */
+export async function productionDates(enquiryId) {
+  const { default: SalesOrder } = await import('../models/SalesOrder.js');
+  const [tasks, orders] = await Promise.all([
+    Todo.find({ enquiry: enquiryId, kind: { $in: EDD_KINDS } })
+      .sort({ createdAt: -1 })
+      .populate([{ path: 'updates.by', select: 'name' }, { path: 'outcome.by', select: 'name' }])
+      .lean(),
+    SalesOrder.find({ enquiry: enquiryId, status: { $nin: ['cancelled'] } })
+      .select('number lines.modelNumber lines.quantity lines.deliveryDate lines.revisedDeliveryDate lines.production')
+      .sort({ createdAt: -1 })
+      .lean(),
+  ]);
+  const said = [];
+  for (const task of tasks) {
+    const department = task.department;
+    for (const update of task.updates || []) {
+      if (update.fields?.edd) said.push({ edd: update.fields.edd, pending: update.fields.pending, by: update.by?.name, at: update.at, department });
+    }
+    if (task.outcome?.fields?.edd) {
+      said.push({ edd: task.outcome.fields.edd, pending: task.outcome.fields.pending, by: task.outcome.by?.name, at: task.outcome.at, department });
+    }
+  }
+  said.sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+  const open = tasks.find((task) => !task.completed);
+  const lines = orders.flatMap((order) => (order.lines || []).map((line) => ({
+    order: order.number,
+    model: line.modelNumber,
+    quantity: line.quantity,
+    produced: line.production?.producedQty || 0,
+    status: line.production?.status,
+    expectedCompletion: line.production?.expectedCompletion || null,
+    dueToBuyer: line.revisedDeliveryDate || line.deliveryDate || null,
+  })));
+  return {
+    edd: said[0] || null,
+    asked: open ? { department: open.department, at: open.createdAt, due: open.dueDate } : null,
+    lines,
   };
 }
 
