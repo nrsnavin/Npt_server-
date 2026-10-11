@@ -11,7 +11,7 @@ import { HANDOFFS, TILE_KIND } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  editTaskBrief, finishWithResult, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
+  attentionFor, editTaskBrief, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
   updateHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
@@ -158,6 +158,12 @@ export const handoffStatus = asyncHandler(transactional(async (req, res) => {
   await answer(res, task);
 }));
 
+/** "Got it" on an answer that came back — it leaves the top of the dashboard. */
+export const handoffSeen = asyncHandler(async (req, res) => {
+  const task = await markAttentionSeen(await taskFor(req), req.user);
+  await answer(res, task);
+});
+
 /** The contact details the department corrects on its task. */
 export const handoffBrief = asyncHandler(async (req, res) => {
   const task = await editTaskBrief(await taskFor(req), req.user, req.body);
@@ -214,14 +220,16 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
     throw ApiError.forbidden('That is another department\'s dashboard');
   }
   /* The enquiries at this department's stages — only for someone who may open enquiries. */
-  const [dashboard, atStages, held] = await Promise.all([
+  const [dashboard, atStages, held, attention] = await Promise.all([
     departmentDashboard(key),
     canRead(req.user, 'enquiries') ? enquiriesAtStages(key, ownershipFilter(req.user)) : [],
     /* The enquiries this department holds — its desk. */
     enquiriesHeldBy(key, req.user),
+    /* Questions for this person, and answers back on this department's tasks — at the top. */
+    attentionFor(req.user, key),
   ]);
   /* The queue less the enquiries themselves: side requests, like a PRT visit or photos sent. */
   const heldIds = new Set(held.map((row) => String(row.task._id)));
   const requests = dashboard.queue.filter((task) => !heldIds.has(String(task._id)));
-  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held } });
+  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, attention } });
 });

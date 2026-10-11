@@ -36,7 +36,7 @@ import {
 import { pushKey, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate,
+  handoffBrief, handoffDone, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate,
 } from '../controllers/handoff.controller.js';
 import {
   handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, taskBriefSchema, taskStatusSchema,
@@ -79,6 +79,7 @@ router.post('/todos/:id/send-back', validate(handoffReturnSchema), handoffSendBa
 router.post('/todos/:id/reschedule', validate(handoffRescheduleSchema), handoffReschedule);
 router.post('/todos/:id/status', validate(taskStatusSchema), handoffStatus);
 router.post('/todos/:id/brief', validate(taskBriefSchema), handoffBrief);
+router.post('/todos/:id/seen', handoffSeen);
 router.post('/todos/:id/result', singlePdf('file'), handoffResult);
 router.delete('/todos/:id', deleteTodo);
 

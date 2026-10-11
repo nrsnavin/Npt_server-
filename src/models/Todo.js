@@ -102,6 +102,17 @@ const todoSchema = new mongoose.Schema(
     },
     /** The task this one was raised from — a clarification asked by the SO team. */
     parentTask: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
+    /**
+     * Something on the task the department has not acted on yet — an answer to its question.
+     * Shown at the top of its dashboard until somebody there moves the task or says they saw it.
+     */
+    attention: {
+      kind: { type: String, enum: ['reply'] },
+      note: { type: String, trim: true, maxlength: 2000 },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      _id: false,
+    },
     /** Done (with what they recorded) or sent back (with why), by whom and when, and where it went next. */
     outcome: {
       result: { type: String, enum: ['done', 'returned', 'moved'] },

@@ -114,12 +114,28 @@ test('Needs Clarification asks for a comment and gives the marketing person a ta
   const again = await status('priya', 'preparing');
   assert.equal(again.status, 200, 'the SO team may carry on meanwhile');
   await status('priya', 'clarification', 'And the delivery address?');
+  /* At the top of the marketing person's dashboard, to answer there. */
+  const mine = (await api('/api/departments/mine/dashboard', { as: 'nandhini' })).json.data.attention;
+  assert.ok(mine.questions.some((row) => row._id === String(question._id)), 'the question is at the top for marketing');
+  assert.equal(mine.questions.find((row) => row._id === String(question._id)).parentTask.department, 'order_confirmation');
   const answered = await api(`/api/workspace/todos/${question._id}/done`, { method: 'POST', as: 'nandhini', body: { note: 'Tiruppur unit — 33AABCS1429P1ZQ' } });
   assert.equal(answered.status, 200, answered.json.message);
   const back = await Todo.findById(soTask._id);
   assert.equal(back.status, 'preparing', 'back where it was before the question');
   assert.match(back.updates.at(-1).note, /Clarified by Nandhini S: Tiruppur unit/);
   assert.equal(await Todo.countDocuments({ title: /^Done: SO Clarification/ }), 0, 'the answer is on the SO task, not a new to-do');
+
+  /* The answer is at the top of the SO team's dashboard until somebody there acts on it. */
+  const theirs = (await api('/api/departments/mine/dashboard', { as: 'priya' })).json.data.attention;
+  const reply = theirs.replies.find((row) => row._id === soTask._id);
+  assert.ok(reply, 'the reply is highlighted for the SO team');
+  assert.match(reply.attention.note, /Tiruppur unit/);
+  assert.equal(reply.attention.by.name, 'Nandhini S');
+  assert.equal((await api('/api/departments/mine/dashboard', { as: 'nandhini' })).json.data.attention.questions.length, 0, 'answered, so gone from marketing');
+  assert.equal((await api(`/api/workspace/todos/${soTask._id}/seen`, { method: 'POST', as: 'siva' })).status, 403);
+  const seen = await api(`/api/workspace/todos/${soTask._id}/seen`, { method: 'POST', as: 'priya' });
+  assert.equal(seen.status, 200, seen.json.message);
+  assert.equal((await api('/api/departments/mine/dashboard', { as: 'priya' })).json.data.attention.replies.length, 0, '"Got it" clears it');
 });
 
 test('the SO team corrects the contact details, and only those', async () => {
