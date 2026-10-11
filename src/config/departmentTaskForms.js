@@ -154,7 +154,7 @@ export const TASK_FORMS = {
     ],
   },
   lr_copy: {
-    team: 'Dispatch Team',
+    team: 'Dispatch Team — LR Copy',
     asks: [{ key: 'invoiceNumber', label: 'Invoice number', from: 'order.invoiceNumber' }],
   },
   team_payment_followup: paymentFollowUp,
