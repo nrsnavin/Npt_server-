@@ -673,3 +673,44 @@ test('a customer keeps its area and landmark; Dispatch sees its open requests in
   const prefill = (await api(`/api/workspace/team-tasks/prefill?customer=${a._id}`, { as: 'nandhini' })).json.data;
   assert.match(prefill.customer.delivery, /12 Mill Road, Kumar Nagar, near Kumar Nagar bus stop, Tiruppur, 641603/, 'the dispatch form’s route line names the landmark');
 });
+
+test('a team task’s form offers the registers: hanger models from the mould register, materials, hooks, clips, prints', async () => {
+  const db = mongoose.connection.db;
+  await db.collection('moulds').insertMany([
+    { mouldCode: 'NPT-400S', name: 'Shirt hanger 400', status: 'active', isActive: true },
+    { mouldCode: 'NPT-OLD1', name: 'Retired tool', status: 'retired', isActive: true },
+  ]);
+  await db.collection('materials').insertMany([
+    { name: 'PP', colour: 'Black', type: 'pp', ratePerKg: 110, isActive: true },
+    { name: 'HIPS White', colour: 'White', type: 'hips', ratePerKg: 130, isActive: true },
+  ]);
+  await db.collection('components').insertMany([
+    { kind: 'hook', name: 'Chrome hook 45 mm', ratePerPiece: 0.4, isActive: true },
+    { kind: 'clip', name: 'Pinch clip', ratePerPiece: 0.3, isActive: true },
+    { kind: 'print', name: 'Logo print 1 colour', ratePerPiece: 0.2, isActive: true },
+    { kind: 'hook', name: 'Old hook', ratePerPiece: 0.4, isActive: false },
+  ]);
+  const { registers } = (await api('/api/workspace/team-tasks/prefill', { as: 'nandhini' })).json.data;
+  assert.ok(registers.moulds.includes('NPT-400S · Shirt hanger 400'), 'the code and what the hanger is');
+  assert.ok(!registers.moulds.some((entry) => entry.startsWith('NPT-OLD1')), 'a retired tool is not offered');
+  assert.ok(registers.materials.includes('PP Black'));
+  assert.ok(registers.materials.includes('HIPS White'), 'not "HIPS White White"');
+  assert.deepEqual([registers.hooks.includes('Chrome hook 45 mm'), registers.hooks.includes('Old hook')], [true, false]);
+  assert.ok(registers.clips.includes('Pinch clip'));
+  assert.ok(registers.prints.includes('Logo print 1 colour'));
+
+  const { buttons } = (await api('/api/handoffs', { as: 'nandhini' })).json.data;
+  const sample = buttons.find((button) => button.key === 'sample_request').asks[0].columns;
+  assert.deepEqual(Object.fromEntries(sample.filter((column) => column.register).map((column) => [column.key, column.register])),
+    { model: 'moulds', material: 'materials', hook: 'hooks', clip: 'clips', print: 'prints' });
+  assert.equal(buttons.find((button) => button.key === 'ask_edd').asks.find((field) => field.key === 'model').register, 'moulds');
+
+  const sent = await api('/api/workspace/team-tasks', {
+    method: 'POST', as: 'nandhini',
+    body: { kind: 'sample_request', note: 'Trial pieces for the fair', brief: { items: [{ model: 'NPT-400S · Shirt hanger 400', material: 'PP Black', hook: 'Chrome hook 45 mm', clip: 'Pinch clip', print: 'Logo print 1 colour', quantity: '3' }] } },
+  });
+  assert.equal(sent.status, 201, sent.json.message);
+  assert.deepEqual((await Todo.findById(sent.json.data.task._id)).brief.items[0], {
+    model: 'NPT-400S · Shirt hanger 400', material: 'PP Black', hook: 'Chrome hook 45 mm', clip: 'Pinch clip', print: 'Logo print 1 colour', quantity: '3',
+  });
+});

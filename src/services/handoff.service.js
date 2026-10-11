@@ -572,7 +572,35 @@ export async function teamTaskPrefill(customerId) {
       };
     }
   }
-  return { customer, items: [], modelList: [], models: '', materials: '', quantity: '', targetPrice: '', order: { paymentTerms: '', invoiceNumber: '' }, members };
+  return {
+    customer, items: [], modelList: [], models: '', materials: '', quantity: '', targetPrice: '', order: { paymentTerms: '', invoiceNumber: '' }, members,
+    /* No enquiry to fill the models and parts from: the registers, as dropdowns. */
+    registers: await registerLists(),
+  };
+}
+
+/** The registers a team task's form picks from: hanger models (moulds), materials, hooks, clips, prints. */
+export async function registerLists() {
+  const [{ default: Mould }, { default: Material }, { default: Component }] = await Promise.all([
+    import('../models/Mould.js'), import('../models/Material.js'), import('../models/Component.js'),
+  ]);
+  const [moulds, materials, parts] = await Promise.all([
+    Mould.find({ isActive: { $ne: false }, status: { $ne: 'retired' } }).select('mouldCode name').sort({ mouldCode: 1 }).lean(),
+    Material.find({ isActive: { $ne: false } }).select('name colour').sort({ name: 1 }).lean(),
+    Component.find({ isActive: { $ne: false }, kind: { $in: ['hook', 'clip', 'print'] } }).select('kind name').sort({ name: 1 }).lean(),
+  ]);
+  const unique = (list) => [...new Set(list.filter(Boolean))];
+  /* "PP Black" — but "HIPS White", not "HIPS White White", when the resin's name already says it. */
+  const materialName = (row) => (row.colour && !row.name.toLowerCase().includes(row.colour.toLowerCase()) ? `${row.name} ${row.colour}` : row.name);
+  const ofKind = (kind) => unique(parts.filter((row) => row.kind === kind).map((row) => row.name));
+  return {
+    /* "M-101 · 380mm slim shirt hanger" — the code the plant uses, and what the hanger is. */
+    moulds: unique(moulds.map((row) => [row.mouldCode, row.name].filter(Boolean).join(' · '))),
+    materials: unique(materials.map(materialName)),
+    hooks: ofKind('hook'),
+    clips: ofKind('clip'),
+    prints: ofKind('print'),
+  };
 }
 
 /**

@@ -24,6 +24,8 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
  *                  quantity, order.paymentTerms, items (rows), modelList (choices), modelList.0
  *                  (the first model) …
  *   optionsFrom    a choice whose options come from the prefill (the enquiry's own models)
+ *   register       a list from a register — moulds, materials, hooks, clips, prints — offered
+ *                  as a dropdown when there is no enquiry to fill it from (a team task)
  *   section        a heading drawn before the question
  *
  * `team` names the department in the form's Workflow / Department list; `option` makes two
@@ -56,19 +58,19 @@ const PRIORITY_DEFAULTS = { priority: true, requiredDate: true };
 
 /* The enquiry's first model, its material and colour, and the order's quantity — all editable. */
 const modelAndQuantity = [
-  { key: 'model', label: 'Model name', type: 'choice', optionsFrom: 'modelList', from: 'modelList.0', placeholder: 'Select model only if required' },
-  { key: 'material', label: 'Material / colour', from: 'materials', placeholder: 'Material and colour from the enquiry' },
+  { key: 'model', label: 'Model name', type: 'choice', optionsFrom: 'modelList', from: 'modelList.0', register: 'moulds', placeholder: 'Select model only if required' },
+  { key: 'material', label: 'Material / colour', from: 'materials', register: 'materials', placeholder: 'Material and colour from the enquiry' },
   { key: 'quantity', label: 'Quantity', type: 'number', from: 'quantity', placeholder: 'Example: 10,000 pcs' },
 ];
 
 /** The rows of a sample request: each model with its parts, the colour rule and how many. */
 const SAMPLE_COLUMNS = [
-  { key: 'model', label: 'Mould / model', required: true },
-  { key: 'material', label: 'Material' },
+  { key: 'model', label: 'Mould / model', required: true, register: 'moulds' },
+  { key: 'material', label: 'Material', register: 'materials' },
   { key: 'colour', label: 'Colour' },
-  { key: 'hook', label: 'Hook' },
-  { key: 'clip', label: 'Clip' },
-  { key: 'print', label: 'Print' },
+  { key: 'hook', label: 'Hook', register: 'hooks' },
+  { key: 'clip', label: 'Clip', register: 'clips' },
+  { key: 'print', label: 'Print', register: 'prints' },
   { key: 'colourType', label: 'Colour is', type: 'choice', options: ['Preferred colour', 'Compulsory colour'] },
   { key: 'quantity', label: 'Pcs', type: 'number' },
 ];
@@ -127,8 +129,8 @@ export const TASK_FORMS = {
     team: 'Quotation Team',
     note: { label: 'Additional instruction / Question', placeholder: 'Target price, packing or anything the costing should know' },
     asks: [
-      { key: 'models', label: 'Hanger model(s)', from: 'models' },
-      { key: 'material', label: 'Material / colour / quality', from: 'materials' },
+      { key: 'models', label: 'Hanger model(s)', from: 'models', register: 'moulds' },
+      { key: 'material', label: 'Material / colour / quality', from: 'materials', register: 'materials' },
       { key: 'quantity', label: 'Quantity', type: 'number', from: 'quantity' },
       { key: 'targetPrice', label: 'Buyer’s target price (₹ per piece)', type: 'number', from: 'targetPrice' },
     ],
@@ -137,7 +139,7 @@ export const TASK_FORMS = {
     team: 'Quotation Team',
     note: { label: 'Additional instruction / Question', placeholder: 'What the buyer said about the price' },
     asks: [
-      { key: 'models', label: 'Hanger model(s)', from: 'models' },
+      { key: 'models', label: 'Hanger model(s)', from: 'models', register: 'moulds' },
       { key: 'targetPrice', label: 'Buyer’s target price (₹ per piece)', type: 'number', from: 'targetPrice' },
     ],
   },
@@ -156,8 +158,8 @@ export const TASK_FORMS = {
     asks: [
       { key: 'contactPerson', label: 'Contact person', section: 'Company & contact details', from: 'customer.contactPerson', placeholder: 'Name of person to call for SO / GST', editable: true },
       { key: 'mobile', label: 'Mobile number', from: 'customer.mobile', editable: true },
-      { key: 'models', label: 'Hanger model(s)', section: 'Sales order details', from: 'models' },
-      { key: 'material', label: 'Material / colour / quality', from: 'materials', placeholder: 'Material from enquiry; editable' },
+      { key: 'models', label: 'Hanger model(s)', section: 'Sales order details', from: 'models', register: 'moulds' },
+      { key: 'material', label: 'Material / colour / quality', from: 'materials', register: 'materials', placeholder: 'Material from enquiry; editable' },
       { key: 'quantity', label: 'Order quantity', type: 'number', from: 'quantity', placeholder: 'Quantity from enquiry; editable' },
       { key: 'paymentTerms', label: 'Payment terms', type: 'choice', options: PAYMENT_TERMS, from: 'order.paymentTerms', placeholder: 'Select payment terms' },
     ],
@@ -223,8 +225,8 @@ export const TASK_FORMS = {
       { key: 'closed', label: 'Task Closed', done: true },
     ],
     asks: [
-      { key: 'model', label: 'Model / mould', type: 'choice', optionsFrom: 'modelList', from: 'modelList.0', placeholder: 'Select the model' },
-      { key: 'material', label: 'Material / colour', from: 'materials' },
+      { key: 'model', label: 'Model / mould', type: 'choice', optionsFrom: 'modelList', from: 'modelList.0', register: 'moulds', placeholder: 'Select the model' },
+      { key: 'material', label: 'Material / colour', from: 'materials', register: 'materials' },
       { key: 'problem', label: 'What is wrong with the tool', required: true },
     ],
   },
