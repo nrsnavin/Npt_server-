@@ -181,3 +181,17 @@ export const KIND_FOR_STAGE = {
   audit: 'gst_invoice_audit',
   my_payment_followup: 'my_payment_followup',
 };
+
+/**
+ * What clicking a stage tile on the enquiry sends: the tile is the department, and clicking it
+ * forwards the enquiry there [web: components/DepartmentDesk.jsx]. The stage's own button,
+ * except where that one is not for sending: the first stage hands it back to its marketing
+ * person, and Quality's tile asks for the check before dispatch rather than an issue.
+ * Team Payment Follow-up stays a side request — Payment Collection chases the money while the
+ * department that has the job keeps it.
+ */
+export const TILE_KIND = {
+  ...KIND_FOR_STAGE,
+  enquiry: 'back_to_marketing',
+  quality: 'quality_check',
+};

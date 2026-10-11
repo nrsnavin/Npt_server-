@@ -5,7 +5,7 @@ import { inDepartment, isManagement } from '../utils/departments.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { transactional } from '../utils/transaction.js';
 import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
-import { HANDOFFS, movesEnquiry } from '../config/handoffs.js';
+import { HANDOFFS, TILE_KIND, movesEnquiry } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
@@ -36,7 +36,11 @@ export const handoffCatalogue = asyncHandler(async (req, res) => {
   res.json({
     success: true,
     data: {
-      stages: [...STAGES, { key: CLOSED_STAGE, number: null, label: 'Closed', department: null }],
+      /* `kind` is the button a stage's tile sends, so clicking the department forwards the enquiry. */
+      stages: [
+        ...STAGES.map((stage) => ({ ...stage, kind: TILE_KIND[stage.key] || null })),
+        { key: CLOSED_STAGE, number: null, label: 'Closed', department: null, kind: null },
+      ],
       /* `moves` says whether a button hands the enquiry over; `hidden` ones are never drawn. */
       buttons: HANDOFFS.map((button) => ({ ...button, moves: movesEnquiry(button) })),
       departments: DEPARTMENTS.map(({ key, label }) => ({ key, label })),
