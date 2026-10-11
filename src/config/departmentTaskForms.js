@@ -45,6 +45,8 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
  *                   enquiry — `edd` (Production's) or `erd` (the mould's ready date)
  *   notifyStatus    every move is shown to the enquiry's marketing person and every Admin,
  *                   under "Needs your action" [models/TaskNotice.js]
+ *   actions         buttons on the task that raise another department's task on the enquiry
+ *                   (Dispatch's Ask Production) — `kind`, `label`, and the `status` it moves to
  * A question marked `editable` may be corrected by the department working the task.
  */
 
@@ -73,6 +75,8 @@ const PAYMENT_TERMS = [
   'Credit — nothing before dispatch', '100% advance', '50% advance, 50% against delivery',
   '50% advance, 50% before dispatch', '30% advance, 70% before dispatch', '100% against dispatch',
 ];
+
+const DISPATCH_SCHEDULES = ['Today Dispatch', 'Today Evening Dispatch', 'Tomorrow Dispatch', 'Tomorrow First Dispatch', 'Top Most Urgent Dispatch'];
 
 const paymentFollowUp = {
   title: 'Payment Follow-up Tracker',
@@ -216,11 +220,31 @@ export const TASK_FORMS = {
     team: 'Dispatch Team',
     priority: false,
     note: { label: 'Dispatch instruction / vehicle details', placeholder: 'Transport, delivery point or special dispatch instruction' },
+    remarkRequired: true,
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'Vehicle, LR, quantity sent or what is holding it' },
+    statuses: [
+      { key: 'received', label: 'Dispatch Request Received' },
+      ...DISPATCH_SCHEDULES.map((label) => ({ key: label.toLowerCase().replace(/[^a-z]+/g, '_'), label })),
+      { key: 'asked_production', label: 'Asked Production Readiness' },
+      { key: 'not_ready', label: 'Goods Not Yet Ready', issue: true },
+      { key: 'waiting_vehicle', label: 'Goods Ready — Waiting for Vehicle' },
+      { key: 'party_collect', label: 'Party Will Collect' },
+      { key: 'part_dispatched', label: 'Part Quantity Dispatched' },
+      { key: 'fully_dispatched', label: 'Fully Dispatched' },
+      { key: 'dispatched', label: 'Dispatched' },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+    /* Asked from the dispatch task itself: each raises that department's task on the enquiry. */
+    actions: [
+      { kind: 'ask_edd', label: 'Ask Production', status: 'asked_production' },
+      { kind: 'ask_assembling_edd', label: 'Ask Assembling Readiness' },
+    ],
     asks: [
       ...modelAndQuantity,
-      { key: 'schedule', label: 'Dispatch schedule', type: 'choice', options: ['Today Dispatch', 'Tomorrow Dispatch', 'This Week', 'On the required date'] },
-      { key: 'booking', label: 'Booking / Collection', type: 'choice', options: ['Normal Booking', 'Door Delivery', 'Customer Collection', 'Courier'] },
-      { key: 'piNumber', label: 'PI Number', placeholder: 'Enter PI number' },
+      { key: 'schedule', label: 'Dispatch schedule', type: 'choice', options: DISPATCH_SCHEDULES },
+      { key: 'booking', label: 'Booking / Collection', type: 'choice', options: ['Normal Booking', 'Book Before 4 PM', 'Book Before 7 PM', 'Party Will Collect', 'Local Delivery'] },
+      { key: 'piNumber', label: 'PI Number (optional)', placeholder: 'Enter PI number' },
       { key: 'delivery', label: 'Delivery contact & vehicle route', type: 'info', from: 'customer.delivery' },
     ],
   },

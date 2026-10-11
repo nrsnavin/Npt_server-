@@ -11,7 +11,7 @@ import { HANDOFFS, TILE_KIND } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  attentionFor, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
+  askFromTask, attentionFor, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
   updateHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
@@ -159,6 +159,17 @@ export const handoffSendBack = asyncHandler(transactional(async (req, res) => {
 export const handoffStatus = asyncHandler(transactional(async (req, res) => {
   const task = await setTaskStatus(await taskFor(req), req.user, req.body);
   await answer(res, task);
+}));
+
+/* Dispatch's "Ask Production": that department's task, raised from this one. */
+export const handoffAsk = asyncHandler(transactional(async (req, res) => {
+  const { task, raised, addedTo } = await askFromTask(await taskFor(req), req.user, req.body);
+  res.json({
+    success: true,
+    data: await task.populate(TASK_POPULATE),
+    raised: { _id: raised._id, title: raised.title, department: raised.department },
+    addedTo,
+  });
 }));
 
 /* A department's moves on this person's enquiries [handoff.service `noticeStatus`]. */

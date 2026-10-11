@@ -391,7 +391,7 @@ async function finishOpenTasks(enquiryId, kinds, { fields = {}, note, user }) {
  * or costing themselves.
  */
 export async function moveEnquiry({
-  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask, addToOpen = false,
+  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask, addToOpen = false, keepStage = false,
 }) {
   const handoff = findHandoff(kind);
   if (!handoff?.department || handoff.stage === CLOSED_STAGE) fail('That button does not raise a department task');
@@ -450,7 +450,8 @@ export async function moveEnquiry({
     priority: PRIORITIES.includes(priority) ? priority : 'normal',
     link: `/enquiries/${enquiry._id}`,
   });
-  await moveStage(enquiry, handoff.stage, { user, task, note: text || handoff.label });
+  /* Asked from another department's task (Dispatch asking Production), the enquiry stays where it is. */
+  if (!keepStage) await moveStage(enquiry, handoff.stage, { user, task, note: text || handoff.label });
   if (openRecords) await openWorkRecord(kind, enquiry, asked);
 
   await publish(EVENTS.HANDOFF_SENT, { task, enquiry, by: user });
@@ -649,17 +650,7 @@ export async function completeHandoff(task, user, { note, fields = {}, next }) {
     return Todo.findById(task._id);
   }
 
-  /* A task finished by uploading the work (the sales order) is not ticked off without it. */
-  const byUpload = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.pdf && entry.done);
-  if (byUpload && !task.resultFile) fail(`Upload the PDF to finish this task — it is marked ${byUpload.label} then`);
-
-  /* Dispatch's task is done when the balance has gone, lot by lot as Updates until then. */
-  if (task.kind === 'invoice_dispatch') {
-    const left = await dispatchBalance(task.enquiry?._id || task.enquiry);
-    if (left.length) {
-      fail(`${describeBalance(left)} still to send. Post each lot as an Update and mark it done once the balance has gone — or short-close the order first.`);
-    }
-  }
+  await assertMayFinish(task);
 
   const handoff = findHandoff(task.kind);
   const kept = keptFields(task.kind, fields);
@@ -684,6 +675,21 @@ export async function completeHandoff(task, user, { note, fields = {}, next }) {
   }
   await publish(EVENTS.HANDOFF_DONE, { task, by: user });
   return task;
+}
+
+/** What has to be true before a task is finished — checked before anything about it changes. */
+async function assertMayFinish(task) {
+  /* A task finished by uploading the work (the sales order) is not ticked off without it. */
+  const byUpload = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.pdf && entry.done);
+  if (byUpload && !task.resultFile) fail(`Upload the PDF to finish this task — it is marked ${byUpload.label} then`);
+
+  /* Dispatch's task is done when the balance has gone, lot by lot as Updates until then. */
+  if (task.kind === 'invoice_dispatch') {
+    const left = await dispatchBalance(task.enquiry?._id || task.enquiry);
+    if (left.length) {
+      fail(`${describeBalance(left)} still to send. Post each lot as an Update and mark it done once the balance has gone — or short-close the order first.`);
+    }
+  }
 }
 
 /* ------------------------------ A department's own workflow ------------------------------ */
@@ -726,6 +732,8 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   if (form.remarkRequired && text.length < 3) fail(`Add a remark to move it to ${step.label}`);
   const readyDate = statusDate(form, step, date);
   if (task.status === status && !readyDate) return task;
+  /* Refused before the status moves, so a refusal leaves the task where it was. */
+  if (step.done) await assertMayFinish(task);
 
   if (step.raises) {
     const enquiry = await enquiryOfTask(task);
@@ -750,6 +758,39 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
   if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { [dateField]: readyDate } : {} });
   return task;
+}
+
+/**
+ * A department asks another from its own task — Dispatch's "Ask Production" [config/
+ * departmentTaskForms.js `actions`]: that department's task is raised on the enquiry (or the
+ * request added to the one it already has), this task says so, and — where the action names a
+ * status — moves to it, with the enquiry's marketing person and Admin told as for any move.
+ */
+export async function askFromTask(task, user, { kind, note, brief, priority, requiredDate }) {
+  openHandoff(task, user);
+  const form = findHandoff(task.kind)?.form || {};
+  const action = (form.actions || []).find((entry) => entry.kind === kind);
+  if (!action) fail('This task does not ask that department');
+  const text = String(note || '').trim();
+  if (text.length < 3) fail(`Say what you need — ${action.label}`);
+  const enquiry = await enquiryOfTask(task);
+  const asking = departmentName(task.department);
+  const raised = await moveEnquiry({
+    enquiry, kind, note: `${asking} asks (${user.name}): ${text}`, user, system: true, openRecords: false,
+    brief, priority, requiredDate, addToOpen: true, keepStage: true,
+  });
+  const step = action.status && statusesOf(task).find((entry) => entry.key === action.status);
+  const said = `${action.label}: ${text}`;
+  task.updates = [...(task.updates || []), { note: said, by: user._id, at: new Date() }];
+  if (step) {
+    task.status = step.key;
+    task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: said, by: user._id, at: new Date() }];
+  }
+  if (!task.user) task.user = user._id;
+  await task.save();
+  if (step && form.notifyStatus) await noticeStatus(task, user, { step, note: said });
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  return { task, raised, addedTo: Boolean(raised.$locals?.addedTo) };
 }
 
 const indiaDay = (date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(date);

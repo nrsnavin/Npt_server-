@@ -39,6 +39,15 @@ export const taskStatusSchema = z.object({
   date: z.string().trim().max(10).optional(),
 });
 
+/** Another department asked from this task — Dispatch's "Ask Production"; checked by the service. */
+export const taskAskSchema = z.object({
+  kind: z.string().trim().min(1).max(40),
+  note: z.string().trim().max(2000).optional(),
+  brief: z.record(z.string(), z.unknown()).optional(),
+  priority: z.enum(['low', 'normal', 'high']).optional(),
+  requiredDate: z.string().trim().max(40).optional().or(z.literal('')),
+});
+
 /** Correcting what the task was told — only the questions marked `editable`; checked by the service. */
 export const taskBriefSchema = z.object({
   brief: z.record(z.string(), z.unknown()),
