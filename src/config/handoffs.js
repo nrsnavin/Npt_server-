@@ -133,6 +133,14 @@ const BUTTONS = [
     hint: 'Accounts to clarify the account',
   },
   {
+    /*
+     * Raised by the SO team's "Needs Clarification" [config/departmentTaskForms.js po_so]: the
+     * enquiry's marketing person answers, and the answer goes back onto the SO task.
+     */
+    key: 'so_clarification', label: 'SO Clarification', department: 'owner', stage: null, hidden: true,
+    hint: 'Sales / SO needs an answer before the sales order can be made',
+  },
+  {
     key: 'request_prt_visit', label: 'Request PRT Visit', department: 'management', stage: null,
     hint: 'Ask for a visit',
     records: [{ key: 'visitDate', label: 'Visit date', type: 'date' }],

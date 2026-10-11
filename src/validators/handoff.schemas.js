@@ -30,6 +30,17 @@ export const handoffUpdateSchema = z.object({
   fields,
 });
 
+/** A department's own status on its task [config/departmentTaskForms.js `statuses`]. */
+export const taskStatusSchema = z.object({
+  status: z.string().trim().min(1).max(40),
+  note: z.string().trim().max(2000).optional(),
+});
+
+/** Correcting what the task was told — only the questions marked `editable`; checked by the service. */
+export const taskBriefSchema = z.object({
+  brief: z.record(z.string(), z.unknown()),
+});
+
 export const handoffReturnSchema = z.object({
   reason: z.string().trim().min(5, 'Say why it is being sent back').max(500),
 });

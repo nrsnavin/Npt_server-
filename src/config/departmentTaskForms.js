@@ -27,6 +27,16 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
  *
  * `team` names the department in the form's Workflow / Department list; `option` makes two
  * buttons one entry there (the follow-up owner then picks between them).
+ *
+ * `statuses` is the department's own workflow on the task — the Status update list on its
+ * dashboard, first one where a new task starts [handoff.service `setTaskStatus`]. Each may say:
+ *   comment    a comment is needed to choose it
+ *   raises     a task it raises for the enquiry's marketing person, with the comment — their
+ *              reply comes back onto this task and the status returns to where it was
+ *   pdf        it is reached only by uploading the PDF of the work (the sales order)
+ *   done       reaching it finishes the task
+ *   next       the department task raised once it is done (the enquiry moves on to it)
+ * A question marked `editable` may be corrected by the department working the task.
  */
 
 const PRIORITY_DEFAULTS = { priority: true, requiredDate: true };
@@ -119,9 +129,16 @@ export const TASK_FORMS = {
   po_so: {
     team: 'SO Team',
     note: { label: 'Additional instruction / Question', placeholder: 'Prepare and send Sales Order to this company' },
+    statuses: [
+      { key: 'waiting', label: 'SO Waiting' },
+      { key: 'preparing', label: 'SO Preparing' },
+      { key: 'clarification', label: 'Needs Clarification', comment: true, raises: 'so_clarification' },
+      { key: 'prepared', label: 'SO Prepared', pdf: true, done: true, next: 'ask_edd' },
+    ],
+    resultLabel: 'Upload Sales Order PDF',
     asks: [
-      { key: 'contactPerson', label: 'Contact person', section: 'Company & contact details', from: 'customer.contactPerson', placeholder: 'Name of person to call for SO / GST' },
-      { key: 'mobile', label: 'Mobile number', from: 'customer.mobile' },
+      { key: 'contactPerson', label: 'Contact person', section: 'Company & contact details', from: 'customer.contactPerson', placeholder: 'Name of person to call for SO / GST', editable: true },
+      { key: 'mobile', label: 'Mobile number', from: 'customer.mobile', editable: true },
       { key: 'models', label: 'Hanger model(s)', section: 'Sales order details', from: 'models' },
       { key: 'material', label: 'Material / colour / quality', from: 'materials', placeholder: 'Material from enquiry; editable' },
       { key: 'quantity', label: 'Order quantity', type: 'number', from: 'quantity', placeholder: 'Quantity from enquiry; editable' },

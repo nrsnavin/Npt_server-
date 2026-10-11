@@ -87,6 +87,21 @@ const todoSchema = new mongoose.Schema(
     brief: { type: mongoose.Schema.Types.Mixed, default: undefined },
     /** The PDF sent with the task, if one was [routes: POST /enquiries/:id/handoffs/:taskId/attachment]. */
     attachment: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+    /** The PDF of the work itself — the sales order — uploaded by the department to finish the task. */
+    resultFile: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+    /** Where the department has got to, in its own words [config/departmentTaskForms.js `statuses`]. */
+    status: { type: String, trim: true },
+    statusHistory: {
+      type: [new mongoose.Schema({
+        status: String,
+        note: { type: String, trim: true, maxlength: 2000 },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        at: { type: Date, default: Date.now },
+      }, { _id: false })],
+      default: undefined,
+    },
+    /** The task this one was raised from — a clarification asked by the SO team. */
+    parentTask: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
     /** Done (with what they recorded) or sent back (with why), by whom and when, and where it went next. */
     outcome: {
       result: { type: String, enum: ['done', 'returned', 'moved'] },

@@ -391,7 +391,7 @@ async function finishOpenTasks(enquiryId, kinds, { fields = {}, note, user }) {
  * or costing themselves.
  */
 export async function moveEnquiry({
-  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [],
+  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask,
 }) {
   const handoff = findHandoff(kind);
   if (!handoff?.department || handoff.stage === CLOSED_STAGE) fail('That button does not raise a department task');
@@ -442,6 +442,9 @@ export async function moveEnquiry({
     title: `${handoff.label} — ${await aboutWithName(enquiry)}`,
     notes: text || undefined,
     ...(Object.keys(asked).length ? { brief: asked } : {}),
+    /* A department with its own workflow starts the task on its first status. */
+    ...(form.statuses?.length ? { status: form.statuses[0].key, statusHistory: [{ status: form.statuses[0].key, by: user?._id, at: new Date() }] } : {}),
+    ...(parentTask ? { parentTask } : {}),
     dueDate: due || dueFor(handoff, enquiry),
     priority: PRIORITIES.includes(priority) ? priority : 'normal',
     link: `/enquiries/${enquiry._id}`,
@@ -613,6 +616,10 @@ export async function completeHandoff(task, user, { note, fields = {}, next }) {
     return Todo.findById(task._id);
   }
 
+  /* A task finished by uploading the work (the sales order) is not ticked off without it. */
+  const byUpload = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.pdf && entry.done);
+  if (byUpload && !task.resultFile) fail(`Upload the PDF to finish this task — it is marked ${byUpload.label} then`);
+
   /* Dispatch's task is done when the balance has gone, lot by lot as Updates until then. */
   if (task.kind === 'invoice_dispatch') {
     const left = await dispatchBalance(task.enquiry?._id || task.enquiry);
@@ -633,12 +640,128 @@ export async function completeHandoff(task, user, { note, fields = {}, next }) {
   await task.save();
 
   const details = (handoff?.records || []).filter((field) => kept[field.key]).map((field) => `${field.label}: ${kept[field.key]}`);
-  await backToSender(task, {
-    user,
-    title: `Done: ${task.title} — next step?`,
-    notes: [`${user.name}: ${text}`, ...details].join('\n'),
-  });
+  /* A clarification's answer goes back onto the task that asked; anything else, to its sender. */
+  if (task.parentTask) await answerParent(task, user, text);
+  else {
+    await backToSender(task, {
+      user,
+      title: `Done: ${task.title} — next step?`,
+      notes: [`${user.name}: ${text}`, ...details].join('\n'),
+    });
+  }
   await publish(EVENTS.HANDOFF_DONE, { task, by: user });
+  return task;
+}
+
+/* ------------------------------ A department's own workflow ------------------------------ */
+
+const statusesOf = (task) => findHandoff(task.kind)?.form?.statuses || [];
+
+/** The answer to a clarification, on the task that asked — and that task back where it was. */
+async function answerParent(clarification, user, text) {
+  const parent = await Todo.findById(clarification.parentTask);
+  if (!parent || parent.completed) return;
+  const asking = statusesOf(parent).find((entry) => entry.raises === clarification.kind);
+  parent.updates = [...(parent.updates || []), { note: `Clarified by ${user.name}: ${text}`, by: user._id, at: new Date() }];
+  if (asking && parent.status === asking.key) {
+    /* Back to whatever it was before the question was asked. */
+    const before = [...(parent.statusHistory || [])].reverse().find((entry) => entry.status !== asking.key)?.status
+      || statusesOf(parent)[0]?.key;
+    parent.status = before;
+    parent.statusHistory = [...(parent.statusHistory || []), { status: before, note: 'Clarification answered', by: user._id, at: new Date() }];
+  }
+  await parent.save();
+  await publish(EVENTS.HANDOFF_UPDATED, { task: parent, by: user });
+}
+
+/**
+ * The department moves its task along its own workflow [config/departmentTaskForms.js
+ * `statuses`]. A status that needs a comment asks for one; one that raises a task asks the
+ * enquiry's marketing person, due today, with the comment. The status reached by uploading the
+ * work (SO Prepared) is not chosen here — see `finishWithResult`.
+ */
+export async function setTaskStatus(task, user, { status, note }) {
+  openHandoff(task, user);
+  const step = statusesOf(task).find((entry) => entry.key === status);
+  if (!step) fail('That is not one of this task’s statuses');
+  if (step.pdf) fail(`Upload the PDF to mark it ${step.label}`);
+  const text = String(note || '').trim();
+  if (step.comment && text.length < 3) fail(`Say what is needed — ${step.label} asks for a comment`);
+  if (task.status === status) return task;
+
+  if (step.raises) {
+    const enquiry = await enquiryOfTask(task);
+    await moveEnquiry({
+      enquiry, kind: step.raises, note: `${user.name}: ${text}`, user, system: true, openRecords: false,
+      requiredDate: new Date(), parentTask: task._id,
+    });
+  }
+  task.status = status;
+  task.statusHistory = [...(task.statusHistory || []), { status, note: text || undefined, by: user._id, at: new Date() }];
+  task.updates = [...(task.updates || []), { note: text ? `${step.label}: ${text}` : step.label, by: user._id, at: new Date() }];
+  if (!task.user) task.user = user._id;
+  await task.save();
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  return task;
+}
+
+/** The status reached by uploading the work, checked before the file is stored. */
+export function resultStepFor(task, user) {
+  openHandoff(task, user);
+  const step = statusesOf(task).find((entry) => entry.pdf);
+  if (!step) fail('This task does not take a PDF of the work');
+  return step;
+}
+
+/**
+ * The work uploaded (the sales order as a PDF): the task reaches that status and is done, and
+ * the department task that follows is raised — the enquiry moves on to Production. When the
+ * next one is refused (the advance not in yet), the task is still done and the reason returned;
+ * Payment Collection has been asked for the money.
+ */
+export async function finishWithResult(task, user, { attachmentId, note }) {
+  const step = resultStepFor(task, user);
+  task.resultFile = attachmentId;
+  task.status = step.key;
+  task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: note || undefined, by: user._id, at: new Date() }];
+  await task.save();
+  const done = step.done
+    ? await completeHandoff(task, user, { note: String(note || '').trim() || `${step.label} — PDF uploaded` })
+    : task;
+  let next = null;
+  let nextProblem = null;
+  if (step.next) {
+    const enquiry = await enquiryOfTask(task);
+    try {
+      next = await moveEnquiry({ enquiry, kind: step.next, note: `${step.label} by ${user.name}`, user, system: true });
+    } catch (error) {
+      if (error?.statusCode !== 400 && error?.statusCode !== 409) throw error;
+      nextProblem = error.message;
+    }
+  }
+  return { task: done, next, nextProblem };
+}
+
+/** The department corrects what it was told — the questions marked `editable` (contact details). */
+export async function editTaskBrief(task, user, { brief = {} }) {
+  openHandoff(task, user);
+  const editable = (findHandoff(task.kind)?.asks || []).filter((field) => field.editable);
+  if (!editable.length) fail('Nothing on this task can be corrected here');
+  const current = { ...(task.brief || {}) };
+  const changed = [];
+  for (const field of editable) {
+    if (!(field.key in brief)) continue;
+    const value = keptAnswer(field, brief[field.key]);
+    if ((current[field.key] || '') === value) continue;
+    if (value) current[field.key] = value;
+    else delete current[field.key];
+    changed.push(field.label);
+  }
+  if (!changed.length) return task;
+  task.brief = current;
+  task.markModified('brief');
+  task.updates = [...(task.updates || []), { note: `Corrected: ${changed.join(', ')}`, by: user._id, at: new Date() }];
+  await task.save();
   return task;
 }
 
@@ -952,6 +1075,7 @@ export async function departmentFigures(department, { now = new Date() } = {}) {
 
 const LIST_POPULATE = [
   { path: 'attachment', select: 'key filename size' },
+  { path: 'resultFile', select: 'key filename size' },
   { path: 'createdBy', select: 'name department' },
   { path: 'user', select: 'name' },
   { path: 'outcome.by', select: 'name' },
