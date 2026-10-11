@@ -56,7 +56,7 @@ test.before(async () => {
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
   }
   const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
-  const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'RR Jain Utjrsh', mobile: '9170875200', assignedTo: me } })).json.data;
+  const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'RR Jain Utjrsh', mobile: '9170875200', email: 'accounts@rrjain.in', assignedTo: me } })).json.data;
   enquiry = (await api('/api/enquiries', {
     method: 'POST', as: 'nandhini',
     body: { customer: customer._id, requirement: { modelNumber: 'UTJRSH-0' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
@@ -335,4 +335,73 @@ test('Assembly’s task moves Asked Assembling Readiness → … → Task Closed
 
   assert.equal((await moveAssembly('closed', { note: 'All 10,000 assembled' })).status, 200);
   assert.equal((await Todo.findById(task._id)).completed, true);
+});
+
+/* ------------------------------ The LR copy ------------------------------ */
+
+let lrTask;
+const PNG = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
+async function uploadResult(as, taskId, { bytes = PNG, type = 'image/png', name = 'LR-55021.png' } = {}) {
+  const form = new FormData();
+  form.append('file', new Blob([bytes], { type }), name);
+  form.append('note', 'LR 55021 · VRL Logistics');
+  const response = await fetch(`${baseUrl}/api/workspace/todos/${taskId}/result`, { method: 'POST', headers: { Authorization: `Bearer ${token[as]}` }, body: form });
+  return { status: response.status, json: await response.json().catch(() => ({})) };
+}
+
+test('the LR task moves LR Copy Awaiting → Received → Sent to Customer → Task Closed', async () => {
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'lr_copy', note: 'Send the LR to the buyer', brief: { invoiceNumber: 'INV-2026-0412' } } });
+  assert.equal(sent.status, 201, sent.json.message);
+  lrTask = await Todo.findById(sent.json.data.task._id);
+  assert.equal(lrTask.status, 'awaiting');
+  const { buttons } = (await api('/api/handoffs', { as: 'ravi' })).json.data;
+  const form = buttons.find((button) => button.key === 'lr_copy').form;
+  assert.deepEqual(form.statuses.map((entry) => entry.label), ['LR Copy Awaiting', 'LR Copy Received', 'LR Copy Sent to Customer', 'Task Closed']);
+  assert.equal(form.resultLabel, 'Upload LR Copy');
+  const chosen = await api(`/api/workspace/todos/${lrTask._id}/status`, { method: 'POST', as: 'ravi', body: { status: 'received', note: 'Got it from VRL' } });
+  assert.equal(chosen.status, 400, 'Received is reached by uploading the LR');
+});
+
+test('uploading the LR (a photo will do) sends it to the buyer by email and WhatsApp, and the task says so', async () => {
+  assert.equal((await uploadResult('ravi', lrTask._id, { bytes: Buffer.from('hello'), type: 'text/plain', name: 'lr.txt' })).status, 400, 'not a PDF or photo');
+  assert.equal((await uploadResult('nandhini', lrTask._id)).status, 403, 'Dispatch uploads it');
+
+  const uploaded = await uploadResult('ravi', lrTask._id);
+  assert.equal(uploaded.status, 200, uploaded.json.message);
+  assert.deepEqual(uploaded.json.sent.map((entry) => [entry.channel, entry.status]), [['email', 'sent'], ['whatsapp', 'sent']]);
+  assert.equal(uploaded.json.sent[0].recipient, 'accounts@rrjain.in');
+  assert.match(uploaded.json.sent[1].recipient, /9170875200$/, 'the buyer’s WhatsApp number');
+  assert.equal(uploaded.json.data.status, 'sent');
+  assert.ok(uploaded.json.data.resultFile, 'the LR is kept on the task');
+
+  const { default: CustomerMessage } = await import('../src/models/CustomerMessage.js');
+  const messages = await CustomerMessage.find({ task: lrTask._id }).lean();
+  assert.equal(messages.length, 2);
+  assert.match(messages[0].body, /LR copy attached/);
+  assert.match(messages[0].subject, /INV-2026-0412/);
+
+  const labels = (await noticesOf('nandhini')).slice(0, 2).map((notice) => notice.statusLabel);
+  assert.deepEqual(labels, ['LR Copy Sent to Customer', 'LR Copy Received'], 'marketing sees both moves');
+});
+
+test('the LR behind its signed link opens without a session, and a forged link does not', async () => {
+  const { signedPath } = await import('../src/utils/signedLink.js');
+  const { default: Attachment } = await import('../src/models/Attachment.js');
+  const file = await Attachment.findOne({ task: lrTask._id });
+  const good = await fetch(`${baseUrl}/api/public/files${signedPath('task-file', file._id, file.filename)}`);
+  assert.equal(good.status, 200);
+  assert.equal(good.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await good.arrayBuffer()), PNG);
+  const forged = signedPath('task-file', file._id, file.filename).replace(/\/[0-9a-f]{64}\//, `/${'0'.repeat(64)}/`);
+  assert.equal((await fetch(`${baseUrl}/api/public/files${forged}`)).status, 404);
+  const otherKind = signedPath('quotation-pdf', file._id, file.filename);
+  assert.equal((await fetch(`${baseUrl}/api/public/files${otherKind}`)).status, 404, 'a link signed for something else');
+});
+
+test('the sales order is still a PDF only', async () => {
+  const so = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'PO in' } });
+  assert.equal(so.status, 201, so.json.message);
+  const photo = await uploadResult('admin', so.json.data.task._id);
+  assert.equal(photo.status, 400);
+  assert.match(photo.json.message, /Attach a PDF/);
 });

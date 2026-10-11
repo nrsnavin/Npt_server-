@@ -34,6 +34,7 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
  *   raises     a task it raises for the enquiry's marketing person, with the comment — their
  *              reply comes back onto this task and the status returns to where it was
  *   pdf        it is reached only by uploading the PDF of the work (the sales order)
+ *   sent       it is reached when the uploaded work has gone to the customer (`sendResult`)
  *   done       reaching it finishes the task
  *   next       the department task raised once it is done (the enquiry moves on to it)
  *   issue      while the task is at it, the enquiry shows it as an issue (marketing's list)
@@ -268,6 +269,21 @@ export const TASK_FORMS = {
   lr_copy: {
     team: 'Dispatch Team — LR Copy',
     asks: [{ key: 'invoiceNumber', label: 'Invoice number', from: 'order.invoiceNumber' }],
+    remarkRequired: true,
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'LR number, transporter, anything the buyer asked' },
+    statuses: [
+      { key: 'awaiting', label: 'LR Copy Awaiting' },
+      { key: 'received', label: 'LR Copy Received', pdf: true },
+      { key: 'sent', label: 'LR Copy Sent to Customer', sent: true },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+    resultLabel: 'Upload LR Copy',
+    resultTitle: 'LR copy',
+    /* A PDF or a photo of the LR, 1 MB at most. */
+    resultTypes: ['application/pdf', 'image/jpeg', 'image/png'],
+    /* Uploaded, it goes to the buyer by email and WhatsApp, and the task moves to the `sent` status. */
+    sendResult: { whatsappTemplate: 'lr_copy' },
   },
   team_payment_followup: paymentFollowUp,
   my_payment_followup: paymentFollowUp,

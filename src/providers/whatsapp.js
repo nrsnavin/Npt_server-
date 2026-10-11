@@ -37,6 +37,8 @@ const TEMPLATE_SETTINGS = {
   otp: ['WHATSAPP_TEMPLATE_OTP'],
   /* A department task sent, done or sent back. Variables: 1 headline, 2 details, 3 link. */
   task: ['WHATSAPP_TEMPLATE_TASK'],
+  /* The LR copy sent to the buyer. Variables: 1 name, 2 enquiry / invoice, 3 link to the copy. */
+  lr_copy: ['WHATSAPP_TEMPLATE_LR_COPY'],
 };
 
 /** The template configured for `key`, or undefined — read now, so a restart picks up a change. */

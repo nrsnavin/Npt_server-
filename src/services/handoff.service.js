@@ -889,7 +889,12 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
   task.attention = undefined;
   task.status = step.key;
   task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: note || undefined, by: user._id, at: new Date() }];
+  if (!step.done) {
+    task.updates = [...(task.updates || []), { note: [step.label, String(note || '').trim()].filter(Boolean).join(': '), by: user._id, at: new Date() }];
+    if (!task.user) task.user = user._id;
+  }
   await task.save();
+  if (findHandoff(task.kind)?.form?.notifyStatus) await noticeStatus(task, user, { step, note: String(note || '').trim() });
   const done = step.done
     ? await completeHandoff(task, user, { note: String(note || '').trim() || `${step.label} — PDF uploaded` })
     : task;
@@ -905,6 +910,33 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
     }
   }
   return { task: done, next, nextProblem };
+}
+
+/**
+ * The uploaded work has gone to the customer [services/taskResultMessage.service.js]: the task
+ * moves to its `sent` status, saying on which channels — when at least one went. The enquiry's
+ * marketing person and Admin are told, as for any move.
+ */
+export async function markResultSent(task, user, results) {
+  const sent = results.filter((entry) => entry.status === 'sent');
+  const step = statusesOf(task).find((entry) => entry.sent);
+  const said = results.map((entry) => (entry.status === 'sent'
+    ? `${entry.channel === 'email' ? 'Email' : 'WhatsApp'} to ${entry.recipient}`
+    : `${entry.channel === 'email' ? 'Email' : 'WhatsApp'} not sent (${entry.skipReason || entry.error || entry.status})`)).join(' · ');
+  if (!step || !sent.length) {
+    if (said) {
+      task.updates = [...(task.updates || []), { note: `Not sent to the customer — ${said}`, by: user._id, at: new Date() }];
+      await task.save();
+    }
+    return task;
+  }
+  task.status = step.key;
+  task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: said, by: user._id, at: new Date() }];
+  task.updates = [...(task.updates || []), { note: `${step.label}: ${said}`, by: user._id, at: new Date() }];
+  await task.save();
+  if (findHandoff(task.kind)?.form?.notifyStatus) await noticeStatus(task, user, { step, note: said });
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  return task;
 }
 
 /** "Got it": the department has seen the answer on its task, and the highlight goes. */

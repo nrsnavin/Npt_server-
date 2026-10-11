@@ -18,6 +18,7 @@ import { listStates, listCities } from '../controllers/place.controller.js';
 import { indiamartStatus, runIndiamartSync } from '../controllers/indiamart.controller.js';
 import { inboundWebhook, verifyWebhook } from '../controllers/whatsapp.controller.js';
 import { publicQuotationPdf } from '../controllers/quotation.controller.js';
+import { publicTaskFile } from '../controllers/handoff.controller.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 
 const router = Router();
@@ -38,6 +39,8 @@ router.get('/whatsapp/inbound', verifyWebhook);
 router.post('/whatsapp/inbound', inboundWebhook);
 /* A sent quotation's PDF behind a signed, expiring link — what WhatsApp fetches. No session. */
 router.get('/public/quotations/:id/:expires/:signature/:file', publicQuotationPdf);
+/* A department task's uploaded work (the LR copy), for WhatsApp to fetch. */
+router.get('/public/files/:id/:expires/:signature/:file', publicTaskFile);
 router.use('/whatsapp', whatsappRoutes);
 /*
  * One search across everything [§32]. Not inside a module's routes because it belongs to no
