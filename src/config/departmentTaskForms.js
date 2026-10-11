@@ -20,7 +20,8 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
  *   required       must be answered (a person raising it; the automations are not asked)
  *   from           where the answer is filled from — a path into the enquiry's prefill
  *                  [handoff.service `taskPrefill`]: customer.contactPerson, models, materials,
- *                  quantity, order.paymentTerms, items (rows), modelList (choices) …
+ *                  quantity, order.paymentTerms, items (rows), modelList (choices), modelList.0
+ *                  (the first model) …
  *   optionsFrom    a choice whose options come from the prefill (the enquiry's own models)
  *   section        a heading drawn before the question
  *
@@ -30,8 +31,10 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
 
 const PRIORITY_DEFAULTS = { priority: true, requiredDate: true };
 
+/* The enquiry's first model, its material and colour, and the order's quantity — all editable. */
 const modelAndQuantity = [
-  { key: 'model', label: 'Model name', type: 'choice', optionsFrom: 'modelList', placeholder: 'Select model only if required' },
+  { key: 'model', label: 'Model name', type: 'choice', optionsFrom: 'modelList', from: 'modelList.0', placeholder: 'Select model only if required' },
+  { key: 'material', label: 'Material / colour', from: 'materials', placeholder: 'Material and colour from the enquiry' },
   { key: 'quantity', label: 'Quantity', type: 'number', from: 'quantity', placeholder: 'Example: 10,000 pcs' },
 ];
 
@@ -130,7 +133,8 @@ export const TASK_FORMS = {
   mould_issue: {
     team: 'Mould Team',
     asks: [
-      { key: 'model', label: 'Model / mould', type: 'choice', optionsFrom: 'modelList', placeholder: 'Select the model' },
+      { key: 'model', label: 'Model / mould', type: 'choice', optionsFrom: 'modelList', from: 'modelList.0', placeholder: 'Select the model' },
+      { key: 'material', label: 'Material / colour', from: 'materials' },
       { key: 'problem', label: 'What is wrong with the tool', required: true },
     ],
   },

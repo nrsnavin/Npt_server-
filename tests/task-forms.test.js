@@ -150,6 +150,42 @@ test('the form is filled from the enquiry: models with their parts, the buyer, t
   assert.equal(other.status, 404, 'a department not asked about it cannot read it');
 });
 
+test('an enquiry naming only the model: material and colour come from its order, quotation or sample, then the mould', async () => {
+  const { default: Mould } = await import('../src/models/Mould.js');
+  const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
+  const mould = await Mould.create({ mouldCode: 'M-141', name: '410 suit', material: 'velvet', partWeightGrams: 40, cycleTimeSeconds: 30 });
+  const me = (await api('/api/auth/me', { token: nandhini })).json.data.id;
+  const bare = (await api('/api/enquiries', {
+    method: 'POST', token: nandhini,
+    body: {
+      customer: enquiry.customer?._id || enquiry.customer, requirement: { modelNumber: 'NPT-410V' },
+      items: [{ mould: String(mould._id), modelNumber: 'NPT-410V' }, { modelNumber: 'NPT-999' }, { mould: String(mould._id), modelNumber: 'NPT-411' }],
+      nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString(),
+    },
+  })).json.data;
+  await SalesOrder.create({
+    number: 'SO-T-2', customer: bare.customer?._id || bare.customer, enquiry: bare._id, assignedTo: me, customerPo: { number: 'PO/78' },
+    lines: [{ modelNumber: 'npt-410v', colour: 'Grey', quantity: 5000, unitPrice: 2 }],
+  });
+
+  const { json } = await api(`/api/enquiries/${bare._id}/handoffs/prefill`, { token: nandhini });
+  const [first, second, third] = json.data.items;
+  assert.equal(first.model, 'NPT-410V');
+  assert.equal(first.colour, 'Grey', 'from the order line for the same model');
+  assert.equal(first.colourType, 'Preferred colour');
+  assert.equal(first.material, 'Velvet', 'the mould register’s material family');
+  assert.deepEqual([second.material, second.colour], ['', ''], 'nothing anywhere says it — left for the person');
+  assert.equal(third.material, 'Velvet', 'same mould, so the same family, though the order names another model');
+  assert.equal(json.data.materials, 'Velvet Grey, Velvet');
+  const { default: Material } = await import('../src/models/Material.js');
+  const white = await Material.create({ name: 'HIPS White', colour: 'White', ratePerKg: 140 });
+  await SalesOrder.updateOne({ number: 'SO-T-2' }, { $push: { lines: { modelNumber: 'NPT-999', materialRef: white._id, quantity: 100, unitPrice: 2 } } });
+  const named = (await api(`/api/enquiries/${bare._id}/handoffs/prefill`, { token: nandhini })).json.data;
+  assert.deepEqual([named.items[1].material, named.items[1].colour], ['HIPS White', 'White'], 'the resin on the order, and its own colour');
+  assert.equal(named.materials, 'Velvet Grey, HIPS White, Velvet', 'not "HIPS White White"');
+  assert.equal(json.data.modelList[0], 'NPT-410V', 'the Production / Dispatch model starts on the first');
+});
+
 let sampleTask;
 
 test('a sample of more than 3 pcs needs the instruction; rows keep only the columns asked', async () => {

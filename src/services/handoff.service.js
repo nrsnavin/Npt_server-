@@ -757,40 +757,77 @@ function termsWords(order) {
  * says. Every answer stays editable on the form.
  */
 export async function taskPrefill(enquiryId) {
-  const [{ default: Customer }, { default: SalesOrder }, { default: Dispatch }] = await Promise.all([
+  const [{ default: Customer }, { default: SalesOrder }, { default: Dispatch }, { default: Quotation }, { default: Sample }] = await Promise.all([
     import('../models/Customer.js'), import('../models/SalesOrder.js'), import('../models/Dispatch.js'),
+    import('../models/Quotation.js'), import('../models/Sample.js'),
   ]);
-  const enquiry = await Enquiry.findById(enquiryId)
-    .populate([
-      { path: 'items.mould', select: 'mouldCode name' },
-      { path: 'items.materialRef', select: 'name' },
-      { path: 'items.hookRef', select: 'name' },
-      { path: 'items.clipRef', select: 'name' },
-      { path: 'items.printRef', select: 'name' },
-    ])
-    .lean();
+  /* The registers a row names, by name — the same on the enquiry, a quotation, an order or a sample. */
+  const parts = (prefix) => [
+    { path: `${prefix}.mould`, select: 'mouldCode name material' },
+    { path: `${prefix}.materialRef`, select: 'name colour' },
+    { path: `${prefix}.hookRef`, select: 'name' },
+    { path: `${prefix}.clipRef`, select: 'name' },
+    { path: `${prefix}.printRef`, select: 'name' },
+  ];
+  const enquiry = await Enquiry.findById(enquiryId).populate(parts('items')).lean();
   if (!enquiry) return null;
-  const customer = enquiry.customer
-    ? await Customer.findById(enquiry.customer).select('name mobile whatsapp contacts address city state pincode').lean()
-    : null;
-  const order = await SalesOrder.findOne({ enquiry: enquiry._id }).sort({ createdAt: -1 })
-    .select('number lines.quantity paymentTerms paymentPlan').lean();
+  const newest = (Model, select, populate) => Model.findOne({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select(select).populate(populate).lean();
+  const [customer, order, quotation, sample] = await Promise.all([
+    enquiry.customer ? Customer.findById(enquiry.customer).select('name mobile whatsapp contacts address city state pincode').lean() : null,
+    newest(SalesOrder, 'number lines paymentTerms paymentPlan', parts('lines').filter((entry) => !/hookRef|clipRef|printRef/.test(entry.path))),
+    newest(Quotation, 'lines', parts('lines')),
+    newest(Sample, 'items', parts('items')),
+  ]);
   const consignment = order
     ? await Dispatch.findOne({ order: order._id, 'invoice.number': { $exists: true } }).sort({ createdAt: -1 }).select('invoice.number').lean()
     : null;
 
-  const source = enquiry.items?.length ? enquiry.items : [enquiry.requirement || {}];
-  const items = source.map((row) => ({
+  /** One row — of the enquiry, a quotation, an order or a sample — in the form's words. */
+  const described = (row) => ({
     model: row.modelNumber || row.mould?.mouldCode || '',
+    mould: String(row.mould?._id || row.mould || ''),
     material: row.materialRef?.name || materialWord(row.material),
-    colour: row.colour || '',
+    /* The colour asked for; else the chosen resin's own colour. */
+    colour: row.colour || row.materialRef?.colour || '',
     hook: row.hookRef?.name || '',
     clip: row.clipRef?.name || '',
     print: row.printRef?.name || row.printing || '',
-    colourType: row.colour ? (row.colourMandatory ? 'Compulsory colour' : 'Preferred colour') : '',
-    /* A sample is three pieces unless somebody says why it is more. */
-    quantity: '3',
-  })).filter((row) => row.model || row.material || row.colour);
+    mandatory: row.colourMandatory,
+    family: materialWord(row.mould?.material),
+  });
+  const sameModel = (a, b) => (a.model && b.model && a.model.toLowerCase() === b.model.toLowerCase())
+    || (a.mould && b.mould && a.mould === b.mould);
+
+  /*
+   * The enquiry's own rows first. Where one leaves material, colour, a hook, a clip or a print
+   * blank, the same model on the newest quotation, order or sample says it — in that order —
+   * and the mould register's material family is the last word on material.
+   */
+  const others = [...(quotation?.lines || []), ...(order?.lines || []), ...(sample?.items || [])].map(described);
+  const source = enquiry.items?.length ? enquiry.items : [enquiry.requirement || {}];
+  let rows = source.map(described).filter((row) => row.model || row.material || row.colour);
+  if (!rows.length) rows = others.filter((row, at) => row.model && others.findIndex((entry) => sameModel(entry, row)) === at);
+  const items = rows.map((row) => {
+    const filled = { ...row };
+    for (const other of others.filter((entry) => sameModel(entry, row))) {
+      for (const key of ['material', 'colour', 'hook', 'clip', 'print']) {
+        if (!filled[key] && other[key]) filled[key] = other[key];
+      }
+      if (filled.mandatory == null && other.mandatory != null) filled.mandatory = other.mandatory;
+    }
+    if (!filled.material) filled.material = filled.family || others.find((entry) => sameModel(entry, row) && entry.family)?.family || '';
+    return {
+      model: filled.model,
+      material: filled.material,
+      colour: filled.colour,
+      hook: filled.hook,
+      clip: filled.clip,
+      print: filled.print,
+      colourType: filled.colour ? (filled.mandatory ? 'Compulsory colour' : 'Preferred colour') : '',
+      /* A sample is three pieces unless somebody says why it is more. */
+      quantity: '3',
+    };
+  });
   const modelList = [...new Set(items.map((row) => row.model).filter(Boolean))];
   const enquiryQuantity = source.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0);
   const orderQuantity = (order?.lines || []).reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
@@ -810,7 +847,10 @@ export async function taskPrefill(enquiryId) {
     items,
     modelList,
     models: modelList.join(', '),
-    materials: items.map((row) => [row.material, row.colour].filter(Boolean).join(' ')).filter(Boolean).join(', '),
+    /* "PP Black" — but "HIPS White", not "HIPS White White", when the resin's name already says it. */
+    materials: items.map((row) => (row.colour && !row.material.toLowerCase().includes(row.colour.toLowerCase())
+      ? [row.material, row.colour].filter(Boolean).join(' ')
+      : row.material || row.colour)).filter(Boolean).join(', '),
     /* Enquiries carry no quantity; the order on it does. */
     quantity: String(orderQuantity || enquiryQuantity || ''),
     targetPrice: enquiry.targetPrice != null ? String(enquiry.targetPrice) : '',
