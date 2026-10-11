@@ -50,7 +50,7 @@ test.before(async () => {
 
   await api('/api/auth/register', { method: 'POST', body: { name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', department: 'management' } });
   token.admin = (await api('/api/auth/login', { method: 'POST', body: { email: 'admin@np.com', password: 'Admin@12345' } })).json.data.token;
-  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['arun', 'Arun K', 'marketing'], ['siva', 'Sivakumar', 'production'], ['kavi', 'Kavitha', 'quality'], ['ravi', 'Ravi Despatch', 'despatch']]) {
+  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['arun', 'Arun K', 'marketing'], ['siva', 'Sivakumar', 'production'], ['kavi', 'Kavitha', 'quality'], ['ravi', 'Ravi Despatch', 'despatch'], ['anand', 'Anand Assembly', 'assembling']]) {
     const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department } });
     assert.equal(made.status, 201, made.json.message);
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
@@ -309,4 +309,30 @@ test('Task Closed on a dispatch task is refused while a balance is left, and the
   const closed = await dispatchMove('ravi', 'closed', { note: 'All gone' });
   assert.equal(closed.status, 200, closed.json.message);
   assert.equal((await Todo.findById(dispatchTask._id)).completed, true);
+});
+
+/* ------------------------------ The Assembly team ------------------------------ */
+
+test('Assembly’s task moves Asked Assembling Readiness → … → Task Closed, each with a remark, and marketing and Admin are told', async () => {
+  const { buttons } = (await api('/api/handoffs', { as: 'anand' })).json.data;
+  assert.deepEqual(buttons.find((button) => button.key === 'ask_assembling_edd').form.statuses.map((entry) => entry.label), [
+    'Asked Assembling Readiness', 'Started', 'Spares Ready', 'Part Quantity Ready', 'Full Quantity Ready', 'Ready for Dispatch', 'Task Closed',
+  ]);
+  const task = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_assembling_edd', completed: false });
+  assert.equal(task.status, 'asked', 'raised by Dispatch’s Ask Assembling Readiness');
+  const moveAssembly = (status, extra = {}) => api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'anand', body: { status, ...extra } });
+
+  assert.equal((await moveAssembly('part_ready')).status, 400, 'no remark');
+  const moved = await moveAssembly('part_ready', { note: '6,000 clipped and packed', date: indiaDay(2) });
+  assert.equal(moved.status, 200, moved.json.message);
+  for (const who of ['nandhini', 'admin']) {
+    const [notice] = await noticesOf(who);
+    assert.equal(notice.statusLabel, 'Part Quantity Ready', who);
+    assert.equal(notice.department, 'assembling');
+  }
+  const { production } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
+  assert.equal(production.edd.edd, indiaDay(2), 'Assembly’s ready date is the EDD');
+
+  assert.equal((await moveAssembly('closed', { note: 'All 10,000 assembled' })).status, 200);
+  assert.equal((await Todo.findById(task._id)).completed, true);
 });

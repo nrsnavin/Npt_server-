@@ -187,7 +187,24 @@ export const TASK_FORMS = {
       { key: 'closed', label: 'Task Closed', done: true },
     ],
   },
-  ask_assembling_edd: { team: 'Assembly Team', asks: modelAndQuantity },
+  ask_assembling_edd: {
+    team: 'Assembly Team',
+    asks: modelAndQuantity,
+    remarkRequired: true,
+    notifyStatus: true,
+    /* Assembly's ready date is the enquiry's EDD, as Production's is. */
+    statusDate: { label: 'ERD / Ready date', field: 'edd' },
+    remark: { label: 'Remarks', placeholder: 'Add assembling / printing remark' },
+    statuses: [
+      { key: 'asked', label: 'Asked Assembling Readiness' },
+      { key: 'started', label: 'Started' },
+      { key: 'spares_ready', label: 'Spares Ready' },
+      { key: 'part_ready', label: 'Part Quantity Ready' },
+      { key: 'full_ready', label: 'Full Quantity Ready' },
+      { key: 'ready_dispatch', label: 'Ready for Dispatch' },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+  },
   mould_issue: {
     team: 'Mould Team',
     remarkRequired: true,
