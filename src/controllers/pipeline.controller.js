@@ -1529,7 +1529,7 @@ export const listDelegationTargets = asyncHandler(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id).select('assignedTo');
   if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
   const may = mayDelegate(req.user, enquiry);
-  res.json({ success: true, data: may ? await delegationTargets(enquiry) : [], mayDelegate: may });
+  res.json({ success: true, data: may ? await delegationTargets(enquiry, req.user) : [], mayDelegate: may });
 });
 
 /** The kinds of activity, from the one list [config/enquiryActivities.js]. */

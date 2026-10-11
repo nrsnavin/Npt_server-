@@ -136,6 +136,8 @@ export const TASK_FORMS = {
       { key: 'prepared', label: 'SO Prepared', pdf: true, done: true, next: 'ask_edd' },
     ],
     resultLabel: 'Upload Sales Order PDF',
+    /* What the uploaded PDF is called where the enquiry shows it. */
+    resultTitle: 'Sales order',
     asks: [
       { key: 'contactPerson', label: 'Contact person', section: 'Company & contact details', from: 'customer.contactPerson', placeholder: 'Name of person to call for SO / GST', editable: true },
       { key: 'mobile', label: 'Mobile number', from: 'customer.mobile', editable: true },

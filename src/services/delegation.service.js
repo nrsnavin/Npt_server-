@@ -13,7 +13,7 @@ import { marketingTeam } from './assignment.service.js';
 import { sendPush } from './push.service.js';
 
 /**
- * Handing an enquiry to another marketing person, at any stage.
+ * Handing an enquiry to another marketing person, an Admin, or taking it yourself, at any stage.
  *
  * The owner does it themselves (going on leave, a buyer in a colleague's area, too much on) or
  * Admin does it for them. What moves is everything that decides whose queue the work sits in:
@@ -37,10 +37,27 @@ const idOf = (value) => String(value?._id || value || '');
 export const mayDelegate = (user, enquiry) =>
   isAdmin(user) || idOf(enquiry.assignedTo) === idOf(user?._id);
 
-/** The marketing people an enquiry may go to: everyone on the team but its current owner. */
-export async function delegationTargets(enquiry) {
-  const team = await marketingTeam();
-  return team.filter((person) => idOf(person._id) !== idOf(enquiry.assignedTo));
+/**
+ * Who an enquiry may go to: everyone on the marketing team, every Admin, and the person handing
+ * it over themselves (an Admin taking it on) — all but its current owner. Each says which it is,
+ * so the screen can group them.
+ */
+export async function delegationTargets(enquiry, user) {
+  const [team, admins] = await Promise.all([
+    marketingTeam(),
+    User.find({ role: 'admin', isActive: { $ne: false } }).sort({ createdAt: 1, _id: 1 }).select('_id name'),
+  ]);
+  const seen = new Set([idOf(enquiry.assignedTo)]);
+  const people = [];
+  const add = (person, group) => {
+    if (seen.has(idOf(person._id))) return;
+    seen.add(idOf(person._id));
+    people.push({ _id: person._id, name: person.name, group, self: idOf(person._id) === idOf(user?._id) });
+  };
+  team.forEach((person) => add(person, 'marketing'));
+  admins.forEach((person) => add(person, 'admin'));
+  if (user && mayDelegate(user, enquiry)) add(user, isAdmin(user) ? 'admin' : 'marketing');
+  return people;
 }
 
 export async function delegateEnquiry({ enquiry, to, note, user }) {
@@ -50,10 +67,9 @@ export async function delegateEnquiry({ enquiry, to, note, user }) {
   const from = idOf(enquiry.assignedTo);
   if (idOf(to) === from) throw ApiError.badRequest('It is already theirs');
 
-  const team = await marketingTeam();
-  const target = team.find((person) => idOf(person._id) === idOf(to));
+  const target = (await delegationTargets(enquiry, user)).find((person) => idOf(person._id) === idOf(to));
   if (!target) {
-    throw ApiError.badRequest('An enquiry can only be handed to an active marketing person who can work enquiries');
+    throw ApiError.badRequest('An enquiry can only be handed to an active marketing person, an Admin, or yourself');
   }
 
   enquiry.assignedTo = target._id;
