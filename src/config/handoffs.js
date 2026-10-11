@@ -98,8 +98,9 @@ const BUTTONS = [
     opens: 'dispatches',
   },
   {
-    key: 'lr_copy', label: 'LR Copy', department: 'despatch', stage: 'lr_copy',
-    hint: 'Send the LR / docket copy',
+    /* Reception's: the LR copy and the dispatch details once the goods have gone. */
+    key: 'lr_copy', label: 'LR Copy', department: 'reception', stage: 'lr_copy',
+    hint: 'Upload the LR copy, send it to the buyer and track the delivery',
     records: [{ key: 'lrNumber', label: 'LR / docket number' }],
   },
   {

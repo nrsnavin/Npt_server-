@@ -21,7 +21,7 @@ export const STAGES = [
   { key: 'mould', number: 6, label: 'Mould', department: 'mould' },
   { key: 'team_payment_followup', number: 7, label: 'Team Payment Follow-up', department: 'payment_collection' },
   { key: 'invoice_dispatch', number: 8, label: 'Invoice & Dispatch', department: 'despatch' },
-  { key: 'lr_copy', number: 9, label: 'LR Copy', department: 'despatch' },
+  { key: 'lr_copy', number: 9, label: 'LR Copy', department: 'reception' },
   { key: 'quality', number: 10, label: 'Quality', department: 'quality' },
   { key: 'ac_clarify', number: 11, label: 'A/C Clarify', department: 'accounts' },
   /* Not on the plant's original screen: the Audit team's own stage, for the GST / invoice check. */

@@ -30,6 +30,7 @@ export const STEPS = [
   ['migrate-query-reads.js', 'read state on query threads from before it existed'],
   ['migrate-enquiry-stages.js', 'a stage on every enquiry, from its sales status'],
   ['migrate-enquiry-holders.js', 'every open enquiry held by its marketing person; departments keep their tasks'],
+  ['migrate-lr-to-reception.js', 'open LR Copy tasks handed from Dispatch to Reception'],
 ];
 
 function run() {
