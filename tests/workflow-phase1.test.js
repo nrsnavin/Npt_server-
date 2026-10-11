@@ -190,23 +190,16 @@ test('a Quality Check still records Passed or Failed, and nothing else', async (
   assert.equal(failed.status, 200, failed.json.message);
 });
 
-/* ---------------------------- 4. Dispatch keeps the balance ---------------------------- */
+/* ---------------------------- 4. Dispatch closes its own task ---------------------------- */
 
-test('Dispatch’s task stays open while an order on it still has pieces to send', async () => {
+test('Dispatch closes its task when it says the goods have gone, whatever the consignments show', async () => {
   const enquiry = await inProduction();
-  const check = (await send(enquiry, 'quality_check', 'siva')).json.data.task;
-  await done(check, 'kavitha', { note: 'Passed', fields: { result: 'Passed' } });
   const dispatchTask = (await send(enquiry, 'invoice_dispatch')).json.data.task;
   const order = await orderOn(enquiry, { quantity: 1000 });
   await consignment(order, 400);
 
-  const leaving = await done(dispatchTask, 'anita', { note: 'First lot gone' });
-  assert.equal(leaving.status, 400);
-  assert.match(leaving.json.message, new RegExp(`${order.number} has 600 pcs still to send`));
-  assert.match(leaving.json.message, /Post each lot as an Update/);
-
-  await consignment(order, 600);
-  const gone = await done(dispatchTask, 'anita', { note: 'Balance sent' });
+  /* 600 pcs have no consignment — the team dispatched them from the task, not the Dispatch screen. */
+  const gone = await done(dispatchTask, 'anita', { note: 'All 1,000 sent — two vehicles' });
   assert.equal(gone.status, 200, gone.json.message);
   assert.equal((await holder(enquiry)).department, 'marketing');
 });

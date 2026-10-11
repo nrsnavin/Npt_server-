@@ -9,7 +9,7 @@ import { isOwnershipScoped, ownsRecord } from './ownership.service.js';
 import { departmentsOf, inDepartment, isManagement } from '../utils/departments.js';
 import { EVENTS, publish } from './events.service.js';
 import ApiError from '../utils/ApiError.js';
-import { describeBalance, dispatchBalance } from './enquiryGates.service.js';
+import { dispatchBalance } from './enquiryGates.service.js';
 import * as paymentPresets from './paymentGates.service.js';
 import { assertEnquiryPaidFor } from './paymentGates.service.js';
 import { MATERIALS } from '../models/Mould.js';
@@ -832,14 +832,12 @@ async function assertMayFinish(task) {
   /* A task finished by uploading the work (the sales order) is not ticked off without it. */
   const byUpload = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.pdf && entry.done);
   if (byUpload && !task.resultFile) fail(`Upload the PDF to finish this task — it is marked ${byUpload.label} then`);
-
-  /* Dispatch's task is done when the balance has gone, lot by lot as Updates until then. */
-  if (task.kind === 'invoice_dispatch' && task.enquiry) {
-    const left = await dispatchBalance(task.enquiry?._id || task.enquiry);
-    if (left.length) {
-      fail(`${describeBalance(left)} still to send. Post each lot as an Update and mark it done once the balance has gone — or short-close the order first.`);
-    }
-  }
+  /*
+   * Dispatch closes its task when it says the goods have gone. The plant runs dispatch from the
+   * task's own statuses and updates, not from consignments on the Dispatch screen, so an order's
+   * consignment balance is not a reason to refuse — it would count lots the team never records
+   * there. (A consignment leaving still finishes the task by itself once nothing is left.)
+   */
 }
 
 /**

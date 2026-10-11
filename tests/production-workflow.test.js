@@ -290,28 +290,21 @@ test('Ask Assembling Readiness raises an Assembly task', async () => {
   assert.match(asked.json.data.updates.at(-1).note, /Ask Assembling Readiness: Are the clips fitted/);
 });
 
-test('Task Closed on a dispatch task is refused while a balance is left, and the status stays', async () => {
-  const before = (await Todo.findById(dispatchTask._id)).status;
-  /* An open order with 1,000 pcs not yet sent — written straight in; only the balance matters here. */
+test('Task Closed on a dispatch task is not held back by a consignment balance the team never records', async () => {
+  /* An open order with 1,000 pcs that no consignment covers — written straight in. */
   const orders = mongoose.connection.collection('salesorders');
   const { insertedId } = await orders.insertOne({
     enquiry: new mongoose.Types.ObjectId(enquiry._id), number: 'SO-2026-0099', status: 'released',
     lines: [{ _id: new mongoose.Types.ObjectId(), modelNumber: 'UTJRSH-0', quantity: 1000 }],
   });
-  const refused = await dispatchMove('ravi', 'closed', { note: 'All gone' });
-  assert.equal(refused.status, 400);
-  assert.match(refused.json.message, /SO-2026-0099 has 1,000 pcs still to send/);
-  const task = await Todo.findById(dispatchTask._id);
-  assert.equal(task.status, before, 'the refused close left the status where it was');
-  assert.equal(task.completed, false);
-
-  await orders.deleteOne({ _id: insertedId });
-  const closed = await dispatchMove('ravi', 'closed', { note: 'All gone' });
-  assert.equal(closed.status, 200, closed.json.message);
-  assert.equal((await Todo.findById(dispatchTask._id)).completed, true);
+  try {
+    const closed = await dispatchMove('ravi', 'closed', { note: 'All gone — sent from the dispatch task' });
+    assert.equal(closed.status, 200, closed.json.message);
+    assert.equal((await Todo.findById(dispatchTask._id)).completed, true);
+  } finally {
+    await orders.deleteOne({ _id: insertedId });
+  }
 });
-
-/* ------------------------------ The Assembly team ------------------------------ */
 
 test('Assembly’s task moves Asked Assembling Readiness → … → Task Closed, each with a remark, and marketing and Admin are told', async () => {
   const { buttons } = (await api('/api/handoffs', { as: 'anand' })).json.data;
