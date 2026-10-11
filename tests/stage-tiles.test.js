@@ -1,5 +1,5 @@
 /**
- * Clicking a department on the enquiry forwards it there [config/handoffs.js TILE_KIND,
+ * Clicking a department on the enquiry raises that department's task [config/handoffs.js TILE_KIND,
  * controllers/handoff.controller.js handoffCatalogue, web: components/DepartmentDesk.jsx].
  *
  *   node --test tests/stage-tiles.test.js
@@ -60,22 +60,21 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-test('every department tile names a button that sends the enquiry to that department', async () => {
+test('every department tile names the button that raises that department’s task', async () => {
   const { stages, buttons } = (await api('/api/handoffs', { token: nandhini })).json.data;
-  for (const stage of stages.filter((item) => item.number)) {
+  for (const stage of stages.filter((item) => item.number && item.kind)) {
     const button = buttons.find((item) => item.key === stage.kind);
     assert.ok(button, `${stage.label} has a button`);
     assert.ok(!button.hidden, `${stage.label}: its button can be sent`);
     const department = button.department === 'owner' ? 'marketing' : button.department;
     assert.equal(department, stage.department, `${stage.label} goes to ${stage.department}`);
-    if (button.moves) assert.equal(button.stage, stage.key, `${stage.label} moves the enquiry to its own stage`);
   }
-  assert.equal(stages.find((item) => item.key === 'enquiry').kind, 'back_to_marketing');
+  assert.equal(stages.find((item) => item.key === 'enquiry').kind, null, 'the enquiry is always marketing’s own');
   assert.equal(stages.find((item) => item.key === 'quality').kind, 'quality_check');
   assert.equal(stages.find((item) => item.key === 'closed').kind, null);
 });
 
-test('clicking a department forwards the enquiry: that department holds it, at its stage', async () => {
+test('clicking a department raises its task; the enquiry stays with its marketing person', async () => {
   const enquiry = (await api('/api/enquiries', {
     method: 'POST', token: nandhini,
     body: {
@@ -85,14 +84,18 @@ test('clicking a department forwards the enquiry: that department holds it, at i
   })).json.data;
   const { stages } = (await api('/api/handoffs', { token: admin })).json.data;
   const tile = (key) => stages.find((item) => item.key === key);
+  const briefs = { sample: { mould: 'NH-400', material: 'PP', colour: 'White', colourType: 'Preferred colour' } };
 
-  for (const key of ['sample', 'mould', 'audit', 'assembling', 'enquiry']) {
+  for (const key of ['sample', 'mould', 'audit', 'assembling']) {
     const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
-      method: 'POST', token: admin, body: { kind: tile(key).kind, note: `Over to ${tile(key).label}` },
+      method: 'POST', token: admin, body: { kind: tile(key).kind, note: `Over to ${tile(key).label}`, brief: briefs[key] },
     });
     assert.equal(sent.status, 201, JSON.stringify(sent.json));
-    assert.equal(sent.json.data.stage, key);
+    assert.equal(sent.json.data.task.department, tile(key).department, `${key}: a task for its department`);
+    assert.equal(sent.json.data.stage, key, 'the stage says where the work is');
     const now = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { token: admin })).json;
-    assert.equal(now.holder?.department, tile(key).department, `${key}: held by its department`);
+    assert.equal(now.holder?.department, 'marketing', `${key}: the enquiry is still marketing’s`);
   }
+  const open = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { token: admin })).json.data.filter((task) => !task.completed && !task.holds);
+  assert.deepEqual(open.map((task) => task.department).sort(), ['assembling', 'audit', 'mould', 'sampling'], 'four departments, four tasks, all at once');
 });

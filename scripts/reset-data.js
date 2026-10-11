@@ -6,10 +6,13 @@
  *   npm run reset-data -- --confirm                 # actually delete
  *   npm run reset-data -- --keep=someone@x.com --confirm
  *   npm run reset-data -- --keep-registers --confirm
+ *   npm run reset-data -- --keep-users --confirm    # every login stays; all the data goes
  *
  * Options:
  *   --keep=<email>    the one account to survive (default: rsnavin1@gmail.com)
  *   --confirm         required to delete anything; without it this is a dry run
+ *   --keep-users      keep every user account (with its department and password), not only one —
+ *                     for clearing the working data while everybody can still sign in
  *   --keep-registers  leave the model masters alone — moulds, materials, hooks/clips/print, the trading master
  *                     [§28]. `--keep-catalogue` is accepted as the old name for this.
  *
@@ -135,6 +138,7 @@ async function run() {
   const keep = argument('keep', DEFAULT_KEEP).toLowerCase();
   const confirmed = flag('confirm');
   const keepRegisters = flag('keep-registers') || flag('keep-catalogue');
+  const keepUsers = flag('keep-users');
 
   await connectDatabase();
   const registered = await loadModels();
@@ -176,7 +180,7 @@ async function run() {
   for (const name of targets) {
     counts.push([name, await mongoose.models[name].countDocuments()]);
   }
-  const otherUsers = await User.countDocuments({ _id: { $ne: survivor._id } });
+  const otherUsers = keepUsers ? 0 : await User.countDocuments({ _id: { $ne: survivor._id } });
   const total = counts.reduce((sum, [, count]) => sum + count, 0) + otherUsers;
 
   console.log(`\n${confirmed ? 'Deleting' : 'Would delete'} from "${mongoose.connection.name}":\n`);
@@ -191,7 +195,8 @@ async function run() {
      that MONGO_URI points at the wrong place. */
   if (!total) console.log('\n  (this database is already empty apart from the account below)');
 
-  console.log(`\nKeeping: ${survivor.name} <${survivor.email}> (${survivor.role})`);
+  if (keepUsers) console.log(`\nKeeping: every user account (${await User.countDocuments()}), so everybody can still sign in`);
+  else console.log(`\nKeeping: ${survivor.name} <${survivor.email}> (${survivor.role})`);
   if (keepRegisters) {
     console.log(`Keeping: the registers — ${REGISTERS.map(label).join(', ')} — untouched.`);
   }
@@ -207,20 +212,23 @@ async function run() {
     if (deletedCount) console.log(`  cleared ${label(name)} (${deletedCount})`);
   }
 
-  const { deletedCount } = await User.deleteMany({ _id: { $ne: survivor._id } });
-  if (deletedCount) console.log(`  cleared other accounts (${deletedCount})`);
+  if (!keepUsers) {
+    const { deletedCount } = await User.deleteMany({ _id: { $ne: survivor._id } });
+    if (deletedCount) console.log(`  cleared other accounts (${deletedCount})`);
+  }
 
   /*
    * The survivor is made an admin on the way out. It is the only account left, so anything
    * less locks the whole system: no one to grant a module, no one to add a colleague back.
    */
-  if (survivor.role !== 'admin') {
+  if (!keepUsers && survivor.role !== 'admin') {
     survivor.role = 'admin';
     await survivor.save();
     console.log(`  promoted ${survivor.email} to admin — it is the only account left`);
   }
 
-  const left = keepRegisters ? 'one user and the registers, and nothing else' : 'one user and nothing else';
+  const people = keepUsers ? 'its users' : 'one user';
+  const left = keepRegisters ? `${people} and the registers, and nothing else` : `${people} and nothing else`;
   console.log(`\nDone. "${mongoose.connection.name}" now holds ${left}.\n`);
 }
 

@@ -5,7 +5,7 @@ import { inDepartment, isManagement } from '../utils/departments.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { transactional } from '../utils/transaction.js';
 import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
-import { HANDOFFS, TILE_KIND, movesEnquiry } from '../config/handoffs.js';
+import { HANDOFFS, TILE_KIND } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
@@ -41,8 +41,8 @@ export const handoffCatalogue = asyncHandler(async (req, res) => {
         ...STAGES.map((stage) => ({ ...stage, kind: TILE_KIND[stage.key] || null })),
         { key: CLOSED_STAGE, number: null, label: 'Closed', department: null, kind: null },
       ],
-      /* `moves` says whether a button hands the enquiry over; `hidden` ones are never drawn. */
-      buttons: HANDOFFS.map((button) => ({ ...button, moves: movesEnquiry(button) })),
+      /* A button with a department raises that department's task; `hidden` ones are never drawn. */
+      buttons: HANDOFFS,
       departments: DEPARTMENTS.map(({ key, label }) => ({ key, label })),
     },
   });
@@ -57,7 +57,9 @@ async function enquiryFor(req) {
 
 export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) => {
   const enquiry = await enquiryFor(req);
-  const task = await sendHandoff({ enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, user: req.user });
+  const task = await sendHandoff({
+    enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, brief: req.body.brief, user: req.user,
+  });
   res.status(201).json({
     success: true,
     data: { task: await task.populate(TASK_POPULATE), stage: enquiry.stage },

@@ -111,7 +111,7 @@ test('Team Payment Follow-up goes to Payment Collection, who can work it', async
   assert.equal(task.department, 'payment_collection');
 
   const desk = (await api('/api/departments/payment_collection/dashboard', { token: vijay })).json.data;
-  assert.ok(desk.requests.some((row) => String(row._id) === String(task._id)), 'on the Payment Collection desk');
+  assert.ok(desk.enquiries.some((row) => String(row.task._id) === String(task._id)), 'on the Payment Collection dashboard');
 
   const done = await api(`/api/workspace/todos/${task._id}/done`, {
     method: 'POST', token: vijay, body: { note: 'Promised by Friday' },

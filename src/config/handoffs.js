@@ -6,11 +6,14 @@
  *   department   whose queue the task lands on; anyone in it may pick it up. `owner` is the
  *                marketing person who holds the enquiry, personally — "My" payment follow-up.
  *                Null for a button that records something rather than asking anybody.
- *   stage        where the enquiry is once it is sent [config/enquiryStages.js]; null leaves it.
- *                A button with both a department and a stage *moves* the enquiry: that
- *                department now holds it, and the one that had it is done with it. A button
- *                with a department and no stage is a side request — the enquiry stays put.
+ *   stage        the stage label the enquiry shows once the task is raised
+ *                [config/enquiryStages.js]; null leaves it. The enquiry itself stays with its
+ *                marketing person whatever is raised — departments get tasks, not the enquiry.
  *   hidden       not offered as a button (the task every new enquiry starts with).
+ *   asks         THE QUESTIONS A DEPARTMENT TASK ASKS when it is raised — what whoever clicks the
+ *                department answers, kept on the task as its brief and shown to the department.
+ *                `required` ones must be answered; `type` as for `records`. Each department's
+ *                list is defined here as the plant settles it (Sampling's first, 11 Oct 2026).
  *   records      what the department fills in when it is done, beside the note — all optional,
  *                because the note is what is required and these are the details worth keeping.
  *                `type` is `date`, `choice` (with `options`) or plain text.
@@ -33,6 +36,15 @@ export const HANDOFFS = [
   {
     key: 'sample_request', label: 'Sample Request', department: 'sampling', stage: 'sample',
     hint: 'Make the sample and send it out',
+    asks: [
+      { key: 'mould', label: 'Mould / model', required: true },
+      {
+        key: 'material', label: 'Material', type: 'choice', required: true,
+        options: ['PP', 'HIPS', 'Plastic', 'Wood', 'Metal', 'Velvet', 'Acrylic', 'Recycled PP'],
+      },
+      { key: 'colour', label: 'Colour', required: true },
+      { key: 'colourType', label: 'Colour is', type: 'choice', required: true, options: ['Preferred colour', 'Compulsory colour'] },
+    ],
     records: [
       { key: 'courier', label: 'Courier' },
       { key: 'awbNumber', label: 'AWB number' },
@@ -139,7 +151,8 @@ export const HANDOFFS = [
     records: [{ key: 'promisedDate', label: 'Promised payment date', type: 'date' }],
   },
   {
-    key: 'back_to_marketing', label: 'Back to Marketing', department: 'owner', stage: 'enquiry',
+    /* Only for an enquiry a department still holds from before department tasks [handoff.service]. */
+    key: 'back_to_marketing', label: 'Back to Marketing', department: 'owner', stage: 'enquiry', hidden: true,
     hint: 'Hand it back to the marketing person who holds the buyer',
   },
   {
@@ -154,12 +167,6 @@ export const HANDOFFS = [
 
 export const HANDOFF_KEYS = HANDOFFS.map((handoff) => handoff.key);
 export const findHandoff = (key) => HANDOFFS.find((handoff) => handoff.key === key);
-
-/** Moves the enquiry: a department takes it over at a stage. */
-export const movesEnquiry = (handoff) => Boolean(handoff?.department && handoff?.stage && handoff.stage !== 'closed');
-
-/** The buttons a department may move an enquiry on with — what "where next" offers. */
-export const NEXT_STEPS = HANDOFFS.filter((handoff) => movesEnquiry(handoff) && !handoff.hidden);
 
 /**
  * The task an enquiry already at a stage is held under, for enquiries that got there before
@@ -183,15 +190,13 @@ export const KIND_FOR_STAGE = {
 };
 
 /**
- * What clicking a stage tile on the enquiry sends: the tile is the department, and clicking it
- * forwards the enquiry there [web: components/DepartmentDesk.jsx]. The stage's own button,
- * except where that one is not for sending: the first stage hands it back to its marketing
- * person, and Quality's tile asks for the check before dispatch rather than an issue.
- * Team Payment Follow-up stays a side request — Payment Collection chases the money while the
- * department that has the job keeps it.
+ * What clicking a department on the enquiry raises: that department's task
+ * [web: components/DepartmentDesk.jsx]. The stage's own button, except Quality's tile, which
+ * asks for the check before dispatch rather than an issue. The first stage is marketing's own —
+ * the enquiry is always theirs — so it raises nothing.
  */
 export const TILE_KIND = {
   ...KIND_FOR_STAGE,
-  enquiry: 'back_to_marketing',
+  enquiry: null,
   quality: 'quality_check',
 };

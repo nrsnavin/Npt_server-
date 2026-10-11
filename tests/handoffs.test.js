@@ -1,9 +1,10 @@
 /**
- * Department tasks about an enquiry: the buttons on the enquiry screen send work to a
- * department's queue, due by the end of the day; anyone there may pick it up, re-date it with a
- * reason, send it back with a reason, or do it — and the sender gets it back for the next step.
- * WhatsApp tells the department and the sender. The enquiry shows which of its twelve stages it
- * is at.
+ * Department tasks about an enquiry: clicking a department on the enquiry raises that
+ * department's task, with the answers to the questions it asks, due by the end of the day.
+ * The enquiry stays with its marketing person. Anyone in the department may pick the task up,
+ * re-date it with a reason, send it back with a reason, or do it — and the sender gets it back
+ * for the next step. WhatsApp tells the department and the sender. The enquiry shows which of
+ * its stages its work is at.
  *
  *   node --test tests/handoffs.test.js
  */
@@ -49,7 +50,10 @@ const api = async (path, { method = 'GET', body, token } = {}) => {
 };
 const signIn = async (email, password) => (await api('/api/auth/login', { method: 'POST', body: { email, password } })).json.data?.token;
 const me = async (token) => (await api('/api/auth/me', { token })).json.data.id;
-const send = (kind, note, token = nandhini, id = enquiryId) => api(`/api/enquiries/${id}/handoffs`, { method: 'POST', token, body: { kind, ...(note ? { note } : {}) } });
+const send = (kind, note, token = nandhini, id = enquiryId, brief) => api(`/api/enquiries/${id}/handoffs`, {
+  method: 'POST', token, body: { kind, ...(note ? { note } : {}), ...(brief ? { brief } : {}) },
+});
+const SAMPLE_BRIEF = { mould: 'NH-400', material: 'PP', colour: 'Black', colourType: 'Compulsory colour' };
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
 /* Up to ten seconds for the outbox to deliver — returns as soon as it has, so it costs nothing
  * when the machine is quick, and a cold first run no longer reads as a missing notice. */
@@ -126,16 +130,13 @@ test('the buttons and the stages come from the server', async () => {
   assert.deepEqual(drawn.map((button) => button.label), [
     'Photos Sent', 'Create Quotation', 'Sample Request', 'Price Negotiation', 'PO & SO', 'Ask EDD',
     'Ask Assembly EDD', 'Mould Issue', 'Team Payment Follow-up', 'Invoice & Dispatch', 'LR Copy',
-    'Quality Check', 'Quality Issue', 'GST / Invoice Audit', 'A/C Clarify', 'Request PRT Visit', 'My Payment Follow-up', 'Back to Marketing', 'Task Closed',
+    'Quality Check', 'Quality Issue', 'GST / Invoice Audit', 'A/C Clarify', 'Request PRT Visit', 'My Payment Follow-up', 'Task Closed',
   ]);
-  /* Which of them hand the enquiry over, and which only record or ask on the side. */
-  const moves = Object.fromEntries(json.data.buttons.map((button) => [button.key, button.moves]));
-  assert.equal(moves.sample_request, true);
-  assert.equal(moves.photos_sent, false);
-  assert.equal(moves.request_prt_visit, false, 'a visit is asked for without moving the enquiry');
-  assert.equal(moves.team_payment_followup, false, 'Accounts chases money while someone else holds it');
-  assert.equal(moves.quality_check, true);
-  assert.equal(moves.task_closed, false);
+  /* The questions a Sample Request asks whoever raises it. */
+  const asks = json.data.buttons.find((button) => button.key === 'sample_request').asks;
+  assert.deepEqual(asks.map((field) => field.label), ['Mould / model', 'Material', 'Colour', 'Colour is']);
+  assert.deepEqual(asks.find((field) => field.key === 'colourType').options, ['Preferred colour', 'Compulsory colour']);
+  assert.ok(asks.every((field) => field.required));
 });
 
 const holder = (id = enquiryId) => Todo.findOne({ enquiry: id, holds: true, completed: false });
@@ -164,15 +165,23 @@ test('a new enquiry is marketing\'s task from the start, at stage 1, due on its 
 
 let sampleTask;
 
-test('sample request: marketing is done with it, sampling has it, and the sample is waiting for them', async () => {
+test('sample request: sampling gets a task with the answers; the enquiry stays with marketing', async () => {
   sent.length = 0;
   const first = await holder();
-  const { status, json } = await send('sample_request', 'Black, 3 pcs, buyer wants it by Friday');
+  const unanswered = await send('sample_request', 'Buyer wants it by Friday');
+  assert.equal(unanswered.status, 400, 'the questions are answered first');
+  assert.match(unanswered.json.message, /Mould \/ model is needed/);
+  const wrongChoice = await send('sample_request', 'x', nandhini, enquiryId, { ...SAMPLE_BRIEF, colourType: 'Any' });
+  assert.equal(wrongChoice.status, 400);
+  assert.match(wrongChoice.json.message, /Colour is is one of: Preferred colour, Compulsory colour/);
+
+  const { status, json } = await send('sample_request', 'Black, 3 pcs, buyer wants it by Friday', nandhini, enquiryId, { ...SAMPLE_BRIEF, notAQuestion: 'x' });
   assert.equal(status, 201, json.message);
   sampleTask = json.data.task;
 
   assert.equal(sampleTask.department, 'sampling');
-  assert.equal(sampleTask.holds, true);
+  assert.notEqual(sampleTask.holds, true, 'a department task, not the enquiry');
+  assert.deepEqual(sampleTask.brief, SAMPLE_BRIEF, 'the answers, and only the questions it asks');
   assert.equal(sampleTask.user, undefined, 'anyone in sampling may pick it up');
   assert.equal(sampleTask.kind, 'sample_request');
   assert.equal(sampleTask.fromDepartment, 'marketing');
@@ -180,17 +189,18 @@ test('sample request: marketing is done with it, sampling has it, and the sample
   /* End of the day in India: 23:59:59.999 IST is 18:29:59.999 UTC. */
   assert.match(sampleTask.dueDate, /T18:29:59\.999Z$/);
 
-  const closed = await Todo.findById(first._id);
-  assert.equal(closed.completed, true, 'marketing\'s task is finished — the enquiry moved on');
-  assert.equal(closed.outcome.result, 'done');
-  assert.equal(closed.outcome.next, 'sample_request');
-
+  const still = await Todo.findById(first._id);
+  assert.equal(still.completed, false, 'the enquiry is still the marketing person\'s');
   const enquiry = await Enquiry.findById(enquiryId);
-  assert.equal(enquiry.stage, 'sample');
-  assert.equal(enquiry.heldBy, 'sampling');
+  assert.equal(enquiry.stage, 'sample', 'its stage says where the work is');
+  assert.equal(enquiry.heldBy, 'marketing');
   assert.equal(String(enquiry.stageHistory.at(-1).task), sampleTask._id);
   const { default: Sample } = await import('../src/models/Sample.js');
-  assert.ok(await Sample.exists({ enquiry: enquiryId }), 'the sample request is raised on the enquiry');
+  const sample = await Sample.findOne({ enquiry: enquiryId });
+  assert.ok(sample, 'the sample request is raised on the enquiry');
+  assert.equal(sample.colour, 'Black');
+  assert.equal(sample.colourMandatory, true, 'a compulsory colour is a condition of the sample');
+  assert.equal(sample.material, 'pp');
 
   await until(() => sent.some((line) => line.includes(PHONES.arun)));
   const message = sent.find((line) => line.includes(PHONES.arun));
@@ -200,8 +210,8 @@ test('sample request: marketing is done with it, sampling has it, and the sample
   assert.ok(!sent.some((line) => line.includes(PHONES.siva)), 'production is not told about sampling\'s work');
 });
 
-test('the same ask twice is one task, and one department holds the enquiry', async () => {
-  const twice = await send('sample_request', 'again');
+test('the same ask twice is one task, and the enquiry is still held once', async () => {
+  const twice = await send('sample_request', 'again', nandhini, enquiryId, SAMPLE_BRIEF);
   assert.equal(twice.status, 409);
   assert.match(twice.json.message, /Sample Request is already with Sampling/);
   assert.equal(await Todo.countDocuments({ enquiry: enquiryId, holds: true, completed: false }), 1);
@@ -264,47 +274,35 @@ test('an update says how it is going without moving the enquiry', async () => {
   assert.equal((await Enquiry.findById(enquiryId)).stage, 'sample');
 });
 
-test('done means moved on: say what was done and where it goes next', async () => {
+test('done: say what was done — it goes back to whoever asked; the enquiry stays put', async () => {
   sent.length = 0;
-  const noNote = await api(`/api/workspace/todos/${sampleTask._id}/done`, { method: 'POST', token: arun, body: { note: '', next: 'back_to_marketing' } });
+  const first = await holder();
+  const noNote = await api(`/api/workspace/todos/${sampleTask._id}/done`, { method: 'POST', token: arun, body: { note: '' } });
   assert.equal(noNote.status, 400);
-  const noNext = await api(`/api/workspace/todos/${sampleTask._id}/done`, { method: 'POST', token: arun, body: { note: 'Sent 3 pcs' } });
-  assert.equal(noNext.status, 400);
-  assert.match(noNext.json.message, /where it goes next/);
-  const notAStep = await api(`/api/workspace/todos/${sampleTask._id}/done`, { method: 'POST', token: arun, body: { note: 'Sent', next: 'photos_sent' } });
-  assert.equal(notAStep.status, 400, 'photos sent does not move the enquiry');
 
   const done = await api(`/api/workspace/todos/${sampleTask._id}/done`, {
     method: 'POST', token: arun,
-    body: { note: 'Sent 3 pcs', next: 'back_to_marketing', fields: { courier: 'Professional', awbNumber: 'PC123', notAField: 'x' } },
+    body: { note: 'Sent 3 pcs', fields: { courier: 'Professional', awbNumber: 'PC123', notAField: 'x' } },
   });
   assert.equal(done.status, 200, done.json.message);
   assert.equal(done.json.data.completed, true);
   assert.equal(done.json.data.outcome.result, 'done');
-  assert.equal(done.json.data.outcome.next, 'back_to_marketing');
   assert.deepEqual(done.json.data.outcome.fields, { courier: 'Professional', awbNumber: 'PC123' }, 'only the fields the button asks for');
   assert.equal(done.json.data.user.name, 'Arun K', 'doing it claims it');
 
-  const back = await holder();
-  assert.equal(back.kind, 'back_to_marketing');
-  assert.equal(String(back.user), await me(nandhini), 'marketing has it again, by name');
-  assert.equal(back.notes, 'Sent 3 pcs');
-  const enquiry = await Enquiry.findById(enquiryId);
-  assert.equal(enquiry.stage, 'enquiry');
-  assert.equal(enquiry.heldBy, 'marketing');
+  assert.equal(String((await holder())._id), String(first._id), 'marketing still has the enquiry');
+  const back = await Todo.findOne({ enquiry: enquiryId, title: /^Done: Sample Request/ });
+  assert.equal(String(back.user), await me(nandhini), 'the sender gets it back for the next step');
+  assert.match(back.notes, /Sent 3 pcs/);
 
   await until(() => sent.some((line) => line.includes(PHONES.nandhini)));
-  const told = sent.filter((line) => line.includes(PHONES.nandhini));
-  assert.match(told[0], /New task for you: Back to Marketing/);
-  assert.match(told[0], /from Arun K/);
-  await settle();
-  assert.equal(sent.filter((line) => line.includes(PHONES.nandhini)).length, 1, 'told once, not "done" and "new task" both');
+  assert.match(sent.find((line) => line.includes(PHONES.nandhini)), /Sample Request done by Arun K/);
 
-  const again = await api(`/api/workspace/todos/${sampleTask._id}/done`, { method: 'POST', token: arun, body: { note: 'twice', next: 'ask_edd' } });
+  const again = await api(`/api/workspace/todos/${sampleTask._id}/done`, { method: 'POST', token: arun, body: { note: 'twice' } });
   assert.equal(again.status, 409, 'a task is done once');
 });
 
-test('sent back: it goes back to whoever had it before, with why', async () => {
+test('sent back: it goes back to whoever asked, with why', async () => {
   const { json } = await send('create_quotation', 'Target ₹1.80');
   const task = json.data.task;
   assert.equal(task.department, 'quotation');
@@ -319,15 +317,13 @@ test('sent back: it goes back to whoever had it before, with why', async () => {
   assert.equal(back.status, 200, back.json.message);
   assert.equal(back.json.data.outcome.result, 'returned');
 
-  const now = await holder();
-  assert.equal(now.kind, 'back_to_marketing');
-  assert.equal(String(now.user), await me(nandhini));
-  assert.match(now.title, /^Sent back: Back to Marketing/);
-  assert.match(now.notes, /black or white/);
-  assert.equal((await Enquiry.findById(enquiryId)).stage, 'enquiry');
+  const told = await Todo.findOne({ enquiry: enquiryId, title: /^Sent back: Create Quotation/ });
+  assert.equal(String(told.user), await me(nandhini));
+  assert.match(told.notes, /black or white/);
+  assert.equal((await holder()).kind, 'new_enquiry', 'the enquiry never left marketing');
 });
 
-test('a department not asked about an enquiry cannot send on it; holding it, it moves it on', async () => {
+test('a department not asked about an enquiry cannot raise tasks on it; one that was asked may', async () => {
   const before = await send('quality_issue', 'Flash on the hook', kavitha);
   assert.equal(before.status, 404, 'quality has not been asked about this enquiry');
 
@@ -336,17 +332,13 @@ test('a department not asked about an enquiry cannot send on it; holding it, it 
   assert.equal(mould.json.data.task.department, 'mould');
   assert.equal((await Enquiry.findById(enquiryId)).stage, 'mould');
 
-  /* The Mould department, holding it now, sends it on to quality — any department may send to another. */
+  /* The Mould department, asked about it, raises Quality's task — any department may ask another. */
   const onward = await send('quality_issue', 'Check cavity 3 parts', murugan);
   assert.equal(onward.status, 201, onward.json.message);
   assert.equal(onward.json.data.task.department, 'quality');
   assert.equal(onward.json.data.task.fromDepartment, 'mould');
   assert.equal((await Enquiry.findById(enquiryId)).stage, 'quality');
-
-  /* Sampling had it once, but does not have it now — so it cannot move it. */
-  const notHolding = await send('ask_edd', 'When?', arun);
-  assert.equal(notHolding.status, 403);
-  assert.match(notHolding.json.message, /Quality has this enquiry/);
+  assert.equal((await Enquiry.findById(enquiryId)).heldBy, 'marketing', 'the enquiry stays with marketing throughout');
 });
 
 test('a marketing colleague cannot send on somebody else\'s enquiry', async () => {
@@ -354,7 +346,7 @@ test('a marketing colleague cannot send on somebody else\'s enquiry', async () =
   assert.equal(refused.status, 404);
 });
 
-test('a task passed to another department takes the enquiry with it, and tells that department', async () => {
+test('a task passed to another department goes with its own queue, and tells that department', async () => {
   const { json } = await send('ask_edd', 'Need the date for the buyer');
   assert.equal(json.data.task.department, 'production');
   sent.length = 0;
@@ -362,12 +354,13 @@ test('a task passed to another department takes the enquiry with it, and tells t
     method: 'POST', token: siva, body: { department: 'quality', reason: 'QC hold decides the date this time' },
   });
   assert.equal(moved.status, 200, moved.json.message);
-  assert.equal((await Enquiry.findById(enquiryId)).heldBy, 'quality');
+  assert.equal((await Todo.findById(json.data.task._id)).department, 'quality');
+  assert.equal((await Enquiry.findById(enquiryId)).heldBy, 'marketing');
   await until(() => sent.some((line) => line.includes(PHONES.kavitha)));
   assert.match(sent.find((line) => line.includes(PHONES.kavitha)), /New task for Quality: Ask EDD/);
 });
 
-test('my payment follow-up is for whoever holds the enquiry, personally', async () => {
+test('my payment follow-up is for the marketing person, personally', async () => {
   const { json } = await send('my_payment_followup', 'Promised by the 20th', admin);
   assert.equal(json.data.task.user?._id, await me(nandhini));
   assert.equal(json.data.task.department, 'marketing');
@@ -377,21 +370,26 @@ test('my payment follow-up is for whoever holds the enquiry, personally', async 
 test('the enquiry lists everything, who has it now, and whether you may move it', async () => {
   const { status, json } = await api(`/api/enquiries/${enquiryId}/handoffs`, { token: nandhini });
   assert.equal(status, 200);
-  assert.ok(json.data.length >= 8);
+  const kinds = new Set(json.data.map((task) => task.kind));
+  for (const kind of ['sample_request', 'create_quotation', 'mould_issue', 'quality_issue', 'ask_edd', 'my_payment_followup']) {
+    assert.ok(kinds.has(kind), `${kind} is listed`);
+  }
   assert.equal(json.data.at(-1).kind, 'new_enquiry', 'where it started');
   assert.equal(json.stage, 'my_payment_followup');
-  assert.equal(json.holder.kind, 'my_payment_followup');
-  assert.equal(json.mayMove, true, 'the marketing person may');
+  assert.equal(json.holder.kind, 'new_enquiry', 'the marketing person has had it all along');
+  assert.equal(json.mayMove, true, 'the marketing person may raise tasks from the tiles');
 
   const toolRoom = await api(`/api/enquiries/${enquiryId}/handoffs`, { token: murugan });
   assert.equal(toolRoom.status, 200, 'the Mould department worked on it, so may read it');
-  assert.equal(toolRoom.json.mayMove, false, 'but does not have it now');
+  assert.equal(toolRoom.json.mayMove, false, 'but it is not theirs');
 
-  /* Through all of that, never more than one department held it. */
+  /* Through all of that, only ever held once — by marketing. */
   assert.equal(await Todo.countDocuments({ enquiry: enquiryId, holds: true, completed: false }), 1);
 });
 
-test('a status that hands work on moves the enquiry, only while it is in the first four stages', async () => {
+const openTask = (id, kind) => Todo.findOne({ enquiry: id, kind, completed: false });
+
+test('a status that hands work on raises the department\'s task, only while in the first four stages', async () => {
   const fresh = await api('/api/enquiries', {
     method: 'POST', token: nandhini,
     body: { customer: (await Enquiry.findById(enquiryId)).customer, requirement: { modelNumber: 'NH-500' } },
@@ -400,22 +398,21 @@ test('a status that hands work on moves the enquiry, only while it is in the fir
   const next = { nextAction: 'Chase', nextFollowUpDate: new Date(Date.now() + 86400000).toISOString() };
   const status = await api(`/api/enquiries/${id}/status`, { method: 'POST', token: nandhini, body: { status: 'pricing_required', ...next } });
   assert.equal(status.status, 200, status.json.message);
-  await until(async () => (await holder(id))?.kind === 'create_quotation');
-  assert.equal((await holder(id))?.department, 'quotation');
+  await until(async () => Boolean(await openTask(id, 'create_quotation')));
+  assert.equal((await openTask(id, 'create_quotation'))?.department, 'quotation');
   assert.equal((await Enquiry.findById(id)).stage, 'pricing_quote');
-  assert.equal(await Todo.countDocuments({ enquiry: id, holds: true, completed: false }), 1);
+  assert.equal((await holder(id)).kind, 'new_enquiry', 'marketing still holds it');
 
-  /* Quotation has it, so marketing (the owner) moves it to production. */
   await send('ask_edd', 'Date please', nandhini, id);
   assert.equal((await Enquiry.findById(id)).stage, 'production_edd');
   await api(`/api/enquiries/${id}/status`, { method: 'POST', token: nandhini, body: { status: 'negotiation', ...next } });
   await settle();
   await settle();
   assert.equal((await Enquiry.findById(id)).stage, 'production_edd', 'a requote does not drag it out of production');
-  assert.equal((await holder(id)).department, 'production');
+  assert.equal(await openTask(id, 'price_negotiation'), null);
 });
 
-test('raising a sample on an enquiry hands it to sampling', async () => {
+test('raising a sample on an enquiry gives sampling its task', async () => {
   const fresh = await api('/api/enquiries', {
     method: 'POST', token: nandhini,
     body: { customer: (await Enquiry.findById(enquiryId)).customer, requirement: { modelNumber: 'NH-600' } },
@@ -423,9 +420,10 @@ test('raising a sample on an enquiry hands it to sampling', async () => {
   const id = fresh.json.data._id;
   const sample = await api('/api/samples', { method: 'POST', token: nandhini, body: { enquiry: id, quantity: 3 } });
   assert.equal(sample.status, 201, sample.json.message);
-  await until(async () => (await holder(id))?.kind === 'sample_request');
-  assert.equal((await holder(id)).department, 'sampling');
+  await until(async () => Boolean(await openTask(id, 'sample_request')));
+  assert.equal((await openTask(id, 'sample_request')).department, 'sampling');
   assert.equal((await Enquiry.findById(id)).stage, 'sample');
+  assert.equal((await holder(id)).kind, 'new_enquiry');
 });
 
 test('photos sent is recorded, not sent to anybody, and the enquiry stays where it is', async () => {
@@ -547,14 +545,14 @@ test('a department sees the enquiries at its own stages; the enquiry list filter
   assert.ok(unknown.json.data.length > listed.json.data.length, 'an unknown stage is ignored, not matched');
 });
 
-test('a department’s desk lists the enquiries it holds, late first, with the records behind them', async () => {
+test('a department’s dashboard lists its open department tasks, late first, with the records behind them', async () => {
   const production = await api('/api/departments/mine/dashboard', { token: siva });
   assert.equal(production.status, 200, production.json.message);
   const { enquiries, requests, queue } = production.json.data;
-  assert.ok(enquiries.length >= 1, 'production holds an enquiry');
+  assert.ok(enquiries.length >= 1, 'production has a task');
   for (const row of enquiries) {
     assert.equal(row.task.department, 'production');
-    assert.equal(row.task.holds, true, 'only the enquiries it holds, not side requests');
+    assert.equal(row.task.completed, false);
     assert.ok(row.enquiry.number && row.enquiry.stageLabel, 'named, with its stage in words');
     assert.ok('sample' in row.records && 'quotation' in row.records && 'order' in row.records);
   }
@@ -603,30 +601,35 @@ test('existing enquiries get their stage from their sales status', async () => {
   assert.deepEqual(await backfillStages(db, { write: true, log: () => {} }), {});
 });
 
-test('existing enquiries get the department task for the stage they are at', async () => {
+test('existing enquiries go back to their marketing person; a department that held one keeps its task', async () => {
   const { backfillHolders } = await import('../scripts/migrate-enquiry-holders.js');
   const customer = (await Enquiry.findById(enquiryId)).customer;
   const owner = await me(nandhini);
   const [atPo, inProduction] = await Enquiry.insertMany([
     { number: 'HOLD-1', customer, assignedTo: owner, status: 'won', stage: 'po_so', requirement: { modelNumber: 'NH-1' } },
-    { number: 'HOLD-2', customer, assignedTo: owner, status: 'won', stage: 'production_edd', requirement: { modelNumber: 'NH-2' } },
+    { number: 'HOLD-2', customer, assignedTo: owner, status: 'won', stage: 'production_edd', heldBy: 'production', requirement: { modelNumber: 'NH-2' } },
   ]);
-  /* Production was already asked for a date before holding tasks existed. */
-  const asked = await Todo.create({
-    enquiry: inProduction._id, customer, kind: 'ask_edd', department: 'production', title: 'Ask EDD — HOLD-2', dueDate: new Date(),
+  /* Production held this one, from before department tasks. */
+  const held = await Todo.create({
+    enquiry: inProduction._id, customer, kind: 'ask_edd', department: 'production', holds: true, title: 'Ask EDD — HOLD-2', dueDate: new Date(),
   });
 
   const dry = await backfillHolders({ write: false, log: () => {} });
-  assert.ok(dry.opened >= 1 && dry.adopted >= 1);
-  assert.equal(await Todo.countDocuments({ enquiry: { $in: [atPo._id, inProduction._id] }, holds: true }), 0, 'a dry run changes nothing');
+  assert.ok(dry.opened >= 1 && dry.released >= 1);
+  assert.equal(await Todo.countDocuments({ enquiry: atPo._id, holds: true }), 0, 'a dry run changes nothing');
+  assert.equal((await Todo.findById(held._id)).holds, true);
 
   await backfillHolders({ write: true, log: () => {} });
   const po = await holder(atPo._id);
-  assert.equal(po.kind, 'po_so');
-  assert.equal(po.department, 'order_confirmation');
-  assert.equal((await Enquiry.findById(atPo._id)).heldBy, 'order_confirmation');
-  assert.equal(String((await holder(inProduction._id))._id), String(asked._id), 'the open Ask EDD becomes the holding task');
+  assert.equal(po.kind, 'new_enquiry');
+  assert.equal(String(po.user), owner);
+  assert.equal((await Enquiry.findById(atPo._id)).heldBy, 'marketing');
+  const kept = await Todo.findById(held._id);
+  assert.equal(kept.completed, false, 'production keeps its task');
+  assert.notEqual(kept.holds, true, 'but no longer holds the enquiry');
+  assert.equal((await holder(inProduction._id)).kind, 'new_enquiry');
+  assert.equal((await Enquiry.findById(inProduction._id)).heldBy, 'marketing');
 
   const again = await backfillHolders({ write: true, log: () => {} });
-  assert.equal(again.opened + again.adopted, 0, 'safe to run twice');
+  assert.equal(again.opened + again.released, 0, 'safe to run twice');
 });

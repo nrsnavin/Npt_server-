@@ -100,17 +100,18 @@ async function moveOnBehalf(enquiryId, kind, { by, status } = {}) {
 }
 
 /**
- * Moves the enquiry on someone's behalf when a record says the work moved — but only from the
- * stage that work belongs to, so an enquiry somebody has already sent elsewhere is left alone.
+ * Raises the next department's task on someone's behalf when a record says the work moved —
+ * finishing the task of the department whose work it was (`finishes`) — but only from the stage
+ * that work belongs to, so an enquiry whose work has gone elsewhere is left alone.
  */
-async function moveWhenAt(enquiryId, { at, kind, by, fields, note }) {
+async function moveWhenAt(enquiryId, { at, kind, by, fields, note, finishes = [] }) {
   const enquiry = await Enquiry.findById(enquiryId?._id || enquiryId).populate('customer', 'code name');
   if (!enquiry || !at.includes(enquiry.stage)) return;
   const holder = await holderOf(enquiry._id);
   if (holder?.kind === kind) return;
   const user = by?._id ? await User.findById(by._id).select('name department role') : undefined;
   try {
-    await moveEnquiry({ enquiry, kind, fields, note, user: user || undefined, system: true, openRecords: false });
+    await moveEnquiry({ enquiry, kind, fields, note, finishes, user: user || undefined, system: true, openRecords: false });
   } catch (error) {
     if (error?.code === 11000 || error?.statusCode === 409) return;
     /* A gate said no (Quality not passed, a balance left): the department moves it by hand. */
@@ -228,7 +229,7 @@ export function registerHandoffSubscribers() {
       const order = await SalesOrder.findById(orderId).select('number enquiry customerPo');
       if (!order?.enquiry) return;
       await moveWhenAt(order.enquiry, {
-        at: ['po_so'], kind: 'ask_edd', by,
+        at: ['po_so'], kind: 'ask_edd', by, finishes: ['po_so'],
         fields: { poNumber: order.customerPo?.number, soNumber: order.number },
         note: `${order.number} released to production`,
       });
@@ -246,7 +247,7 @@ export function registerHandoffSubscribers() {
       if (!order?.enquiry) return;
       const sent = (dispatch.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0);
       await moveWhenAt(order.enquiry, {
-        at: ['invoice_dispatch'], kind: 'lr_copy', by,
+        at: ['invoice_dispatch'], kind: 'lr_copy', by, finishes: ['invoice_dispatch'],
         fields: { invoiceNumber: dispatch.invoice?.number, quantitySent: sent ? String(sent) : undefined, transporter: dispatch.transporter },
         note: `${dispatch.number} has left the plant`,
       });

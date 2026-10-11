@@ -60,14 +60,16 @@ const followUp = { nextAction: 'Call the buyer', nextFollowUpDate: soon() };
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
 
 /** The department that has the enquiry, once a move made on someone's behalf has landed. */
+/** The department's open task on the enquiry — the enquiry itself stays with its marketing person. */
 async function holderOf(id, department) {
-  let holder;
+  let task;
   for (let i = 0; i < 100; i += 1) {
-    holder = (await api(`/api/enquiries/${id}/handoffs`, { token: admin })).json.holder;
-    if (holder?.department === department) break;
+    const { data = [] } = (await api(`/api/enquiries/${id}/handoffs`, { token: admin })).json;
+    task = data.find((row) => row.department === department && !row.completed && !row.holds);
+    if (task) break;
     await new Promise((resolve) => setTimeout(resolve, 60));
   }
-  return holder;
+  return task;
 }
 
 const requirement = (extra = {}) => ({
@@ -311,7 +313,7 @@ test('management is not queued the bench’s own work', async () => {
     'an admin should not be handed the sample team’s queue'
   );
 
-  /* The bench's work is the enquiry itself, on Sampling's queue — not a task per person. */
+  /* The bench's work is one department task, on Sampling's queue — not a task per person. */
   const holder = await holderOf(enquiry._id, 'sampling');
   assert.equal(holder?.department, 'sampling');
   assert.ok(!adminTasks.json.data.some((todo) => String(todo._id) === String(holder._id)), 'and not on the admin\'s own list');
@@ -411,7 +413,7 @@ test('the automated route into pricing raises the same handover as the manual on
   }
 });
 
-test('a request raised by hand hands the enquiry to the bench, exactly as an automated one does', async () => {
+test('a request raised by hand gives the bench its task, exactly as an automated one does', async () => {
   // Manual entry is the primary path [§8] and permanent. A request raised on an enquiry by hand
   // moves that enquiry to Sampling just as the automation does, so it lands on the bench.
   const customer = await makeCustomer(nandhini);
@@ -429,7 +431,7 @@ test('a request raised by hand hands the enquiry to the bench, exactly as an aut
   assert.equal(holder.kind, 'sample_request');
 });
 
-test('reaching pricing hands the enquiry to Quotation, with the buyer\'s target on the sheet', async () => {
+test('reaching pricing gives Quotation its task, with the buyer\'s target on the sheet', async () => {
   // §5 and §41.8: an enquiry reaching pricing is somebody's job the moment it gets there.
   const customer = await makeCustomer(nandhini);
   const enquiry = await makeEnquiry(nandhini, customer._id, { targetPrice: 7.2 });
