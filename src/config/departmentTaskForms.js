@@ -231,6 +231,20 @@ export const TASK_FORMS = {
   quality_issue: {
     team: 'Quality Team',
     asks: [...modelAndQuantity, { key: 'problem', label: 'The problem', required: true }],
+    remarkRequired: true,
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'What was found, what was done for the buyer' },
+    /* A complaint is an issue on the enquiry until it is resolved. */
+    statuses: [
+      { key: 'received', label: 'Complaint Received', issue: true },
+      { key: 'checking', label: 'Under Checking', issue: true },
+      { key: 'attended', label: 'Attended', issue: true },
+      { key: 'corrective_action', label: 'Corrective Action', issue: true },
+      { key: 'replacement', label: 'Replacement In Progress', issue: true },
+      { key: 'replaced', label: 'Replaced', issue: true },
+      { key: 'resolved', label: 'Resolved' },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
   },
   invoice_dispatch: {
     title: 'Send Dispatch Request',

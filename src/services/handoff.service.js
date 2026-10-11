@@ -1219,7 +1219,7 @@ export async function taskPrefill(enquiryId) {
 
 const EDD_KINDS = ['ask_edd', 'ask_assembling_edd'];
 
-/** Kinds whose tasks a problem is, whatever their status, while they are open. */
+/** Kinds whose tasks are a problem in themselves — a complaint — until their workflow says otherwise. */
 const ISSUE_KINDS = ['quality_issue'];
 const MOULD_KINDS = ['mould_issue'];
 
@@ -1250,8 +1250,14 @@ export async function enquiryProgress(enquiryIds) {
     }
     if (task.completed) continue;
     const step = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status);
-    if (step?.issue) row.issues.push({ department: task.department, label: step.label });
-    else if (ISSUE_KINDS.includes(task.kind)) row.issues.push({ department: task.department, label: findHandoff(task.kind)?.label || 'Issue' });
+    const kindLabel = findHandoff(task.kind)?.label || 'Issue';
+    if (step?.issue) {
+      /* A complaint says what it is and where it has got to: "Quality Issue — Under Checking". */
+      row.issues.push({ department: task.department, label: ISSUE_KINDS.includes(task.kind) ? `${kindLabel} — ${step.label}` : step.label });
+    } else if (!step && ISSUE_KINDS.includes(task.kind)) {
+      /* One raised before Quality had its workflow: an issue until it is closed. */
+      row.issues.push({ department: task.department, label: kindLabel });
+    }
   }
   return progress;
 }
