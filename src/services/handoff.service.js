@@ -715,14 +715,17 @@ async function answerParent(clarification, user, text) {
  * enquiry's marketing person, due today, with the comment. The status reached by uploading the
  * work (SO Prepared) is not chosen here — see `finishWithResult`.
  */
-export async function setTaskStatus(task, user, { status, note }) {
+export async function setTaskStatus(task, user, { status, note, date }) {
   openHandoff(task, user);
+  const form = findHandoff(task.kind)?.form || {};
   const step = statusesOf(task).find((entry) => entry.key === status);
   if (!step) fail('That is not one of this task’s statuses');
   if (step.pdf) fail(`Upload the PDF to mark it ${step.label}`);
   const text = String(note || '').trim();
   if (step.comment && text.length < 3) fail(`Say what is needed — ${step.label} asks for a comment`);
-  if (task.status === status) return task;
+  if (form.remarkRequired && text.length < 3) fail(`Add a remark to move it to ${step.label}`);
+  const readyDate = statusDate(form, step, date);
+  if (task.status === status && !readyDate) return task;
 
   if (step.raises) {
     const enquiry = await enquiryOfTask(task);
@@ -733,12 +736,95 @@ export async function setTaskStatus(task, user, { status, note }) {
   }
   task.status = status;
   task.attention = undefined;
-  task.statusHistory = [...(task.statusHistory || []), { status, note: text || undefined, by: user._id, at: new Date() }];
-  task.updates = [...(task.updates || []), { note: text ? `${step.label}: ${text}` : step.label, by: user._id, at: new Date() }];
+  task.statusHistory = [...(task.statusHistory || []), { status, note: text || undefined, date: readyDate || undefined, by: user._id, at: new Date() }];
+  const said = [step.label, readyDate && `${form.statusDate?.label || 'Ready date'} ${readyDate}`].filter(Boolean).join(' · ');
+  /* A ready date is the enquiry's EDD from here on [productionDates]. */
+  task.updates = [...(task.updates || []), {
+    note: text ? `${said}: ${text}` : said, ...(readyDate ? { fields: { edd: readyDate } } : {}), by: user._id, at: new Date(),
+  }];
   if (!task.user) task.user = user._id;
   await task.save();
+  if (form.notifyStatus) await noticeStatus(task, user, { step, note: text, date: readyDate });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  /* The last status finishes the task (Task Closed), and its sender hears it is done. */
+  if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { edd: readyDate } : {} });
   return task;
+}
+
+const indiaDay = (date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(date);
+
+/** The ready date going with a status move, as YYYY-MM-DD — or null when there is none. */
+function statusDate(form, step, date) {
+  const given = String(date || '').trim();
+  if (given) {
+    if (!form.statusDate && !step.date) fail('This task does not take a date');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(given) || Number.isNaN(Date.parse(given))) fail('Give the date as a calendar date');
+    if (given < indiaDay(new Date())) fail('The ready date cannot be in the past');
+    return given;
+  }
+  if (step.date === 'tomorrow') return indiaDay(new Date(Date.now() + DAY_MS));
+  if (step.date === 'required') fail(`Give the ${form.statusDate?.label || 'ready date'} for ${step.label}`);
+  return null;
+}
+
+/**
+ * The move, shown to the enquiry's marketing person and every Admin — not to whoever made it —
+ * under "Needs your action" until they read and dismiss it [models/TaskNotice.js].
+ */
+async function noticeStatus(task, user, { step, note, date }) {
+  const [{ default: TaskNotice }, { default: User }] = await Promise.all([
+    import('../models/TaskNotice.js'), import('../models/User.js'),
+  ]);
+  const enquiry = await Enquiry.findById(task.enquiry?._id || task.enquiry).select('assignedTo customer').lean();
+  const admins = await User.find({ role: 'admin', isActive: { $ne: false } }).select('_id').lean();
+  const recipients = new Set([enquiry?.assignedTo, ...admins.map((person) => person._id)].filter(Boolean).map(String));
+  recipients.delete(String(user._id));
+  if (!recipients.size) return;
+  await TaskNotice.insertMany([...recipients].map((recipient) => ({
+    recipient, task: task._id, enquiry: enquiry?._id, customer: task.customer || enquiry?.customer,
+    department: task.department, kind: task.kind, status: step.key, statusLabel: step.label,
+    note: note || undefined, date: date || undefined, by: user._id, at: new Date(),
+  })));
+}
+
+/* Unread, or read within the last day — a notice clears itself a day after it is read. */
+const liveNotices = (user) => ({
+  recipient: user._id,
+  $or: [{ readAt: null }, { expireAt: { $gt: new Date() } }],
+});
+
+/** This person's notices of department moves, newest first. */
+export async function noticesFor(user) {
+  const { default: TaskNotice } = await import('../models/TaskNotice.js');
+  return TaskNotice.find(liveNotices(user)).sort({ at: -1 }).limit(50)
+    .populate([
+      { path: 'by', select: 'name department' },
+      { path: 'customer', select: 'code name' },
+      { path: 'enquiry', select: 'number' },
+    ]).lean();
+}
+
+/** Read: it can be dismissed now, and it clears itself a day later. */
+export async function readNotice(user, id) {
+  const { default: TaskNotice, READ_NOTICE_KEPT_MS } = await import('../models/TaskNotice.js');
+  const notice = await TaskNotice.findOne({ _id: id, recipient: user._id });
+  if (!notice) throw ApiError.notFound('Notice not found');
+  if (!notice.readAt) {
+    notice.readAt = new Date();
+    notice.expireAt = new Date(notice.readAt.getTime() + READ_NOTICE_KEPT_MS);
+    await notice.save();
+  }
+  return notice;
+}
+
+/** Dismissed — only once read, so nobody clears what they have not looked at. */
+export async function dismissNotice(user, id) {
+  const { default: TaskNotice } = await import('../models/TaskNotice.js');
+  const notice = await TaskNotice.findOne({ _id: id, recipient: user._id });
+  if (!notice) throw ApiError.notFound('Notice not found');
+  if (!notice.readAt) fail('Read it first — then it can be dismissed');
+  await notice.deleteOne();
+  return { dismissed: true };
 }
 
 /** The status reached by uploading the work, checked before the file is stored. */
@@ -808,7 +894,8 @@ export async function attentionFor(user, department) {
     }).sort({ createdAt: 1 }).limit(50).populate(populate),
     Todo.find({ 'attention.kind': 'reply', completed: false, department }).sort({ 'attention.at': -1 }).limit(50).populate(populate),
   ]);
-  return { questions, replies };
+  /* And what departments did on this person's enquiries — Admin's, every enquiry's. */
+  return { questions, replies, notices: await noticesFor(user) };
 }
 
 /** The department corrects what it was told — the questions marked `editable` (contact details). */
@@ -1105,7 +1192,11 @@ export async function productionDates(enquiryId) {
   })));
   return {
     edd: said[0] || null,
-    asked: open ? { department: open.department, at: open.createdAt, due: open.dueDate } : null,
+    asked: open ? {
+      department: open.department, at: open.createdAt, due: open.dueDate,
+      /* Where Production has it on its own workflow — Planning, Part 1 Ready … */
+      status: (findHandoff(open.kind)?.form?.statuses || []).find((entry) => entry.key === open.status)?.label || null,
+    } : null,
     lines,
   };
 }

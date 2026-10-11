@@ -11,7 +11,7 @@ import { HANDOFFS, TILE_KIND } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  attentionFor, editTaskBrief, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
+  attentionFor, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
   updateHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
@@ -160,6 +160,19 @@ export const handoffStatus = asyncHandler(transactional(async (req, res) => {
   const task = await setTaskStatus(await taskFor(req), req.user, req.body);
   await answer(res, task);
 }));
+
+/* A department's moves on this person's enquiries [handoff.service `noticeStatus`]. */
+export const listNotices = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await noticesFor(req.user) });
+});
+
+export const markNoticeRead = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await readNotice(req.user, req.params.id) });
+});
+
+export const removeNotice = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await dismissNotice(req.user, req.params.id) });
+});
 
 /** "Got it" on an answer that came back — it leaves the top of the dashboard. */
 export const handoffSeen = asyncHandler(async (req, res) => {

@@ -36,6 +36,7 @@ export const handoffUpdateSchema = z.object({
 export const taskStatusSchema = z.object({
   status: z.string().trim().min(1).max(40),
   note: z.string().trim().max(2000).optional(),
+  date: z.string().trim().max(10).optional(),
 });
 
 /** Correcting what the task was told — only the questions marked `editable`; checked by the service. */
