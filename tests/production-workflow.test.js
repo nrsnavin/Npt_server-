@@ -764,3 +764,42 @@ test('the migration hands open LR Copy tasks from Dispatch to Reception, and lea
   assert.equal((await Todo.findById(done._id)).department, 'despatch', 'the record of who did it stays');
   assert.equal((await moveLrTasks({ write: true, log: () => {} })).moved, 0, 'run twice, nothing more to do');
 });
+
+test('Done on a task with its own workflow closes it at Task Closed and tells marketing and Admin, like choosing it', async () => {
+  const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Stock run for the showroom', brief: { quantity: '2000' } } });
+  assert.equal(sent.status, 201, sent.json.message);
+  const id = sent.json.data.task._id;
+  assert.equal((await api(`/api/workspace/todos/${id}/status`, { method: 'POST', as: 'siva', body: { status: 'planning', note: 'On M2 next week' } })).status, 200);
+  const done = await api(`/api/workspace/todos/${id}/done`, { method: 'POST', as: 'siva', body: { note: 'All 2,000 made and handed to stores' } });
+  assert.equal(done.status, 200, done.json.message);
+  const task = await Todo.findById(id);
+  assert.equal(task.completed, true);
+  assert.equal(task.status, 'closed', 'not left showing Planning');
+  assert.equal(task.statusHistory.at(-1).status, 'closed');
+  const [notice] = await noticesOf('nandhini');
+  assert.equal(notice.statusLabel, 'Task Closed');
+  assert.equal(notice.note, 'All 2,000 made and handed to stores');
+});
+
+test('choosing Task Closed tells them once, not twice', async () => {
+  const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Another stock run' } });
+  const id = sent.json.data.task._id;
+  const before = (await noticesOf('nandhini')).length;
+  assert.equal((await api(`/api/workspace/todos/${id}/status`, { method: 'POST', as: 'siva', body: { status: 'closed', note: 'Done and dusted' } })).status, 200);
+  assert.equal((await noticesOf('nandhini')).length, before + 1);
+});
+
+test('a team task form only fills in customers its raiser may see, and only Admin and marketing get it', async () => {
+  const customer = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data.customer;
+  const id = customer._id || customer;
+  assert.equal((await api(`/api/workspace/team-tasks/prefill?customer=${id}`, { as: 'siva' })).status, 403, 'Production does not raise team tasks');
+  assert.equal((await api(`/api/workspace/team-tasks/prefill?customer=${id}`, { as: 'rekha' })).status, 403);
+  assert.equal((await api(`/api/workspace/team-tasks/prefill?customer=${id}`, { as: 'arun' })).status, 404, 'another marketing person’s buyer');
+  const own = await api(`/api/workspace/team-tasks/prefill?customer=${id}`, { as: 'nandhini' });
+  assert.equal(own.status, 200);
+  assert.ok(own.json.data.customer.mobile, 'their own buyer’s contact');
+  assert.equal((await api(`/api/workspace/team-tasks/prefill?customer=${id}`, { as: 'admin' })).status, 200, 'Admin sees every buyer');
+  const named = await api('/api/workspace/team-tasks', { method: 'POST', as: 'arun', body: { kind: 'ask_edd', note: 'Stock run', customer: id } });
+  assert.equal(named.status, 400);
+  assert.match(named.json.message, /not on the register/);
+});

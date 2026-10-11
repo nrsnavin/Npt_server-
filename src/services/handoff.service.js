@@ -529,8 +529,9 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
   let buyer = null;
   if (customer) {
     const { default: Customer } = await import('../models/Customer.js');
-    buyer = /^[0-9a-f]{24}$/i.test(String(customer)) ? await Customer.findById(customer).select('code name') : null;
-    if (!buyer) fail('That customer is not on the register');
+    buyer = /^[0-9a-f]{24}$/i.test(String(customer)) ? await Customer.findById(customer).select('code name assignedTo') : null;
+    /* A marketing person names their own buyers, as everywhere else; Admin any. */
+    if (!buyer || (isOwnershipScoped(user) && !ownsRecord(user, buyer))) fail('That customer is not on the register');
   }
   let department = handoff.department;
   let assignee = picked.member?._id;
@@ -556,12 +557,17 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
 }
 
 /** What a team task's form can fill without an enquiry: the members to pick, and the named customer's contact. */
-export async function teamTaskPrefill(customerId) {
+export async function teamTaskPrefill(customerId, user) {
+  /* The same people who may raise a team task — and a customer's contact only if theirs to see. */
+  if (user && !(isAdmin(user) || inDepartment(user, 'marketing'))) {
+    throw ApiError.forbidden('Only Admin and the marketing team raise team tasks without an enquiry');
+  }
   const members = await membersFor(HANDOFFS.flatMap((handoff) => (handoff.asks || []).filter((field) => field.type === 'member').map((field) => field.department)));
   let customer = { name: '', contactPerson: '', mobile: '', whatsapp: '', delivery: '' };
   if (customerId && /^[0-9a-f]{24}$/i.test(String(customerId))) {
     const { default: Customer } = await import('../models/Customer.js');
     const found = await Customer.findById(customerId).lean();
+    if (found && user && isOwnershipScoped(user) && !ownsRecord(user, found)) throw ApiError.notFound('Customer not found');
     if (found) {
       const primary = found.contacts?.find((contact) => contact.isPrimary) || found.contacts?.[0];
       const phone = primary?.mobile || found.mobile || '';
@@ -803,6 +809,17 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
 
   const handoff = findHandoff(task.kind);
   const kept = keptFields(task.kind, fields);
+  /*
+   * Done on a task with its own workflow is that workflow's last status (Task Closed): the card
+   * shows it, and the enquiry's marketing person and Admin are told, as when it is chosen from
+   * the list — not "done" beside whatever status it last had.
+   */
+  const closing = !system && statusesOf(task).find((entry) => entry.done && !entry.pdf);
+  const closesNow = Boolean(closing && task.status !== closing.key);
+  if (closesNow) {
+    task.status = closing.key;
+    task.statusHistory = [...(task.statusHistory || []), { status: closing.key, note: text, by: user._id, at: new Date() }];
+  }
   task.completed = true;
   task.completedAt = new Date();
   task.completedBy = user._id;
@@ -812,6 +829,7 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
   };
   await task.save();
 
+  if (closesNow && handoff?.form?.notifyStatus) await noticeStatus(task, user, { step: closing, note: text });
   const details = (handoff?.records || []).filter((field) => kept[field.key]).map((field) => `${field.label}: ${kept[field.key]}`);
   /* A clarification's answer goes back onto the task that asked; anything else, to its sender. */
   if (task.parentTask) await answerParent(task, user, text);
