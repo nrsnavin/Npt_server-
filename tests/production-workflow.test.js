@@ -163,3 +163,53 @@ test('Task Closed finishes the task', async () => {
   const [notice] = await noticesOf('nandhini');
   assert.equal(notice.statusLabel, 'Task Closed');
 });
+
+/* ------------------------------ The Mould team ------------------------------ */
+
+let mouldTask;
+const mouldMove = (as, status, extra = {}) => api(`/api/workspace/todos/${mouldTask._id}/status`, { method: 'POST', as, body: { status, ...extra } });
+const listed = async () => (await api('/api/enquiries', { as: 'nandhini' })).json.data.find((row) => row._id === enquiry._id);
+
+test('the Mould task has its own workflow, starting at Development', async () => {
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', as: 'nandhini', body: { kind: 'mould_issue', note: 'New tool for UTJRSH-0', brief: { model: 'UTJRSH-0', problem: 'New development — no tool yet' } },
+  });
+  assert.equal(sent.status, 201, sent.json.message);
+  mouldTask = await Todo.findById(sent.json.data.task._id);
+  assert.equal(mouldTask.status, 'development');
+  const { buttons } = (await api('/api/handoffs', { as: 'nandhini' })).json.data;
+  const form = buttons.find((button) => button.key === 'mould_issue').form;
+  assert.deepEqual(form.statuses.map((entry) => entry.label), ['Development', 'Development EDR', 'Rework', 'Rework EDR', 'Mould Ready', 'Task Closed']);
+});
+
+test('a Mould move needs a remark; the EDR moves need the mould’s ready date; marketing and Admin are told', async () => {
+  const before = (await noticesOf('nandhini')).length;
+  assert.equal((await mouldMove('admin', 'development_edr', { date: indiaDay(6) })).status, 400, 'no remark');
+  assert.match((await mouldMove('admin', 'development_edr', { note: 'Steel ordered, core in CNC' })).json.message, /EDR \/ Mould ready date/);
+  const moved = await mouldMove('admin', 'development_edr', { note: 'Steel ordered, core in CNC', date: indiaDay(6) });
+  assert.equal(moved.status, 200, moved.json.message);
+  const notices = await noticesOf('nandhini');
+  assert.equal(notices.length, before + 1);
+  assert.equal(notices[0].statusLabel, 'Development EDR');
+  assert.equal(notices[0].department, 'mould');
+  assert.equal(notices[0].date, indiaDay(6));
+  assert.ok(!(await noticesOf('admin')).some((entry) => entry.statusLabel === 'Development EDR'), 'Admin made this move');
+});
+
+test('marketing’s enquiry list shows the stage, the mould’s ERD, Production’s EDD and the issues', async () => {
+  let row = await listed();
+  assert.ok(row.stage, 'the enquiry’s stage');
+  assert.equal(row.progress.erd.date, indiaDay(6));
+  assert.equal(row.progress.erd.department, 'mould');
+  assert.equal(row.progress.edd.date, indiaDay(1), 'Production’s Ready Tomorrow');
+  assert.deepEqual(row.progress.issues, []);
+
+  assert.equal((await mouldMove('admin', 'rework', { note: 'Trial shots short on cavity 2' })).status, 200);
+  row = await listed();
+  assert.deepEqual(row.progress.issues, [{ department: 'mould', label: 'Rework' }]);
+
+  assert.equal((await mouldMove('admin', 'mould_ready', { note: 'Trial passed — tool in the store' })).status, 200);
+  row = await listed();
+  assert.deepEqual(row.progress.issues, [], 'the issue goes when the mould is ready');
+  assert.equal(row.progress.erd.date, indiaDay(6), 'the ERD given stays');
+});

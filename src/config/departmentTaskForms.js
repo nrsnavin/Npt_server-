@@ -36,11 +36,13 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
  *   pdf        it is reached only by uploading the PDF of the work (the sales order)
  *   done       reaching it finishes the task
  *   next       the department task raised once it is done (the enquiry moves on to it)
+ *   issue      while the task is at it, the enquiry shows it as an issue (marketing's list)
  *   date       `required` — a ready date must be given with it; `tomorrow` — it is tomorrow
  *              unless another is given. Any other status takes the date if one is given.
  * With the statuses, a form may say:
  *   remarkRequired  every move along them needs a remark (`remark` labels the box)
- *   statusDate      a ready date may go with a move (`label`); it becomes the enquiry's EDD
+ *   statusDate      a ready date may go with a move (`label`); `field` says what it is on the
+ *                   enquiry — `edd` (Production's) or `erd` (the mould's ready date)
  *   notifyStatus    every move is shown to the enquiry's marketing person and every Admin,
  *                   under "Needs your action" [models/TaskNotice.js]
  * A question marked `editable` may be corrected by the department working the task.
@@ -160,7 +162,8 @@ export const TASK_FORMS = {
     /* Every move says why, and the enquiry's marketing person and Admin are told of it. */
     remarkRequired: true,
     notifyStatus: true,
-    statusDate: { label: 'ERD / Ready date' },
+    /* Production's ready date — the enquiry's EDD [handoff.service `productionDates`]. */
+    statusDate: { label: 'ERD / Ready date', field: 'edd' },
     remark: { label: 'Remarks', placeholder: 'Add production / assembling remark' },
     statuses: [
       { key: 'received', label: 'EDD Request Received' },
@@ -171,9 +174,9 @@ export const TASK_FORMS = {
       { key: 'started', label: 'Production Started' },
       { key: 'part1_ready', label: 'Part 1 Ready' },
       { key: 'part2_ready', label: 'Part 2 Ready' },
-      { key: 'mould_issue', label: 'Mould Issue' },
-      { key: 'machine_not_allotted', label: 'Machine Not Allotted / Alternate Required' },
-      { key: 'raw_material', label: 'Raw Material Not Available' },
+      { key: 'mould_issue', label: 'Mould Issue', issue: true },
+      { key: 'machine_not_allotted', label: 'Machine Not Allotted / Alternate Required', issue: true },
+      { key: 'raw_material', label: 'Raw Material Not Available', issue: true },
       { key: 'completed', label: 'Production Completed' },
       { key: 'assembling', label: 'Assembling' },
       { key: 'ready_dispatch', label: 'Ready for Dispatch' },
@@ -183,6 +186,19 @@ export const TASK_FORMS = {
   ask_assembling_edd: { team: 'Assembly Team', asks: modelAndQuantity },
   mould_issue: {
     team: 'Mould Team',
+    remarkRequired: true,
+    notifyStatus: true,
+    /* The mould's expected ready date — the enquiry's ERD. */
+    statusDate: { label: 'EDR / Mould ready date', field: 'erd' },
+    remark: { label: 'Remarks', placeholder: 'Add mould development / rework remark' },
+    statuses: [
+      { key: 'development', label: 'Development' },
+      { key: 'development_edr', label: 'Development EDR', date: 'required' },
+      { key: 'rework', label: 'Rework', issue: true },
+      { key: 'rework_edr', label: 'Rework EDR', date: 'required', issue: true },
+      { key: 'mould_ready', label: 'Mould Ready' },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
     asks: [
       { key: 'model', label: 'Model / mould', type: 'choice', optionsFrom: 'modelList', from: 'modelList.0', placeholder: 'Select the model' },
       { key: 'material', label: 'Material / colour', from: 'materials' },

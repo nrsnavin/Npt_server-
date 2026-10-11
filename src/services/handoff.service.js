@@ -738,16 +738,17 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   task.attention = undefined;
   task.statusHistory = [...(task.statusHistory || []), { status, note: text || undefined, date: readyDate || undefined, by: user._id, at: new Date() }];
   const said = [step.label, readyDate && `${form.statusDate?.label || 'Ready date'} ${readyDate}`].filter(Boolean).join(' · ');
-  /* A ready date is the enquiry's EDD from here on [productionDates]. */
+  /* A ready date is the enquiry's EDD (Production) or ERD (the mould) from here on [enquiryProgress]. */
+  const dateField = form.statusDate?.field || 'edd';
   task.updates = [...(task.updates || []), {
-    note: text ? `${said}: ${text}` : said, ...(readyDate ? { fields: { edd: readyDate } } : {}), by: user._id, at: new Date(),
+    note: text ? `${said}: ${text}` : said, ...(readyDate ? { fields: { [dateField]: readyDate } } : {}), by: user._id, at: new Date(),
   }];
   if (!task.user) task.user = user._id;
   await task.save();
   if (form.notifyStatus) await noticeStatus(task, user, { step, note: text, date: readyDate });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
-  if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { edd: readyDate } : {} });
+  if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { [dateField]: readyDate } : {} });
   return task;
 }
 
@@ -1144,6 +1145,43 @@ export async function taskPrefill(enquiryId) {
 /* ------------------------------ Production's dates ------------------------------ */
 
 const EDD_KINDS = ['ask_edd', 'ask_assembling_edd'];
+
+/** Kinds whose tasks a problem is, whatever their status, while they are open. */
+const ISSUE_KINDS = ['quality_issue'];
+const MOULD_KINDS = ['mould_issue'];
+
+/**
+ * Where each enquiry is, for marketing's list [web: pages/Enquiries.jsx]: the mould's ready date
+ * (ERD), Production's date (EDD) and the issues open on it — a department task at a problem
+ * status (Mould Issue, Raw Material Not Available, Rework …) or a Quality issue still open.
+ * One query for the page of enquiries, not one per row.
+ */
+export async function enquiryProgress(enquiryIds) {
+  const ids = enquiryIds.filter(Boolean);
+  const progress = new Map(ids.map((id) => [String(id), { erd: null, edd: null, issues: [] }]));
+  if (!ids.length) return progress;
+  const tasks = await Todo.find({ enquiry: { $in: ids }, kind: { $in: [...EDD_KINDS, ...MOULD_KINDS, ...ISSUE_KINDS] } })
+    .select('enquiry kind department status completed updates.fields updates.at outcome.fields outcome.at')
+    .lean();
+  const latest = (row, field, date, at, department) => {
+    if (!date || (row[field] && new Date(row[field].at || 0) >= new Date(at || 0))) return;
+    row[field] = { date, at, department };
+  };
+  for (const task of tasks) {
+    const row = progress.get(String(task.enquiry));
+    if (!row) continue;
+    const said = [...(task.updates || []), ...(task.outcome ? [task.outcome] : [])];
+    for (const entry of said) {
+      latest(row, 'edd', entry.fields?.edd, entry.at, task.department);
+      latest(row, 'erd', entry.fields?.erd, entry.at, task.department);
+    }
+    if (task.completed) continue;
+    const step = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status);
+    if (step?.issue) row.issues.push({ department: task.department, label: step.label });
+    else if (ISSUE_KINDS.includes(task.kind)) row.issues.push({ department: task.department, label: findHandoff(task.kind)?.label || 'Issue' });
+  }
+  return progress;
+}
 
 /**
  * When the goods will be ready — what the enquiry page shows while it is in Production
