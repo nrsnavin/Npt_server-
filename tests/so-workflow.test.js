@@ -164,3 +164,39 @@ test('uploading the sales order PDF finishes the task and moves the enquiry to P
   assert.equal((await Enquiry.findById(enquiry._id)).stage, 'production_edd');
   assert.equal((await upload('priya')).status, 409, 'a finished task takes no second PDF');
 });
+
+test('asking Production again adds to its open task instead of refusing', async () => {
+  const before = await Todo.countDocuments({ enquiry: enquiry._id, kind: 'ask_edd', completed: false });
+  assert.equal(before, 1, 'the SO going through asked Production already');
+  const refused = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Buyer needs the date' } });
+  assert.equal(refused.status, 409, 'an automation or an old screen still gets the refusal');
+
+  const added = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', as: 'nandhini',
+    body: { kind: 'ask_edd', note: 'Buyer needs the date by Friday', brief: { model: 'UTJRSH-0', quantity: '5000' }, priority: 'high', addToOpen: true },
+  });
+  assert.equal(added.status, 201, added.json.message);
+  assert.equal(added.json.data.addedTo, true);
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'ask_edd', completed: false }), 1, 'still one task');
+  const task = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_edd', completed: false });
+  assert.match(task.updates.at(-1).note, /Nandhini S asked again: Buyer needs the date by Friday — Model name: UTJRSH-0 · Quantity: 5000/);
+  assert.equal(task.priority, 'high', 'a higher priority carries over');
+  assert.equal(task.brief.quantity, '5000');
+});
+
+test('the EDD Production gives shows with the enquiry', async () => {
+  const task = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_edd', completed: false });
+  const asked = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json.production;
+  assert.equal(asked.edd, null, 'no date given yet');
+  assert.equal(asked.asked.department, 'production', 'but Production has been asked');
+
+  const update = await api(`/api/workspace/todos/${task._id}/update`, {
+    method: 'POST', as: 'siva', body: { note: 'Mould on machine 3 from Monday', fields: { edd: '2026-10-24', pending: '4000' } },
+  });
+  assert.equal(update.status, 200, update.json.message);
+  const { production } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
+  assert.equal(production.edd.edd, '2026-10-24');
+  assert.equal(production.edd.pending, '4000');
+  assert.equal(production.edd.by, 'Sivakumar');
+  assert.equal(production.edd.department, 'production');
+});

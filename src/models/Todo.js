@@ -95,6 +95,8 @@ const todoSchema = new mongoose.Schema(
       type: [new mongoose.Schema({
         status: String,
         note: { type: String, trim: true, maxlength: 2000 },
+        /* The ready date given with the move (YYYY-MM-DD), where the workflow takes one. */
+        date: String,
         by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         at: { type: Date, default: Date.now },
       }, { _id: false })],

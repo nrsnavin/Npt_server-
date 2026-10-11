@@ -391,7 +391,7 @@ async function finishOpenTasks(enquiryId, kinds, { fields = {}, note, user }) {
  * or costing themselves.
  */
 export async function moveEnquiry({
-  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask,
+  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask, addToOpen = false,
 }) {
   const handoff = findHandoff(kind);
   if (!handoff?.department || handoff.stage === CLOSED_STAGE) fail('That button does not raise a department task');
@@ -400,7 +400,7 @@ export async function moveEnquiry({
   if (!system && !(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
 
   const already = await Todo.findOne({ enquiry: enquiry._id, kind, completed: false }).populate('user', 'name');
-  if (already) {
+  if (already && !addToOpen) {
     throw ApiError.conflict(
       `${handoff.label} is already with ${departmentName(already.department)}`
         + `${already.user?.name ? ` (${already.user.name})` : ''}. Add to that one, or wait for it to come back.`
@@ -408,6 +408,7 @@ export async function moveEnquiry({
   }
   const asked = keptBrief(kind, brief, { strict: !system });
   if (!system) assertNote(kind, asked, note);
+  if (already) return addToOpenTask(already, { handoff, note, asked, priority, requiredDate, user });
   const form = handoff.form || {};
   const due = requiredDue(requiredDate) || (form.dueFrom && requiredDue(asked[form.dueFrom], 'That date'));
 
@@ -454,6 +455,38 @@ export async function moveEnquiry({
 
   await publish(EVENTS.HANDOFF_SENT, { task, enquiry, by: user });
   return task;
+}
+
+/**
+ * Somebody raises a task the department already has open (Production asked for the EDD by the
+ * SO going through, then marketing asks again): the new request goes onto the open task as an
+ * update — the note, the answers, an earlier date or a higher priority — and the department is
+ * told again, rather than refusing or opening a second task for the same work.
+ */
+async function addToOpenTask(task, { handoff, note, asked, priority, requiredDate, user }) {
+  const answers = describeAnswers(handoff, asked);
+  const text = [String(note || '').trim(), answers].filter(Boolean).join(' — ') || 'Asked again';
+  task.updates = [...(task.updates || []), { note: `${user?.name || 'Someone'} asked again: ${text}`, by: user?._id, at: new Date() }];
+  if (Object.keys(asked).length) {
+    task.brief = { ...(task.brief || {}), ...asked };
+    task.markModified('brief');
+  }
+  const due = requiredDue(requiredDate);
+  if (due && (!task.dueDate || due < task.dueDate)) task.dueDate = due;
+  const rank = { low: 0, normal: 1, high: 2 };
+  if (PRIORITIES.includes(priority) && rank[priority] > rank[task.priority || 'normal']) task.priority = priority;
+  await task.save();
+  task.$locals.addedTo = true;
+  await publish(EVENTS.HANDOFF_SENT, { task, enquiry: task.enquiry, by: user });
+  return task;
+}
+
+/** The form's answers in a line, for an update: "Model name: NPT-410V · Quantity: 5000". */
+function describeAnswers(handoff, asked) {
+  return (handoff.asks || [])
+    .filter((field) => asked[field.key] != null && !Array.isArray(asked[field.key]))
+    .map((field) => `${field.label}: ${asked[field.key]}`)
+    .join(' · ');
 }
 
 /**
@@ -527,7 +560,7 @@ export async function closeEnquiryAutomatically({ enquiry, note }) {
  * One button pressed on the enquiry screen. Returns the task (or the record, for the buttons
  * that only record). `enquiry` must be a document with `customer` populated or an id.
  */
-export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, user }) {
+export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, addToOpen, user }) {
   const handoff = findHandoff(kind);
   if (!handoff || handoff.hidden) fail('That is not one of the buttons');
 
@@ -537,7 +570,7 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
   }
 
   /* Every button that names a department raises that department's task. */
-  if (handoff.department) return moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, user });
+  if (handoff.department) return moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, user });
 
   if (!(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
 
@@ -682,14 +715,17 @@ async function answerParent(clarification, user, text) {
  * enquiry's marketing person, due today, with the comment. The status reached by uploading the
  * work (SO Prepared) is not chosen here — see `finishWithResult`.
  */
-export async function setTaskStatus(task, user, { status, note }) {
+export async function setTaskStatus(task, user, { status, note, date }) {
   openHandoff(task, user);
+  const form = findHandoff(task.kind)?.form || {};
   const step = statusesOf(task).find((entry) => entry.key === status);
   if (!step) fail('That is not one of this task’s statuses');
   if (step.pdf) fail(`Upload the PDF to mark it ${step.label}`);
   const text = String(note || '').trim();
   if (step.comment && text.length < 3) fail(`Say what is needed — ${step.label} asks for a comment`);
-  if (task.status === status) return task;
+  if (form.remarkRequired && text.length < 3) fail(`Add a remark to move it to ${step.label}`);
+  const readyDate = statusDate(form, step, date);
+  if (task.status === status && !readyDate) return task;
 
   if (step.raises) {
     const enquiry = await enquiryOfTask(task);
@@ -700,12 +736,95 @@ export async function setTaskStatus(task, user, { status, note }) {
   }
   task.status = status;
   task.attention = undefined;
-  task.statusHistory = [...(task.statusHistory || []), { status, note: text || undefined, by: user._id, at: new Date() }];
-  task.updates = [...(task.updates || []), { note: text ? `${step.label}: ${text}` : step.label, by: user._id, at: new Date() }];
+  task.statusHistory = [...(task.statusHistory || []), { status, note: text || undefined, date: readyDate || undefined, by: user._id, at: new Date() }];
+  const said = [step.label, readyDate && `${form.statusDate?.label || 'Ready date'} ${readyDate}`].filter(Boolean).join(' · ');
+  /* A ready date is the enquiry's EDD from here on [productionDates]. */
+  task.updates = [...(task.updates || []), {
+    note: text ? `${said}: ${text}` : said, ...(readyDate ? { fields: { edd: readyDate } } : {}), by: user._id, at: new Date(),
+  }];
   if (!task.user) task.user = user._id;
   await task.save();
+  if (form.notifyStatus) await noticeStatus(task, user, { step, note: text, date: readyDate });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  /* The last status finishes the task (Task Closed), and its sender hears it is done. */
+  if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { edd: readyDate } : {} });
   return task;
+}
+
+const indiaDay = (date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(date);
+
+/** The ready date going with a status move, as YYYY-MM-DD — or null when there is none. */
+function statusDate(form, step, date) {
+  const given = String(date || '').trim();
+  if (given) {
+    if (!form.statusDate && !step.date) fail('This task does not take a date');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(given) || Number.isNaN(Date.parse(given))) fail('Give the date as a calendar date');
+    if (given < indiaDay(new Date())) fail('The ready date cannot be in the past');
+    return given;
+  }
+  if (step.date === 'tomorrow') return indiaDay(new Date(Date.now() + DAY_MS));
+  if (step.date === 'required') fail(`Give the ${form.statusDate?.label || 'ready date'} for ${step.label}`);
+  return null;
+}
+
+/**
+ * The move, shown to the enquiry's marketing person and every Admin — not to whoever made it —
+ * under "Needs your action" until they read and dismiss it [models/TaskNotice.js].
+ */
+async function noticeStatus(task, user, { step, note, date }) {
+  const [{ default: TaskNotice }, { default: User }] = await Promise.all([
+    import('../models/TaskNotice.js'), import('../models/User.js'),
+  ]);
+  const enquiry = await Enquiry.findById(task.enquiry?._id || task.enquiry).select('assignedTo customer').lean();
+  const admins = await User.find({ role: 'admin', isActive: { $ne: false } }).select('_id').lean();
+  const recipients = new Set([enquiry?.assignedTo, ...admins.map((person) => person._id)].filter(Boolean).map(String));
+  recipients.delete(String(user._id));
+  if (!recipients.size) return;
+  await TaskNotice.insertMany([...recipients].map((recipient) => ({
+    recipient, task: task._id, enquiry: enquiry?._id, customer: task.customer || enquiry?.customer,
+    department: task.department, kind: task.kind, status: step.key, statusLabel: step.label,
+    note: note || undefined, date: date || undefined, by: user._id, at: new Date(),
+  })));
+}
+
+/* Unread, or read within the last day — a notice clears itself a day after it is read. */
+const liveNotices = (user) => ({
+  recipient: user._id,
+  $or: [{ readAt: null }, { expireAt: { $gt: new Date() } }],
+});
+
+/** This person's notices of department moves, newest first. */
+export async function noticesFor(user) {
+  const { default: TaskNotice } = await import('../models/TaskNotice.js');
+  return TaskNotice.find(liveNotices(user)).sort({ at: -1 }).limit(50)
+    .populate([
+      { path: 'by', select: 'name department' },
+      { path: 'customer', select: 'code name' },
+      { path: 'enquiry', select: 'number' },
+    ]).lean();
+}
+
+/** Read: it can be dismissed now, and it clears itself a day later. */
+export async function readNotice(user, id) {
+  const { default: TaskNotice, READ_NOTICE_KEPT_MS } = await import('../models/TaskNotice.js');
+  const notice = await TaskNotice.findOne({ _id: id, recipient: user._id });
+  if (!notice) throw ApiError.notFound('Notice not found');
+  if (!notice.readAt) {
+    notice.readAt = new Date();
+    notice.expireAt = new Date(notice.readAt.getTime() + READ_NOTICE_KEPT_MS);
+    await notice.save();
+  }
+  return notice;
+}
+
+/** Dismissed — only once read, so nobody clears what they have not looked at. */
+export async function dismissNotice(user, id) {
+  const { default: TaskNotice } = await import('../models/TaskNotice.js');
+  const notice = await TaskNotice.findOne({ _id: id, recipient: user._id });
+  if (!notice) throw ApiError.notFound('Notice not found');
+  if (!notice.readAt) fail('Read it first — then it can be dismissed');
+  await notice.deleteOne();
+  return { dismissed: true };
 }
 
 /** The status reached by uploading the work, checked before the file is stored. */
@@ -775,7 +894,8 @@ export async function attentionFor(user, department) {
     }).sort({ createdAt: 1 }).limit(50).populate(populate),
     Todo.find({ 'attention.kind': 'reply', completed: false, department }).sort({ 'attention.at': -1 }).limit(50).populate(populate),
   ]);
-  return { questions, replies };
+  /* And what departments did on this person's enquiries — Admin's, every enquiry's. */
+  return { questions, replies, notices: await noticesFor(user) };
 }
 
 /** The department corrects what it was told — the questions marked `editable` (contact details). */
@@ -1018,6 +1138,66 @@ export async function taskPrefill(enquiryId) {
     order: order
       ? { number: order.number, paymentTerms: termsWords(order), invoiceNumber: consignment?.invoice?.number || '' }
       : { paymentTerms: '', invoiceNumber: '' },
+  };
+}
+
+/* ------------------------------ Production's dates ------------------------------ */
+
+const EDD_KINDS = ['ask_edd', 'ask_assembling_edd'];
+
+/**
+ * When the goods will be ready — what the enquiry page shows while it is in Production
+ * [web: components/DepartmentDesk.jsx]. Two answers, both kept:
+ *
+ *   edd     the latest date Production (or Assembly) gave on its task — in an update or when
+ *           it said it was done — with who said it, when, and what was still pending
+ *   lines   each sales order line's own expected completion, as the production board keeps it,
+ *           beside what the buyer was promised and how much is made
+ *
+ * `asked` is the open Production / Assembly task, so the page can say a date has been asked
+ * for and not given yet.
+ */
+export async function productionDates(enquiryId) {
+  const { default: SalesOrder } = await import('../models/SalesOrder.js');
+  const [tasks, orders] = await Promise.all([
+    Todo.find({ enquiry: enquiryId, kind: { $in: EDD_KINDS } })
+      .sort({ createdAt: -1 })
+      .populate([{ path: 'updates.by', select: 'name' }, { path: 'outcome.by', select: 'name' }])
+      .lean(),
+    SalesOrder.find({ enquiry: enquiryId, status: { $nin: ['cancelled'] } })
+      .select('number lines.modelNumber lines.quantity lines.deliveryDate lines.revisedDeliveryDate lines.production')
+      .sort({ createdAt: -1 })
+      .lean(),
+  ]);
+  const said = [];
+  for (const task of tasks) {
+    const department = task.department;
+    for (const update of task.updates || []) {
+      if (update.fields?.edd) said.push({ edd: update.fields.edd, pending: update.fields.pending, by: update.by?.name, at: update.at, department });
+    }
+    if (task.outcome?.fields?.edd) {
+      said.push({ edd: task.outcome.fields.edd, pending: task.outcome.fields.pending, by: task.outcome.by?.name, at: task.outcome.at, department });
+    }
+  }
+  said.sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+  const open = tasks.find((task) => !task.completed);
+  const lines = orders.flatMap((order) => (order.lines || []).map((line) => ({
+    order: order.number,
+    model: line.modelNumber,
+    quantity: line.quantity,
+    produced: line.production?.producedQty || 0,
+    status: line.production?.status,
+    expectedCompletion: line.production?.expectedCompletion || null,
+    dueToBuyer: line.revisedDeliveryDate || line.deliveryDate || null,
+  })));
+  return {
+    edd: said[0] || null,
+    asked: open ? {
+      department: open.department, at: open.createdAt, due: open.dueDate,
+      /* Where Production has it on its own workflow — Planning, Part 1 Ready … */
+      status: (findHandoff(open.kind)?.form?.statuses || []).find((entry) => entry.key === open.status)?.label || null,
+    } : null,
+    lines,
   };
 }
 

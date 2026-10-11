@@ -36,6 +36,13 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
  *   pdf        it is reached only by uploading the PDF of the work (the sales order)
  *   done       reaching it finishes the task
  *   next       the department task raised once it is done (the enquiry moves on to it)
+ *   date       `required` — a ready date must be given with it; `tomorrow` — it is tomorrow
+ *              unless another is given. Any other status takes the date if one is given.
+ * With the statuses, a form may say:
+ *   remarkRequired  every move along them needs a remark (`remark` labels the box)
+ *   statusDate      a ready date may go with a move (`label`); it becomes the enquiry's EDD
+ *   notifyStatus    every move is shown to the enquiry's marketing person and every Admin,
+ *                   under "Needs your action" [models/TaskNotice.js]
  * A question marked `editable` may be corrected by the department working the task.
  */
 
@@ -147,7 +154,32 @@ export const TASK_FORMS = {
       { key: 'paymentTerms', label: 'Payment terms', type: 'choice', options: PAYMENT_TERMS, from: 'order.paymentTerms', placeholder: 'Select payment terms' },
     ],
   },
-  ask_edd: { team: 'Production Team', asks: modelAndQuantity },
+  ask_edd: {
+    team: 'Production Team',
+    asks: modelAndQuantity,
+    /* Every move says why, and the enquiry's marketing person and Admin are told of it. */
+    remarkRequired: true,
+    notifyStatus: true,
+    statusDate: { label: 'ERD / Ready date' },
+    remark: { label: 'Remarks', placeholder: 'Add production / assembling remark' },
+    statuses: [
+      { key: 'received', label: 'EDD Request Received' },
+      { key: 'accepted', label: 'EDD Accepted' },
+      { key: 'planning', label: 'Planning' },
+      { key: 'ready_tomorrow', label: 'Ready Tomorrow', date: 'tomorrow' },
+      { key: 'ready_on_date', label: 'Ready on Selected Date', date: 'required' },
+      { key: 'started', label: 'Production Started' },
+      { key: 'part1_ready', label: 'Part 1 Ready' },
+      { key: 'part2_ready', label: 'Part 2 Ready' },
+      { key: 'mould_issue', label: 'Mould Issue' },
+      { key: 'machine_not_allotted', label: 'Machine Not Allotted / Alternate Required' },
+      { key: 'raw_material', label: 'Raw Material Not Available' },
+      { key: 'completed', label: 'Production Completed' },
+      { key: 'assembling', label: 'Assembling' },
+      { key: 'ready_dispatch', label: 'Ready for Dispatch' },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+  },
   ask_assembling_edd: { team: 'Assembly Team', asks: modelAndQuantity },
   mould_issue: {
     team: 'Mould Team',

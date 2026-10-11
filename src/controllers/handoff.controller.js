@@ -11,7 +11,7 @@ import { HANDOFFS, TILE_KIND } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  attentionFor, editTaskBrief, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
+  attentionFor, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
   updateHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
@@ -64,11 +64,12 @@ export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) =>
   const enquiry = await enquiryFor(req);
   const task = await sendHandoff({
     enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, brief: req.body.brief,
-    priority: req.body.priority, requiredDate: req.body.requiredDate || undefined, user: req.user,
+    priority: req.body.priority, requiredDate: req.body.requiredDate || undefined, addToOpen: req.body.addToOpen === true, user: req.user,
   });
   res.status(201).json({
     success: true,
-    data: { task: await task.populate(TASK_POPULATE), stage: enquiry.stage },
+    /* `addedTo`: the department already had this task open, and the request went onto it. */
+    data: { task: await task.populate(TASK_POPULATE), stage: enquiry.stage, addedTo: Boolean(task.$locals?.addedTo) },
   });
 }));
 
@@ -126,6 +127,8 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     stageHistory: enquiry.stageHistory,
     holder,
     mayMove: enquiry.stage !== CLOSED_STAGE && (await mayMove(req.user, enquiry, holder)),
+    /* When the goods will be ready — Production's EDD and the order lines' own dates. */
+    production: await productionDates(enquiry._id),
   });
 });
 
@@ -157,6 +160,19 @@ export const handoffStatus = asyncHandler(transactional(async (req, res) => {
   const task = await setTaskStatus(await taskFor(req), req.user, req.body);
   await answer(res, task);
 }));
+
+/* A department's moves on this person's enquiries [handoff.service `noticeStatus`]. */
+export const listNotices = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await noticesFor(req.user) });
+});
+
+export const markNoticeRead = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await readNotice(req.user, req.params.id) });
+});
+
+export const removeNotice = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await dismissNotice(req.user, req.params.id) });
+});
 
 /** "Got it" on an answer that came back — it leaves the top of the dashboard. */
 export const handoffSeen = asyncHandler(async (req, res) => {

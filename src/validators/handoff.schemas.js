@@ -12,6 +12,8 @@ export const handoffSchema = z.object({
   /** The answers to the form the department task opens with [config/departmentTaskForms.js]; checked by the service. */
   brief: z.record(z.string(), z.unknown()).optional(),
   priority: z.enum(['low', 'normal', 'high']).optional(),
+  /** Add to the department's open task of this kind instead of refusing the second one. */
+  addToOpen: z.boolean().optional(),
   /** The task's due date, when the person raising it names one. */
   requiredDate: z.string().trim().max(40).optional().or(z.literal('')),
 });
@@ -34,6 +36,7 @@ export const handoffUpdateSchema = z.object({
 export const taskStatusSchema = z.object({
   status: z.string().trim().min(1).max(40),
   note: z.string().trim().max(2000).optional(),
+  date: z.string().trim().max(10).optional(),
 });
 
 /** Correcting what the task was told — only the questions marked `editable`; checked by the service. */
