@@ -1,3 +1,5 @@
+/* First: the plant's day, before any date is made [config/timezone.js]. */
+import './config/timezone.js';
 import './app.js';
 import { installProcessGuards } from './config/processGuards.js';
 import { connectDatabase, disconnectDatabase } from './config/db.js';

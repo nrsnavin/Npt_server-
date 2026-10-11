@@ -4,6 +4,8 @@ import { env } from '../config/env.js';
 import { normalisePhone } from '../utils/phone.js';
 import { PROVIDER, fetchLeads, isConfigured } from './indiamart.client.js';
 import { createBuyer, customerByContact, ownerForNewBuyer, raiseFirstEnquiry } from './intake.service.js';
+import { withCreateLocks } from './operationLock.service.js';
+import { customerKeys } from '../utils/customerKeys.js';
 
 /**
  * Turning IndiaMART enquiries into enquiries [BLUEPRINT §41 by analogy].
@@ -86,9 +88,18 @@ export function normalise(row) {
  * everything it saw: `created` (a new customer and its enquiry), `attached` (an enquiry on a
  * customer we already had), `duplicate` or `skipped`.
  */
-export async function ingestOne(row, { now = () => new Date() } = {}) {
+export async function ingestOne(row, options = {}) {
   const parsed = normalise(row);
   if (!parsed) return { outcome: 'skipped', why: 'no unique query id on the row' };
+  /*
+   * One at a time per lead and per buyer's number: the scheduled poll and Admin's "Sync now"
+   * can read the same lead together, and both passed "seen before?" — two enquiries, and two
+   * customers for a new buyer.
+   */
+  return withCreateLocks([`indiamart:${parsed.reference}`, ...customerKeys(parsed.buyer)], () => ingestParsed(parsed, options));
+}
+
+async function ingestParsed(parsed, { now = () => new Date() } = {}) {
 
   /* Seen before — the overlap window re-reads deliberately, so this is the ordinary case. */
   const already = await Enquiry.findOne({ 'conversation.reference': parsed.reference });

@@ -189,6 +189,16 @@ test('a new buyer becomes an owned customer and an enquiry with a next step', as
   assert.match(enquiry.remarks, /Velvet Flocked Hanger/);
 });
 
+test('the same IndiaMART enquiry arriving twice at once — the poll and "Sync now" — is still one', async () => {
+  await reset();
+
+  const outcomes = (await Promise.all([ingestOne(row()), ingestOne(row()), ingestOne(row())])).map((result) => result.outcome);
+
+  assert.deepEqual(outcomes.sort(), ['created', 'duplicate', 'duplicate']);
+  assert.equal(await Enquiry.countDocuments(), 1);
+  assert.equal(await Customer.countDocuments(), 1);
+});
+
 test('the same IndiaMART enquiry twice is one enquiry', async () => {
   await reset();
 

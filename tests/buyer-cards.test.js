@@ -221,6 +221,16 @@ test('the salesperson must give the next step, when, and how they met them', asy
   assert.equal(confirmed.enquiry._id, String(enquiry._id));
 });
 
+test('a double tap on Confirm makes one customer, and the second tap is told it was done', async () => {
+  cardReply = card({ company: 'Double Tap Fabrics', mobile: '9840077001' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  const replies = await Promise.all(Array.from({ length: 8 }, () => finish(draft._id, theRest)));
+  assert.deepEqual(replies.map((reply) => reply.status).sort(), [200, ...Array(7).fill(409)]);
+  assert.equal(replies.find((reply) => reply.status === 200).json.data.card.status, 'confirmed', 'the reply shows the card as decided');
+  assert.equal(await Customer.countDocuments({ name: 'Double Tap Fabrics' }), 1);
+});
+
 test('a draft can be dropped', async () => {
   cardReply = card({ company: 'Drop Me Textiles', mobile: '9840099999' });
   await whatsapp(NANDHINI_PHONE, { photo: true });

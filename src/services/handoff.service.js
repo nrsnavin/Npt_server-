@@ -1,3 +1,4 @@
+import { withCreateLocks } from './operationLock.service.js';
 import Todo, { PRIORITIES } from '../models/Todo.js';
 import Enquiry from '../models/Enquiry.js';
 import { CLOSED_STAGE, STAGES, stageLabel } from '../config/enquiryStages.js';
@@ -432,7 +433,16 @@ async function finishOpenTasks(enquiryId, kinds, { fields = {}, note, user }) {
  * the required questions. `openRecords: false` is for the automations, which raise the sample
  * or costing themselves.
  */
-export async function moveEnquiry({
+export function moveEnquiry(request) {
+  /*
+   * One request per enquiry and kind at a time. The check below ("already with Production?") and
+   * the create after it were two steps, so a double tap — or two people at once — both passed the
+   * check and opened twin tasks. The second now waits, finds the first, and is told it is open.
+   */
+  return withCreateLocks([`handoff:${request.enquiry?._id || request.enquiry}:${request.kind}`], () => moveEnquiryChecked(request));
+}
+
+async function moveEnquiryChecked({
   enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask, addToOpen = false, keepStage = false,
 }) {
   const handoff = findHandoff(kind);
