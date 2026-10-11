@@ -197,3 +197,37 @@ test('only the owner (or Admin) sets it, and only to a known status', async () =
   assert.equal((await setMarketing(enquiry._id, 'nonsense')).status, 400);
   assert.equal((await setMarketing(enquiry._id, 'task_closed', admin)).status, 200);
 });
+
+test('raising a department task moves the marketing status: the sales ones forward, the plant’s six by the last asked', async () => {
+  const enquiry = await raise();
+  const ask = (kind, extra = {}) => api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', token: admin, body: { kind, note: `${kind} please`, addToOpen: true, ...extra },
+  });
+  const status = async () => (await read(enquiry._id)).marketingStatus;
+
+  assert.equal((await ask('create_quotation')).status, 201);
+  assert.equal(await status(), 'quotation_preparing');
+  assert.equal((await ask('sample_request', { brief: { items: [{ model: 'UTJRSH-0', quantity: '2' }] } })).status, 201);
+  assert.equal(await status(), 'quotation_preparing', 'a sample asked later does not pull it back');
+
+  assert.equal((await ask('ask_edd')).status, 201);
+  assert.equal(await status(), 'production');
+  assert.equal((await ask('mould_issue', { brief: { problem: 'Flash on the hook boss' } })).status, 201);
+  assert.equal(await status(), 'mould', 'a mould raised during production reads Mould');
+  assert.equal((await ask('ask_assembling_edd')).status, 201);
+  assert.equal(await status(), 'assembling');
+  assert.equal((await ask('quality_check')).status, 201);
+  assert.equal(await status(), 'qc');
+  assert.equal((await ask('invoice_dispatch')).status, 201);
+  assert.equal(await status(), 'dispatch');
+  assert.equal((await ask('lr_copy')).status, 201);
+  assert.equal(await status(), 'lr_copy');
+
+  const history = (await read(enquiry._id)).marketingStatusHistory.map((entry) => entry.to);
+  assert.deepEqual(history.slice(-6), ['production', 'mould', 'assembling', 'qc', 'dispatch', 'lr_copy']);
+
+  assert.equal((await setMarketing(enquiry._id, 'task_closed')).status, 200);
+  const again = await ask('ask_edd');
+  assert.equal(again.json.data.addedTo, true, 'added to Production’s open task');
+  assert.equal(await status(), 'task_closed', 'nothing pulls it back out of Task Closed');
+});

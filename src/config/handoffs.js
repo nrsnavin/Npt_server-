@@ -138,9 +138,13 @@ const BUTTONS = [
     hint: 'Sales / SO needs an answer before the sales order can be made',
   },
   {
-    key: 'request_prt_visit', label: 'Request PRT Visit', department: 'management', stage: null,
-    hint: 'Ask for a visit',
-    records: [{ key: 'visitDate', label: 'Visit date', type: 'date' }],
+    /* PRT — the Payment Recovery Team: Payment Collection's people, sent to the buyer. */
+    key: 'request_prt_visit', label: 'Request PRT Visit', department: 'payment_collection', stage: null,
+    hint: 'Send a Payment Recovery Team member to the buyer',
+    records: [
+      { key: 'visitDate', label: 'Visited on', type: 'date' },
+      { key: 'outcome', label: 'What the buyer said / paid' },
+    ],
   },
   {
     key: 'my_payment_followup', label: 'My Payment Follow-up', department: 'owner', stage: 'my_payment_followup',

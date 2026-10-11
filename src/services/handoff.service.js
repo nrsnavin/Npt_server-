@@ -1,6 +1,7 @@
 import Todo, { PRIORITIES } from '../models/Todo.js';
 import Enquiry from '../models/Enquiry.js';
 import { CLOSED_STAGE, STAGES, stageLabel } from '../config/enquiryStages.js';
+import { followTask, marketingStatusOf } from '../config/marketingStatuses.js';
 import { findDepartment } from '../config/modules.js';
 import { HANDOFFS, findHandoff } from '../config/handoffs.js';
 import { canRead } from './access.service.js';
@@ -140,6 +141,15 @@ async function moveStage(enquiry, to, { user, task, note, heldBy }) {
   if (Object.keys(set).length) update.$set = set;
   if (Object.keys(unset).length) update.$unset = unset;
   if (entry) update.$push = { stageHistory: entry };
+  /* Marketing's words follow the task raised — Sample requested … Production, Mould, QC, LR Copy. */
+  const follows = task?.kind && followTask(task.kind, marketingStatusOf(enquiry));
+  const marketing = follows
+    ? { from: enquiry.marketingStatus || null, to: follows, at: new Date(), by: user?._id, note: task.title }
+    : null;
+  if (marketing) {
+    update.$set = { ...(update.$set || {}), marketingStatus: follows };
+    update.$push = { ...(update.$push || {}), marketingStatusHistory: marketing };
+  }
   if (!Object.keys(update).length) return;
   await Enquiry.updateOne({ _id: enquiry._id }, update, { timestamps: false, keepVersion: true });
 
@@ -147,6 +157,10 @@ async function moveStage(enquiry, to, { user, task, note, heldBy }) {
   if (entry) {
     enquiry.stage = to;
     enquiry.unmarkModified('stage');
+  }
+  if (marketing) {
+    enquiry.marketingStatus = marketing.to;
+    enquiry.unmarkModified('marketingStatus');
   }
   if (heldBy !== undefined) {
     enquiry.heldBy = heldBy || undefined;
@@ -283,6 +297,34 @@ export async function ensureHolder(enquiry, { user } = {}) {
   return task;
 }
 
+/**
+ * The person a `member` question names — an active member of its department — and the brief with
+ * their name in place of their id. Refused when it names anyone else.
+ */
+async function pickedMember(kind, brief = {}) {
+  const field = (findHandoff(kind)?.asks || []).find((entry) => entry.type === 'member');
+  const id = field && brief?.[field.key];
+  if (!field || !id) return { brief, member: null };
+  const { default: User } = await import('../models/User.js');
+  const member = /^[0-9a-f]{24}$/i.test(String(id))
+    ? await User.findOne({ _id: id, isActive: { $ne: false }, $or: [{ department: field.department }, { extraDepartments: field.department }] }).select('name department')
+    : null;
+  if (!member) fail(`${field.label}: pick someone from ${departmentName(field.department)}`);
+  return { brief: { ...brief, [field.key]: member.name }, member };
+}
+
+/** Who a form may pick for each `member` question: the active people of that department. */
+export async function membersFor(departments) {
+  const keys = [...new Set(departments)].filter(Boolean);
+  if (!keys.length) return {};
+  const { default: User } = await import('../models/User.js');
+  const people = await User.find({ isActive: { $ne: false }, $or: [{ department: { $in: keys } }, { extraDepartments: { $in: keys } }] })
+    .select('name department extraDepartments').sort({ name: 1 }).lean();
+  return Object.fromEntries(keys.map((key) => [key, people
+    .filter((person) => person.department === key || (person.extraDepartments || []).includes(key))
+    .map((person) => ({ _id: String(person._id), name: person.name }))]));
+}
+
 /** One answer, checked against its question: a number is a number, a date a date, a choice one of its options. */
 function keptAnswer(field, value) {
   if (field.type === 'check') return value === true || value === 'true' || value === 'Yes' ? 'Yes' : '';
@@ -406,7 +448,9 @@ export async function moveEnquiry({
         + `${already.user?.name ? ` (${already.user.name})` : ''}. Add to that one, or wait for it to come back.`
     );
   }
-  const asked = keptBrief(kind, brief, { strict: !system });
+  /* A member picked on the form (the PRT visitor): theirs by name, kept on the brief by name. */
+  const picked = await pickedMember(kind, brief);
+  const asked = keptBrief(kind, picked.brief, { strict: !system });
   if (!system) assertNote(kind, asked, note);
   if (already) return addToOpenTask(already, { handoff, note, asked, priority, requiredDate, user });
   const form = handoff.form || {};
@@ -425,7 +469,7 @@ export async function moveEnquiry({
   if (finishes.length) await finishOpenTasks(enquiry._id, finishes, { fields, note: text, user });
 
   let department = handoff.department;
-  let assignee;
+  let assignee = picked.member?._id;
   if (department === 'owner') {
     /* My Payment Follow-up is the raiser's own; anything else for the owner is the enquiry's marketing person's. */
     ({ userId: assignee, department } = handoff.toRaiser && user?._id
@@ -458,6 +502,105 @@ export async function moveEnquiry({
 
   await publish(EVENTS.HANDOFF_SENT, { task, enquiry, by: user });
   return task;
+}
+
+/**
+ * A department task with no enquiry behind it — Admin or a marketing person asking a team for
+ * something on its own (a mould trial, a statement for a buyer, a PRT visit on an old balance).
+ * The same form as from an enquiry, without the enquiry's answers to fill it: a customer may be
+ * named, a member picked, a priority and date set; it lands on the team's queue and works the
+ * same way, except for the steps that only make sense on an enquiry (asking its marketing
+ * person, raising the next department's task on it), which say so.
+ */
+export async function raiseTeamTask({ kind, note, brief, priority, requiredDate, customer, user }) {
+  if (!(isAdmin(user) || inDepartment(user, 'marketing'))) {
+    throw ApiError.forbidden('Only Admin and the marketing team raise team tasks without an enquiry');
+  }
+  const handoff = findHandoff(kind);
+  if (!handoff?.department || handoff.hidden) fail('That is not a department task');
+  const picked = await pickedMember(kind, brief);
+  const asked = keptBrief(kind, picked.brief, { strict: true });
+  assertNote(kind, asked, note);
+  const text = String(note || '').trim();
+  if (text.length < 3) fail('Say what the team should do');
+  const form = handoff.form || {};
+  const due = requiredDue(requiredDate) || (form.dueFrom && requiredDue(asked[form.dueFrom], 'That date')) || endOfDayIST(new Date());
+
+  let buyer = null;
+  if (customer) {
+    const { default: Customer } = await import('../models/Customer.js');
+    buyer = /^[0-9a-f]{24}$/i.test(String(customer)) ? await Customer.findById(customer).select('code name') : null;
+    if (!buyer) fail('That customer is not on the register');
+  }
+  let department = handoff.department;
+  let assignee = picked.member?._id;
+  if (department === 'owner') ({ userId: assignee, department } = { userId: user._id, department: user.department || 'marketing' });
+
+  const task = await Todo.create({
+    customer: buyer?._id,
+    kind,
+    department,
+    user: assignee || undefined,
+    fromDepartment: user.department || undefined,
+    createdBy: user._id,
+    title: `${handoff.label} — ${buyer ? buyer.name : 'team task'}`,
+    notes: text,
+    ...(Object.keys(asked).length ? { brief: asked } : {}),
+    ...(form.statuses?.length ? { status: form.statuses[0].key, statusHistory: [{ status: form.statuses[0].key, by: user._id, at: new Date() }] } : {}),
+    dueDate: due,
+    priority: PRIORITIES.includes(priority) ? priority : 'normal',
+    link: '/departments/mine',
+  });
+  await publish(EVENTS.HANDOFF_SENT, { task, enquiry: null, by: user });
+  return task;
+}
+
+/** What a team task's form can fill without an enquiry: the members to pick, and the named customer's contact. */
+export async function teamTaskPrefill(customerId) {
+  const members = await membersFor(HANDOFFS.flatMap((handoff) => (handoff.asks || []).filter((field) => field.type === 'member').map((field) => field.department)));
+  let customer = { name: '', contactPerson: '', mobile: '', whatsapp: '', delivery: '' };
+  if (customerId && /^[0-9a-f]{24}$/i.test(String(customerId))) {
+    const { default: Customer } = await import('../models/Customer.js');
+    const found = await Customer.findById(customerId).lean();
+    if (found) {
+      const primary = found.contacts?.find((contact) => contact.isPrimary) || found.contacts?.[0];
+      const phone = primary?.mobile || found.mobile || '';
+      const place = [found.address, found.area, found.landmark && `near ${found.landmark}`, found.city, found.state, found.pincode].filter(Boolean).join(', ');
+      customer = {
+        name: found.name, contactPerson: primary?.name || '', mobile: phone, whatsapp: primary?.whatsapp || found.whatsapp || phone,
+        delivery: `${primary?.name || 'Not added'} · ${phone || 'No number'} · ${place || 'Road not selected'}`,
+      };
+    }
+  }
+  return {
+    customer, items: [], modelList: [], models: '', materials: '', quantity: '', targetPrice: '', order: { paymentTerms: '', invoiceNumber: '' }, members,
+    /* No enquiry to fill the models and parts from: the registers, as dropdowns. */
+    registers: await registerLists(),
+  };
+}
+
+/** The registers a team task's form picks from: hanger models (moulds), materials, hooks, clips, prints. */
+export async function registerLists() {
+  const [{ default: Mould }, { default: Material }, { default: Component }] = await Promise.all([
+    import('../models/Mould.js'), import('../models/Material.js'), import('../models/Component.js'),
+  ]);
+  const [moulds, materials, parts] = await Promise.all([
+    Mould.find({ isActive: { $ne: false }, status: { $ne: 'retired' } }).select('mouldCode name').sort({ mouldCode: 1 }).lean(),
+    Material.find({ isActive: { $ne: false } }).select('name colour').sort({ name: 1 }).lean(),
+    Component.find({ isActive: { $ne: false }, kind: { $in: ['hook', 'clip', 'print'] } }).select('kind name').sort({ name: 1 }).lean(),
+  ]);
+  const unique = (list) => [...new Set(list.filter(Boolean))];
+  /* "PP Black" — but "HIPS White", not "HIPS White White", when the resin's name already says it. */
+  const materialName = (row) => (row.colour && !row.name.toLowerCase().includes(row.colour.toLowerCase()) ? `${row.name} ${row.colour}` : row.name);
+  const ofKind = (kind) => unique(parts.filter((row) => row.kind === kind).map((row) => row.name));
+  return {
+    /* "M-101 · 380mm slim shirt hanger" — the code the plant uses, and what the hanger is. */
+    moulds: unique(moulds.map((row) => [row.mouldCode, row.name].filter(Boolean).join(' · '))),
+    materials: unique(materials.map(materialName)),
+    hooks: ofKind('hook'),
+    clips: ofKind('clip'),
+    prints: ofKind('print'),
+  };
 }
 
 /**
@@ -613,7 +756,8 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
 }
 
 function openHandoff(task, user) {
-  if (!task.kind || !task.enquiry) fail('That is not a task sent about an enquiry');
+  /* A department task — about an enquiry, or raised for the team without one [raiseTeamTask]. */
+  if (!task.kind) fail('That is not a department task');
   if (task.completed) throw ApiError.conflict('That task is already finished');
   if (!mayWorkOnHandoff(user, task)) {
     throw ApiError.forbidden(`This task is on the ${departmentName(task.department)} queue`);
@@ -690,7 +834,7 @@ async function assertMayFinish(task) {
   if (byUpload && !task.resultFile) fail(`Upload the PDF to finish this task — it is marked ${byUpload.label} then`);
 
   /* Dispatch's task is done when the balance has gone, lot by lot as Updates until then. */
-  if (task.kind === 'invoice_dispatch') {
+  if (task.kind === 'invoice_dispatch' && task.enquiry) {
     const left = await dispatchBalance(task.enquiry?._id || task.enquiry);
     if (left.length) {
       fail(`${describeBalance(left)} still to send. Post each lot as an Update and mark it done once the balance has gone — or short-close the order first.`);
@@ -793,6 +937,7 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   if (step.done) await assertMayFinish(task);
 
   if (step.raises) {
+    if (!task.enquiry) fail(`${step.label} asks the enquiry's marketing person — this task has no enquiry. Ask whoever raised it instead.`);
     const enquiry = await enquiryOfTask(task);
     await moveEnquiry({
       enquiry, kind: step.raises, note: `${user.name}: ${text}`, user, system: true, openRecords: false,
@@ -830,6 +975,7 @@ export async function askFromTask(task, user, { kind, note, brief, priority, req
   if (!action) fail('This task does not ask that department');
   const text = String(note || '').trim();
   if (text.length < 3) fail(`Say what you need — ${action.label}`);
+  if (!task.enquiry) fail(`${action.label} raises a task on the enquiry — this task has no enquiry. Raise a team task instead.`);
   const enquiry = await enquiryOfTask(task);
   const asking = departmentName(task.department);
   const raised = await moveEnquiry({
@@ -874,9 +1020,11 @@ async function noticeStatus(task, user, { step, note, date }) {
   const [{ default: TaskNotice }, { default: User }] = await Promise.all([
     import('../models/TaskNotice.js'), import('../models/User.js'),
   ]);
-  const enquiry = await Enquiry.findById(task.enquiry?._id || task.enquiry).select('assignedTo customer').lean();
+  const enquiry = task.enquiry ? await Enquiry.findById(task.enquiry?._id || task.enquiry).select('assignedTo customer').lean() : null;
   const admins = await User.find({ role: 'admin', isActive: { $ne: false } }).select('_id').lean();
-  const recipients = new Set([enquiry?.assignedTo, ...admins.map((person) => person._id)].filter(Boolean).map(String));
+  /* The enquiry's marketing person — or, on a team task with no enquiry, whoever raised it. */
+  const asker = enquiry ? enquiry.assignedTo : task.createdBy;
+  const recipients = new Set([asker, ...admins.map((person) => person._id)].filter(Boolean).map(String));
   recipients.delete(String(user._id));
   if (!recipients.size) return;
   await TaskNotice.insertMany([...recipients].map((recipient) => ({
@@ -957,7 +1105,9 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
     : task;
   let next = null;
   let nextProblem = null;
-  if (step.next) {
+  if (step.next && !task.enquiry) {
+    nextProblem = `No enquiry on this task, so ${findHandoff(step.next)?.label || 'the next step'} was not raised.`;
+  } else if (step.next) {
     const enquiry = await enquiryOfTask(task);
     try {
       next = await moveEnquiry({ enquiry, kind: step.next, note: `${step.label} by ${user.name}`, user, system: true });
@@ -1246,7 +1396,7 @@ export async function taskPrefill(enquiryId) {
 
   const primary = customer?.contacts?.find((contact) => contact.isPrimary) || customer?.contacts?.[0];
   const phone = primary?.mobile || customer?.mobile || '';
-  const place = [customer?.address, customer?.city, customer?.state, customer?.pincode].filter(Boolean).join(', ');
+  const place = [customer?.address, customer?.area, customer?.landmark && `near ${customer.landmark}`, customer?.city, customer?.state, customer?.pincode].filter(Boolean).join(', ');
 
   return {
     customer: {
@@ -1269,6 +1419,8 @@ export async function taskPrefill(enquiryId) {
     order: order
       ? { number: order.number, paymentTerms: termsWords(order), invoiceNumber: consignment?.invoice?.number || '' }
       : { paymentTerms: '', invoiceNumber: '' },
+    /* The people each `member` question may pick — the PRT members for a visit. */
+    members: await membersFor(HANDOFFS.flatMap((handoff) => (handoff.asks || []).filter((field) => field.type === 'member').map((field) => field.department))),
   };
 }
 
@@ -1320,6 +1472,70 @@ export async function enquiryProgress(enquiryIds) {
     }
   }
   return progress;
+}
+
+/**
+ * The open dispatch requests in baskets, for loading one vehicle with buyers at the same place
+ * [web: Dispatch desk]. A basket is the buyers at the same landmark (the bus stop or mill a
+ * driver asks for); without one, the same area; then the same PIN. Each basket also names the
+ * other baskets in its PIN — near enough to add to the same trip. Buyers with no address yet
+ * come last, so somebody fills it in.
+ */
+export async function dispatchBaskets() {
+  const { default: Customer } = await import('../models/Customer.js');
+  const tasks = await Todo.find({ kind: 'invoice_dispatch', completed: false })
+    .select('enquiry customer title brief dueDate priority status user')
+    .populate([{ path: 'enquiry', select: 'number customer' }, { path: 'user', select: 'name' }])
+    .sort({ dueDate: 1 })
+    .lean();
+  const customerOf = (task) => String(task.customer || task.enquiry?.customer || '');
+  const ids = [...new Set(tasks.map(customerOf).filter(Boolean))];
+  const customers = new Map((await Customer.find({ _id: { $in: ids } }).select('name code address area landmark city pincode').lean())
+    .map((customer) => [String(customer._id), customer]));
+  const norm = (text) => String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const statuses = findHandoff('invoice_dispatch')?.form?.statuses || [];
+
+  const baskets = new Map();
+  for (const task of tasks) {
+    const customer = customers.get(customerOf(task));
+    const city = customer?.city || '';
+    let key = 'none';
+    let label = 'No address yet — add it on the customer';
+    let by = 'none';
+    if (customer?.landmark) {
+      key = `landmark:${norm(customer.landmark)}|${norm(city)}`; by = 'landmark';
+      label = `Near ${customer.landmark}${city ? `, ${city}` : ''}`;
+    } else if (customer?.area) {
+      key = `area:${norm(customer.area)}|${norm(city)}`; by = 'area';
+      label = `${customer.area}${city ? `, ${city}` : ''}`;
+    } else if (customer?.pincode) {
+      key = `pin:${norm(customer.pincode)}`; by = 'pincode';
+      label = `PIN ${customer.pincode}${city ? ` · ${city}` : ''}`;
+    } else if (city) {
+      key = `city:${norm(city)}`; by = 'city'; label = city;
+    }
+    if (!baskets.has(key)) baskets.set(key, { key, label, by, pincode: customer?.pincode || null, stops: [] });
+    baskets.get(key).stops.push({
+      task: task._id,
+      enquiry: task.enquiry ? { _id: task.enquiry._id, number: task.enquiry.number } : null,
+      customer: customer ? { _id: customer._id, name: customer.name } : null,
+      address: [customer?.address, customer?.area, customer?.landmark && `near ${customer.landmark}`, customer?.city, customer?.pincode].filter(Boolean).join(', '),
+      schedule: task.brief?.schedule || null,
+      booking: task.brief?.booking || null,
+      quantity: task.brief?.quantity || null,
+      status: statuses.find((entry) => entry.key === task.status)?.label || null,
+      due: task.dueDate || null,
+      with: task.user?.name || null,
+    });
+  }
+  const list = [...baskets.values()];
+  /* Near enough to share the trip: the other baskets in the same PIN. */
+  for (const basket of list) {
+    basket.nearby = basket.pincode
+      ? list.filter((other) => other !== basket && other.pincode === basket.pincode).map((other) => other.label)
+      : [];
+  }
+  return list.sort((a, b) => (a.by === 'none') - (b.by === 'none') || b.stops.length - a.stops.length || a.label.localeCompare(b.label));
 }
 
 /**
@@ -1545,7 +1761,16 @@ export async function enquiriesHeldBy(department, user, { now = new Date(), limi
     ? await Promise.all([newest(Sample, ''), newest(Quotation, ''), newest(SalesOrder, '')])
     : [new Map(), new Map(), new Map()];
 
-  return tasks.filter((task) => task.enquiry).map((task) => {
+  return tasks.map((task) => {
+    /* A team task raised without an enquiry [raiseTeamTask]: on the desk with the rest. */
+    if (!task.enquiry) {
+      return {
+        task, enquiry: null, since: task.createdAt,
+        late: Boolean(task.dueDate && task.dueDate < now),
+        dueToday: Boolean(task.dueDate && task.dueDate >= now && task.dueDate <= endOfDayIST(now)),
+        records: { sample: null, quotation: null, order: null },
+      };
+    }
     const key = String(task.enquiry._id);
     const pick = (row) => (row ? { _id: row._id, number: row.number, status: row.status } : null);
     return {

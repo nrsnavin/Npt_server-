@@ -347,6 +347,7 @@ async function seed() {
     quality: byEmail['quality@npthangers.com'],
     quotation: byEmail['rsnavin1@gmail.com'],
     audit: byEmail['audit@npthangers.com'],
+    collections: byEmail['collections@npthangers.com'],
   });
 
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));

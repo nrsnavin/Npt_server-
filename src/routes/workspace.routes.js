@@ -36,12 +36,12 @@ import {
 import { pushKey, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk,
+  handoffBrief, handoffDone, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, attachTeamTaskPdf,
 } from '../controllers/handoff.controller.js';
 import {
-  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, taskAskSchema, taskBriefSchema, taskStatusSchema,
+  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskStatusSchema,
 } from '../validators/handoff.schemas.js';
-import { singleTaskResult } from '../middleware/upload.js';
+import { singlePdf, singleTaskResult } from '../middleware/upload.js';
 
 const router = Router();
 
@@ -81,6 +81,10 @@ router.post('/todos/:id/status', validate(taskStatusSchema), handoffStatus);
 router.post('/todos/:id/brief', validate(taskBriefSchema), handoffBrief);
 router.post('/todos/:id/seen', handoffSeen);
 router.post('/todos/:id/ask', validate(taskAskSchema), handoffAsk);
+/* A department task for a team, with no enquiry behind it — Admin and marketing. */
+router.get('/team-tasks/prefill', teamTaskFormPrefill);
+router.post('/team-tasks', validate(teamTaskSchema), createTeamTask);
+router.post('/team-tasks/:id/attachment', singlePdf('file'), attachTeamTaskPdf);
 /* What departments did on my enquiries — read, then dismissed (or cleared a day after reading). */
 router.get('/notices', listNotices);
 router.post('/notices/:id/read', markNoticeRead);

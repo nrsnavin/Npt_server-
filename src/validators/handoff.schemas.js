@@ -18,6 +18,16 @@ export const handoffSchema = z.object({
   requiredDate: z.string().trim().max(40).optional().or(z.literal('')),
 });
 
+/** A department task raised for a team without an enquiry; a customer may be named. */
+export const teamTaskSchema = z.object({
+  kind: z.enum(HANDOFF_KEYS),
+  note: z.string().trim().max(2000).optional(),
+  brief: z.record(z.string(), z.unknown()).optional(),
+  priority: z.enum(['low', 'normal', 'high']).optional(),
+  requiredDate: z.string().trim().max(40).optional().or(z.literal('')),
+  customer: z.string().trim().max(40).optional().or(z.literal('')),
+});
+
 /** Done: what was done, and the details the button asks for [config/handoffs.js]. */
 export const handoffDoneSchema = z.object({
   note: z.string().trim().min(2, 'Say what was done').max(2000),

@@ -57,6 +57,10 @@ const customerSchema = new mongoose.Schema(
      * place for the same truth to be wrong in.
      */
     address: { type: String, trim: true },
+    /* The locality and the landmark a driver asks for — and what dispatch groups loads by
+       ("everything near the Kumar Nagar bus stop on one vehicle") [handoff.service `dispatchBaskets`]. */
+    area: { type: String, trim: true },
+    landmark: { type: String, trim: true },
     city: { type: String, trim: true },
     state: { type: String, trim: true },
     pincode: { type: String, trim: true },
