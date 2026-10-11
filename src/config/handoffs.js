@@ -103,10 +103,7 @@ const BUTTONS = [
     records: [{ key: 'lrNumber', label: 'LR / docket number' }],
   },
   {
-    /*
-     * The check before goods go. Invoice & Dispatch is refused until Quality has passed the job
-     * here (or by a final inspection in the Quality module) [services/handoff.service.js].
-     */
+    /* The check before goods go — asked when the plant wants it; it does not lock Dispatch. */
     key: 'quality_check', label: 'Quality Check', department: 'quality', stage: 'quality',
     hint: 'Check the goods before they are invoiced and sent',
     records: [

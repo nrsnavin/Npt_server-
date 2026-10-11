@@ -302,7 +302,23 @@ export const TASK_FORMS = {
   team_payment_followup: paymentFollowUp,
   my_payment_followup: paymentFollowUp,
   gst_invoice_audit: { team: 'Audit Team', asks: [{ key: 'invoiceNumber', label: 'Invoice number', from: 'order.invoiceNumber' }] },
-  ac_clarify: { team: 'Accounts Team' },
+  ac_clarify: {
+    team: 'Accounts Team',
+    remarkRequired: true,
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'Amount, reference, what the account shows' },
+    statuses: [
+      { key: 'approval_required', label: 'Payment Approval Required' },
+      { key: 'confirmation_pending', label: 'Payment Confirmation Pending' },
+      { key: 'confirmed', label: 'Payment Confirmed' },
+      { key: 'credit_approved', label: 'Credit Approved' },
+      { key: 'statement_required', label: 'Statement Required' },
+      { key: 'clarified', label: 'Account Clarified' },
+      /* An account on hold holds the enquiry up — marketing's list shows it. */
+      { key: 'hold', label: 'Hold', issue: true },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+  },
   request_prt_visit: { team: 'Admin', asks: [{ key: 'visitDate', label: 'Visit date', type: 'date' }] },
 };
 

@@ -2,13 +2,13 @@ import Todo, { PRIORITIES } from '../models/Todo.js';
 import Enquiry from '../models/Enquiry.js';
 import { CLOSED_STAGE, STAGES, stageLabel } from '../config/enquiryStages.js';
 import { findDepartment } from '../config/modules.js';
-import { findHandoff } from '../config/handoffs.js';
+import { HANDOFFS, findHandoff } from '../config/handoffs.js';
 import { canRead } from './access.service.js';
 import { isOwnershipScoped, ownsRecord } from './ownership.service.js';
 import { departmentsOf, inDepartment, isManagement } from '../utils/departments.js';
 import { EVENTS, publish } from './events.service.js';
 import ApiError from '../utils/ApiError.js';
-import { describeBalance, dispatchBalance, qualityPassed } from './enquiryGates.service.js';
+import { describeBalance, dispatchBalance } from './enquiryGates.service.js';
 import * as paymentPresets from './paymentGates.service.js';
 import { assertEnquiryPaidFor } from './paymentGates.service.js';
 import { MATERIALS } from '../models/Mould.js';
@@ -413,14 +413,11 @@ export async function moveEnquiry({
   const due = requiredDue(requiredDate) || (form.dueFrom && requiredDue(asked[form.dueFrom], 'That date'));
 
   /*
-   * The gates [services/enquiryGates.service.js, services/paymentGates.service.js]. Dispatch only
-   * once Quality has passed the job; Production only once the advance is in, Dispatch only once
-   * the money due before dispatch is in — refused with the shortfall, and Payment Collection is
-   * asked for it.
+   * The payment gates [services/paymentGates.service.js]: Production only once the advance is
+   * in, Dispatch only once the money due before dispatch is in — refused with the shortfall, and
+   * Payment Collection is asked for it. Dispatch is not held for a Quality pass: the plant asks
+   * Quality when it wants the goods checked (Quality Check), not as a lock on Dispatch.
    */
-  if (kind === 'invoice_dispatch' && !(await qualityPassed(enquiry._id, {}))) {
-    fail('Quality has not passed this job yet. Send it to Quality Check first; Dispatch can be asked once it passes.');
-  }
   if (kind === 'ask_edd') await assertEnquiryPaidFor(enquiry._id, 'production', { by: user });
   if (kind === 'invoice_dispatch') await assertEnquiryPaidFor(enquiry._id, 'dispatch', { by: user });
 
@@ -1238,7 +1235,10 @@ export async function enquiryProgress(enquiryIds) {
   const ids = enquiryIds.filter(Boolean);
   const progress = new Map(ids.map((id) => [String(id), { erd: null, edd: null, issues: [] }]));
   if (!ids.length) return progress;
-  const tasks = await Todo.find({ enquiry: { $in: ids }, kind: { $in: [...EDD_KINDS, ...MOULD_KINDS, ...ISSUE_KINDS] } })
+  /* Every kind that gives a date, or has a status that is an issue (Dispatch's Goods Not Yet Ready, Accounts' Hold …). */
+  const withIssues = HANDOFFS.filter((handoff) => (handoff.form?.statuses || []).some((entry) => entry.issue)).map((handoff) => handoff.key);
+  const kinds = [...new Set([...EDD_KINDS, ...MOULD_KINDS, ...ISSUE_KINDS, ...withIssues])];
+  const tasks = await Todo.find({ enquiry: { $in: ids }, kind: { $in: kinds } })
     .select('enquiry kind department status completed updates.fields updates.at outcome.fields outcome.at')
     .lean();
   const latest = (row, field, date, at, department) => {

@@ -437,3 +437,45 @@ test('a Quality complaint moves Complaint Received → … → Task Closed with 
   assert.equal((await moveQuality('closed', 'Closed with the buyer')).status, 200);
   assert.equal((await Todo.findById(task._id)).completed, true);
 });
+
+/* ------------------------------ Accounts ------------------------------ */
+
+test('Accounts’ task moves Payment Approval Required → … → Task Closed with remarks; Hold is an issue on the enquiry', async () => {
+  const { default: User } = await import('../src/models/User.js');
+  await User.updateOne({ email: 'kavi@np.com' }, { $addToSet: { extraDepartments: 'accounts' } });
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ac_clarify', note: 'Two receipts against one invoice — which order is the second for?' } });
+  assert.equal(sent.status, 201, sent.json.message);
+  const task = await Todo.findById(sent.json.data.task._id);
+  assert.equal(task.status, 'approval_required');
+  const { buttons } = (await api('/api/handoffs', { as: 'nandhini' })).json.data;
+  assert.deepEqual(buttons.find((button) => button.key === 'ac_clarify').form.statuses.map((entry) => entry.label), [
+    'Payment Approval Required', 'Payment Confirmation Pending', 'Payment Confirmed', 'Credit Approved',
+    'Statement Required', 'Account Clarified', 'Hold', 'Task Closed',
+  ]);
+  const moveAccounts = (status, note) => api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'admin', body: { status, ...(note ? { note } : {}) } });
+  assert.equal((await moveAccounts('hold')).status, 400, 'no remark');
+  assert.equal((await moveAccounts('hold', 'Old balance of ₹42,000 unpaid since August')).status, 200);
+  const issues = async () => (await listed()).progress.issues.filter((issue) => issue.department === 'accounts').map((issue) => issue.label);
+  assert.deepEqual(await issues(), ['Hold']);
+  const [notice] = await noticesOf('nandhini');
+  assert.equal(notice.statusLabel, 'Hold');
+  assert.equal(notice.department, 'accounts');
+
+  assert.equal((await moveAccounts('clarified', 'Second receipt is for SO-0412')).status, 200);
+  assert.deepEqual(await issues(), []);
+  assert.equal((await moveAccounts('closed', 'Done')).status, 200);
+  assert.equal((await Todo.findById(task._id)).completed, true);
+});
+
+test('any department’s issue status shows on the enquiry list — Dispatch’s Goods Not Yet Ready too', async () => {
+  const { default: Todo } = await import('../src/models/Todo.js');
+  const dispatch = await Todo.create({
+    enquiry: enquiry._id, kind: 'invoice_dispatch', department: 'despatch', title: 'Invoice & Dispatch', status: 'not_ready',
+  });
+  try {
+    const row = await listed();
+    assert.ok(row.progress.issues.some((issue) => issue.department === 'despatch' && issue.label === 'Goods Not Yet Ready'));
+  } finally {
+    await dispatch.deleteOne();
+  }
+});

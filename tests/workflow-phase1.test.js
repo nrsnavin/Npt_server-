@@ -36,7 +36,6 @@ let Todo;
 let Enquiry;
 let SalesOrder;
 let Dispatch;
-let Inspection;
 let Receivable;
 let EVENTS;
 let publish;
@@ -101,7 +100,6 @@ test.before(async () => {
   ({ default: Enquiry } = await import('../src/models/Enquiry.js'));
   ({ default: SalesOrder } = await import('../src/models/SalesOrder.js'));
   ({ default: Dispatch } = await import('../src/models/Dispatch.js'));
-  ({ default: Inspection } = await import('../src/models/Inspection.js'));
   ({ default: Receivable } = await import('../src/models/Receivable.js'));
   ({ EVENTS, publish } = await import('../src/services/events.service.js'));
   server = app.listen(0);
@@ -170,30 +168,10 @@ test('Assembling has its own stage, and counts its own enquiries', async () => {
   assert.ok(at[0].count >= 1);
 });
 
-/* ------------------------------ 2. Quality first ------------------------------ */
+/* ------------------------------ 2. Quality, when asked ------------------------------ */
 
-test('Dispatch cannot be asked until Quality has passed the job', async () => {
+test('Dispatch can be asked without a Quality pass — the plant dropped that lock', async () => {
   const enquiry = await inProduction();
-  const early = await send(enquiry, 'invoice_dispatch', 'siva');
-  assert.equal(early.status, 400);
-  assert.match(early.json.message, /Quality has not passed this job/);
-
-  const toQuality = await send(enquiry, 'quality_check', 'siva');
-  assert.equal(toQuality.status, 201, toQuality.json.message);
-  const check = toQuality.json.data.task;
-  assert.equal(check.department, 'quality');
-
-  const notAChoice = await done(check, 'kavitha', { note: 'Looked', fields: { result: 'Maybe' } });
-  assert.equal(notAChoice.status, 400);
-  assert.match(notAChoice.json.message, /Result is one of: Passed, Failed/);
-
-  const failed = await done(check, 'kavitha', { note: 'Flash on the hook', fields: { result: 'Failed' } });
-  assert.equal(failed.status, 200, failed.json.message);
-  assert.equal((await send(enquiry, 'invoice_dispatch', 'siva')).status, 400, 'a failed check does not open Dispatch');
-
-  const again = (await send(enquiry, 'quality_check', 'siva')).json.data.task;
-  const passed = await done(again, 'kavitha', { note: '3 pcs per carton checked', fields: { result: 'Passed', passedQty: '1000' } });
-  assert.equal(passed.status, 200, passed.json.message);
   const toDispatch = await send(enquiry, 'invoice_dispatch', 'siva');
   assert.equal(toDispatch.status, 201, toDispatch.json.message);
   assert.equal(toDispatch.json.data.task.department, 'despatch');
@@ -201,25 +179,15 @@ test('Dispatch cannot be asked until Quality has passed the job', async () => {
   assert.equal((await holder(enquiry)).department, 'marketing');
 });
 
-test('a pass in the Quality module counts too — and rework means checking again', async () => {
+test('a Quality Check still records Passed or Failed, and nothing else', async () => {
   const enquiry = await inProduction();
-  const order = await orderOn(enquiry);
-  await Inspection.collection.insertOne({
-    order: order._id, stage: 'final', verdict: 'passed', checked: 1000, inspectedBy: new mongoose.Types.ObjectId(), createdAt: new Date(),
-  });
-  const ok = await send(enquiry, 'invoice_dispatch', 'siva');
-  assert.equal(ok.status, 201, ok.json.message);
-  assert.equal(ok.json.data.task.department, 'despatch');
-
-  /* Made again after the pass (Production asked once more): the old pass no longer counts. */
-  const fresh = await inProduction();
-  const check = (await send(fresh, 'quality_check', 'siva')).json.data.task;
-  await done(check, 'kavitha', { note: 'Fine', fields: { result: 'Passed' } });
-  await done(await openTask(fresh, 'ask_edd'), 'siva', { note: 'First run done' });
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  assert.equal((await send(fresh, 'ask_edd')).status, 201);
-  const reworked = await send(fresh, 'invoice_dispatch', 'siva');
-  assert.equal(reworked.status, 400, 'made again after the pass, so Quality looks again');
+  const check = (await send(enquiry, 'quality_check', 'siva')).json.data.task;
+  assert.equal(check.department, 'quality');
+  const notAChoice = await done(check, 'kavitha', { note: 'Looked', fields: { result: 'Maybe' } });
+  assert.equal(notAChoice.status, 400);
+  assert.match(notAChoice.json.message, /Result is one of: Passed, Failed/);
+  const failed = await done(check, 'kavitha', { note: 'Flash on the hook', fields: { result: 'Failed' } });
+  assert.equal(failed.status, 200, failed.json.message);
 });
 
 /* ---------------------------- 4. Dispatch keeps the balance ---------------------------- */
