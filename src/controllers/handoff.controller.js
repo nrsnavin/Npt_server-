@@ -13,7 +13,7 @@ import { HANDOFFS, TILE_KIND, findHandoff } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  askFromTask, attentionFor, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
+  askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
   updateHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
@@ -314,5 +314,7 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
   /* The queue less the enquiries themselves: side requests, like a PRT visit or photos sent. */
   const heldIds = new Set(held.map((row) => String(row.task._id)));
   const requests = dashboard.queue.filter((task) => !heldIds.has(String(task._id)));
-  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, attention } });
+  /* Dispatch plans vehicles by place: the open requests in baskets of the same landmark / PIN. */
+  const baskets = key === 'despatch' ? await dispatchBaskets() : undefined;
+  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, attention, baskets } });
 });

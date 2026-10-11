@@ -565,7 +565,7 @@ export async function teamTaskPrefill(customerId) {
     if (found) {
       const primary = found.contacts?.find((contact) => contact.isPrimary) || found.contacts?.[0];
       const phone = primary?.mobile || found.mobile || '';
-      const place = [found.address, found.city, found.state, found.pincode].filter(Boolean).join(', ');
+      const place = [found.address, found.area, found.landmark && `near ${found.landmark}`, found.city, found.state, found.pincode].filter(Boolean).join(', ');
       customer = {
         name: found.name, contactPerson: primary?.name || '', mobile: phone, whatsapp: primary?.whatsapp || found.whatsapp || phone,
         delivery: `${primary?.name || 'Not added'} · ${phone || 'No number'} · ${place || 'Road not selected'}`,
@@ -1368,7 +1368,7 @@ export async function taskPrefill(enquiryId) {
 
   const primary = customer?.contacts?.find((contact) => contact.isPrimary) || customer?.contacts?.[0];
   const phone = primary?.mobile || customer?.mobile || '';
-  const place = [customer?.address, customer?.city, customer?.state, customer?.pincode].filter(Boolean).join(', ');
+  const place = [customer?.address, customer?.area, customer?.landmark && `near ${customer.landmark}`, customer?.city, customer?.state, customer?.pincode].filter(Boolean).join(', ');
 
   return {
     customer: {
@@ -1444,6 +1444,70 @@ export async function enquiryProgress(enquiryIds) {
     }
   }
   return progress;
+}
+
+/**
+ * The open dispatch requests in baskets, for loading one vehicle with buyers at the same place
+ * [web: Dispatch desk]. A basket is the buyers at the same landmark (the bus stop or mill a
+ * driver asks for); without one, the same area; then the same PIN. Each basket also names the
+ * other baskets in its PIN — near enough to add to the same trip. Buyers with no address yet
+ * come last, so somebody fills it in.
+ */
+export async function dispatchBaskets() {
+  const { default: Customer } = await import('../models/Customer.js');
+  const tasks = await Todo.find({ kind: 'invoice_dispatch', completed: false })
+    .select('enquiry customer title brief dueDate priority status user')
+    .populate([{ path: 'enquiry', select: 'number customer' }, { path: 'user', select: 'name' }])
+    .sort({ dueDate: 1 })
+    .lean();
+  const customerOf = (task) => String(task.customer || task.enquiry?.customer || '');
+  const ids = [...new Set(tasks.map(customerOf).filter(Boolean))];
+  const customers = new Map((await Customer.find({ _id: { $in: ids } }).select('name code address area landmark city pincode').lean())
+    .map((customer) => [String(customer._id), customer]));
+  const norm = (text) => String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const statuses = findHandoff('invoice_dispatch')?.form?.statuses || [];
+
+  const baskets = new Map();
+  for (const task of tasks) {
+    const customer = customers.get(customerOf(task));
+    const city = customer?.city || '';
+    let key = 'none';
+    let label = 'No address yet — add it on the customer';
+    let by = 'none';
+    if (customer?.landmark) {
+      key = `landmark:${norm(customer.landmark)}|${norm(city)}`; by = 'landmark';
+      label = `Near ${customer.landmark}${city ? `, ${city}` : ''}`;
+    } else if (customer?.area) {
+      key = `area:${norm(customer.area)}|${norm(city)}`; by = 'area';
+      label = `${customer.area}${city ? `, ${city}` : ''}`;
+    } else if (customer?.pincode) {
+      key = `pin:${norm(customer.pincode)}`; by = 'pincode';
+      label = `PIN ${customer.pincode}${city ? ` · ${city}` : ''}`;
+    } else if (city) {
+      key = `city:${norm(city)}`; by = 'city'; label = city;
+    }
+    if (!baskets.has(key)) baskets.set(key, { key, label, by, pincode: customer?.pincode || null, stops: [] });
+    baskets.get(key).stops.push({
+      task: task._id,
+      enquiry: task.enquiry ? { _id: task.enquiry._id, number: task.enquiry.number } : null,
+      customer: customer ? { _id: customer._id, name: customer.name } : null,
+      address: [customer?.address, customer?.area, customer?.landmark && `near ${customer.landmark}`, customer?.city, customer?.pincode].filter(Boolean).join(', '),
+      schedule: task.brief?.schedule || null,
+      booking: task.brief?.booking || null,
+      quantity: task.brief?.quantity || null,
+      status: statuses.find((entry) => entry.key === task.status)?.label || null,
+      due: task.dueDate || null,
+      with: task.user?.name || null,
+    });
+  }
+  const list = [...baskets.values()];
+  /* Near enough to share the trip: the other baskets in the same PIN. */
+  for (const basket of list) {
+    basket.nearby = basket.pincode
+      ? list.filter((other) => other !== basket && other.pincode === basket.pincode).map((other) => other.label)
+      : [];
+  }
+  return list.sort((a, b) => (a.by === 'none') - (b.by === 'none') || b.stops.length - a.stops.length || a.label.localeCompare(b.label));
 }
 
 /**

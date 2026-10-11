@@ -634,3 +634,42 @@ test('a team task’s enquiry-only steps say so; the rest finish normally', asyn
   assert.equal(closed.status, 200, closed.json.message);
   assert.equal((await Todo.findById(id)).completed, true);
 });
+
+/* ------------------------------ Dispatch baskets ------------------------------ */
+
+test('a customer keeps its area and landmark; Dispatch sees its open requests in baskets by landmark, area and PIN', async () => {
+  const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
+  const buyer = async (name, place) => {
+    const made = await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name, mobile: `98${String(Math.random()).slice(2, 10)}`, assignedTo: me, ...place } });
+    assert.equal(made.status, 201, made.json.message);
+    return made.json.data;
+  };
+  const kumar = { address: '12 Mill Road', area: 'Kumar Nagar', landmark: 'Kumar Nagar bus stop', city: 'Tiruppur', pincode: '641603' };
+  const a = await buyer('Aruna Knits', kumar);
+  assert.equal(a.landmark, 'Kumar Nagar bus stop', 'the landmark is kept');
+  assert.equal(a.area, 'Kumar Nagar');
+  const b = await buyer('Bala Garments', { ...kumar, address: '3 Second Street', landmark: 'kumar nagar  Bus Stop' });
+  const c = await buyer('Chitra Exports', { address: '40 Avinashi Road', area: 'Anupparpalayam', city: 'Tiruppur', pincode: '641603' });
+  const d = await buyer('Deva Fashions', {});
+  for (const customer of [a, b, c, d]) {
+    const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'admin', body: { kind: 'invoice_dispatch', note: `Lot for ${customer.name}`, customer: customer._id, brief: { schedule: 'Tomorrow Dispatch' } } });
+    assert.equal(sent.status, 201, sent.json.message);
+  }
+
+  const { baskets } = (await api('/api/departments/despatch/dashboard', { as: 'ravi' })).json.data;
+  const names = (basket) => basket.stops.map((stop) => stop.customer?.name).sort();
+  const landmark = baskets.find((basket) => basket.by === 'landmark' && basket.label === 'Near Kumar Nagar bus stop, Tiruppur');
+  assert.ok(landmark, 'one basket for the landmark, however it was typed');
+  assert.deepEqual(names(landmark), ['Aruna Knits', 'Bala Garments']);
+  assert.equal(landmark.stops[0].schedule, 'Tomorrow Dispatch');
+  assert.match(landmark.stops.find((stop) => stop.customer.name === 'Aruna Knits').address, /12 Mill Road, Kumar Nagar, near Kumar Nagar bus stop, Tiruppur, 641603/);
+  const area = baskets.find((basket) => basket.by === 'area' && names(basket).includes('Chitra Exports'));
+  assert.equal(area.label, 'Anupparpalayam, Tiruppur');
+  assert.ok(landmark.nearby.includes('Anupparpalayam, Tiruppur'), 'the same PIN is near enough to add to the trip');
+  const none = baskets.at(-1);
+  assert.equal(none.by, 'none', 'buyers with no address come last');
+  assert.ok(names(none).includes('Deva Fashions'));
+  assert.equal((await api('/api/departments/production/dashboard', { as: 'siva' })).json.data.baskets, undefined, 'only Dispatch plans vehicles');
+  const prefill = (await api(`/api/workspace/team-tasks/prefill?customer=${a._id}`, { as: 'nandhini' })).json.data;
+  assert.match(prefill.customer.delivery, /12 Mill Road, Kumar Nagar, near Kumar Nagar bus stop, Tiruppur, 641603/, 'the dispatch form’s route line names the landmark');
+});

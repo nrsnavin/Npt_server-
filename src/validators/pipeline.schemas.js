@@ -115,6 +115,8 @@ export const customerSchema = z.object({
   /* Where a lorry goes. §19 gates a consignment on having one, and the consignment prefills
      itself from here — see the field's own note on the model. */
   address: z.string().max(500).optional(),
+  area: z.string().trim().max(160).optional(),
+  landmark: z.string().trim().max(160).optional(),
   city: z.string().optional(),
   state: z.string().optional(),
   pincode: z.string().max(12).optional(),
