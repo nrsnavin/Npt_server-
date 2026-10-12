@@ -231,7 +231,8 @@ PORT=5000
 # After "Turn on transactions" (§4), append &replicaSet=rs0 — and only then.
 MONGO_URI=mongodb://nptadmin:PUT-A-LONG-RANDOM-PASSWORD-HERE@127.0.0.1:27017/npt_erp?authSource=admin
 
-# Anything long and random. Changing it signs everybody out.
+# Anything long and random (32 characters at least). Changing it signs everybody out. With
+# NODE_ENV=production the API refuses to start on the development default or a short value.
 JWT_SECRET=GENERATE-WITH-openssl-rand-base64-48
 JWT_EXPIRES_IN=7d
 
@@ -283,6 +284,29 @@ Run these from anywhere — they edit `/etc/nginx/`, not either repo.
 sudo nano /etc/nginx/sites-available/npt
 ```
 
+The browser-side guards live in one snippet, included wherever a `location` block sets its own
+headers — in Nginx, an `add_header` inside a `location` *replaces* every header the server block
+set, so a snippet that is included in each place is the only way they stay on every answer.
+
+```bash
+sudo nano /etc/nginx/snippets/npt-security.conf
+```
+
+```nginx
+# What the browser is told about this app: it is never shown inside another site's frame, it
+# runs no script but its own files, loads styles and fonts only from itself and Google Fonts,
+# and talks to nothing but its API. Anything injected into a page is refused by the browser.
+# The API host is the one the web app was built with (VITE_API_URL).
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "DENY" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api2.baluelastics.com; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'" always;
+# Only once certbot (§TLS, below) has issued the certificate and https works — a browser that
+# has seen this header refuses plain http to the host for a year.
+# add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+```
+
 ```nginx
 # The React app.
 server {
@@ -291,6 +315,7 @@ server {
 
     root /srv/npt/web/dist;
     index index.html;
+    include snippets/npt-security.conf;
 
     # A single-page app: every unknown path is a route, not a missing file. Without this,
     # reloading on /enquiries/123 returns a 404 from Nginx rather than the app.
@@ -303,12 +328,14 @@ server {
     # "This screen's code could not be fetched" on whichever screen they open next.
     location = /index.html {
         add_header Cache-Control "no-cache";
+        include snippets/npt-security.conf;
     }
 
     # Hashed filenames, so they can be cached hard.
     location /assets/ {
         expires 1y;
         add_header Cache-Control "public, immutable";
+        include snippets/npt-security.conf;
 
         # A tab that was already open when a deploy landed is holding the *previous*
         # index.html, and asks for chunk names this build renamed. `on-box.sh` keeps the
@@ -324,6 +351,7 @@ server {
         root /srv/npt/web/dist.old;
         expires 1y;
         add_header Cache-Control "public, immutable";
+        include snippets/npt-security.conf;
     }
 
     gzip on;

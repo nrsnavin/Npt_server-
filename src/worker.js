@@ -5,6 +5,7 @@ import { installProcessGuards } from './config/processGuards.js';
 import { connectDatabase, disconnectDatabase } from './config/db.js';
 import { startBackground } from './background.js';
 import { connectCache, disconnectCache } from './services/cache.service.js';
+import { secretProblem } from './config/env.js';
 
 /**
  * The background worker: reminders, escalations, the IndiaMART feed, dispatch recovery and
@@ -19,6 +20,9 @@ import { connectCache, disconnectCache } from './services/cache.service.js';
  */
 async function start() {
   installProcessGuards();
+  /* The worker signs the links it sends out, so it is held to the same secret rule as the API. */
+  const secret = secretProblem();
+  if (secret) throw new Error(secret);
   await connectDatabase();
   console.log('Worker: MongoDB connected');
   await connectCache();

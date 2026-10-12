@@ -1,7 +1,7 @@
 import Enquiry from '../models/Enquiry.js';
 import Todo from '../models/Todo.js';
 import Attachment from '../models/Attachment.js';
-import { bufferOf, put, remove } from '../services/storage.service.js';
+import { bufferOf, put, remove, safeFilename } from '../services/storage.service.js';
 import { sendResultToCustomer } from '../services/taskResultMessage.service.js';
 import { signatureValid } from '../utils/signedLink.js';
 import ApiError from '../utils/ApiError.js';
@@ -195,7 +195,7 @@ export const publicTaskFile = asyncHandler(async (req, res) => {
   if (!buffer) throw ApiError.notFound('This link has expired.');
   res.setHeader('Content-Type', attachment.mimeType);
   res.setHeader('Content-Length', buffer.length);
-  res.setHeader('Content-Disposition', `inline; filename="${String(attachment.filename || 'document').replace(/"/g, '')}"`);
+  res.setHeader('Content-Disposition', `inline; filename="${safeFilename(attachment.filename)}"`);
   res.send(buffer);
 });
 
