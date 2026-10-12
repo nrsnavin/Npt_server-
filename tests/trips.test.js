@@ -186,3 +186,24 @@ test('stops are ticked off; one not delivered says why on the request; completin
   const back = await api(`/api/trips/${trip._id}/status`, { method: 'POST', as: 'ravi', body: { status: 'left' } });
   assert.equal(back.status, 409, 'a completed trip stays completed');
 });
+
+test('the dispatch report: trips a day, stops a trip, delivered and missed with why, on time, vehicle fill', async () => {
+  const today = india(0);
+  const report = await api(`/api/dispatch-planning/report?from=${india(-2)}&to=${india(3)}`, { as: 'ravi' });
+  assert.equal(report.status, 200, report.json.message);
+  const data = report.json.data;
+  assert.equal(data.trips, 1, 'the cancelled trip is counted apart');
+  assert.equal(data.cancelled, 1);
+  assert.equal(data.stops, 3);
+  assert.equal(data.stopsPerTrip, 3);
+  assert.equal(data.delivered, 2);
+  assert.equal(data.notDelivered, 1);
+  assert.match(data.missed[0].note, /Gate closed/);
+  assert.equal(data.onTime.onTime + data.onTime.late + data.onTime.undated, 3);
+  const ace = data.vehicles.find((row) => row.vehicle === 'TN 39 AB 4521');
+  assert.equal(ace.trips, 1);
+  assert.equal(ace.averageCartons, 40, '25 + 15 after the edit, the third stop uncounted');
+  assert.equal(ace.fill, 100, '40 cartons on a 40-carton vehicle');
+  const tooLong = await api(`/api/dispatch-planning/report?from=2025-01-01&to=${today}`, { as: 'ravi' });
+  assert.equal(tooLong.status, 400, 'three months at most');
+});

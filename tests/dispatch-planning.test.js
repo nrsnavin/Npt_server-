@@ -203,3 +203,37 @@ test('the lists keep one spelling, and an edit made on an old copy is refused', 
   const offered = await api('/api/delivery-routes?active=true', { as: 'ravi' });
   assert.equal(offered.json.data.length, 0, 'a route switched off is not offered');
 });
+
+test('suggested trips: one per transporter, our groups given a vehicle in turn — confirmed, they become trips', async () => {
+  const ace = (await api('/api/vehicles', { method: 'POST', as: 'ravi', body: { number: 'TN 39 AB 4521', kind: 'Tata Ace', capacityCartons: 40 } })).json.data;
+  const eicher = (await api('/api/vehicles', { method: 'POST', as: 'ravi', body: { number: 'TN 39 CD 1100', kind: 'Eicher', capacityCartons: 120 } })).json.data;
+  const suggested = await api('/api/dispatch-planning/suggest', { as: 'ravi' });
+  assert.equal(suggested.status, 200, suggested.json.message);
+  const { trips } = suggested.json.data;
+  const kpnTrip = trips.find((row) => row.mode === 'transport');
+  assert.equal(kpnTrip.transporter.name, 'KPN Parcel');
+  assert.equal(kpnTrip.stops.length, 2);
+  const own = trips.filter((row) => row.mode === 'own_vehicle');
+  assert.ok(own.length >= 2, `${own.length} own-vehicle trips`);
+  assert.equal(own[0].vehicle.number, eicher.number, 'the biggest vehicle goes first, to the most urgent group');
+  assert.ok(trips.some((row) => row.mode === 'party_collects'));
+  if (own.length > 2) assert.equal(own[2].run, 2, 'more groups than vehicles: a second run');
+
+  const tomorrow = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(Date.now() + 86400000));
+  const body = {
+    date: tomorrow,
+    trips: trips.map((row) => ({ tasks: row.stops.map((stop) => String(stop.task)), mode: row.mode, vehicle: row.vehicle?._id, transporter: row.transporter?._id, ...(row.mode === 'own_vehicle' && !row.vehicle ? { driverName: 'Hired' } : {}) })),
+  };
+  const made = await api('/api/dispatch-planning/suggest', { method: 'POST', as: 'ravi', body });
+  assert.equal(made.status, 201, made.json.message);
+  assert.equal(made.json.data.made.length, trips.length);
+  assert.equal(made.json.data.refused.length, 0);
+  const after = (await api('/api/dispatch-planning/plan', { as: 'ravi' })).json.data;
+  assert.equal(after.groups.length, 0, 'every ready request is now on a trip');
+  assert.equal(after.trips.filter((row) => row.status === 'planned').length, trips.length);
+
+  const again = await api('/api/dispatch-planning/suggest', { method: 'POST', as: 'ravi', body });
+  assert.equal(again.status, 409, 'confirming twice makes nothing twice');
+  assert.match(again.json.message, /already on TRP-/);
+  void ace;
+});

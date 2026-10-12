@@ -40,7 +40,10 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
  *   sent       it is reached when the uploaded work has gone to the customer (`sendResult`)
  *   done       reaching it finishes the task
  *   next       the department task raised once it is reached (the enquiry moves on to it) —
- *              Dispatched raises Reception's LR copy; SO Prepared raises Production's EDD
+ *              Dispatched raises Reception's LR copy; SO Prepared raises Production's EDD. If that
+ *              task is already open (a second part load), it is told of this one instead
+ *   readyForDispatch  reaching it tells the enquiry's open Dispatch request, which moves to
+ *              Goods Ready — Waiting for Vehicle if it was still waiting on the goods
  *   issue      while the task is at it, the enquiry shows it as an issue (marketing's list)
  *   date       `required` — a ready date must be given with it; `tomorrow` — it is tomorrow
  *              unless another is given. Any other status takes the date if one is given.
@@ -215,7 +218,8 @@ export const TASK_FORMS = {
       { key: 'raw_material', label: 'Raw Material Not Available', issue: true },
       { key: 'completed', label: 'Production Completed' },
       { key: 'assembling', label: 'Assembling' },
-      { key: 'ready_dispatch', label: 'Ready for Dispatch' },
+      /* Tells the enquiry's open Dispatch request, which moves to Goods Ready [handoff.service `tellDispatchReady`]. */
+      { key: 'ready_dispatch', label: 'Ready for Dispatch', readyForDispatch: true },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
   },
@@ -233,7 +237,7 @@ export const TASK_FORMS = {
       { key: 'spares_ready', label: 'Spares Ready' },
       { key: 'part_ready', label: 'Part Quantity Ready' },
       { key: 'full_ready', label: 'Full Quantity Ready' },
-      { key: 'ready_dispatch', label: 'Ready for Dispatch' },
+      { key: 'ready_dispatch', label: 'Ready for Dispatch', readyForDispatch: true },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
   },
@@ -281,7 +285,8 @@ export const TASK_FORMS = {
       { key: 'not_ready', label: 'Goods Not Yet Ready', issue: true },
       { key: 'waiting_vehicle', label: 'Goods Ready — Waiting for Vehicle' },
       { key: 'party_collect', label: 'Party Will Collect' },
-      { key: 'part_dispatched', label: 'Part Quantity Dispatched' },
+      /* A part load has its own LR: Reception's LR copy task is raised, or told of the further load. */
+      { key: 'part_dispatched', label: 'Part Quantity Dispatched', next: 'lr_copy' },
       /* Gone: Reception gets the LR copy task, with the dispatch details. */
       { key: 'fully_dispatched', label: 'Fully Dispatched', next: 'lr_copy' },
       { key: 'dispatched', label: 'Dispatched', next: 'lr_copy' },

@@ -9,6 +9,7 @@ import { setTaskStatus } from './handoff.service.js';
 import { listTrips, requestsOnTrips } from './trip.service.js';
 import Vehicle from '../models/Vehicle.js';
 import ApiError from '../utils/ApiError.js';
+import { km, nearestOrder } from '../utils/geo.js';
 
 /**
  * Planning tomorrow's dispatch: the open dispatch requests, put into groups that can go together
@@ -154,7 +155,7 @@ export async function dispatchPlan() {
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
   const [customers, transporters, routes, plantTasks, orders, vehicles, trips] = await Promise.all([
     Customer.find({ _id: { $in: [...new Set(tasks.map(customerIdOf).filter(Boolean))] } })
-      .select('name code mobile whatsapp address area landmark city pincode deliveryMode usualTransporter deliveryRoute').lean(),
+      .select('name code mobile whatsapp address area landmark city pincode deliveryMode usualTransporter deliveryRoute site.lat site.lng').lean(),
     Transporter.find({}).lean(),
     DeliveryRoute.find({}).lean(),
     Todo.find({ enquiry: { $in: enquiryIds }, kind: { $in: PLANT_KINDS } }).select('enquiry kind status updatedAt').sort({ updatedAt: -1 }).lean(),
@@ -193,6 +194,7 @@ export async function dispatchPlan() {
       customer: customer ? { _id: customer._id, name: customer.name, phone: customer.whatsapp || customer.mobile || null } : null,
       address: addressOf(customer),
       landmark: customer?.landmark || null,
+      site: customer?.site?.lat != null ? { lat: customer.site.lat, lng: customer.site.lng } : null,
       model: task.brief?.model || null,
       quantity: Number(task.brief?.quantity) || null,
       schedule: task.brief?.schedule || null,
@@ -223,11 +225,36 @@ export async function dispatchPlan() {
       group.label = `Near ${spelt}${city ? `, ${city}` : ''}`;
       group.reason = `Same landmark: ${spelt}`;
     }
+    /* Our own vehicle: the pinned stops in the order the vehicle would reach them. */
+    if (group.mode === 'own_vehicle' && group.stops.filter((stop) => stop.site).length > 1) {
+      group.stops = nearestOrder(group.stops, (stop) => stop.site);
+      group.orderedByDistance = true;
+    }
     group.urgency = Math.min(...group.stops.map((stop) => stop.urgency));
     group.totals = { stops: group.stops.length, quantity: group.stops.reduce((sum, stop) => sum + (stop.quantity || 0), 0) };
     group.needsDetails = group.by === 'none';
     return group;
   });
+  /*
+   * Near enough to share a vehicle: another of our own groups with a pinned buyer within
+   * NEARBY_KM of one of this group's. Said on the group, so the desk can put the two on one trip.
+   */
+  const NEARBY_KM = 3;
+  const own = list.filter((group) => group.mode === 'own_vehicle' && group.stops.some((stop) => stop.site));
+  for (const group of own) {
+    group.nearby = own
+      .filter((other) => other !== group)
+      .map((other) => {
+        let closest = null;
+        for (const a of group.stops) for (const b of other.stops) {
+          const d = km(a.site, b.site);
+          if (d != null && (closest == null || d < closest)) closest = d;
+        }
+        return closest != null && closest <= NEARBY_KM ? { key: other.key, label: other.label, km: Math.round(closest * 10) / 10 } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.km - b.km);
+  }
   const MODE_ORDER = { transport: 0, own_vehicle: 1, courier: 2, party_collects: 3 };
   list.sort((a, b) =>
     a.needsDetails - b.needsDetails || a.urgency - b.urgency || MODE_ORDER[a.mode] - MODE_ORDER[b.mode] ||
@@ -248,7 +275,7 @@ export async function dispatchPlan() {
       waitingPayment: waiting.waiting_payment.length,
       needsDetails: list.filter((group) => group.needsDetails).reduce((sum, group) => sum + group.stops.length, 0),
     },
-    coverage: { customers: waitingCustomers.length, placed },
+    coverage: { customers: waitingCustomers.length, placed, pinned: waitingCustomers.filter((customer) => customer.site?.lat != null).length },
     schedules: SCHEDULE_STATUSES,
     transporters: transporters.filter((row) => row.active !== false).map(({ _id, name, bookingOffice }) => ({ _id, name, bookingOffice })),
     routes: routes.filter((row) => row.active !== false).map(({ _id, name, areas, days }) => ({ _id, name, areas, days })),
@@ -329,4 +356,47 @@ export async function setCustomerDelivery({ customers: ids, ...fields }) {
     { ...(Object.keys(set).length ? { $set: set } : {}), ...(Object.keys(unset).length ? { $unset: unset } : {}) }
   );
   return { updated: result.modifiedCount };
+}
+
+/**
+ * Suggested trips for a day — the planner's groups made into a draft of trips in one press, for
+ * the desk to look over, untick and confirm [web: components/SuggestTrips.jsx]. Nothing is saved.
+ *
+ *   transport bookings  one trip per transporter (one drop at its booking office)
+ *   courier, collection one each
+ *   our own deliveries  one per group, most urgent first, each given a vehicle in turn — the
+ *                       biggest first — and a second run when there are more groups than vehicles
+ *
+ * Groups still missing delivery details are left out: what the trip would be is the question.
+ */
+export async function suggestTrips() {
+  const plan = await dispatchPlan();
+  const vehicles = [...plan.vehicles].sort((a, b) => (b.capacityCartons || 0) - (a.capacityCartons || 0));
+  const transporters = new Map(plan.transporters.map((row) => [String(row._id), row]));
+  const ready = plan.groups.filter((group) => !group.needsDetails);
+  const own = ready.filter((group) => group.mode === 'own_vehicle');
+  const trips = [];
+  for (const group of ready.filter((entry) => entry.mode !== 'own_vehicle')) {
+    const transporterId = group.mode === 'transport' ? group.key.split('transporter:')[1] : null;
+    const transporter = transporterId && transporters.get(transporterId);
+    trips.push({
+      key: group.key, mode: group.mode, modeLabel: group.modeLabel, label: group.label, reason: group.reason,
+      transporter: transporter ? { _id: transporter._id, name: transporter.name, bookingOffice: transporter.bookingOffice } : null,
+      vehicle: null, run: 1, urgency: group.urgency, stops: group.stops,
+    });
+  }
+  own.forEach((group, index) => {
+    const vehicle = vehicles.length ? vehicles[index % vehicles.length] : null;
+    trips.push({
+      key: group.key, mode: 'own_vehicle', modeLabel: group.modeLabel, label: group.label, reason: group.reason,
+      transporter: null, vehicle, run: vehicles.length ? Math.floor(index / vehicles.length) + 1 : 1, urgency: group.urgency, stops: group.stops,
+    });
+  });
+  trips.sort((a, b) => a.urgency - b.urgency || a.run - b.run);
+  return {
+    trips,
+    leftOut: plan.groups.filter((group) => group.needsDetails).reduce((sum, group) => sum + group.stops.length, 0),
+    vehicles: plan.vehicles,
+    transporters: plan.transporters,
+  };
 }
