@@ -26,7 +26,7 @@ import mongoose from 'mongoose';
  * density that the plant treats their grammage as the same, and the factor below says so
  * rather than this list implying it.
  */
-export const MATERIAL_TYPES = ['pp', 'hips', 'ld', 'abs', 'ps', 'recycled_pp', 'other'];
+export const MATERIAL_TYPES = ['pp', 'hips', 'gpps', 'ld', 'hd', 'abs', 'eva', 'kresin', 'ps', 'recycled_pp', 'other'];
 
 const materialSchema = new mongoose.Schema(
   {

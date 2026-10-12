@@ -41,6 +41,8 @@
     "seed:demo": "node src/seed/index.js --keep-users --full",
     "import:mould-sheet": "node scripts/import-mould-sheet.js",
     "register-team": "node scripts/register-team.js",
+    "import:materials": "node scripts/import-materials.js",
+    "import:aux": "node scripts/import-aux.js",
     "workflow-load-test": "node tests/load/workflow-load.mjs"
   },
   "dependencies": {

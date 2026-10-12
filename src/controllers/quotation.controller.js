@@ -74,7 +74,8 @@ const POPULATE = [
   { path: 'requestedBy', select: 'name' },
   { path: 'costedBy', select: 'name' },
   { path: 'lines.approvedBy', select: 'name' },
-  { path: 'lines.tradedItem', select: 'modelNumber code description supplier colour inwardPrice priceUpdatedAt isActive' },
+  /* The photo too: a trading model has no mould to draw its picture from. */
+  { path: 'lines.tradedItem', select: 'modelNumber code description supplier colour inwardPrice priceUpdatedAt isActive photo', populate: { path: 'photo', select: 'key' } },
 ];
 
 const isAdmin = isManagement;
@@ -402,7 +403,7 @@ const loadDetail = (id) =>
     ))
     .populate(Object.entries(REGISTER_FIELDS).map(([ref, select]) => ({ path: `lines.${ref}`, select })))
     .populate('lines.approvedBy', 'name')
-    .populate('lines.tradedItem', 'modelNumber code description supplier colour inwardPrice priceUpdatedAt isActive')
+    .populate({ path: 'lines.tradedItem', select: 'modelNumber code description supplier colour inwardPrice priceUpdatedAt isActive photo', populate: { path: 'photo', select: 'key' } })
     .populate('requestedBy', 'name')
     .populate('costedBy', 'name')
     .populate('revisions.by', 'name')

@@ -132,7 +132,9 @@ export function estimateInward(numbers, ppRate) {
 /** The PP rate the estimate uses: the one given, else the newest PP on the material register. */
 export async function ppRateFor(given) {
   if (given) return { rate: given, from: 'given' };
-  const pp = await Material.findOne({ type: 'pp', ratePerKg: { $gt: 0 } }).sort({ updatedAt: -1 }).select('name ratePerKg');
+  /* PP Natural when the register has it — the list carries a dozen PP grades, from ₹55 to ₹160. */
+  const pp = await Material.findOne({ type: 'pp', colour: /^natural$/i, ratePerKg: { $gt: 0 } }).sort({ updatedAt: -1 }).select('name ratePerKg')
+    || await Material.findOne({ type: 'pp', ratePerKg: { $gt: 0 } }).sort({ updatedAt: -1 }).select('name ratePerKg');
   return pp ? { rate: pp.ratePerKg, from: pp.name } : { rate: 0, from: null };
 }
 
