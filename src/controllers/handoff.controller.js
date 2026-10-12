@@ -232,7 +232,7 @@ export const handoffDocument = asyncHandler(async (req, res) => {
         key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
         uploadedBy: req.user._id, task: fresh._id, docType: kind.type, title: kind.label,
       }]);
-      fresh.updates = [...(fresh.updates || []), { note: `${kind.label} uploaded: ${req.file.originalname}`, by: req.user._id, at: new Date() }];
+      fresh.updates = [...(fresh.updates || []), { kind: 'uploaded', statusLabel: `${kind.label} uploaded`, text: req.file.originalname, note: `${kind.label} uploaded: ${req.file.originalname}`, by: req.user._id, at: new Date() }];
       await fresh.save();
       return made;
     }, { label: 'task document' }));

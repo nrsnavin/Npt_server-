@@ -187,7 +187,7 @@ export async function createQcRecord(body, user) {
   if (made.task) {
     await Todo.updateOne(
       { _id: made.task },
-      { $push: { updates: { note: `QC record ${made.number}: ${made.verdict.replace(/_/g, ' ')}${made.failedTests.length ? ` — failed ${made.failedTests.join(', ')}` : ''}`, by: user._id, at: new Date() } } },
+      { $push: { updates: { kind: 'notice', statusLabel: `QC record ${made.number}`, text: `${made.verdict.replace(/_/g, ' ')}${made.failedTests.length ? ` — failed ${made.failedTests.join(', ')}` : ''}`, note: `QC record ${made.number}: ${made.verdict.replace(/_/g, ' ')}${made.failedTests.length ? ` — failed ${made.failedTests.join(', ')}` : ''}`, by: user._id, at: new Date() } } },
       { keepVersion: true }
     );
   }

@@ -98,6 +98,12 @@ test('one desk, one queue: a Quality login works Assembly’s and Printing’s t
   assert.deepEqual(mine.map((task) => task.department).sort(), ['assembling', 'printing', 'quality']);
   const moved = await api(`/api/workspace/todos/${ids.printing}/status`, { method: 'POST', as: 'suresh', body: { status: 'started', note: 'Artwork approved, on the pad printer' } });
   assert.equal(moved.status, 200, moved.json.message);
+  /* The update is kept in its parts — the step, the person's words — beside the one-line note. */
+  const line = moved.json.data.updates.at(-1);
+  assert.equal(line.kind, 'status');
+  assert.equal(line.statusLabel, 'Started');
+  assert.equal(line.text, 'Artwork approved, on the pad printer');
+  assert.equal(line.note, 'Started: Artwork approved, on the pad printer');
 
   const desk = (await api('/api/dashboard/tasks?department=finishing', { as: 'admin' })).json.data;
   assert.deepEqual(desk.map((task) => task.department).sort(), ['assembling', 'printing', 'quality']);
