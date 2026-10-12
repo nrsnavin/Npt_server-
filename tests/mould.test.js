@@ -452,3 +452,49 @@ test('a weight typed past five decimals is cut when it is saved', async () => {
   assert.equal(json.data.partWeightGrams, 1.23456);
   assert.equal(json.data.runnerWeightGrams, 0.12345);
 });
+
+/* ------------------------------- Editing and deleting ------------------------------- */
+
+test('a mould code can be corrected — but not onto another mould’s', async () => {
+  const first = (await addMould()).json.data;
+  const second = (await addMould()).json.data;
+  const renamed = await api(`/api/moulds/${first._id}`, { method: 'PATCH', token: admin, body: { mouldCode: 'tp-224 b' } });
+  assert.equal(renamed.status, 200, renamed.json.message);
+  assert.equal(renamed.json.data.mouldCode, 'TP-224 B');
+  const clash = await api(`/api/moulds/${second._id}`, { method: 'PATCH', token: admin, body: { mouldCode: 'TP-224 B' } });
+  assert.equal(clash.status, 409);
+  assert.match(clash.json.message, /another mould's code/);
+});
+
+test('a mould not yet weighed (0 g, as from the price sheet) still takes an edit', async () => {
+  const unweighed = (await addMould()).json.data;
+  await mongoose.connection.collection('moulds').updateOne({ _id: new mongoose.Types.ObjectId(unweighed._id) }, { $set: { partWeightGrams: 0 } });
+  const edited = await api(`/api/moulds/${unweighed._id}`, { method: 'PATCH', token: ramesh, body: { partWeightGrams: 0, jobWorkCost: 0.8 } });
+  assert.equal(edited.status, 200, edited.json.message);
+  assert.equal(edited.json.data.jobWorkCost, 0.8);
+});
+
+test('Admin deletes an unused mould, photo and all; one an enquiry uses is refused, with where', async () => {
+  const unused = (await addMould()).json.data;
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(200, 1)]);
+  const form = new FormData();
+  form.append('photo', new Blob([jpeg], { type: 'image/jpeg' }), 'part.jpg');
+  await fetch(`${baseUrl}/api/moulds/${unused._id}/photo`, { method: 'PUT', headers: { Authorization: `Bearer ${admin}` }, body: form });
+
+  assert.equal((await api(`/api/moulds/${unused._id}`, { method: 'DELETE', token: ramesh })).status, 403, 'Admin only');
+  const gone = await api(`/api/moulds/${unused._id}`, { method: 'DELETE', token: admin });
+  assert.equal(gone.status, 200, gone.json.message);
+  assert.equal((await api(`/api/moulds/${unused._id}`, { token: admin })).status, 404);
+  assert.equal(await mongoose.connection.collection('attachments').countDocuments({ mould: new mongoose.Types.ObjectId(unused._id) }), 0, 'its photo goes with it');
+
+  const used = (await addMould()).json.data;
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST', token: nandhini,
+    body: { customer, mould: used._id, requirement: {}, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 86400000).toISOString() },
+  });
+  assert.equal(enquiry.status, 201, enquiry.json.message);
+  const refused = await api(`/api/moulds/${used._id}`, { method: 'DELETE', token: admin });
+  assert.equal(refused.status, 409);
+  assert.match(refused.json.message, /used on 1 enquiry — retire it instead/);
+  assert.equal((await api(`/api/moulds/${used._id}`, { token: admin })).status, 200, 'still there');
+});

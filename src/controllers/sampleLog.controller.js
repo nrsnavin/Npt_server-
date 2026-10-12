@@ -214,6 +214,9 @@ export const downloadAttachment = asyncHandler(async (req, res) => {
    */
   if (attachment.mould) {
     if (!canRead(req.user, 'moulds')) throw ApiError.notFound('File not found');
+  } else if (attachment.tradedItem) {
+    /* The trading master's photo: whoever may read the master [routes: `tradingRead`]. */
+    if (!canRead(req.user, 'materials') && !canRead(req.user, 'pricing')) throw ApiError.notFound('File not found');
   } else if (attachment.task) {
     /* A department task's PDF: whoever may work the task, whoever raised it, the enquiry's owner, Admin. */
     const { default: Todo } = await import('../models/Todo.js');

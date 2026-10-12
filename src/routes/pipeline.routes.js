@@ -20,7 +20,7 @@ import {
   convertEnquiryToCustomer,
 } from '../controllers/pipeline.controller.js';
 import {
-  listMoulds, getMould, createMould, updateMould, exportMoulds, setMouldPhoto,
+  listMoulds, getMould, createMould, updateMould, exportMoulds, setMouldPhoto, deleteMould,
 } from '../controllers/mould.controller.js';
 import {
   listMaterials, getMaterial, createMaterial, updateMaterial, exportMaterials, materialPricings,
@@ -48,7 +48,7 @@ import { materialSchema, materialUpdateSchema } from '../validators/material.sch
 import { tradedItemSchema, tradedItemUpdateSchema } from '../validators/tradedItem.schemas.js';
 import {
   createTradedItem, exportTradedItems, getTradedItem, importTradedItems, listTradedItems,
-  tradedItemQuotations, tradedTemplate, updateTradedItem,
+  tradedItemQuotations, tradedTemplate, updateTradedItem, setTradedItemPhoto, deleteTradedItem,
 } from '../controllers/tradedItem.controller.js';
 import { componentSchema, componentUpdateSchema } from '../validators/component.schemas.js';
 import { customerTimeline } from '../controllers/timeline.controller.js';
@@ -90,6 +90,8 @@ router.get('/moulds/:id', requireModule('moulds'), getMould);
 router.patch('/moulds/:id', requireModule('moulds', 'write'), validate(mouldUpdateSchema), updateMould);
 /* The part the tool makes. A register of numbers is hard to recognise a mould in. */
 router.put('/moulds/:id/photo', requireModule('moulds', 'write'), singleImage('photo'), setMouldPhoto);
+/* Admin only, and refused while anything uses the mould — retire it instead [deleteMould]. */
+router.delete('/moulds/:id', requireModule('moulds', 'write'), adminOnly, deleteMould);
 
 /*
  * Materials. The resin register the costing reads its rate and grammage basis from — the
@@ -119,6 +121,8 @@ router.post('/traded-items', tradingRead, validate(tradedItemSchema), createTrad
 router.get('/traded-items/:id', tradingRead, getTradedItem);
 router.get('/traded-items/:id/quotations', tradingRead, tradedItemQuotations);
 router.patch('/traded-items/:id', tradingRead, validate(tradedItemUpdateSchema), updateTradedItem);
+router.put('/traded-items/:id/photo', tradingRead, singleImage('photo'), setTradedItemPhoto);
+router.delete('/traded-items/:id', tradingRead, adminOnly, deleteTradedItem);
 
 /*
  * Hooks, clips and printing — three registers over one collection, told apart by `kind`.

@@ -299,3 +299,65 @@ test('picking an item while costing takes its price; a later move does not reach
   });
   assert.equal(cleared.json.data.lines[0].cost.inwardPrice, undefined);
 });
+
+test('the build-up rides the upload, and an update row needs no price; marketing sees no build-up', async () => {
+  const csv = [
+    'Model,Grammage as PP,Runner grammage,Job work cost,Hook,Clips,Packing cost',
+    'PH-17,14,2,0.75,0.70,,0.1',
+    'NEW-99,10,1,0.5,,,0.1',
+  ].join('\n');
+  const priceBefore = (await api('/api/traded-items?search=PH-17', { token: quoter })).json.data[0].inwardPrice;
+  const preview = await upload(Buffer.from(csv), 'buildup.csv');
+  assert.equal(preview.status, 200, JSON.stringify(preview.json));
+  const [ph, fresh] = preview.json.data.plan;
+  assert.equal(ph.action, 'update');
+  assert.deepEqual(ph.changes.jobWorkCost, { from: null, to: 0.75 });
+  assert.equal(fresh.action, 'error', 'a new item still needs its price');
+  assert.match(fresh.problems[0], /No inward price/);
+
+  await upload(Buffer.from(csv), 'buildup.csv', { commit: true });
+  const item = (await api('/api/traded-items?search=PH-17', { token: quoter })).json.data[0];
+  assert.deepEqual(item.buildUp, { partWeightGrams: 14, runnerWeightGrams: 2, jobWorkCost: 0.75, hookCost: 0.7, packingCost: 0.1 });
+  assert.equal(item.inwardPrice, priceBefore, 'the price is untouched');
+  const seen = (await api(`/api/traded-items/${item._id}`, { token: nandhini })).json.data;
+  assert.equal(seen.buildUp, undefined, 'cost, like the price');
+
+  const edited = await api(`/api/traded-items/${item._id}`, { method: 'PATCH', token: quoter, body: { buildUp: { ...item.buildUp, clipsCost: 1.2 } } });
+  assert.equal(edited.status, 200, edited.json.message);
+  assert.equal(edited.json.data.buildUp.clipsCost, 1.2);
+});
+
+test('a bought-in piece takes a photo, served to whoever reads the master', async () => {
+  const item = (await api('/api/traded-items?search=PH-17', { token: quoter })).json.data[0];
+  const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(300, 9)]);
+  const form = new FormData();
+  form.append('photo', new Blob([jpeg], { type: 'image/jpeg' }), 'ph-17.jpg');
+  const put = await api(`/api/traded-items/${item._id}/photo`, { method: 'PUT', token: quoter, form });
+  assert.equal(put.status, 200, put.json.message);
+  const key = put.json.data.photo.key;
+  assert.ok(key);
+  const listed = (await api('/api/traded-items?search=PH-17', { token: nandhini })).json.data[0];
+  assert.equal(listed.photo.key, key, 'marketing sees the photo');
+  const file = await fetch(`${baseUrl}/api/files/${key}`, { headers: { Authorization: `Bearer ${nandhini}` } });
+  assert.equal(file.status, 200);
+
+  const refused = new FormData();
+  refused.append('photo', new Blob([jpeg], { type: 'image/jpeg' }), 'x.jpg');
+  assert.equal((await api(`/api/traded-items/${item._id}/photo`, { method: 'PUT', token: nandhini, form: refused })).status, 403);
+});
+
+test('Admin deletes a bought-in item no quotation is costed on; one costed on is refused', async () => {
+  const spare = await api('/api/traded-items', { method: 'POST', token: quoter, body: { modelNumber: 'AC-20 (2)', inwardPrice: 2.6 } });
+  assert.equal(spare.status, 201, spare.json.message);
+  assert.equal((await api(`/api/traded-items/${spare.json.data._id}`, { method: 'DELETE', token: quoter })).status, 403, 'Admin only');
+  const gone = await api(`/api/traded-items/${spare.json.data._id}`, { method: 'DELETE', token: admin });
+  assert.equal(gone.status, 200, gone.json.message);
+  assert.equal((await api(`/api/traded-items/${spare.json.data._id}`, { token: admin })).status, 404);
+
+  const quotations = await mongoose.connection.collection('quotations').find({ 'lines.tradedItem': { $exists: true, $ne: null } }).toArray();
+  const costedOn = quotations.flatMap((row) => row.lines).find((line) => line.tradedItem)?.tradedItem;
+  assert.ok(costedOn, 'an earlier test costed a quotation on an item');
+  const refused = await api(`/api/traded-items/${costedOn}`, { method: 'DELETE', token: admin });
+  assert.equal(refused.status, 409);
+  assert.match(refused.json.message, /used on \d+ quotations? — mark it no longer bought instead/);
+});

@@ -164,6 +164,8 @@ const mouldSchema = new mongoose.Schema(
      * URL so it goes through the same access check and storage service as every other file.
      */
     photo: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+    /** The link the photo was fetched from by the sheet import [scripts/import-mould-sheet.js] — so a re-run does not fetch it again. */
+    photoSourceUrl: { type: String, trim: true },
 
     /**
      * How much of the runner comes back as regrind, as a percentage.

@@ -64,6 +64,31 @@ const tradedItemSchema = new mongoose.Schema(
     hsnCode: { type: String, trim: true },
     gstPercent: { type: Number, min: 0, max: 100 },
 
+    /** A photograph of the piece, as on the mould register [Mould `photo`]; fetched by the sheet import from its link. */
+    photo: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+    photoSourceUrl: { type: String, trim: true },
+
+    /*
+     * The plant's cost build-up for a bought-in piece, from the price sheet: grams on a PP basis,
+     * and job work, hook, clips and packing per piece. Kept beside the inward price, which the
+     * import estimates from it until the supplier's own price replaces it. Cost — hidden with
+     * the price [services/pricingVisibility.js `TRADED_CONFIDENTIAL`].
+     */
+    buildUp: {
+      type: new mongoose.Schema(
+        {
+          partWeightGrams: { type: Number, min: 0 },
+          runnerWeightGrams: { type: Number, min: 0 },
+          jobWorkCost: { type: Number, min: 0 },
+          hookCost: { type: Number, min: 0 },
+          clipsCost: { type: Number, min: 0 },
+          packingCost: { type: Number, min: 0 },
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+
     isActive: { type: Boolean, default: true },
     notes: String,
   },
