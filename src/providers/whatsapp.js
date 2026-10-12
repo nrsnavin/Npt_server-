@@ -41,6 +41,8 @@ const TEMPLATE_SETTINGS = {
   lr_copy: ['WHATSAPP_TEMPLATE_LR_COPY'],
   /* A trip planned or on its way to the buyer. Variables: 1 name, 2 what, 3 how and when. */
   trip: ['WHATSAPP_TEMPLATE_TRIP'],
+  /* Asking the buyer to share their delivery location. Variables: 1 name. */
+  location: ['WHATSAPP_TEMPLATE_LOCATION'],
 };
 
 /** The template configured for `key`, or undefined — read now, so a restart picks up a change. */

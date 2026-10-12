@@ -443,7 +443,7 @@ export function moveEnquiry(request) {
 }
 
 async function moveEnquiryChecked({
-  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask, addToOpen = false, keepStage = false,
+  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask, addToOpen = false, keepStage = false, order: pickedOrder,
 }) {
   const handoff = findHandoff(kind);
   if (!handoff?.department || handoff.stage === CLOSED_STAGE) fail('That button does not raise a department task');
@@ -489,7 +489,11 @@ async function moveEnquiryChecked({
   const holder = await holderOf(enquiry._id);
   /* The enquiry's sales order, carried on the task: what a dispatch, an LR or a QC sheet is for. */
   const { default: SalesOrder } = await import('../models/SalesOrder.js');
-  const order = await SalesOrder.findOne({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('_id').lean();
+  /* The SO picked on the form must be this enquiry's; none picked, the enquiry's newest. */
+  const order = pickedOrder
+    ? await SalesOrder.findOne({ _id: pickedOrder, enquiry: enquiry._id }).select('_id').lean()
+    : await SalesOrder.findOne({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('_id').lean();
+  if (pickedOrder && !order) fail('That sales order is not on this enquiry');
   const task = await Todo.create({
     enquiry: enquiry._id,
     customer: enquiry.customer?._id || enquiry.customer,
@@ -726,7 +730,7 @@ export async function closeEnquiryAutomatically({ enquiry, note }) {
  * One button pressed on the enquiry screen. Returns the task (or the record, for the buttons
  * that only record). `enquiry` must be a document with `customer` populated or an id.
  */
-export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, addToOpen, user }) {
+export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, addToOpen, order, user }) {
   const handoff = findHandoff(kind);
   if (!handoff || handoff.hidden) fail('That is not one of the buttons');
 
@@ -736,7 +740,7 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
   }
 
   /* Every button that names a department raises that department's task. */
-  if (handoff.department) return moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, user });
+  if (handoff.department) return moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, order, user });
 
   if (!(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
 
@@ -1972,4 +1976,30 @@ export async function enquiriesAtStages(department, scope = {}) {
 export async function allDepartmentFigures(departments, { now = new Date() } = {}) {
   const rows = await Promise.all(departments.map((key) => departmentFigures(key, { now })));
   return rows.map(({ openFilter, ...numbers }) => numbers);
+}
+
+/**
+ * A lot failed QC, or is held: the open dispatch request on its enquiry (and SO) hears it — a line on
+ * the request, and a notice to Dispatch, the marketing person and Admin. **Dispatch is not held.**
+ * The plant decides whether the goods go; this makes sure nobody sends them without knowing.
+ * With no request open yet, the Quality task the sheet answers carries the notice instead.
+ */
+export async function warnDispatchOfQc(record, user) {
+  const verdict = record.verdict === 'on_hold' ? 'on hold' : 'rejected';
+  const failed = record.failedTests?.length ? ` — failed ${record.failedTests.join(', ')}` : '';
+  const note = `QC ${record.number}: ${verdict}${failed}. Dispatch is not held — check with Quality before loading.`;
+  const requests = await Todo.find({
+    kind: 'invoice_dispatch', completed: false, enquiry: record.enquiry,
+    ...(record.order ? { $or: [{ order: record.order }, { order: { $exists: false } }] } : {}),
+  });
+  const step = (task) => ({ key: task.status || 'qc', label: `QC ${verdict}` });
+  for (const request of requests) {
+    await Todo.updateOne({ _id: request._id }, { $push: { updates: { note, by: user._id, at: new Date() } } }, { keepVersion: true });
+    await noticeStatus(request, user, { step: step(request), note, also: await peopleOn(request) });
+  }
+  if (!requests.length && record.task) {
+    const task = await Todo.findById(record.task);
+    if (task) await noticeStatus(task, user, { step: step(task), note });
+  }
+  return requests.length;
 }

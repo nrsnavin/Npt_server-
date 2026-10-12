@@ -16,6 +16,7 @@ import mongoose from 'mongoose';
 
 process.env.RATE_LIMIT_MAX = '100000';
 process.env.JWT_SECRET = 'records-test-secret';
+process.env.WHATSAPP_WEBHOOK_TOKEN = 'records-webhook-token';
 
 let mongo;
 let server;
@@ -482,4 +483,240 @@ test('a QC sheet is prefilled from the task, enquiry, SO and line; the enquiry s
   /* Dispatch, which works the enquiry, sees it too; another marketing person does not. */
   assert.equal((await api(`/api/enquiries/${enquiry._id}/records`, { as: 'ravi' })).status, 200);
   assert.equal((await api(`/api/enquiries/${enquiry._id}/records`, { as: 'arun' })).status, 404);
+});
+
+test('a model’s and a buyer’s test standards fill the minimums; AQL decides the sample; the new tests are worked out', async () => {
+  const mould = await addMould({ hookType: 'swivel', sizeMm: 400 });
+  const standards = await api(`/api/moulds/${mould._id}`, { method: 'PATCH', as: 'siva', body: { qcStandards: { breakingMinKg: 15, hookPullMinKg: 8, hookTurns: 500, widthToleranceMm: 2, moistureMaxPercent: 0.2, piecesPerCarton: 200, aql: 2.5 } } });
+  assert.equal(standards.status, 200, standards.json.message);
+  const enquiry = await enquiryFor('Ruby Garments', '9840040008');
+  const buyer = await api(`/api/customers/${enquiry.customer?._id || enquiry.customer}`, { as: 'nandhini' });
+  const buyerDoc = buyer.json.data.customer;
+  const stricter = await api(`/api/customers/${buyerDoc._id}`, { method: 'PATCH', as: 'nandhini', body: { qcStandards: { breakingMinKg: 18 }, expectedUpdatedAt: buyerDoc.updatedAt } });
+  assert.equal(stricter.status, 200, stricter.json.message);
+  const order = await SalesOrder.create({ number: 'SO-STD-1', customer: buyerDoc._id, enquiry: enquiry._id, assignedTo: ids.nandhini, status: 'production_running', lines: [{ mould: mould._id, modelNumber: mould.mouldCode, quantity: 10000, unitPrice: 7 }] });
+
+  const { fields } = (await api(`/api/qc-records/prefill?order=${order._id}`, { as: 'priya' })).json.data;
+  assert.equal(fields.breaking.requiredKg, 18, 'the buyer’s figure wins');
+  assert.equal(fields.hook.pullRequiredKg, 8, 'the model’s where the buyer says nothing');
+  assert.equal(fields.hookTurns.required, 500);
+  assert.equal(fields.resinChecks.moistureMaxPercent, 0.2);
+  assert.equal(fields.packing.piecesPerCarton, 200);
+  assert.equal(fields.measurements[0].tolerance, 2);
+  assert.equal(fields.aql, 2.5);
+  assert.match(fields.standardsFrom, new RegExp(`model ${mould.mouldCode} · buyer Ruby Garments`));
+
+  /* AQL 2.5 on 10,000: 200 pieces, accept up to 10 — five rejects still pass the lot. */
+  const lot = { ...SHEET, order: String(order._id), lotSize: 10000, sampleSize: undefined, aql: 2.5, rejected: 5, defects: [{ type: 'flash', count: 5 }] };
+  const within = await api('/api/qc-records', { method: 'POST', as: 'priya', body: lot });
+  assert.equal(within.status, 201, within.json.message);
+  assert.deepEqual(within.json.data.aqlPlan, { letter: 'L', sampleSize: 200, accept: 10, reject: 11 });
+  assert.equal(within.json.data.sampleSize, 200);
+  assert.equal(within.json.data.aqlResult, 'pass');
+  const over = await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...lot, rejected: 12, defects: [{ type: 'flash', count: 12 }] } });
+  assert.equal(over.status, 400);
+  assert.match(over.json.message, /AQL sample/);
+
+  /* The new tests, worked out from their figures. */
+  const tested = await api('/api/qc-records', {
+    method: 'POST', as: 'priya',
+    body: {
+      ...SHEET, verdict: 'rejected',
+      hookTurns: { required: 500, achieved: 650 },
+      shrinkage: { mouldMm: 402, partMm: 400, maxPercent: 1 },
+      resinChecks: { moisturePercent: 0.3, moistureMaxPercent: 0.2, mfi: 11, mfiMin: 8, mfiMax: 12 },
+      packing: { piecesPerCarton: 200, piecesFound: 196, labels: 'pass' },
+      uv: { hours: 72, result: 'pass' },
+      cartonDrop: { heightCm: 90, drops: 3, result: 'fail' },
+    },
+  });
+  assert.equal(tested.status, 201, tested.json.message);
+  const record = tested.json.data;
+  assert.equal(record.hookTurns.result, 'pass');
+  assert.equal(record.shrinkage.percent, 0.5);
+  assert.equal(record.shrinkage.result, 'pass');
+  assert.equal(record.resinChecks.moistureResult, 'fail');
+  assert.equal(record.resinChecks.mfiResult, 'pass');
+  assert.equal(record.packing.result, 'fail', 'four short a carton');
+  assert.deepEqual(record.failedTests, ['Resin moisture', 'Packing', 'Carton drop']);
+  const pdf = await request(`/api/qc-records/${record._id}/certificate`, { as: 'priya' });
+  assert.equal(pdf.status, 200);
+});
+
+test('a rejected lot warns Dispatch on the open request — and the request still moves', async () => {
+  const enquiry = await enquiryFor('Zara Knit Wear', '9840040009');
+  const customer = enquiry.customer?._id || enquiry.customer;
+  const order = await SalesOrder.create({ number: 'SO-WARN-1', customer, enquiry: enquiry._id, assignedTo: ids.nandhini, status: 'production_running', lines: [{ modelNumber: 'NH-400', quantity: 5000, unitPrice: 7 }] });
+  const request = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Send it', brief: { quantity: '5000' } } })).json.data.task;
+  const { default: TaskNotice } = await import('../src/models/TaskNotice.js');
+  const before = await TaskNotice.countDocuments({ task: request._id });
+
+  const rejected = await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, stage: 'pre_dispatch', enquiry: enquiry._id, order: String(order._id), verdict: 'rejected', breaking: { requiredKg: 15, samplesKg: [12, 13] } } });
+  assert.equal(rejected.status, 201, rejected.json.message);
+  const told = await Todo.findById(request._id).lean();
+  assert.ok(told.updates.some((row) => row.note.includes(rejected.json.data.number) && /not held/.test(row.note)));
+  const notices = await TaskNotice.find({ task: request._id }).lean();
+  assert.ok(notices.length > before, 'Dispatch, marketing and Admin hear it');
+  assert.ok(notices.some((row) => String(row.recipient) === ids.ravi), 'the dispatch desk');
+  assert.ok(notices.some((row) => String(row.recipient) === ids.nandhini), 'the marketing person');
+
+  /* The plan and the SO's dispatch details show it; the request moves on regardless. */
+  const plan = (await api('/api/dispatch-planning/plan', { as: 'ravi' })).json.data;
+  const stop = [...plan.groups.flatMap((group) => group.stops), ...plan.notReady, ...plan.waitingPayment].find((row) => String(row.task) === String(request._id));
+  assert.equal(stop.qc.verdict, 'rejected');
+  assert.deepEqual(stop.qc.failed, ['Breaking strength']);
+  const details = (await api(`/api/orders/${order._id}/dispatch-details`, { as: 'nandhini' })).json.data;
+  assert.equal(details.requests[0].qc.number, rejected.json.data.number);
+  const moved = await api(`/api/workspace/todos/${request._id}/status`, { method: 'POST', as: 'ravi', body: { status: 'dispatched', note: 'Buyer accepted it as is' } });
+  assert.equal(moved.status, 200, moved.json.message);
+
+  /* An incoming-material check is not about the goods going out: no warning. */
+  const count = (await Todo.findById(request._id).lean()).updates.length;
+  await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, stage: 'incoming', enquiry: enquiry._id, verdict: 'on_hold' } });
+  assert.equal((await Todo.findById(request._id).lean()).updates.length, count);
+});
+
+test('the reject report adds up QC sheets and press rejects; maintenance reminders are raised once and closed by the maintenance', async () => {
+  const mould = await addMould({ maintenanceEveryShots: 100 });
+  const machine = await addMachine({ serviceEveryDays: 30 });
+  await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, mould: mould._id, verdict: 'rejected', sampleSize: 50, rejected: 5, defects: [{ type: 'short_shot', count: 3 }, { type: 'flash', count: 2 }], breaking: { requiredKg: 15, samplesKg: [10, 11] } } });
+  const run = (await api('/api/mould-runs', { method: 'POST', as: 'siva', body: { mould: mould._id, machine: machine._id } })).json.data;
+  await api(`/api/mould-runs/${run._id}/finish`, { method: 'POST', as: 'siva', body: { counterEnd: 150, goodPieces: 570, rejectedPieces: 30, downtimeMinutes: 25 } });
+
+  const report = await api('/api/qc-records/report', { as: 'priya' });
+  assert.equal(report.status, 200, report.json.message);
+  const row = report.json.data.moulds.find((entry) => entry.mould.code === mould.mouldCode);
+  assert.equal(row.sampleRejectPercent, 10);
+  assert.equal(row.rejectPercent, 5);
+  assert.equal(row.failedSheets, 1);
+  const press = report.json.data.machines.find((entry) => entry.machine.code === machine.code);
+  assert.deepEqual([press.made, press.rejected, press.rejectPercent, press.downtimeMinutes], [600, 30, 5, 25]);
+  assert.ok(report.json.data.defects.some((entry) => entry.type === 'short_shot' && entry.count >= 3));
+  assert.ok(report.json.data.failedTests.some((entry) => entry.name === 'Breaking strength'));
+  assert.equal((await api('/api/qc-records/report', { as: 'siva' })).status, 200, 'production reads it');
+  assert.equal((await api('/api/qc-records/report', { as: 'nandhini' })).status, 200, 'marketing holds the quality read');
+  assert.equal((await api('/api/qc-records/report', { as: 'ravi' })).status, 200);
+
+  /* 150 shots past a 100-shot interval: the tool room is told at once, once. */
+  const mouldTasks = () => Todo.find({ originKey: `mould-maintenance:${mould._id}`, completed: false }).lean();
+  assert.equal((await mouldTasks()).length, 1);
+  assert.equal((await mouldTasks())[0].department, 'mould');
+  const { runMaintenanceReminders } = await import('../src/services/records.service.js');
+  await runMaintenanceReminders();
+  assert.equal((await mouldTasks()).length, 1, 'not twice');
+  await api('/api/maintenance', { method: 'POST', as: 'murali', body: { asset: 'mould', mould: mould._id, type: 'polishing', workDone: 'Polished' } });
+  assert.equal((await mouldTasks()).length, 0, 'closed by the maintenance');
+
+  /* A machine whose service fell due: production is told; recording the service closes it. */
+  const { default: Machine } = await import('../src/models/Machine.js');
+  await Machine.updateOne({ _id: machine._id }, { $set: { nextServiceDue: new Date(Date.now() - 86400000) } });
+  const raised = await runMaintenanceReminders();
+  assert.ok(raised.includes(`machine ${machine.code}`));
+  const machineTask = await Todo.findOne({ originKey: `machine-service:${machine._id}`, completed: false }).lean();
+  assert.equal(machineTask.department, 'production');
+  assert.match(machineTask.title, /overdue/);
+  await api('/api/maintenance', { method: 'POST', as: 'siva', body: { asset: 'machine', machine: machine._id, type: 'preventive', workDone: 'Oil changed' } });
+  assert.equal(await Todo.countDocuments({ originKey: `machine-service:${machine._id}`, completed: false }), 0);
+});
+
+test('a run on an SO line adds its good pieces to the line once; the resin it used leaves the store; low stock asks to reorder', async () => {
+  const mould = await addMould();
+  const machine = await addMachine();
+  const enquiry = await enquiryFor('Aadhya Fashions', '9840040010');
+  const order = await SalesOrder.create({
+    number: 'SO-RUN-1', customer: enquiry.customer?._id || enquiry.customer, enquiry: enquiry._id, assignedTo: ids.nandhini, status: 'production_running',
+    lines: [{ mould: mould._id, modelNumber: mould.mouldCode, quantity: 10000, unitPrice: 7, production: { producedQty: 1000 } }, { modelNumber: 'NH-900', quantity: 500, unitPrice: 9 }],
+  });
+  const material = await api('/api/materials', { method: 'POST', as: 'siva', body: { name: 'PP H110MA', ratePerKg: 110 } });
+  assert.equal(material.status, 201, material.json.message);
+  const resin = material.json.data;
+  const received = await api(`/api/materials/${resin._id}/stock`, { method: 'POST', as: 'siva', body: { kind: 'receipt', kg: 500, reference: 'GRN-41' } });
+  assert.equal(received.status, 201, received.json.message);
+  assert.equal(received.json.data.material.stockKg, 500);
+  assert.equal((await api(`/api/materials/${resin._id}/stock`, { method: 'POST', as: 'siva', body: { kind: 'receipt', kg: -5 } })).status, 400);
+  assert.equal((await api(`/api/materials/${resin._id}/stock`, { method: 'POST', as: 'nandhini', body: { kind: 'receipt', kg: 5 } })).status, 403);
+
+  /* Started from the enquiry: its SO, and the line on this mould. */
+  const started = await api('/api/mould-runs', { method: 'POST', as: 'siva', body: { mould: mould._id, machine: machine._id, enquiry: enquiry._id, resin: { material: String(resin._id), name: 'PP' } } });
+  assert.equal(started.status, 201, started.json.message);
+  assert.equal(started.json.data.order.number, 'SO-RUN-1');
+  assert.equal(started.json.data.orderLine, String(order.lines[0]._id));
+  const finished = await api(`/api/mould-runs/${started.json.data._id}/finish`, { method: 'POST', as: 'siva', body: { counterEnd: 600, goodPieces: 2350, rejectedPieces: 50, resin: { usedKg: 80 } } });
+  assert.equal(finished.status, 200, finished.json.message);
+  assert.equal(finished.json.data.producedAdded, 2350);
+  assert.match(finished.json.data.productionNote, /2,350 added to SO-RUN-1/);
+  assert.equal(finished.json.data.resinIssued, 80);
+  const line = (await SalesOrder.findById(order._id).lean()).lines[0];
+  assert.equal(line.production.producedQty, 3350);
+  const book = (await api(`/api/materials/${resin._id}/stock`, { as: 'siva' })).json.data;
+  assert.equal(book.material.stockKg, 420);
+  assert.deepEqual(book.movements.map((row) => [row.kind, row.kg, row.balanceAfter]), [['issue', -80, 420], ['receipt', 500, 500]]);
+  assert.equal(book.movements[0].run.number, started.json.data.number);
+
+  /* An SO not yet released: the pieces wait, and the run says so. */
+  const held = await SalesOrder.create({ number: 'SO-RUN-2', customer: order.customer, enquiry: (await enquiryFor('Held Buyer', '9840040011'))._id, assignedTo: ids.nandhini, status: 'order_verification', lines: [{ mould: mould._id, quantity: 100, unitPrice: 7 }] });
+  const early = (await api('/api/mould-runs', { method: 'POST', as: 'siva', body: { mould: mould._id, order: String(held._id) } })).json.data;
+  const notYet = (await api(`/api/mould-runs/${early._id}/finish`, { method: 'POST', as: 'siva', body: { counterEnd: 700, goodPieces: 400 } })).json.data;
+  assert.equal(notYet.producedAdded, undefined);
+  assert.match(notYet.productionNote, /not in production/);
+  assert.equal((await api('/api/mould-runs', { method: 'POST', as: 'siva', body: { mould: mould._id, order: String(held._id), orderLine: String(order.lines[0]._id) } })).status, 400);
+
+  /* Below the reorder level: production is asked once; a receipt above it closes the ask. */
+  const updated = await api(`/api/materials/${resin._id}`, { method: 'PATCH', as: 'siva', body: { reorderKg: 450, expectedUpdatedAt: book.material.updatedAt } });
+  assert.equal(updated.status, 200, updated.json.message);
+  const { runMaintenanceReminders } = await import('../src/services/records.service.js');
+  assert.ok((await runMaintenanceReminders()).includes('stock PP H110MA'));
+  assert.equal(await Todo.countDocuments({ originKey: `low-stock:${resin._id}`, completed: false }), 1);
+  await api(`/api/materials/${resin._id}/stock`, { method: 'POST', as: 'siva', body: { kind: 'receipt', kg: 300 } });
+  assert.equal(await Todo.countDocuments({ originKey: `low-stock:${resin._id}`, completed: false }), 0);
+});
+
+test('a buyer is asked on WhatsApp for their location; the location they share is pinned on them', async () => {
+  const enquiry = await enquiryFor('Mehta Garments', '9840040012');
+  const customerId = enquiry.customer?._id || enquiry.customer;
+  const asked = await api(`/api/customers/${customerId}/ask-location`, { method: 'POST', as: 'ravi' });
+  assert.equal(asked.status, 201, asked.json.message);
+  const { default: Customer } = await import('../src/models/Customer.js');
+  assert.ok((await Customer.findById(customerId).lean()).locationAskedAt);
+  assert.equal((await api(`/api/customers/${customerId}/ask-location`, { method: 'POST', as: 'priya' })).status, 403);
+  assert.equal((await api(`/api/customers/${customerId}/ask-location`, { method: 'POST', as: 'arun' })).status, 404, 'another marketing person’s buyer');
+
+  const shared = await fetch(`${baseUrl}/api/whatsapp/inbound`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-webhook-token': 'records-webhook-token' },
+    body: JSON.stringify({ From: 'whatsapp:+919840040012', MessageSid: 'SMLOC0001', Latitude: '11.1085', Longitude: '77.3411', Label: 'Mehta Garments, Tiruppur' }),
+  });
+  assert.equal(shared.status, 200, await shared.text());
+  const pinned = await Customer.findById(customerId).lean();
+  assert.equal(pinned.site.lat, 11.1085);
+  assert.equal(pinned.site.lng, 77.3411);
+  assert.equal(pinned.site.source, 'whatsapp');
+  assert.equal(pinned.locationAskedAt, undefined, 'the ask is answered');
+
+  /* Not asked again: a later location stays in the thread and does not move the pin. */
+  await fetch(`${baseUrl}/api/whatsapp/inbound`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'x-webhook-token': 'records-webhook-token' },
+    body: JSON.stringify({ From: 'whatsapp:+919840040012', MessageSid: 'SMLOC0003', Latitude: '12.9', Longitude: '80.2' }),
+  });
+  assert.equal((await Customer.findById(customerId).lean()).site.lat, 11.1085);
+
+  /* Meta's webhook shape carries the location the same way. */
+  const { parseMetaWebhook } = await import('../src/providers/meta.js');
+  const { messages } = parseMetaWebhook({ entry: [{ changes: [{ value: { messages: [{ from: '919840040012', id: 'wamid.1', type: 'location', location: { latitude: 11.2, longitude: 77.4, name: 'Gate 2' } }] } }] }] });
+  assert.deepEqual(messages[0].location, { lat: 11.2, lng: 77.4, name: 'Gate 2', address: undefined });
+  assert.equal(messages[0].body, '📍 Gate 2');
+});
+
+test('a task names which SO it is for when the enquiry has several', async () => {
+  const enquiry = await enquiryFor('Twin Orders Ltd', '9840040013');
+  const customer = enquiry.customer?._id || enquiry.customer;
+  const first = await SalesOrder.create({ number: 'SO-TWIN-1', customer, enquiry: enquiry._id, assignedTo: ids.nandhini, lines: [{ modelNumber: 'A', quantity: 10, unitPrice: 1 }] });
+  await SalesOrder.create({ number: 'SO-TWIN-2', customer, enquiry: enquiry._id, assignedTo: ids.nandhini, lines: [{ modelNumber: 'B', quantity: 10, unitPrice: 1 }] });
+  const other = await SalesOrder.create({ number: 'SO-TWIN-X', customer, enquiry: (await enquiryFor('Elsewhere', '9840040014'))._id, assignedTo: ids.nandhini, lines: [{ modelNumber: 'C', quantity: 10, unitPrice: 1 }] });
+
+  const picked = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'quality_check', note: 'Check SO 1', brief: {}, order: String(first._id) } });
+  assert.equal(picked.status, 201, picked.json.message);
+  assert.equal(String((await Todo.findById(picked.json.data.task._id).lean()).order), String(first._id));
+  const wrong = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'lr_copy', note: 'LR', brief: {}, order: String(other._id) } });
+  assert.equal(wrong.status, 400);
+  assert.match(wrong.json.message, /not on this enquiry/);
 });

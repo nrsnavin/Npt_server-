@@ -43,14 +43,14 @@ const POPULATE = [
  * becomes a buyer card to confirm (buyerCard.service), and everything else — every message from
  * anybody else — goes to the inbox.
  */
-async function takeMessage({ from, body, media, providerId, profileName, receivedAt }) {
+async function takeMessage({ from, body, media, providerId, profileName, receivedAt, location }) {
   const staff = await staffForNumber(from);
   if (staff) {
     const handled = await handleStaffMessage({ staff, from, body, media, providerId });
     if (handled) return { outcome: handled.outcome, ...(handled.why ? { why: handled.why } : {}) };
   }
 
-  const result = await receiveMessage({ from, body, media, providerId, profileName, receivedAt });
+  const result = await receiveMessage({ from, body, media, providerId, profileName, receivedAt, location });
   return {
     outcome: result.outcome,
     ...(result.why ? { why: result.why } : {}),
@@ -160,6 +160,10 @@ export const inboundWebhook = asyncHandler(async (req, res) => {
     providerId: payload.MessageSid || payload.messageId,
     profileName: payload.ProfileName || payload.profileName,
     receivedAt: payload.receivedAt,
+    /* A shared location: Twilio's Latitude/Longitude fields, or `location` on the plain shape. */
+    location: payload.Latitude != null && payload.Longitude != null
+      ? { lat: Number(payload.Latitude), lng: Number(payload.Longitude), name: payload.Label || undefined, address: payload.Address || undefined }
+      : payload.location,
   });
 
   res.json({ success: result.outcome !== 'rejected', ...result });

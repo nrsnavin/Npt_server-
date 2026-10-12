@@ -1,4 +1,5 @@
 import Customer from '../models/Customer.js';
+import { pinSharedLocation } from './customerLocation.service.js';
 import WhatsappThread from '../models/WhatsappThread.js';
 import { nextInRotation } from './assignment.service.js';
 import { normalisePhone } from '../utils/phone.js';
@@ -102,6 +103,7 @@ export async function receiveMessage({
   providerId,
   profileName,
   receivedAt,
+  location,
 } = {}) {
   const number = normalisePhone(from);
   if (!number) return { outcome: 'rejected', why: 'no usable sender number' };
@@ -118,7 +120,7 @@ export async function receiveMessage({
   }
 
   const at = receivedAt ? new Date(receivedAt) : new Date();
-  const message = { providerId, body, media, profileName, receivedAt: at };
+  const message = { providerId, body, media, profileName, receivedAt: at, ...(location ? { location } : {}) };
 
   const existing = await WhatsappThread.findOne({ number });
   if (existing) {
@@ -138,6 +140,7 @@ export async function receiveMessage({
     if (existing.status === 'waiting_for_customer') existing.status = 'new';
 
     await existing.save();
+    if (location) await pinSharedLocation(existing, existing.messages.at(-1));
     return { outcome: 'appended', thread: existing };
   }
 
@@ -159,5 +162,6 @@ export async function receiveMessage({
     lastMessagePreview: preview(body, media),
   });
 
+  if (location) await pinSharedLocation(thread, thread.messages.at(-1));
   return { outcome: 'created', thread, matchedBy: thread.matchedBy, rotatedTo: owner.name };
 }

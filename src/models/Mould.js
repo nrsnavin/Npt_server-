@@ -1,5 +1,6 @@
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
+import qcStandardsSchema from './qcStandards.schema.js';
 
 /**
  * What the piece is for. A fact about the geometry, so it belongs to the tool that cuts it.
@@ -202,6 +203,8 @@ const mouldSchema = new mongoose.Schema(
      * The mould's life, in shots: every finished run adds its shot count [services/records.service.js].
      * Maintenance falls due every `maintenanceEveryShots` after the last one.
      */
+    /** What this model is tested against — minimum breaking strength, hook pull, hang load and the rest [QC records]. */
+    qcStandards: { type: qcStandardsSchema, default: undefined },
     totalShots: { type: Number, min: 0, default: 0 },
     maintenanceEveryShots: { type: Number, min: 0 },
     lastMaintenanceShots: { type: Number, min: 0 },

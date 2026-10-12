@@ -7,6 +7,7 @@ import { runQueryEscalations } from './services/queryEscalation.service.js';
 import { runPaymentEscalations } from './services/receivable.service.js';
 import { runProductionEscalations } from './services/productionEscalation.service.js';
 import { runDispatchEscalations } from './services/dispatchEscalation.service.js';
+import { runMaintenanceReminders } from './services/records.service.js';
 import { isConfigured as isIndiamartConfigured } from './services/indiamart.client.js';
 import { syncIndiamartEnquiries } from './services/indiamart.ingest.js';
 import { recoverEvents } from './services/events.service.js';
@@ -100,6 +101,10 @@ function startEscalationSweep() {
        * still prevent the problem — a marketing person reminded on Tuesday mentions it on
        * Wednesday's call. Everything after it is recovery.
        */
+      /* And the presses and tools due for service: a task on production's or the tool room's queue, once. */
+      const due = await runMaintenanceReminders();
+      if (due.length) console.log(`Maintenance due: ${due.join(', ')}`);
+
       const money = await runPaymentEscalations();
       if (money.escalated) {
         console.log(`Payments: escalated ${money.escalated} of ${money.checked} open receivables`);

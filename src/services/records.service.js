@@ -6,8 +6,12 @@ import Mould from '../models/Mould.js';
 import Enquiry from '../models/Enquiry.js';
 import Todo from '../models/Todo.js';
 import Trip from '../models/Trip.js';
-import SalesOrder from '../models/SalesOrder.js';
+import SalesOrder, { PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
+import Material from '../models/Material.js';
+import StockMovement from '../models/StockMovement.js';
+import { recordChange, snapshot } from './audit.service.js';
 import { findHandoff } from '../config/handoffs.js';
+import { warnDispatchOfQc } from './handoff.service.js';
 import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
 import { withCreateLocks } from './operationLock.service.js';
@@ -15,6 +19,8 @@ import { render, letterhead, facts, footer } from './recordPdf.js';
 import { DEFECT_TYPES } from '../models/Inspection.js';
 import { MOULDING_TYPES, PRINT_TYPES, QC_STAGES } from '../models/QcRecord.js';
 import { MAINTENANCE_TYPES } from '../models/MaintenanceRecord.js';
+import { aqlPlan } from '../utils/aql.js';
+import { raiseDepartmentTask, resolveTasks } from './task.service.js';
 
 /**
  * The plant's records beyond the workflow: QC test sheets, machines and their maintenance, mould
@@ -52,11 +58,53 @@ export function workOut(record) {
   if (out.hangLoad?.deflectionMm != null && out.hangLoad?.allowedDeflectionMm != null) {
     out.hangLoad.result = out.hangLoad.deflectionMm <= out.hangLoad.allowedDeflectionMm ? 'pass' : 'fail';
   }
+  const pass = (ok) => (ok ? 'pass' : 'fail');
+  if (out.hookTurns?.required != null && out.hookTurns?.achieved != null) out.hookTurns.result = pass(out.hookTurns.achieved >= out.hookTurns.required);
+  if (out.shrinkage?.mouldMm && out.shrinkage?.partMm != null) {
+    out.shrinkage.percent = Math.round(((out.shrinkage.mouldMm - out.shrinkage.partMm) / out.shrinkage.mouldMm) * 10000) / 100;
+    if (out.shrinkage.maxPercent != null) out.shrinkage.result = pass(Math.abs(out.shrinkage.percent) <= out.shrinkage.maxPercent);
+  }
+  const resin = out.resinChecks;
+  if (resin?.moisturePercent != null && resin?.moistureMaxPercent != null) resin.moistureResult = pass(resin.moisturePercent <= resin.moistureMaxPercent);
+  if (resin?.mfi != null && (resin.mfiMin != null || resin.mfiMax != null)) resin.mfiResult = pass((resin.mfiMin == null || resin.mfi >= resin.mfiMin) && (resin.mfiMax == null || resin.mfi <= resin.mfiMax));
+  if (out.packing && (out.packing.piecesPerCarton != null || out.packing.labels)) {
+    const counted = out.packing.piecesPerCarton == null || out.packing.piecesFound == null || out.packing.piecesFound === out.packing.piecesPerCarton;
+    if (out.packing.piecesFound != null || out.packing.labels) out.packing.result = pass(counted && out.packing.labels !== 'fail');
+  }
+  /* AQL: the plan for the lot, its sample size where none was given, and the rejects against it. */
+  const plan = out.aql ? aqlPlan(out.lotSize, out.aql) : null;
+  if (plan) {
+    out.aqlPlan = { letter: plan.letter, sampleSize: plan.sampleSize, accept: plan.accept, reject: plan.reject };
+    if (out.sampleSize == null) out.sampleSize = plan.sampleSize;
+    if (out.rejected != null) out.aqlResult = pass(out.rejected <= plan.accept);
+  }
   if (out.sampleSize != null && out.rejected != null && out.accepted == null) out.accepted = Math.max(0, out.sampleSize - out.rejected);
   return out;
 }
 
 const failedOf = (record) => new QcRecord(record).failedTests;
+
+/** The QC verdicts Dispatch is told about: a lot that failed, or is held, at the press or later. */
+export const QC_WARNING_VERDICTS = ['rejected', 'on_hold'];
+const LOT_STAGES = ['first_off', 'in_process', 'final', 'pre_dispatch'];
+
+/**
+ * The latest QC verdict on each enquiry's goods (the press, final and before-dispatch checks — not
+ * incoming material), for the dispatch screens to show beside each request. Shown, never a lock:
+ * the plant decides whether goods go.
+ */
+export async function latestQcByEnquiry(enquiryIds) {
+  const ids = [...new Set((enquiryIds || []).filter(Boolean).map(String))];
+  if (!ids.length) return new Map();
+  const rows = await QcRecord.find({ enquiry: { $in: ids }, stage: { $in: LOT_STAGES } })
+    .sort({ inspectedAt: -1 }).select('number enquiry order verdict stage inspectedAt breaking hook clip print weight measurements hangLoad drop colourMatch hookTurns uv shrinkage resinChecks packing cartonDrop aqlResult').lean();
+  const latest = new Map();
+  for (const row of rows) {
+    if (latest.has(String(row.enquiry))) continue;
+    latest.set(String(row.enquiry), { _id: row._id, number: row.number, verdict: row.verdict, stage: row.stage, at: row.inspectedAt, failed: new QcRecord(row).failedTests });
+  }
+  return latest;
+}
 
 /** The SO an enquiry's work belongs to: its newest sales order, as the department forms read it. */
 export const orderOnEnquiry = (enquiryId) => (enquiryId
@@ -101,7 +149,9 @@ export async function createQcRecord(body, user) {
   if (record.rejected > (record.sampleSize ?? Infinity)) throw ApiError.badRequest('More rejected than were sampled — check the figures');
   if (record.rejected > 0 && !record.defects?.length) throw ApiError.badRequest('Say what was wrong with the rejected pieces');
   const failed = failedOf(record);
-  if (record.verdict === 'passed' && (failed.length || record.rejected > 0)) {
+  /* Rejects within the AQL plan still pass the lot; without a plan, any reject is a deviation. */
+  const rejectsAllowed = record.aqlPlan ? record.aqlPlan.accept : 0;
+  if (record.verdict === 'passed' && (failed.length || record.rejected > rejectsAllowed)) {
     throw ApiError.badRequest(`${failed.length ? `${failed.join(', ')} failed` : 'Pieces were rejected'} — mark it Passed with deviation (say why in the remarks) or Rejected`);
   }
   if (record.verdict === 'passed_with_deviation' && String(record.remarks || '').trim().length < 5) {
@@ -121,6 +171,9 @@ export async function createQcRecord(body, user) {
     record.customer = record.customer || enquiry.customer;
   }
   const [made] = await QcRecord.create([{ ...record, number: await nextNumber('QCR'), inspectedBy: user._id, inspectedAt: record.inspectedAt || new Date() }]);
+  if (QC_WARNING_VERDICTS.includes(made.verdict) && LOT_STAGES.includes(made.stage) && made.enquiry) {
+    await warnDispatchOfQc(made, user);
+  }
   if (made.task) {
     await Todo.updateOne(
       { _id: made.task },
@@ -202,6 +255,13 @@ export async function renderQcCertificate(record) {
       ['Weight', record.weight?.actual != null ? `${record.weight.actual} g` : '', record.weight?.target != null ? `${record.weight.target} ± ${record.weight.tolerance ?? 0} g` : '', record.weight?.result],
       ...(record.measurements || []).map((row) => [row.name, row.actual != null ? `${row.actual} ${row.unit || ''}` : '', row.target != null ? `${row.target} ± ${row.tolerance ?? 0} ${row.unit || ''}` : '', row.result]),
       ['Colour', '', record.colourMatch?.against ? `against ${record.colourMatch.against}` : '', record.colourMatch?.result],
+      ['Hook turns', record.hookTurns?.achieved != null ? `${record.hookTurns.achieved} turns` : '', record.hookTurns?.required != null ? `≥ ${record.hookTurns.required}` : '', record.hookTurns?.result],
+      ['UV / colour-fastness', record.uv?.hours != null ? `${record.uv.hours} h` : '', '', record.uv?.result],
+      ['Shrinkage', record.shrinkage?.percent != null ? `${record.shrinkage.percent}%` : '', record.shrinkage?.maxPercent != null ? `≤ ${record.shrinkage.maxPercent}%` : '', record.shrinkage?.result],
+      ['Resin moisture', record.resinChecks?.moisturePercent != null ? `${record.resinChecks.moisturePercent}%` : '', record.resinChecks?.moistureMaxPercent != null ? `≤ ${record.resinChecks.moistureMaxPercent}%` : '', record.resinChecks?.moistureResult],
+      ['Melt-flow (MFI)', record.resinChecks?.mfi != null ? `${record.resinChecks.mfi} g/10 min` : '', [record.resinChecks?.mfiMin, record.resinChecks?.mfiMax].some((value) => value != null) ? `${record.resinChecks.mfiMin ?? '—'}–${record.resinChecks.mfiMax ?? '—'}` : '', record.resinChecks?.mfiResult],
+      ['Packing', record.packing?.piecesFound != null ? `${record.packing.piecesFound} pcs/carton` : '', record.packing?.piecesPerCarton != null ? `${record.packing.piecesPerCarton} pcs/carton` : '', record.packing?.result],
+      ['Carton drop', record.cartonDrop?.heightCm != null ? `${record.cartonDrop.heightCm} cm × ${record.cartonDrop.drops ?? 1}` : '', '', record.cartonDrop?.result],
     ].filter(([, found, wanted, outcome]) => found || wanted || (outcome && outcome !== 'not_tested'));
     const widths = [120, 210, 110, 70];
     for (const row of rows) {
@@ -216,6 +276,8 @@ export async function renderQcCertificate(record) {
     }
     doc.moveDown(0.4);
     facts(doc, [
+      ['AQL', record.aqlPlan?.sampleSize ? `${record.aql} · code ${record.aqlPlan.letter} · sample ${record.aqlPlan.sampleSize} · accept ≤ ${record.aqlPlan.accept}, reject ≥ ${record.aqlPlan.reject} · ${record.aqlResult === 'fail' ? 'LOT REJECTED' : 'lot accepted'}` : null],
+      ['Standards', record.standardsFrom],
       ['Sample', record.sampleSize != null ? `${record.sampleSize} of a lot of ${record.lotSize ?? '—'} · ${record.accepted ?? '—'} accepted · ${record.rejected || 0} rejected` : null],
       ['Defects', (record.defects || []).map((row) => `${DEFECT_TYPES.find((entry) => entry.key === row.type)?.label || row.type} × ${row.count}`).join(', ')],
       ['Verdict', record.verdict.replace(/_/g, ' ').toUpperCase()],
@@ -253,6 +315,7 @@ export async function recordMaintenance(body, user) {
     }
     if (['breakdown', 'maintenance'].includes(machine.status) && body.backInService !== false) machine.status = 'idle';
     await machine.save();
+    await resolveTasks(machineReminderKey(machine._id));
   } else {
     const mould = await Mould.findById(body.mould);
     if (!mould) throw ApiError.badRequest('That mould is not on the register');
@@ -265,6 +328,7 @@ export async function recordMaintenance(body, user) {
     }
     if (mould.status === 'maintenance' && body.backInService !== false) mould.status = 'active';
     await mould.save();
+    await resolveTasks(mouldReminderKey(mould._id));
   }
   return record;
 }
@@ -297,10 +361,35 @@ export async function startRun(body, user) {
     if (body.machine && !machine) throw ApiError.badRequest('That machine is not on the list');
     const busy = await MouldRun.findOne({ status: 'running', $or: [{ mould: mould._id }, ...(machine ? [{ machine: machine._id }] : [])] }).select('number machine').lean();
     if (busy) throw ApiError.conflict(`${busy.number} is still running on this ${String(busy.machine) === String(machine?._id) ? 'machine' : 'mould'} — finish it first`);
-    let customer;
-    if (body.enquiry) customer = (await Enquiry.findById(body.enquiry).select('customer').lean())?.customer;
+    /* The SO line it makes: picked, or the enquiry's SO line on this mould (or its only line). */
+    let order = null;
+    let orderLine = body.orderLine;
+    const ORDER_SELECT = 'number enquiry customer status lines._id lines.mould lines.modelNumber';
+    if (body.order) {
+      order = await SalesOrder.findById(body.order).select(ORDER_SELECT).lean();
+      if (!order) throw ApiError.badRequest('That sales order was not found');
+      if (body.enquiry && order.enquiry && String(order.enquiry) !== String(body.enquiry)) throw ApiError.badRequest(`${order.number} is on another enquiry`);
+    } else if (body.enquiry) {
+      const newest = await orderOnEnquiry(body.enquiry);
+      order = newest ? await SalesOrder.findById(newest._id).select(ORDER_SELECT).lean() : null;
+    }
+    let line = null;
+    if (order) {
+      if (orderLine) {
+        line = order.lines.find((entry) => String(entry._id) === String(orderLine));
+        if (!line) throw ApiError.badRequest(`That line is not on ${order.number}`);
+      } else {
+        const onMould = order.lines.filter((entry) => String(entry.mould) === String(mould._id));
+        line = onMould.length === 1 ? onMould[0] : order.lines.length === 1 ? order.lines[0] : null;
+      }
+    } else if (orderLine) throw ApiError.badRequest('Pick the sales order the line is on');
+    const enquiryId = body.enquiry || order?.enquiry;
+    const customer = enquiryId ? (await Enquiry.findById(enquiryId).select('customer').lean())?.customer || order?.customer : order?.customer;
     const [run] = await MouldRun.create([{
       ...body,
+      enquiry: enquiryId,
+      order: order?._id,
+      orderLine: line?._id,
       customer,
       number: await nextNumber('RUN'),
       status: 'running',
@@ -308,7 +397,7 @@ export async function startRun(body, user) {
       counterStart: body.counterStart ?? mould.totalShots ?? 0,
       cavitiesRunning: body.cavitiesRunning ?? mould.runningCavities,
       cycleTimeSeconds: body.cycleTimeSeconds ?? mould.cycleTimeSeconds,
-      modelNumber: body.modelNumber || mould.mouldCode,
+      modelNumber: body.modelNumber || line?.modelNumber || mould.mouldCode,
       startedBy: user._id,
     }]);
     if (machine) { machine.status = 'running'; await machine.save(); }
@@ -334,13 +423,72 @@ export async function finishRun(run, body, user) {
     run.shotsCounted = shots;
     await Mould.updateOne({ _id: run.mould }, { $inc: { totalShots: shots } }, { keepVersion: true });
   }
+  if (run.order && run.orderLine && run.goodPieces > 0 && run.producedAdded == null) await addToProduction(run, user);
+  if (run.resin?.material && run.resin?.usedKg > 0 && run.resinIssued == null) await issueResin(run, user);
   await run.save();
+  if (shots) {
+    const mould = await Mould.findById(run.mould).select('mouldCode totalShots maintenanceEveryShots lastMaintenanceShots').lean();
+    if (mould) await remindMould(mould);
+  }
   if (run.machine) await Machine.updateOne({ _id: run.machine, status: 'running' }, { $set: { status: 'idle' } }, { keepVersion: true });
   return run;
 }
 
+/**
+ * A finished run's good pieces, added to its SO line's produced count — once, and only on an order
+ * in production. Otherwise the run says why, and the plant adds them on the SO by hand.
+ */
+async function addToProduction(run, user) {
+  const order = await SalesOrder.findById(run.order);
+  const line = order?.lines.id(run.orderLine);
+  if (!order || !line) { run.productionNote = 'The SO line was not found — add the pieces on the SO'; return; }
+  if (PRE_RELEASE_STATUSES.includes(order.status) || ['cancelled', 'closed'].includes(order.status)) {
+    run.productionNote = `${order.number} is not in production — the pieces were not added to it`;
+    return;
+  }
+  const before = snapshot(order);
+  if (!line.production) line.production = {};
+  line.production.producedQty = (line.production.producedQty || 0) + run.goodPieces;
+  if (!line.production.actualStart) line.production.actualStart = run.startedAt;
+  await order.save();
+  await recordChange({ model: 'SalesOrder', doc: order, before, by: user });
+  run.producedAdded = run.goodPieces;
+  run.productionNote = `${run.goodPieces.toLocaleString('en-IN')} added to ${order.number} · ${line.modelNumber || 'line'}`;
+}
+
+/** The resin a run used, taken out of the store — once — with the book entry behind it. */
+async function issueResin(run, user) {
+  const kg = run.resin.usedKg;
+  const material = await Material.findOneAndUpdate({ _id: run.resin.material }, { $inc: { stockKg: -kg } }, { new: true, keepVersion: true });
+  if (!material) return;
+  await StockMovement.create([{ material: material._id, kind: 'issue', kg: -kg, balanceAfter: material.stockKg, run: run._id, reference: run.number, by: user._id }]);
+  run.resinIssued = kg;
+}
+
+/* ------------------------------------------------------------------ stock --- */
+
+export const lowStockKey = (materialId) => `low-stock:${materialId}`;
+
+/** A receipt from the supplier, or a count corrected — the balance moved and the book entry kept. */
+export async function moveStock(materialId, { kind, kg, reference, note }, user) {
+  const material = await Material.findOneAndUpdate({ _id: materialId }, { $inc: { stockKg: kg } }, { new: true, keepVersion: true });
+  if (!material) throw ApiError.notFound('Material not found');
+  const [movement] = await StockMovement.create([{ material: material._id, kind, kg, balanceAfter: material.stockKg, reference, note, by: user._id }]);
+  if (material.reorderKg == null || material.stockKg > material.reorderKg) await resolveTasks(lowStockKey(material._id));
+  return { material, movement };
+}
+
+export async function stockBook(materialId, { limit = 100 } = {}) {
+  const material = await Material.findById(materialId).select('name code colour stockKg reorderKg');
+  if (!material) throw ApiError.notFound('Material not found');
+  const movements = await StockMovement.find({ material: materialId }).sort({ at: -1 }).limit(Math.min(Number(limit) || 100, 500))
+    .populate([{ path: 'by', select: 'name' }, { path: 'run', select: 'number' }]).lean();
+  return { material, movements };
+}
+
 const RUN_POPULATE = [
   { path: 'mould', select: 'mouldCode name totalShots maintenanceEveryShots lastMaintenanceShots' }, { path: 'machine', select: 'code name' },
+  { path: 'order', select: 'number lines._id lines.modelNumber' },
   { path: 'enquiry', select: 'number' }, { path: 'customer', select: 'name' }, { path: 'resin.material', select: 'name grade' },
   { path: 'startedBy', select: 'name' }, { path: 'endedBy', select: 'name' },
 ];
@@ -454,6 +602,7 @@ const TRIP_MODES_SAID = { own_vehicle: 'Own vehicle', transport: 'Transport', pa
 /** Dispatch requests and LR tasks, with the trips each request went on, in the words a screen shows. */
 async function describeDispatch(requests, lrTasks) {
   const ids = requests.map((task) => task._id);
+  const qc = await latestQcByEnquiry(requests.map((task) => task.enquiry?._id || task.enquiry));
   const trips = ids.length
     ? await Trip.find({ 'stops.task': { $in: ids } }).sort({ date: 1 }).populate([{ path: 'vehicle', select: 'number kind' }, { path: 'transporter', select: 'name phone' }]).lean()
     : [];
@@ -466,6 +615,7 @@ async function describeDispatch(requests, lrTasks) {
       completed: Boolean(task.completed),
       raisedAt: task.createdAt,
       quantity: task.brief?.quantity || '',
+      qc: qc.get(String(task.enquiry?._id || task.enquiry)) || null,
       remark: (task.statusHistory || []).filter((entry) => entry.note).at(-1)?.note || task.notes || '',
       trips: trips.flatMap((trip) => trip.stops.filter((stop) => String(stop.task) === String(task._id)).map((stop) => ({
         trip: trip.number,
@@ -582,20 +732,20 @@ export async function qcPrefill({ task: taskId, enquiry: enquiryId, order: order
     orderRef = orderRef || task.order;
   }
   const parts = (prefix) => [
-    { path: `${prefix}.mould`, select: 'mouldCode name sizeMm hookType cavities activeCavities partWeightGrams material' },
+    { path: `${prefix}.mould`, select: 'mouldCode name sizeMm hookType cavities activeCavities partWeightGrams material packingQty qcStandards' },
     { path: `${prefix}.materialRef`, select: 'name colour supplier type' },
     { path: `${prefix}.hookRef`, select: 'name colour' },
     { path: `${prefix}.clipRef`, select: 'name colour' },
     { path: `${prefix}.printRef`, select: 'name colour' },
   ];
-  let order = orderRef ? await SalesOrder.findById(orderRef).populate(parts('lines')).populate('customer', 'name').lean() : null;
+  let order = orderRef ? await SalesOrder.findById(orderRef).populate(parts('lines')).populate('customer', 'name qcStandards').lean() : null;
   if (orderRef && !order) throw ApiError.notFound('Order not found');
   enquiryRef = enquiryRef || order?.enquiry;
-  const enquiry = enquiryRef ? await Enquiry.findById(enquiryRef).select('number customer items mould').populate(parts('items')).populate('customer', 'name').lean() : null;
+  const enquiry = enquiryRef ? await Enquiry.findById(enquiryRef).select('number customer items mould').populate(parts('items')).populate('customer', 'name qcStandards').lean() : null;
   if (enquiryRef && !enquiry) throw ApiError.notFound('Enquiry not found');
   if (!order && enquiry) {
     const newest = await orderOnEnquiry(enquiry._id);
-    order = newest ? await SalesOrder.findById(newest._id).populate(parts('lines')).populate('customer', 'name').lean() : null;
+    order = newest ? await SalesOrder.findById(newest._id).populate(parts('lines')).populate('customer', 'name qcStandards').lean() : null;
   }
 
   const rows = order ? order.lines || [] : enquiry?.items || [];
@@ -631,6 +781,31 @@ export async function qcPrefill({ task: taskId, enquiry: enquiryId, order: order
       lotSize: row.quantity || undefined,
     });
   }
+  /* The minimums: the model's standards, with the buyer's own laid over them. */
+  const buyer = order?.customer || enquiry?.customer;
+  const mouldOfRow = row?.mould?.mouldCode ? row.mould : null;
+  const defined = (object) => Object.fromEntries(Object.entries(object || {}).filter(([, value]) => value != null && value !== ''));
+  const standard = { ...defined(mouldOfRow?.qcStandards), ...defined(buyer?.qcStandards) };
+  if (standard.piecesPerCarton == null && mouldOfRow?.packingQty) standard.piecesPerCarton = mouldOfRow.packingQty;
+  const sources = [Object.keys(defined(mouldOfRow?.qcStandards)).length && `model ${mouldOfRow.mouldCode}`, Object.keys(defined(buyer?.qcStandards)).length && `buyer ${buyer.name}`].filter(Boolean);
+  if (Object.keys(standard).length) {
+    const merge = (key, value) => { fields[key] = { ...(fields[key] || {}), ...JSON.parse(JSON.stringify(value)) }; };
+    merge('breaking', { requiredKg: standard.breakingMinKg });
+    merge('hook', { pullRequiredKg: standard.hookPullMinKg });
+    merge('clip', { gripRequiredKg: standard.clipGripMinKg });
+    merge('hangLoad', { loadKg: standard.hangLoadKg, hours: standard.hangHours, allowedDeflectionMm: standard.allowedDeflectionMm });
+    if (fields.weight || standard.weightToleranceG != null) merge('weight', { tolerance: standard.weightToleranceG });
+    merge('drop', { heightCm: standard.dropHeightCm, drops: standard.drops });
+    merge('resinChecks', { moistureMaxPercent: standard.moistureMaxPercent, mfiMin: standard.mfiMin, mfiMax: standard.mfiMax });
+    merge('shrinkage', { maxPercent: standard.shrinkageMaxPercent });
+    merge('hookTurns', { required: standard.hookTurns });
+    merge('uv', { hours: standard.uvHours });
+    merge('cartonDrop', { heightCm: standard.cartonDropCm });
+    merge('packing', { piecesPerCarton: standard.piecesPerCarton });
+    if (fields.measurements && standard.widthToleranceMm != null) fields.measurements = fields.measurements.map((entry) => (entry.name === 'Width' ? { ...entry, tolerance: standard.widthToleranceMm } : entry));
+    if (standard.aql != null) fields.aql = standard.aql;
+    if (sources.length) fields.standardsFrom = `Standards: ${sources.join(' · ')}`;
+  }
   const label = (entry) => [entry.modelNumber || entry.mould?.mouldCode, entry.colour, entry.quantity && `${entry.quantity} pcs`].filter(Boolean).join(' · ') || 'Item';
   return {
     enquiry: enquiry ? { _id: enquiry._id, number: enquiry.number } : null,
@@ -639,6 +814,134 @@ export async function qcPrefill({ task: taskId, enquiry: enquiryId, order: order
     lineKind,
     line: row ? row._id : null,
     lines: rows.map((entry) => ({ _id: entry._id, label: label(entry) })),
-    fields: JSON.parse(JSON.stringify(fields)),
+    fields: Object.fromEntries(Object.entries(JSON.parse(JSON.stringify(fields))).filter(([, value]) => !(value && typeof value === 'object' && !Array.isArray(value) && !Object.keys(value).length))),
   };
+}
+
+/* ------------------------------------------------------------ reject report --- */
+
+const pct = (part, whole) => (whole ? Math.round((part / whole) * 1000) / 10 : null);
+
+/**
+ * Where the rejects come from, over a span of days: the QC sheets (verdicts, failed tests, defects,
+ * pieces rejected out of those sampled, by mould) and the runs (pieces rejected at the press out of
+ * those made, and the minutes stopped, by machine and by mould). Highest reject rate first.
+ */
+export async function qcReport({ from, to }) {
+  const span = { $gte: new Date(`${from}T00:00:00+05:30`), $lte: new Date(`${to}T23:59:59+05:30`) };
+  const [records, runs] = await Promise.all([
+    QcRecord.find({ inspectedAt: span }).populate({ path: 'mould', select: 'mouldCode name' }).lean(),
+    MouldRun.find({ endedAt: span, status: { $in: ['completed', 'aborted'] } })
+      .populate([{ path: 'mould', select: 'mouldCode name' }, { path: 'machine', select: 'code name' }]).lean(),
+  ]);
+
+  const verdicts = Object.fromEntries(['passed', 'passed_with_deviation', 'rejected', 'on_hold'].map((key) => [key, 0]));
+  const failedTests = new Map();
+  const defects = new Map();
+  const mouldRows = new Map();
+  const machineRows = new Map();
+  const mouldRow = (mould) => {
+    const key = String(mould?._id || 'none');
+    if (!mouldRows.has(key)) mouldRows.set(key, { mould: mould ? { _id: mould._id, code: mould.mouldCode, name: mould.name } : null, sheets: 0, failedSheets: 0, sampled: 0, rejectedSampled: 0, made: 0, rejectedMade: 0 });
+    return mouldRows.get(key);
+  };
+
+  for (const record of records) {
+    verdicts[record.verdict] = (verdicts[record.verdict] || 0) + 1;
+    const failed = new QcRecord(record).failedTests;
+    for (const name of failed) failedTests.set(name, (failedTests.get(name) || 0) + 1);
+    for (const row of record.defects || []) defects.set(row.type, (defects.get(row.type) || 0) + row.count);
+    if (!record.mould) continue;
+    const row = mouldRow(record.mould);
+    row.sheets += 1;
+    if (record.verdict === 'rejected' || failed.length) row.failedSheets += 1;
+    row.sampled += record.sampleSize || 0;
+    row.rejectedSampled += record.rejected || 0;
+  }
+  for (const run of runs) {
+    const good = run.goodPieces || 0;
+    const bad = run.rejectedPieces || 0;
+    const row = mouldRow(run.mould);
+    row.made += good + bad;
+    row.rejectedMade += bad;
+    if (!run.machine) continue;
+    const key = String(run.machine._id);
+    if (!machineRows.has(key)) machineRows.set(key, { machine: { _id: run.machine._id, code: run.machine.code, name: run.machine.name }, runs: 0, made: 0, rejected: 0, downtimeMinutes: 0 });
+    const machine = machineRows.get(key);
+    machine.runs += 1;
+    machine.made += good + bad;
+    machine.rejected += bad;
+    machine.downtimeMinutes += run.downtimeMinutes || 0;
+  }
+
+  const byRate = (a, b) => (b.rejectPercent ?? -1) - (a.rejectPercent ?? -1);
+  return {
+    from, to,
+    sheets: records.length,
+    verdicts,
+    failedTests: [...failedTests].map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+    defects: [...defects].map(([type, count]) => ({ type, label: DEFECT_TYPES.find((entry) => entry.key === type)?.label || type, count })).sort((a, b) => b.count - a.count),
+    moulds: [...mouldRows.values()].filter((row) => row.mould).map((row) => ({
+      ...row, sampleRejectPercent: pct(row.rejectedSampled, row.sampled), rejectPercent: pct(row.rejectedMade, row.made),
+    })).sort(byRate),
+    machines: [...machineRows.values()].map((row) => ({ ...row, rejectPercent: pct(row.rejected, row.made) })).sort(byRate),
+    pressRejects: { made: runs.reduce((sum, run) => sum + (run.goodPieces || 0) + (run.rejectedPieces || 0), 0), rejected: runs.reduce((sum, run) => sum + (run.rejectedPieces || 0), 0) },
+  };
+}
+
+/* ------------------------------------------------------------ reminders --- */
+
+export const machineReminderKey = (machineId) => `machine-service:${machineId}`;
+export const mouldReminderKey = (mouldId) => `mould-maintenance:${mouldId}`;
+
+/** A mould past its shot count since the last maintenance: one task on the tool room's queue. */
+export async function remindMould(mould) {
+  const every = mould.maintenanceEveryShots;
+  const since = Math.max(0, (mould.totalShots || 0) - (mould.lastMaintenanceShots || 0));
+  if (!every || since < every) return null;
+  return raiseDepartmentTask({
+    department: 'mould',
+    title: `Maintenance due — mould ${mould.mouldCode}`,
+    notes: `${since.toLocaleString('en-IN')} shots since the last maintenance, against every ${every.toLocaleString('en-IN')}. Record it on the mould when done.`,
+    link: `/moulds/${mould._id}`,
+    originKey: mouldReminderKey(mould._id),
+  });
+}
+
+/**
+ * Machines whose service falls due within two days, and moulds past their shot count: each gets one
+ * task on its department's queue (production for machines, the tool room for moulds), raised once
+ * and closed when the maintenance is recorded.
+ */
+export async function runMaintenanceReminders({ now = new Date() } = {}) {
+  const soon = new Date(new Date(now).getTime() + 2 * 86400000);
+  const raised = [];
+  const machines = await Machine.find({ active: { $ne: false }, status: { $ne: 'retired' }, nextServiceDue: { $lte: soon } }).lean();
+  for (const machine of machines) {
+    const overdue = new Date(machine.nextServiceDue) < new Date(now);
+    const task = await raiseDepartmentTask({
+      department: 'production',
+      title: `Service ${overdue ? 'overdue' : 'due'} — machine ${machine.code}`,
+      notes: `Preventive maintenance was due on ${new Date(machine.nextServiceDue).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}. Record it on the machine when done.`,
+      link: `/machines/${machine._id}`,
+      dueDate: machine.nextServiceDue,
+      originKey: machineReminderKey(machine._id),
+    });
+    if (task) raised.push(`machine ${machine.code}`);
+  }
+  const moulds = await Mould.find({ maintenanceEveryShots: { $gt: 0 }, isActive: { $ne: false } }).select('mouldCode totalShots maintenanceEveryShots lastMaintenanceShots').lean();
+  for (const mould of moulds) if (await remindMould(mould)) raised.push(`mould ${mould.mouldCode}`);
+  /* And the resin running short: production is asked to reorder, once, until a receipt lifts it. */
+  const short = await Material.find({ isActive: { $ne: false }, reorderKg: { $gt: 0 }, $expr: { $lte: ['$stockKg', '$reorderKg'] } }).select('name stockKg reorderKg').lean();
+  for (const material of short) {
+    const task = await raiseDepartmentTask({
+      department: 'production',
+      title: `Reorder ${material.name}`,
+      notes: `${Math.round(material.stockKg)} kg in the store, against a reorder level of ${material.reorderKg} kg.`,
+      link: '/materials',
+      originKey: lowStockKey(material._id),
+    });
+    if (task) raised.push(`stock ${material.name}`);
+  }
+  return raised;
 }

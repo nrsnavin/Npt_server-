@@ -24,6 +24,8 @@ export const materialSchema = z.object({
    */
   grammageFactorPercent: z.number().min(-50).max(200).optional(),
   supplier: z.string().max(120).optional(),
+  /* Below this many kilograms in the store, production is asked to reorder; null switches it off. */
+  reorderKg: z.number().min(0).max(1e7).nullable().optional(),
   isActive: z.boolean().optional(),
   notes: z.string().optional(),
 });

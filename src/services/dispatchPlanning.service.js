@@ -10,6 +10,7 @@ import { listTrips, requestsOnTrips } from './trip.service.js';
 import Vehicle from '../models/Vehicle.js';
 import ApiError from '../utils/ApiError.js';
 import { km, nearestOrder } from '../utils/geo.js';
+import { latestQcByEnquiry } from './records.service.js';
 
 /**
  * Planning tomorrow's dispatch: the open dispatch requests, put into groups that can go together
@@ -165,6 +166,8 @@ export async function dispatchPlan() {
     /* Trips still to go or on the road, and those finished today. */
     listTrips({ status: 'planned,loading,left' }).then(async (open) => [...open, ...(await listTrips({ from: today, to: today, status: 'completed' }))]),
   ]);
+  /* The latest QC verdict on each enquiry's goods — shown on the stop, never a lock on it. */
+  const qcByEnquiry = await latestQcByEnquiry(enquiryIds);
   const byId = (rows) => new Map(rows.map((row) => [String(row._id), row]));
   const customerMap = byId(customers);
   const lists = { transporters: byId(transporters), routes: byId(routes) };
@@ -204,6 +207,7 @@ export async function dispatchPlan() {
       due: task.dueDate || null,
       with: task.user?.name || null,
       urgency: urgencyOf(task),
+      qc: task.enquiry ? qcByEnquiry.get(String(task.enquiry._id)) || null : null,
     };
     const { lane, why } = await laneOf(task, { plantByEnquiry, ordersByEnquiry, statusLabel });
     if (lane !== 'ready') {

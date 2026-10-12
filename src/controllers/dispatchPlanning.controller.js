@@ -1,4 +1,5 @@
 import Transporter from '../models/Transporter.js';
+import { latestQcByEnquiry } from '../services/records.service.js';
 import DeliveryRoute from '../models/DeliveryRoute.js';
 import Vehicle from '../models/Vehicle.js';
 import Trip from '../models/Trip.js';
@@ -72,7 +73,13 @@ export const listTripsHandler = asyncHandler(async (req, res) => {
   res.json({ success: true, data: trips.map(tripSummary) });
 });
 
-export const getTrip = asyncHandler(async (req, res) => answerTrip(res, await tripFor(req)));
+/* The trip, with the latest QC verdict beside each stop — shown to whoever loads it, never a lock. */
+export const getTrip = asyncHandler(async (req, res) => {
+  const data = (await populateTrip(await tripFor(req))).toJSON();
+  const qc = await latestQcByEnquiry(data.stops.map((stop) => stop.enquiry?._id || stop.enquiry));
+  data.stops = data.stops.map((stop) => ({ ...stop, qc: qc.get(String(stop.enquiry?._id || stop.enquiry)) || null }));
+  res.json({ success: true, data });
+});
 
 export const createTripHandler = asyncHandler(transactional(async (req, res) => {
   await answerTrip(res, await createTrip(req.body, req.user), 201);

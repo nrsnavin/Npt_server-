@@ -29,6 +29,17 @@ export const qcRecordSchema = z.object({
   hangLoad: z.object({ loadKg: num(10000), hours: num(1000), deflectionMm: num(10000), allowedDeflectionMm: num(10000), result: passFail }).optional(),
   drop: z.object({ heightCm: num(10000), drops: num(1000), result: passFail }).optional(),
   colourMatch: z.object({ against: text(120), result: passFail }).optional(),
+  hookTurns: z.object({ required: num(1e7), achieved: num(1e7), result: passFail }).optional(),
+  uv: z.object({ hours: num(10000), result: passFail }).optional(),
+  shrinkage: z.object({ mouldMm: num(100000), partMm: num(100000), maxPercent: num(100), result: passFail }).optional(),
+  resinChecks: z.object({
+    moisturePercent: num(100), moistureMaxPercent: num(100), moistureResult: passFail,
+    mfi: num(1000), mfiMin: num(1000), mfiMax: num(1000), mfiResult: passFail,
+  }).optional(),
+  packing: z.object({ piecesPerCarton: num(100000), piecesFound: num(100000), cartonsChecked: num(100000), labels: passFail, result: passFail }).optional(),
+  cartonDrop: z.object({ heightCm: num(10000), drops: num(1000), result: passFail }).optional(),
+  aql: z.union([z.literal(0.65), z.literal(1), z.literal(1.5), z.literal(2.5), z.literal(4), z.literal(6.5)]).optional(),
+  standardsFrom: text(200),
   lotSize: num(), sampleSize: num(), accepted: num(), rejected: num(),
   defects: z.array(z.object({ type: z.enum(DEFECT_KEYS), count: z.number().int().min(1), note: text(300) })).max(30).optional(),
   verdict: z.enum(QC_VERDICTS),
@@ -58,7 +69,7 @@ export const maintenanceSchema = z.object({
 });
 
 export const runStartSchema = z.object({
-  mould: objectId, machine: optionalId, enquiry: optionalId, order: optionalId,
+  mould: objectId, machine: optionalId, enquiry: optionalId, order: optionalId, orderLine: optionalId,
   modelNumber: text(80), colour: text(60), plannedQuantity: num(1e9),
   startedAt: date, shift: z.enum(SHIFTS).optional(), operator: text(80),
   counterStart: num(1e10), cavitiesRunning: num(1000), cycleTimeSeconds: num(10000),
@@ -72,3 +83,11 @@ export const runFinishSchema = z.object({
   resin: z.object({ material: optionalId, name: text(80), batch: text(60), usedKg: num(1e7) }).optional(),
   endedAt: date, aborted: z.boolean().optional(),
 });
+
+export const stockMovementSchema = z.object({
+  kind: z.enum(['receipt', 'adjust']),
+  kg: z.number().min(-1e7).max(1e7).refine((value) => value !== 0, 'Say how many kilograms'),
+  reference: text(120),
+  note: text(500),
+}).refine((body) => body.kind !== 'receipt' || body.kg > 0, { message: 'A receipt adds stock — the kilograms received', path: ['kg'] });
+

@@ -288,9 +288,13 @@ export function parseMetaWebhook(body) {
       const value = change.value || {};
       const names = new Map((value.contacts || []).map((contact) => [contact.wa_id, contact.profile?.name]));
       for (const message of value.messages || []) {
+        const place = message.type === 'location' && message.location
+          ? { lat: Number(message.location.latitude), lng: Number(message.location.longitude), name: message.location.name, address: message.location.address }
+          : undefined;
         messages.push({
           from: `+${waId(message.from)}`,
-          body: wordsOf(message),
+          body: wordsOf(message) ?? (place ? `📍 ${place.name || place.address || 'Location shared'}` : undefined),
+          ...(place && Number.isFinite(place.lat) && Number.isFinite(place.lng) ? { location: place } : {}),
           media: mediaOf(message),
           providerId: message.id,
           profileName: names.get(message.from),
