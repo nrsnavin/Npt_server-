@@ -343,3 +343,16 @@ tells the open LR task rather than raising a second one.
 
 **Dispatch report** (`/dispatch/report`): trips, stops a trip, delivered and not delivered (with
 why), the share of requests that left by the day they were wanted, and how full each vehicle went.
+
+**Between departments.** The department that asked hears the answers: a task raised from another
+department's task (Dispatch's *Ask Production*) remembers who asked, and every move on it is told to
+that task's person (or team) as well as the enquiry's marketing person and Admin. *Mould Ready* is
+told on the enquiry's Production task. Accounts marking *Payment Confirmed* or *Credit Approved*,
+while an order on the enquiry is still held at Production or Dispatch for its money, gets a task to
+record the receipt in Payments — once per order, with what is short.
+
+**Suggested department steps** (until the plant sends its own; edit `config/departmentTaskForms.js`):
+Quotation (costing and price negotiation) — Request Received → Costing → Waiting for Admin Approval →
+Quote Sent → Task Closed. Audit — Received → Checking → Correction Needed (shown as an issue) →
+Corrected → Task Closed. PRT visit — Visit Assigned → Visited → Collected / Promised → Task Closed.
+The SO team now gives a remark on every move, and the enquiry's marketing person and Admin are told.

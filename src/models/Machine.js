@@ -1,0 +1,40 @@
+import { protectWrites } from '../utils/concurrency.js';
+import mongoose from 'mongoose';
+
+/**
+ * One moulding machine on the floor [services/maintenance.service.js]. Its maintenance history and
+ * the runs made on it hang off it, so "which machine, and what was last done to it" has one answer.
+ */
+export const MACHINE_STATUSES = ['running', 'idle', 'breakdown', 'maintenance', 'retired'];
+
+const machineSchema = new mongoose.Schema(
+  {
+    code: { type: String, required: true, trim: true, uppercase: true, maxlength: 20 },
+    name: { type: String, trim: true, maxlength: 80 },
+    make: { type: String, trim: true, maxlength: 80 },
+    tonnage: { type: Number, min: 0, max: 5000 },
+    year: { type: Number, min: 1950, max: 2100 },
+    /* The largest shot it takes, for matching a mould to a machine. */
+    shotCapacityGrams: { type: Number, min: 0 },
+    location: { type: String, trim: true, maxlength: 80 },
+    status: { type: String, enum: MACHINE_STATUSES, default: 'idle', index: true },
+    /* Preventive maintenance every this many days; the last one and when the next falls due. */
+    serviceEveryDays: { type: Number, min: 0, max: 3650 },
+    lastServiceAt: Date,
+    nextServiceDue: Date,
+    notes: { type: String, trim: true, maxlength: 1000 },
+    active: { type: Boolean, default: true, index: true },
+  },
+  { timestamps: true }
+);
+
+machineSchema.index({ code: 1 }, { unique: true, collation: { locale: 'en', strength: 2 } });
+
+machineSchema.virtual('serviceOverdue').get(function serviceOverdue() {
+  return Boolean(this.nextServiceDue && new Date(this.nextServiceDue) < new Date());
+});
+machineSchema.set('toJSON', { virtuals: true });
+machineSchema.set('toObject', { virtuals: true });
+
+protectWrites(machineSchema);
+export default mongoose.model('Machine', machineSchema);

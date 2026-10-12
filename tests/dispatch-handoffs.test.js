@@ -53,7 +53,7 @@ test.before(async () => {
   baseUrl = `http://127.0.0.1:${server.address().port}`;
   await api('/api/auth/register', { method: 'POST', body: { name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', department: 'management' } });
   token.admin = (await api('/api/auth/login', { method: 'POST', body: { email: 'admin@np.com', password: 'Admin@12345' } })).json.data.token;
-  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['siva', 'Sivakumar', 'production'], ['anand', 'Anand Assembly', 'assembling'], ['ravi', 'Ravi Despatch', 'despatch'], ['rekha', 'Rekha Reception', 'reception']]) {
+  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['siva', 'Sivakumar', 'production'], ['anand', 'Anand Assembly', 'assembling'], ['ravi', 'Ravi Despatch', 'despatch'], ['rekha', 'Rekha Reception', 'reception'], ['murali', 'Murali Mould', 'mould'], ['asha', 'Asha Accounts', 'accounts']]) {
     const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department } });
     assert.equal(made.status, 201, made.json.message);
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
@@ -116,4 +116,47 @@ test('a part load raises Reception’s LR copy; the next load tells that LR task
   const after = await Todo.find({ enquiry: enquiry._id, kind: 'lr_copy', completed: false }).lean();
   assert.equal(after.length, 1, 'still one LR task');
   assert.match(after[0].updates.at(-1).note, /Fully Dispatched by Ravi Despatch.*Remaining 12,000 by KPN/);
+});
+
+test('the department that asked hears every move on the task it asked for', async () => {
+  const enquiry = await enquiryFor('Arul Exports', '9840030004');
+  const dispatch = await raise(enquiry, 'invoice_dispatch');
+  await api(`/api/workspace/todos/${dispatch}/ask`, { method: 'POST', as: 'ravi', body: { kind: 'ask_edd', note: 'Ready when?' } });
+  const production = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_edd', completed: false }).lean();
+  assert.deepEqual(production.askedFrom.map(String), [String(dispatch)]);
+  const moved = await move('siva', production._id, 'planning', 'On the machine Monday');
+  assert.equal(moved.status, 200, moved.json.message);
+  const notice = await TaskNotice.findOne({ task: production._id, recipient: ids.ravi, status: 'planning' }).lean();
+  assert.ok(notice, 'Dispatch, who asked, hears Planning');
+});
+
+test('Mould Ready tells the enquiry’s Production task, and Production hears it', async () => {
+  const enquiry = await enquiryFor('Sri Murugan Garments', '9840030005');
+  const production = await raise(enquiry, 'ask_edd');
+  const mould = await raise(enquiry, 'mould_issue', { problem: 'Hook cavity flashing' });
+  const ready = await move('murali', mould, 'mould_ready', 'Cavity re-polished');
+  assert.equal(ready.status, 200, ready.json.message);
+  const task = await Todo.findById(production).lean();
+  assert.match(task.updates.at(-1).note, /Mould.*: Mould Ready — Cavity re-polished/);
+  assert.equal(task.status, 'received', 'nothing moved — that is Production’s call');
+  assert.ok(await TaskNotice.exists({ task: production, recipient: ids.siva }), 'Production is told');
+});
+
+test('Payment Confirmed with the order still held for its money gives Accounts a task to record the receipt', async () => {
+  const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
+  const enquiry = await enquiryFor('Velan Exports', '9840030006');
+  const order = new mongoose.Types.ObjectId();
+  await SalesOrder.collection.insertOne({ _id: order, number: 'SO-TEST-0001', enquiry: new mongoose.Types.ObjectId(enquiry._id), status: 'approved_for_production', paymentPlan: { advancePercent: 50 }, lines: [{ _id: new mongoose.Types.ObjectId(), modelNumber: 'NH-400', quantity: 10000, unitPrice: 1 }] });
+  const clarify = await raise(enquiry, 'ac_clarify');
+  const confirmed = await move('asha', clarify, 'confirmed', 'UTR 4455 for 5,000 seen in the bank');
+  assert.equal(confirmed.status, 200, confirmed.json.message);
+  const ask = await Todo.findOne({ originKey: `record-receipt:${order}`, completed: false }).lean();
+  assert.ok(ask, 'Accounts is asked to record the receipt');
+  assert.equal(String(ask.user), ids.asha);
+  assert.match(ask.title, /Record the receipt for SO-TEST-0001 — Production and Dispatch is waiting on it/);
+  assert.match(ask.notes, /₹5,000 short/);
+  /* Once only, however many times it is confirmed. */
+  await move('asha', clarify, 'statement_required', 'Asked for the statement');
+  await move('asha', clarify, 'confirmed', 'Confirmed again');
+  assert.equal(await Todo.countDocuments({ originKey: `record-receipt:${order}`, completed: false }), 1);
 });

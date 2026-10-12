@@ -44,6 +44,9 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
  *              task is already open (a second part load), it is told of this one instead
  *   readyForDispatch  reaching it tells the enquiry's open Dispatch request, which moves to
  *              Goods Ready — Waiting for Vehicle if it was still waiting on the goods
+ *   tells      reaching it tells the enquiry's open task of that kind (Mould Ready → Production)
+ *   recordsPayment  reaching it, with an order on the enquiry still held for its payment, gives
+ *              whoever moved it a task to record the receipt in Payments
  *   issue      while the task is at it, the enquiry shows it as an issue (marketing's list)
  *   date       `required` — a ready date must be given with it; `tomorrow` — it is tomorrow
  *              unless another is given. Any other status takes the date if one is given.
@@ -113,6 +116,24 @@ function qualityWorkflow({ complaint }) {
   };
 }
 
+/**
+ * The Quotation team's workflow on a costing or a price negotiation — suggested steps, kept until
+ * the plant sends its own: Request Received → Costing → Waiting for Admin Approval → Quote Sent →
+ * Task Closed. Each move with a remark, told to the enquiry's marketing person and Admin.
+ */
+const quotationWorkflow = {
+  remarkRequired: true,
+  notifyStatus: true,
+  remark: { label: 'Remarks', placeholder: 'Price worked out, what Admin said, when it went to the buyer' },
+  statuses: [
+    { key: 'received', label: 'Request Received' },
+    { key: 'costing', label: 'Costing' },
+    { key: 'approval', label: 'Waiting for Admin Approval' },
+    { key: 'sent', label: 'Quote Sent' },
+    { key: 'closed', label: 'Task Closed', done: true },
+  ],
+};
+
 const paymentFollowUp = {
   title: 'Payment Follow-up Tracker',
   submit: 'Save Follow-up',
@@ -158,6 +179,7 @@ export const TASK_FORMS = {
   },
   create_quotation: {
     team: 'Quotation Team',
+    ...quotationWorkflow,
     note: { label: 'Additional instruction / Question', placeholder: 'Target price, packing or anything the costing should know' },
     asks: [
       { key: 'models', label: 'Hanger model(s)', from: 'models', register: 'moulds' },
@@ -168,6 +190,7 @@ export const TASK_FORMS = {
   },
   price_negotiation: {
     team: 'Quotation Team',
+    ...quotationWorkflow,
     note: { label: 'Additional instruction / Question', placeholder: 'What the buyer said about the price' },
     asks: [
       { key: 'models', label: 'Hanger model(s)', from: 'models', register: 'moulds' },
@@ -177,6 +200,10 @@ export const TASK_FORMS = {
   po_so: {
     team: 'SO Team',
     note: { label: 'Additional instruction / Question', placeholder: 'Prepare and send Sales Order to this company' },
+    /* Every move says why, and the enquiry's marketing person and Admin are told of it. */
+    remarkRequired: true,
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'What is done, what is missing, when the SO will go' },
     statuses: [
       { key: 'waiting', label: 'SO Waiting' },
       { key: 'preparing', label: 'SO Preparing' },
@@ -253,7 +280,8 @@ export const TASK_FORMS = {
       { key: 'development_edr', label: 'Development EDR', date: 'required' },
       { key: 'rework', label: 'Rework', issue: true },
       { key: 'rework_edr', label: 'Rework EDR', date: 'required', issue: true },
-      { key: 'mould_ready', label: 'Mould Ready' },
+      /* Tells the enquiry's open Production task the tool is back [handoff.service `tellOpenTasks`]. */
+      { key: 'mould_ready', label: 'Mould Ready', tells: 'ask_edd' },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
     asks: [
@@ -350,7 +378,21 @@ export const TASK_FORMS = {
 
   team_payment_followup: paymentFollowUp,
   my_payment_followup: paymentFollowUp,
-  gst_invoice_audit: { team: 'Audit Team', asks: [{ key: 'invoiceNumber', label: 'Invoice number', from: 'order.invoiceNumber' }] },
+  /* Suggested steps, kept until the plant sends its own. A correction needed shows as an issue on the enquiry. */
+  gst_invoice_audit: {
+    team: 'Audit Team',
+    asks: [{ key: 'invoiceNumber', label: 'Invoice number', from: 'order.invoiceNumber' }],
+    remarkRequired: true,
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'What was checked, what has to be corrected' },
+    statuses: [
+      { key: 'received', label: 'Received' },
+      { key: 'checking', label: 'Checking' },
+      { key: 'correction', label: 'Correction Needed', issue: true },
+      { key: 'corrected', label: 'Corrected' },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+  },
   ac_clarify: {
     team: 'Accounts Team',
     remarkRequired: true,
@@ -359,8 +401,9 @@ export const TASK_FORMS = {
     statuses: [
       { key: 'approval_required', label: 'Payment Approval Required' },
       { key: 'confirmation_pending', label: 'Payment Confirmation Pending' },
-      { key: 'confirmed', label: 'Payment Confirmed' },
-      { key: 'credit_approved', label: 'Credit Approved' },
+      /* If an order on the enquiry is still held for its payment, whoever confirmed is asked to record the receipt. */
+      { key: 'confirmed', label: 'Payment Confirmed', recordsPayment: true },
+      { key: 'credit_approved', label: 'Credit Approved', recordsPayment: true },
       { key: 'statement_required', label: 'Statement Required' },
       { key: 'clarified', label: 'Account Clarified' },
       /* An account on hold holds the enquiry up — marketing's list shows it. */
@@ -375,6 +418,17 @@ export const TASK_FORMS = {
     note: { label: 'What to collect / discuss', placeholder: 'Amount due, invoices, what the buyer promised last time' },
     /* Due on the day of the visit. */
     dueFrom: 'visitDate',
+    /* Suggested steps, kept until the plant sends its own. */
+    remarkRequired: true,
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'Who was met, what was paid or promised, the next date' },
+    statuses: [
+      { key: 'assigned', label: 'Visit Assigned' },
+      { key: 'visited', label: 'Visited' },
+      { key: 'collected', label: 'Collected' },
+      { key: 'promised', label: 'Promised' },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
     asks: [
       /* The member is picked by the person assigning it; the task is theirs by name. */
       { key: 'visitor', label: 'PRT member to visit', type: 'member', department: 'payment_collection', required: true },

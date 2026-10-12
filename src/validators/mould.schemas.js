@@ -65,6 +65,8 @@ const mouldFields = z.object({
       .optional(),
 
     status: z.enum(MOULD_STATUSES).optional(),
+    /* Maintenance due every this many shots [services/records.service.js]. */
+    maintenanceEveryShots: z.number().int().nonnegative().nullable().optional(),
     ownedBy: z.enum(MOULD_OWNERSHIP).optional(),
     /**
      * Nullable as well as optional, and it has to be both.
@@ -136,6 +138,8 @@ export const mouldUpdateSchema = z
 
     cavities: z.number().int().positive().optional(),
     activeCavities: z.number().int().nonnegative().optional(),
+    /* Null switches the shot-count reminder off. */
+    maintenanceEveryShots: z.number().int().nonnegative().nullable().optional(),
 
     partWeightGrams: pieceWeight().optional(),
     runnerWeightGrams: weight.optional(),

@@ -86,14 +86,21 @@ test('the SO task starts at SO Waiting; the statuses come from the server', asyn
 });
 
 test('Preparing; Prepared only by uploading the PDF; another department cannot move it', async () => {
-  assert.equal((await status('siva', 'preparing')).status, 403);
-  const preparing = await status('priya', 'preparing');
+  assert.equal((await status('siva', 'preparing', 'Not mine to move')).status, 403);
+  /* Every SO move says why — and the enquiry's marketing person hears it. */
+  const bareMove = await status('priya', 'preparing');
+  assert.equal(bareMove.status, 400);
+  assert.match(bareMove.json.message, /Add a remark/);
+  const preparing = await status('priya', 'preparing', 'Typing the SO, GST to confirm');
   assert.equal(preparing.status, 200, preparing.json.message);
   assert.equal(preparing.json.data.status, 'preparing');
+  const { default: TaskNotice } = await import('../src/models/TaskNotice.js');
+  const nandhiniId = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
+  assert.ok(await TaskNotice.exists({ task: soTask._id, recipient: nandhiniId, status: 'preparing' }), 'marketing is told of the move');
   const prepared = await status('priya', 'prepared');
   assert.equal(prepared.status, 400);
   assert.match(prepared.json.message, /Upload the PDF to mark it SO Prepared/);
-  assert.equal((await status('priya', 'nonsense')).status, 400);
+  assert.equal((await status('priya', 'nonsense', 'No such step')).status, 400);
 });
 
 test('Needs Clarification asks for a comment and gives the marketing person a task; the answer comes back', async () => {
@@ -111,7 +118,7 @@ test('Needs Clarification asks for a comment and gives the marketing person a ta
   assert.equal(String(question.parentTask), soTask._id);
   assert.match(question.notes, /Priya Orders: Which GSTIN/);
 
-  const again = await status('priya', 'preparing');
+  const again = await status('priya', 'preparing', 'Carrying on with the rest');
   assert.equal(again.status, 200, 'the SO team may carry on meanwhile');
   await status('priya', 'clarification', 'And the delivery address?');
   /* At the top of the marketing person's dashboard, to answer there. */
