@@ -2,13 +2,17 @@ import Component from '../models/Component.js';
 import { parseSheet } from './mouldSheet.service.js';
 
 /**
- * The plant's aux price list — hooks and clips, one rate a piece — onto the hook and clip
- * registers [scripts/import-aux.js]. A name with "hook" in it is a hook; everything else on the
- * list (clips, and the pads that go with them) is a clip. "NONE" is the list saying no part, and
- * is not a part.
+ * The plant's aux price lists — hooks, clips and print, one rate a piece — onto the hook, clip
+ * and print registers [scripts/import-aux.js]. A name with "hook" in it is a hook; a print by
+ * its colours ("1 COLOUR") is print; everything else (clips, and the pads that go with them) is a
+ * clip. "NONE" is the list saying no part, and is not a part.
  */
 
-export const kindOf = (name) => (/hook/i.test(name) ? 'hook' : 'clip');
+export const kindOf = (name) => {
+  if (/hook/i.test(name)) return 'hook';
+  if (/\bcolou?rs?\b/i.test(name)) return 'print';
+  return 'clip';
+};
 
 /** The shade a name carries, for the register's colour column. */
 export function colourOf(name) {
@@ -43,7 +47,7 @@ export function readAux(text) {
 
 /** Each row: create, update (a price that moved), or unchanged — matched on kind and name. */
 export async function planAux(entries) {
-  const existing = await Component.find({ kind: { $in: ['hook', 'clip'] } }).select('kind name ratePerPiece');
+  const existing = await Component.find({ kind: { $in: ['hook', 'clip', 'print'] } }).select('kind name ratePerPiece');
   const byKey = new Map(existing.map((part) => [`${part.kind}:${nameKey(part.name)}`, part]));
   const seen = new Map();
   return entries.map((entry) => {

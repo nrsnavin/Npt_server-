@@ -1,13 +1,15 @@
 /**
- * Reads the plant's aux price list — hooks and clips — onto the hook and clip registers
+ * Reads the plant's aux price lists — hooks, clips and print — onto their registers
  * [services/auxRates.service.js].
  *
  * Usage:
  *   npm run import:aux                          # dry run of data/aux-rates.tsv
  *   npm run import:aux -- --confirm             # write it
+ *   npm run import:aux -- data/print-rates.tsv --confirm   # the print list (1 / 2 / 3 colour)
  *   npm run import:aux -- path/to/aux.tsv --confirm
  *
- * A name with "hook" in it goes on the hook register, the rest on the clip register; a part
+ * A name with "hook" in it goes on the hook register, a print by its colours on the print
+ * register, the rest on the clip register; a part
  * already there (same kind and name, any spacing or case) has its price brought to the list.
  * Safe to run again — and whenever the prices change. Reads MONGO_URI from .env.
  */
@@ -32,14 +34,15 @@ async function main() {
   const plan = await planAux(entries);
   for (const entry of plan) {
     const price = entry.rate === undefined ? '₹0 (no price)' : `₹${entry.rate}`;
-    const where = entry.kind === 'hook' ? 'hook' : 'clip';
+    const where = entry.kind.padEnd(5);
     if (entry.action === 'create') console.log(`  add     ${where}  ${entry.name} · ${price}${entry.colour ? ` · ${entry.colour}` : ''}`);
     else if (entry.action === 'update') console.log(`  update  ${where}  ${entry.name} · ₹${entry.from} → ${price}`);
     else if (entry.action === 'skip') console.log(`  skip    line ${entry.line} ${entry.name}: ${entry.reason}`);
     for (const warning of entry.warnings || []) console.log(`          ! ${warning}`);
   }
   const count = (action, kind) => plan.filter((entry) => entry.action === action && (!kind || entry.kind === kind)).length;
-  console.log(`\nHooks: ${count('create', 'hook')} to add, ${count('update', 'hook')} to update · Clips: ${count('create', 'clip')} to add, ${count('update', 'clip')} to update · ${count('unchanged')} unchanged.`);
+  const kinds = ['hook', 'clip', 'print'].filter((kind) => plan.some((entry) => entry.kind === kind));
+  console.log(`\n${kinds.map((kind) => `${kind[0].toUpperCase()}${kind.slice(1)}s: ${count('create', kind)} to add, ${count('update', kind)} to update`).join(' · ')} · ${count('unchanged')} unchanged.`);
 
   if (!confirm) {
     console.log('Dry run — nothing written. Run again with --confirm to import.');

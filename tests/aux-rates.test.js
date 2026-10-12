@@ -52,3 +52,11 @@ test('imported onto the registers; a part already there is repriced, not doubled
   const again = await service.planAux(service.readAux(list));
   assert.equal(again.filter((entry) => entry.action !== 'unchanged').length, 0);
 });
+
+test('the print list goes on the print register: 1, 2 and 3 colour', async () => {
+  const prints = service.readAux(readFileSync(new URL('../data/print-rates.tsv', import.meta.url), 'utf8'));
+  assert.deepEqual(prints.map((entry) => [entry.name, entry.kind, entry.rate]), [['1 COLOUR', 'print', 0.5], ['2 COLOUR', 'print', 1], ['3 COLOUR', 'print', 1.5]]);
+  assert.deepEqual(await service.applyAux(await service.planAux(prints)), { created: 3, updated: 0 });
+  assert.equal(await Component.countDocuments({ kind: 'print' }), 3);
+  assert.equal((await service.planAux(prints)).filter((entry) => entry.action !== 'unchanged').length, 0);
+});
