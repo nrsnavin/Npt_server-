@@ -464,7 +464,7 @@ export async function dispatchDetailsForOrder(order) {
     Todo.find({
       kind: 'lr_copy',
       $or: [{ order: order._id }, ...(requests.some((task) => !task.order) ? [{ enquiry: order.enquiry, order: { $exists: false } }] : [])],
-    }).sort({ createdAt: 1 }).select('status brief completed resultFile createdAt').lean(),
+    }).sort({ createdAt: 1 }).select('status brief completed resultFile createdAt').populate('resultFile', 'key filename').lean(),
   ]);
   const MODE = { own_vehicle: 'Own vehicle', transport: 'Transport', party_collects: 'Party collected', courier: 'Courier' };
   return {
