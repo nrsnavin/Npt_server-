@@ -1,3 +1,4 @@
+import { MANAGEMENT_QUERY } from '../utils/departments.js';
 import User from '../models/User.js';
 import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
@@ -179,7 +180,7 @@ export function registerHandoffSubscribers() {
           ? User.find({ _id: task.user, ...active }).select('name phone')
           : User.find({ department: task.department, ...active }).select('name phone'),
         task.createdBy ? User.find({ _id: task.createdBy, ...active }).select('name phone') : [],
-        User.find({ $or: [{ role: 'admin' }, { department: 'management' }], ...active }).select('name phone'),
+        User.find({ ...MANAGEMENT_QUERY, ...active }).select('name phone'),
       ]);
       const people = [...new Map([...holders, ...sender, ...admins].map((person) => [String(person._id), person])).values()];
       if (!people.length) return;

@@ -1,3 +1,4 @@
+import { MANAGEMENT_QUERY } from '../utils/departments.js';
 import Sample, { NOT_ESCALATED_STATUSES } from '../models/Sample.js';
 import User from '../models/User.js';
 import { raiseTask } from './task.service.js';
@@ -67,7 +68,7 @@ async function recipientsFor(level, sample) {
 
   const managers = await User.find({
     isActive: { $ne: false },
-    $or: [{ role: 'admin' }, { department: 'management' }],
+    ...MANAGEMENT_QUERY,
   }).select('_id');
 
   return managers.map((user) => user._id);

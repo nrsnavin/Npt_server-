@@ -1,3 +1,4 @@
+import { MANAGEMENT_QUERY } from '../utils/departments.js';
 import Sample, { CLOSED_SAMPLE_STATUSES, WITH_CUSTOMER_STATUSES } from '../models/Sample.js';
 import SampleLog from '../models/SampleLog.js';
 import User from '../models/User.js';
@@ -166,7 +167,7 @@ const originKey = (row) => `sample:${row._id}:stalled:${row.idleDays}`;
 async function management() {
   return User.find({
     isActive: { $ne: false },
-    $or: [{ role: 'admin' }, { department: 'management' }],
+    ...MANAGEMENT_QUERY,
   }).select('_id');
 }
 

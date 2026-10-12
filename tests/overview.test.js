@@ -160,3 +160,23 @@ test('Admin reads any department’s tasks, open or done; nobody widens their ow
   assert.equal((await listed('admin', '?state=later')).status, 400);
   assert.equal((await listed('admin', '?department=nowhere')).status, 400);
 });
+
+test('each tile counts what the list it opens shows — a won enquiry is not a follow-up', async () => {
+  /* Won, still in the plant, follow-up date today: active work, but not one to chase. */
+  const won = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: ids.bala, requirement: { modelNumber: 'NPT-410V' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 86400000).toISOString() },
+  })).json.data;
+  await Enquiry.updateOne({ _id: won._id }, { $set: { status: 'won', nextFollowUpDate: new Date() } });
+
+  const totalOf = (json) => json.pagination?.total ?? json.meta?.total ?? json.data?.length;
+  const tonight = new Date(); tonight.setHours(23, 59, 59, 999);
+  const { figures } = (await api('/api/dashboard/overview', { as: 'nandhini' })).json.data;
+  const dueList = (await api(`/api/enquiries?open=true&dueBy=${encodeURIComponent(tonight.toISOString())}`, { as: 'nandhini' })).json;
+  const openList = (await api('/api/enquiries?open=true', { as: 'nandhini' })).json;
+  assert.equal(figures.dueToday, totalOf(dueList), 'Due today = the Due now list');
+  assert.equal(figures.activeEnquiries, totalOf(openList), 'Active enquiries = the Open list');
+
+  const due = (await api('/api/dashboard/parties?filter=due_today', { as: 'nandhini' })).json.data;
+  assert.equal(due.rows.some((row) => row.name === 'Bala Garments'), false, 'the party chip agrees');
+});
