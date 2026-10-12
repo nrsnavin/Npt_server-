@@ -9,6 +9,7 @@ import Attachment from '../models/Attachment.js';
 import { put, remove } from '../services/storage.service.js';
 import { allMouldsVisibleTo, mouldVisibleTo, seesMachineRate } from '../services/pricingVisibility.js';
 import { transactional } from '../utils/transaction.js';
+import { describeUsage, usageOf } from '../services/recordUsage.service.js';
 
 /** The same ceiling every other export uses — see pipeline.controller.js. */
 const EXPORT_LIMIT = 5000;
@@ -157,6 +158,18 @@ export const updateMould = asyncHandler(transactional(async (req, res) => {
    * Null clears; undefined leaves alone. A customer-owned tool bought out is an ordinary
    * correction, and without an explicit clear the only way to make one is through the database.
    */
+  /*
+   * A code corrected — a typo, or a second row from the price sheet given its own name. The
+   * records that use the mould point at it by id, so they follow; the one thing to refuse is a
+   * code another mould already has.
+   */
+  if (patch.mouldCode !== undefined) {
+    patch.mouldCode = patch.mouldCode.trim().toUpperCase();
+    if (patch.mouldCode !== mould.mouldCode && await Mould.exists({ mouldCode: patch.mouldCode, _id: { $ne: mould._id } })) {
+      throw ApiError.conflict(`${patch.mouldCode} is another mould's code`);
+    }
+  }
+
   if (patch.ownedByCustomer === null) {
     mould.ownedByCustomer = undefined;
     delete patch.ownedByCustomer;
@@ -176,6 +189,29 @@ export const updateMould = asyncHandler(transactional(async (req, res) => {
 
   res.json({ success: true, data: mouldVisibleTo(mould, req.user) });
 }));
+
+/**
+ * Removes a mould from the register — Admin only, and only one nothing uses. A mould an enquiry,
+ * a quotation, a sample, an order or a run points at is refused with where it is used: retiring
+ * it (status Retired) takes it off every picker and keeps that history readable.
+ */
+export const deleteMould = asyncHandler(async (req, res) => {
+  const mould = await Mould.findById(req.params.id);
+  if (!mould) throw ApiError.notFound('Mould not found');
+  const uses = await usageOf('Mould', mould._id);
+  if (uses.length) {
+    throw ApiError.conflict(
+      `${mould.mouldCode} is used on ${describeUsage(uses)} — retire it instead, so that history still reads`,
+      { uses }
+    );
+  }
+  const files = await Attachment.find({ mould: mould._id }).select('key');
+  await mould.deleteOne();
+  await Attachment.deleteMany({ mould: mould._id });
+  await Promise.all(files.map((file) => remove(file.key).catch(() => {})));
+  await recordChange({ model: 'Mould', doc: mould, by: req.user, action: 'deleted', note: `Deleted ${mould.mouldCode}` });
+  res.json({ success: true, data: { _id: mould._id, mouldCode: mould.mouldCode } });
+});
 
 export const exportMoulds = asyncHandler(async (req, res) => {
   const { sort, filter } = mouldQuery(req.query, req.user);

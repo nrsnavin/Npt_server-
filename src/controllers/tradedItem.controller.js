@@ -14,6 +14,9 @@ import { sheetRows } from '../services/sheetRows.js';
 import { TEMPLATE_HEADERS, applyImport, planImport } from '../services/tradedImport.service.js';
 import { transactional } from '../utils/transaction.js';
 import { attachPhoto } from '../services/recordPhoto.service.js';
+import { describeUsage, usageOf } from '../services/recordUsage.service.js';
+import Attachment from '../models/Attachment.js';
+import { remove } from '../services/storage.service.js';
 
 /**
  * The trading master [models/TradedItem.js]: bought-in items and their inward price.
@@ -101,6 +104,25 @@ export const setTradedItemPhoto = asyncHandler(async (req, res) => {
   });
   await item.populate('photo', 'key');
   res.json({ success: true, data: tradedItemVisibleTo(item, req.user) });
+});
+
+/** Removes a bought-in item — Admin only, and only one no quotation is costed on (else: untick "Still bought"). */
+export const deleteTradedItem = asyncHandler(async (req, res) => {
+  const item = await TradedItem.findById(req.params.id);
+  if (!item) throw ApiError.notFound('Item not found');
+  const uses = await usageOf('TradedItem', item._id);
+  if (uses.length) {
+    throw ApiError.conflict(
+      `${item.modelNumber} is used on ${describeUsage(uses)} — mark it no longer bought instead, so those still read`,
+      { uses }
+    );
+  }
+  const files = await Attachment.find({ tradedItem: item._id }).select('key');
+  await item.deleteOne();
+  await Attachment.deleteMany({ tradedItem: item._id });
+  await Promise.all(files.map((file) => remove(file.key).catch(() => {})));
+  await recordChange({ model: 'TradedItem', doc: item, by: req.user, action: 'deleted', note: `Deleted ${item.modelNumber}` });
+  res.json({ success: true, data: { _id: item._id, modelNumber: item.modelNumber } });
 });
 
 export const updateTradedItem = asyncHandler(transactional(async (req, res) => {

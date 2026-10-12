@@ -120,9 +120,8 @@ export const promoteMouldSchema = mouldFields
 /**
  * Correcting a mould.
  *
- * `mouldCode` is left out on purpose: it is stamped on the tool, and a register whose numbers
- * can be reassigned is one where last year's costings point at a different mould than the one
- * they were built from.
+ * `mouldCode` can be corrected: the records using the mould point at it by id, so last year's
+ * costings still point at the mould they were built from — under its corrected code.
  *
  * The cavity check has to be re-stated over the merged record rather than over the patch —
  * sending `activeCavities` alone has nothing to compare it against — so it is applied in the
@@ -130,6 +129,8 @@ export const promoteMouldSchema = mouldFields
  */
 export const mouldUpdateSchema = z
   .object({
+    /* Corrected, not reassigned: the records that use the mould follow it by id [updateMould]. */
+    mouldCode: z.string().trim().min(2).max(40).optional(),
     name: z.string().min(2).max(120).optional(),
     material: z.enum(MATERIALS).optional(),
 
@@ -146,7 +147,8 @@ export const mouldUpdateSchema = z
     /* What the model is tested against [QC records]. */
     qcStandards: qcStandardsInput,
 
-    partWeightGrams: pieceWeight().optional(),
+    /* Zero is "not weighed yet" — a mould from the price sheet with no grammage keeps editing. */
+    partWeightGrams: z.number().nonnegative().transform(cutGrams).optional(),
     runnerWeightGrams: weight.optional(),
     regrindRecoveryPercent: z.number().min(0).max(100).optional(),
 

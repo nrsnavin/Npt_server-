@@ -345,3 +345,19 @@ test('a bought-in piece takes a photo, served to whoever reads the master', asyn
   refused.append('photo', new Blob([jpeg], { type: 'image/jpeg' }), 'x.jpg');
   assert.equal((await api(`/api/traded-items/${item._id}/photo`, { method: 'PUT', token: nandhini, form: refused })).status, 403);
 });
+
+test('Admin deletes a bought-in item no quotation is costed on; one costed on is refused', async () => {
+  const spare = await api('/api/traded-items', { method: 'POST', token: quoter, body: { modelNumber: 'AC-20 (2)', inwardPrice: 2.6 } });
+  assert.equal(spare.status, 201, spare.json.message);
+  assert.equal((await api(`/api/traded-items/${spare.json.data._id}`, { method: 'DELETE', token: quoter })).status, 403, 'Admin only');
+  const gone = await api(`/api/traded-items/${spare.json.data._id}`, { method: 'DELETE', token: admin });
+  assert.equal(gone.status, 200, gone.json.message);
+  assert.equal((await api(`/api/traded-items/${spare.json.data._id}`, { token: admin })).status, 404);
+
+  const quotations = await mongoose.connection.collection('quotations').find({ 'lines.tradedItem': { $exists: true, $ne: null } }).toArray();
+  const costedOn = quotations.flatMap((row) => row.lines).find((line) => line.tradedItem)?.tradedItem;
+  assert.ok(costedOn, 'an earlier test costed a quotation on an item');
+  const refused = await api(`/api/traded-items/${costedOn}`, { method: 'DELETE', token: admin });
+  assert.equal(refused.status, 409);
+  assert.match(refused.json.message, /used on \d+ quotations? — mark it no longer bought instead/);
+});
