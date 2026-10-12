@@ -9,13 +9,17 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
 import { listParams, paginated } from '../utils/query.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
-import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
+import { customerScope, isOwnershipScoped, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { raiseTask } from '../services/task.service.js';
 import { dueDateFor, orderPosition } from '../services/receivable.service.js';
 import { afterCommit, transactional } from '../utils/transaction.js';
 import { afterPayment } from '../services/paymentGates.service.js';
 import { FOLLOW_UP_MODES, FOLLOW_UP_STATUSES } from '../config/paymentFollowUp.js';
 import { endOfDayIST } from '../services/handoff.service.js';
+import Todo from '../models/Todo.js';
+import { CREDIT_RULE, COLLECTION_KINDS, creditStatusOf } from '../services/collections.service.js';
+import { inDepartment, isManagement } from '../utils/departments.js';
+import { findHandoff } from '../config/handoffs.js';
 
 /**
  * Payments [BLUEPRINT §20, §25].
@@ -31,13 +35,17 @@ import { endOfDayIST } from '../services/handoff.service.js';
  */
 
 const POPULATE = [
-  { path: 'customer', select: 'code name city mobile creditTermsDays paymentTerms' },
+  { path: 'customer', select: 'code name city mobile creditTermsDays paymentTerms credit' },
   { path: 'order', select: 'number customerPo' },
   { path: 'dispatch', select: 'number lrNumber dispatchDate' },
   { path: 'assignedTo', select: 'name' },
   { path: 'followUps.by', select: 'name' },
   { path: 'receipts.recordedBy', select: 'name' },
+  { path: 'receipts.confirmed.by', select: 'name' },
 ];
+
+/** Accounts, or Admin: the people who can see the bank, and so the only ones whose receipt counts at the gate. */
+const seesTheBank = (user) => isManagement(user) || inDepartment(user, 'accounts');
 
 /** Refuses a receivable the caller may not see, in the shape reading it would take. */
 async function readable(id, user) {
@@ -205,6 +213,8 @@ export const paymentDay = asyncHandler(async (req, res) => {
     owner: receivable.assignedTo?.name || null,
     value: receivable.invoice?.value || 0,
     received: receivable.received,
+    awaitingConfirmation: receivable.awaitingConfirmation,
+    credit: creditStatusOf(receivable.customer?.credit),
     advanceApplied: receivable.advanceApplied,
     balance: receivable.balance,
     dueBy: receivable.dueBy,
@@ -263,13 +273,14 @@ export const paymentDay = asyncHandler(async (req, res) => {
   const broken = owing.filter((row) => row.promise?.broken).sort(oldest);
   const brokenIds = new Set(broken.map((row) => String(row._id)));
 
+  /* Overdue with a promise still standing is a different call from overdue with none — it goes under "promised". */
   const overdue = owing
-    .filter((row) => row.isOverdue && !brokenIds.has(String(row._id)))
+    .filter((row) => row.isOverdue && !brokenIds.has(String(row._id)) && !row.promise)
     .sort(oldest);
   const chasing = new Set([...brokenIds, ...overdue.map((row) => String(row._id))]);
 
   const soon = owing
-    .filter((row) => !chasing.has(String(row._id)) && (row.daysToDue ?? 99) <= 7)
+    .filter((row) => !chasing.has(String(row._id)) && (row.daysToDue ?? 99) >= 0 && (row.daysToDue ?? 99) <= 7)
     .sort(oldest);
   const settled = new Set([...chasing, ...soon.map((row) => String(row._id))]);
 
@@ -286,7 +297,7 @@ export const paymentDay = asyncHandler(async (req, res) => {
   const shown = async (group) => {
     const head = group.slice(0, DAY_GROUP_LIMIT);
     await Receivable.populate(head, [
-      { path: 'customer', select: 'code name mobile' },
+      { path: 'customer', select: 'code name mobile credit' },
       { path: 'order', select: 'number' },
       { path: 'assignedTo', select: 'name' },
       { path: 'followUps.by', select: 'name' },
@@ -295,6 +306,51 @@ export const paymentDay = asyncHandler(async (req, res) => {
   };
   const more = (group) => Math.max(0, group.length - DAY_GROUP_LIMIT);
 
+  /*
+   * The cases, beside the money [docs/PAYMENT-COLLECTION-WORKFLOW.md §5]: what is with the
+   * Payment Recovery Team and with whom, what each collector holds, and the buyers whose credit
+   * status says stop and ask. Scoped as the money is: a marketing person sees their own buyers'.
+   */
+  /* Every open case on the buyers this reader may see — a PRT case on an old balance counts too. */
+  const visible = isOwnershipScoped(req.user)
+    ? (await Customer.find(customerScope(req.user)).select('_id').lean()).map((row) => row._id)
+    : null;
+  const cases = await Todo.find({ kind: { $in: COLLECTION_KINDS }, completed: false, ...(visible ? { customer: { $in: visible } } : {}) })
+    .select('kind department status user customer order dueDate priority suggestion statusHistory createdAt')
+    .populate([{ path: 'user', select: 'name' }, { path: 'customer', select: 'code name' }, { path: 'order', select: 'number' }])
+    .sort({ dueDate: 1 }).lean();
+  const labelOf = (task) => (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status)?.label || task.status;
+  const owedBy = new Map();
+  for (const row of owing) {
+    const key = String(row.customer?._id || row.customer);
+    owedBy.set(key, (owedBy.get(key) || 0) + row.balance);
+  }
+  const caseCard = (task) => ({
+    _id: task._id, kind: task.kind, label: findHandoff(task.kind)?.label, status: task.status, statusLabel: labelOf(task),
+    with: task.user?.name || null, customer: task.customer, order: task.order, dueDate: task.dueDate, priority: task.priority,
+    suggestion: task.suggestion || null, owed: Math.round(owedBy.get(String(task.customer?._id || task.customer)) || 0),
+    promisesBroken: (task.statusHistory || []).filter((entry) => entry.status === 'promise_broken').length,
+  });
+  const recovery = cases.filter((task) => task.kind === 'prt_recovery').map(caseCard);
+  const collecting = cases.filter((task) => task.kind !== 'prt_recovery');
+  const byCollector = new Map();
+  for (const task of collecting) {
+    const key = task.user?.name || 'Nobody yet';
+    if (!byCollector.has(key)) byCollector.set(key, { name: key, cases: 0, owed: 0, suggested: 0, broken: 0 });
+    const row = byCollector.get(key);
+    row.cases += 1;
+    row.owed += Math.round(owedBy.get(String(task.customer?._id || task.customer)) || 0);
+    if (task.suggestion?.kind) row.suggested += 1;
+    if (task.status === 'promise_broken') row.broken += 1;
+  }
+  const credit = { watch: [], hold: [] };
+  const flagged = await Customer.find({ ...(visible ? { _id: { $in: visible } } : {}), 'credit.status': { $in: ['watch', 'hold'] } }).select('code name credit').lean();
+  for (const buyer of flagged) {
+    const status = creditStatusOf(buyer.credit);
+    if (status === 'good') continue;
+    credit[status].push({ _id: buyer._id, code: buyer.code, name: buyer.name, reason: buyer.credit.override?.reason || buyer.credit.derived?.reason, byAdmin: Boolean(buyer.credit.override?.status), owed: Math.round(owedBy.get(String(buyer._id)) || 0) });
+  }
+
   res.json({
     success: true,
     data: {
@@ -302,6 +358,10 @@ export const paymentDay = asyncHandler(async (req, res) => {
       overdue: await shown(overdue),
       soon: await shown(soon),
       promised: await shown(promised),
+      recovery,
+      suggested: collecting.filter((task) => task.suggestion?.kind).map(caseCard),
+      collectors: [...byCollector.values()].sort((a, b) => b.owed - a.owed),
+      credit,
     },
     more: { broken: more(broken), overdue: more(overdue), soon: more(soon), promised: more(promised) },
     meta: {
@@ -318,6 +378,13 @@ export const paymentDay = asyncHandler(async (req, res) => {
       awaitingAdvance: Math.round(
         owing.filter((row) => row.kind === 'advance').reduce((sum, row) => sum + row.balance, 0)
       ),
+      /* Recorded by a collector or PRT, not yet seen in the bank by Accounts. */
+      awaitingConfirmation: Math.round(rows.reduce((sum, row) => sum + row.awaitingConfirmation, 0)),
+      withPrt: recovery.length,
+      suggestedForPrt: collecting.filter((task) => task.suggestion?.kind).length,
+      creditWatch: credit.watch.length,
+      creditHold: credit.hold.length,
+      creditRule: CREDIT_RULE,
     },
   });
 });
@@ -487,6 +554,12 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
 
   const before = snapshot(receivable);
 
+  /*
+   * Who recorded it decides whether it is confirmed. Accounts and Admin can see the bank, so
+   * their receipt is confirmed as it is written; a collector's or PRT member's is money they
+   * took or were told of, which stops the chase but waits for Accounts before it opens the
+   * payment gate [models/Receivable.js `confirmed`, paymentGates.service `receivedOn`].
+   */
   receivable.receipts.push({
     idempotencyKey: key,
     amount: req.body.amount,
@@ -495,6 +568,7 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
     reference: req.body.reference,
     note: req.body.note,
     recordedBy: req.user._id,
+    ...(seesTheBank(req.user) ? { confirmed: { by: req.user._id, at: new Date() } } : {}),
   });
 
   await applyPaymentPositions([receivable]);
@@ -537,6 +611,52 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
   await receivable.populate(POPULATE);
   res.status(201).json({ success: true, data: receivable });
 })));
+
+/**
+ * Accounts confirms a receipt a collector or PRT member recorded: they have seen it in the bank.
+ * Only then does it count at the payment gate, which is why the gate is re-checked after it.
+ */
+export const confirmReceipt = asyncHandler(withOrderLock(async req => (await Receivable.findById(req.params.id).select('order'))?.order || req.params.id, transactional(async (req, res) => {
+  if (!seesTheBank(req.user)) throw ApiError.forbidden('Only Accounts or Admin confirm a receipt — they are the ones who can see the bank.');
+  const receivable = await readable(req.params.id, req.user);
+  const receipt = receivable.receipts.id(req.params.receiptId);
+  if (!receipt) throw ApiError.notFound('No such receipt on this one');
+  if (receipt.confirmed?.at) {
+    await receivable.populate(POPULATE);
+    return res.json({ success: true, data: receivable, replayed: true });
+  }
+  const before = snapshot(receivable);
+  receipt.confirmed = { by: req.user._id, at: new Date() };
+  await receivable.save();
+  await recordChange({
+    model: 'Receivable', doc: receivable, before,
+    by: req.user, note: `Confirmed ₹${Math.round(receipt.amount).toLocaleString('en-IN')} received`,
+  });
+  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order));
+  await receivable.populate(POPULATE);
+  return res.json({ success: true, data: receivable });
+})));
+
+/**
+ * Admin's word on a buyer's credit: Watch or Hold by hand, with the reason, or cleared back to
+ * what the rule says [models/Customer.js `credit`]. A Hold warns on the enquiry, the SO and the
+ * dispatch request; it does not stop them — the payment gate does that, on the order's terms.
+ */
+export const setCustomerCredit = asyncHandler(transactional(async (req, res) => {
+  if (!isManagement(req.user)) throw ApiError.forbidden('Only Admin puts a buyer on credit hold, or lifts one.');
+  const customer = await Customer.findById(req.params.id);
+  if (!customer) throw ApiError.notFound('Customer not found');
+  const before = snapshot(customer);
+  const { status, reason } = req.body;
+  customer.credit = {
+    ...(customer.credit?.toObject?.() || customer.credit || {}),
+    override: status ? { status, reason, by: req.user._id, at: new Date() } : undefined,
+  };
+  customer.credit.status = creditStatusOf(customer.credit);
+  await customer.save();
+  await recordChange({ model: 'Customer', doc: customer, before, by: req.user, note: status ? `Credit ${status}: ${reason}` : 'Credit override cleared' });
+  res.json({ success: true, data: { credit: customer.credit, creditStatus: customer.credit.status } });
+}));
 
 /**
  * Marking one disputed or on hold, and clearing it again.

@@ -134,6 +134,18 @@ const quotationWorkflow = {
   ],
 };
 
+/**
+ * Payment Collection's workflow on a follow-up — the phone half of the chase
+ * [docs/PAYMENT-COLLECTION-WORKFLOW.md; handoff.service `setTaskStatus`, collections.service].
+ * Beyond the flags every workflow has:
+ *   followUp   the move is also a call on the receivable's log, with this follow-up status
+ *              [config/paymentFollowUp.js] — so the chase screen and the task agree
+ *   mode       how the buyer was reached, on that log entry (a visit, for PRT)
+ *   promise    the date given with the move is the buyer's promise: the receivable's promised and
+ *              next follow-up date, and the task's due date. Broken by the sweep when it passes
+ *              with no money in [collections.service `runCollectionSweep`]
+ *   recordsReceipt  money was taken: whoever moved it is asked to record the receipt in Payments
+ */
 const paymentFollowUp = {
   title: 'Payment Follow-up Tracker',
   submit: 'Save Follow-up',
@@ -146,6 +158,23 @@ const paymentFollowUp = {
   /* Due on the day the buyer asked to be called, when they said one. */
   dueFrom: 'callOn',
   note: { label: 'Follow-up note', placeholder: 'Payment discussion or follow-up note' },
+  remarkRequired: true,
+  statusDate: { label: 'Promised date', field: 'promisedDate' },
+  remark: { label: 'Remarks', placeholder: 'Who you spoke to, what they said, what was agreed' },
+  statuses: [
+    { key: 'assigned', label: 'Assigned' },
+    { key: 'contacted', label: 'Contacted', followUp: 'other' },
+    { key: 'promised', label: 'Promised', date: 'required', promise: true, followUp: 'promised' },
+    { key: 'part_paid', label: 'Part Paid', followUp: 'part_paid', recordsReceipt: true },
+    /* Set by the sweep the morning after a promised date passes with nothing in; a person may set it too. */
+    { key: 'promise_broken', label: 'Promise Broken', issue: true },
+    { key: 'not_reachable', label: 'Not Reachable', followUp: 'no_answer' },
+    /* The buyer argues the invoice: Accounts gets A/C Clarify, and marketing's list shows the issue. */
+    { key: 'disputed', label: 'Disputed', comment: true, raises: 'ac_clarify', followUp: 'disputed', issue: true },
+    /* Hand-over to the field: the PRT case is raised and this task closes with the reason. */
+    { key: 'escalate_prt', label: 'Escalated to PRT', comment: true, raises: 'prt_recovery', done: true },
+    { key: 'paid', label: 'Paid', followUp: 'payment_sent', recordsReceipt: true, done: true },
+  ],
   asks: [
     { key: 'contact', label: 'Contact person / WhatsApp', from: 'customer.whatsapp' },
     {
@@ -431,14 +460,49 @@ export const TASK_FORMS = {
       { key: 'closed', label: 'Task Closed', done: true },
     ],
   },
+  /*
+   * The field half of the chase: the Payment Recovery Team's case [docs/PAYMENT-COLLECTION-WORKFLOW.md].
+   * Raised by Payment Collection's "Escalated to PRT", or by Admin / marketing by hand. The
+   * same flags as the follow-up above; a visit is a call on the receivable's log, mode `visit`.
+   */
+  prt_recovery: {
+    team: 'Payment Recovery Team',
+    title: 'PRT Recovery',
+    submit: 'Send to PRT',
+    note: { label: 'What to collect / discuss', placeholder: 'Amount due, invoices, what the buyer promised last time, why it is going to the field' },
+    /* Due on the day of the visit when one is fixed. */
+    dueFrom: 'visitDate',
+    remarkRequired: true,
+    notifyStatus: true,
+    statusDate: { label: 'Visit / promised date', field: 'visitDate' },
+    remark: { label: 'Remarks', placeholder: 'Who was met, what was paid or promised, the next date' },
+    statuses: [
+      { key: 'assigned', label: 'Assigned' },
+      { key: 'visit_planned', label: 'Visit Planned', date: 'required', visit: true },
+      { key: 'visited', label: 'Visited', followUp: 'other', mode: 'visit' },
+      { key: 'collected', label: 'Collected', followUp: 'payment_sent', mode: 'visit', recordsReceipt: true },
+      { key: 'part_collected', label: 'Part Collected', followUp: 'part_paid', mode: 'visit', recordsReceipt: true },
+      { key: 'promised', label: 'Promised', date: 'required', promise: true, followUp: 'promised', mode: 'visit' },
+      { key: 'promise_broken', label: 'Promise Broken', issue: true },
+      /* PRT's recommendation: Admin decides — legal notice, write-off or a credit hold — on the customer. */
+      { key: 'cannot_recover', label: 'Cannot Recover', comment: true, issue: true },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+    asks: [
+      /* Picked by whoever assigns it; the automation leaves it for the team to take. */
+      { key: 'visitor', label: 'PRT member to visit', type: 'member', department: 'payment_recovery' },
+      { key: 'visitDate', label: 'Visit date', type: 'date' },
+      { key: 'contact', label: 'Contact person / WhatsApp', from: 'customer.whatsapp' },
+      { key: 'address', label: 'Where', type: 'info', from: 'customer.delivery' },
+    ],
+  },
+  /* The earlier PRT task, kept so what was raised on it still reads; new cases are `prt_recovery`. */
   request_prt_visit: {
     team: 'PRT — Payment Recovery Team',
     title: 'Request PRT Visit',
     submit: 'Assign PRT Visit',
     note: { label: 'What to collect / discuss', placeholder: 'Amount due, invoices, what the buyer promised last time' },
-    /* Due on the day of the visit. */
     dueFrom: 'visitDate',
-    /* Suggested steps, kept until the plant sends its own. */
     remarkRequired: true,
     notifyStatus: true,
     remark: { label: 'Remarks', placeholder: 'Who was met, what was paid or promised, the next date' },
@@ -450,8 +514,7 @@ export const TASK_FORMS = {
       { key: 'closed', label: 'Task Closed', done: true },
     ],
     asks: [
-      /* The member is picked by the person assigning it; the task is theirs by name. */
-      { key: 'visitor', label: 'PRT member to visit', type: 'member', department: 'payment_collection', required: true },
+      { key: 'visitor', label: 'PRT member to visit', type: 'member', department: 'payment_recovery', required: true },
       { key: 'visitDate', label: 'Visit date', type: 'date', required: true },
       { key: 'address', label: 'Where', type: 'info', from: 'customer.delivery' },
     ],

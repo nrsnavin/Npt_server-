@@ -55,6 +55,17 @@ export const receiptSchema = z.strictObject({
   note: z.string().max(500).optional(),
 });
 
+/** Admin's word on a buyer's credit. Absent clears it, and the rule's own reading shows again. */
+export const creditSchema = z
+  .strictObject({
+    status: z.enum(['good', 'watch', 'hold']).optional(),
+    reason: z.string().trim().max(500).optional(),
+  })
+  .refine((value) => !value.status || (value.reason || '').length >= 3, {
+    message: 'Say why — the marketing person and the buyer will both ask',
+    path: ['reason'],
+  });
+
 export const judgementSchema = z
   .strictObject({
     /** Absent clears it, and the receivable returns to whatever the dates say. */

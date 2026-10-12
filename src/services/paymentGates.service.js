@@ -35,10 +35,14 @@ const STAGE_WORDS = { production: 'before production', dispatch: 'before dispatc
 const rupees = (value) => `₹${Math.round(value).toLocaleString('en-IN')}`;
 const round2 = (value) => Math.round(value * 100) / 100;
 
-/** Every rupee received against the order, whichever receivable it landed on. */
+/**
+ * Every rupee Accounts has confirmed against the order, whichever receivable it landed on. A
+ * receipt a collector or PRT member recorded and Accounts has not yet seen in the bank stops the
+ * chase ringing, but does not open the gate [models/Receivable.js `confirmed`].
+ */
 async function receivedOn(orderId) {
   const rows = await Receivable.find({ order: orderId });
-  return round2(rows.reduce((sum, row) => sum + (row.received || 0), 0));
+  return round2(rows.reduce((sum, row) => sum + (row.confirmedReceived || 0), 0));
 }
 
 /**

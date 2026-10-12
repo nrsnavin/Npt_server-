@@ -95,7 +95,7 @@ const PLAN = [
   ['gst_invoice_audit', 'GSTIN on the invoice does not match the PO'],
   ['gst_invoice_audit', 'Check the GST rate on the export invoice before it goes'],
   ['ac_clarify', 'Two receipts against one invoice — which order is the second for?'],
-  ['request_prt_visit', 'Collect the overdue balance — buyer promised a cheque on the visit', { prt: true }],
+  ['prt_recovery', 'Collect the overdue balance — buyer promised a cheque on the visit', { prt: true }],
 ];
 
 export async function seedDepartmentTasks(people) {
@@ -117,8 +117,8 @@ export async function seedDepartmentTasks(people) {
         task = await moveEnquiry({
           enquiry, kind, note, user: owner, system: true, openRecords: kind !== 'sample_request',
           /* A PRT visit goes to a Payment Recovery Team member, by name, on a date. */
-          brief: answersFor(kind, prefill, options.prt && people.collections
-            ? { visitor: String(people.collections._id), visitDate: day(2).toISOString().slice(0, 10) }
+          brief: answersFor(kind, prefill, options.prt && (people.recovery || people.collections)
+            ? { visitor: String((people.recovery || people.collections)._id), visitDate: day(2).toISOString().slice(0, 10) }
             : options.brief),
           priority: options.lateBy ? 'high' : 'normal',
         });

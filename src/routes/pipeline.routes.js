@@ -53,6 +53,8 @@ import {
   sendEnquiryHandoff,
 } from '../controllers/handoff.controller.js';
 import { handoffSchema } from '../validators/handoff.schemas.js';
+import { setCustomerCredit } from '../controllers/payment.controller.js';
+import { creditSchema } from '../validators/payment.schemas.js';
 
 const router = Router();
 
@@ -147,6 +149,8 @@ router.patch('/customers/:id', requireModule('customers', 'write'), validate(cus
 /* The buyer's gate, pinned from a location somebody shared in a thread — never typed. */
 router.post('/customers/:id/site', requireModule('customers', 'write'), pinSite);
 router.delete('/customers/:id/site', requireModule('customers', 'write'), clearSite);
+/* Admin's word on the buyer's credit — Watch or Hold by hand, with the reason, or cleared. */
+router.post('/customers/:id/credit', requireModule('customers', 'write'), validate(creditSchema), setCustomerCredit);
 
 /*
  * Cards to confirm: photos of new buyers, read by the model, made a customer and its first

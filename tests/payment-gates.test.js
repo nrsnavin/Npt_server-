@@ -186,6 +186,11 @@ test('production waits for the advance; when Payment Collection records it, the 
   const advance = await Receivable.findOne({ order: order._id, kind: 'advance' });
   const paid = await api(`/api/payments/${advance._id}/receipts`, { method: 'POST', as: 'vijay', body: { amount: 3750, reference: 'UTR123' } });
   assert.equal(paid.status, 201, paid.json.message);
+  /* Payment Collection's receipt stops the chase ringing, but the gate waits for Accounts to see it in the bank. */
+  assert.equal(paid.json.data.awaitingConfirmation, 3750);
+  assert.equal((await send(enquiry, 'ask_edd')).status, 400, 'not yet confirmed');
+  const confirmed = await api(`/api/payments/${advance._id}/receipts/${paid.json.data.receipts[0]._id}/confirm`, { method: 'POST', as: 'kiran' });
+  assert.equal(confirmed.status, 200, confirmed.json.message);
   assert.ok(await until(async () => (await collectionTasks(order)).every((task) => task.completed)), 'the chase closes');
   assert.ok(await until(async () => Todo.exists({ user: id.admin, title: new RegExp(`Advance received on ${order.number}`) })),
     'the order’s marketing person is told');
@@ -252,7 +257,8 @@ test('50% advance, 50% before dispatch: the balance is chased once the advance i
 
   const advance = await Receivable.findOne({ order: order._id, kind: 'advance' });
   assert.equal(advance.invoice.value, 7500, 'everything due before the goods leave');
-  await api(`/api/payments/${advance._id}/receipts`, { method: 'POST', as: 'vijay', body: { amount: 3750, reference: 'UTR1' } });
+  /* Accounts' own receipt is confirmed as it is written. */
+  await api(`/api/payments/${advance._id}/receipts`, { method: 'POST', as: 'kiran', body: { amount: 3750, reference: 'UTR1' } });
   assert.ok(await until(async () => (await collectionTasks(order)).some((task) => !task.completed && /before dispatch/.test(task.title))));
   const next = (await collectionTasks(order)).find((task) => !task.completed);
   assert.match(next.title, /Collect ₹3,750 before dispatch/, 'the balance, not the whole order');

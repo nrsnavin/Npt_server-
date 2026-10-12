@@ -102,7 +102,7 @@ export async function trackedTasks(user, { department, state = 'open', limit = 3
   const tasks = await Todo.find(filter)
     /* Enough to work the task from the board, not only to list it: what was asked, every update
        with who wrote it, the PDF, the outcome [components/TaskPanel.jsx]. */
-    .select('kind department fromDepartment title notes brief status dueDate priority user createdBy customer enquiry order createdAt updates attention completed completedAt holds attachment resultFile outcome')
+    .select('kind department fromDepartment title notes brief status dueDate priority user createdBy customer enquiry order createdAt updates attention completed completedAt holds attachment resultFile outcome suggestion')
     .populate([
       { path: 'customer', select: 'name code' },
       { path: 'enquiry', select: 'number requirement.modelNumber items.modelNumber' },

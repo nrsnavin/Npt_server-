@@ -18,6 +18,8 @@ export const CUSTOMER_TYPES = [
 ];
 
 export const RATINGS = ['A', 'B', 'C'];
+/** How the buyer pays: nothing much overdue; worth a look; stop and ask before giving more credit. */
+export const CREDIT_STATUSES = ['good', 'watch', 'hold'];
 export const CUSTOMER_SOURCES = [
   'manual', 'phone', 'email', 'walk_in', 'referral', 'trade_show', 'whatsapp', 'indiamart',
 ];
@@ -154,6 +156,32 @@ const customerSchema = new mongoose.Schema(
 
     creditTermsDays: { type: Number, min: 0, default: 0 },
     paymentTerms: { type: String, trim: true },
+
+    /**
+     * How the buyer pays, in one word, for every screen that is about to give them more goods
+     * [docs/PAYMENT-COLLECTION-WORKFLOW.md §4]. `derived` is worked out by the collection sweep
+     * from the receivables and the chase (Watch: 16–45 days overdue or a broken promise; Hold:
+     * 46+ days, two broken promises or a PRT case); `override` is Admin's own word, which wins
+     * while it stands; `status` is whichever applies, kept here so a list can filter on it. A
+     * Hold warns — it does not stop a dispatch; the payment gate does that on the order's terms.
+     */
+    credit: {
+      status: { type: String, enum: CREDIT_STATUSES, default: 'good' },
+      override: {
+        status: { type: String, enum: CREDIT_STATUSES },
+        reason: { type: String, trim: true, maxlength: 500 },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        at: Date,
+        _id: false,
+      },
+      derived: {
+        status: { type: String, enum: CREDIT_STATUSES },
+        reason: { type: String, trim: true, maxlength: 400 },
+        at: Date,
+        _id: false,
+      },
+      _id: false,
+    },
     rating: { type: String, enum: RATINGS, default: 'B' },
 
     /** Rolled up from orders and payments as those modules land. */

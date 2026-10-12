@@ -5,6 +5,7 @@ import { runStallSweep } from './services/anomaly.service.js';
 import { runLateTaskSweep } from './services/handoff.service.js';
 import { runQueryEscalations } from './services/queryEscalation.service.js';
 import { runPaymentEscalations } from './services/receivable.service.js';
+import { runCollectionSweep } from './services/collections.service.js';
 import { runProductionEscalations } from './services/productionEscalation.service.js';
 import { runDispatchEscalations } from './services/dispatchEscalation.service.js';
 import { runMaintenanceReminders } from './services/records.service.js';
@@ -108,6 +109,11 @@ function startEscalationSweep() {
       const money = await runPaymentEscalations();
       if (money.escalated) {
         console.log(`Payments: escalated ${money.escalated} of ${money.checked} open receivables`);
+      }
+      /* And the chase itself: promises gone unkept, cases for the field, every buyer's credit status. */
+      const chase = await runCollectionSweep();
+      if (chase.broken || chase.suggested || chase.credit) {
+        console.log(`Collections: ${chase.broken} promises broken, ${chase.suggested} cases suggested for PRT, ${chase.credit} credit statuses changed`);
       }
     } catch (error) {
       console.error('Sampling escalation sweep failed:', error.message);

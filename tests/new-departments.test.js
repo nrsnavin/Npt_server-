@@ -81,7 +81,7 @@ test.after(async () => {
 
 test('the three are departments a user can be put in, with their own grants', async () => {
   const { DEPARTMENTS, findDepartment, MODULE_KEYS } = await import('../src/config/modules.js');
-  assert.deepEqual(DEPARTMENTS.slice(-3).map((department) => department.label), ['Accounts', 'Payment Collection', 'Audit']);
+  assert.deepEqual(DEPARTMENTS.slice(-4).map((department) => department.label), ['Accounts', 'Payment Collection', 'Payment Recovery (PRT)', 'Audit']);
   assert.equal(findDepartment('assembling').label, 'Assembly');
   assert.equal(findDepartment('payment_collection').defaultAccess.payments, 'write');
 

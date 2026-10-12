@@ -121,6 +121,18 @@ const todoSchema = new mongoose.Schema(
       at: Date,
       _id: false,
     },
+    /**
+     * What the app proposes the department do next, with its reason — "Escalate to PRT" on a
+     * collection case that has gone 30 days overdue, or had two promises broken, or could not be
+     * reached three times [services/collections.service.js]. Shown on the task until somebody acts
+     * on it; the rule suggests, the collector or Admin decides.
+     */
+    suggestion: {
+      kind: { type: String, enum: ['escalate_prt'] },
+      reason: { type: String, trim: true, maxlength: 400 },
+      at: Date,
+      _id: false,
+    },
     /** Done (with what they recorded) or sent back (with why), by whom and when, and where it went next. */
     outcome: {
       result: { type: String, enum: ['done', 'returned', 'moved'] },

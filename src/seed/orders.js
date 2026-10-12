@@ -611,7 +611,8 @@ export async function seedOrders({ priya, nandhini, arun, ramesh, anita }) {
         ? { number: dispatch.invoice?.number, date: dispatch.invoice?.date, value: dispatch.invoice?.value ?? value }
         : { value, date: days(-2, 11) },
       dueBy,
-      receipts: receipts || [],
+      /* Seeded receipts are Accounts' own: confirmed as they are written, so the gates read them. */
+      receipts: (receipts || []).map((receipt) => ({ ...receipt, confirmed: receipt.confirmed || { by: receipt.recordedBy, at: receipt.receivedAt } })),
       followUps: followUps || [],
       judgement,
       judgementNote,

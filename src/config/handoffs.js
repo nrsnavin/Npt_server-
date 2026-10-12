@@ -145,8 +145,21 @@ const BUTTONS = [
     hint: 'Sales / SO needs an answer before the sales order can be made',
   },
   {
-    /* PRT — the Payment Recovery Team: Payment Collection's people, sent to the buyer. */
-    key: 'request_prt_visit', label: 'Request PRT Visit', department: 'payment_collection', stage: null,
+    /*
+     * PRT — the Payment Recovery Team, a department of its own: the case goes to the field when
+     * the phone has stopped working [docs/PAYMENT-COLLECTION-WORKFLOW.md]. Raised by Payment
+     * Collection's "Escalated to PRT", or here by hand.
+     */
+    key: 'prt_recovery', label: 'PRT Recovery', department: 'payment_recovery', stage: null,
+    hint: 'Send the case to the Payment Recovery Team',
+    records: [
+      { key: 'collected', label: 'Collected (₹)' },
+      { key: 'outcome', label: 'What the buyer said / paid' },
+    ],
+  },
+  {
+    /* The earlier PRT visit button, replaced by PRT Recovery: kept so old tasks still read. */
+    key: 'request_prt_visit', label: 'Request PRT Visit', department: 'payment_recovery', stage: null, hidden: true,
     hint: 'Send a Payment Recovery Team member to the buyer',
     records: [
       { key: 'visitDate', label: 'Visited on', type: 'date' },
