@@ -34,7 +34,7 @@ function watchConnection(connection) {
   if (watching) return;
   watching = true;
   connection.on('error', (error) => console.error('[db] connection error:', error.message));
-  connection.on('disconnected', () => console.warn('[db] disconnected — the driver is reconnecting'));
+  connection.on('disconnected', () => console.warn('[db] disconnected (the driver reconnects by itself unless the app is shutting down)'));
   connection.on('reconnected', () => console.log('[db] reconnected'));
 }
 
