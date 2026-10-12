@@ -7,7 +7,8 @@ import { signatureValid } from '../utils/signedLink.js';
 import ApiError from '../utils/ApiError.js';
 import { inDepartment, isManagement } from '../utils/departments.js';
 import asyncHandler from '../utils/asyncHandler.js';
-import { transactional } from '../utils/transaction.js';
+import { inTransaction, transactional } from '../utils/transaction.js';
+import { retryOnConflict } from '../utils/concurrency.js';
 import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
 import { HANDOFFS, TILE_KIND, findHandoff } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
@@ -169,10 +170,18 @@ export const handoffDone = asyncHandler(transactional(async (req, res) => {
   await answer(res, task);
 }));
 
-export const handoffUpdate = asyncHandler(transactional(async (req, res) => {
+/*
+ * An update only adds a line. Two people writing on the same task in the same instant both
+ * loaded version n; the second save is refused by the version check, though it overwrote
+ * nothing. So the whole block — load, append, commit — runs again on the task as it now stands
+ * [utils/concurrency.js `retryOnConflict`], outside the transaction, which read a snapshot.
+ */
+const againOnConflict = (handler) => (req, res) => retryOnConflict(() => handler(req, res));
+
+export const handoffUpdate = asyncHandler(againOnConflict(transactional(async (req, res) => {
   const task = await updateHandoff(await taskFor(req), req.user, req.body);
   await answer(res, task);
-}));
+})));
 
 export const handoffSendBack = asyncHandler(transactional(async (req, res) => {
   const task = await returnHandoff(await taskFor(req), req.user, req.body);
@@ -215,12 +224,18 @@ export const handoffDocument = asyncHandler(async (req, res) => {
   if (!['application/pdf', 'image/jpeg', 'image/png'].includes(req.file.mimetype)) throw ApiError.badRequest('Attach a PDF, or a JPEG / PNG photo');
   const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
   try {
-    const attachment = await Attachment.create({
-      key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
-      uploadedBy: req.user._id, task: task._id, docType: kind.type, title: kind.label,
-    });
-    task.updates = [...(task.updates || []), { note: `${kind.label} uploaded: ${req.file.originalname}`, by: req.user._id, at: new Date() }];
-    await task.save();
+    /* The file is on disk already; its row and the task's line commit together, and a clash with
+       somebody else's line on the task is tried again on the task as it now stands. */
+    const attachment = await retryOnConflict(() => inTransaction(async () => {
+      const fresh = await taskFor(req);
+      const [made] = await Attachment.create([{
+        key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
+        uploadedBy: req.user._id, task: fresh._id, docType: kind.type, title: kind.label,
+      }]);
+      fresh.updates = [...(fresh.updates || []), { note: `${kind.label} uploaded: ${req.file.originalname}`, by: req.user._id, at: new Date() }];
+      await fresh.save();
+      return made;
+    }, { label: 'task document' }));
     res.status(201).json({ success: true, data: attachment });
   } catch (error) {
     await remove(key);
@@ -268,10 +283,10 @@ export const handoffSeen = asyncHandler(async (req, res) => {
 });
 
 /** The contact details the department corrects on its task. */
-export const handoffBrief = asyncHandler(async (req, res) => {
+export const handoffBrief = asyncHandler(transactional(async (req, res) => {
   const task = await editTaskBrief(await taskFor(req), req.user, req.body);
   await answer(res, task);
-});
+}));
 
 /**
  * The work as a PDF — the sales order — which finishes the task and raises the next department's
@@ -289,10 +304,15 @@ export const handoffResult = asyncHandler(async (req, res) => {
   const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
   let attachment;
   try {
-    attachment = await Attachment.create({
-      key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size, uploadedBy: req.user._id, task: task._id,
-    });
-    let { task: done, next, nextProblem } = await finishWithResult(task, req.user, { attachmentId: attachment._id, note: req.body?.note });
+    /* The file's row, the task's finish and the next department's task commit together, or none
+       of them do; the messages to the buyer go only once that has landed. */
+    let { task: done, next, nextProblem } = await inTransaction(async () => {
+      const fresh = await taskFor(req);
+      [attachment] = await Attachment.create([{
+        key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size, uploadedBy: req.user._id, task: fresh._id,
+      }]);
+      return finishWithResult(fresh, req.user, { attachmentId: attachment._id, note: req.body?.note });
+    }, { label: 'task result' });
     /* The LR copy goes on to the buyer, by email and WhatsApp, and the task says it went. */
     let sent = null;
     if (form.sendResult) {
@@ -314,10 +334,11 @@ export const handoffResult = asyncHandler(async (req, res) => {
   }
 });
 
-export const handoffReschedule = asyncHandler(async (req, res) => {
+/* The new date and the notice of it commit together. */
+export const handoffReschedule = asyncHandler(transactional(async (req, res) => {
   const task = await rescheduleHandoff(await taskFor(req), req.user, req.body);
   await answer(res, task);
-});
+}));
 
 /* ------------------------------ Dashboards ------------------------------ */
 
