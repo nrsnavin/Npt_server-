@@ -81,14 +81,38 @@ test('kilometres between two gates, and pinned stops in nearest-next order from 
   assert.deepEqual(geo.nearestOrder(stops, (stop) => stop.s).map((stop) => stop.id), ['near1', 'near2', 'far', 'none']);
 });
 
-test('groups whose buyers are within 3 km name each other on the planner — the far one is not named', async () => {
+test('pinned buyers within 3 km are one group by real distance, whatever area was typed — the far one is not', async () => {
   const plan = (await api('/api/dispatch-planning/plan', { as: 'ravi' })).json.data;
   const of = (key) => plan.groups.find((group) => group.stops.some((stop) => String(stop.task) === String(tasks[key])));
-  assert.equal(of('near1').nearby.length, 1);
-  assert.equal(of('near1').nearby[0].label, of('near2').label);
-  assert.ok(of('near1').nearby[0].km < 1.5);
+  /* Kumar Nagar and Anupparpalayam: two areas typed, a kilometre apart — one trip. */
+  assert.equal(of('near1').key, of('near2').key);
+  assert.equal(of('near1').by, 'distance');
+  assert.match(of('near1').label, /within 1(\.\d)? km/);
+  assert.match(of('near1').reason, /within 3 km/);
+  /* In the order the vehicle reaches them from the plant. */
+  assert.deepEqual(of('near1').stops.map((stop) => stop.customer.name), ['Kumar Nagar Knits', 'Anupparpalayam Apparels']);
+  /* Avinashi, twenty away: its own group, by its area, near nobody. */
+  assert.notEqual(of('far').key, of('near1').key);
+  assert.equal(of('far').by, 'area');
   assert.equal(of('far').nearby.length, 0);
   assert.equal(plan.coverage.pinned, 3);
+  assert.deepEqual(plan.unpinned, []);
+});
+
+test('buyers with no pin are listed for asking; a pin chains a third buyer into the cluster', async () => {
+  const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
+  const unpinned = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'No Pin Garments', area: 'Kumar Nagar', city: 'Tiruppur', mobile: '9840040099', assignedTo: me } })).json.data;
+  const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'admin', body: { kind: 'invoice_dispatch', note: 'Lot', customer: unpinned._id, brief: { booking: 'Local Delivery' } } });
+  assert.equal(sent.status, 201, sent.json.message);
+  let plan = (await api('/api/dispatch-planning/plan', { as: 'ravi' })).json.data;
+  assert.deepEqual(plan.unpinned.map((row) => row.name), ['No Pin Garments']);
+  /* Pinned 2 km past Anupparpalayam: more than 3 km from Kumar Nagar, but it chains through its neighbour. */
+  await pin(unpinned._id, 11.1500, 77.3400);
+  plan = (await api('/api/dispatch-planning/plan', { as: 'ravi' })).json.data;
+  const group = plan.groups.find((row) => row.stops.some((stop) => stop.customer.name === 'No Pin Garments'));
+  assert.equal(group.by, 'distance');
+  assert.equal(group.stops.length, 3);
+  assert.deepEqual(plan.unpinned, []);
 });
 
 test('a trip is re-ordered by distance from the plant before it leaves', async () => {

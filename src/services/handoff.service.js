@@ -52,6 +52,9 @@ const departmentName = (key) => findDepartment(key)?.label || String(key || '').
 
 const fail = (message) => { throw ApiError.badRequest(message); };
 
+/** Work that belongs to one sales order: with several open on the enquiry, the person raising it names which. */
+export const ORDER_BOUND_KINDS = ['ask_edd', 'ask_assembling_edd', 'invoice_dispatch', 'lr_copy', 'quality_check', 'quality_issue'];
+
 /** Admin, or the Admin department: sees and may act on everything. */
 const isAdmin = isManagement;
 
@@ -488,12 +491,24 @@ async function moveEnquiryChecked({
   }
   const holder = await holderOf(enquiry._id);
   /* The enquiry's sales order, carried on the task: what a dispatch, an LR or a QC sheet is for. */
-  const { default: SalesOrder } = await import('../models/SalesOrder.js');
-  /* The SO picked on the form must be this enquiry's; none picked, the enquiry's newest. */
-  const order = pickedOrder
-    ? await SalesOrder.findOne({ _id: pickedOrder, enquiry: enquiry._id }).select('_id').lean()
-    : await SalesOrder.findOne({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('_id').lean();
-  if (pickedOrder && !order) fail('That sales order is not on this enquiry');
+  const { default: SalesOrder, OPEN_ORDER_STATUSES } = await import('../models/SalesOrder.js');
+  /*
+   * The SO the task is for. Picked on the form: it must be this enquiry's. Raised by another task
+   * (Dispatched → LR copy): that task's SO. Otherwise the enquiry's only open SO — and with several
+   * open, a person raising work that belongs to one SO is asked which, rather than the newest being
+   * assumed and the dispatch or the QC sheet landing on the wrong order.
+   */
+  let order = null;
+  if (pickedOrder) {
+    order = await SalesOrder.findOne({ _id: pickedOrder, enquiry: enquiry._id }).select('_id').lean();
+    if (!order) fail('That sales order is not on this enquiry');
+  } else {
+    const open = await SalesOrder.find({ enquiry: enquiry._id, status: { $in: OPEN_ORDER_STATUSES } }).sort({ createdAt: -1 }).select('_id number').lean();
+    if (open.length > 1 && ORDER_BOUND_KINDS.includes(kind) && !system) {
+      fail(`This enquiry has ${open.length} open sales orders (${open.map((row) => row.number).join(', ')}) — pick which one this is for`);
+    }
+    order = open[0] || await SalesOrder.findOne({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('_id').lean();
+  }
   const task = await Todo.create({
     enquiry: enquiry._id,
     customer: enquiry.customer?._id || enquiry.customer,
@@ -975,7 +990,7 @@ export async function setTaskStatus(task, user, { status, note, date }) {
     const enquiry = await enquiryOfTask(task);
     await moveEnquiry({
       enquiry, kind: step.raises, note: `${user.name}: ${text}`, user, system: true, openRecords: false,
-      requiredDate: new Date(), parentTask: task._id,
+      requiredDate: new Date(), parentTask: task._id, order: task.order,
     });
   }
   task.status = status;
@@ -1022,7 +1037,7 @@ export async function askFromTask(task, user, { kind, note, brief, priority, req
   const asking = departmentName(task.department);
   const raised = await moveEnquiry({
     enquiry, kind, note: `${asking} asks (${user.name}): ${text}`, user, system: true, openRecords: false,
-    brief, priority, requiredDate, addToOpen: true, keepStage: true,
+    brief, priority, requiredDate, addToOpen: true, keepStage: true, order: task.order,
   });
   /* The task asked remembers who asked, so its moves are told back here [noticeStatus]. */
   if (raised?._id) await Todo.updateOne({ _id: raised._id }, { $addToSet: { askedFrom: task._id } }, { keepVersion: true });
@@ -1071,7 +1086,7 @@ async function raiseNextFrom(task, user, step, text) {
   if (findHandoff(step.next)?.asks?.some((field) => field.key === 'dispatchedOn')) brief.dispatchedOn = indiaDay(new Date());
   try {
     return await moveEnquiry({
-      enquiry, kind: step.next, note: `${step.label} by ${user.name}${text ? ` — ${text}` : ''}`, user, system: true, openRecords: false, brief,
+      enquiry, kind: step.next, note: `${step.label} by ${user.name}${text ? ` — ${text}` : ''}`, user, system: true, openRecords: false, brief, order: task.order,
     });
   } catch (error) {
     if (error?.statusCode !== 400 && error?.statusCode !== 409) throw error;
@@ -1280,7 +1295,7 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
   } else if (step.next) {
     const enquiry = await enquiryOfTask(task);
     try {
-      next = await moveEnquiry({ enquiry, kind: step.next, note: `${step.label} by ${user.name}`, user, system: true });
+      next = await moveEnquiry({ enquiry, kind: step.next, note: `${step.label} by ${user.name}`, user, system: true, order: task.order });
     } catch (error) {
       if (error?.statusCode !== 400 && error?.statusCode !== 409) throw error;
       nextProblem = error.message;

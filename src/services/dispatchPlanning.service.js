@@ -189,6 +189,7 @@ export async function dispatchPlan() {
 
   const groups = new Map();
   const waiting = { not_ready: [], waiting_payment: [] };
+  const pinned = [];
   for (const task of tasks) {
     const customer = customerMap.get(customerIdOf(task));
     const stop = {
@@ -215,10 +216,53 @@ export async function dispatchPlan() {
       continue;
     }
     const { mode, from } = modeOf(task, customer);
+    /* Our own vehicle, a pinned buyer and no route set: grouped by real distance below, not by the address typed. */
+    if (mode === 'own_vehicle' && stop.site && !customer?.deliveryRoute) {
+      pinned.push({ ...stop, modeFrom: from, customer: stop.customer, _customer: customer });
+      continue;
+    }
     const group = groupOf(mode, customer, lists);
     const key = `${mode}|${group.key}`;
     if (!groups.has(key)) groups.set(key, { key, mode, modeLabel: MODE_LABELS[mode], ...group, stops: [] });
     groups.get(key).stops.push({ ...stop, modeFrom: from });
+  }
+
+  /*
+   * Pinned buyers by distance: a buyer within CLUSTER_KM of any buyer already in a cluster joins it
+   * (single linkage), so a chain of neighbours down one road becomes one trip. A buyer near nobody
+   * falls back to the typed address, as before.
+   */
+  const CLUSTER_KM = 3;
+  const clusters = [];
+  for (const stop of pinned) {
+    const joining = clusters.filter((cluster) => cluster.some((other) => (km(stop.site, other.site) ?? Infinity) <= CLUSTER_KM));
+    if (!joining.length) clusters.push([stop]);
+    else {
+      const merged = [stop, ...joining.flat()];
+      for (const cluster of joining) clusters.splice(clusters.indexOf(cluster), 1);
+      clusters.push(merged);
+    }
+  }
+  for (const cluster of clusters) {
+    if (cluster.length === 1) {
+      const [stop] = cluster;
+      const group = groupOf('own_vehicle', stop._customer, lists);
+      const key = `own_vehicle|${group.key}`;
+      if (!groups.has(key)) groups.set(key, { key, mode: 'own_vehicle', modeLabel: MODE_LABELS.own_vehicle, ...group, stops: [] });
+      const { _customer, ...clean } = stop;
+      groups.get(key).stops.push(clean);
+      continue;
+    }
+    let span = 0;
+    for (const a of cluster) for (const b of cluster) span = Math.max(span, km(a.site, b.site) ?? 0);
+    const near = commonest(cluster.map((stop) => stop._customer?.landmark || stop._customer?.area).filter(Boolean)) || commonest(cluster.map((stop) => stop._customer?.city).filter(Boolean));
+    const key = `own_vehicle|near:${[...cluster.map((stop) => String(stop.task))].sort()[0]}`;
+    groups.set(key, {
+      key, mode: 'own_vehicle', modeLabel: MODE_LABELS.own_vehicle, by: 'distance',
+      label: `${near ? `Near ${near}` : 'Close together'} · within ${Math.max(1, Math.round(span * 10) / 10)} km`,
+      reason: `Pinned buyers within ${CLUSTER_KM} km of each other`,
+      stops: cluster.map(({ _customer, ...clean }) => clean),
+    });
   }
 
   const list = [...groups.values()].map((group) => {
@@ -280,6 +324,9 @@ export async function dispatchPlan() {
       needsDetails: list.filter((group) => group.needsDetails).reduce((sum, group) => sum + group.stops.length, 0),
     },
     coverage: { customers: waitingCustomers.length, placed, pinned: waitingCustomers.filter((customer) => customer.site?.lat != null).length },
+    /* Buyers waiting on our own vehicle with no pin — asked for their location in one go from the plan. */
+    unpinned: waitingCustomers.filter((customer) => customer.site?.lat == null && (customer.deliveryMode || 'own_vehicle') === 'own_vehicle')
+      .map((customer) => ({ _id: customer._id, name: customer.name })),
     schedules: SCHEDULE_STATUSES,
     transporters: transporters.filter((row) => row.active !== false).map(({ _id, name, bookingOffice }) => ({ _id, name, bookingOffice })),
     routes: routes.filter((row) => row.active !== false).map(({ _id, name, areas, days }) => ({ _id, name, areas, days })),

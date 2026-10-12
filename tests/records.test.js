@@ -719,4 +719,30 @@ test('a task names which SO it is for when the enquiry has several', async () =>
   const wrong = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'lr_copy', note: 'LR', brief: {}, order: String(other._id) } });
   assert.equal(wrong.status, 400);
   assert.match(wrong.json.message, /not on this enquiry/);
+
+  /* Two open SOs and none named: asked which, never the newest assumed — tasks, QC sheets, runs. */
+  const unnamed = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Send', brief: {} } });
+  assert.equal(unnamed.status, 400);
+  assert.match(unnamed.json.message, /2 open sales orders \(SO-TWIN-2, SO-TWIN-1\) — pick which one/);
+  const sheet = await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, enquiry: enquiry._id } });
+  assert.equal(sheet.status, 400);
+  assert.match(sheet.json.message, /pick which one/);
+  const prefill = (await api(`/api/qc-records/prefill?enquiry=${enquiry._id}`, { as: 'priya' })).json.data;
+  assert.equal(prefill.order, null);
+  assert.deepEqual(prefill.orderChoices.map((row) => row.number), ['SO-TWIN-2', 'SO-TWIN-1']);
+  const mould = await addMould();
+  assert.equal((await api('/api/mould-runs', { method: 'POST', as: 'siva', body: { mould: mould._id, enquiry: enquiry._id } })).status, 400);
+  /* From the QC task that names SO 1, the sheet lands on SO 1 without asking. */
+  const fromTask = await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, task: picked.json.data.task._id } });
+  assert.equal(fromTask.status, 201, fromTask.json.message);
+  assert.equal(fromTask.json.data.order.number, 'SO-TWIN-1');
+
+  /* A dispatch request for SO 1 (the older); marking it dispatched raises the LR copy on SO 1 too, not the newest. */
+  const second = first._id;
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Send SO 1', brief: {}, order: String(second) } });
+  assert.equal(sent.status, 201, sent.json.message);
+  const moved = await api(`/api/workspace/todos/${sent.json.data.task._id}/status`, { method: 'POST', as: 'ravi', body: { status: 'dispatched', note: 'Gone' } });
+  assert.equal(moved.status, 200, moved.json.message);
+  const lr = await Todo.findOne({ enquiry: enquiry._id, kind: 'lr_copy', completed: false }).lean();
+  assert.equal(String(lr.order), String(second), 'the LR copy is for the SO that went');
 });

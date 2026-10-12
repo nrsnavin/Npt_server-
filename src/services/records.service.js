@@ -6,7 +6,7 @@ import Mould from '../models/Mould.js';
 import Enquiry from '../models/Enquiry.js';
 import Todo from '../models/Todo.js';
 import Trip from '../models/Trip.js';
-import SalesOrder, { PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
+import SalesOrder, { OPEN_ORDER_STATUSES, PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
 import Material from '../models/Material.js';
 import StockMovement from '../models/StockMovement.js';
 import { recordChange, snapshot } from './audit.service.js';
@@ -111,6 +111,12 @@ export const orderOnEnquiry = (enquiryId) => (enquiryId
   ? SalesOrder.findOne({ enquiry: enquiryId }).sort({ createdAt: -1 }).select('number enquiry customer lines._id lines.modelNumber lines.mould lines.colour').lean()
   : null);
 
+/** The enquiry's open SOs, newest first — more than one, and work that belongs to one SO must say which. */
+export const openOrdersOn = (enquiryId) => (enquiryId
+  ? SalesOrder.find({ enquiry: enquiryId, status: { $in: OPEN_ORDER_STATUSES } }).sort({ createdAt: -1 }).select('number customerPo.number').lean()
+  : []);
+const askWhichOrder = (open) => ApiError.badRequest(`This enquiry has ${open.length} open sales orders (${open.map((row) => row.number).join(', ')}) — pick which one this is for`);
+
 /**
  * Ties a QC record to its sales order. Picked: it must exist and be on the same enquiry, and the
  * line must be one of its lines — the model and mould come off the line when the sheet left them
@@ -125,6 +131,8 @@ async function linkOrder(record) {
       throw ApiError.badRequest(`${order.number} is on another enquiry — pick the SO of this enquiry`);
     }
   } else {
+    const open = await openOrdersOn(record.enquiry);
+    if (open.length > 1) throw askWhichOrder(open);
     order = await orderOnEnquiry(record.enquiry);
   }
   if (!order) {
@@ -370,6 +378,8 @@ export async function startRun(body, user) {
       if (!order) throw ApiError.badRequest('That sales order was not found');
       if (body.enquiry && order.enquiry && String(order.enquiry) !== String(body.enquiry)) throw ApiError.badRequest(`${order.number} is on another enquiry`);
     } else if (body.enquiry) {
+      const open = await openOrdersOn(body.enquiry);
+      if (open.length > 1) throw askWhichOrder(open);
       const newest = await orderOnEnquiry(body.enquiry);
       order = newest ? await SalesOrder.findById(newest._id).select(ORDER_SELECT).lean() : null;
     }
@@ -743,7 +753,9 @@ export async function qcPrefill({ task: taskId, enquiry: enquiryId, order: order
   enquiryRef = enquiryRef || order?.enquiry;
   const enquiry = enquiryRef ? await Enquiry.findById(enquiryRef).select('number customer items mould').populate(parts('items')).populate('customer', 'name qcStandards').lean() : null;
   if (enquiryRef && !enquiry) throw ApiError.notFound('Enquiry not found');
-  if (!order && enquiry) {
+  /* With several open SOs and none picked, the form is asked to pick — nothing is assumed. */
+  const openOrders = enquiry ? await openOrdersOn(enquiry._id) : [];
+  if (!order && enquiry && openOrders.length <= 1) {
     const newest = await orderOnEnquiry(enquiry._id);
     order = newest ? await SalesOrder.findById(newest._id).populate(parts('lines')).populate('customer', 'name qcStandards').lean() : null;
   }
@@ -811,6 +823,8 @@ export async function qcPrefill({ task: taskId, enquiry: enquiryId, order: order
     enquiry: enquiry ? { _id: enquiry._id, number: enquiry.number } : null,
     customer: order?.customer?.name || enquiry?.customer?.name || null,
     order: order ? { _id: order._id, number: order.number, buyerPo: order.customerPo?.number || '' } : null,
+    /* Several open SOs and none picked: the ones to choose from. */
+    orderChoices: !order && openOrders.length > 1 ? openOrders.map((row) => ({ _id: row._id, number: row.number, buyerPo: row.customerPo?.number || '' })) : [],
     lineKind,
     line: row ? row._id : null,
     lines: rows.map((entry) => ({ _id: entry._id, label: label(entry) })),
