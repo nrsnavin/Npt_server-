@@ -1,3 +1,4 @@
+import { MANAGEMENT_QUERY } from '../utils/departments.js';
 import { applyPaymentPositions } from './paymentPosition.service.js';
 import Receivable, { PAYMENT_ESCALATIONS } from '../models/Receivable.js';
 import Customer from '../models/Customer.js';
@@ -193,7 +194,7 @@ export async function runPaymentEscalations({ now = new Date() } = {}) {
      per receivable would be a query per row on a list that gets long precisely when it is busy. */
   const management = await User.find({
     isActive: { $ne: false },
-    $or: [{ role: 'admin' }, { department: 'management' }],
+    ...MANAGEMENT_QUERY,
   }).select('_id');
 
   /* Payment Collection rings the buyer; Accounts keeps the books. Both hear about a late invoice. */

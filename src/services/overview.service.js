@@ -1,5 +1,5 @@
 import Customer from '../models/Customer.js';
-import Enquiry from '../models/Enquiry.js';
+import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
 import Quotation, { CLOSED_QUOTATION_STATUSES, QUOTATION_STATUSES } from '../models/Quotation.js';
 import Todo from '../models/Todo.js';
 import { findHandoff } from '../config/handoffs.js';
@@ -24,6 +24,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /** Still being worked: not closed by Task Closed, not lost. */
 const activeEnquiries = (user) => ({ ...ownershipFilter(user), stage: { $ne: 'closed' }, status: { $ne: 'lost' } });
 
+/*
+ * Open for marketing — the Enquiries list's own "Open" and "Due now" [pipeline.controller]: not won
+ * or lost. A won enquiry still in the plant is active work, but it is not a follow-up, and the
+ * tiles link to those lists — a tile saying 4 over a list of 3 reads as a bug.
+ */
+const openForMarketing = (user) => ({ ...activeEnquiries(user), status: { $nin: CLOSED_STATUSES } });
+
 /** Marketing's first step — an enquiry nobody has verified and moved on yet. */
 const isNew = { $or: [{ marketingStatus: 'enquiry_received' }, { marketingStatus: null, status: { $in: ['new', 'requirement_clarification'] } }] };
 
@@ -33,10 +40,11 @@ const LIVE_QUOTES = QUOTATION_STATUSES.filter((status) => !CLOSED_QUOTATION_STAT
 export async function overviewFor(user) {
   const tonight = endOfDayIST(new Date());
   const active = activeEnquiries(user);
-  const [customers, dueToday, open, quotations, newCount, fresh] = await Promise.all([
+  const open = openForMarketing(user);
+  const [customers, dueToday, openCount, quotations, newCount, fresh] = await Promise.all([
     Customer.countDocuments(customerScope(user)),
-    Enquiry.countDocuments({ ...active, nextFollowUpDate: { $lte: tonight } }),
-    Enquiry.countDocuments(active),
+    Enquiry.countDocuments({ ...open, nextFollowUpDate: { $lte: tonight } }),
+    Enquiry.countDocuments(open),
     Quotation.countDocuments({ ...ownershipFilter(user), status: { $in: LIVE_QUOTES } }),
     Enquiry.countDocuments({ ...active, ...isNew }),
     Enquiry.find({ ...active, ...isNew })
@@ -47,7 +55,7 @@ export async function overviewFor(user) {
       .lean(),
   ]);
   return {
-    figures: { customers, dueToday, activeEnquiries: open, quotations },
+    figures: { customers, dueToday, activeEnquiries: openCount, quotations },
     newEnquiries: { total: newCount, rows: fresh },
   };
 }
@@ -151,7 +159,8 @@ export async function partiesFor(user, { filter = 'all', page = 1, limit = 50, s
   for (const enquiry of enquiries) {
     const key = String(enquiry.customer);
     if (!latest.has(key)) latest.set(key, enquiry);
-    const due = enquiry.nextFollowUpDate ? new Date(enquiry.nextFollowUpDate) : null;
+    /* Due like the Due now list: a won enquiry is not chased. */
+    const due = enquiry.nextFollowUpDate && !CLOSED_STATUSES.includes(enquiry.status) ? new Date(enquiry.nextFollowUpDate) : null;
     if (due && (!soonest.has(key) || due < soonest.get(key))) soonest.set(key, due);
     if (marketingStatusOf(enquiry) === 'enquiry_received') fresh.add(key);
   }

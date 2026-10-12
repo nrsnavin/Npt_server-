@@ -1,3 +1,4 @@
+import { MANAGEMENT_QUERY } from '../utils/departments.js';
 import User from '../models/User.js';
 import { EVENTS, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
 import { raiseTask, resolveTasks } from '../services/task.service.js';
@@ -73,7 +74,7 @@ export function registerPricingSubscribers() {
       if (!quotation) return;
       const approvers = await User.find({
         isActive: { $ne: false },
-        $or: [{ role: 'admin' }, { department: 'management' }],
+        ...MANAGEMENT_QUERY,
       }).select('_id');
 
       const waiting = (quotation.lines || []).filter((line) => line.status === 'approval_pending');

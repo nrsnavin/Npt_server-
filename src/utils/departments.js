@@ -15,3 +15,13 @@ export const inDepartment = (user, key) => Boolean(key) && departmentsOf(user).i
 
 /** Admin: the admin role, or working in the Admin (management) department. */
 export const isManagement = (user) => user?.role === 'admin' || inDepartment(user, 'management');
+
+/**
+ * Every Admin, as a query — the same people `isManagement` says yes to: the admin role, or the
+ * Admin (management) department as the main one or an extra. Notices and escalations used two
+ * narrower versions, so somebody in Management as an extra department, or by department without
+ * the role, saw everything Admin sees and was told about none of it.
+ */
+export const MANAGEMENT_QUERY = Object.freeze({
+  $or: [{ role: 'admin' }, { department: 'management' }, { extraDepartments: 'management' }],
+});

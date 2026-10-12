@@ -1,3 +1,4 @@
+import { MANAGEMENT_QUERY } from '../utils/departments.js';
 import SalesOrder, { PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
 import OrderQuery, { dueFrom } from '../models/OrderQuery.js';
 import User from '../models/User.js';
@@ -63,7 +64,7 @@ async function recipientsFor(order) {
     }).select('_id'),
     User.find({
       isActive: { $ne: false },
-      $or: [{ role: 'admin' }, { department: 'management' }],
+      ...MANAGEMENT_QUERY,
     }).select('_id'),
   ]);
 

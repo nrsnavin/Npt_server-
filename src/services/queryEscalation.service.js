@@ -1,3 +1,4 @@
+import { MANAGEMENT_QUERY } from '../utils/departments.js';
 import OrderQuery from '../models/OrderQuery.js';
 import User from '../models/User.js';
 import { raiseTask } from './task.service.js';
@@ -71,7 +72,7 @@ async function recipientsFor(level, query) {
 
   const managers = await User.find({
     isActive: { $ne: false },
-    $or: [{ role: 'admin' }, { department: 'management' }],
+    ...MANAGEMENT_QUERY,
   }).select('_id');
 
   return managers.map((user) => user._id);

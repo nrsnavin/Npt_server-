@@ -7,7 +7,7 @@ import { findDepartment } from '../config/modules.js';
 import { HANDOFFS, findHandoff } from '../config/handoffs.js';
 import { canRead } from './access.service.js';
 import { isOwnershipScoped, ownsRecord } from './ownership.service.js';
-import { departmentsOf, inDepartment, isManagement } from '../utils/departments.js';
+import { departmentsOf, inDepartment, isManagement, MANAGEMENT_QUERY } from '../utils/departments.js';
 import { EVENTS, publish } from './events.service.js';
 import ApiError from '../utils/ApiError.js';
 import { dispatchBalance } from './enquiryGates.service.js';
@@ -1081,7 +1081,7 @@ async function noticeStatus(task, user, { step, note, date }) {
     import('../models/TaskNotice.js'), import('../models/User.js'),
   ]);
   const enquiry = task.enquiry ? await Enquiry.findById(task.enquiry?._id || task.enquiry).select('assignedTo customer').lean() : null;
-  const admins = await User.find({ role: 'admin', isActive: { $ne: false } }).select('_id').lean();
+  const admins = await User.find({ ...MANAGEMENT_QUERY, isActive: { $ne: false } }).select('_id').lean();
   /* The enquiry's marketing person — or, on a team task with no enquiry, whoever raised it. */
   const asker = enquiry ? enquiry.assignedTo : task.createdBy;
   const recipients = new Set([asker, ...admins.map((person) => person._id)].filter(Boolean).map(String));
