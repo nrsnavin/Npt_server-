@@ -487,9 +487,13 @@ async function moveEnquiryChecked({
       : await ownerOf(enquiry));
   }
   const holder = await holderOf(enquiry._id);
+  /* The enquiry's sales order, carried on the task: what a dispatch, an LR or a QC sheet is for. */
+  const { default: SalesOrder } = await import('../models/SalesOrder.js');
+  const order = await SalesOrder.findOne({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('_id').lean();
   const task = await Todo.create({
     enquiry: enquiry._id,
     customer: enquiry.customer?._id || enquiry.customer,
+    ...(order ? { order: order._id } : {}),
     kind,
     department,
     user: assignee || undefined,

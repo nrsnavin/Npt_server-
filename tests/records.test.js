@@ -24,6 +24,7 @@ const token = {};
 const ids = {};
 let Todo;
 let Trip;
+let SalesOrder;
 
 const request = async (path, { method = 'GET', body, as } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -80,12 +81,13 @@ test.before(async () => {
   const { default: app } = await import('../src/app.js');
   ({ default: Todo } = await import('../src/models/Todo.js'));
   ({ default: Trip } = await import('../src/models/Trip.js'));
+  ({ default: SalesOrder } = await import('../src/models/SalesOrder.js'));
   server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
   await api('/api/auth/register', { method: 'POST', body: { name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', department: 'management' } });
   token.admin = (await api('/api/auth/login', { method: 'POST', body: { email: 'admin@np.com', password: 'Admin@12345' } })).json.data.token;
-  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['siva', 'Sivakumar', 'production'], ['priya', 'Priya QC', 'quality'], ['kavin', 'Kavin QC Head', 'quality'], ['murali', 'Murali Mould', 'mould'], ['ravi', 'Ravi Despatch', 'despatch']]) {
+  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['arun', 'Arun K', 'marketing'], ['siva', 'Sivakumar', 'production'], ['priya', 'Priya QC', 'quality'], ['kavin', 'Kavin QC Head', 'quality'], ['murali', 'Murali Mould', 'mould'], ['ravi', 'Ravi Despatch', 'despatch']]) {
     const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department } });
     assert.equal(made.status, 201, made.json.message);
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
@@ -336,4 +338,148 @@ test('the dispatch register lists what left, with the LR details, and exports as
 
   assert.equal((await api('/api/dispatch-register?from=2024-01-01&to=2026-06-01', { as: 'ravi' })).status, 400, 'at most a year');
   assert.equal((await api('/api/dispatch-register', { as: 'priya' })).status, 403);
+});
+
+test('an SO carries its QC records and its dispatch details — the trips, the delivery and the LR', async () => {
+  const enquiry = await enquiryFor('Ganesh Knits', '9840040005');
+  const other = await enquiryFor('Ganesh Knits Unit 2', '9840040006');
+  const customer = enquiry.customer?._id || enquiry.customer;
+  const order = await SalesOrder.create({
+    number: 'SO-LINK-1', customer, enquiry: enquiry._id, assignedTo: ids.nandhini, status: 'production_running',
+    customerPo: { number: 'PO/GK/77' },
+    lines: [{ modelNumber: 'NH-400', quantity: 5000, unitPrice: 7.5 }, { modelNumber: 'NH-420', colour: 'White', quantity: 3000, unitPrice: 8 }],
+  });
+  const elsewhere = await SalesOrder.create({ number: 'SO-LINK-2', customer, enquiry: other._id, assignedTo: ids.nandhini, lines: [{ modelNumber: 'NH-400', quantity: 100, unitPrice: 7 }] });
+
+  /* Tasks raised on the enquiry carry its SO. */
+  const check = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'quality_check', note: 'Check the lot', brief: {} } })).json.data.task;
+  assert.equal(String((await Todo.findById(check._id).lean()).order), String(order._id));
+
+  /* From the task: the SO comes with it. Picked with a line: the model comes off the line. */
+  const fromTask = await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, modelNumber: undefined, task: check._id } });
+  assert.equal(fromTask.status, 201, fromTask.json.message);
+  assert.equal(fromTask.json.data.order.number, 'SO-LINK-1');
+  assert.equal(fromTask.json.data.order.customerPo.number, 'PO/GK/77');
+  const second = order.lines[1]._id;
+  const onLine = await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, modelNumber: undefined, order: String(order._id), orderLine: String(second) } });
+  assert.equal(onLine.status, 201, onLine.json.message);
+  assert.equal(onLine.json.data.modelNumber, 'NH-420');
+  assert.equal(onLine.json.data.enquiry.number, enquiry.number, 'the enquiry comes off the SO');
+  /* From the enquiry alone: its SO. */
+  const fromEnquiry = await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, enquiry: enquiry._id, verdict: 'rejected', rejected: 2, defects: [{ type: 'flash', count: 2 }], orderLine: String(second) } });
+  assert.equal(fromEnquiry.status, 201, fromEnquiry.json.message);
+  assert.equal(fromEnquiry.json.data.order.number, 'SO-LINK-1');
+
+  const wrongLine = await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, order: String(order._id), orderLine: String(elsewhere.lines[0]._id) } });
+  assert.equal(wrongLine.status, 400);
+  assert.match(wrongLine.json.message, /not on SO-LINK-1/);
+  const wrongEnquiry = await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, enquiry: enquiry._id, order: String(elsewhere._id) } });
+  assert.equal(wrongEnquiry.status, 400);
+
+  const qc = await api(`/api/orders/${order._id}/qc-records`, { as: 'priya' });
+  assert.equal(qc.status, 200, qc.json.message);
+  assert.equal(qc.json.data.length, 3);
+  assert.deepEqual(qc.json.lines.map((line) => line.verdict), [null, 'rejected'], 'the latest verdict per line');
+  assert.equal((await api(`/api/qc-records?order=${order._id}`, { as: 'priya' })).json.pagination.total, 3);
+  const pdf = await request(`/api/qc-records/${onLine.json.data._id}/certificate`, { as: 'priya' });
+  assert.equal(pdf.status, 200);
+
+  /* Dispatch: the request carries the SO; the trip, the delivery and the LR come back on it. */
+  const dispatch = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Send it', brief: { quantity: '5000' } } });
+  assert.equal(dispatch.status, 201, dispatch.json.message);
+  const request_ = dispatch.json.data.task;
+  assert.equal(String((await Todo.findById(request_._id).lean()).order), String(order._id));
+  const lr = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'lr_copy', note: 'LR', brief: {} } })).json.data.task;
+  await Todo.updateOne({ _id: lr._id }, { $set: { brief: { lrNumber: 'LR-9001', transporter: 'KPN Parcel', invoiceNumber: 'INV-501' } } });
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  await Trip.create({
+    number: 'TRP-LINK-1', date: today, mode: 'own_vehicle', driverName: 'Selvam', status: 'left', leftAt: new Date(), createdBy: ids.ravi,
+    stops: [{ task: request_._id, enquiry: enquiry._id, customer, model: 'NH-400', quantity: 5000, cartons: 25, status: 'delivered', at: new Date() }],
+  });
+
+  const details = await api(`/api/orders/${order._id}/dispatch-details`, { as: 'nandhini' });
+  assert.equal(details.status, 200, details.json.message);
+  const [sent] = details.json.data.requests;
+  assert.equal(sent.quantity, '5000');
+  assert.equal(sent.trips[0].trip, 'TRP-LINK-1');
+  assert.equal(sent.trips[0].delivery, 'delivered');
+  assert.equal(sent.trips[0].cartons, 25);
+  assert.equal(details.json.data.lr[0].lrNumber, 'LR-9001');
+  assert.equal(details.json.data.lr[0].invoiceNumber, 'INV-501');
+  /* The other SO's page shows none of it. */
+  assert.equal((await api(`/api/orders/${elsewhere._id}/dispatch-details`, { as: 'nandhini' })).json.data.requests.length, 0);
+
+  /* Someone else's order is not found; the SO team reads dispatch but not the QC sheets. */
+  assert.equal((await api(`/api/orders/${order._id}/dispatch-details`, { as: 'arun' })).status, 404);
+  assert.equal((await api(`/api/orders/${order._id}/qc-records`, { as: 'ravi' })).status, 200, 'dispatch holds the quality read');
+  assert.equal((await api('/api/orders/not-an-id/dispatch-details', { as: 'nandhini' })).status, 404);
+
+  const register = (await api('/api/dispatch-register', { as: 'ravi' })).json.data.find((row) => row.trip === 'TRP-LINK-1');
+  assert.equal(register.order, 'SO-LINK-1');
+  assert.equal(register.buyerPo, 'PO/GK/77');
+});
+
+test('a QC sheet is prefilled from the task, enquiry, SO and line; the enquiry shows its SOs, QC and dispatch', async () => {
+  const mould = await addMould({ hookType: 'swivel', sizeMm: 400, partWeightGrams: 31 });
+  const enquiry = await enquiryFor('Kavya Exports', '9840040007');
+  const customer = enquiry.customer?._id || enquiry.customer;
+
+  /* Before there is an SO: the enquiry's one item. */
+  const early = await api(`/api/qc-records/prefill?enquiry=${enquiry._id}`, { as: 'priya' });
+  assert.equal(early.status, 200, early.json.message);
+  assert.equal(early.json.data.lineKind, 'enquiry');
+  assert.equal(early.json.data.customer, 'Kavya Exports');
+  assert.equal(early.json.data.fields.modelNumber, 'NH-400');
+
+  const order = await SalesOrder.create({
+    number: 'SO-PRE-1', customer, enquiry: enquiry._id, assignedTo: ids.nandhini, status: 'production_running', customerPo: { number: 'PO/KE/9' },
+    lines: [
+      { mould: mould._id, modelNumber: mould.mouldCode, material: 'pp', colour: 'Black', printing: 'Pad print, white logo', quantity: 6000, unitPrice: 7.5 },
+      { modelNumber: 'NH-500', colour: 'White', quantity: 2000, unitPrice: 9 },
+    ],
+  });
+  const check = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'quality_check', note: 'Check it', brief: {} } })).json.data.task;
+
+  /* From the task, two lines: the choices, and nothing per-model until one is picked. */
+  const choices = (await api(`/api/qc-records/prefill?task=${check._id}`, { as: 'priya' })).json.data;
+  assert.equal(choices.order.number, 'SO-PRE-1');
+  assert.equal(choices.order.buyerPo, 'PO/KE/9');
+  assert.equal(choices.enquiry.number, enquiry.number);
+  assert.equal(choices.lines.length, 2);
+  assert.equal(choices.line, null);
+  assert.deepEqual(choices.fields, {});
+
+  const picked = (await api(`/api/qc-records/prefill?task=${check._id}&orderLine=${order.lines[0]._id}`, { as: 'priya' })).json.data;
+  assert.equal(picked.line, String(order.lines[0]._id));
+  const { fields } = picked;
+  assert.equal(fields.modelNumber, mould.mouldCode);
+  assert.equal(fields.mould, String(mould._id));
+  assert.equal(fields.size, '400 mm');
+  assert.equal(fields.mouldingType, 'injection_assembly', 'a swivel hook is fitted after moulding');
+  assert.equal(fields.cavities, 'All 4');
+  assert.deepEqual(fields.resin, { name: 'PP', colour: 'Black' });
+  assert.equal(fields.hook.type, 'swivel');
+  assert.deepEqual(fields.print, { type: 'pad', artwork: 'Pad print, white logo' });
+  assert.deepEqual(fields.weight, { target: 31 });
+  assert.deepEqual(fields.measurements, [{ name: 'Width', unit: 'mm', target: 400 }]);
+  assert.equal(fields.lotSize, 6000);
+
+  assert.equal((await api(`/api/qc-records/prefill?order=${order._id}&orderLine=${mould._id}`, { as: 'priya' })).status, 400);
+  assert.equal((await api('/api/qc-records/prefill?enquiry=nope', { as: 'priya' })).status, 400);
+  assert.equal((await api(`/api/qc-records/prefill?enquiry=${enquiry._id}`, { as: 'ravi' })).status, 403, 'Quality’s form');
+
+  /* The enquiry's own page: its SO, its QC sheets, its dispatch with the SO on each request. */
+  await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, task: check._id, orderLine: String(order.lines[0]._id) } });
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Go', brief: { quantity: '6000' } } });
+  assert.equal(sent.status, 201, sent.json.message);
+  const records = await api(`/api/enquiries/${enquiry._id}/records`, { as: 'nandhini' });
+  assert.equal(records.status, 200, records.json.message);
+  assert.deepEqual(records.json.data.orders.map((row) => [row.number, row.buyerPo, row.quantity]), [['SO-PRE-1', 'PO/KE/9', 8000]]);
+  assert.equal(records.json.data.qc.length, 1);
+  assert.equal(records.json.data.qc[0].order.number, 'SO-PRE-1');
+  assert.equal(records.json.data.dispatch.requests[0].order.number, 'SO-PRE-1');
+  assert.equal(records.json.data.dispatch.requests[0].quantity, '6000');
+  /* Dispatch, which works the enquiry, sees it too; another marketing person does not. */
+  assert.equal((await api(`/api/enquiries/${enquiry._id}/records`, { as: 'ravi' })).status, 200);
+  assert.equal((await api(`/api/enquiries/${enquiry._id}/records`, { as: 'arun' })).status, 404);
 });
