@@ -205,3 +205,24 @@ test('each tile counts what the list it opens shows — a won enquiry is not a f
   const due = (await api('/api/dashboard/parties?filter=due_today', { as: 'nandhini' })).json.data;
   assert.equal(due.rows.some((row) => row.name === 'Bala Garments'), false, 'the party chip agrees');
 });
+
+test('a marketing person follows the tasks on their own enquiries — not a colleague’s on a buyer of theirs', async () => {
+  const { default: Todo } = await import('../src/models/Todo.js');
+  /* Arun works an enquiry for Nandhini's buyer — delegated to him — and asks Production about it. */
+  const theirs = await Enquiry.create({
+    number: 'ENQ-T-901', customer: ids.aruna, assignedTo: ids.arun, requirement: { modelNumber: 'NPT-500' },
+    nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 86400000),
+  });
+  const asked = await Todo.create({ department: 'production', kind: 'ask_edd', title: 'Ask EDD', enquiry: theirs._id, customer: ids.aruna, createdBy: ids.arun });
+  /* A team task with no enquiry, on Nandhini's buyer, raised by somebody else. */
+  const team = await Todo.create({ department: 'production', kind: 'ask_edd', title: 'Ask EDD', customer: ids.bala });
+
+  const seen = async (as) => (await api('/api/dashboard/tasks?state=all', { as })).json.data.map((task) => task._id);
+  const nandhini = await seen('nandhini');
+  assert.equal(nandhini.includes(String(asked._id)), false, 'Arun’s enquiry, though the buyer is hers');
+  assert.equal(nandhini.includes(String(team._id)), true, 'a team task on her own buyer');
+  assert.equal(nandhini.includes(ids.task), true, 'her own enquiry’s task');
+  const arun = await seen('arun');
+  assert.equal(arun.includes(String(asked._id)), true, 'his enquiry');
+  assert.equal(arun.includes(String(team._id)), false);
+});

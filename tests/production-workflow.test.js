@@ -230,7 +230,7 @@ test('the dispatch request offers the plant’s schedules and bookings; the task
   assert.equal(asks.piNumber.required, undefined, 'PI number is optional');
   assert.deepEqual(form.statuses.map((entry) => entry.label), [
     'Dispatch Request Received', 'Today Dispatch', 'Today Evening Dispatch', 'Tomorrow Dispatch', 'Tomorrow First Dispatch',
-    'Top Most Urgent Dispatch', 'Asked Production Readiness', 'Goods Not Yet Ready', 'Goods Ready — Waiting for Vehicle',
+    'Top Most Urgent Dispatch', 'Asked Production Readiness', 'Asked Assembling Readiness', 'Goods Not Yet Ready', 'Goods Ready — Waiting for Vehicle',
     'Party Will Collect', 'Part Quantity Dispatched', 'Fully Dispatched', 'Dispatched', 'Task Closed',
   ]);
   assert.deepEqual(form.actions.map((action) => action.label), ['Ask Production', 'Ask Assembling Readiness']);
@@ -286,24 +286,29 @@ test('Ask Assembling Readiness raises an Assembly task', async () => {
   const asked = await ask('ravi', { kind: 'ask_assembling_edd', note: 'Are the clips fitted on the trouser lot?' });
   assert.equal(asked.status, 200, asked.json.message);
   assert.equal(asked.json.raised.department, 'assembling');
-  assert.equal(asked.json.data.status, 'asked_production', 'Assembly’s ask does not move the status');
+  assert.equal(asked.json.data.status, 'asked_assembling');
   assert.match(asked.json.data.updates.at(-1).note, /Ask Assembling Readiness: Are the clips fitted/);
 });
 
-test('Task Closed on a dispatch task is not held back by a consignment balance the team never records', async () => {
-  /* An open order with 1,000 pcs that no consignment covers — written straight in. */
-  const orders = mongoose.connection.collection('salesorders');
-  const { insertedId } = await orders.insertOne({
-    enquiry: new mongoose.Types.ObjectId(enquiry._id), number: 'SO-2026-0099', status: 'released',
-    lines: [{ _id: new mongoose.Types.ObjectId(), modelNumber: 'UTJRSH-0', quantity: 1000 }],
-  });
-  try {
-    const closed = await dispatchMove('ravi', 'closed', { note: 'All gone — sent from the dispatch task' });
-    assert.equal(closed.status, 200, closed.json.message);
-    assert.equal((await Todo.findById(dispatchTask._id)).completed, true);
-  } finally {
-    await orders.deleteOne({ _id: insertedId });
-  }
+test('while Production or Assembly has the readiness ask open, the dispatch task stays at Asked … — no move, no Done', async () => {
+  const shown = await api('/api/departments/despatch/dashboard', { as: 'ravi' });
+  assert.equal(shown.status, 200, shown.json.message);
+  const card = shown.json.data.enquiries.find((row) => String(row.task._id) === String(dispatchTask._id));
+  assert.deepEqual(card.task.waitingOn.map((task) => task.department).sort(), ['assembling', 'production'], 'the card knows what it waits on');
+
+  const refused = await dispatchMove('ravi', 'dispatched', { note: 'Loaded' });
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.message, /Waiting on .* still open/);
+  const done = await api(`/api/workspace/todos/${dispatchTask._id}/done`, { method: 'POST', as: 'ravi', body: { note: 'Gone' } });
+  assert.equal(done.status, 400, 'Done waits too');
+
+  /* Production closes its task: Assembly's is still open, so it still waits. */
+  const production = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_edd', completed: false });
+  await Todo.updateOne({ _id: production._id }, { $set: { completed: true, completedAt: new Date(), status: 'closed' } });
+  const still = await dispatchMove('ravi', 'dispatched', { note: 'Loaded' });
+  assert.equal(still.status, 400);
+  assert.match(still.json.message, /Assembl/);
+  assert.equal((await Todo.findById(dispatchTask._id)).status, 'asked_assembling');
 });
 
 test('Assembly’s task moves Asked Assembling Readiness → … → Task Closed, each with a remark, and marketing and Admin are told', async () => {
@@ -328,6 +333,24 @@ test('Assembly’s task moves Asked Assembling Readiness → … → Task Closed
 
   assert.equal((await moveAssembly('closed', { note: 'All 10,000 assembled' })).status, 200);
   assert.equal((await Todo.findById(task._id)).completed, true);
+});
+
+test('Task Closed on a dispatch task is not held back by a consignment balance the team never records', async () => {
+  /* Assembly has answered [the test above]: nothing is asked any more. */
+  assert.equal(await Todo.countDocuments({ askedFrom: dispatchTask._id, completed: false }), 0);
+  /* An open order with 1,000 pcs that no consignment covers — written straight in. */
+  const orders = mongoose.connection.collection('salesorders');
+  const { insertedId } = await orders.insertOne({
+    enquiry: new mongoose.Types.ObjectId(enquiry._id), number: 'SO-2026-0099', status: 'released',
+    lines: [{ _id: new mongoose.Types.ObjectId(), modelNumber: 'UTJRSH-0', quantity: 1000 }],
+  });
+  try {
+    const closed = await dispatchMove('ravi', 'closed', { note: 'All gone — sent from the dispatch task' });
+    assert.equal(closed.status, 200, closed.json.message);
+    assert.equal((await Todo.findById(dispatchTask._id)).completed, true);
+  } finally {
+    await orders.deleteOne({ _id: insertedId });
+  }
 });
 
 /* ------------------------------ The LR copy ------------------------------ */

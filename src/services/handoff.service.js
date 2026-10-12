@@ -43,7 +43,7 @@ export function endOfDayIST(now = new Date()) {
 }
 
 /** The start of the day in India — the earliest a task may be re-dated to. */
-function startOfDayIST(now = new Date()) {
+export function startOfDayIST(now = new Date()) {
   const local = new Date(now.getTime() + IST_OFFSET_MS);
   local.setUTCHours(0, 0, 0, 0);
   return new Date(local.getTime() - IST_OFFSET_MS);
@@ -174,7 +174,7 @@ async function moveStage(enquiry, to, { user, task, note, heldBy }) {
 }
 
 const aboutOf = (enquiry) => {
-  const customerName = enquiry.customer?.name;
+  const customerName = enquiry.customer?.name || enquiry.prospect?.name;
   return `${enquiry.number}${customerName ? ` · ${customerName}` : ''}`;
 };
 
@@ -849,6 +849,8 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
     return Todo.findById(task._id);
   }
 
+  /* The app closing it (the consignment left) is not held back; a person's Done is. */
+  if (!system) await assertNotWaiting(task);
   await assertMayFinish(task);
 
   const handoff = findHandoff(task.kind);
@@ -890,6 +892,20 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
 }
 
 /** What has to be true before a task is finished — checked before anything about it changes. */
+/**
+ * Asked Production or Assembling for its readiness [`askFromTask`]: the answer is theirs to
+ * give, so this task stays at "Asked …" — no other status, not done — until that task is
+ * closed; then it moves on from here.
+ */
+async function assertNotWaiting(task) {
+  const actions = findHandoff(task.kind)?.form?.actions || [];
+  if (!actions.length) return;
+  const waiting = await Todo.findOne({ askedFrom: task._id, completed: false, kind: { $in: actions.map((action) => action.kind) } }).select('kind department');
+  if (!waiting) return;
+  const action = actions.find((entry) => entry.kind === waiting.kind);
+  fail(`Waiting on ${departmentName(waiting.department)} — ${action?.label || 'the task asked'} is still open. The status changes once that task is closed.`);
+}
+
 async function assertMayFinish(task) {
   /* A task finished by uploading the work (the sales order) is not ticked off without it. */
   const byUpload = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.pdf && entry.done);
@@ -993,6 +1009,7 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   if (form.remarkRequired && text.length < 3) fail(`Add a remark to move it to ${step.label}`);
   const readyDate = statusDate(form, step, date);
   if (task.status === status && !readyDate) return task;
+  await assertNotWaiting(task);
   /* Refused before the status moves, so a refusal leaves the task where it was. */
   if (step.done) await assertMayFinish(task);
 
@@ -1944,7 +1961,11 @@ export async function departmentFigures(department, { now = new Date() } = {}) {
   };
 }
 
+/** What a task's open asks show: whose task, at what status. */
+export const WAITING_ON_POPULATE = { path: 'waitingOn', select: 'kind department status title askedFrom', populate: { path: 'user', select: 'name' } };
+
 const LIST_POPULATE = [
+  WAITING_ON_POPULATE,
   { path: 'attachment', select: 'key filename size' },
   { path: 'resultFile', select: 'key filename size' },
   { path: 'createdBy', select: 'name department' },

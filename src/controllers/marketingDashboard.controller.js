@@ -50,7 +50,7 @@ const DORMANT_DAYS = 90;
 const enquiryCard = (enquiry, startOfToday) => ({
   _id: enquiry._id,
   number: enquiry.number,
-  customer: enquiry.customer?.name || null,
+  customer: enquiry.customer?.name || enquiry.prospect?.name || null,
   modelNumber: enquiry.requirement?.modelNumber || null,
   status: enquiry.status,
   nextAction: enquiry.nextAction || null,

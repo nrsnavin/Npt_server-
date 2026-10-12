@@ -114,6 +114,37 @@ const conversationRef = z
 
 const blankToUndefined = (value) => (value === '' || value === null ? undefined : value);
 
+/* Delivery or accounts: the order contact, or a person of its own. Optional — most buyers have one. */
+const roleContact = z
+  .object({
+    sameAsOrder: z.boolean().optional(),
+    name: z.string().trim().max(120).optional(),
+    phone: z.string().trim().max(40).optional(),
+  })
+  .optional();
+
+/**
+ * A buyer who is not a customer yet — who asked, and how to reach them [models/Enquiry.js
+ * `prospect`]. A name and a phone or an email; the rest is what was taken down on the call.
+ */
+export const prospectSchema = z
+  .object({
+    name: z.string().trim().min(2, 'Give the company or person who asked').max(160),
+    contactPerson: z.string().trim().max(120).optional(),
+    mobile: z.string().trim().max(40).optional(),
+    whatsapp: z.string().trim().max(40).optional(),
+    email: z.union([z.string().trim().email(), z.literal('')]).optional(),
+    city: z.string().trim().max(120).optional(),
+  })
+  .refine((value) => value.mobile || value.whatsapp || value.email, {
+    message: 'Give a phone number or an email, so somebody can call them back',
+    path: ['mobile'],
+  });
+
+/* A customer, or a prospect — never neither. */
+const oneBuyer = (value) => Boolean(value.customer || value.prospect);
+const oneBuyerMessage = { message: 'Pick the customer, or take down the prospect’s name and phone', path: ['customer'] };
+
 export const customerSchema = z.object({
   name: z.string().min(2).max(160),
   customerType: z.enum(CUSTOMER_TYPES).optional(),
@@ -135,6 +166,8 @@ export const customerSchema = z.object({
   email: z.string().trim().email().optional(),
   gstin: z.string().optional(),
   contacts: z.array(contactSchema).optional(),
+  deliveryContact: roleContact,
+  accountsContact: roleContact,
   /*
    * Required, and chosen from the marketing team [§29].
    *
@@ -184,10 +217,20 @@ export const enquiryCore = {
 };
 
 export const enquirySchema = z.object({
-  customer: objectId,
+  customer: objectId.optional(),
+  prospect: prospectSchema.optional(),
   assignedTo: objectId.optional(),
   ...enquiryCore,
-});
+}).refine(oneBuyer, oneBuyerMessage);
+
+/**
+ * Making a prospect's enquiry a customer's: an existing customer to link it to, or the new
+ * customer's own fields (the owner defaults to the enquiry's).
+ */
+export const enquiryConvertSchema = z.union([
+  z.strictObject({ customer: objectId }),
+  customerSchema.extend({ assignedTo: objectId.optional() }),
+]);
 
 /*
  * `assignedTo` is named here as well as on create, because leaving it out did not refuse a
@@ -198,11 +241,13 @@ export const enquirySchema = z.object({
 export const enquiryUpdateSchema = z
   .object({ ...enquiryCore, assignedTo: objectId, requirement: requirementSchema.optional() })
   .partial()
-  .extend(versioned);
+  /* A prospect's name and number are corrected in place until the enquiry is converted. */
+  .extend({ ...versioned, prospect: prospectSchema.optional() });
 
 /** One conversation, several models — each becomes its own enquiry under a group. */
 export const enquiryGroupSchema = z.object({
-  customer: objectId,
+  customer: objectId.optional(),
+  prospect: prospectSchema.optional(),
   // Named here as it is on the single create, or an administrator raising three models for a
   // colleague silently got three enquiries assigned to somebody else.
   assignedTo: objectId.optional(),
@@ -216,7 +261,7 @@ export const enquiryGroupSchema = z.object({
     })
     .optional(),
   enquiries: z.array(z.object(enquiryCore)).min(1, 'Add at least one model'),
-});
+}).refine(oneBuyer, oneBuyerMessage);
 
 export const enquiryStatusSchema = z.object({
   ...versioned,
@@ -318,3 +363,23 @@ export const enquiryMarketingStatusSchema = z.object({
   status: z.enum(MARKETING_STATUS_KEYS),
   note: z.string().trim().max(500).optional(),
 });
+
+/** A customer follow-up from the customer list: set one, log a call on it, or close it. */
+export const customerFollowUpSchema = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('set'),
+    due: z.coerce.date(),
+    note: z.string().trim().max(500).optional(),
+    priority: z.enum(['normal', 'high']).optional(),
+  }),
+  z.object({
+    action: z.literal('log'),
+    note: z.string().trim().min(2, 'Say what happened').max(1000),
+    /* The next call, when there is one: the follow-up moves to it and stays open. */
+    next: z.coerce.date().optional(),
+  }),
+  z.object({
+    action: z.literal('close'),
+    note: z.string().trim().max(1000).optional(),
+  }),
+]);
