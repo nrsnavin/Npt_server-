@@ -1569,7 +1569,7 @@ export const describeHandoff = (task) => {
 
 /* ------------------------------ Task forms ------------------------------ */
 
-const MATERIAL_WORDS = { pp: 'PP', hips: 'HIPS', recycled_pp: 'Recycled PP' };
+const MATERIAL_WORDS = { pp: 'PP', hips: 'HIPS', gpps: 'GPPS', ld: 'LD', hd: 'HD', abs: 'ABS', eva: 'EVA', kresin: 'Kresin', recycled_pp: 'Recycled PP' };
 const materialWord = (value) => (value ? MATERIAL_WORDS[value] || value.charAt(0).toUpperCase() + value.slice(1) : '');
 const PRESET_WORDS = {
   credit: 'Credit — nothing before dispatch', advance_100: '100% advance',
