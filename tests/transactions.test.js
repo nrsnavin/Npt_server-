@@ -175,3 +175,20 @@ test('a writer outside waits for a lock the transaction holds', async () => {
   const release = await acquireOperationLock('order:tx-held', { retryMs: 100 });
   await release();
 });
+
+test('a block that keeps aborting its own transaction stops after a few attempts instead of spinning', async () => {
+  /* Catching a duplicate key inside a transaction aborts it underneath the block; the driver then
+     retries for up to two minutes. Measured before the cap: thirteen thousand attempts. */
+  const { default: Counter } = await import('../src/models/Counter.js');
+  await Counter.create({ key: 'tx-spin-guard', seq: 1 });
+  let attempts = 0;
+  const started = Date.now();
+  const outcome = await tx.inTransaction(async () => {
+    attempts += 1;
+    await Counter.create([{ key: 'tx-spin-guard', seq: 2 }]).catch(() => null);
+    await Counter.findOne({ key: 'tx-spin-guard' });
+  }).then(() => 'committed', (error) => error);
+  assert.equal(outcome.statusCode, 409, String(outcome?.message || outcome));
+  assert.ok(attempts <= tx.MAX_TRANSACTION_ATTEMPTS, `tried ${attempts} times`);
+  assert.ok(Date.now() - started < 10000, `took ${Date.now() - started} ms`);
+});

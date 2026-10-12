@@ -169,10 +169,10 @@ export const handoffDone = asyncHandler(transactional(async (req, res) => {
   await answer(res, task);
 }));
 
-export const handoffUpdate = asyncHandler(async (req, res) => {
+export const handoffUpdate = asyncHandler(transactional(async (req, res) => {
   const task = await updateHandoff(await taskFor(req), req.user, req.body);
   await answer(res, task);
-});
+}));
 
 export const handoffSendBack = asyncHandler(transactional(async (req, res) => {
   const task = await returnHandoff(await taskFor(req), req.user, req.body);

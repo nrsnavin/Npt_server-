@@ -170,6 +170,15 @@ export const createQuery = asyncHandler(transactional(async (req, res) => {
   const granted = (await Promise.all(rows.map(peopleBehind))).flat();
   await shareCustomerWith(customer._id, [...granted, req.user._id]);
 
+  /* A new question rings everyone it is asked of — on their phone (push) and, in the app, on the
+     Queries panel's badge and alert [web: QueriesDock]. Not the asker. Never throws. */
+  const asked = [...new Set(granted.map(String))].filter((id) => id !== String(req.user._id));
+  await sendPush(asked, {
+    title: `New query ${query.number} from ${req.user.name}`,
+    body: String(query.subject || question).slice(0, 140),
+    link: `/queries/${query._id}`,
+  });
+
   res.status(201).json({ success: true, data: await withRefs(query) });
 }));
 
@@ -319,6 +328,60 @@ export function urgentFirst(sort = '-updatedAt') {
     : sort;
   return { isUrgent: -1, ...rest };
 }
+
+/**
+ * The Queries panel's badge and list [web: components/QueriesDock.jsx]: how many messages wait
+ * for me, on how many threads, and the threads themselves — unread first, then the latest.
+ *
+ * The badge counts the threads I am part of (raised by me, asked of me or my department, tagging
+ * me) and urgent ones. Admin can open every thread in the plant, and the panel lists them, but a
+ * badge counting every unread line in the plant would always say forty and mean nothing.
+ */
+export const queryUnread = asyncHandler(async (req, res) => {
+  const me = req.user._id;
+  const threads = await Query.find({
+    $and: [...(seesEveryQuery(req.user) ? [] : [roomFilter(req.user)]), { status: { $ne: 'closed' } }],
+  })
+    .select('number subject isUrgent status question raisedBy participants messages createdAt updatedAt')
+    .populate([{ path: 'raisedBy', select: 'name' }, { path: 'messages.by', select: 'name' }])
+    .sort({ updatedAt: -1 })
+    .limit(200);
+  const cursors = new Map(
+    (await QueryRead.find({ user: me, query: { $in: threads.map((query) => query._id) } }).select('query at').lean())
+      .map((read) => [String(read.query), read.at])
+  );
+  const rows = threads.map((query) => {
+    const cursor = cursors.get(String(query._id));
+    const taggedMe = taggedUnreadFor(query, cursor, me);
+    return {
+      _id: query._id,
+      number: query.number,
+      subject: query.subject,
+      isUrgent: Boolean(query.isUrgent),
+      unread: unreadFor(query, cursor, me),
+      taggedMe,
+      /* Whether it counts on the badge — mine, tagging me, or urgent. */
+      counts: inTheRoom(query, req.user) || taggedMe > 0 || Boolean(query.isUrgent),
+      last: lastSaid(query),
+      updatedAt: query.updatedAt,
+    };
+  });
+  const waiting = rows.filter((row) => row.unread > 0 && row.counts);
+  const ordered = [...rows.filter((row) => row.unread > 0), ...rows.filter((row) => !row.unread)];
+  res.json({
+    success: true,
+    data: {
+      unread: waiting.reduce((sum, row) => sum + row.unread, 0),
+      threads: waiting.length,
+      /* The newest unread moment — the panel compares it to the last one it saw to say "new". */
+      latestAt: waiting.reduce((latest, row) => {
+        const at = row.last?.at ? new Date(row.last.at).getTime() : 0;
+        return at > latest ? at : latest;
+      }, 0) || null,
+      rows: ordered.slice(0, 30),
+    },
+  });
+});
 
 export const listQueries = asyncHandler(async (req, res) => {
   /*

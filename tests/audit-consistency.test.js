@@ -98,7 +98,9 @@ function holdSaves(t, Model, ids, parties = 2) {
     }
     return original.apply(this, args);
   };
-  return replies => assert.ok(arrived === parties || (arrived >= 1 && replies.some(reply => reply.status === 409)), 'Writers must overlap at save or be refused by the held lock');
+  /* Overlapping at the save, or queued behind the order lock and then refused on what the first
+     one wrote (409 busy, or 400 for a balance it would now exceed) — never both let through. */
+  return replies => assert.ok(arrived === parties || (arrived >= 1 && replies.some(reply => reply.status === 409 || reply.status === 400)), 'Writers must overlap at save or be refused after the held lock');
 }
 
 test('CONTROL: a sequential stale timestamp is rejected', async t => {
@@ -322,8 +324,9 @@ test('advance credit is allocated once across invoices and included in filtered 
 test('locks do not expire during long work and ordinary errors release them', async () => {
   const {default:OperationLock}=await import('../src/models/OperationLock.js');
   const {withOperationLock}=await import('../src/services/operationLock.service.js');
-  const key=number('LOCK');const lock=await OperationLock.create({_id:key,token:'fixture',acquiredAt:new Date(0),process:'fixture'});
-  try {await assert.rejects(withOperationLock(key,()=>assert.fail('must not enter')),e=>e.statusCode===409);}finally{await OperationLock.deleteOne({_id:lock._id,token:'fixture'});}
+  /* Taken long ago, but its holder is still renewing it: still held. */
+  const key=number('LOCK');const lock=await OperationLock.create({_id:key,token:'fixture',acquiredAt:new Date(0),renewedAt:new Date(),process:'fixture'});
+  try {await assert.rejects(withOperationLock(key,()=>assert.fail('must not enter'),{retryMs:300}),e=>e.statusCode===409);}finally{await OperationLock.deleteOne({_id:lock._id,token:'fixture'});}
   await assert.rejects(withOperationLock(key,()=>{throw new Error('ordinary failure');}),/ordinary failure/);
   assert.equal(await withOperationLock(key,()=>42),42);
 });
@@ -335,4 +338,30 @@ test('a successful HTTP reply is sent only after the order lock has been release
   const res={json:async body=>{assert.equal(await OperationLock.exists({_id:`order:${f.order._id}`}),null);sent=true;return body;}};
   await withOrderLock(()=>f.order._id,async(req,response)=>response.json({success:true}))({},res);
   assert.equal(sent,true);
+});
+
+test('a lock left by a crashed process is taken over once its holder stops renewing it; a held one is renewed', async () => {
+  const {default:OperationLock}=await import('../src/models/OperationLock.js');
+  const {withOperationLock,lockTiming}=await import('../src/services/operationLock.service.js');
+  /* A crash mid-change: nobody has renewed this one for longer than a transaction may live. */
+  const key=number('LOCK');
+  await OperationLock.create({_id:key,token:'crashed',acquiredAt:new Date(Date.now()-10*60000),renewedAt:new Date(Date.now()-lockTiming.staleMs-1000),process:'gone:1'});
+  assert.equal(await withOperationLock(key,()=>'entered',{retryMs:0}),'entered');
+  assert.equal(await OperationLock.exists({_id:key}),null,'released after');
+  /* A slow holder keeps renewing, so it is never mistaken for a dead one. */
+  const {renewMs}=lockTiming;lockTiming.renewMs=50;
+  try {
+    const renewed=await withOperationLock(key,async()=>{const first=(await OperationLock.findById(key).lean()).renewedAt;await new Promise(r=>setTimeout(r,200));return [first,(await OperationLock.findById(key).lean()).renewedAt];});
+    assert.ok(renewed[1]>renewed[0],'renewedAt moved while the work ran');
+  } finally {lockTiming.renewMs=renewMs;}
+});
+
+test('a second change to the same order waits for the first instead of being refused', async () => {
+  const {withOperationLock}=await import('../src/services/operationLock.service.js');
+  const key=number('LOCK');const order=[];
+  await Promise.all([
+    withOperationLock(key,async()=>{order.push('first in');await new Promise(r=>setTimeout(r,300));order.push('first out');}),
+    new Promise(r=>setTimeout(r,20)).then(()=>withOperationLock(key,async()=>{order.push('second in');})),
+  ]);
+  assert.deepEqual(order,['first in','first out','second in']);
 });

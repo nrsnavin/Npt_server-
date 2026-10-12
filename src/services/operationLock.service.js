@@ -12,6 +12,37 @@ import { currentTransaction, whenTransactionEnds } from '../utils/transaction.js
  */
 export const OWNER_LOCK_WAIT_MS = 15000;
 
+/**
+ * How long a second person's change to the same order waits for the first to finish. An order's
+ * changes take tens of milliseconds; refusing the second one at once — "related records are being
+ * updated" — is what two people on the same order saw whenever they pressed within the same
+ * moment. A few seconds lets them queue; past that something is genuinely stuck.
+ */
+export const ORDER_LOCK_WAIT_MS = 8000;
+
+/**
+ * A held lock is renewed every `renewMs`, and one nobody has renewed for `staleMs` is taken over.
+ *
+ * Without this a lock outlived the process holding it: a crash, a deploy or an out-of-memory kill
+ * in the middle of an order's change left `order:<id>` in place, and that order refused every
+ * change after it until somebody deleted the row by hand. The holder renewing it is what makes
+ * taking it over safe — a live holder, however slow, keeps it — and `staleMs` is longer than the
+ * sixty seconds MongoDB lets a transaction live, so whatever the dead holder had open has already
+ * been rolled back by the database when the lock is taken from it.
+ */
+export const lockTiming = { renewMs: 10_000, staleMs: 90_000 };
+
+/** Removes the lock on `key` if its holder has stopped renewing it; true when it did. */
+async function takeOverAbandoned(key) {
+  const cutoff = new Date(Date.now() - lockTiming.staleMs);
+  const gone = await OperationLock.findOneAndDelete({
+    _id: key,
+    $or: [{ renewedAt: { $lt: cutoff } }, { renewedAt: { $exists: false }, acquiredAt: { $lt: cutoff } }],
+  }).session(null).lean();
+  if (gone) console.warn(`[lock] took over ${key}: ${gone.process || 'its holder'} stopped renewing it at ${(gone.renewedAt || gone.acquiredAt)?.toISOString?.()}`);
+  return Boolean(gone);
+}
+
 export async function acquireOperationLock(key, { retryMs = 0 } = {}) {
   /*
    * Inside a transaction the lock is held until the transaction ends, not until the save that
@@ -29,14 +60,24 @@ export async function acquireOperationLock(key, { retryMs = 0 } = {}) {
       break;
     } catch (error) {
       if (error?.code !== 11000) throw error;
-      if (Date.now() >= deadline) throw ApiError.conflict('Related records are being updated. Reload and try again. If this persists, ask an administrator to check interrupted operations.');
+      if (await takeOverAbandoned(key)) continue;
+      if (Date.now() >= deadline) throw ApiError.conflict('Related records are being updated. Wait a moment and try again.');
       /* Backing off, with a little randomness, so a queue of waiters does not retry in step. */
       const pause = Math.min(250, 20 * 2 ** Math.min(attempt, 4)) * (0.5 + Math.random() / 2);
       await new Promise(resolve => setTimeout(resolve, Math.min(pause, Math.max(0, deadline - Date.now()) + 5)));
     }
   }
+  /* Renewed while held, so a slow holder is never mistaken for a dead one. */
+  const renewal = setInterval(() => {
+    OperationLock.updateOne({ _id: key, token }, { $set: { renewedAt: new Date() } }).session(null).exec()
+      .catch((error) => console.error(`[lock] renewing ${key} failed:`, error.message));
+  }, lockTiming.renewMs);
+  renewal.unref();
   /* A promise, not a lazy query, so a release that nobody awaits still happens. */
-  const release = () => OperationLock.deleteOne({ _id: key, token }).session(null).exec();
+  const release = () => {
+    clearInterval(renewal);
+    return OperationLock.deleteOne({ _id: key, token }).session(null).exec();
+  };
   if (transaction?.real) {
     transaction.held.set(key, release);
     whenTransactionEnds(async () => {
@@ -47,8 +88,8 @@ export async function acquireOperationLock(key, { retryMs = 0 } = {}) {
   }
   return release;
 }
-export async function withOperationLock(key, work) {
-  const release = await acquireOperationLock(key);
+export async function withOperationLock(key, work, { retryMs = ORDER_LOCK_WAIT_MS } = {}) {
+  const release = await acquireOperationLock(key, { retryMs });
   try { return await work(); } finally { await release(); }
 }
 /** JSON mutation replies leave only after the lock is released, so the next action can start. */
@@ -84,7 +125,11 @@ export async function withOwnerLocks(ids, work) {
 export async function withCreateLocks(keys, work, { waitMs = 5000, staleMs = 30000 } = {}) {
   const sorted = [...new Set(keys.filter(Boolean).map(String))].sort();
   if (!sorted.length) return work();
-  await OperationLock.deleteMany({ _id: { $in: sorted }, acquiredAt: { $lt: new Date(Date.now() - staleMs) } }).session(null);
+  const cutoff = new Date(Date.now() - staleMs);
+  await OperationLock.deleteMany({
+    _id: { $in: sorted },
+    $or: [{ renewedAt: { $lt: cutoff } }, { renewedAt: { $exists: false }, acquiredAt: { $lt: cutoff } }],
+  }).session(null);
   const releases = [];
   try {
     for (const key of sorted) releases.push(await acquireOperationLock(key, { retryMs: waitMs }));

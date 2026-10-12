@@ -8,6 +8,7 @@ import { collect, sendCsv } from '../utils/csv.js';
 import Attachment from '../models/Attachment.js';
 import { put, remove } from '../services/storage.service.js';
 import { allMouldsVisibleTo, mouldVisibleTo, seesMachineRate } from '../services/pricingVisibility.js';
+import { transactional } from '../utils/transaction.js';
 
 /** The same ceiling every other export uses — see pipeline.controller.js. */
 const EXPORT_LIMIT = 5000;
@@ -143,7 +144,7 @@ export const createMould = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: mouldVisibleTo(mould, req.user) });
 });
 
-export const updateMould = asyncHandler(async (req, res) => {
+export const updateMould = asyncHandler(transactional(async (req, res) => {
   const mould = await Mould.findById(req.params.id);
   if (!mould) throw ApiError.notFound('Mould not found');
 
@@ -174,7 +175,7 @@ export const updateMould = asyncHandler(async (req, res) => {
   await recordChange({ model: 'Mould', doc: mould, before, by: req.user });
 
   res.json({ success: true, data: mouldVisibleTo(mould, req.user) });
-});
+}));
 
 export const exportMoulds = asyncHandler(async (req, res) => {
   const { sort, filter } = mouldQuery(req.query, req.user);

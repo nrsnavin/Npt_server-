@@ -7,6 +7,7 @@ import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { collect, sendCsv } from '../utils/csv.js';
+import { transactional } from '../utils/transaction.js';
 
 /** The same ceiling every other export uses — see pipeline.controller.js. */
 const EXPORT_LIMIT = 5000;
@@ -105,7 +106,7 @@ export const createMaterial = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: material });
 });
 
-export const updateMaterial = asyncHandler(async (req, res) => {
+export const updateMaterial = asyncHandler(transactional(async (req, res) => {
   const material = await Material.findById(req.params.id);
   if (!material) throw ApiError.notFound('Material not found');
 
@@ -127,7 +128,7 @@ export const updateMaterial = asyncHandler(async (req, res) => {
   await recordChange({ model: 'Material', doc: material, before, by: req.user });
 
   res.json({ success: true, data: material });
-});
+}));
 
 /**
  * What is priced against this material, so a rate change can be judged before it is made.

@@ -39,6 +39,8 @@ const TEMPLATE_SETTINGS = {
   task: ['WHATSAPP_TEMPLATE_TASK'],
   /* The LR copy sent to the buyer. Variables: 1 name, 2 enquiry / invoice, 3 link to the copy. */
   lr_copy: ['WHATSAPP_TEMPLATE_LR_COPY'],
+  /* A trip planned or on its way to the buyer. Variables: 1 name, 2 what, 3 how and when. */
+  trip: ['WHATSAPP_TEMPLATE_TRIP'],
 };
 
 /** The template configured for `key`, or undefined — read now, so a restart picks up a change. */

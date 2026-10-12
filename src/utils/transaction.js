@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import mongoose from 'mongoose';
+import ApiError from './ApiError.js';
 
 /**
  * Multi-record writes that happen together or not at all.
@@ -91,21 +92,50 @@ const runDetached = (fn) =>
     })
   );
 
-export async function inTransaction(work) {
+/**
+ * How many times one block may be tried before the person is told to try again.
+ *
+ * The driver retries a transaction on every "transient" error for up to two minutes, and one
+ * of those is the transaction having been aborted underneath the block — which is what happens
+ * when code inside it catches a database error (a duplicate key it means to shrug off) and
+ * carries on. A block that does that on every attempt is retried as fast as the database can
+ * answer, thousands of times, holding a connection and its locks while every other request
+ * waits. A real write conflict between two people settles in two or three attempts; past this
+ * number it is not going to.
+ */
+export const MAX_TRANSACTION_ATTEMPTS = 6;
+
+/** A short random pause before attempt `n`, so two requests that collided do not collide again in step. */
+const backoff = (n) => new Promise((resolve) => setTimeout(resolve, Math.min(200, 10 * 2 ** n) * (0.5 + Math.random())));
+
+export async function inTransaction(work, { label } = {}) {
   /* Already inside one: join it. A transaction does not nest. */
   if (scope.getStore()) return work();
 
   const real = await transactionsSupported();
   const store = { real, held: new Map(), afterEnd: [], afterCommit: [] };
+  let attempts = 0;
+  let lastError = null;
   let result;
   try {
     result = await scope.run(store, () =>
       real
         ? mongoose.connection.transaction(
-            () => {
+            async () => {
+              attempts += 1;
+              if (attempts > MAX_TRANSACTION_ATTEMPTS) {
+                console.error(`[transaction] gave up after ${MAX_TRANSACTION_ATTEMPTS} attempts${label ? ` on ${label}` : ''}: ${lastError?.codeName || lastError?.message || 'conflict at commit'}`);
+                throw ApiError.conflict('Several people are changing the same records right now. Wait a moment and try again.');
+              }
+              if (attempts > 1) await backoff(attempts);
               /* A retry starts clean: nothing queued by the attempt that was thrown away. */
               store.afterCommit.length = 0;
-              return work();
+              try {
+                return await work();
+              } catch (error) {
+                lastError = error;
+                throw error;
+              }
             },
             { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' } }
           )
@@ -148,7 +178,7 @@ export const transactional = (handler) => async (req, res) => {
       code = undefined;
       reply = undefined;
       return handler(req, res);
-    });
+    }, { label: `${req.method} ${req.baseUrl || ''}${req.route?.path || req.path}` });
   } finally {
     res.json = json;
     res.status = status;

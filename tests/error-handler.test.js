@@ -45,3 +45,19 @@ test('a refusal written for a person still says what it says', () => {
   const tooBig = Object.assign(new Error('request entity too large'), { status: 413, statusCode: 413 });
   assert.deepEqual([answer(tooBig).status, answer(tooBig).body.message], [413, 'request entity too large']);
 });
+
+test('an error after the reply has started is handed on, not answered twice', () => {
+  const sent = {};
+  const res = {
+    headersSent: true,
+    status() { throw new Error('ERR_HTTP_HEADERS_SENT'); },
+    json() { throw new Error('ERR_HTTP_HEADERS_SENT'); },
+  };
+  let handedOn = null;
+  const quiet = console.error;
+  console.error = () => {};
+  const failure = new Error('the file store went away mid-stream');
+  try { errorHandler(failure, {}, res, (error) => { handedOn = error; }); } finally { console.error = quiet; }
+  assert.equal(handedOn, failure);
+  assert.equal(sent.status, undefined);
+});

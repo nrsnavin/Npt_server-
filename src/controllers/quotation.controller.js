@@ -499,7 +499,7 @@ export const createQuotation = asyncHandler(transactional(async (req, res) => {
  * line again [§9]; after sending, the price changes only through a revision and a re-cost is
  * recorded without touching what the buyer was offered.
  */
-export const costLine = asyncHandler(async (req, res) => {
+export const costLine = asyncHandler(transactional(async (req, res) => {
   assertMayCost(req.user);
 
   const quotation = await Quotation.findById(req.params.id);
@@ -591,7 +591,7 @@ export const costLine = asyncHandler(async (req, res) => {
   await recordChange({ model: 'Quotation', doc: quotation, before, by: req.user });
   await announce(quotation, was, req.user);
   await replyWith(res, quotation, req.user);
-});
+}));
 
 /** Tells whoever is next: Admin when a price waits on them, the owner when it is ready to send. */
 async function announce(quotation, was, user) {
@@ -609,7 +609,7 @@ async function announce(quotation, was, user) {
  * records the price signed; a later lower price needs signing again. A refusal needs a reason —
  * it goes back to whoever costed it.
  */
-export const decideLine = asyncHandler(async (req, res) => {
+export const decideLine = asyncHandler(transactional(async (req, res) => {
   if (!isAdmin(req.user)) throw ApiError.forbidden('Only Admin approves a price below the minimum');
 
   const quotation = await Quotation.findById(req.params.id);
@@ -643,7 +643,7 @@ export const decideLine = asyncHandler(async (req, res) => {
   if (approve) await announce(quotation, was, req.user);
   else await publish(EVENTS.PRICING_REJECTED, { quotation, lineId: String(line._id), by: req.user });
   await replyWith(res, quotation, req.user);
-});
+}));
 
 /* ------------------------------ Editing, revising ------------------------------ */
 
@@ -654,7 +654,7 @@ export const decideLine = asyncHandler(async (req, res) => {
  * follows. Once the buyer has it, anything they read changes through a revision, so what they
  * were told stays on record [§10].
  */
-export const updateQuotation = asyncHandler(async (req, res) => {
+export const updateQuotation = asyncHandler(transactional(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id);
   if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
   if (CLOSED_QUOTATION_STATUSES.includes(quotation.status)) {
@@ -704,7 +704,7 @@ export const updateQuotation = asyncHandler(async (req, res) => {
   await recordChange({ model: 'Quotation', doc: quotation, before, by: req.user });
   await announce(quotation, was, req.user);
   await replyWith(res, quotation, req.user);
-});
+}));
 
 /**
  * A new offer on the same quotation [§10]: Rev 0 ₹7.50, Rev 1 ₹7.30, Rev 2 ₹7.20, all kept.

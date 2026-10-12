@@ -7,7 +7,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet, MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
 export const ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -30,10 +30,14 @@ const run = (script, env) =>
  * `prepare(db)` runs after the seed and before the API starts — the place to load volume, so the
  * API boots onto the data the way a restarted server would.
  */
-export async function startStack({ prepare, env: extra = {} } = {}) {
+export async function startStack({ prepare, env: extra = {}, replSet = false } = {}) {
   const port = 5400 + Math.floor(Math.random() * 400);
-  const mongo = await MongoMemoryServer.create({ instance: { storageEngine: 'wiredTiger' } });
-  pin(mongo.instanceInfo.instance.mongodProcess.pid);
+  /* `replSet`: a one-node replica set, so every transaction in the code really runs as one — the
+     way the plant's database is deployed. */
+  const mongo = replSet
+    ? await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } })
+    : await MongoMemoryServer.create({ instance: { storageEngine: 'wiredTiger' } });
+  for (const server of mongo.servers || [mongo]) pin(server.instanceInfo.instance.mongodProcess.pid);
   const uri = mongo.getUri('npt_load');
   const env = {
     ...process.env,

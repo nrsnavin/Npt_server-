@@ -9,6 +9,7 @@ import { ENQUIRY_ACTIVITY_KEYS } from '../config/enquiryActivities.js';
 
 // The one definition, which also accepts a populated reference — see schemas.js.
 import { objectId } from './schemas.js';
+import { DELIVERY_MODES } from '../models/Customer.js';
 
 /**
  * A date that can also be cleared.
@@ -110,6 +111,8 @@ const conversationRef = z
   })
   .optional();
 
+const blankToUndefined = (value) => (value === '' || value === null ? undefined : value);
+
 export const customerSchema = z.object({
   name: z.string().min(2).max(160),
   customerType: z.enum(CUSTOMER_TYPES).optional(),
@@ -118,6 +121,10 @@ export const customerSchema = z.object({
   address: z.string().max(500).optional(),
   area: z.string().trim().max(160).optional(),
   landmark: z.string().trim().max(160).optional(),
+  /* How the goods go [services/dispatchPlanning.service.js]; empty or null clears it on an edit. */
+  deliveryMode: z.preprocess(blankToUndefined, z.enum(DELIVERY_MODES).optional()),
+  usualTransporter: z.preprocess(blankToUndefined, objectId.optional()),
+  deliveryRoute: z.preprocess(blankToUndefined, objectId.optional()),
   city: z.string().optional(),
   state: z.string().optional(),
   pincode: z.string().max(12).optional(),

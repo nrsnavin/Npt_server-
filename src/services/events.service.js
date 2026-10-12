@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { afterCommit, currentTransaction } from '../utils/transaction.js';
 import Outbox from '../models/Outbox.js';
-import { deliver, recoverOutbox, serialize } from './outbox.service.js';
+import { deliver, hydrate, recoverOutbox, serialize } from './outbox.service.js';
 
 /**
  * Domain events.
@@ -100,8 +100,21 @@ export async function publish(event, payload = {}) {
     }
   };
 
-  if (currentTransaction()?.real) afterCommit(run);
-  else run();
+  /*
+   * After a commit the listeners get the records as committed, read afresh — not the request's
+   * own documents. By the time the commit lands the request has usually gone on to shape those
+   * for its answer (a sample's customer populated with just a name), and a listener reading the
+   * customer's phone off that copy found none and told the buyer nothing. The retry sweep already
+   * delivers from fresh copies; this is the same.
+   */
+  if (currentTransaction()?.real) {
+    afterCommit(async () => {
+      if (!row) return run();
+      const fresh = await hydrate(row.payload).catch(() => payload);
+      await deliver(row, fresh, bus.listeners(event)).catch((error) =>
+        console.error(`[events] delivering ${event} failed:`, error.message));
+    });
+  } else run();
 }
 
 /** Delivers again whatever is still pending — run by the background sweep on one process. */

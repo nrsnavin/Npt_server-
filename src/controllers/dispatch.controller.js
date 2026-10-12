@@ -34,6 +34,7 @@ import { completeDispatchEffects } from '../services/dispatchRecovery.service.js
 import { put, remove } from '../services/storage.service.js';
 import { raiseTask } from '../services/task.service.js';
 import { collect, sendCsv } from '../utils/csv.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Dispatch [BLUEPRINT §18–19].
@@ -477,7 +478,7 @@ async function orderForDispatch(id, user) {
  * dispute waiting for a buyer to notice it, and the way that happens is a screen sending its
  * own idea of what is on the line.
  */
-export const createDispatch = asyncHandler(withOrderLock(req => req.body.order, async (req, res) => {
+export const createDispatch = asyncHandler(withOrderLock(req => req.body.order, transactional(async (req, res) => {
   const order = await orderForDispatch(req.body.order, req.user);
   /* `address` and `pincode` as well, or the prefill below has nothing to read. */
   await order.populate('customer', 'code name address city state pincode');
@@ -544,7 +545,7 @@ export const createDispatch = asyncHandler(withOrderLock(req => req.body.order, 
     data: dispatchVisibleTo(dispatch, req.user),
     orderMovedTo: moved,
   });
-}));
+})));
 
 /**
  * Correcting a consignment.
@@ -591,7 +592,7 @@ function assertDeliveryDate(dispatch, value) {
   if (at > endOfToday) throw ApiError.badRequest('A delivery date cannot be in the future');
 }
 
-export const updateDispatch = asyncHandler(withOrderLock(async req => (await Dispatch.findById(req.params.id).select('order'))?.order || req.params.id, async (req, res) => {
+export const updateDispatch = asyncHandler(withOrderLock(async req => (await Dispatch.findById(req.params.id).select('order'))?.order || req.params.id, transactional(async (req, res) => {
   const dispatch = await Dispatch.findById(req.params.id);
   if (!dispatch) throw ApiError.notFound('Consignment not found');
   if (!ownsRecord(req.user, dispatch)) throw ApiError.notFound('Consignment not found');
@@ -664,11 +665,11 @@ export const updateDispatch = asyncHandler(withOrderLock(async req => (await Dis
     pending,
     message: pending ? 'Saved. Accounting for this consignment is still pending and will be retried.' : undefined,
   });
-}));
+})));
 
 /* -------------------------------- Actions -------------------------------- */
 
-export const applyDispatchAction = asyncHandler(withOrderLock(async req => (await Dispatch.findById(req.params.id).select('order'))?.order || req.params.id, async (req, res) => {
+export const applyDispatchAction = asyncHandler(withOrderLock(async req => (await Dispatch.findById(req.params.id).select('order'))?.order || req.params.id, transactional(async (req, res) => {
   const dispatch = await Dispatch.findById(req.params.id);
   if (!dispatch) throw ApiError.notFound('Consignment not found');
   if (!ownsRecord(req.user, dispatch)) throw ApiError.notFound('Consignment not found');
@@ -895,7 +896,7 @@ export const applyDispatchAction = asyncHandler(withOrderLock(async req => (awai
     message: pending ? 'Departure recorded; accounting or order totals are pending. The server will retry automatically.' : undefined,
     orderMovedTo: moved,
   });
-}));
+})));
 
 /** The actions this consignment can take from where it is, so the screen need not guess. */
 export const listDispatchActions = asyncHandler(async (req, res) => {
@@ -956,7 +957,7 @@ export const listDispatchActions = asyncHandler(async (req, res) => {
  * A null date clears it, and lateness falls back to the plant's own estimate. That matters:
  * a promise renegotiated away should not leave a consignment on the late list for ever.
  */
-export const setDispatchPromise = asyncHandler(async (req, res) => {
+export const setDispatchPromise = asyncHandler(transactional(async (req, res) => {
   const dispatch = await Dispatch.findById(req.params.id);
   if (!dispatch) throw ApiError.notFound('Consignment not found');
   if (!ownsRecord(req.user, dispatch)) throw ApiError.notFound('Consignment not found');
@@ -1004,7 +1005,7 @@ export const setDispatchPromise = asyncHandler(async (req, res) => {
 
   await dispatch.populate(POPULATE);
   res.json({ success: true, data: dispatchVisibleTo(dispatch, req.user) });
-});
+}));
 
 /** `pod_pending` is not a sentence. This is, and it is the first thing the reader wants. */
 const readableStatus = (status) =>
@@ -1029,7 +1030,7 @@ const readableStatus = (status) =>
  * consignment three times in a morning should replace one open item, not stack three — the
  * to-do list is a list of things to do, and "read this" three times is one thing.
  */
-export const tellMarketing = asyncHandler(async (req, res) => {
+export const tellMarketing = asyncHandler(transactional(async (req, res) => {
   const dispatch = await Dispatch.findById(req.params.id).populate([
     { path: 'order', select: 'number priorityBy priority' },
     { path: 'customer', select: 'name' },
@@ -1081,7 +1082,7 @@ export const tellMarketing = asyncHandler(async (req, res) => {
   });
 
   res.json({ success: true, data: { told: audience.size, note } });
-});
+}));
 
 /* --------------------------------- The POD --------------------------------- */
 

@@ -238,7 +238,7 @@ async function readableEscalation(id, user) {
  * often not in the department that was stopped. It is also what stops three people ringing the
  * same supplier on the same morning.
  */
-export const addEscalationUpdate = asyncHandler(async (req, res) => {
+export const addEscalationUpdate = asyncHandler(transactional(async (req, res) => {
   const escalation = await readableEscalation(req.params.escalationId, req.user);
 
   if (escalation.status === 'resolved') {
@@ -274,7 +274,7 @@ export const addEscalationUpdate = asyncHandler(async (req, res) => {
 
   await escalation.populate(POPULATE);
   res.json({ success: true, data: escalation });
-});
+}));
 
 /**
  * Marking it resolved.
@@ -285,7 +285,7 @@ export const addEscalationUpdate = asyncHandler(async (req, res) => {
  * close on nothing having changed, and the next person to hit the same problem has no idea
  * whether it was fixed or given up on.
  */
-export const resolveEscalation = asyncHandler(async (req, res) => {
+export const resolveEscalation = asyncHandler(transactional(async (req, res) => {
   const escalation = await readableEscalation(req.params.escalationId, req.user);
 
   if (escalation.status === 'resolved') {
@@ -334,4 +334,4 @@ export const resolveEscalation = asyncHandler(async (req, res) => {
 
   await escalation.populate(POPULATE);
   res.json({ success: true, data: escalation });
-});
+}));

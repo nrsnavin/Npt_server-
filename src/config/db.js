@@ -24,7 +24,22 @@ export const connectionOptions = () => ({
   writeConcern: { w: 'majority' },
 });
 
+/*
+ * Said once, so a dropped connection is logged as one rather than surfacing as an unhandled
+ * 'error' event. The driver reconnects by itself; requests in the meantime fail with a 500 and
+ * the screens retry.
+ */
+let watching = false;
+function watchConnection(connection) {
+  if (watching) return;
+  watching = true;
+  connection.on('error', (error) => console.error('[db] connection error:', error.message));
+  connection.on('disconnected', () => console.warn('[db] disconnected (the driver reconnects by itself unless the app is shutting down)'));
+  connection.on('reconnected', () => console.log('[db] reconnected'));
+}
+
 export async function connectDatabase(uri = env.mongoUri) {
+  watchConnection(mongoose.connection);
   await mongoose.connect(uri, connectionOptions());
   return mongoose.connection;
 }
