@@ -285,6 +285,15 @@ export const TASK_FORMS = {
       { key: 'piNumber', label: 'PI Number (optional)', placeholder: 'Enter PI number' },
       { key: 'delivery', label: 'Delivery contact & vehicle route', type: 'info', from: 'customer.delivery' },
     ],
+    /*
+     * Papers the department uploads onto its task, which marketing can then attach when writing
+     * to the buyer from the enquiry [services/enquiryDocuments.service.js]. Any number of each;
+     * uploading one moves nothing.
+     */
+    documents: [
+      { type: 'invoice', label: 'Invoice' },
+      { type: 'dispatch_details', label: 'Dispatch details' },
+    ],
   },
   lr_copy: {
     team: 'Reception — LR Copy',
@@ -316,6 +325,8 @@ export const TASK_FORMS = {
     resultTypes: ['application/pdf', 'image/jpeg', 'image/png'],
     /* Uploaded, it goes to the buyer by email and WhatsApp, and the task moves to the `sent` status. */
     sendResult: { whatsappTemplate: 'lr_copy' },
+    /* Reception keeps the dispatch papers after fulfilment, beside the LR copy above. */
+    documents: [{ type: 'dispatch_details', label: 'Dispatch details' }],
   },
 
   team_payment_followup: paymentFollowUp,

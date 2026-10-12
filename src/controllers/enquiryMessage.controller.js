@@ -13,6 +13,7 @@ import { isWhatsAppConfigured, sendWhatsApp } from '../providers/whatsapp.js';
 import { isProduction } from '../config/env.js';
 import { QUEUE_STATUSES } from './sampleDashboard.controller.js';
 import { marketingStatusLabel } from '../config/marketingStatuses.js';
+import { documentFile, documentFromLink, documentsFor, documentUrl } from '../services/enquiryDocuments.service.js';
 
 /**
  * Writing to the buyer from the enquiry, on the company's WhatsApp number and the company's
@@ -55,8 +56,15 @@ export const sendEnquiryMessage = asyncHandler(async (req, res) => {
     throw ApiError.forbidden('Only the person this enquiry is assigned to writes to the buyer from here');
   }
 
-  const { channel, subject, body } = req.body;
+  const { channel, subject, body, attachments = [] } = req.body;
   const customer = await Customer.findById(enquiry.customer);
+  /* Every paper fetched and checked before anything goes: a bad pick refuses the whole message
+     rather than sending the words without the invoice they promise. */
+  const papers = [];
+  for (const pick of attachments) {
+    if (papers.some((paper) => paper.type === pick.type && paper.id === pick.id)) continue;
+    papers.push(await documentFile(enquiry, pick));
+  }
   const address = addressFor(channel, customer);
   if (!address) {
     throw ApiError.badRequest(
@@ -78,7 +86,9 @@ export const sendEnquiryMessage = asyncHandler(async (req, res) => {
     subject: channel === 'email' ? subject : undefined,
     body,
     sentBy: req.user._id,
+    ...(papers.length ? { attachments: papers.map(({ type, label, filename }) => ({ type, label, filename })) } : {}),
   };
+  const baseUrl = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
 
   let delivery;
   try {
@@ -88,15 +98,27 @@ export const sendEnquiryMessage = asyncHandler(async (req, res) => {
         subject,
         text: body,
         html: `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:560px;white-space:pre-wrap">${escapeHtml(body)}</div>`,
+        attachments: papers.map((paper) => ({ filename: paper.filename, content: paper.buffer, contentType: paper.mimeType })),
       });
       delivery = { providerId: result.messageId, providerStatus: result.delivered ? 'sent' : 'logged' };
-    } else if (!isWhatsAppConfigured()) {
-      /* Outside production a missing provider logs rather than fails, as the sample notices do. */
-      console.log(`\n[whatsapp] to ${address}\n${body}\n`);
-      delivery = { providerStatus: 'logged' };
     } else {
-      const result = await sendWhatsApp({ to: address, body });
-      delivery = { providerId: result.id, providerStatus: result.status };
+      /* WhatsApp carries one document a message: the words go with the first, each further paper
+         follows on its own, named. The buyer's phone fetches each from a signed link. */
+      const parts = papers.length
+        ? papers.map((paper, index) => ({ body: index === 0 ? body : paper.label, document: { url: documentUrl(baseUrl, enquiry, paper), filename: paper.filename } }))
+        : [{ body }];
+      if (!isWhatsAppConfigured()) {
+        /* Outside production a missing provider logs rather than fails, as the sample notices do. */
+        for (const part of parts) console.log(`\n[whatsapp] to ${address}\n${part.body}${part.document ? `\n${part.document.url}` : ''}\n`);
+        delivery = { providerStatus: 'logged' };
+      } else {
+        let first;
+        for (const part of parts) {
+          const result = await sendWhatsApp({ to: address, ...part });
+          first ||= result;
+        }
+        delivery = { providerId: first.id, providerStatus: first.status };
+      }
     }
   } catch (error) {
     await CustomerMessage.create({ ...base, status: 'failed', error: error.message });
@@ -109,7 +131,7 @@ export const sendEnquiryMessage = asyncHandler(async (req, res) => {
   enquiry.activities.push({
     type: channel,
     /* The fact, not the words: this line is read by Admin and the departments too. */
-    note: channel === 'email' ? 'Email sent from the company mail' : 'WhatsApp sent from the company number',
+    note: `${channel === 'email' ? 'Email sent from the company mail' : 'WhatsApp sent from the company number'}${papers.length ? ` with ${papers.map((paper) => paper.label).join(', ')}` : ''}`,
     spokeTo: customer.name,
     at,
     by: req.user._id,
@@ -118,6 +140,23 @@ export const sendEnquiryMessage = asyncHandler(async (req, res) => {
   await enquiry.save();
 
   res.status(201).json({ success: true, data: await message.populate('sentBy', 'name') });
+});
+
+/** The papers this enquiry has to attach — its marketing person's, like the conversation. */
+export const listEnquiryDocuments = asyncHandler(async (req, res) => {
+  const enquiry = await readable(req);
+  if (!isOwner(req.user, enquiry)) return res.json({ success: true, data: [], meta: { mayAttach: false } });
+  res.json({ success: true, data: await documentsFor(enquiry), meta: { mayAttach: true } });
+});
+
+/** A paper behind a signed link — what WhatsApp fetches to deliver it. No session: the signature is the permission. */
+export const publicEnquiryDocument = asyncHandler(async (req, res) => {
+  const paper = await documentFromLink(req.params);
+  if (!paper) throw ApiError.notFound('This link has expired.');
+  res.setHeader('Content-Type', paper.mimeType);
+  res.setHeader('Content-Length', paper.buffer.length);
+  res.setHeader('Content-Disposition', `inline; filename="${String(paper.filename).replace(/"/g, '')}"`);
+  res.send(paper.buffer);
 });
 
 /**
@@ -162,6 +201,7 @@ export const listEnquiryMessages = asyncHandler(async (req, res) => {
       automatic: message.automatic,
       by: message.sentBy?.name || null,
       to: message.recipient,
+      attachments: message.attachments || [],
     })),
     ...inbound,
   ]

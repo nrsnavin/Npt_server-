@@ -59,6 +59,11 @@ const customerMessageSchema = new mongoose.Schema(
      * somebody's action.
      */
     sentBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    /** The papers that went with it, by name [services/enquiryDocuments.service.js] — so "did they get the invoice?" is answerable. */
+    attachments: {
+      type: [new mongoose.Schema({ type: String, label: String, filename: String }, { _id: false })],
+      default: undefined,
+    },
     automatic: { type: Boolean, default: false },
     /** True when a human changed the generated draft before it went [§42]. */
     edited: { type: Boolean, default: false },

@@ -1,6 +1,6 @@
 import { dashboardOverview, dashboardParties, dashboardTasks } from '../controllers/overview.controller.js';
 import { Router } from 'express';
-import { enquiryTimeline, listEnquiryMessages, sendEnquiryMessage } from '../controllers/enquiryMessage.controller.js';
+import { enquiryTimeline, listEnquiryMessages, sendEnquiryMessage, listEnquiryDocuments } from '../controllers/enquiryMessage.controller.js';
 import {
   listBuyerCards, getBuyerCard, buyerCardImage, uploadBuyerCard, confirmBuyerCard, discardBuyerCard,
 } from '../controllers/buyerCard.controller.js';
@@ -233,6 +233,8 @@ router.post('/enquiries/:id/actions', requireModule('enquiries', 'write'), valid
 router.post('/enquiries/:id/activities', requireModule('enquiries', 'write'), validate(enquiryActivitySchema), logEnquiryActivity);
 /* Writing to the buyer from the company number and mail; the conversation is the owner's. */
 router.get('/enquiries/:id/messages', listEnquiryMessages);
+/* The papers to attach to a message: quote, enquiry and sample details, SO, invoice, dispatch details, LR. */
+router.get('/enquiries/:id/attachables', listEnquiryDocuments);
 router.post('/enquiries/:id/messages', requireModule('enquiries', 'write'), validate(enquiryMessageSchema), sendEnquiryMessage);
 /* Marketing's own status for the enquiry — the dropdown on the enquiry and the list. */
 router.post('/enquiries/:id/marketing-status', requireModule('enquiries', 'write'), validate(enquiryMarketingStatusSchema), setEnquiryMarketingStatus);

@@ -14,7 +14,7 @@ import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
-  updateHandoff,
+  updateHandoff, mayWorkOnHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -197,6 +197,44 @@ export const publicTaskFile = asyncHandler(async (req, res) => {
   res.setHeader('Content-Length', buffer.length);
   res.setHeader('Content-Disposition', `inline; filename="${String(attachment.filename || 'document').replace(/"/g, '')}"`);
   res.send(buffer);
+});
+
+/**
+ * A paper a department keeps on its task — Dispatch's invoice and dispatch details, Reception's
+ * dispatch details [config/departmentTaskForms.js `documents`]. Moves nothing; marketing attaches
+ * it when writing to the buyer from the enquiry. Open or closed: the invoice often follows the goods.
+ */
+export const handoffDocument = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  const kinds = findHandoff(task.kind)?.form?.documents || [];
+  const kind = kinds.find((entry) => entry.type === req.body?.docType);
+  if (!kinds.length) throw ApiError.badRequest('This task does not keep documents');
+  if (!kind) throw ApiError.badRequest(`Say which paper this is — ${kinds.map((entry) => entry.label).join(' or ')}`);
+  if (!mayWorkOnHandoff(req.user, task)) throw ApiError.forbidden(`This task is on the ${DEPARTMENTS.find((entry) => entry.key === task.department)?.label || task.department} queue`);
+  if (!req.file) throw ApiError.badRequest('Attach the file');
+  if (!['application/pdf', 'image/jpeg', 'image/png'].includes(req.file.mimetype)) throw ApiError.badRequest('Attach a PDF, or a JPEG / PNG photo');
+  const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+  try {
+    const attachment = await Attachment.create({
+      key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
+      uploadedBy: req.user._id, task: task._id, docType: kind.type, title: kind.label,
+    });
+    task.updates = [...(task.updates || []), { note: `${kind.label} uploaded: ${req.file.originalname}`, by: req.user._id, at: new Date() }];
+    await task.save();
+    res.status(201).json({ success: true, data: attachment });
+  } catch (error) {
+    await remove(key);
+    throw error;
+  }
+});
+
+/** The papers on a task, newest first — for whoever may see the task. */
+export const handoffDocuments = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  if (!mayWorkOnHandoff(req.user, task) && String(task.createdBy) !== String(req.user._id)) throw ApiError.notFound('Task not found');
+  const files = await Attachment.find({ task: task._id, docType: { $exists: true } })
+    .select('key filename mimeType size docType title createdAt uploadedBy').populate('uploadedBy', 'name').sort({ createdAt: -1 }).lean();
+  res.json({ success: true, data: files });
 });
 
 /* Dispatch's "Ask Production": that department's task, raised from this one. */

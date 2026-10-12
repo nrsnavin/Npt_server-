@@ -36,7 +36,7 @@ import {
 import { pushKey, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, attachTeamTaskPdf,
+  handoffBrief, handoffDone, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, attachTeamTaskPdf, handoffDocument, handoffDocuments,
 } from '../controllers/handoff.controller.js';
 import {
   handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskStatusSchema,
@@ -90,6 +90,9 @@ router.get('/notices', listNotices);
 router.post('/notices/:id/read', markNoticeRead);
 router.delete('/notices/:id', removeNotice);
 router.post('/todos/:id/result', singleTaskResult('file'), handoffResult);
+/* Papers a department keeps on its task — the invoice, dispatch details — for marketing to attach. */
+router.get('/todos/:id/documents', handoffDocuments);
+router.post('/todos/:id/documents', singleTaskResult('file'), handoffDocument);
 router.delete('/todos/:id', deleteTodo);
 
 /*
