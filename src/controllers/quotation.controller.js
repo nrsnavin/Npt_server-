@@ -408,6 +408,77 @@ const loadDetail = (id) =>
     .populate('revisions.by', 'name')
     .populate('statusHistory.by', 'name');
 
+const OBJECT_ID = /^[0-9a-f]{24}$/i;
+const PREVIOUS_LIMIT = 8;
+
+/**
+ * What this mould in this material was quoted at before — beside the costing sheet, once both are
+ * picked [web: components/PreviousQuotes.jsx].
+ *
+ * Two groups, nearest first: the same mould, material, hook and clips (the same item, so the same
+ * price question), then the same mould and material with other parts. Each row names its hook,
+ * clips, print and packing so the difference in price can be read off the difference in parts.
+ * Scoped as the quotation list is; the cost behind a price only for whoever may see costing [§8].
+ */
+export const previousQuotes = asyncHandler(async (req, res) => {
+  const { mould, material, hook, clip, exclude } = req.query;
+  if (!OBJECT_ID.test(String(mould || '')) || !OBJECT_ID.test(String(material || ''))) {
+    return res.json({ success: true, data: { same: [], similar: [] } });
+  }
+  const filter = {
+    ...ownershipFilter(req.user),
+    lines: { $elemMatch: { mould, materialRef: material } },
+    ...(OBJECT_ID.test(String(exclude || '')) ? { _id: { $ne: exclude } } : {}),
+  };
+  const rows = await Quotation.find(filter)
+    .select('number status createdAt sentAt packing customer lines')
+    .populate([
+      { path: 'customer', select: 'name' },
+      { path: 'lines.mould', select: 'mouldCode name' },
+      ...Object.entries(REGISTER_FIELDS).map(([ref, select]) => ({ path: `lines.${ref}`, select })),
+    ])
+    .sort('-createdAt')
+    .limit(60);
+
+  const costing = seesCosting(req.user);
+  const idOf = (value) => String(value?._id || value || '');
+  const part = (value) => (value?.name ? [value.name, value.colour].filter(Boolean).join(' · ') : null);
+  const quoted = [];
+  for (const quotation of rows) {
+    for (const line of quotation.lines || []) {
+      if (idOf(line.mould) !== String(mould) || idOf(line.materialRef) !== String(material)) continue;
+      const price = line.approvedPrice ?? line.unitPrice ?? line.calculatedSellingPrice;
+      if (!price && !line.totalCost) continue;
+      quoted.push({
+        quotation: quotation._id,
+        number: quotation.number,
+        status: quotation.status,
+        at: quotation.sentAt || quotation.createdAt,
+        customer: quotation.customer?.name || null,
+        modelNumber: line.modelNumber || line.mould?.mouldCode,
+        colour: line.colour,
+        quantity: line.quantity,
+        price: price ?? null,
+        ...(costing ? { cost: Math.round(line.totalCost * 100) / 100, packingCost: line.cost?.packingCost || 0 } : {}),
+        material: part(line.materialRef),
+        hook: part(line.hookRef),
+        clip: part(line.clipRef),
+        print: part(line.printRef),
+        printing: line.printing || null,
+        packing: quotation.packing || null,
+        sameParts: idOf(line.hookRef) === String(hook || '') && idOf(line.clipRef) === String(clip || ''),
+      });
+    }
+  }
+  res.json({
+    success: true,
+    data: {
+      same: quoted.filter((row) => row.sameParts).slice(0, PREVIOUS_LIMIT),
+      similar: quoted.filter((row) => !row.sameParts).slice(0, PREVIOUS_LIMIT),
+    },
+  });
+});
+
 export const getQuotation = asyncHandler(async (req, res) => {
   const quotation = await loadDetail(req.params.id);
   if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
