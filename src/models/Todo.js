@@ -135,7 +135,20 @@ const todoSchema = new mongoose.Schema(
     /** Progress said along the way without moving the enquiry — pending quantity, a call made. */
     updates: {
       type: [new mongoose.Schema({
+        /* The whole line, as it has always been kept: "Started · Ready date 2026-10-17: on M3". */
         note: { type: String, trim: true, maxlength: 2000 },
+        /*
+         * The same line in its parts, so a screen can draw it as a step, a date and the person's
+         * words rather than one sentence [web: utils/taskHistory.js]. `kind`: status (a move on
+         * the workflow), note (a plain update), asked_again, asked (another department asked from
+         * this task), corrected, uploaded, notice (something the app noted — a message not sent).
+         */
+        kind: { type: String, enum: ['status', 'note', 'asked_again', 'asked', 'corrected', 'uploaded', 'notice'] },
+        status: { type: String, trim: true },
+        statusLabel: { type: String, trim: true, maxlength: 120 },
+        date: { type: String, trim: true },
+        dateLabel: { type: String, trim: true, maxlength: 60 },
+        text: { type: String, trim: true, maxlength: 2000 },
         fields: { type: Map, of: String, default: undefined },
         by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         at: { type: Date, default: Date.now },

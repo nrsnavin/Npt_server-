@@ -187,7 +187,7 @@ export async function createQcRecord(body, user) {
   if (made.task) {
     await Todo.updateOne(
       { _id: made.task },
-      { $push: { updates: { note: `QC record ${made.number}: ${made.verdict.replace(/_/g, ' ')}${made.failedTests.length ? ` — failed ${made.failedTests.join(', ')}` : ''}`, by: user._id, at: new Date() } } },
+      { $push: { updates: { kind: 'notice', statusLabel: `QC record ${made.number}`, text: `${made.verdict.replace(/_/g, ' ')}${made.failedTests.length ? ` — failed ${made.failedTests.join(', ')}` : ''}`, note: `QC record ${made.number}: ${made.verdict.replace(/_/g, ' ')}${made.failedTests.length ? ` — failed ${made.failedTests.join(', ')}` : ''}`, by: user._id, at: new Date() } } },
       { keepVersion: true }
     );
   }
@@ -527,8 +527,16 @@ export const lowStockKey = (materialId) => `low-stock:${materialId}`;
 
 /** A receipt from the supplier, or a count corrected — the balance moved and the book entry kept. */
 export async function moveStock(materialId, { kind, kg, reference, note }, user) {
-  const material = await Material.findOneAndUpdate({ _id: materialId }, { $inc: { stockKg: kg } }, { new: true, keepVersion: true });
-  if (!material) throw ApiError.notFound('Material not found');
+  /* One atomic step on the balance, and the entry written in the same transaction. A correction
+     downwards is refused by the same step when the store does not hold that much — checked and
+     taken together, so two corrections at once cannot both pass a check neither of them saw. */
+  const enough = kind === 'adjust' && kg < 0 ? { stockKg: { $gte: -kg } } : {};
+  const material = await Material.findOneAndUpdate({ _id: materialId, ...enough }, { $inc: { stockKg: kg } }, { new: true, keepVersion: true });
+  if (!material) {
+    const held = await Material.findById(materialId).select('stockKg').lean();
+    if (!held) throw ApiError.notFound('Material not found');
+    throw ApiError.badRequest(`The store holds ${Number(held.stockKg || 0).toLocaleString('en-IN')} kg — a correction cannot take it below zero`);
+  }
   const [movement] = await StockMovement.create([{ material: material._id, kind, kg, balanceAfter: material.stockKg, reference, note, by: user._id }]);
   if (material.reorderKg == null || material.stockKg > material.reorderKg) await resolveTasks(lowStockKey(material._id));
   return { material, movement };

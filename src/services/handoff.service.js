@@ -658,7 +658,10 @@ export async function registerLists() {
 async function addToOpenTask(task, { handoff, note, asked, priority, requiredDate, user }) {
   const answers = describeAnswers(handoff, asked);
   const text = [String(note || '').trim(), answers].filter(Boolean).join(' — ') || 'Asked again';
-  task.updates = [...(task.updates || []), { note: `${user?.name || 'Someone'} asked again: ${text}`, by: user?._id, at: new Date() }];
+  task.updates = [...(task.updates || []), {
+    kind: 'asked_again', text: String(note || '').trim() || undefined,
+    note: `${user?.name || 'Someone'} asked again: ${text}`, by: user?._id, at: new Date(),
+  }];
   if (Object.keys(asked).length) {
     task.brief = { ...(task.brief || {}), ...asked };
     task.markModified('brief');
@@ -1007,6 +1010,8 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   /* A ready date is the enquiry's EDD (Production) or ERD (the mould) from here on [enquiryProgress]. */
   const dateField = form.statusDate?.field || 'edd';
   task.updates = [...(task.updates || []), {
+    kind: 'status', status: step.key, statusLabel: step.label, text: text || undefined,
+    ...(readyDate ? { date: readyDate, dateLabel: form.statusDate?.label || 'Ready date' } : {}),
     note: text ? `${said}: ${text}` : said, ...(readyDate ? { fields: { [dateField]: readyDate } } : {}), by: user._id, at: new Date(),
   }];
   if (!task.user) task.user = user._id;
@@ -1050,7 +1055,7 @@ export async function askFromTask(task, user, { kind, note, brief, priority, req
   if (raised?._id) await Todo.updateOne({ _id: raised._id }, { $addToSet: { askedFrom: task._id } }, { keepVersion: true });
   const step = action.status && statusesOf(task).find((entry) => entry.key === action.status);
   const said = `${action.label}: ${text}`;
-  task.updates = [...(task.updates || []), { note: said, by: user._id, at: new Date() }];
+  task.updates = [...(task.updates || []), { kind: 'asked', statusLabel: action.label, text, note: said, by: user._id, at: new Date() }];
   if (step) {
     task.status = step.key;
     task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: said, by: user._id, at: new Date() }];
@@ -1097,7 +1102,7 @@ async function raiseNextFrom(task, user, step, text) {
     });
   } catch (error) {
     if (error?.statusCode !== 400 && error?.statusCode !== 409) throw error;
-    task.updates = [...(task.updates || []), { note: `${findHandoff(step.next)?.label || 'Next task'} not raised: ${error.message}`, by: user._id, at: new Date() }];
+    task.updates = [...(task.updates || []), { kind: 'notice', statusLabel: `${findHandoff(step.next)?.label || 'Next task'} not raised`, text: error.message, note: `${findHandoff(step.next)?.label || 'Next task'} not raised: ${error.message}`, by: user._id, at: new Date() }];
     await task.save();
     return null;
   }
@@ -1287,7 +1292,10 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
   task.status = step.key;
   task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: note || undefined, by: user._id, at: new Date() }];
   if (!step.done) {
-    task.updates = [...(task.updates || []), { note: [step.label, String(note || '').trim()].filter(Boolean).join(': '), by: user._id, at: new Date() }];
+    task.updates = [...(task.updates || []), {
+      kind: 'status', status: step.key, statusLabel: step.label, text: String(note || '').trim() || undefined,
+      note: [step.label, String(note || '').trim()].filter(Boolean).join(': '), by: user._id, at: new Date(),
+    }];
     if (!task.user) task.user = user._id;
   }
   await task.save();
@@ -1324,14 +1332,14 @@ export async function markResultSent(task, user, results) {
     : `${entry.channel === 'email' ? 'Email' : 'WhatsApp'} not sent (${entry.skipReason || entry.error || entry.status})`)).join(' · ');
   if (!step || !sent.length) {
     if (said) {
-      task.updates = [...(task.updates || []), { note: `Not sent to the customer — ${said}`, by: user._id, at: new Date() }];
+      task.updates = [...(task.updates || []), { kind: 'notice', statusLabel: 'Not sent to the customer', text: said, note: `Not sent to the customer — ${said}`, by: user._id, at: new Date() }];
       await task.save();
     }
     return task;
   }
   task.status = step.key;
   task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: said, by: user._id, at: new Date() }];
-  task.updates = [...(task.updates || []), { note: `${step.label}: ${said}`, by: user._id, at: new Date() }];
+  task.updates = [...(task.updates || []), { kind: 'status', status: step.key, statusLabel: step.label, text: said, note: `${step.label}: ${said}`, by: user._id, at: new Date() }];
   await task.save();
   if (findHandoff(task.kind)?.form?.notifyStatus) await noticeStatus(task, user, { step, note: said });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
@@ -1390,7 +1398,7 @@ export async function editTaskBrief(task, user, { brief = {} }) {
   task.brief = current;
   task.attention = undefined;
   task.markModified('brief');
-  task.updates = [...(task.updates || []), { note: `Corrected: ${changed.join(', ')}`, by: user._id, at: new Date() }];
+  task.updates = [...(task.updates || []), { kind: 'corrected', statusLabel: 'Corrected', text: changed.join(', '), note: `Corrected: ${changed.join(', ')}`, by: user._id, at: new Date() }];
   await task.save();
   return task;
 }
@@ -1405,7 +1413,7 @@ export async function updateHandoff(task, user, { note, fields = {} }) {
   if (text.length < 2) fail('Say what the update is');
   const kept = keptFields(task.kind, fields);
   task.updates = [...(task.updates || []), {
-    note: text, fields: Object.keys(kept).length ? kept : undefined, by: user._id, at: new Date(),
+    kind: 'note', text, note: text, fields: Object.keys(kept).length ? kept : undefined, by: user._id, at: new Date(),
   }];
   task.attention = undefined;
   /* The first person in the department to write on it has taken it. Admin writing from the

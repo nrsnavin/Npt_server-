@@ -46,15 +46,28 @@ const GAPLESS = new Set(['SO']);
  * A gapless one is taken inside, so a rollback gives it back; there the people taking one queue
  * on a lock for that counter, which turns a pile of conflicts into a line that moves.
  */
+/**
+ * The step itself. An upsert on a key nobody has used yet is the one moment two callers can
+ * collide: both find no row, both insert, and the unique index refuses the second with a
+ * duplicate-key error — the first number of a new year, taken by two people at once. The second
+ * simply asks again: the row is there now, and `$inc` cannot collide.
+ */
+async function step(key, options = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const counter = await Counter.findOneAndUpdate({ key }, { $inc: { seq: 1 } }, { new: true, upsert: true, ...options });
+      return counter.seq;
+    } catch (error) {
+      if (error?.code !== 11000 || attempt >= 3) throw error;
+    }
+  }
+}
+
 async function bump(key, { gapless = false } = {}) {
   const transaction = currentTransaction();
-  if (transaction?.real && !gapless) {
-    const counter = await Counter.findOneAndUpdate({ key }, { $inc: { seq: 1 } }, { new: true, upsert: true, session: null });
-    return counter.seq;
-  }
+  if (transaction?.real && !gapless) return step(key, { session: null });
   if (transaction?.real) await acquireOperationLock(`counter:${key}`, { retryMs: 30_000 });
-  const counter = await Counter.findOneAndUpdate({ key }, { $inc: { seq: 1 } }, { new: true, upsert: true });
-  return counter.seq;
+  return step(key);
 }
 
 /** The next number for a prefix, per calendar year, e.g. nextNumber('ENQ') -> "ENQ-2026-0007". */
