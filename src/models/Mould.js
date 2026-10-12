@@ -198,6 +198,15 @@ const mouldSchema = new mongoose.Schema(
 
     status: { type: String, enum: MOULD_STATUSES, default: 'active', index: true },
 
+    /**
+     * The mould's life, in shots: every finished run adds its shot count [services/records.service.js].
+     * Maintenance falls due every `maintenanceEveryShots` after the last one.
+     */
+    totalShots: { type: Number, min: 0, default: 0 },
+    maintenanceEveryShots: { type: Number, min: 0 },
+    lastMaintenanceShots: { type: Number, min: 0 },
+    lastMaintenanceAt: Date,
+
     ownedBy: { type: String, enum: MOULD_OWNERSHIP, default: 'company', index: true },
     /** Set only when the buyer paid for the tool — see `MOULD_OWNERSHIP`. */
     ownedByCustomer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
@@ -213,6 +222,14 @@ const mouldSchema = new mongoose.Schema(
 );
 
 mouldSchema.index({ mouldCode: 'text', name: 'text' });
+
+/** Shots since the last maintenance, and whether the next is due by count. */
+mouldSchema.virtual('shotsSinceMaintenance').get(function shotsSinceMaintenance() {
+  return Math.max(0, (this.totalShots || 0) - (this.lastMaintenanceShots || 0));
+});
+mouldSchema.virtual('maintenanceDue').get(function maintenanceDue() {
+  return Boolean(this.maintenanceEveryShots && this.shotsSinceMaintenance >= this.maintenanceEveryShots);
+});
 mouldSchema.index({ status: 1, material: 1 });
 
 /**

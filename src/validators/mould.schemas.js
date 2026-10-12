@@ -65,6 +65,8 @@ const mouldFields = z.object({
       .optional(),
 
     status: z.enum(MOULD_STATUSES).optional(),
+    /* Maintenance due every this many shots [services/records.service.js]. */
+    maintenanceEveryShots: z.number().int().nonnegative().nullable().optional(),
     ownedBy: z.enum(MOULD_OWNERSHIP).optional(),
     /**
      * Nullable as well as optional, and it has to be both.

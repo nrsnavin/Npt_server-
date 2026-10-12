@@ -11,6 +11,7 @@ import sampleRoutes from './sample.routes.js';
 import whatsappRoutes from './whatsapp.routes.js';
 import queryRoutes from './query.routes.js';
 import dispatchPlanningRoutes from './dispatchPlanning.routes.js';
+import recordsRoutes from './records.routes.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
 import { globalSearch } from '../controllers/search.controller.js';
 import { inbox } from '../controllers/inbox.controller.js';
@@ -94,6 +95,8 @@ router.use('/', orderRoutes);
 router.use('/', queryRoutes);
 /* Dispatch planning: the trip planner and its transporter and route lists. */
 router.use('/', dispatchPlanningRoutes);
+/* QC records, machines, maintenance, mould runs and the dispatch register. */
+router.use('/', recordsRoutes);
 router.use('/', pipelineRoutes);
 
 export default router;
