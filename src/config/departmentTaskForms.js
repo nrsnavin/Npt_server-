@@ -44,6 +44,9 @@ import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
  *              task is already open (a second part load), it is told of this one instead
  *   readyForDispatch  reaching it tells the enquiry's open Dispatch request, which moves to
  *              Goods Ready — Waiting for Vehicle if it was still waiting on the goods
+ *   tells      reaching it tells the enquiry's open task of that kind (Mould Ready → Production)
+ *   recordsPayment  reaching it, with an order on the enquiry still held for its payment, gives
+ *              whoever moved it a task to record the receipt in Payments
  *   issue      while the task is at it, the enquiry shows it as an issue (marketing's list)
  *   date       `required` — a ready date must be given with it; `tomorrow` — it is tomorrow
  *              unless another is given. Any other status takes the date if one is given.
@@ -253,7 +256,8 @@ export const TASK_FORMS = {
       { key: 'development_edr', label: 'Development EDR', date: 'required' },
       { key: 'rework', label: 'Rework', issue: true },
       { key: 'rework_edr', label: 'Rework EDR', date: 'required', issue: true },
-      { key: 'mould_ready', label: 'Mould Ready' },
+      /* Tells the enquiry's open Production task the tool is back [handoff.service `tellOpenTasks`]. */
+      { key: 'mould_ready', label: 'Mould Ready', tells: 'ask_edd' },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
     asks: [
@@ -359,8 +363,9 @@ export const TASK_FORMS = {
     statuses: [
       { key: 'approval_required', label: 'Payment Approval Required' },
       { key: 'confirmation_pending', label: 'Payment Confirmation Pending' },
-      { key: 'confirmed', label: 'Payment Confirmed' },
-      { key: 'credit_approved', label: 'Credit Approved' },
+      /* If an order on the enquiry is still held for its payment, whoever confirmed is asked to record the receipt. */
+      { key: 'confirmed', label: 'Payment Confirmed', recordsPayment: true },
+      { key: 'credit_approved', label: 'Credit Approved', recordsPayment: true },
       { key: 'statement_required', label: 'Statement Required' },
       { key: 'clarified', label: 'Account Clarified' },
       /* An account on hold holds the enquiry up — marketing's list shows it. */

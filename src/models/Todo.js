@@ -105,6 +105,12 @@ const todoSchema = new mongoose.Schema(
     /** The task this one was raised from — a clarification asked by the SO team. */
     parentTask: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
     /**
+     * The other departments' tasks that asked for this one (Dispatch's "Ask Production") — their
+     * people hear each move on it, as the enquiry's marketing person and Admin do [handoff.service
+     * `noticeStatus`]. Not the enquiry's owner: the department that asked.
+     */
+    askedFrom: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Todo' }], default: undefined },
+    /**
      * Something on the task the department has not acted on yet — an answer to its question.
      * Shown at the top of its dashboard until somebody there moves the task or says they saw it.
      */
