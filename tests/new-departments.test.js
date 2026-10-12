@@ -142,7 +142,9 @@ test('Assembly gets its EDD question', async () => {
   });
   assert.equal(sent.status, 201, JSON.stringify(sent.json));
   const desk = (await api('/api/departments/assembling/dashboard', { token: lakshmi })).json.data;
-  assert.equal(desk.figures.label, 'Assembly');
+  /* Assembly's desk is the shared Quality · Assembling · Printing desk [config/modules.js DESK_GROUPS]. */
+  assert.equal(desk.figures.label, 'Quality · Assembling · Printing');
+  assert.equal(desk.desk.key, 'finishing');
   assert.ok(desk.enquiries.some((row) => String(row.enquiry._id) === String(enquiry._id)));
 });
 

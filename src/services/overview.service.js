@@ -7,7 +7,7 @@ import { marketingStatusLabel, marketingStatusOf } from '../config/marketingStat
 import { customerScope, isOwnershipScoped, ownershipFilter } from './ownership.service.js';
 import { departmentsOf, isManagement } from '../utils/departments.js';
 import { endOfDayIST } from './handoff.service.js';
-import { DEPARTMENT_KEYS } from '../config/modules.js';
+import { DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import ApiError from '../utils/ApiError.js';
 
 /**
@@ -77,7 +77,9 @@ export const TASK_STATES = ['open', 'done', 'all'];
  */
 export async function trackedTasks(user, { department, state = 'open', limit = 300 } = {}) {
   if (!TASK_STATES.includes(state)) throw new ApiError(400, `State must be one of ${TASK_STATES.join(', ')}`);
-  if (department && !DEPARTMENT_KEYS.includes(department)) throw new ApiError(400, `Unknown department “${department}”`);
+  /* A department, or a desk shared by several [config/modules.js DESK_GROUPS] — every one of its queues. */
+  const members = department ? (deskOf(department)?.key === department ? deskOf(department).departments : [department]) : [];
+  if (department && !DEPARTMENT_KEYS.includes(department) && deskOf(department)?.key !== department) throw new ApiError(400, `Unknown department “${department}”`);
   const filter = { kind: { $exists: true }, ...NOT_THE_ENQUIRY };
   if (state === 'open') filter.completed = false;
   if (state === 'done') filter.completed = true;
@@ -93,8 +95,9 @@ export async function trackedTasks(user, { department, state = 'open', limit = 3
     }
   }
   if (department) {
-    if (filter.department && !filter.department.$in.includes(department)) return [];
-    filter.department = department;
+    const allowed = filter.department ? members.filter((key) => filter.department.$in.includes(key)) : members;
+    if (!allowed.length) return [];
+    filter.department = { $in: allowed };
   }
   const tasks = await Todo.find(filter)
     /* Enough to work the task from the board, not only to list it: what was asked, every update

@@ -141,6 +141,8 @@ const paymentFollowUp = {
   option: 'team_payment_followup',
   priority: false,
   requiredDate: false,
+  /* Every follow-up note reaches Admin and the enquiry's marketing person under "Needs your action". */
+  notifyStatus: true,
   /* Due on the day the buyer asked to be called, when they said one. */
   dueFrom: 'callOn',
   note: { label: 'Follow-up note', placeholder: 'Payment discussion or follow-up note' },
@@ -262,6 +264,24 @@ export const TASK_FORMS = {
       { key: 'asked', label: 'Asked Assembling Readiness' },
       { key: 'started', label: 'Started' },
       { key: 'spares_ready', label: 'Spares Ready' },
+      { key: 'part_ready', label: 'Part Quantity Ready' },
+      { key: 'full_ready', label: 'Full Quantity Ready' },
+      { key: 'ready_dispatch', label: 'Ready for Dispatch', readyForDispatch: true },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+  },
+  /* Printing sits with Quality and Assembly on one desk [config/modules.js DESK_GROUPS]; its task runs
+     the same way as Assembly's, with its own header on that desk. */
+  ask_printing: {
+    team: 'Printing Team',
+    asks: modelAndQuantity,
+    remarkRequired: true,
+    notifyStatus: true,
+    statusDate: { label: 'Ready date', field: 'edd' },
+    remark: { label: 'Remarks', placeholder: 'Add printing remark — artwork, colours, pieces done' },
+    statuses: [
+      { key: 'asked', label: 'Asked Printing Readiness' },
+      { key: 'started', label: 'Started' },
       { key: 'part_ready', label: 'Part Quantity Ready' },
       { key: 'full_ready', label: 'Full Quantity Ready' },
       { key: 'ready_dispatch', label: 'Ready for Dispatch', readyForDispatch: true },

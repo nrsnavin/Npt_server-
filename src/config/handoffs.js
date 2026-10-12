@@ -67,6 +67,12 @@ const BUTTONS = [
     records: [{ key: 'edd', label: 'Expected date', type: 'date' }, { key: 'pending', label: 'Pending quantity' }],
   },
   {
+    /* Printing shares Assembly's stage: the hanger is at the finishing desk either way. */
+    key: 'ask_printing', label: 'Ask Printing', department: 'printing', stage: 'assembling',
+    hint: 'When will printing finish?',
+    records: [{ key: 'edd', label: 'Expected date', type: 'date' }, { key: 'pending', label: 'Pending quantity' }],
+  },
+  {
     key: 'mould_issue', label: 'Mould Issue', department: 'mould', stage: 'mould',
     hint: 'The Mould department looks at the tool',
     records: [
