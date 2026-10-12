@@ -1,9 +1,6 @@
 import { Router } from 'express';
 import {
-  listQueries, getQuery, createQuery, addMessage,
-  addParticipant, closeQuery, reopenQuery, participantOptions,
-  readUrgency, suggestReply,
-  markRead, addFile, setUrgent, setLabels, readSummaries, bulkLabel, labelSuggestions,
+  listQueries, getQuery, createQuery, addMessage, addParticipant, closeQuery, reopenQuery, participantOptions, readUrgency, suggestReply, markRead, addFile, setUrgent, setLabels, readSummaries, bulkLabel, labelSuggestions, queryUnread,
 } from '../controllers/query.controller.js';
 import { singleDocument } from '../middleware/upload.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
@@ -35,6 +32,8 @@ router.use(authenticate);
 /* Who a participant may be, for the picker — departments and the people in each. */
 router.get('/queries/options', requireModule('queries'), participantOptions);
 
+/* The Queries panel: unread count and the threads, unread first. Above `/queries/:id`. */
+router.get('/queries/unread', requireModule('queries'), queryUnread);
 router.get('/queries', requireModule('queries'), listQueries);
 /*
  * How pressing the page in view is, read by the model [queries].
