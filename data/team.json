@@ -1,0 +1,14 @@
+[
+  { "email": "admin@navinplastic.com", "name": "Admin", "role": "admin", "departments": ["management"] },
+  { "email": "info@navinplastic.com", "name": "Info", "departments": ["marketing"] },
+  { "email": "sivakumar@navinplastic.com", "name": "Sivakumar", "departments": ["marketing", "production"] },
+  { "email": "ganesh@navinplastic.com", "name": "Ganesh", "departments": ["marketing"] },
+  { "email": "hangers@navinplastic.com", "name": "Hangers", "departments": ["marketing"] },
+  { "email": "sample@navinplastic.com", "name": "Sampling", "departments": ["sampling"] },
+  { "email": "office@navinplastic.com", "name": "Office (Dispatch)", "departments": ["despatch"] },
+  { "email": "payments@navinplastic.com", "name": "Payments", "departments": ["payment_collection"] },
+  { "email": "business@navinplastic.com", "name": "Business (PO & SO)", "departments": ["order_confirmation"] },
+  { "email": "sales1@navinplastic.com", "name": "Sales1", "departments": ["assembling", "printing", "quality"] },
+  { "email": "accounts@navinplastic.com", "name": "Accounts", "departments": ["audit"] },
+  { "email": "prt@navinplastic.com", "name": "PRT", "departments": ["payment_recovery"] }
+]

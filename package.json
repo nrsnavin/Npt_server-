@@ -40,6 +40,7 @@
     "migrate:all": "node scripts/migrate-all.js",
     "seed:demo": "node src/seed/index.js --keep-users --full",
     "import:mould-sheet": "node scripts/import-mould-sheet.js",
+    "register-team": "node scripts/register-team.js",
     "workflow-load-test": "node tests/load/workflow-load.mjs"
   },
   "dependencies": {
