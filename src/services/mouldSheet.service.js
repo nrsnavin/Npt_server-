@@ -137,49 +137,57 @@ export async function ppRateFor(given) {
 }
 
 /**
- * Each entry's action: create or update on the mould register or the trading master, or skip
- * with the reason. The first row of a code wins within a register; a later one is skipped and
- * named, because two rows for one model is a question for the person, not for the import.
+ * Each entry's action: create or update on the mould register or the trading master. Nothing is
+ * dropped: a second row for a code already on the sheet goes in under "CODE (2)", and a row with
+ * nothing but its code goes in as a mould to fill in — each named in the warnings, for the
+ * person to rename or complete.
  */
 export async function planSheet(entries) {
-  const codes = entries.map((entry) => entry.code.toUpperCase());
-  const [moulds, items] = await Promise.all([
-    Mould.find({ mouldCode: { $in: codes } }).select('mouldCode'),
-    TradedItem.find({ $or: [{ code: { $in: codes } }, { modelKey: { $in: entries.map((entry) => modelKeyOf(entry.code)) } }] }).select('code modelKey modelNumber'),
-  ]);
-  const mouldByCode = new Map(moulds.map((mould) => [mould.mouldCode, mould]));
-  const itemByKey = new Map(items.map((item) => [item.modelKey, item]));
-  const itemByCode = new Map(items.filter((item) => item.code).map((item) => [item.code, item]));
-
-  const seen = { mould: new Map(), traded: new Map() };
   const supplies = new Map();
   for (const entry of entries) {
     const key = entry.code.toUpperCase();
     if (entry.supply) supplies.set(key, new Set([...(supplies.get(key) || []), entry.supply]));
   }
 
-  return entries.map((entry) => {
+  /* First the register and the code each row lands on, so the lookups below find the "(2)"s too. */
+  const taken = { mould: new Set(), traded: new Set() };
+  const placed = entries.map((entry) => {
     const warnings = [...entry.warnings];
+    const register = entry.supply === 'trade' ? 'traded' : 'mould';
     const hasData = Object.keys(entry.numbers).length || entry.photoUrl;
-    if (!entry.supply && !hasData) return { ...entry, action: 'skip', reason: 'nothing but the code on this row' };
-    let register = entry.supply === 'trade' ? 'traded' : 'mould';
-    if (!entry.supply) warnings.push('Trade / Manufacture is blank — taken as Manufacture');
-    const key = entry.code.toUpperCase();
-    if (seen[register].has(key)) {
-      return { ...entry, register, action: 'skip', reason: `${entry.code} is already on line ${seen[register].get(key)} of the sheet` };
+    if (!entry.supply && !hasData) warnings.push('Nothing but the code on the sheet — added to fill in');
+    else if (!entry.supply) warnings.push('Trade / Manufacture is blank — taken as Manufacture');
+    let code = entry.code;
+    for (let copy = 2; taken[register].has(code.toUpperCase()); copy += 1) code = `${entry.code} (${copy})`;
+    taken[register].add(code.toUpperCase());
+    const notes = [...entry.notes];
+    if (code !== entry.code) {
+      warnings.push(`${entry.code} is already higher up the sheet — added as ${code}, to rename`);
+      notes.push(`A second row for ${entry.code} on the sheet (line ${entry.line}) — rename this one`);
     }
-    seen[register].set(key, entry.line);
-    if (supplies.get(key)?.size > 1) warnings.push(`${entry.code} is on the sheet as both Trade and Manufacture — on both registers`);
+    if (supplies.get(entry.code.toUpperCase())?.size > 1) warnings.push(`${entry.code} is on the sheet as both Trade and Manufacture — on both registers`);
+    return { ...entry, sheetCode: entry.code, code, notes, warnings, register };
+  });
 
-    if (register === 'mould') {
-      if (entry.numbers.partWeightGrams === undefined) warnings.push('No grammage — weight 0 until measured');
+  const codes = placed.map((entry) => entry.code.toUpperCase());
+  const [moulds, items] = await Promise.all([
+    Mould.find({ mouldCode: { $in: codes } }).select('mouldCode'),
+    TradedItem.find({ $or: [{ code: { $in: codes } }, { modelKey: { $in: placed.map((entry) => modelKeyOf(entry.code)) } }] }).select('code modelKey modelNumber'),
+  ]);
+  const mouldByCode = new Map(moulds.map((mould) => [mould.mouldCode, mould]));
+  const itemByKey = new Map(items.map((item) => [item.modelKey, item]));
+  const itemByCode = new Map(items.filter((item) => item.code).map((item) => [item.code, item]));
+
+  return placed.map((entry) => {
+    const key = entry.code.toUpperCase();
+    if (entry.register === 'mould') {
+      if (entry.numbers.partWeightGrams === undefined) entry.warnings.push('No grammage — weight 0 until measured');
       const existing = mouldByCode.get(key);
-      return { ...entry, warnings, register, action: existing ? 'update' : 'create', id: existing?._id };
+      return { ...entry, action: existing ? 'update' : 'create', id: existing?._id };
     }
     const existing = itemByCode.get(key) || itemByKey.get(modelKeyOf(entry.code));
-    if (!existing && entry.numbers.partWeightGrams === undefined) warnings.push('No grammage — the estimate has no resin');
-    register = 'traded';
-    return { ...entry, warnings, register, action: existing ? 'update' : 'create', id: existing?._id };
+    if (!existing && entry.numbers.partWeightGrams === undefined) entry.warnings.push('No grammage — the estimate has no resin');
+    return { ...entry, action: existing ? 'update' : 'create', id: existing?._id };
   });
 }
 
@@ -253,7 +261,7 @@ export async function applySheet(plan, { by, ppRate = 0, sheetName = 'the price 
       result.photos.kept += 1;
       continue;
     }
-    const got = await fetchPhoto(entry.photoUrl, entry.code);
+    const got = await fetchPhoto(entry.photoUrl, entry.sheetCode || entry.code);
     if (got.error) {
       result.photos.failed.push({ code: entry.code, line: entry.line, reason: got.error });
       log(`  photo for ${entry.code}: ${got.error}`);

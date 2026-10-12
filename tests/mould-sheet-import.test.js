@@ -128,12 +128,15 @@ test('Manufacture → moulds at 30 s, Trade → the trading master with its buil
   assert.equal(action('MAU-30', 'traded').action, 'create');
   assert.equal(action('MAU-30', 'mould').action, 'create', 'the same code as Trade and Manufacture is on both registers');
   assert.match(action('MAU-30', 'mould').warnings.join(), /both Trade and Manufacture/);
-  assert.equal(plan.filter((entry) => entry.code === 'TP-224')[1].action, 'skip', 'a second row for a code is not a second record');
-  assert.equal(action('RWP-330').action, 'skip');
+  const second = plan.find((entry) => entry.sheetCode === 'TP-224' && entry.code !== 'TP-224');
+  assert.equal(second.code, 'TP-224 (2)', 'a second row for a code is added under its own code, to rename');
+  assert.match(second.warnings.join(), /added as TP-224 \(2\), to rename/);
+  assert.equal(action('RWP-330').action, 'create', 'nothing but a code: added, to fill in');
+  assert.ok(plan.every((entry) => entry.action !== 'skip'), 'no row is dropped');
   assert.match(action('B-31').warnings.join(), /"\.\.2" read as 0\.2/);
 
   const result = await applySheet(plan, { by, ppRate: 100, fetchPhoto: photoFetcher() });
-  assert.deepEqual(result.moulds, { created: 4, updated: 0 });
+  assert.deepEqual(result.moulds, { created: 6, updated: 0 });
   assert.deepEqual(result.traded, { created: 2, updated: 0 });
   assert.equal(result.photos.added, 4);
   assert.deepEqual(result.photos.failed.map((miss) => [miss.code, miss.reason]), [['B-31', 'the link is not a picture']]);
@@ -147,7 +150,13 @@ test('Manufacture → moulds at 30 s, Trade → the trading master with its buil
   assert.equal(d30.photo.mimeType, 'image/jpeg');
   assert.equal(String(d30.photo.mould), String(d30._id));
   assert.equal((await Mould.findOne({ mouldCode: 'B-31' })).packingCost, 0.2);
-  assert.equal((await Mould.findOne({ mouldCode: 'TP-224' })).runnerWeightGrams, 2, 'the first row wins');
+  assert.equal((await Mould.findOne({ mouldCode: 'TP-224' })).runnerWeightGrams, 2, 'the first row keeps the code');
+  const copy = await Mould.findOne({ mouldCode: 'TP-224 (2)' });
+  assert.equal(copy.runnerWeightGrams, 1);
+  assert.match(copy.notes, /A second row for TP-224 on the sheet \(line 8\) — rename this one/);
+  const blank = await Mould.findOne({ mouldCode: 'RWP-330' });
+  assert.equal(blank.partWeightGrams, 0);
+  assert.equal(blank.cycleTimeSeconds, 30);
 
   const traded = await TradedItem.findOne({ modelNumber: 'MAU-30' }).populate('photo');
   assert.equal(traded.buildUp.partWeightGrams, 14);
@@ -172,12 +181,12 @@ test('running it again updates in place and fetches no photo twice', async () =>
 
   const plan = await planSheet(readSheet(parseSheet(sheet)).entries);
   const result = await applySheet(plan, { by: await User.findOne(), ppRate: 100, fetchPhoto: photoFetcher() });
-  assert.deepEqual(result.moulds, { created: 0, updated: 4 });
+  assert.deepEqual(result.moulds, { created: 0, updated: 6 });
   assert.deepEqual(result.traded, { created: 0, updated: 2 });
   assert.equal(result.photos.kept, 4);
   assert.equal(fetched - before, 1, 'only the link that failed is tried again');
   assert.equal(await Attachment.countDocuments(), attachments);
   assert.equal((await Mould.findOne({ mouldCode: 'D-30' })).cycleTimeSeconds, 24, 'the tool room’s cycle time stands');
   assert.equal((await TradedItem.findOne({ modelNumber: 'MAU-30' })).inwardPrice, 2.9, 'a price already set stands');
-  assert.equal((await Mould.countDocuments()), 4);
+  assert.equal((await Mould.countDocuments()), 6);
 });
