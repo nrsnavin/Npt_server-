@@ -173,6 +173,10 @@ const qcRecordSchema = new mongoose.Schema(
     aqlResult: passFail,
     /* Where the minimums came from — the model's standards, the buyer's — as the sheet was opened. */
     standardsFrom: { type: String, trim: true, maxlength: 200 },
+    /* The SO line's inspection this sheet wrote [models/Inspection.js] — so the line's quality standing,
+       its holds and the consignment's pre-dispatch check stay right without a second form. */
+    inspection: { type: mongoose.Schema.Types.ObjectId, ref: 'Inspection' },
+    inspectionNote: { type: String, trim: true, maxlength: 300 },
 
     /* The sample. */
     lotSize: { type: Number, min: 0 },

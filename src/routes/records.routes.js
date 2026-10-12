@@ -5,7 +5,7 @@ import ApiError from '../utils/ApiError.js';
 import { accessLevel } from '../services/access.service.js';
 import { levelSatisfies } from '../config/modules.js';
 import {
-  approveQc, askLocationHandler, enquiryRecordsHandler, qcPrefillHandler, qcReportHandler, moveStockHandler, stockBookHandler, createMachine, createMaintenance, createQc, dispatchRegisterHandler, finishRunHandler, getQc, listMachines,
+  approveQc, askLocationHandler, setupChecklistHandler, enquiryRecordsHandler, qcPrefillHandler, qcReportHandler, moveStockHandler, stockBookHandler, createMachine, createMaintenance, createQc, dispatchRegisterHandler, finishRunHandler, getQc, listMachines,
   listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine,
 } from '../controllers/records.controller.js';
 import {
@@ -46,6 +46,7 @@ router.post('/mould-runs/:id/finish', requireModule('production', 'write'), vali
 router.get('/moulds/:id/history', requireModule('moulds'), mouldHistoryHandler);
 
 router.get('/dispatch-register', requireModule('dispatch'), dispatchRegisterHandler);
+router.get('/setup-checklist', setupChecklistHandler);
 
 /* The resin store: the book for a material, and receipts or corrected counts (the material register's write grant). */
 router.get('/materials/:id/stock', requireModule('materials'), stockBookHandler);

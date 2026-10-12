@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import QcRecord from '../models/QcRecord.js';
 import SalesOrder from '../models/SalesOrder.js';
 import { ownsCustomer, ownsRecord } from '../services/ownership.service.js';
+import { isManagement } from '../utils/departments.js';
 import Customer from '../models/Customer.js';
 import { askForLocation } from '../services/customerLocation.service.js';
 import { canRead } from '../services/access.service.js';
@@ -19,7 +20,7 @@ import { sendCsv } from '../utils/csv.js';
 import { accessLevel } from '../services/access.service.js';
 import { levelSatisfies } from '../config/modules.js';
 import {
-  REGISTER_COLUMNS, qcReport, moveStock, stockBook, approveQcRecord, createQcRecord, dispatchDetailsForOrder, dispatchRegister, enquiryRecords, finishRun, qcForOrder, qcPrefill, listQcRecords, listRuns, maintenanceHistory,
+  REGISTER_COLUMNS, qcReport, moveStock, setupChecklist, stockBook, approveQcRecord, createQcRecord, dispatchDetailsForOrder, dispatchRegister, enquiryRecords, finishRun, qcForOrder, qcPrefill, listQcRecords, listRuns, maintenanceHistory,
   mouldHistory, populateQc, populateRun, recordMaintenance, renderQcCertificate, startRun,
 } from '../services/records.service.js';
 
@@ -174,4 +175,10 @@ export const askLocationHandler = asyncHandler(async (req, res) => {
   if (!customer || !ownsCustomer(req.user, customer)) throw ApiError.notFound('Customer not found');
   const message = await askForLocation(customer, req.user);
   res.status(201).json({ success: true, data: { message: message._id, recipient: message.recipient, at: message.createdAt } });
+});
+
+/** What the plant still has to fill in before the newer screens do anything — Admin's checklist. */
+export const setupChecklistHandler = asyncHandler(async (req, res) => {
+  if (!isManagement(req.user)) throw ApiError.forbidden('Only Admin sees the setup checklist');
+  res.json({ success: true, data: await setupChecklist() });
 });

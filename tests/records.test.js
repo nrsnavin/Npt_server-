@@ -746,3 +746,36 @@ test('a task names which SO it is for when the enquiry has several', async () =>
   const lr = await Todo.findOne({ enquiry: enquiry._id, kind: 'lr_copy', completed: false }).lean();
   assert.equal(String(lr.order), String(second), 'the LR copy is for the SO that went');
 });
+
+test('one form for Quality: a QC sheet on an SO line writes the line’s inspection; Admin’s setup checklist; search finds the plant’s records', async () => {
+  const enquiry = await enquiryFor('Inspection Sync Ltd', '9840040015');
+  const order = await SalesOrder.create({ number: 'SO-SYNC-1', customer: enquiry.customer?._id || enquiry.customer, enquiry: enquiry._id, assignedTo: ids.nandhini, status: 'production_running', lines: [{ modelNumber: 'NH-400', colour: 'Black', quantity: 5000, unitPrice: 7 }] });
+  const lineId = String(order.lines[0]._id);
+  const made = await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, order: String(order._id), orderLine: lineId, sampleSize: 80, rejected: 2, defects: [{ type: 'flash', count: 2 }], verdict: 'passed_with_deviation', remarks: 'Two flashed pieces pulled' } });
+  assert.equal(made.status, 201, made.json.message);
+  assert.equal(made.json.data.inspection.verdict, 'passed_with_deviation');
+  const onOrder = await api(`/api/orders/${order._id}/inspections`, { as: 'priya' });
+  assert.equal(onOrder.status, 200, onOrder.json.message);
+  const written = onOrder.json.data.find((row) => row._id === made.json.data.inspection._id);
+  assert.deepEqual([written.quantityInspected, written.quantityRejected, written.stage], [80, 2, 'final']);
+  assert.match(written.remarks, new RegExp(`From QC record ${made.json.data.number}`));
+  /* Before dispatch with no consignment raised: kept on the sheet, and it says why. */
+  const early = await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, stage: 'pre_dispatch', order: String(order._id), orderLine: lineId } });
+  assert.equal(early.json.data.inspection, undefined);
+  const reread = (await api(`/api/qc-records/${early.json.data._id}`, { as: 'priya' })).json.data;
+  assert.match(reread.inspectionNote, /No consignment raised yet/);
+
+  const checklist = await api('/api/setup-checklist', { as: 'admin' });
+  assert.equal(checklist.status, 200, checklist.json.message);
+  const keys = checklist.json.data.map((row) => row.key);
+  for (const key of ['machines', 'mould_interval', 'mould_standards', 'resin_stock', 'resin_reorder', 'delivery', 'pins', 'dispatch_lists', 'whatsapp', 'templates']) assert.ok(keys.includes(key), key);
+  assert.equal(checklist.json.data.find((row) => row.key === 'machines').done, true, 'machines were added earlier in this file');
+  assert.equal((await api('/api/setup-checklist', { as: 'priya' })).status, 403);
+
+  const found = await api(`/api/search?q=${made.json.data.number}`, { as: 'priya' });
+  assert.equal(found.status, 200, found.json.message);
+  assert.ok(found.json.data.groups.some((group) => group.key === 'qc' && group.results.some((row) => row.title === made.json.data.number)));
+  const machines = await api('/api/search?q=IM-', { as: 'siva' });
+  assert.ok(machines.json.data.groups.some((group) => group.key === 'machines' && group.results.length > 0));
+  assert.ok(!(await api(`/api/search?q=${made.json.data.number}`, { as: 'arun' })).json.data.groups.some((group) => group.key === 'machines'), 'marketing has no production grant');
+});

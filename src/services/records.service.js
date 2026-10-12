@@ -16,7 +16,8 @@ import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
 import { withCreateLocks } from './operationLock.service.js';
 import { render, letterhead, facts, footer } from './recordPdf.js';
-import { DEFECT_TYPES } from '../models/Inspection.js';
+import Inspection, { DEFECT_TYPES } from '../models/Inspection.js';
+import Dispatch, { CLOSED_DISPATCH_STATUSES, GONE_DISPATCH_STATUSES } from '../models/Dispatch.js';
 import { MOULDING_TYPES, PRINT_TYPES, QC_STAGES } from '../models/QcRecord.js';
 import { MAINTENANCE_TYPES } from '../models/MaintenanceRecord.js';
 import { aqlPlan } from '../utils/aql.js';
@@ -179,6 +180,7 @@ export async function createQcRecord(body, user) {
     record.customer = record.customer || enquiry.customer;
   }
   const [made] = await QcRecord.create([{ ...record, number: await nextNumber('QCR'), inspectedBy: user._id, inspectedAt: record.inspectedAt || new Date() }]);
+  await syncInspection(made, user);
   if (QC_WARNING_VERDICTS.includes(made.verdict) && LOT_STAGES.includes(made.stage) && made.enquiry) {
     await warnDispatchOfQc(made, user);
   }
@@ -190,6 +192,50 @@ export async function createQcRecord(body, user) {
     );
   }
   return made;
+}
+
+/**
+ * One form for Quality: a QC sheet on an SO line also writes that line's inspection — the record
+ * the SO's quality panel, the line's hold and the consignment's pre-dispatch check read. The press
+ * and final checks always; a before-dispatch check when exactly one consignment still to go carries
+ * the line (an inspection before dispatch is about one lorry). Otherwise the sheet says why not.
+ */
+async function syncInspection(record, user) {
+  const note = (text) => QcRecord.updateOne({ _id: record._id }, { $set: { inspectionNote: text } }, { keepVersion: true });
+  if (!record.order || !record.orderLine) return null;
+  if (!['in_process', 'final', 'pre_dispatch'].includes(record.stage)) return null;
+  if (!['passed', 'passed_with_deviation', 'rejected'].includes(record.verdict)) return note('On hold — no inspection written until it has a verdict');
+  if (!(record.sampleSize > 0)) return note('No pieces counted, so no inspection was written on the SO');
+  const order = await SalesOrder.findById(record.order).select('status lines');
+  const line = order?.lines.id(record.orderLine);
+  if (!order || !line) return null;
+  if (PRE_RELEASE_STATUSES.includes(order.status) || order.status === 'cancelled') return note(`${order.status === 'cancelled' ? 'The SO was cancelled' : 'The SO is not released yet'} — no inspection written on it`);
+  let consignment = null;
+  if (record.stage === 'pre_dispatch') {
+    const open = await Dispatch.find({ order: order._id, 'lines.orderLine': line._id, status: { $nin: [...GONE_DISPATCH_STATUSES, ...CLOSED_DISPATCH_STATUSES] } }).select('_id number').lean();
+    if (open.length !== 1) return note(open.length ? 'More than one consignment carries this line — record the before-dispatch check on the consignment' : 'No consignment raised yet — the check is kept here and on the dispatch request');
+    [consignment] = open;
+  }
+  const [inspection] = await Inspection.create([{
+    number: await nextNumber('QC'),
+    order: order._id,
+    line: line._id,
+    dispatch: consignment?._id,
+    mould: record.mould || line.mould,
+    materialRef: line.materialRef,
+    modelNumber: record.modelNumber || line.modelNumber,
+    colour: record.resin?.colour || line.colour,
+    stage: record.stage,
+    inspectedBy: user._id,
+    inspectedAt: record.inspectedAt || new Date(),
+    quantityInspected: record.sampleSize,
+    quantityRejected: record.rejected || 0,
+    defects: record.defects || [],
+    verdict: record.verdict,
+    remarks: [`From QC record ${record.number}`, record.remarks].filter(Boolean).join(' — '),
+  }]);
+  await QcRecord.updateOne({ _id: record._id }, { $set: { inspection: inspection._id }, $unset: { inspectionNote: 1 } }, { keepVersion: true });
+  return inspection;
 }
 
 /** The QC head's sign-off — never the inspector's own. */
@@ -204,7 +250,7 @@ export async function approveQcRecord(record, user) {
 
 const QC_POPULATE = [
   { path: 'enquiry', select: 'number' }, { path: 'customer', select: 'name code' }, { path: 'mould', select: 'mouldCode name' },
-  { path: 'order', select: 'number customerPo.number status' },
+  { path: 'order', select: 'number customerPo.number status' }, { path: 'inspection', select: 'number verdict' },
   { path: 'machine', select: 'code name' }, { path: 'resin.material', select: 'name grade' }, { path: 'inspectedBy', select: 'name' },
   { path: 'approvedBy', select: 'name' }, { path: 'run', select: 'number' }, { path: 'task', select: 'kind title' },
 ];
@@ -958,4 +1004,47 @@ export async function runMaintenanceReminders({ now = new Date() } = {}) {
     if (task) raised.push(`stock ${material.name}`);
   }
   return raised;
+}
+
+/* ---------------------------------------------------------- setup checklist --- */
+
+/**
+ * What the plant still has to fill in before the newer screens do anything: machines on the list,
+ * moulds with a maintenance interval and test standards, resin with stock and a reorder level,
+ * buyers with delivery details and a location pin, the dispatch lists, and WhatsApp's templates.
+ * Each a count against the whole, so Admin sees how far along it is and where to go.
+ */
+export async function setupChecklist() {
+  const [{ default: Customer }, { default: Vehicle }, { default: Transporter }, whatsapp] = await Promise.all([
+    import('../models/Customer.js'), import('../models/Vehicle.js'), import('../models/Transporter.js'), import('../providers/whatsapp.js'),
+  ]);
+  const active = { isActive: { $ne: false } };
+  const [machines, moulds, mouldsTimed, mouldsTested, materials, materialsStocked, materialsReorder, customers, customersDelivery, customersPinned, vehicles, transporters] = await Promise.all([
+    Machine.countDocuments({ active: { $ne: false } }),
+    Mould.countDocuments(active),
+    Mould.countDocuments({ ...active, maintenanceEveryShots: { $gt: 0 } }),
+    Mould.countDocuments({ ...active, qcStandards: { $exists: true, $ne: null } }),
+    Material.countDocuments(active),
+    Material.countDocuments({ ...active, stockKg: { $gt: 0 } }),
+    Material.countDocuments({ ...active, reorderKg: { $gt: 0 } }),
+    Customer.countDocuments({ status: { $ne: 'inactive' } }),
+    Customer.countDocuments({ status: { $ne: 'inactive' }, $or: [{ deliveryMode: { $exists: true, $ne: null } }, { deliveryRoute: { $exists: true, $ne: null } }, { usualTransporter: { $exists: true, $ne: null } }] }),
+    Customer.countDocuments({ status: { $ne: 'inactive' }, 'site.lat': { $exists: true } }),
+    Vehicle.countDocuments({ active: { $ne: false } }),
+    Transporter.countDocuments({ active: { $ne: false } }),
+  ]);
+  const templates = ['trip', 'lr_copy', 'location', 'task'].filter((key) => !whatsapp.whatsappTemplate(key));
+  const share = (have, of) => ({ have, of, done: of === 0 ? true : have >= of });
+  return [
+    { key: 'machines', label: 'Moulding machines on the list', ...{ have: machines, of: null, done: machines > 0 }, link: '/machines', hint: 'Add each press once — runs and maintenance are kept against it' },
+    { key: 'mould_interval', label: 'Moulds with a maintenance interval (shots)', ...share(mouldsTimed, moulds), link: '/moulds', hint: 'Edit the mould → Maintenance every (shots)' },
+    { key: 'mould_standards', label: 'Moulds with test standards', ...share(mouldsTested, moulds), link: '/moulds', hint: 'Edit the mould → Test standards — the QC sheet fills its minimums from them' },
+    { key: 'resin_stock', label: 'Materials with stock in the store', ...share(materialsStocked, materials), link: '/materials', hint: 'Material register → In store → Received' },
+    { key: 'resin_reorder', label: 'Materials with a reorder level', ...share(materialsReorder, materials), link: '/materials', hint: 'Edit the material → Reorder at (kg)' },
+    { key: 'delivery', label: 'Buyers with delivery details', ...share(customersDelivery, customers), link: '/customers', hint: 'How the goods go, the route or the usual transporter — the planner groups by these' },
+    { key: 'pins', label: 'Buyers with a location pin', ...share(customersPinned, customers), link: '/dispatch/plan', hint: 'Ask them on WhatsApp from Plan trips — the planner groups pinned buyers by real distance' },
+    { key: 'dispatch_lists', label: 'Vehicles and transporters', have: vehicles + transporters, of: null, done: vehicles > 0 && transporters > 0, link: '/dispatch/lists', hint: `${vehicles} vehicles · ${transporters} transporters` },
+    { key: 'whatsapp', label: 'WhatsApp connected', have: whatsapp.isWhatsAppConfigured() ? 1 : 0, of: null, done: whatsapp.isWhatsAppConfigured(), link: '/integrations', hint: 'Messages to buyers go out from the company number' },
+    { key: 'templates', label: 'WhatsApp templates approved', have: 4 - templates.length, of: 4, done: !templates.length, link: '/integrations', hint: templates.length ? `Missing: ${templates.map((key) => `WHATSAPP_TEMPLATE_${key.toUpperCase()}`).join(', ')} — without them, messages only reach buyers who wrote in the last 24 hours` : 'All set' },
+  ];
 }
