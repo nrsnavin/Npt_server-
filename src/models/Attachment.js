@@ -27,6 +27,8 @@ const attachmentSchema = new mongoose.Schema(
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', index: true },
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
     mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould', index: true },
+    /** A bought-in piece's photo, off the trading master. */
+    tradedItem: { type: mongoose.Schema.Types.ObjectId, ref: 'TradedItem', index: true },
     salesOrder: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder', index: true },
     /* A photo or document posted into a query thread; readable by whoever can read the thread. */
     query: { type: mongoose.Schema.Types.ObjectId, ref: 'Query', index: true },

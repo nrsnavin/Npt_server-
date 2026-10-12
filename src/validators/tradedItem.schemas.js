@@ -23,6 +23,17 @@ export const tradedItemSchema = z.object({
   gstPercent: z.number().min(0).max(100).optional(),
   isActive: z.boolean().optional(),
   notes: z.string().max(1000).optional(),
+  /* The plant's cost build-up for the piece [TradedItem `buildUp`]; every figure optional. */
+  buildUp: z
+    .object({
+      partWeightGrams: z.number().nonnegative().optional(),
+      runnerWeightGrams: z.number().nonnegative().optional(),
+      jobWorkCost: z.number().nonnegative().optional(),
+      hookCost: z.number().nonnegative().optional(),
+      clipsCost: z.number().nonnegative().optional(),
+      packingCost: z.number().nonnegative().optional(),
+    })
+    .optional(),
 });
 
 export const tradedItemUpdateSchema = tradedItemSchema

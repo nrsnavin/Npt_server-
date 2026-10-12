@@ -27,15 +27,26 @@ export const COLUMNS = {
   hsnCode: ['hsn', 'hsn code'],
   gstPercent: ['gst', 'gst %', 'gst percent', 'tax'],
   notes: ['notes', 'remarks'],
+  /* The cost build-up [TradedItem `buildUp`], as the plant's price sheet heads it. */
+  partWeightGrams: ['grammage as pp', 'grammage', 'grams', 'gram', 'weight'],
+  runnerWeightGrams: ['runner grammage', 'runner'],
+  jobWorkCost: ['job work cost', 'job work'],
+  hookCost: ['hook', 'hook cost'],
+  clipsCost: ['clips', 'clip', 'clips cost'],
+  packingCost: ['packing cost'],
 };
+
+/** The columns that land on the item's build-up rather than on the item. */
+export const BUILD_UP = ['partWeightGrams', 'runnerWeightGrams', 'jobWorkCost', 'hookCost', 'clipsCost', 'packingCost'];
 
 /** The headings the template carries, in order. */
 export const TEMPLATE_HEADERS = [
   'Model', 'Code', 'Description', 'Category', 'Size mm', 'Colour', 'Material', 'Supplier',
   'Supplier code', 'Inward price', 'MOQ', 'Pcs per carton', 'HSN', 'GST %', 'Notes',
+  'Grammage as PP', 'Runner grammage', 'Job work cost', 'Hook', 'Clips', 'Packing cost',
 ];
 
-const NUMERIC = ['sizeMm', 'inwardPrice', 'moq', 'piecesPerCarton', 'gstPercent'];
+const NUMERIC = ['sizeMm', 'inwardPrice', 'moq', 'piecesPerCarton', 'gstPercent', ...BUILD_UP];
 /** The fields an upload may change on an existing item, and that are compared for "unchanged". */
 const FIELDS = Object.keys(COLUMNS);
 
@@ -51,13 +62,13 @@ export function headerMap(header) {
 }
 
 /**
- * The header row: the first of the opening rows naming both a model and a price, so a sheet
- * with a title line or two above the table still reads.
+ * The header row: the first of the opening rows naming a model and a price — or a build-up
+ * column, for a sheet that only updates those — so a title line or two above the table still reads.
  */
 export function findHeader(rows) {
   for (let at = 0; at < Math.min(rows.length, 10); at += 1) {
     const map = headerMap(rows[at]);
-    if (map.includes('modelNumber') && map.includes('inwardPrice')) return { at, map };
+    if (map.includes('modelNumber') && (map.includes('inwardPrice') || BUILD_UP.some((field) => map.includes(field)))) return { at, map };
   }
   return null;
 }
@@ -93,9 +104,6 @@ export function readRow(cells, map) {
   }
   if (fields.code) fields.code = fields.code.toUpperCase();
   if (!fields.modelNumber) problems.push('No model');
-  if (fields.inwardPrice === undefined && !problems.some((text) => text.startsWith('Inward price'))) {
-    problems.push('No inward price');
-  }
   return { fields, problems };
 }
 
@@ -114,7 +122,7 @@ export async function planImport(rows) {
 
   const read = rows.slice(header.at + 1)
     .map((cells, offset) => ({ row: header.at + offset + 2, ...readRow(cells, header.map) }))
-    .filter((entry) => Object.keys(entry.fields).length || entry.problems.length < 2);
+    .filter((entry) => Object.keys(entry.fields).length || entry.problems.some((problem) => problem !== 'No model'));
 
   const codes = read.map((entry) => entry.fields.code).filter(Boolean);
   const keys = read.map((entry) => modelKeyOf(entry.fields.modelNumber)).filter(Boolean);
@@ -134,16 +142,22 @@ export async function planImport(rows) {
     seen.add(identity);
     seen.add(`key:${key}`);
 
-    if (!item) return { row, action: 'create', fields };
+    /* A new item needs its price; a row updating one may carry only, say, its build-up. */
+    if (!item) {
+      return fields.inwardPrice === undefined
+        ? { row, action: 'error', problems: ['No inward price'], fields }
+        : { row, action: 'create', fields };
+    }
     /* A model renamed onto another item's name would break the one-row-per-model rule. */
     const clash = byKey.get(key);
     if (clash && String(clash._id) !== String(item._id)) {
       return { row, action: 'error', problems: [`${fields.modelNumber} belongs to another item (${clash.code || clash.modelNumber})`], fields };
     }
+    const current = (field) => (BUILD_UP.includes(field) ? item.buildUp?.[field] : item[field]);
     const changes = Object.fromEntries(
       Object.entries(fields)
-        .filter(([field, value]) => !same(item[field], value))
-        .map(([field, value]) => [field, { from: item[field] ?? null, to: value }])
+        .filter(([field, value]) => !same(current(field), value))
+        .map(([field, value]) => [field, { from: current(field) ?? null, to: value }])
     );
     return Object.keys(changes).length
       ? { row, action: 'update', id: item._id, modelNumber: item.modelNumber, changes, fields }
@@ -158,6 +172,14 @@ export async function planImport(rows) {
 }
 
 /** Writes a plan: creates and updates, each price move dated in the item's history. */
+/** A row's fields as the item stores them: the build-up columns under `buildUp`. */
+function stored(fields, item) {
+  const plain = Object.fromEntries(Object.entries(fields).filter(([field]) => !BUILD_UP.includes(field)));
+  const buildUp = Object.fromEntries(Object.entries(fields).filter(([field]) => BUILD_UP.includes(field)));
+  if (Object.keys(buildUp).length) plain.buildUp = { ...(item?.buildUp?.toObject?.() || item?.buildUp || {}), ...buildUp };
+  return plain;
+}
+
 export async function applyImport(plan, user) {
   let created = 0;
   let updated = 0;
@@ -165,7 +187,7 @@ export async function applyImport(plan, user) {
   for (const entry of plan) {
     if (entry.action === 'create') {
       await TradedItem.create({
-        ...entry.fields,
+        ...stored(entry.fields),
         priceUpdatedAt: now,
         priceHistory: [{ price: entry.fields.inwardPrice, at: now, by: user?._id, source: 'upload' }],
       });
@@ -174,7 +196,7 @@ export async function applyImport(plan, user) {
       const item = await TradedItem.findById(entry.id);
       if (!item) continue;
       const before = item.inwardPrice;
-      Object.assign(item, entry.fields);
+      Object.assign(item, stored(entry.fields, item));
       if (entry.changes.inwardPrice) {
         item.priceUpdatedAt = now;
         item.priceHistory.push({ price: item.inwardPrice, from: before, at: now, by: user?._id, source: 'upload' });

@@ -48,7 +48,7 @@ import { materialSchema, materialUpdateSchema } from '../validators/material.sch
 import { tradedItemSchema, tradedItemUpdateSchema } from '../validators/tradedItem.schemas.js';
 import {
   createTradedItem, exportTradedItems, getTradedItem, importTradedItems, listTradedItems,
-  tradedItemQuotations, tradedTemplate, updateTradedItem,
+  tradedItemQuotations, tradedTemplate, updateTradedItem, setTradedItemPhoto,
 } from '../controllers/tradedItem.controller.js';
 import { componentSchema, componentUpdateSchema } from '../validators/component.schemas.js';
 import { customerTimeline } from '../controllers/timeline.controller.js';
@@ -119,6 +119,7 @@ router.post('/traded-items', tradingRead, validate(tradedItemSchema), createTrad
 router.get('/traded-items/:id', tradingRead, getTradedItem);
 router.get('/traded-items/:id/quotations', tradingRead, tradedItemQuotations);
 router.patch('/traded-items/:id', tradingRead, validate(tradedItemUpdateSchema), updateTradedItem);
+router.put('/traded-items/:id/photo', tradingRead, singleImage('photo'), setTradedItemPhoto);
 
 /*
  * Hooks, clips and printing — three registers over one collection, told apart by `kind`.

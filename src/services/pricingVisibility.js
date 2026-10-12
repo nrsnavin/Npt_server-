@@ -329,7 +329,7 @@ export const allDispatchesVisibleTo = (rows, user) => rows.map((row) => dispatch
  * What a bought-in item costs us is cost [§8], the same as a resin rate on a quotation line:
  * the Quotation department and Admin see it, everyone else sees the item.
  */
-export const TRADED_CONFIDENTIAL = ['inwardPrice', 'priceHistory', 'priceUpdatedAt'];
+export const TRADED_CONFIDENTIAL = ['inwardPrice', 'priceHistory', 'priceUpdatedAt', 'buildUp'];
 
 export const seesInwardPrice = (user) => seesCosting(user);
 

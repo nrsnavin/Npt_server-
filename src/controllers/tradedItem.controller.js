@@ -13,6 +13,7 @@ import {
 import { sheetRows } from '../services/sheetRows.js';
 import { TEMPLATE_HEADERS, applyImport, planImport } from '../services/tradedImport.service.js';
 import { transactional } from '../utils/transaction.js';
+import { attachPhoto } from '../services/recordPhoto.service.js';
 
 /**
  * The trading master [models/TradedItem.js]: bought-in items and their inward price.
@@ -44,14 +45,14 @@ function tradedQuery(query, user) {
 export const listTradedItems = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = tradedQuery(req.query, req.user);
   const [rows, total] = await Promise.all([
-    TradedItem.find(filter).select('-priceHistory').sort(sort).skip((page - 1) * limit).limit(limit),
+    TradedItem.find(filter).select('-priceHistory').populate('photo', 'key').sort(sort).skip((page - 1) * limit).limit(limit),
     TradedItem.countDocuments(filter),
   ]);
   paginated(res, allTradedItemsVisibleTo(rows, req.user), { page, limit, total });
 });
 
 export const getTradedItem = asyncHandler(async (req, res) => {
-  const item = await TradedItem.findById(req.params.id).populate('priceHistory.by', 'name');
+  const item = await TradedItem.findById(req.params.id).populate('priceHistory.by', 'name').populate('photo', 'key');
   if (!item) throw ApiError.notFound('Item not found');
   res.json({ success: true, data: tradedItemVisibleTo(item, req.user) });
 });
@@ -82,6 +83,24 @@ export const createTradedItem = asyncHandler(async (req, res) => {
     priceHistory: [{ price: req.body.inwardPrice, at: now, by: req.user._id, source: 'manual' }],
   });
   res.status(201).json({ success: true, data: item });
+});
+
+/** The piece's photograph, as on the mould register [mould.controller `setMouldPhoto`]. */
+export const setTradedItemPhoto = asyncHandler(async (req, res) => {
+  assertMayKeep(req.user);
+  const item = await TradedItem.findById(req.params.id);
+  if (!item) throw ApiError.notFound('Item not found');
+  if (!req.file) throw ApiError.badRequest('Attach a photo');
+  await attachPhoto(item, {
+    link: 'tradedItem',
+    buffer: req.file.buffer,
+    mimeType: req.file.mimetype,
+    filename: req.file.originalname,
+    by: req.user._id,
+    title: `${item.code || item.modelNumber} — part photo`,
+  });
+  await item.populate('photo', 'key');
+  res.json({ success: true, data: tradedItemVisibleTo(item, req.user) });
 });
 
 export const updateTradedItem = asyncHandler(transactional(async (req, res) => {
