@@ -13,6 +13,7 @@ import { ownershipFilter } from '../services/ownership.service.js';
 import { suggestRouting, routingModelConfigured } from '../services/taskRouting.llm.js';
 import { DEPARTMENT_KEYS } from '../config/modules.js';
 import { listParams, paginated } from '../utils/query.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * The names a task carries, resolved.
@@ -411,7 +412,7 @@ export const updateTodo = asyncHandler(async (req, res) => {
  * department nothing; "buyer is at the gate and the LR is not cut" tells them what to do. The
  * same floor as every other reason the app keeps on the record.
  */
-export const escalateTodo = asyncHandler(async (req, res) => {
+export const escalateTodo = asyncHandler(transactional(async (req, res) => {
   const todo = await todoInView(req);
 
   if (todo.completed) {
@@ -471,7 +472,7 @@ export const escalateTodo = asyncHandler(async (req, res) => {
   if (todo.holds && todo.enquiry) await Enquiry.updateOne({ _id: todo.enquiry }, { $set: { heldBy: to } });
   if (todo.kind) await publish(EVENTS.HANDOFF_SENT, { task: todo, by: req.user });
   res.json({ success: true, data: await todo.populate(TODO_POPULATE) });
-});
+}));
 
 export const deleteTodo = asyncHandler(async (req, res) => {
   const todo = await todoInView(req);

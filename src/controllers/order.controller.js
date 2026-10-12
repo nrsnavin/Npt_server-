@@ -570,7 +570,7 @@ export const orderFromQuotation = asyncHandler(transactional(async (req, res) =>
  * count would suddenly be short against a number that moved, and nothing on the record would
  * say it had. Terms and remarks stay editable throughout, because those are paperwork.
  */
-export const updateOrder = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
+export const updateOrder = asyncHandler(withOrderLock(req => req.params.id, transactional(async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -624,7 +624,7 @@ export const updateOrder = asyncHandler(withOrderLock(req => req.params.id, asyn
 
   await order.populate(POPULATE);
   res.json({ success: true, data: orderVisibleTo(order, req.user) });
-}));
+})));
 
 /* ------------------------------ The §13 gate ------------------------------ */
 
@@ -637,7 +637,7 @@ export const updateOrder = asyncHandler(withOrderLock(req => req.params.id, asyn
  * happen after release: the checks describe a decision taken before the plant started, and
  * editing them afterwards rewrites the record of why the job was allowed to run.
  */
-export const setOrderCheck = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
+export const setOrderCheck = asyncHandler(withOrderLock(req => req.params.id, transactional(async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -690,7 +690,7 @@ export const setOrderCheck = asyncHandler(withOrderLock(req => req.params.id, as
     outstanding: order.outstandingChecks,
     releasable: order.releasable,
   });
-}));
+})));
 
 /* -------------------------------- Actions -------------------------------- */
 
@@ -700,7 +700,7 @@ const missingChecks = (order) =>
     .map((key) => VERIFICATION_CHECKS.find((check) => check.key === key).label.toLowerCase())
     .join(', ');
 
-export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
+export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id, transactional(async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -769,7 +769,7 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
     checks: checklistFor(order),
     did: recipe.label,
   });
-}));
+})));
 
 /** The actions this order can take from where it is, so the screen need not guess. */
 export const listOrderActions = asyncHandler(async (req, res) => {
@@ -864,7 +864,7 @@ export const setOrderPo = asyncHandler(withOrderLock(req => req.params.id, async
  * as the other direction — a buyer who stopped chasing is a fact about the account — and it is
  * the half people skip, leaving a record that says only that somebody changed their mind.
  */
-export const setOrderPriority = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
+export const setOrderPriority = asyncHandler(withOrderLock(req => req.params.id, transactional(async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -925,7 +925,7 @@ export const setOrderPriority = asyncHandler(withOrderLock(req => req.params.id,
 
   await order.populate(POPULATE);
   res.json({ success: true, data: orderVisibleTo(order, req.user) });
-}));
+})));
 
 /**
  * A new delivery date the buyer has agreed to [§25].
@@ -945,7 +945,7 @@ export const setOrderPriority = asyncHandler(withOrderLock(req => req.params.id,
  * answerable six months later when somebody asks why an order ran late, and a field that
  * quietly absorbs each renegotiation answers it with the last excuse rather than the promise.
  */
-export const setLinePromisedDate = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
+export const setLinePromisedDate = asyncHandler(withOrderLock(req => req.params.id, transactional(async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -1010,7 +1010,7 @@ export const setLinePromisedDate = asyncHandler(withOrderLock(req => req.params.
     data: orderVisibleTo(order, req.user),
     line: order.lines.id(req.params.lineId),
   });
-}));
+})));
 
 /**
  * Where the order stands against its payment terms — the order screen's "money before work".
@@ -1025,7 +1025,7 @@ export const orderPaymentStanding = asyncHandler(async (req, res) => {
  * Admin lets production start, or the goods go, before the money is in. Recorded with who and
  * why, so the exception is visible on the order rather than a phone call nobody remembers.
  */
-export const waiveOrderPayment = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
+export const waiveOrderPayment = asyncHandler(withOrderLock(req => req.params.id, transactional(async (req, res) => {
   if (!isManagement(req.user)) throw ApiError.forbidden('Only Admin can let an order go on without the payment');
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
@@ -1041,4 +1041,4 @@ export const waiveOrderPayment = asyncHandler(withOrderLock(req => req.params.id
     note: `Allowed ${stage} without the payment: ${reason.trim()}`,
   });
   res.json({ success: true, data: await paymentStanding(order) });
-}));
+})));

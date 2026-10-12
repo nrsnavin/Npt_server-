@@ -385,7 +385,7 @@ export const raiseAdvance = asyncHandler(withOrderLock(req => req.params.id, tra
  * `promisedDate` is what makes this a chase rather than a log. Recording it means the next
  * caller opens with "you said Friday" instead of starting the same conversation again.
  */
-export const logFollowUp = asyncHandler(async (req, res) => {
+export const logFollowUp = asyncHandler(transactional(async (req, res) => {
   const receivable = await readable(req.params.id, req.user);
 
   receivable.followUps.push({
@@ -439,7 +439,7 @@ export const logFollowUp = asyncHandler(async (req, res) => {
 
   await receivable.populate(POPULATE);
   res.status(201).json({ success: true, data: receivable });
-});
+}));
 
 /** The payment contact: who to speak to about this money. Accounts keeps it. */
 export const setPaymentContact = asyncHandler(async (req, res) => {
@@ -549,7 +549,7 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
  * Clearing it returns the receivable to whatever the dates actually say rather than to a
  * remembered status, which is why the judgement is a field of its own and not an overwrite.
  */
-export const setJudgement = asyncHandler(async (req, res) => {
+export const setJudgement = asyncHandler(transactional(async (req, res) => {
   const receivable = await readable(req.params.id, req.user);
   const before = snapshot(receivable);
 
@@ -572,4 +572,4 @@ export const setJudgement = asyncHandler(async (req, res) => {
 
   await receivable.populate(POPULATE);
   res.json({ success: true, data: receivable });
-});
+}));

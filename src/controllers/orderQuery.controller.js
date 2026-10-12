@@ -238,7 +238,7 @@ export const raiseOrderQuery = asyncHandler(transactional(async (req, res) => {
  * second answer on an already-answered question reopens nothing: it is more of the same
  * conversation, and forcing it back to `open` would restart a clock the plant already met.
  */
-export const answerOrderQuery = asyncHandler(async (req, res) => {
+export const answerOrderQuery = asyncHandler(transactional(async (req, res) => {
   const query = await OrderQuery.findById(req.params.queryId);
   if (!query) throw ApiError.notFound('Question not found');
 
@@ -324,7 +324,7 @@ export const answerOrderQuery = asyncHandler(async (req, res) => {
 
   await query.populate(POPULATE);
   res.json({ success: true, data: query });
-});
+}));
 
 /**
  * Closing, which only the asker may do.
@@ -336,7 +336,7 @@ export const answerOrderQuery = asyncHandler(async (req, res) => {
  * The exception is an administrator, because somebody has to be able to tidy up after a person
  * who has left, and the alternative is a question that can never be closed by anyone.
  */
-export const closeOrderQuery = asyncHandler(async (req, res) => {
+export const closeOrderQuery = asyncHandler(transactional(async (req, res) => {
   const query = await OrderQuery.findById(req.params.queryId);
   if (!query) throw ApiError.notFound('Question not found');
 
@@ -367,4 +367,4 @@ export const closeOrderQuery = asyncHandler(async (req, res) => {
 
   await query.populate(POPULATE);
   res.json({ success: true, data: query });
-});
+}));

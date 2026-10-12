@@ -1,4 +1,6 @@
 import Counter from '../models/Counter.js';
+import { currentTransaction } from '../utils/transaction.js';
+import { acquireOperationLock } from './operationLock.service.js';
 
 /**
  * Human-readable document numbers.
@@ -27,7 +29,30 @@ export function financialYear(date = new Date()) {
   return { start, label: `${two(start)}-${two(start + 1)}` };
 }
 
-async function bump(key) {
+/**
+ * Numbers that must run without a gap: a quote and a sales order are documents a buyer holds,
+ * and a missing number on them reads as a cancelled or hidden one. Everything else (an enquiry,
+ * a customer, a sample, a consignment) only has to be unique.
+ */
+const GAPLESS = new Set(['SO']);
+
+/**
+ * One counter, one step.
+ *
+ * Inside a transaction every number taken from the same counter is a write to the same row, and
+ * two transactions writing one row conflict: with eight people raising enquiries at once they
+ * collided over and over until the retries ran out. So an ordinary number is taken outside the
+ * transaction — it cannot conflict, and a rolled-back attempt costs at most a skipped number.
+ * A gapless one is taken inside, so a rollback gives it back; there the people taking one queue
+ * on a lock for that counter, which turns a pile of conflicts into a line that moves.
+ */
+async function bump(key, { gapless = false } = {}) {
+  const transaction = currentTransaction();
+  if (transaction?.real && !gapless) {
+    const counter = await Counter.findOneAndUpdate({ key }, { $inc: { seq: 1 } }, { new: true, upsert: true, session: null });
+    return counter.seq;
+  }
+  if (transaction?.real) await acquireOperationLock(`counter:${key}`, { retryMs: 30_000 });
   const counter = await Counter.findOneAndUpdate({ key }, { $inc: { seq: 1 } }, { new: true, upsert: true });
   return counter.seq;
 }
@@ -35,7 +60,7 @@ async function bump(key) {
 /** The next number for a prefix, per calendar year, e.g. nextNumber('ENQ') -> "ENQ-2026-0007". */
 export async function nextNumber(prefix, date = new Date()) {
   const { year } = indiaYearMonth(date);
-  const seq = await bump(`${prefix}-${year}`);
+  const seq = await bump(`${prefix}-${year}`, { gapless: GAPLESS.has(prefix) });
   return `${prefix}-${year}-${String(seq).padStart(4, '0')}`;
 }
 
@@ -49,7 +74,7 @@ export const quoteCounterKey = (date = new Date()) => `NP-FY-${financialYear(dat
  * A revision keeps its quote's number — it is the same offer, restated.
  */
 export async function nextQuoteNumber(date = new Date()) {
-  const seq = await bump(quoteCounterKey(date));
+  const seq = await bump(quoteCounterKey(date), { gapless: true });
   return `NP/${financialYear(date).label}/${String(seq).padStart(3, '0')}`;
 }
 

@@ -8,6 +8,15 @@ export function notFoundHandler(req, _res, next) {
 
 // eslint-disable-next-line no-unused-vars
 export function errorHandler(err, req, res, _next) {
+  /*
+   * Part of the answer has already gone (a file or an export streaming when its source failed).
+   * A second set of headers would throw here; Express's own handler closes the connection, which
+   * is the only honest thing left to do with a half-sent reply.
+   */
+  if (res.headersSent) {
+    console.error(`[request ${req.id || '-'}] ${req.method} ${req.originalUrl} failed after the reply started:`, err?.message || err);
+    return _next(err);
+  }
   let error = err;
 
   if (err instanceof mongoose.Error.VersionError || err instanceof mongoose.Error.DocumentNotFoundError) {

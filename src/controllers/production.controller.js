@@ -17,6 +17,7 @@ import { PRESSING_BANDS, byUrgency, urgencyOf } from '../services/productionUrge
 import { urgentOrdersFor } from '../services/urgentOrders.service.js';
 import OrderQuery from '../models/OrderQuery.js';
 import { collect, sendCsv } from '../utils/csv.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Production status [BLUEPRINT §14–17].
@@ -267,7 +268,7 @@ export const exportProductionLines = asyncHandler(async (req, res) => {
  * let somebody set the word and the number in either order with a moment in between where the
  * record contradicts itself.
  */
-export const updateProductionLine = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
+export const updateProductionLine = asyncHandler(withOrderLock(req => req.params.id, transactional(async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
@@ -430,7 +431,7 @@ export const updateProductionLine = asyncHandler(withOrderLock(req => req.params
      */
     willMissPromise: saved.willMissPromise || undefined,
   });
-}));
+})));
 
 /* ------------------------------ The plant's day ------------------------------ */
 

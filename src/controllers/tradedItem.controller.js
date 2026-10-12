@@ -12,6 +12,7 @@ import {
 } from '../services/pricingVisibility.js';
 import { sheetRows } from '../services/sheetRows.js';
 import { TEMPLATE_HEADERS, applyImport, planImport } from '../services/tradedImport.service.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * The trading master [models/TradedItem.js]: bought-in items and their inward price.
@@ -83,7 +84,7 @@ export const createTradedItem = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: item });
 });
 
-export const updateTradedItem = asyncHandler(async (req, res) => {
+export const updateTradedItem = asyncHandler(transactional(async (req, res) => {
   assertMayKeep(req.user);
   const item = await TradedItem.findById(req.params.id);
   if (!item) throw ApiError.notFound('Item not found');
@@ -104,7 +105,7 @@ export const updateTradedItem = asyncHandler(async (req, res) => {
   await item.save();
   await recordChange({ model: 'TradedItem', doc: item, before, by: req.user });
   res.json({ success: true, data: item });
-});
+}));
 
 /**
  * An Excel or CSV upload. Without `commit` it answers what would happen and writes nothing; the

@@ -30,7 +30,8 @@ not need new infrastructure is already on.
 
 A handler that writes several records — an order and the number it took, a quotation and its
 event, a lead and the enquiry made from it — commits them together or not at all. Twenty such
-handlers are wrapped in `transactional()` (`src/utils/transaction.js`). Measured on a replica set:
+handlers were wrapped in `transactional()` (`src/utils/transaction.js`); since the October pass
+(§7) it is about seventy — every request that changes more than one record. Measured on a replica set:
 four "raise order" presses racing for one quotation, four rounds, gave consecutive numbers; the
 same run without transactions gave SO-0001, 0003, 0006, 0010.
 
@@ -165,9 +166,56 @@ bucket. Block all public access on it.
 Every response carries `X-Request-Id` (kept from the load balancer when it sends one). A 500's
 message quotes it, and production logs are one JSON object per request with the same id.
 
+## 7. Twenty people at once (Oct 2026)
+
+The design target: twenty people — marketing, SO, Production, Assembly, Mould, Quality,
+Dispatch, Reception, Accounts and Sampling — working the enquiry workflow at the same moment,
+without a crash, a half-saved change, a duplicate, or a lock left behind.
+
+**What it runs on.** One API box (t3.small is enough; t3.medium gives headroom) under pm2, and
+MongoDB as a **replica set** — the one-node set from §1 on the same box, or Atlas. The replica set
+is not optional at this size: it is what makes every multi-record change all-or-nothing. Pool
+size 50 per process is ample; twenty people rarely hold more than ten connections between them.
+
+**How it was found.** The whole test suite was run with every database write recorded per
+request; any request writing more than one collection outside a transaction was listed. That
+list — dispatch actions, enquiry status moves, sample status, production updates, order actions,
+customer edits and about forty more — is now wrapped. Then a load test of twenty people working
+flat out (`npm run workflow-load-test`, below) found the rest.
+
+What changed, and why:
+
+| Change | Where | Without it |
+| --- | --- | --- |
+| ~70 multi-record handlers run in a transaction | controllers, `transactional()` | a crash between two saves left half a change: a status moved with no handover, a dispatch with no audit row |
+| A transaction gives up after 6 attempts, with a short random pause between | `utils/transaction.js` | code that caught a database error inside a transaction made the driver retry for two minutes — measured, 13,018 attempts — holding a connection the whole time |
+| Ordinary numbers (enquiry, customer, sample, dispatch…) are taken outside the transaction; quote and SO numbers stay gapless by queueing on a lock | `services/numbering.service.js` | every new record wrote to the same counter row, so eight people saving at once collided until the retries ran out (409s, p95 3–4 s) |
+| A held lock is renewed every 10 s; one not renewed for 90 s is taken over | `services/operationLock.service.js`, `models/OperationLock.js` | a crash or deploy mid-change left that order locked for good, until someone deleted the row by hand |
+| A second change to the same order waits up to 8 s instead of being refused at once | `withOperationLock` | two people pressing on one order in the same moment: the second got "related records are being updated" |
+| After a commit, events read their records afresh | `services/events.service.js` | listeners saw the request's own copies, already reshaped for its reply — a sample's customer reduced to a name, so "sample ready" was never sent |
+| Slow or broken clients are timed out; shutdown waits 10 s then exits; a dropped database connection is logged | `server.js`, `config/db.js` | a keep-alive socket held a deploy open; a half-sent reply crashed the error handler |
+
+**No deadlocks.** MongoDB does not wait on locks inside a transaction — a conflict aborts one
+side at once and it retries. The app's own locks are always taken in sorted order (owner locks,
+create locks), always have a wait limit, and are now renewed and taken over if their holder dies,
+so nothing can wait forever.
+
+**Measured** (twenty people, two minutes, API and database pinned to two cores — see the run's own
+output for the full table): no server errors, no dropped connections, the API alive at the end,
+every refusal one a person can be shown (409 when two people move the same task at once, 404/400
+for the rest), no duplicate enquiry number or customer, no enquiry with two open tasks of one kind,
+no lock left behind, every handover delivered, 95% of writes under 1.5 s and of reads under 1 s.
+
+```bash
+npm run workflow-load-test            # two minutes, exits non-zero if any check fails
+node tests/load/workflow-load.mjs --quick
+```
+
+Run it before a release that touches the workflow, and after any change to locking or numbering.
+
 ## Order of doing it
 
-1. The one-node replica set (§1) — transactions, no new cost.
+1. The one-node replica set (§1) — transactions, no new cost. Required for twenty people at once (§7).
 2. `S3_BUCKET` and the copy script — the photos stop depending on one disk.
 3. Atlas instead of the local MongoDB, when losing up to a day of data is no longer acceptable.
 4. `REDIS_URL`, then a second API instance behind a load balancer, `RUN_BACKGROUND=false` and a

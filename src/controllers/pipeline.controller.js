@@ -102,7 +102,7 @@ const REASSIGNABLE = {
   samples: { model: Sample, module: 'samples', field: 'requestedBy', label: 'Sample' },
 };
 
-export const bulkReassign = asyncHandler(async (req, res) => {
+export const bulkReassign = asyncHandler(transactional(async (req, res) => {
   const source = REASSIGNABLE[req.params.collection];
   if (!source) throw ApiError.notFound('Nothing of that kind can be reassigned');
 
@@ -143,7 +143,7 @@ export const bulkReassign = asyncHandler(async (req, res) => {
     success: true,
     data: { moved: records.length, assignTo: successor._id, requested: ids.length },
   });
-});
+}));
 
 /* -------------------------------- Exports -------------------------------- */
 
@@ -388,7 +388,7 @@ async function createCustomerChecked(req, res) {
   res.status(201).json({ success: true, data: customer });
 }
 
-export const updateCustomer = asyncHandler(async (req, res) => {
+export const updateCustomer = asyncHandler(transactional(async (req, res) => {
   const customer = await Customer.findById(req.params.id);
   if (!customer) throw ApiError.notFound('Customer not found');
   /*
@@ -415,7 +415,7 @@ export const updateCustomer = asyncHandler(async (req, res) => {
   await recordChange({ model: 'Customer', doc: customer, before, by: req.user });
 
   res.json({ success: true, data: (await customerSummaries([customer]))[0] });
-});
+}));
 
 /**
  * Finds an existing customer matching a new one, by GST first and then by number.
@@ -1066,7 +1066,7 @@ export const createEnquiryGroup = asyncHandler(transactional(async (req, res) =>
   res.status(201).json({ success: true, data: { groupRef, enquiries: created } });
 }));
 
-export const updateEnquiry = asyncHandler(async (req, res) => {
+export const updateEnquiry = asyncHandler(transactional(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
@@ -1131,7 +1131,7 @@ export const updateEnquiry = asyncHandler(async (req, res) => {
   await recordChange({ model: 'Enquiry', doc: enquiry, before, by: req.user });
 
   res.json({ success: true, data: enquiry });
-});
+}));
 
 /**
  * Moves an enquiry to a new stage.
@@ -1282,7 +1282,7 @@ async function moveEnquiry(enquiry, body, user) {
   return enquiry;
 }
 
-export const setEnquiryStatus = asyncHandler(async (req, res) => {
+export const setEnquiryStatus = asyncHandler(transactional(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
@@ -1291,7 +1291,7 @@ export const setEnquiryStatus = asyncHandler(async (req, res) => {
 
   await moveEnquiry(enquiry, req.body, req.user);
   res.json({ success: true, data: enquiry });
-});
+}));
 
 /**
  * Setting the enquiry's marketing status [config/marketingStatuses.js] — the "Current Marketing
@@ -1302,7 +1302,7 @@ export const setEnquiryStatus = asyncHandler(async (req, res) => {
  * "Quotation preparing" opens the quotation — by moving the sales status through the same door
  * a stage move uses. Only forward: an enquiry already further on is not pulled back.
  */
-export const setEnquiryMarketingStatus = asyncHandler(async (req, res) => {
+export const setEnquiryMarketingStatus = asyncHandler(transactional(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);
   if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
 
@@ -1329,7 +1329,7 @@ export const setEnquiryMarketingStatus = asyncHandler(async (req, res) => {
   }
 
   res.json({ success: true, data: enquiry, meta: { movedTo: moves ? salesMove : null } });
-});
+}));
 
 /**
  * Doing a named thing to an enquiry, rather than picking a database word out of a dropdown.
@@ -1344,7 +1344,7 @@ export const setEnquiryMarketingStatus = asyncHandler(async (req, res) => {
  * three spellings, and no list could group them. Whoever is doing it can still edit the text
  * when their case is unusual — it is a default, not a cage.
  */
-export const applyEnquiryAction = asyncHandler(async (req, res) => {
+export const applyEnquiryAction = asyncHandler(transactional(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
@@ -1403,7 +1403,7 @@ export const applyEnquiryAction = asyncHandler(async (req, res) => {
   }
 
   res.json({ success: true, data: enquiry, did: recipe.label });
-});
+}));
 
 /**
  * A call, WhatsApp, email, visit or meeting, logged on the enquiry [role requirements §2].
@@ -1414,7 +1414,7 @@ export const applyEnquiryAction = asyncHandler(async (req, res) => {
  * second half never gets typed. A closed enquiry can still be logged against (a lost buyer who
  * rings back is worth writing down) but gets no next step until it is reopened.
  */
-export const logEnquiryActivity = asyncHandler(async (req, res) => {
+export const logEnquiryActivity = asyncHandler(transactional(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);
   if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
 
@@ -1446,7 +1446,7 @@ export const logEnquiryActivity = asyncHandler(async (req, res) => {
     success: true,
     data: { activity: enquiry.activities.at(-1), activities: enquiry.activities, enquiry: withoutActivities(enquiry) },
   });
-});
+}));
 
 const withoutActivities = (enquiry) => {
   const { activities, ...rest } = enquiry.toJSON();

@@ -22,6 +22,7 @@ import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { raiseTask } from '../services/task.service.js';
 import { requireEnquiry } from '../services/enquiryLink.service.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Marketing's view of a sample runs through `requestedBy`, not `assignedTo` — the sample is
@@ -310,7 +311,7 @@ const specRows = (rows) => Promise.all(rows.map((row) => buildSpec(row)));
  * This exists for the cases automation cannot see — a second sample after a modification, say.
  * Always on an enquiry: a sample with no enquiry behind it is work nobody can find again.
  */
-export const createSample = asyncHandler(async (req, res) => {
+export const createSample = asyncHandler(transactional(async (req, res) => {
   const { enquiry: enquiryId, customer: customerId, ...input } = req.body;
 
   /*
@@ -383,7 +384,7 @@ export const createSample = asyncHandler(async (req, res) => {
   }
 
   res.status(201).json({ success: true, data: await withRefs(sample) });
-});
+}));
 
 /**
  * Attaches a standalone request to the enquiry that turns up after it.
@@ -392,7 +393,7 @@ export const createSample = asyncHandler(async (req, res) => {
  * should be one story. Only ever set, never moved: re-pointing a sample at a different
  * enquiry would rewrite what was made for whom.
  */
-export const linkEnquiry = asyncHandler(async (req, res) => {
+export const linkEnquiry = asyncHandler(transactional(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
   if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
@@ -416,7 +417,7 @@ export const linkEnquiry = asyncHandler(async (req, res) => {
   await sample.save();
 
   res.json({ success: true, data: await withRefs(sample) });
-});
+}));
 
 /**
  * Names the buyer on a request raised without one.
@@ -429,7 +430,7 @@ export const linkEnquiry = asyncHandler(async (req, res) => {
  * made for whom. A sample that came from an enquiry takes its customer from that enquiry, so
  * this refuses rather than letting the two disagree.
  */
-export const linkCustomer = asyncHandler(async (req, res) => {
+export const linkCustomer = asyncHandler(transactional(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
   if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
@@ -454,9 +455,9 @@ export const linkCustomer = asyncHandler(async (req, res) => {
   await sample.save();
 
   res.json({ success: true, data: await withRefs(sample) });
-});
+}));
 
-export const updateSample = asyncHandler(async (req, res) => {
+export const updateSample = asyncHandler(transactional(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
   if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
@@ -488,10 +489,10 @@ export const updateSample = asyncHandler(async (req, res) => {
   await recordChange({ model: 'Sample', doc: sample, before, by: req.user });
 
   res.json({ success: true, data: await withRefs(sample) });
-});
+}));
 
 /** Picking a request off the shared queue, or handing it to a colleague. */
-export const assignSample = asyncHandler(async (req, res) => {
+export const assignSample = asyncHandler(transactional(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
   if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
@@ -508,7 +509,7 @@ export const assignSample = asyncHandler(async (req, res) => {
   sample.assignedTo = named === null ? null : named || req.user._id;
   await sample.save();
   res.json({ success: true, data: await withRefs(sample) });
-});
+}));
 
 /** Two shades are the same shade if they differ only in spacing or case. */
 const sameShade = (a, b) =>
@@ -548,7 +549,7 @@ function assertColourAllowed(sample) {
  * tracking number typed wrong is worth correcting afterwards, which the move cannot do
  * because a sample only dispatches once.
  */
-export const setDispatchDetails = asyncHandler(async (req, res) => {
+export const setDispatchDetails = asyncHandler(transactional(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
   if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
@@ -566,7 +567,7 @@ export const setDispatchDetails = asyncHandler(async (req, res) => {
 
   await sample.save();
   res.json({ success: true, data: await withRefs(sample) });
-});
+}));
 
 /** A stage as a person says it: "sample ready", not `sample_ready`. */
 const stageWords = (status) => status.replace(/_/g, ' ');
@@ -579,7 +580,7 @@ const stageWords = (status) => status.replace(/_/g, ' ');
  * expect is a sample nobody chases. And the three feedback stages are not the sample team's
  * to set — see `recordFeedback`.
  */
-export const setSampleStatus = asyncHandler(async (req, res) => {
+export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
   if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
@@ -762,7 +763,7 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
   if (specific) await publish(specific, { sample, from, by: req.user });
 
   res.json({ success: true, data: await withRefs(sample) });
-});
+}));
 
 /**
  * The sample team closing its task on a request [the sampling work queue].
@@ -774,7 +775,7 @@ export const setSampleStatus = asyncHandler(async (req, res) => {
  * Closing one that never went out is ending it, so it cancels the request and says why —
  * the same rule a cancel by hand has, because whoever asked for it will ask what happened.
  */
-export const closeSampleTask = asyncHandler(async (req, res) => {
+export const closeSampleTask = asyncHandler(transactional(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
   if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
@@ -802,7 +803,7 @@ export const closeSampleTask = asyncHandler(async (req, res) => {
   if (unsent) await publish(EVENTS.SAMPLE_STATUS_CHANGED, { sample, from, to: 'cancelled', by: req.user });
 
   res.json({ success: true, data: await withRefs(sample) });
-});
+}));
 
 /**
  * Records what the customer said.
@@ -811,7 +812,7 @@ export const closeSampleTask = asyncHandler(async (req, res) => {
  * sample; only the person talking to the customer knows the answer, and letting the maker
  * mark their own work approved is how a sample register stops being worth reading.
  */
-export const recordFeedback = asyncHandler(async (req, res) => {
+export const recordFeedback = asyncHandler(transactional(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
   if (!sample) throw ApiError.notFound('Sample not found');
   if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
@@ -861,14 +862,14 @@ export const recordFeedback = asyncHandler(async (req, res) => {
   await publish(sampleStatusEvent(outcome), { sample, from, by: req.user });
 
   res.json({ success: true, data: await withRefs(sample) });
-});
+}));
 
 /**
  * Raises the next attempt after `modification_required`, carrying everything forward and
  * linking the two, so the register reads as a sequence of attempts rather than a pile of
  * unrelated requests.
  */
-export const resample = asyncHandler(async (req, res) => {
+export const resample = asyncHandler(transactional(async (req, res) => {
   const previous = await Sample.findById(req.params.id);
   if (!previous) throw ApiError.notFound('Sample not found');
   if (!owns(req.user, previous)) throw ApiError.notFound('Sample not found');
@@ -930,7 +931,7 @@ export const resample = asyncHandler(async (req, res) => {
   await previous.save();
 
   res.status(201).json({ success: true, data: { sample: await withRefs(sample), previous } });
-});
+}));
 
 /** Counts and overdue per stage, for the sampling dashboard [§22]. */
 export const samplePipeline = asyncHandler(async (req, res) => {

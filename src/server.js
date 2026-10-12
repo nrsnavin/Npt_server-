@@ -5,7 +5,7 @@ import { installProcessGuards } from './config/processGuards.js';
 import { env, isProduction } from './config/env.js';
 import { startBackground } from './background.js';
 import { connectCache, disconnectCache } from './services/cache.service.js';
-import { connectDatabase } from './config/db.js';
+import { connectDatabase, disconnectDatabase } from './config/db.js';
 import { configurationProblem, isConfigured } from './providers/twilio.js';
 import { metaConfigurationProblem } from './providers/meta.js';
 import { whatsappProvider } from './providers/whatsapp.js';
@@ -73,13 +73,33 @@ async function start() {
     const stopBackground = process.env.RUN_BACKGROUND === 'false' ? null : startBackground();
     if (!stopBackground) console.log('Background work: left to the worker (RUN_BACKGROUND=false)');
 
+    /*
+     * A request that never finishes sending its headers or body is closed rather than held open
+     * for ever: one slow or broken client per socket otherwise ties up a connection each.
+     */
+    server.headersTimeout = 30_000;
+    server.requestTimeout = 120_000;
+    /* Longer than a load balancer's idle timeout (60 s on AWS), so the balancer closes first. */
+    server.keepAliveTimeout = 65_000;
+
+    let stopping = false;
     const shutdown = async (signal) => {
+      if (stopping) return;
+      stopping = true;
       console.log(`${signal} received, shutting down`);
+      /* Requests in flight get ten seconds to finish; then the process goes regardless. */
+      setTimeout(() => {
+        console.error('Shutdown took too long — exiting with requests still open');
+        process.exit(1);
+      }, 10_000).unref();
       await stopBackground?.().catch(() => {});
       server.close(async () => {
         await disconnectCache().catch(() => {});
+        await disconnectDatabase().catch(() => {});
         process.exit(0);
       });
+      /* Idle keep-alive sockets would otherwise hold `close` open until they time out. */
+      server.closeIdleConnections?.();
     };
 
     process.on('SIGTERM', () => shutdown('SIGTERM'));

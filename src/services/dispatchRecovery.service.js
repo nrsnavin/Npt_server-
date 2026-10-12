@@ -39,10 +39,11 @@ export async function reconcileDispatches({ onError = error => console.error('Di
   let completed = 0;
   for (const row of pending) {
     try {
+      /* A busy order is skipped, not waited on: the next sweep comes round to it. */
       await withOperationLock(`order:${row.order}`, async () => {
         const dispatch = await Dispatch.findById(row._id);
         if (dispatch) await completeDispatchEffects(dispatch);
-      });
+      }, { retryMs: 0 });
       completed++;
     } catch (error) { if (error.statusCode !== 409) onError(error); }
   }

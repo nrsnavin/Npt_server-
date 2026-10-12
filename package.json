@@ -37,7 +37,8 @@
     "migrate:enquiry-holders": "node scripts/migrate-enquiry-holders.js",
     "migrate:merge-costing": "node scripts/migrate-merge-costing.js",
     "migrate:all": "node scripts/migrate-all.js",
-    "seed:demo": "node src/seed/index.js --keep-users --full"
+    "seed:demo": "node src/seed/index.js --keep-users --full",
+    "workflow-load-test": "node tests/load/workflow-load.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",

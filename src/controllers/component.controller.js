@@ -7,6 +7,7 @@ import { listParams, paginated } from '../utils/query.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { collect, sendCsv } from '../utils/csv.js';
+import { transactional } from '../utils/transaction.js';
 
 /** The same ceiling every other export uses — see pipeline.controller.js. */
 const EXPORT_LIMIT = 5000;
@@ -94,7 +95,7 @@ export const createComponent = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: component });
 });
 
-export const updateComponent = asyncHandler(async (req, res) => {
+export const updateComponent = asyncHandler(transactional(async (req, res) => {
   const component = await Component.findById(req.params.id);
   if (!component) throw ApiError.notFound('Not on the register');
 
@@ -116,7 +117,7 @@ export const updateComponent = asyncHandler(async (req, res) => {
   await recordChange({ model: 'Component', doc: component, before, by: req.user });
 
   res.json({ success: true, data: component });
-});
+}));
 
 /**
  * What is priced against this part, so a rate change can be judged before it is made.

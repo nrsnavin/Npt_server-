@@ -5,6 +5,7 @@ import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { ownsRecord } from '../services/ownership.service.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
+import { transactional } from '../utils/transaction.js';
 
 /**
  * Pinning a buyer's site from a check-in, and taking the pin off.
@@ -32,7 +33,7 @@ async function editableCustomer(id, user) {
   return customer;
 }
 
-export const pinSite = asyncHandler(async (req, res) => {
+export const pinSite = asyncHandler(transactional(async (req, res) => {
   const customer = await editableCustomer(req.params.id, req.user);
   const { query: queryId, message: messageId } = req.body;
 
@@ -72,9 +73,9 @@ export const pinSite = asyncHandler(async (req, res) => {
 
   await customer.populate('site.setBy', 'name');
   res.json({ success: true, data: customer.site });
-});
+}));
 
-export const clearSite = asyncHandler(async (req, res) => {
+export const clearSite = asyncHandler(transactional(async (req, res) => {
   const customer = await editableCustomer(req.params.id, req.user);
   if (!customer.site) return res.json({ success: true, data: null });
 
@@ -84,4 +85,4 @@ export const clearSite = asyncHandler(async (req, res) => {
   await recordChange({ model: 'Customer', doc: customer, before, by: req.user });
 
   return res.json({ success: true, data: null });
-});
+}));
