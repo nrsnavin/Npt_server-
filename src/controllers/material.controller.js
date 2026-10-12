@@ -30,7 +30,7 @@ const EXPORT_LIMIT = 5000;
  */
 const MATERIAL_SORTABLE = [
   'name', 'code', 'type', 'colour', 'ratePerKg', 'grammageFactorPercent',
-  'supplier', 'rateUpdatedAt', 'isActive', 'createdAt',
+  'supplier', 'rateUpdatedAt', 'isActive', 'createdAt', 'stockKg',
 ];
 
 /** What the register's list understands, shared by the screen and its download. */
