@@ -1,3 +1,4 @@
+import { isManagement } from '../utils/departments.js';
 import Sample from '../models/Sample.js';
 import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
@@ -220,7 +221,7 @@ export const downloadAttachment = asyncHandler(async (req, res) => {
     const task = await Todo.findById(attachment.task).select('department user createdBy enquiry');
     const me = String(req.user._id);
     const enquiry = task?.enquiry ? await Enquiry.findById(task.enquiry).select('assignedTo') : null;
-    const mayRead = task && (req.user.role === 'admin' || inDepartment(req.user, task.department)
+    const mayRead = task && (isManagement(req.user) || inDepartment(req.user, task.department)
       || [task.user, task.createdBy, enquiry?.assignedTo].some((id) => id && String(id) === me));
     if (!mayRead) throw ApiError.notFound('File not found');
   } else if (attachment.query) {

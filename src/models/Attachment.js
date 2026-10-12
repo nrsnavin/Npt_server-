@@ -33,6 +33,13 @@ const attachmentSchema = new mongoose.Schema(
     /* The PDF sent with a department task; readable by whoever may work the task or sent it. */
     task: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo', index: true },
 
+    /**
+     * On a department task, which of its papers this is — `invoice`, `dispatch_details` — from
+     * the task form's `documents` [config/departmentTaskForms.js]. Unset for the task's result
+     * (the sales order, the LR copy), which the task names itself.
+     */
+    docType: { type: String, trim: true },
+
     /** What the file is, in the reader's words: "Buyer drawing", "Signed approval". */
     title: { type: String, trim: true },
   },

@@ -1,3 +1,4 @@
+import { publicEnquiryDocument } from '../controllers/enquiryMessage.controller.js';
 import { Router } from 'express';
 
 import authRoutes from './auth.routes.js';
@@ -41,6 +42,8 @@ router.post('/whatsapp/inbound', inboundWebhook);
 router.get('/public/quotations/:id/:expires/:signature/:file', publicQuotationPdf);
 /* A department task's uploaded work (the LR copy), for WhatsApp to fetch. */
 router.get('/public/files/:id/:expires/:signature/:file', publicTaskFile);
+/* An enquiry's paper sent on WhatsApp [services/enquiryDocuments.service.js] — signed, it lapses in 30 days. */
+router.get('/public/documents/:id/:expires/:signature/:file', publicEnquiryDocument);
 router.use('/whatsapp', whatsappRoutes);
 /*
  * One search across everything [§32]. Not inside a module's routes because it belongs to no

@@ -1,3 +1,4 @@
+import { DOCUMENT_TYPES } from '../services/enquiryDocuments.service.js';
 import { MARKETING_STATUS_KEYS } from '../config/marketingStatuses.js';
 import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS } from '../models/Mould.js';
@@ -291,6 +292,11 @@ export const enquiryMessageSchema = z
     channel: z.enum(['whatsapp', 'email']),
     subject: z.string().trim().max(200).optional(),
     body: z.string().trim().min(1, 'Write the message first').max(4000),
+    /* Papers from this enquiry to send with it [services/enquiryDocuments.service.js]. */
+    attachments: z
+      .array(z.object({ type: z.enum(DOCUMENT_TYPES), id: z.string().regex(/^[0-9a-f]{24}$/i, 'Not a document id') }))
+      .max(6, 'Attach six documents at most')
+      .optional(),
   })
   .refine((value) => value.channel !== 'email' || (value.subject || '').length > 0, {
     message: 'An email needs a subject',

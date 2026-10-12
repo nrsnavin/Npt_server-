@@ -851,6 +851,13 @@ async function renderPdfFor(quotation) {
   return renderQuotationPdf(quotation, photos, costedResins(quotation));
 }
 
+/** One quotation's PDF and its file name — attached from the enquiry's message panel too. */
+export async function quotationPdfFile(id) {
+  const quotation = await loadForPdf(id);
+  if (!quotation) return null;
+  return { quotation, buffer: await renderPdfFor(quotation), filename: `${fileSafeNumber(quotation.number)}.pdf` };
+}
+
 export const quotationPdf = asyncHandler(async (req, res) => {
   const quotation = await loadForPdf(req.params.id);
   if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
