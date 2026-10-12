@@ -7,8 +7,14 @@
  * the one their own typed tasks go on, and the one that decides whether they are a marketing
  * person who sees only their own buyers [services/ownership.service.js].
  */
-export const departmentsOf = (user) =>
-  [...new Set([user?.department, ...(user?.extraDepartments || [])].filter(Boolean))];
+import { deskMates } from '../config/modules.js';
+
+export const departmentsOf = (user) => {
+  const own = [...new Set([user?.department, ...(user?.extraDepartments || [])].filter(Boolean))];
+  /* A desk shared by several departments [config/modules.js DESK_GROUPS] is worked by all of them:
+     a Quality login holds Assembly's and Printing's queues too. The main department stays first. */
+  return [...new Set(own.flatMap((key) => deskMates(key)))];
+};
 
 /** True when this person works in that department, as their main one or an extra one. */
 export const inDepartment = (user, key) => Boolean(key) && departmentsOf(user).includes(key);

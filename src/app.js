@@ -15,6 +15,7 @@ import routes from './routes/index.js';
 import healthRoutes from './routes/health.routes.js';
 import { notFoundHandler, errorHandler } from './middleware/error.js';
 import ApiError from './utils/ApiError.js';
+import { redactUrl } from './utils/redact.js';
 import { registerSamplingSubscribers } from './subscribers/sampling.subscriber.js';
 import { registerPricingSubscribers } from './subscribers/pricing.subscriber.js';
 import { registerOrderSubscribers } from './subscribers/orders.subscriber.js';
@@ -58,6 +59,8 @@ app.use((req, res, next) => {
   next();
 });
 morgan.token('id', (req) => req.id);
+/* A webhook token offered in the query string stays out of the log [utils/redact.js]. */
+morgan.token('url', (req) => redactUrl(req.originalUrl || req.url));
 morgan.token('user', (req) => (req.user?._id ? String(req.user._id) : '-'));
 /* Production logs one JSON object per request, which log search can filter by id, user or route. */
 const accessLog = isProduction

@@ -96,6 +96,32 @@ export async function ownerFor({ customer }) {
  *   appended  — a conversation we already had
  *   created   — a number we had not seen
  */
+/**
+ * A shared location is two finite coordinates on the globe, or nothing. The webhook is the one
+ * door with no session behind it, so what comes through it is shaped here before it is written —
+ * a pin is copied straight onto the buyer's record, and an object or a string in place of a number
+ * would either fail the whole message or sit on the customer as a broken pin.
+ */
+export function cleanLocation(location) {
+  if (!location || typeof location !== 'object') return undefined;
+  const lat = Number(location.lat);
+  const lng = Number(location.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) return undefined;
+  const text = (value) => (typeof value === 'string' && value.trim() ? value.trim().slice(0, 200) : undefined);
+  return { lat, lng, name: text(location.name), address: text(location.address) };
+}
+
+/** The media list the same way: a few entries, each a plain record of strings. */
+export function cleanMedia(media) {
+  if (!Array.isArray(media)) return [];
+  const text = (value) => (typeof value === 'string' ? value.slice(0, 2000) : undefined);
+  return media
+    .filter((item) => item && typeof item === 'object')
+    .slice(0, 10)
+    .map((item) => ({ url: text(item.url), id: text(item.id), contentType: text(item.contentType), filename: text(item.filename) }))
+    .filter((item) => item.url || item.id);
+}
+
 export async function receiveMessage({
   from,
   body,
@@ -105,6 +131,11 @@ export async function receiveMessage({
   receivedAt,
   location,
 } = {}) {
+  location = cleanLocation(location);
+  media = cleanMedia(media);
+  body = typeof body === 'string' ? body : body == null ? undefined : String(body);
+  profileName = typeof profileName === 'string' ? profileName.slice(0, 120) : undefined;
+  providerId = typeof providerId === 'string' ? providerId : providerId == null ? undefined : String(providerId);
   const number = normalisePhone(from);
   if (!number) return { outcome: 'rejected', why: 'no usable sender number' };
 

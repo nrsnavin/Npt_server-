@@ -1,7 +1,7 @@
 import Enquiry from '../models/Enquiry.js';
 import Todo from '../models/Todo.js';
 import Attachment from '../models/Attachment.js';
-import { bufferOf, put, remove } from '../services/storage.service.js';
+import { bufferOf, put, remove, safeFilename } from '../services/storage.service.js';
 import { sendResultToCustomer } from '../services/taskResultMessage.service.js';
 import { signatureValid } from '../utils/signedLink.js';
 import ApiError from '../utils/ApiError.js';
@@ -10,7 +10,7 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { transactional } from '../utils/transaction.js';
 import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
 import { HANDOFFS, TILE_KIND, findHandoff } from '../config/handoffs.js';
-import { DEPARTMENTS, DEPARTMENT_KEYS } from '../config/modules.js';
+import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
@@ -195,7 +195,7 @@ export const publicTaskFile = asyncHandler(async (req, res) => {
   if (!buffer) throw ApiError.notFound('This link has expired.');
   res.setHeader('Content-Type', attachment.mimeType);
   res.setHeader('Content-Length', buffer.length);
-  res.setHeader('Content-Disposition', `inline; filename="${String(attachment.filename || 'document').replace(/"/g, '')}"`);
+  res.setHeader('Content-Disposition', `inline; filename="${safeFilename(attachment.filename)}"`);
   res.send(buffer);
 });
 
@@ -340,19 +340,69 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
   if (!inDepartment(req.user, key) && !seesEveryDepartment(req.user)) {
     throw ApiError.forbidden('That is another department\'s dashboard');
   }
-  /* The enquiries at this department's stages — only for someone who may open enquiries. */
-  const [dashboard, atStages, held, attention] = await Promise.all([
-    departmentDashboard(key),
-    canRead(req.user, 'enquiries') ? enquiriesAtStages(key, ownershipFilter(req.user)) : [],
-    /* The enquiries this department holds — its desk. */
-    enquiriesHeldBy(key, req.user),
-    /* Questions for this person, and answers back on this department's tasks — at the top. */
-    attentionFor(req.user, key),
-  ]);
+  /*
+   * One desk for Quality, Assembly and Printing [config/modules.js DESK_GROUPS]: each department's
+   * queue is read on its own — the screen shows each under its own header — and the figures are
+   * the desk's together. A department of its own is the one-member case of the same thing.
+   */
+  const desk = deskOf(key);
+  const members = desk ? desk.departments : [key];
+  const perDepartment = await Promise.all(members.map(async (member) => {
+    const [dashboard, atStages, held] = await Promise.all([
+      departmentDashboard(member),
+      /* The enquiries at this department's stages — only for someone who may open enquiries. */
+      canRead(req.user, 'enquiries') ? enquiriesAtStages(member, ownershipFilter(req.user)) : [],
+      /* The enquiries this department holds — its desk. */
+      enquiriesHeldBy(member, req.user),
+    ]);
+    return { dashboard, atStages, held };
+  }));
+  /* Questions for this person, and answers back on this desk's tasks — at the top. */
+  const attention = await attentionFor(req.user, desk ? members : key);
+  const dashboard = mergeDashboards(perDepartment.map((row) => row.dashboard), { key, label: desk?.label });
+  const atStages = perDepartment.flatMap((row) => row.atStages);
+  /* A person's own payment follow-up is on every member's desk list — once on the merged desk. */
+  const held = uniqueTasks(perDepartment.flatMap((row) => row.held), (row) => row.task._id);
   /* The queue less the enquiries themselves: side requests, like a PRT visit or photos sent. */
   const heldIds = new Set(held.map((row) => String(row.task._id)));
   const requests = dashboard.queue.filter((task) => !heldIds.has(String(task._id)));
   /* Dispatch plans vehicles by place: the open requests in baskets of the same landmark / PIN. */
   const baskets = key === 'despatch' ? await dispatchBaskets() : undefined;
-  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, attention, baskets } });
+  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, attention, baskets, ...(desk ? { desk } : {}) } });
 });
+
+const uniqueTasks = (rows, idOf) => {
+  const seen = new Set();
+  return rows.filter((row) => {
+    const id = String(idOf(row));
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+};
+
+/** Several departments' dashboards as one desk's: counts added, lists joined in their own order. */
+function mergeDashboards(dashboards, { key, label }) {
+  if (dashboards.length === 1) return dashboards[0];
+  const sum = (field) => dashboards.reduce((total, row) => total + (row.figures[field] || 0), 0);
+  const mean = (field) => {
+    const values = dashboards.map((row) => row.figures[field]).filter((value) => value !== null && value !== undefined);
+    return values.length ? Math.round((values.reduce((total, value) => total + value, 0) / values.length) * 10) / 10 : null;
+  };
+  const byDue = (a, b) => new Date(a.dueDate || 8640000000000000) - new Date(b.dueDate || 8640000000000000);
+  const byDone = (a, b) => new Date(b.completedAt || 0) - new Date(a.completedAt || 0);
+  return {
+    figures: {
+      department: key,
+      label,
+      open: sum('open'), unclaimed: sum('unclaimed'), late: sum('late'), dueToday: sum('dueToday'),
+      doneThisWeek: sum('doneThisWeek'), sentBackThisWeek: sum('sentBackThisWeek'),
+      averageHoursToDone: mean('averageHoursToDone'),
+      onTimePercent: mean('onTimePercent') === null ? null : Math.round(mean('onTimePercent')),
+    },
+    queue: uniqueTasks(dashboards.flatMap((row) => row.queue), (task) => task._id).sort(byDue),
+    recentlyDone: dashboards.flatMap((row) => row.recentlyDone).sort(byDone),
+    waitingOnOthers: uniqueTasks(dashboards.flatMap((row) => row.waitingOnOthers), (task) => task._id).sort(byDue),
+    cameBack: uniqueTasks(dashboards.flatMap((row) => row.cameBack), (task) => task._id).sort(byDone),
+  };
+}

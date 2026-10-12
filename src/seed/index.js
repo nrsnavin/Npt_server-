@@ -40,6 +40,16 @@ import SalesOrder from '../models/SalesOrder.js';
 const KEEP_USERS = process.argv.includes('--keep-users');
 const REPLACE = process.argv.includes('--replace');
 
+/*
+ * The live database is not a place to practise. This clears data and plants demo logins whose
+ * passwords are in this file, so a production server refuses it unless told in so many words.
+ */
+if (process.env.NODE_ENV === 'production' && !process.argv.includes('--i-mean-production')) {
+  console.error('NODE_ENV is production. The seed clears data and creates demo logins with known passwords.');
+  console.error('If that is really what you want on this database: npm run seed -- --i-mean-production');
+  process.exit(1);
+}
+
 /** Dates relative to today, so the reminder feed always has something to show. */
 const days = (offset, hour = 17) => {
   const date = new Date();

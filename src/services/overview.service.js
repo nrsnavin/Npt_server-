@@ -7,7 +7,7 @@ import { marketingStatusLabel, marketingStatusOf } from '../config/marketingStat
 import { customerScope, isOwnershipScoped, ownershipFilter } from './ownership.service.js';
 import { departmentsOf, isManagement } from '../utils/departments.js';
 import { endOfDayIST } from './handoff.service.js';
-import { DEPARTMENT_KEYS } from '../config/modules.js';
+import { DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import ApiError from '../utils/ApiError.js';
 
 /**
@@ -77,7 +77,9 @@ export const TASK_STATES = ['open', 'done', 'all'];
  */
 export async function trackedTasks(user, { department, state = 'open', limit = 300 } = {}) {
   if (!TASK_STATES.includes(state)) throw new ApiError(400, `State must be one of ${TASK_STATES.join(', ')}`);
-  if (department && !DEPARTMENT_KEYS.includes(department)) throw new ApiError(400, `Unknown department “${department}”`);
+  /* A department, or a desk shared by several [config/modules.js DESK_GROUPS] — every one of its queues. */
+  const members = department ? (deskOf(department)?.key === department ? deskOf(department).departments : [department]) : [];
+  if (department && !DEPARTMENT_KEYS.includes(department) && deskOf(department)?.key !== department) throw new ApiError(400, `Unknown department “${department}”`);
   const filter = { kind: { $exists: true }, ...NOT_THE_ENQUIRY };
   if (state === 'open') filter.completed = false;
   if (state === 'done') filter.completed = true;
@@ -93,16 +95,23 @@ export async function trackedTasks(user, { department, state = 'open', limit = 3
     }
   }
   if (department) {
-    if (filter.department && !filter.department.$in.includes(department)) return [];
-    filter.department = department;
+    const allowed = filter.department ? members.filter((key) => filter.department.$in.includes(key)) : members;
+    if (!allowed.length) return [];
+    filter.department = { $in: allowed };
   }
   const tasks = await Todo.find(filter)
-    .select('kind department title notes brief status dueDate priority user createdBy customer enquiry createdAt updates attention completed completedAt')
+    /* Enough to work the task from the board, not only to list it: what was asked, every update
+       with who wrote it, the PDF, the outcome [components/TaskPanel.jsx]. */
+    .select('kind department fromDepartment title notes brief status dueDate priority user createdBy customer enquiry order createdAt updates attention completed completedAt holds attachment resultFile outcome')
     .populate([
       { path: 'customer', select: 'name code' },
       { path: 'enquiry', select: 'number requirement.modelNumber items.modelNumber' },
+      { path: 'order', select: 'number' },
       { path: 'createdBy', select: 'name' },
       { path: 'user', select: 'name' },
+      { path: 'updates.by', select: 'name' },
+      { path: 'outcome.by', select: 'name' },
+      { path: 'attachment', select: 'key filename size' },
     ])
     .sort(state === 'open' ? { dueDate: 1, createdAt: 1 } : { completed: 1, completedAt: -1, createdAt: -1 })
     .limit(Math.min(Math.max(Number(limit) || 300, 1), 500))

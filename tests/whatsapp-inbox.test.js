@@ -672,3 +672,18 @@ test('a number for a customer who has none is filed against them directly', asyn
   await inbound(from, 'Any update on that?');
   assert.equal((await threadFor(from)).matchedBy, 'customer');
 });
+
+test('a location that is not two coordinates is dropped, not written; a real one is kept as numbers', async () => {
+  const bad = await inbound(STRANGER, 'here', { Latitude: 'north', Longitude: '77.3' });
+  assert.equal(bad.status, 200);
+  const thread = await WhatsappThread.findOne({ number: STRANGER });
+  assert.ok(thread);
+  assert.equal(thread.messages.at(-1).location?.lat, undefined);
+
+  const good = await inbound(STRANGER, 'gate 2', { Latitude: '11.15', Longitude: '77.34', Label: 'Gate 2' });
+  assert.equal(good.status, 200);
+  const again = await WhatsappThread.findOne({ number: STRANGER });
+  assert.equal(again.messages.at(-1).location.lat, 11.15);
+  assert.equal(again.messages.at(-1).location.lng, 77.34);
+  assert.equal(again.messages.at(-1).location.name, 'Gate 2');
+});

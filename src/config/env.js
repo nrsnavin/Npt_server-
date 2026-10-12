@@ -185,3 +185,17 @@ export const env = {
 export const escalationIntervalMinutes = Number(process.env.ESCALATION_INTERVAL_MINUTES ?? 60);
 
 export const isProduction = env.nodeEnv === 'production';
+
+/**
+ * The one secret everything hangs off: every session, and the signed links WhatsApp fetches
+ * documents through. A deployment that forgot to set it ran on the development default — and
+ * anybody who had read this repository could mint a session for any account. Production refuses
+ * to start on the default or on anything short enough to guess; development keeps the convenience.
+ */
+export const DEV_SECRET = 'npt-dev-secret-change-me';
+export function secretProblem(secret = env.jwtSecret, nodeEnv = env.nodeEnv) {
+  if (nodeEnv !== 'production') return null;
+  if (!secret || secret === DEV_SECRET) return 'JWT_SECRET is not set. Generate one with: openssl rand -base64 48';
+  if (String(secret).length < 32) return 'JWT_SECRET is too short to be safe — use at least 32 characters (openssl rand -base64 48)';
+  return null;
+}

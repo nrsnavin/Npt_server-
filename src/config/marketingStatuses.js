@@ -75,6 +75,7 @@ export const FROM_TASK = {
   ask_edd: 'production',
   mould_issue: 'mould',
   ask_assembling_edd: 'assembling',
+  ask_printing: 'assembling',
   quality_check: 'qc',
   invoice_dispatch: 'dispatch',
   lr_copy: 'lr_copy',

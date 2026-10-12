@@ -14,6 +14,7 @@ import { isProduction } from '../config/env.js';
 import { QUEUE_STATUSES } from './sampleDashboard.controller.js';
 import { marketingStatusLabel } from '../config/marketingStatuses.js';
 import { documentFile, documentFromLink, documentsFor, documentUrl } from '../services/enquiryDocuments.service.js';
+import { safeFilename } from '../services/storage.service.js';
 
 /**
  * Writing to the buyer from the enquiry, on the company's WhatsApp number and the company's
@@ -155,7 +156,7 @@ export const publicEnquiryDocument = asyncHandler(async (req, res) => {
   if (!paper) throw ApiError.notFound('This link has expired.');
   res.setHeader('Content-Type', paper.mimeType);
   res.setHeader('Content-Length', paper.buffer.length);
-  res.setHeader('Content-Disposition', `inline; filename="${String(paper.filename).replace(/"/g, '')}"`);
+  res.setHeader('Content-Disposition', `inline; filename="${safeFilename(paper.filename)}"`);
   res.send(paper.buffer);
 });
 

@@ -139,6 +139,31 @@ test('a party is due today, or new, when any live enquiry of theirs is — not j
   assert.equal(json.data.counts.new_enquiry, 1);
 });
 
+test('Admin works any department’s task from the board — an update, a new date — without taking it off the queue', async () => {
+  const updated = await api(`/api/workspace/todos/${ids.task}/update`, { method: 'POST', as: 'admin', body: { note: 'Checked with the press — the mould goes on M3 tomorrow' } });
+  assert.equal(updated.status, 200, updated.json.message);
+  assert.ok(!updated.json.data.user, 'still nobody’s: Admin writing on it does not claim it for Admin');
+
+  const inFiveDays = new Date(Date.now() + 5 * 86400000).toISOString();
+  const moved = await api(`/api/workspace/todos/${ids.task}/reschedule`, { method: 'POST', as: 'admin', body: { dueDate: inFiveDays, reason: 'Press is down until Monday' } });
+  assert.equal(moved.status, 200, moved.json.message);
+
+  /* The board carries what the panel needs: the update with who wrote it, and the new date. */
+  const [row] = (await api('/api/dashboard/tasks?department=production', { as: 'admin' })).json.data.filter((task) => task._id === ids.task);
+  assert.equal(row.updates.at(-1).note, 'Checked with the press — the mould goes on M3 tomorrow');
+  assert.equal(row.updates.at(-1).by.name, 'Navin R');
+  assert.equal(new Date(row.dueDate).toDateString(), new Date(inFiveDays).toDateString());
+
+  /* Production's own first writer does take it. */
+  const theirs = await api(`/api/workspace/todos/${ids.task}/update`, { method: 'POST', as: 'siva', body: { note: 'Mould is on M3' } });
+  assert.equal(theirs.status, 200, theirs.json.message);
+  assert.equal(String(theirs.json.data.user?._id || theirs.json.data.user), ids.siva);
+
+  /* Another marketing person is not Admin and not Production: refused. */
+  const other = await api(`/api/workspace/todos/${ids.task}/update`, { method: 'POST', as: 'arun', body: { note: 'Not mine' } });
+  assert.ok(other.status >= 400 && other.status < 500, `refused, got ${other.status}`);
+});
+
 test('Admin reads any department’s tasks, open or done; nobody widens their own scope', async () => {
   const listed = async (as, query) => api(`/api/dashboard/tasks${query}`, { as });
   const ids_ = (response) => response.json.data.map((task) => task._id);

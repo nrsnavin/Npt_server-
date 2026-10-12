@@ -49,6 +49,14 @@ export const isAllowedDocument = (mimeType) => ALLOWED_DOCUMENT_TYPES.includes(m
 
 export const MAX_BYTES = 12 * 1024 * 1024;
 
+/**
+ * A stored filename, fit for a Content-Disposition header. The name came from whoever uploaded
+ * the file; a quote, a newline or a control character in it would break the header — Node
+ * refuses to send one, and the download answers 500 — so the header keeps printable ASCII only.
+ */
+export const safeFilename = (name, fallback = 'document') =>
+  String(name || '').replace(/[^\x20-\x7e]/g, '').replace(/["\\]/g, '').trim() || fallback;
+
 export const EXTENSIONS = {
   'image/jpeg': '.jpg',
   'image/png': '.png',

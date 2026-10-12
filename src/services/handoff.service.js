@@ -454,7 +454,12 @@ async function moveEnquiryChecked({
   if (kind === 'back_to_marketing') return returnToMarketing({ enquiry, note, fields, user, system });
   if (!system && !(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
 
-  const already = await Todo.findOne({ enquiry: enquiry._id, kind, completed: false }).populate('user', 'name');
+  /* One open request per enquiry and kind — except a "My" task, which is each person's own: a
+     second person's payment follow-up on the same buyer is theirs, not an add-on to a colleague's. */
+  const already = await Todo.findOne({
+    enquiry: enquiry._id, kind, completed: false,
+    ...(handoff.toRaiser && user?._id && !system ? { user: user._id } : {}),
+  }).populate('user', 'name');
   if (already && !addToOpen) {
     throw ApiError.conflict(
       `${handoff.label} is already with ${departmentName(already.department)}`
@@ -485,7 +490,9 @@ async function moveEnquiryChecked({
   let assignee = picked.member?._id;
   if (department === 'owner') {
     /* My Payment Follow-up is the raiser's own; anything else for the owner is the enquiry's marketing person's. */
-    ({ userId: assignee, department } = handoff.toRaiser && user?._id
+    /* Raised by a person: on their own list, whoever they are. Raised by a flow (a step's "next"),
+       nobody chose it — it goes to the enquiry's marketing person, not to whoever pressed Done. */
+    ({ userId: assignee, department } = handoff.toRaiser && user?._id && !system
       ? { userId: user._id, department: user.department || 'marketing' }
       : await ownerOf(enquiry));
   }
@@ -1358,7 +1365,7 @@ export async function attentionFor(user, department) {
       parentTask: { $exists: true }, completed: false,
       $or: [{ user: user._id }, { department: { $in: departmentsOf(user) }, user: null }],
     }).sort({ createdAt: 1 }).limit(50).populate(populate),
-    Todo.find({ 'attention.kind': 'reply', completed: false, department }).sort({ 'attention.at': -1 }).limit(50).populate(populate),
+    Todo.find({ 'attention.kind': 'reply', completed: false, department: Array.isArray(department) ? { $in: department } : department }).sort({ 'attention.at': -1 }).limit(50).populate(populate),
   ]);
   /* And what departments did on this person's enquiries — Admin's, every enquiry's. */
   return { questions, replies, notices: await noticesFor(user) };
@@ -1401,9 +1408,17 @@ export async function updateHandoff(task, user, { note, fields = {} }) {
     note: text, fields: Object.keys(kept).length ? kept : undefined, by: user._id, at: new Date(),
   }];
   task.attention = undefined;
-  if (!task.user) task.user = user._id;
+  /* The first person in the department to write on it has taken it. Admin writing from the
+     board has not: the job stays on the department's queue for whoever picks it up. */
+  if (!task.user && !isAdmin(user)) task.user = user._id;
   await task.save();
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  /* Every update on an SO, dispatch, quality, assembling, printing or payment task reaches Admin
+     and the enquiry's marketing person under "Needs your action", as a status move does. */
+  if (findHandoff(task.kind)?.form?.notifyStatus) {
+    const current = statusesOf(task).find((entry) => entry.key === task.status);
+    await noticeStatus(task, user, { step: { key: task.status || 'update', label: current ? `Update — ${current.label}` : 'Update' }, note: text });
+  }
   return task;
 }
 
@@ -1422,6 +1437,7 @@ export async function returnHandoff(task, user, { reason }) {
   task.completedBy = user._id;
   task.outcome = { result: 'returned', note: why, by: user._id, at: new Date() };
   await task.save();
+  if (findHandoff(task.kind)?.form?.notifyStatus) await noticeStatus(task, user, { step: { key: 'sent_back', label: 'Sent back' }, note: why });
 
   if (task.holds) {
     /* An enquiry a department still held goes back to its marketing person, with why. */
@@ -1462,6 +1478,10 @@ export async function rescheduleHandoff(task, user, { dueDate, reason }) {
   task.reschedules = [...(task.reschedules || []), { from: task.dueDate, to: due, reason: why, by: user._id, at: new Date() }];
   task.dueDate = due;
   await task.save();
+  if (findHandoff(task.kind)?.form?.notifyStatus) {
+    const day = new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' }).format(due);
+    await noticeStatus(task, user, { step: { key: 'rescheduled', label: `Date moved to ${day}` }, note: why, date: due });
+  }
   return task;
 }
 
@@ -1915,9 +1935,12 @@ export async function departmentDashboard(department, { now = new Date() } = {})
  * department's.
  */
 export async function enquiriesHeldBy(department, user, { now = new Date(), limit = 200 } = {}) {
-  const filter = { kind: { $exists: true }, completed: false, department, ...NOT_THE_ENQUIRY };
+  const queue = { kind: { $exists: true }, department, ...NOT_THE_ENQUIRY };
   /* Marketing's desk is each person's own buyers; any other desk is the department's. */
-  if (department === 'marketing' && isOwnershipScoped(user)) filter.user = user._id;
+  if (department === 'marketing' && isOwnershipScoped(user)) queue.user = user._id;
+  /* And this person's own payment follow-ups, whichever desk they read from: a "My" task belongs
+     on its person's login, not only on the enquiry it is about. */
+  const filter = { completed: false, $or: [queue, { kind: 'my_payment_followup', user: user._id }] };
 
   const tasks = await Todo.find(filter)
     .sort({ dueDate: 1, createdAt: 1 })

@@ -164,8 +164,9 @@ test('Assembling has its own stage, and counts its own enquiries', async () => {
 
   const board = await api('/api/departments/assembling/dashboard', { as: 'admin' });
   const at = board.json.data.atStages;
-  assert.deepEqual(at.map((stage) => stage.key), ['assembling']);
-  assert.ok(at[0].count >= 1);
+  /* Assembly's desk is shared with Quality and Printing [config/modules.js DESK_GROUPS]: every member's stages. */
+  assert.deepEqual(at.map((stage) => stage.key), ['quality', 'assembling']);
+  assert.ok(at.find((stage) => stage.key === 'assembling').count >= 1);
 });
 
 /* ------------------------------ 2. Quality, when asked ------------------------------ */

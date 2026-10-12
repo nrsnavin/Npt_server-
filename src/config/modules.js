@@ -563,6 +563,23 @@ const DEPARTMENT_LIST = [
       tasks: 'write',
     },
   },
+  /*
+   * Printing: the print on the hanger, after moulding and beside assembly. One desk with Quality
+   * and Assembly [DESK_GROUPS] — the same people, three queues under their own headers.
+   */
+  {
+    key: 'printing',
+    label: 'Printing',
+    defaultAccess: {
+      queries: 'write',
+      tasks: 'write',
+      production: 'read',
+      orders: 'read',
+      quality: 'read',
+      moulds: 'read',
+      announcements: 'read',
+    },
+  },
   {
     key: 'management',
     label: 'Admin',
@@ -578,12 +595,28 @@ const DEPARTMENT_LIST = [
  */
 const DEPARTMENT_ORDER = [
   'management', 'marketing', 'order_confirmation', 'quotation', 'sampling',
-  'production', 'mould', 'quality', 'assembling', 'despatch', 'reception', 'accounts', 'payment_collection', 'audit',
+  'production', 'mould', 'quality', 'assembling', 'printing', 'despatch', 'reception', 'accounts', 'payment_collection', 'audit',
 ];
 
 export const DEPARTMENTS = DEPARTMENT_ORDER.map((key) => DEPARTMENT_LIST.find((department) => department.key === key));
 
 export const DEPARTMENT_KEYS = DEPARTMENTS.map((department) => department.key);
+
+/**
+ * Departments that are one desk. Quality, Assembly and Printing are the same few people in this
+ * plant, so a login in any of them works all three queues, their desk is one screen, and the
+ * Department Tasks board offers them as one choice — while every task keeps its own department,
+ * and the screens show each under its own header. The keys stay apart on every record.
+ */
+export const DESK_GROUPS = [
+  { key: 'finishing', label: 'Quality · Assembling · Printing', departments: ['quality', 'assembling', 'printing'] },
+];
+
+/** The desk a department belongs to, or null when it is a desk of its own. */
+export const deskOf = (key) => DESK_GROUPS.find((desk) => desk.key === key || desk.departments.includes(key)) || null;
+
+/** Every department on the same desk as this one — itself included, itself alone when it shares none. */
+export const deskMates = (key) => deskOf(key)?.departments || [key];
 
 export const findModule = (key) => MODULES.find((module) => module.key === key);
 export const findDepartment = (key) => DEPARTMENTS.find((department) => department.key === key);
