@@ -1401,7 +1401,9 @@ export async function updateHandoff(task, user, { note, fields = {} }) {
     note: text, fields: Object.keys(kept).length ? kept : undefined, by: user._id, at: new Date(),
   }];
   task.attention = undefined;
-  if (!task.user) task.user = user._id;
+  /* The first person in the department to write on it has taken it. Admin writing from the
+     board has not: the job stays on the department's queue for whoever picks it up. */
+  if (!task.user && !isAdmin(user)) task.user = user._id;
   await task.save();
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   return task;
