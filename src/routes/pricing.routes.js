@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   listQuotations, getQuotation, createQuotation, updateQuotation, costLine, decideLine,
-  reviseQuotation, sendQuotation, respondToQuotation, quotationPdf, sendPreview,
+  reviseQuotation, sendQuotation, respondToQuotation, quotationPdf, sendPreview, previousQuotes,
 } from '../controllers/quotation.controller.js';
 import { authenticate, authorize, requireModule } from '../middleware/auth.js';
 import { getQuoteNumbering, setQuoteNumbering } from '../controllers/quoteNumbering.controller.js';
@@ -33,6 +33,8 @@ router.get('/quotations', requireModule('pricing'), listQuotations);
 router.get('/quotations/numbering', requireModule('pricing'), getQuoteNumbering);
 router.put('/quotations/numbering', authorize('admin'), validate(quoteNumberingSchema), setQuoteNumbering);
 router.post('/quotations', requireModule('pricing', 'quote'), validate(quotationSchema), createQuotation);
+/* What this mould in this material was quoted at before — beside the costing sheet. Before `/:id`. */
+router.get('/quotations/previous', requireModule('pricing'), previousQuotes);
 router.get('/quotations/:id', requireModule('pricing'), getQuotation);
 /** The document the customer receives, rendered from the record on demand. */
 router.get('/quotations/:id/pdf', requireModule('pricing'), quotationPdf);
