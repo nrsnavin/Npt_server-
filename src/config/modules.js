@@ -550,6 +550,26 @@ const DEPARTMENT_LIST = [
     },
   },
   /*
+   * Payment Recovery (PRT): the people who go to the buyer when the phone has stopped working.
+   * A case reaches them from Payment Collection (Escalated to PRT) or from Admin; they visit,
+   * collect on the spot or take a promise, and say when a balance cannot be recovered
+   * [docs/PAYMENT-COLLECTION-WORKFLOW.md].
+   */
+  {
+    key: 'payment_recovery',
+    label: 'Payment Recovery (PRT)',
+    defaultAccess: {
+      queries: 'write',
+      payments: 'write',
+      tasks: 'write',
+      customers: 'read',
+      orders: 'read',
+      dispatch: 'read',
+      enquiries: 'read',
+      announcements: 'read',
+    },
+  },
+  /*
    * Audit: checks the GST and invoices, and may look at anything to do it — read on every module
    * except who has access, which stays Admin's. The cost behind a quotation stays redacted, as for
    * every reader without costing rights [services/pricingVisibility.js].
@@ -589,13 +609,13 @@ const DEPARTMENT_LIST = [
 
 /**
  * The departments, in the order the plant lists them (role requirements, 7 Oct 2026), with
- * Mould after Production, Reception after Dispatch, and Payment Collection and Audit after Accounts. The keys are older than some of the names —
+ * Mould after Production, Reception after Dispatch, and Payment Collection, Payment Recovery and Audit after Accounts. The keys are older than some of the names —
  * `management` is Admin, `order_confirmation` is Sales / SO, `assembling` is Assembly,
  * `despatch` is Dispatch — and are kept, because every user and task stores them.
  */
 const DEPARTMENT_ORDER = [
   'management', 'marketing', 'order_confirmation', 'quotation', 'sampling',
-  'production', 'mould', 'quality', 'assembling', 'printing', 'despatch', 'reception', 'accounts', 'payment_collection', 'audit',
+  'production', 'mould', 'quality', 'assembling', 'printing', 'despatch', 'reception', 'accounts', 'payment_collection', 'payment_recovery', 'audit',
 ];
 
 export const DEPARTMENTS = DEPARTMENT_ORDER.map((key) => DEPARTMENT_LIST.find((department) => department.key === key));

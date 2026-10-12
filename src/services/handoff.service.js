@@ -14,6 +14,7 @@ import { dispatchBalance } from './enquiryGates.service.js';
 import * as paymentPresets from './paymentGates.service.js';
 import { assertEnquiryPaidFor } from './paymentGates.service.js';
 import { MATERIALS } from '../models/Mould.js';
+import { askToRecordReceipt, endOfIndiaDay, logCollectionCall } from './collections.service.js';
 
 /**
  * One department asking another for something about an enquiry — the buttons on the enquiry
@@ -995,17 +996,14 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   /* Refused before the status moves, so a refusal leaves the task where it was. */
   if (step.done) await assertMayFinish(task);
 
-  if (step.raises) {
-    if (!task.enquiry) fail(`${step.label} asks the enquiry's marketing person — this task has no enquiry. Ask whoever raised it instead.`);
-    const enquiry = await enquiryOfTask(task);
-    await moveEnquiry({
-      enquiry, kind: step.raises, note: `${user.name}: ${text}`, user, system: true, openRecords: false,
-      requiredDate: new Date(), parentTask: task._id, order: task.order,
-    });
-  }
+  if (step.raises) await raiseFromStatus(task, user, step, text);
   task.status = status;
   task.attention = undefined;
+  /* The suggestion was about what to do next; a move is somebody doing it. */
+  if (task.suggestion) task.suggestion = undefined;
   task.statusHistory = [...(task.statusHistory || []), { status, note: text || undefined, date: readyDate || undefined, by: user._id, at: new Date() }];
+  /* A promise is when the money is due next, a visit is when PRT goes: the task falls due that day [collections.service]. */
+  if ((step.promise || step.visit) && readyDate) task.dueDate = endOfIndiaDay(readyDate);
   const said = [step.label, readyDate && `${form.statusDate?.label || 'Ready date'} ${readyDate}`].filter(Boolean).join(' · ');
   /* A ready date is the enquiry's EDD (Production) or ERD (the mould) from here on [enquiryProgress]. */
   const dateField = form.statusDate?.field || 'edd';
@@ -1026,9 +1024,58 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   if (step.tells && task.enquiry) await tellOpenTasks(task, user, step, text, step.tells);
   /* Accounts confirming a payment the order is still held for: somebody has to record it. */
   if (step.recordsPayment && task.enquiry) await askToRecordPayment(task, user, step);
+  /* A collection case: the move is a call on the receivable's log, a promise its promised date. */
+  if (step.followUp || step.promise) await logCollectionCall(task, user, step, text, readyDate);
+  /* Money taken: whoever took it records the receipt in Payments; Accounts confirms it there. */
+  if (step.recordsReceipt) await askToRecordReceipt(task, user, step);
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
   if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { [dateField]: readyDate } : {} });
   return task;
+}
+
+/**
+ * The task a status raises [config/departmentTaskForms.js `raises`]: on the enquiry when the
+ * task has one — a clarification's answer comes back onto this task — and otherwise, for a team
+ * task raised on a buyer alone, straight onto the other department's queue with the same
+ * customer and order. A status that also finishes this task (Escalated to PRT) hands the case
+ * on rather than asking a question, so the new task is not a child of a closed one.
+ */
+async function raiseFromStatus(task, user, step, text) {
+  const target = findHandoff(step.raises);
+  const brief = {};
+  /* What this task knew that the next asks for too — the payment contact onto the PRT case. */
+  for (const field of target?.asks || []) {
+    if (task.brief?.[field.key] && !['member', 'info', 'kind', 'items'].includes(field.type)) brief[field.key] = task.brief[field.key];
+  }
+  if (task.enquiry) {
+    const enquiry = await enquiryOfTask(task);
+    return moveEnquiry({
+      enquiry, kind: step.raises, note: `${user.name}: ${text}`, user, system: true, openRecords: false,
+      requiredDate: new Date(), parentTask: step.done ? undefined : task._id, order: task.order, brief,
+    });
+  }
+  if (!target?.department || target.department === 'owner') {
+    fail(`${step.label} asks the enquiry's marketing person — this task has no enquiry. Ask whoever raised it instead.`);
+  }
+  const form = target.form || {};
+  const { default: Customer } = await import('../models/Customer.js');
+  const buyer = task.customer?.name ? task.customer : await Customer.findById(task.customer?._id || task.customer).select('name').lean();
+  return Todo.create({
+    customer: task.customer?._id || task.customer || undefined,
+    order: task.order?._id || task.order || undefined,
+    kind: step.raises,
+    department: target.department,
+    fromDepartment: actingFor(user, task) || undefined,
+    createdBy: user._id,
+    title: `${target.label} — ${buyer?.name || 'team task'}`,
+    notes: `${user.name}: ${text}`,
+    ...(Object.keys(brief).length ? { brief } : {}),
+    ...(form.statuses?.length ? { status: form.statuses[0].key, statusHistory: [{ status: form.statuses[0].key, by: user._id, at: new Date() }] } : {}),
+    ...(step.done ? {} : { parentTask: task._id }),
+    dueDate: endOfDayIST(new Date()),
+    priority: task.priority === 'high' ? 'high' : 'normal',
+    link: '/departments/mine',
+  });
 }
 
 /**
@@ -1111,7 +1158,7 @@ async function raiseNextFrom(task, user, step, text) {
 const indiaDay = (date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(date);
 
 /** The people to tell about a task: whoever has it, or everyone in its department when nobody does. */
-async function peopleOn(task) {
+export async function peopleOn(task) {
   if (task.user) return [task.user?._id || task.user];
   const { default: User } = await import('../models/User.js');
   return (await User.find({ $or: [{ department: task.department }, { extraDepartments: task.department }], isActive: { $ne: false } }).select('_id').lean())
@@ -1208,7 +1255,7 @@ function statusDate(form, step, date) {
  * The move, shown to the enquiry's marketing person and every Admin — not to whoever made it —
  * under "Needs your action" until they read and dismiss it [models/TaskNotice.js].
  */
-async function noticeStatus(task, user, { step, note, date, also = [], onlyAlso = false }) {
+export async function noticeStatus(task, user, { step, note, date, also = [], onlyAlso = false }) {
   const [{ default: TaskNotice }, { default: User }] = await Promise.all([
     import('../models/TaskNotice.js'), import('../models/User.js'),
   ]);
@@ -1222,12 +1269,12 @@ async function noticeStatus(task, user, { step, note, date, also = [], onlyAlso 
     for (const asking of await Todo.find({ _id: { $in: task.askedFrom }, completed: false }).select('user department').lean()) askers.push(...(await peopleOn(asking)));
   }
   const recipients = new Set((onlyAlso ? also : [asker, ...admins.map((person) => person._id), ...also, ...askers]).filter(Boolean).map(String));
-  recipients.delete(String(user._id));
+  if (user?._id) recipients.delete(String(user._id));
   if (!recipients.size) return;
   await TaskNotice.insertMany([...recipients].map((recipient) => ({
-    recipient, task: task._id, enquiry: enquiry?._id, customer: task.customer || enquiry?.customer,
+    recipient, task: task._id, enquiry: enquiry?._id, customer: task.customer?._id || task.customer || enquiry?.customer,
     department: task.department, kind: task.kind, status: step.key, statusLabel: step.label,
-    note: note || undefined, date: date || undefined, by: user._id, at: new Date(),
+    note: note || undefined, date: date || undefined, by: user?._id || undefined, at: new Date(),
   })));
 }
 

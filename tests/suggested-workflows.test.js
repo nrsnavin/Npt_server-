@@ -2,7 +2,7 @@
  * The suggested steps for the departments that had none (until the plant sends its own):
  *   Quotation  Request Received → Costing → Waiting for Admin Approval → Quote Sent → Task Closed
  *   Audit      Received → Checking → Correction Needed → Corrected → Task Closed
- *   PRT visit  Visit Assigned → Visited → Collected / Promised → Task Closed
+ *   PRT case   Assigned → Visit Planned → Visited → Collected / Promised → Task Closed
  * Each move with a remark, told to the enquiry's marketing person and Admin.
  *
  *   node --test tests/suggested-workflows.test.js
@@ -46,7 +46,7 @@ test.before(async () => {
   baseUrl = `http://127.0.0.1:${server.address().port}`;
   await api('/api/auth/register', { method: 'POST', body: { name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', department: 'management' } });
   token.admin = (await api('/api/auth/login', { method: 'POST', body: { email: 'admin@np.com', password: 'Admin@12345' } })).json.data.token;
-  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['kumar', 'Kumar Costing', 'quotation'], ['audrey', 'Audrey Audit', 'audit'], ['raja', 'Raja Recovery', 'payment_collection']]) {
+  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['kumar', 'Kumar Costing', 'quotation'], ['audrey', 'Audrey Audit', 'audit'], ['raja', 'Raja Recovery', 'payment_recovery']]) {
     const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department } });
     assert.equal(made.status, 201, made.json.message);
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
@@ -68,7 +68,7 @@ test('the three workflows come from the server, in order', async () => {
   assert.deepEqual(labels('create_quotation'), ['Request Received', 'Costing', 'Waiting for Admin Approval', 'Quote Sent', 'Task Closed']);
   assert.deepEqual(labels('price_negotiation'), labels('create_quotation'));
   assert.deepEqual(labels('gst_invoice_audit'), ['Received', 'Checking', 'Correction Needed', 'Corrected', 'Task Closed']);
-  assert.deepEqual(labels('request_prt_visit'), ['Visit Assigned', 'Visited', 'Collected', 'Promised', 'Task Closed']);
+  assert.deepEqual(labels('prt_recovery'), ['Assigned', 'Visit Planned', 'Visited', 'Collected', 'Part Collected', 'Promised', 'Promise Broken', 'Cannot Recover', 'Task Closed']);
 });
 
 test('a costing moves with a remark, marketing hears it, and Task Closed finishes it', async () => {
@@ -92,10 +92,10 @@ test('an audit needing a correction shows as an issue; a PRT visit runs its step
   const listed = (await api('/api/enquiries', { as: 'nandhini' })).json.data.find((row) => row._id === enquiry._id);
   assert.ok(JSON.stringify(listed).includes('Correction Needed'), 'the enquiry list shows the correction as an issue');
 
-  const visit = await api('/api/workspace/team-tasks', { method: 'POST', as: 'admin', body: { kind: 'request_prt_visit', note: 'Collect INV-0412', brief: { visitor: ids.raja, visitDate: new Date(Date.now() + 86400000).toISOString().slice(0, 10) } } });
+  const visit = await api('/api/workspace/team-tasks', { method: 'POST', as: 'admin', body: { kind: 'prt_recovery', note: 'Collect INV-0412', brief: { visitor: ids.raja, visitDate: new Date(Date.now() + 86400000).toISOString().slice(0, 10) } } });
   assert.equal(visit.status, 201, visit.json.message);
   const visitTask = visit.json.data.task?._id || visit.json.data._id;
   assert.equal((await Todo.findById(visitTask).lean()).status, 'assigned');
-  const visited = await move('raja', visitTask, 'promised', 'Met the accountant — paying on Friday');
+  const visited = await move('raja', visitTask, 'visited', 'Met the accountant — paying on Friday');
   assert.equal(visited.status, 200, visited.json.message);
 });

@@ -115,7 +115,7 @@ test('the departments, in the plant\'s order', async () => {
   const { DEPARTMENTS } = await import('../src/config/modules.js');
   assert.deepEqual(DEPARTMENTS.map((department) => department.label), [
     'Admin', 'Marketing', 'Sales / SO', 'Quotation', 'Sampling',
-    'Production', 'Mould', 'Quality', 'Assembly', 'Printing', 'Dispatch', 'Reception', 'Accounts', 'Payment Collection', 'Audit',
+    'Production', 'Mould', 'Quality', 'Assembly', 'Printing', 'Dispatch', 'Reception', 'Accounts', 'Payment Collection', 'Payment Recovery (PRT)', 'Audit',
   ]);
 });
 
@@ -131,7 +131,7 @@ test('the buttons and the stages come from the server', async () => {
   assert.deepEqual(drawn.map((button) => button.label), [
     'Photos Sent', 'Create Quotation', 'Sample Request', 'Price Negotiation', 'PO & SO', 'Ask EDD',
     'Ask Assembly EDD', 'Ask Printing', 'Mould Issue', 'Team Payment Follow-up', 'Invoice & Dispatch', 'LR Copy',
-    'Quality Check', 'Quality Issue', 'GST / Invoice Audit', 'A/C Clarify', 'Request PRT Visit', 'My Payment Follow-up', 'Task Closed',
+    'Quality Check', 'Quality Issue', 'GST / Invoice Audit', 'A/C Clarify', 'PRT Recovery', 'My Payment Follow-up', 'Task Closed',
   ]);
   /* The form a Sample Request asks whoever raises it: a row per model [config/departmentTaskForms.js]. */
   const [rows] = json.data.buttons.find((button) => button.key === 'sample_request').asks;
@@ -579,7 +579,7 @@ test('Admin sees every department side by side; nobody else does', async () => {
   assert.equal(refused.status, 403);
   const { status, json } = await api('/api/departments/overview', { token: admin });
   assert.equal(status, 200);
-  assert.equal(json.data.length, 15);
+  assert.equal(json.data.length, 16);
   const production = json.data.find((row) => row.department === 'production');
   assert.ok(production.late >= 1);
   assert.equal(json.data[0].label, 'Admin');

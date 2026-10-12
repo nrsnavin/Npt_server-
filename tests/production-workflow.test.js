@@ -50,7 +50,7 @@ test.before(async () => {
 
   await api('/api/auth/register', { method: 'POST', body: { name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', department: 'management' } });
   token.admin = (await api('/api/auth/login', { method: 'POST', body: { email: 'admin@np.com', password: 'Admin@12345' } })).json.data.token;
-  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['arun', 'Arun K', 'marketing'], ['siva', 'Sivakumar', 'production'], ['kavi', 'Kavitha', 'quality'], ['ravi', 'Ravi Despatch', 'despatch'], ['anand', 'Anand Assembly', 'assembling'], ['meera', 'Meera Sampling', 'sampling'], ['raja', 'Raja Recovery', 'payment_collection'], ['rekha', 'Rekha Reception', 'reception']]) {
+  for (const [key, name, department] of [['nandhini', 'Nandhini S', 'marketing'], ['arun', 'Arun K', 'marketing'], ['siva', 'Sivakumar', 'production'], ['kavi', 'Kavitha', 'quality'], ['ravi', 'Ravi Despatch', 'despatch'], ['anand', 'Anand Assembly', 'assembling'], ['meera', 'Meera Sampling', 'sampling'], ['raja', 'Raja Recovery', 'payment_recovery'], ['rekha', 'Rekha Reception', 'reception']]) {
     const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department } });
     assert.equal(made.status, 201, made.json.message);
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
@@ -563,22 +563,21 @@ test('a quotation sent closes the Create Quotation and Price Negotiation tasks w
 
 test('marketing assigns a PRT visit to a Payment Recovery Team member they pick, due on the visit date', async () => {
   const prefill = (await api(`/api/enquiries/${enquiry._id}/handoffs/prefill`, { as: 'nandhini' })).json.data;
-  const members = prefill.members.payment_collection;
+  const members = prefill.members.payment_recovery;
   const raja = members.find((person) => person.name === 'Raja Recovery');
   assert.ok(raja, 'the PRT members are offered');
   assert.ok(!members.some((person) => person.name === 'Sivakumar'), 'only the recovery team');
 
   const visit = (brief) => api(`/api/enquiries/${enquiry._id}/handoffs`, {
-    method: 'POST', as: 'nandhini', body: { kind: 'request_prt_visit', note: 'Collect ₹42,000 against INV-0412', brief },
+    method: 'POST', as: 'nandhini', body: { kind: 'prt_recovery', note: 'Collect ₹42,000 against INV-0412', brief },
   });
-  assert.match((await visit({ visitDate: indiaDay(3) })).json.message, /PRT member to visit/, 'who goes has to be picked');
   const siva = (await api('/api/auth/me', { as: 'siva' })).json.data.id;
-  assert.match((await visit({ visitor: siva, visitDate: indiaDay(3) })).json.message, /pick someone from Payment Collection/);
+  assert.match((await visit({ visitor: siva, visitDate: indiaDay(3) })).json.message, /pick someone from Payment Recovery \(PRT\)/);
 
   const sent = await visit({ visitor: raja._id, visitDate: indiaDay(3) });
   assert.equal(sent.status, 201, sent.json.message);
   const task = await Todo.findById(sent.json.data.task._id);
-  assert.equal(task.department, 'payment_collection');
+  assert.equal(task.department, 'payment_recovery');
   assert.equal(String(task.user), raja._id, 'Raja’s by name');
   assert.equal(task.brief.visitor, 'Raja Recovery');
   assert.equal(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(task.dueDate), indiaDay(3), 'due on the visit day');
@@ -620,8 +619,8 @@ test('Admin and marketing raise a department task with no enquiry; it lands on t
   assert.ok((await noticesOf('admin')).some((entry) => entry.task === String(task._id)), 'and Admin');
 
   const prefill = (await api('/api/workspace/team-tasks/prefill', { as: 'nandhini' })).json.data;
-  const raja = prefill.members.payment_collection.find((person) => person.name === 'Raja Recovery');
-  const prt = await teamTask('admin', { kind: 'request_prt_visit', note: 'Old balance from last year', brief: { visitor: raja._id, visitDate: indiaDay(4) } });
+  const raja = prefill.members.payment_recovery.find((person) => person.name === 'Raja Recovery');
+  const prt = await teamTask('admin', { kind: 'prt_recovery', note: 'Old balance from last year', brief: { visitor: raja._id, visitDate: indiaDay(4) } });
   assert.equal(prt.status, 201, prt.json.message);
   assert.equal(String((await Todo.findById(prt.json.data.task._id)).user), raja._id, 'the picked PRT member’s');
 

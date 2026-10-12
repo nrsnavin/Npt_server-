@@ -28,7 +28,7 @@ import {
 } from '../controllers/quality.controller.js';
 import {
   listReceivables, getReceivable, paymentDay,
-  raiseAdvance, logFollowUp, setPaymentContact, followUpOptions, recordReceipt, setJudgement,
+  raiseAdvance, logFollowUp, setPaymentContact, followUpOptions, recordReceipt, confirmReceipt, setJudgement,
 } from '../controllers/payment.controller.js';
 import { inspectionSchema } from '../validators/quality.schemas.js';
 import {
@@ -256,6 +256,8 @@ router.get('/payments/:id', requireModule('payments'), getReceivable);
 router.put('/payments/:id/contact', requireModule('payments', 'write'), validate(paymentContactSchema), setPaymentContact);
 router.post('/payments/:id/follow-ups', requireModule('payments'), validate(followUpSchema), logFollowUp);
 router.post('/payments/:id/receipts', requireModule('payments', 'write'), validate(receiptSchema), recordReceipt);
+/* Accounts has seen a collector's receipt in the bank — only then does it count at the payment gate. */
+router.post('/payments/:id/receipts/:receiptId/confirm', requireModule('payments', 'write'), confirmReceipt);
 router.post('/payments/:id/judgement', requireModule('payments', 'write'), validate(judgementSchema), setJudgement);
 
 /* The advance a buyer owes before anything is made — raised against the order it belongs to. */

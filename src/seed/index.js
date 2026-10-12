@@ -75,6 +75,7 @@ const PEOPLE = [
   { name: 'Murugan Mould', email: 'mould@npthangers.com', password: 'Mould@12345', department: 'mould', phone: '9876500013' },
   { name: 'Lakshmi Assembly', email: 'assembly@npthangers.com', password: 'Assem@12345', department: 'assembling', phone: '9876500010' },
   { name: 'Vijay Collections', email: 'collections@npthangers.com', password: 'Collect@1234', department: 'payment_collection', phone: '9876500011' },
+  { name: 'Senthil Recovery', email: 'prt@npthangers.com', password: 'Prt@123456', department: 'payment_recovery', phone: '9876500015' },
   { name: 'Revathi Audit', email: 'audit@npthangers.com', password: 'Audit@12345', department: 'audit', phone: '9876500012' },
 ];
 
@@ -359,6 +360,7 @@ async function seed() {
     quotation: byEmail['rsnavin1@gmail.com'],
     audit: byEmail['audit@npthangers.com'],
     collections: byEmail['collections@npthangers.com'],
+    recovery: byEmail['prt@npthangers.com'],
   });
 
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));

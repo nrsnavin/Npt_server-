@@ -82,6 +82,18 @@ const receiptSchema = new mongoose.Schema(
     reference: { type: String, trim: true },
     recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     note: { type: String, trim: true, maxlength: 500 },
+    /**
+     * Accounts has seen it in the bank. A collector or a PRT member records the money the moment
+     * it is taken — cash at the buyer's desk, a cheque in the hand — and the chase stops ringing
+     * for it; but the payment gates (the advance before production, the money before dispatch)
+     * open only on what Accounts has confirmed. A receipt Accounts or Admin records is confirmed
+     * as it is written.
+     */
+    confirmed: {
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      _id: false,
+    },
   },
   { timestamps: true }
 );
@@ -229,6 +241,16 @@ receivableSchema.index(
 
 receivableSchema.virtual('received').get(function received() {
   return Math.round((this.receipts || []).reduce((sum, row) => sum + (row.amount || 0), 0) * 100) / 100;
+});
+
+/** What Accounts has confirmed in the bank — the figure the payment gates open on. */
+receivableSchema.virtual('confirmedReceived').get(function confirmedReceived() {
+  return Math.round((this.receipts || []).filter((row) => row.confirmed?.at).reduce((sum, row) => sum + (row.amount || 0), 0) * 100) / 100;
+});
+
+/** Recorded by the collector or PRT and not yet seen in the bank by Accounts. */
+receivableSchema.virtual('awaitingConfirmation').get(function awaitingConfirmation() {
+  return Math.round((this.received - this.confirmedReceived) * 100) / 100;
 });
 
 receivableSchema.virtual('advanceApplied').get(function () { return this.$locals.advanceApplied || 0; });
