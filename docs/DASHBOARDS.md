@@ -350,3 +350,9 @@ that task's person (or team) as well as the enquiry's marketing person and Admin
 told on the enquiry's Production task. Accounts marking *Payment Confirmed* or *Credit Approved*,
 while an order on the enquiry is still held at Production or Dispatch for its money, gets a task to
 record the receipt in Payments — once per order, with what is short.
+
+**Suggested department steps** (until the plant sends its own; edit `config/departmentTaskForms.js`):
+Quotation (costing and price negotiation) — Request Received → Costing → Waiting for Admin Approval →
+Quote Sent → Task Closed. Audit — Received → Checking → Correction Needed (shown as an issue) →
+Corrected → Task Closed. PRT visit — Visit Assigned → Visited → Collected / Promised → Task Closed.
+The SO team now gives a remark on every move, and the enquiry's marketing person and Admin are told.
