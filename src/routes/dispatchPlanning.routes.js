@@ -2,11 +2,13 @@ import { Router } from 'express';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
-  deliveryRoutes, getDispatchPlan, scheduleDispatchGroup, setDeliveryDetails, transporters,
+  createTripHandler, deliveryRoutes, getDispatchPlan, getTrip, listTripsHandler, scheduleDispatchGroup, setDeliveryDetails,
+  setStopStatusHandler, setTripStatusHandler, tellBuyersHandler, transporters, tripSheet, updateTripHandler, vehicles,
 } from '../controllers/dispatchPlanning.controller.js';
 import {
-  customerDeliverySchema, deliveryRouteSchema, deliveryRouteUpdateSchema, scheduleGroupSchema,
-  transporterSchema, transporterUpdateSchema,
+  customerDeliverySchema, deliveryRouteSchema, deliveryRouteUpdateSchema, scheduleGroupSchema, stopStatusSchema,
+  tellBuyersSchema, transporterSchema, transporterUpdateSchema, tripSchema, tripStatusSchema, tripUpdateSchema,
+  vehicleSchema, vehicleUpdateSchema,
 } from '../validators/dispatchPlanning.schemas.js';
 
 /**
@@ -28,5 +30,19 @@ router.patch('/transporters/:id', requireModule('dispatch', 'write'), validate(t
 router.get('/delivery-routes', requireModule('dispatch'), deliveryRoutes.list);
 router.post('/delivery-routes', requireModule('dispatch', 'write'), validate(deliveryRouteSchema), deliveryRoutes.create);
 router.patch('/delivery-routes/:id', requireModule('dispatch', 'write'), validate(deliveryRouteUpdateSchema), deliveryRoutes.update);
+
+router.get('/vehicles', requireModule('dispatch'), vehicles.list);
+router.post('/vehicles', requireModule('dispatch', 'write'), validate(vehicleSchema), vehicles.create);
+router.patch('/vehicles/:id', requireModule('dispatch', 'write'), validate(vehicleUpdateSchema), vehicles.update);
+
+/* Trips: a group made into a vehicle on a day [services/trip.service.js]. */
+router.get('/trips', requireModule('dispatch'), listTripsHandler);
+router.post('/trips', requireModule('dispatch', 'write'), validate(tripSchema), createTripHandler);
+router.get('/trips/:id', requireModule('dispatch'), getTrip);
+router.get('/trips/:id/sheet', requireModule('dispatch'), tripSheet);
+router.patch('/trips/:id', requireModule('dispatch', 'write'), validate(tripUpdateSchema), updateTripHandler);
+router.post('/trips/:id/status', requireModule('dispatch', 'write'), validate(tripStatusSchema), setTripStatusHandler);
+router.post('/trips/:id/stops/:stopId', requireModule('dispatch', 'write'), validate(stopStatusSchema), setStopStatusHandler);
+router.post('/trips/:id/tell-buyers', requireModule('dispatch', 'write'), validate(tellBuyersSchema), tellBuyersHandler);
 
 export default router;

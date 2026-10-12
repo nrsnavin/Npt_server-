@@ -17,7 +17,7 @@ const RULE = '#BBBBBB';
 const day = (value) => (value ? new Date(value).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : null);
 const titleCase = (value) => (value ? String(value).replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()) : null);
 
-function render(draw) {
+export function render(draw) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: MARGIN, info: { Producer: company.name, Creator: company.name } });
     const chunks = [];
@@ -29,7 +29,7 @@ function render(draw) {
   });
 }
 
-function letterhead(doc, title, reference) {
+export function letterhead(doc, title, reference) {
   doc.fillColor(INK).font('Helvetica-Bold').fontSize(16).text(company.name, MARGIN, MARGIN);
   doc.font('Helvetica').fontSize(8.5).fillColor(MUTED);
   const lines = [company.tagline, ...(company.addressLines || []), [company.phone, company.email].filter(Boolean).join('  ·  '), company.gstin && `GSTIN ${company.gstin}`];
@@ -43,7 +43,7 @@ function letterhead(doc, title, reference) {
 }
 
 /** Label and value rows, two columns; empty values are left out rather than printed as dashes. */
-function facts(doc, rows) {
+export function facts(doc, rows) {
   const labelWidth = 130;
   for (const [label, value] of rows) {
     if (value === undefined || value === null || value === '') continue;
@@ -76,7 +76,7 @@ function itemRows(item) {
   ];
 }
 
-function footer(doc) {
+export function footer(doc) {
   doc.moveDown(1.2);
   doc.font('Helvetica').fontSize(8).fillColor(MUTED)
     .text(`Prepared by ${company.name} on ${day(new Date())}. ${company.website || ''}`.trim(), MARGIN, doc.y, { width: WIDTH });

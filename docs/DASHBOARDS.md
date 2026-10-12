@@ -303,3 +303,25 @@ without its metrics is half delivered.
 **One caution.** Do not build a metric before the field it reads exists. Every entry above
 names its module; if the module is not built, the number is a guess, and a dashboard that
 guesses once is never trusted again.
+
+## Dispatch: Plan trips and Trips
+
+**Plan trips** (`/dispatch/plan`, and a tab on the Dispatch desk) puts the ready dispatch requests
+into groups that can go together — transport bookings by transporter, our own deliveries by
+delivery route, then landmark (spelling-tolerant), area, PIN and town — each saying why in words.
+Requests not ready, or still owing money before dispatch, wait apart with the reason.
+
+**Make trip** on a group: the day and time, our vehicle (driver filled from the vehicle) or the
+transporter, and cartons per stop held against what the vehicle carries. The requests move to Today
+or Tomorrow Dispatch with the trip in the remark. A request is on one open trip at most.
+
+**A trip** (`/dispatch/trips/:id`): Planned → Start loading → Left the plant → Trip completed.
+Before it leaves, stops move up or down, change cartons or come off. *Left the plant* marks every
+request Dispatched — Reception gets each LR copy, filled with the vehicle — and on the road each
+stop is ticked Delivered or Not delivered (why goes onto the request). The trip sheet PDF is for the
+driver; *Tell buyers* sends one WhatsApp per buyer (the plan, or "on the way"), once per kind of news
+unless sent again on purpose. A WhatsApp template can be set with `WHATSAPP_TEMPLATE_TRIP`
+(variables: 1 name, 2 what, 3 how and when).
+
+Lists: **Vehicles** (number, type, cartons it carries, usual driver), **Transporters** (booking
+office) and **Delivery routes** (areas, days) under Dispatch → Vehicles & transporters.

@@ -42,3 +42,58 @@ export const customerDeliverySchema = z.object({
   landmark: text(160),
   pincode: z.string().trim().regex(/^(\d{6})?$/, 'A PIN code is six digits').optional(),
 });
+
+export const vehicleSchema = z.object({
+  number: z.string().trim().min(4, 'The vehicle number, as on the plate').max(20),
+  kind: text(60),
+  capacityCartons: z.number().int().min(0).max(5000).nullable().optional(),
+  driverName: text(80),
+  driverPhone: text(20),
+  notes: text(500),
+  active: z.boolean().optional(),
+  expectedUpdatedAt: z.string().optional(),
+});
+export const vehicleUpdateSchema = vehicleSchema.partial();
+
+const day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'A day as YYYY-MM-DD');
+const cartonsByTask = z.record(z.string(), z.number().int().min(0).max(5000).nullable()).optional();
+
+export const tripSchema = z.object({
+  tasks: z.array(objectId).min(1, 'Pick at least one request').max(60),
+  mode: z.enum(DELIVERY_MODES),
+  date: day.optional(),
+  departAt: text(20),
+  vehicle: objectId.optional().or(z.literal('')).transform((value) => value || undefined),
+  transporter: objectId.optional().or(z.literal('')).transform((value) => value || undefined),
+  driverName: text(80),
+  driverPhone: text(20),
+  note: text(500),
+  cartons: cartonsByTask,
+});
+
+export const tripUpdateSchema = z.object({
+  date: day.optional(),
+  departAt: text(20),
+  mode: z.enum(DELIVERY_MODES).optional(),
+  vehicle: objectId.nullable().optional().or(z.literal('')),
+  transporter: objectId.nullable().optional().or(z.literal('')),
+  driverName: text(80),
+  driverPhone: text(20),
+  note: text(500),
+  stops: z.array(z.object({ id: objectId, cartons: z.number().int().min(0).max(5000).nullable().optional() })).min(1).max(60).optional(),
+  addTasks: z.array(objectId).max(60).optional(),
+  cartons: cartonsByTask,
+  expectedUpdatedAt: z.string().optional(),
+});
+
+export const tripStatusSchema = z.object({
+  status: z.enum(['planned', 'loading', 'left', 'completed', 'cancelled']),
+  note: text(500),
+});
+
+export const stopStatusSchema = z.object({
+  status: z.enum(['delivered', 'not_delivered']),
+  note: text(500),
+});
+
+export const tellBuyersSchema = z.object({ force: z.boolean().optional() });

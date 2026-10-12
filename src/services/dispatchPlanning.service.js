@@ -6,6 +6,8 @@ import DeliveryRoute from '../models/DeliveryRoute.js';
 import { findHandoff } from '../config/handoffs.js';
 import { paymentStanding } from './paymentGates.service.js';
 import { setTaskStatus } from './handoff.service.js';
+import { listTrips, requestsOnTrips } from './trip.service.js';
+import Vehicle from '../models/Vehicle.js';
 import ApiError from '../utils/ApiError.js';
 
 /**
@@ -139,15 +141,18 @@ function urgencyOf(task) {
 }
 
 export async function dispatchPlan() {
-  const tasks = await Todo.find({ kind: 'invoice_dispatch', completed: false })
+  /* A request already on a trip is planned; it shows on its trip, not in a group. */
+  const onTrips = await requestsOnTrips();
+  const tasks = (await Todo.find({ kind: 'invoice_dispatch', completed: false })
     .select('enquiry customer title brief dueDate priority status user createdAt')
     .populate([{ path: 'enquiry', select: 'number customer' }, { path: 'user', select: 'name' }])
     .sort({ dueDate: 1, createdAt: 1 })
-    .lean();
+    .lean()).filter((task) => !onTrips.has(String(task._id)));
 
   const customerIdOf = (task) => String(task.customer || task.enquiry?.customer || '');
   const enquiryIds = [...new Set(tasks.map((task) => String(task.enquiry?._id || '')).filter(Boolean))];
-  const [customers, transporters, routes, plantTasks, orders] = await Promise.all([
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  const [customers, transporters, routes, plantTasks, orders, vehicles, trips] = await Promise.all([
     Customer.find({ _id: { $in: [...new Set(tasks.map(customerIdOf).filter(Boolean))] } })
       .select('name code mobile whatsapp address area landmark city pincode deliveryMode usualTransporter deliveryRoute').lean(),
     Transporter.find({}).lean(),
@@ -155,6 +160,9 @@ export async function dispatchPlan() {
     Todo.find({ enquiry: { $in: enquiryIds }, kind: { $in: PLANT_KINDS } }).select('enquiry kind status updatedAt').sort({ updatedAt: -1 }).lean(),
     SalesOrder.find({ enquiry: { $in: enquiryIds }, status: { $nin: ['closed', 'cancelled'] } })
       .select('number enquiry totalValue paymentPlan paymentWaivers').lean(),
+    Vehicle.find({ active: { $ne: false } }).sort({ number: 1 }).lean(),
+    /* Trips still to go or on the road, and those finished today. */
+    listTrips({ status: 'planned,loading,left' }).then(async (open) => [...open, ...(await listTrips({ from: today, to: today, status: 'completed' }))]),
   ]);
   const byId = (rows) => new Map(rows.map((row) => [String(row._id), row]));
   const customerMap = byId(customers);
@@ -244,6 +252,34 @@ export async function dispatchPlan() {
     schedules: SCHEDULE_STATUSES,
     transporters: transporters.filter((row) => row.active !== false).map(({ _id, name, bookingOffice }) => ({ _id, name, bookingOffice })),
     routes: routes.filter((row) => row.active !== false).map(({ _id, name, areas, days }) => ({ _id, name, areas, days })),
+    vehicles: vehicles.map(({ _id, number, kind, capacityCartons, driverName, driverPhone }) => ({ _id, number, kind, capacityCartons, driverName, driverPhone })),
+    trips: trips.map(tripSummary),
+    today,
+  };
+}
+
+/** A trip as the planner's lane shows it. */
+export function tripSummary(trip) {
+  const cartons = trip.stops.reduce((sum, stop) => sum + (stop.cartons || 0), 0);
+  const capacity = trip.vehicle?.capacityCartons || null;
+  return {
+    _id: trip._id,
+    number: trip.number,
+    date: trip.date,
+    departAt: trip.departAt || null,
+    mode: trip.mode,
+    modeLabel: MODE_LABELS[trip.mode],
+    status: trip.status,
+    goesBy: trip.mode === 'transport'
+      ? [trip.transporter?.name, trip.transporter?.bookingOffice].filter(Boolean).join(' · ')
+      : trip.mode === 'own_vehicle' ? [trip.vehicle?.number, trip.vehicle?.kind].filter(Boolean).join(' · ') || 'Our vehicle' : MODE_LABELS[trip.mode],
+    driver: [trip.driverName, trip.driverPhone].filter(Boolean).join(' · ') || null,
+    stops: trip.stops.length,
+    delivered: trip.stops.filter((stop) => stop.status === 'delivered').length,
+    buyers: trip.stops.map((stop) => stop.customer?.name).filter(Boolean),
+    cartons,
+    capacity,
+    over: Boolean(capacity && cartons > capacity),
   };
 }
 
