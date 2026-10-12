@@ -82,6 +82,7 @@ export const tripUpdateSchema = z.object({
   note: text(500),
   stops: z.array(z.object({ id: objectId, cartons: z.number().int().min(0).max(5000).nullable().optional() })).min(1).max(60).optional(),
   addTasks: z.array(objectId).max(60).optional(),
+  orderByDistance: z.boolean().optional(),
   cartons: cartonsByTask,
   expectedUpdatedAt: z.string().optional(),
 });
@@ -97,3 +98,8 @@ export const stopStatusSchema = z.object({
 });
 
 export const tellBuyersSchema = z.object({ force: z.boolean().optional() });
+
+export const makeTripsSchema = z.object({
+  date: day,
+  trips: z.array(tripSchema.omit({ date: true })).min(1, 'Pick at least one trip').max(30),
+});

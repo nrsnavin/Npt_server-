@@ -3,12 +3,13 @@ import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
   createTripHandler, deliveryRoutes, getDispatchPlan, getTrip, listTripsHandler, scheduleDispatchGroup, setDeliveryDetails,
-  setStopStatusHandler, setTripStatusHandler, tellBuyersHandler, transporters, tripSheet, updateTripHandler, vehicles,
+  dispatchReportHandler, makeSuggestedTrips, setStopStatusHandler, setTripStatusHandler, suggestTripsHandler, tellBuyersHandler, transporters, tripSheet,
+  updateTripHandler, vehicles,
 } from '../controllers/dispatchPlanning.controller.js';
 import {
   customerDeliverySchema, deliveryRouteSchema, deliveryRouteUpdateSchema, scheduleGroupSchema, stopStatusSchema,
   tellBuyersSchema, transporterSchema, transporterUpdateSchema, tripSchema, tripStatusSchema, tripUpdateSchema,
-  vehicleSchema, vehicleUpdateSchema,
+  vehicleSchema, vehicleUpdateSchema, makeTripsSchema,
 } from '../validators/dispatchPlanning.schemas.js';
 
 /**
@@ -21,6 +22,9 @@ router.use(authenticate);
 
 router.get('/dispatch-planning/plan', requireModule('dispatch'), getDispatchPlan);
 router.post('/dispatch-planning/schedule', requireModule('dispatch', 'write'), validate(scheduleGroupSchema), scheduleDispatchGroup);
+router.get('/dispatch-planning/report', requireModule('dispatch'), dispatchReportHandler);
+router.get('/dispatch-planning/suggest', requireModule('dispatch'), suggestTripsHandler);
+router.post('/dispatch-planning/suggest', requireModule('dispatch', 'write'), validate(makeTripsSchema), makeSuggestedTrips);
 router.post('/dispatch-planning/customer-delivery', requireModule('dispatch', 'write'), validate(customerDeliverySchema), setDeliveryDetails);
 
 router.get('/transporters', requireModule('dispatch'), transporters.list);

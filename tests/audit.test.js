@@ -58,6 +58,16 @@ const soon = (days = 3) => {
 
 const followUp = { nextAction: 'Call the buyer', nextFollowUpDate: soon() };
 const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
+/** Asks again until `check` answers, for up to five seconds — background work on a busy machine. */
+async function eventually(read, check) {
+  let value;
+  for (let i = 0; i < 50; i += 1) {
+    value = await read();
+    if (check(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return value;
+}
 
 /** The department that has the enquiry, once a move made on someone's behalf has landed. */
 /** The department's open task on the enquiry — the enquiry itself stays with its marketing person. */
@@ -243,10 +253,9 @@ test('losing an enquiry takes its open sample off the bench', async () => {
     token: nandhini,
     body: { status: 'sample_required', ...followUp },
   });
-  await settle();
-
-  const before = await api(`/api/samples?enquiry=${enquiry._id}`, { token: meera });
+  const before = await eventually(() => api(`/api/samples?enquiry=${enquiry._id}`, { token: meera }), (answer) => answer.json.data?.length > 0);
   const sample = before.json.data[0];
+  assert.ok(sample, 'the sample request was raised');
   assert.equal(sample.status, 'request_received');
 
   await api(`/api/enquiries/${enquiry._id}/status`, {
@@ -254,9 +263,8 @@ test('losing an enquiry takes its open sample off the bench', async () => {
     token: nandhini,
     body: { status: 'lost', lostReason: 'price' },
   });
-  await settle();
 
-  const after = await api(`/api/samples/${sample._id}`, { token: meera });
+  const after = await eventually(() => api(`/api/samples/${sample._id}`, { token: meera }), (answer) => answer.json.data?.status === 'cancelled');
   assert.equal(
     after.json.data.status,
     'cancelled',

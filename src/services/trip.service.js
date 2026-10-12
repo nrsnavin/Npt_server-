@@ -13,6 +13,7 @@ import { nextNumber } from './numbering.service.js';
 import { setTaskStatus } from './handoff.service.js';
 import { withCreateLocks } from './operationLock.service.js';
 import { render, letterhead, facts, footer } from './recordPdf.js';
+import { nearestOrder } from '../utils/geo.js';
 
 /**
  * Trips [models/Trip.js]: a group from the trip planner made into a vehicle on a day, then
@@ -165,6 +166,13 @@ export async function updateTrip(trip, body, user) {
       });
       trip.stops = kept;
     }
+    /* The pinned stops in the order the vehicle would reach them from the plant. */
+    if (body.orderByDistance) {
+      const sites = new Map((await Customer.find({ _id: { $in: trip.stops.map((stop) => stop.customer).filter(Boolean) } }).select('site.lat site.lng').lean())
+        .filter((customer) => customer.site?.lat != null).map((customer) => [String(customer._id), customer.site]));
+      if (sites.size < 2) throw ApiError.badRequest('Fewer than two buyers on this trip have a pinned location, so there is no distance to order by');
+      trip.stops = nearestOrder([...trip.stops], (stop) => sites.get(String(stop.customer)));
+    }
     let addedTasks = [];
     if (added.length) {
       addedTasks = await openRequests(added);
@@ -314,7 +322,7 @@ export async function tellBuyers(trip, { force = false } = {}, user) {
 const TRIP_POPULATE = [
   { path: 'vehicle' },
   { path: 'transporter' },
-  { path: 'stops.customer', select: 'name mobile whatsapp address area landmark city pincode' },
+  { path: 'stops.customer', select: 'name mobile whatsapp address area landmark city pincode site.lat site.lng' },
   { path: 'stops.enquiry', select: 'number' },
   { path: 'stops.task', select: 'status completed title' },
   { path: 'createdBy', select: 'name' },
@@ -382,4 +390,86 @@ export async function renderTripSheet(trip) {
       .text('Loaded by: ______________________        Driver: ______________________        Time out: __________', MARGIN, doc.y, { width: WIDTH });
     footer(doc);
   });
+}
+
+/**
+ * Makes the confirmed trips from a suggestion, each on its own: one that cannot be made (a request
+ * put on a trip by someone else meanwhile) is reported and the rest are still made.
+ */
+export async function makeTrips({ date, trips }, user, { inTransaction }) {
+  const made = [];
+  const refused = [];
+  for (const draft of trips) {
+    try {
+      made.push(await inTransaction(() => createTrip({ ...draft, date }, user)));
+    } catch (error) {
+      if (!error.statusCode || error.statusCode >= 500) throw error;
+      refused.push({ tasks: draft.tasks, message: error.message });
+    }
+  }
+  return { made, refused };
+}
+
+/**
+ * How dispatch went over a span of days [web: pages/DispatchReport.jsx]: trips a day, stops a trip,
+ * what was delivered and what was not (and why), how many requests left by the day they were
+ * wanted, and how full each vehicle went. Cancelled trips are counted apart and left out of the rest.
+ */
+export async function dispatchReport({ from, to }) {
+  const span = (new Date(`${to}T00:00:00Z`) - new Date(`${from}T00:00:00Z`)) / 86400000;
+  if (!(span >= 0)) throw ApiError.badRequest('The end of the span is before its start');
+  if (span > 92) throw ApiError.badRequest('Pick at most three months at a time');
+  const trips = await Trip.find({ date: { $gte: from, $lte: to } })
+    .populate([{ path: 'vehicle', select: 'number kind capacityCartons' }, { path: 'transporter', select: 'name' }, { path: 'stops.task', select: 'dueDate' }])
+    .lean();
+  const live = trips.filter((trip) => trip.status !== 'cancelled');
+  const stops = live.flatMap((trip) => trip.stops.map((stop) => ({ ...stop, trip })));
+
+  const byDay = new Map();
+  for (const trip of live) {
+    const row = byDay.get(trip.date) || { date: trip.date, trips: 0, stops: 0 };
+    row.trips += 1;
+    row.stops += trip.stops.length;
+    byDay.set(trip.date, row);
+  }
+  const count = (list, keyOf) => list.reduce((map, item) => map.set(keyOf(item), (map.get(keyOf(item)) || 0) + 1), new Map());
+
+  /* On time: left on or before the day the request was wanted (its required date). */
+  let onTime = 0; let late = 0; let undated = 0;
+  for (const stop of stops.filter((entry) => entry.trip.leftAt)) {
+    const due = stop.task?.dueDate;
+    if (!due) { undated += 1; continue; }
+    if (indiaDay(new Date(stop.trip.leftAt)) <= indiaDay(new Date(due))) onTime += 1; else late += 1;
+  }
+
+  const vehicles = new Map();
+  for (const trip of live.filter((entry) => entry.vehicle)) {
+    const cartons = trip.stops.reduce((sum, stop) => sum + (stop.cartons || 0), 0);
+    const row = vehicles.get(String(trip.vehicle._id)) || { vehicle: trip.vehicle.number, kind: trip.vehicle.kind, capacity: trip.vehicle.capacityCartons || null, trips: 0, counted: 0, cartons: 0 };
+    row.trips += 1;
+    if (cartons) { row.counted += 1; row.cartons += cartons; }
+    vehicles.set(String(trip.vehicle._id), row);
+  }
+
+  const missed = stops.filter((stop) => stop.status === 'not_delivered');
+  return {
+    from, to,
+    trips: live.length,
+    cancelled: trips.length - live.length,
+    stops: stops.length,
+    stopsPerTrip: live.length ? Math.round((stops.length / live.length) * 10) / 10 : 0,
+    delivered: stops.filter((stop) => stop.status === 'delivered').length,
+    notDelivered: missed.length,
+    stillOut: stops.filter((stop) => stop.status === 'planned' && stop.trip.status === 'left').length,
+    missed: missed.slice(-20).map((stop) => ({ trip: stop.trip.number, date: stop.trip.date, note: stop.note })),
+    onTime: { onTime, late, undated, rate: onTime + late ? Math.round((onTime / (onTime + late)) * 100) : null },
+    byDay: [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    byMode: Object.fromEntries(count(live, (trip) => trip.mode)),
+    byStatus: Object.fromEntries(count(trips, (trip) => trip.status)),
+    vehicles: [...vehicles.values()].map((row) => ({
+      ...row,
+      averageCartons: row.counted ? Math.round(row.cartons / row.counted) : null,
+      fill: row.counted && row.capacity ? Math.round((row.cartons / row.counted / row.capacity) * 100) : null,
+    })).sort((a, b) => b.trips - a.trips),
+  };
 }

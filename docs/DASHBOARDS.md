@@ -325,3 +325,21 @@ unless sent again on purpose. A WhatsApp template can be set with `WHATSAPP_TEMP
 
 Lists: **Vehicles** (number, type, cartons it carries, usual driver), **Transporters** (booking
 office) and **Delivery routes** (areas, days) under Dispatch → Vehicles & transporters.
+
+**Suggest trips** on Plan trips makes every ready group into a draft trip in one press — one per
+transporter, our own groups given a vehicle in turn (biggest first, a second run when there are more
+groups than vehicles). Untick, change a vehicle, pick Today or Tomorrow, and make them; any that
+cannot be made (put on a trip by someone else meanwhile) are listed, the rest are made.
+
+**Distance.** Where buyers have a pinned location (shared in a query thread), our own groups name
+the other groups within 3 km ("could share the vehicle"), a group's stops are listed in the order a
+vehicle reaches them, and a trip can be put in order from the plant. Set the plant with `PLANT_LAT`
+and `PLANT_LNG`; without it, the order starts from the first pinned buyer.
+
+**Hand-ons.** Production or Assembly marking *Ready for Dispatch* tells the enquiry's open Dispatch
+request (and its person, or the whole team) and moves it to *Goods Ready — Waiting for Vehicle* if it
+was still waiting on the goods. *Part Quantity Dispatched* raises Reception's LR copy; a further load
+tells the open LR task rather than raising a second one.
+
+**Dispatch report** (`/dispatch/report`): trips, stops a trip, delivered and not delivered (with
+why), the share of requests that left by the day they were wanted, and how full each vehicle went.

@@ -6,11 +6,11 @@ import mongoose from 'mongoose';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
-import { transactional } from '../utils/transaction.js';
+import { inTransaction, transactional } from '../utils/transaction.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
-import { dispatchPlan, scheduleGroup, setCustomerDelivery, tripSummary } from '../services/dispatchPlanning.service.js';
+import { dispatchPlan, scheduleGroup, setCustomerDelivery, suggestTrips, tripSummary } from '../services/dispatchPlanning.service.js';
 import {
-  createTrip, listTrips, populateTrip, renderTripSheet, setStopStatus, setTripStatus, tellBuyers, updateTrip,
+  createTrip, dispatchReport, listTrips, makeTrips, populateTrip, renderTripSheet, setStopStatus, setTripStatus, tellBuyers, updateTrip,
 } from '../services/trip.service.js';
 
 /**
@@ -102,4 +102,26 @@ export const tripSheet = asyncHandler(async (req, res) => {
   const pdf = await renderTripSheet(trip);
   res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `attachment; filename="${trip.number}-trip-sheet.pdf"` });
   res.send(pdf);
+});
+
+export const suggestTripsHandler = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await suggestTrips() });
+});
+
+/* Each trip in its own transaction, so one refused does not undo the others. */
+export const makeSuggestedTrips = asyncHandler(async (req, res) => {
+  const { made, refused } = await makeTrips(req.body, req.user, { inTransaction });
+  res.status(made.length ? 201 : 409).json({
+    success: made.length > 0,
+    data: { made: made.map((trip) => ({ _id: trip._id, number: trip.number })), refused },
+    ...(made.length ? {} : { message: refused[0]?.message || 'No trip could be made' }),
+  });
+});
+
+const indiaToday = (offset = 0) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(Date.now() + offset * 86400000));
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+export const dispatchReportHandler = asyncHandler(async (req, res) => {
+  const from = DAY.test(req.query.from || '') ? req.query.from : indiaToday(-29);
+  const to = DAY.test(req.query.to || '') ? req.query.to : indiaToday(7);
+  res.json({ success: true, data: await dispatchReport({ from, to }) });
 });

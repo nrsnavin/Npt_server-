@@ -985,6 +985,8 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
   if (step.next && !step.pdf && task.enquiry) await raiseNextFrom(task, user, step, text);
+  /* Production or Assembly saying the goods are ready reaches the Dispatch request waiting on them. */
+  if (step.readyForDispatch && task.enquiry) await tellDispatchReady(task, user, step, text);
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
   if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { [dateField]: readyDate } : {} });
   return task;
@@ -1032,7 +1034,16 @@ export async function askFromTask(task, user, { kind, note, brief, priority, req
  */
 async function raiseNextFrom(task, user, step, text) {
   const enquiryId = task.enquiry?._id || task.enquiry;
-  if (await Todo.exists({ enquiry: enquiryId, kind: step.next, completed: false })) return null;
+  const open = await Todo.findOne({ enquiry: enquiryId, kind: step.next, completed: false }).select('_id');
+  if (open) {
+    /* Already raised — a second part load, or the last of them: the open task is told, not doubled. */
+    await Todo.updateOne(
+      { _id: open._id },
+      { $push: { updates: { note: `${step.label} by ${user.name}${task.brief?.quantity ? ` · ${task.brief.quantity} pcs on the request` : ''}${text ? ` — ${text}` : ''}`, by: user._id, at: new Date() } } },
+      { keepVersion: true }
+    );
+    return null;
+  }
   const enquiry = await enquiryOfTask(task);
   const prefill = await taskPrefill(enquiryId);
   const read = (path) => path?.split('.').reduce((value, key) => (value == null ? undefined : value[key]), prefill);
@@ -1058,6 +1069,39 @@ async function raiseNextFrom(task, user, step, text) {
 
 const indiaDay = (date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(date);
 
+/* The Dispatch statuses that mean "still waiting on the goods" — a ready signal moves these on. */
+const WAITING_ON_GOODS = ['received', 'asked_production', 'not_ready'];
+
+/**
+ * Production (or Assembly) says Ready for Dispatch: every open Dispatch request on the enquiry is
+ * told on its own task, and one still waiting on the goods moves to Goods Ready — Waiting for
+ * Vehicle, so it appears in the trip planner's ready groups without anyone re-typing it. The
+ * Dispatch person on it, or the whole team when nobody has taken it, is told under "Needs your
+ * action", as are the enquiry's marketing person and Admin.
+ */
+async function tellDispatchReady(task, user, step, text) {
+  const asking = departmentName(task.department);
+  const requests = await Todo.find({ enquiry: task.enquiry?._id || task.enquiry, kind: 'invoice_dispatch', completed: false });
+  if (!requests.length) return;
+  const said = `${asking}: ${step.label}${text ? ` — ${text}` : ''}`;
+  const ready = statusesOf({ kind: 'invoice_dispatch' }).find((entry) => entry.key === 'waiting_vehicle');
+  const { default: User } = await import('../models/User.js');
+  for (const request of requests) {
+    request.updates = [...(request.updates || []), { note: said, by: user._id, at: new Date() }];
+    const moves = ready && WAITING_ON_GOODS.includes(request.status);
+    if (moves) {
+      request.status = ready.key;
+      request.statusHistory = [...(request.statusHistory || []), { status: ready.key, note: said, by: user._id, at: new Date() }];
+    }
+    await request.save();
+    const team = request.user
+      ? [request.user]
+      : (await User.find({ $or: [{ department: request.department }, { extraDepartments: request.department }], isActive: { $ne: false } }).select('_id').lean()).map((person) => person._id);
+    await noticeStatus(request, user, { step: moves ? ready : { key: request.status, label: `${asking} — ${step.label}` }, note: said, also: team });
+    await publish(EVENTS.HANDOFF_UPDATED, { task: request, by: user });
+  }
+}
+
 /** The ready date going with a status move, as YYYY-MM-DD — or null when there is none. */
 function statusDate(form, step, date) {
   const given = String(date || '').trim();
@@ -1076,7 +1120,7 @@ function statusDate(form, step, date) {
  * The move, shown to the enquiry's marketing person and every Admin — not to whoever made it —
  * under "Needs your action" until they read and dismiss it [models/TaskNotice.js].
  */
-async function noticeStatus(task, user, { step, note, date }) {
+async function noticeStatus(task, user, { step, note, date, also = [] }) {
   const [{ default: TaskNotice }, { default: User }] = await Promise.all([
     import('../models/TaskNotice.js'), import('../models/User.js'),
   ]);
@@ -1084,7 +1128,7 @@ async function noticeStatus(task, user, { step, note, date }) {
   const admins = await User.find({ ...MANAGEMENT_QUERY, isActive: { $ne: false } }).select('_id').lean();
   /* The enquiry's marketing person — or, on a team task with no enquiry, whoever raised it. */
   const asker = enquiry ? enquiry.assignedTo : task.createdBy;
-  const recipients = new Set([asker, ...admins.map((person) => person._id)].filter(Boolean).map(String));
+  const recipients = new Set([asker, ...admins.map((person) => person._id), ...also].filter(Boolean).map(String));
   recipients.delete(String(user._id));
   if (!recipients.size) return;
   await TaskNotice.insertMany([...recipients].map((recipient) => ({
