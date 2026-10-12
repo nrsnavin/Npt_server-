@@ -359,6 +359,7 @@ export const TASK_FORMS = {
       { key: 'received', label: 'Dispatch Request Received' },
       ...DISPATCH_SCHEDULES.map((label) => ({ key: label.toLowerCase().replace(/[^a-z]+/g, '_'), label })),
       { key: 'asked_production', label: 'Asked Production Readiness' },
+      { key: 'asked_assembling', label: 'Asked Assembling Readiness' },
       { key: 'not_ready', label: 'Goods Not Yet Ready', issue: true },
       { key: 'waiting_vehicle', label: 'Goods Ready — Waiting for Vehicle' },
       { key: 'party_collect', label: 'Party Will Collect' },
@@ -372,7 +373,7 @@ export const TASK_FORMS = {
     /* Asked from the dispatch task itself: each raises that department's task on the enquiry. */
     actions: [
       { kind: 'ask_edd', label: 'Ask Production', status: 'asked_production' },
-      { kind: 'ask_assembling_edd', label: 'Ask Assembling Readiness' },
+      { kind: 'ask_assembling_edd', label: 'Ask Assembling Readiness', status: 'asked_assembling' },
     ],
     asks: [
       ...modelAndQuantity,

@@ -1,6 +1,7 @@
 import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
+import { normalisePhone } from '../utils/phone.js';
 import { STAGE_KEYS, stageForStatus } from '../config/enquiryStages.js';
 import { CUSTOMER_SOURCES } from './Customer.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
@@ -326,7 +327,28 @@ const enquirySchema = new mongoose.Schema(
     number: { type: String, required: true, unique: true },
     enquiryDate: { type: Date, default: Date.now },
 
-    customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true, index: true },
+    /*
+     * The buyer, once they are one. An enquiry may come before the account does — a call from a
+     * company nobody has on the register — and then it carries a `prospect` instead: who asked and
+     * how to reach them. "Convert to customer" makes the account from it and fills this in
+     * [pipeline.controller `convertEnquiryToCustomer`]. A sample, a quotation or an order is raised
+     * only once there is a customer [services/enquiryLink.service.js].
+     */
+    customer: {
+      type: mongoose.Schema.Types.ObjectId, ref: 'Customer', index: true,
+      required: [function needsBuyer() { return !this.prospect?.name; }, 'Every enquiry names its buyer — a customer, or a prospect with a name and a phone number'],
+    },
+    prospect: {
+      name: { type: String, trim: true, maxlength: 160 },
+      contactPerson: { type: String, trim: true, maxlength: 120 },
+      mobile: { type: String, trim: true, set: (v) => normalisePhone(v) || v || undefined },
+      whatsapp: { type: String, trim: true, set: (v) => normalisePhone(v) || v || undefined },
+      email: { type: String, trim: true, lowercase: true, maxlength: 200 },
+      city: { type: String, trim: true, maxlength: 120 },
+      /* When it became a customer — the prospect's details stay, as what was first taken down. */
+      convertedAt: Date,
+      _id: false,
+    },
     contact: { type: mongoose.Schema.Types.ObjectId },
     /** The owning marketing person. Ownership is strict [§29]. */
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },

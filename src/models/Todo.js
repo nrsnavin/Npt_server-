@@ -251,6 +251,19 @@ todoSchema.virtual('unclaimed').get(function unclaimed() {
   return !this.user;
 });
 
+/*
+ * The tasks this one asked for and is waiting on — Dispatch's Ask Production / Ask Assembling
+ * Readiness while they are open [handoff.service `askFromTask`]. Populated by the lists that
+ * draw a task's status, which stays locked until they close [`setTaskStatus`].
+ */
+todoSchema.virtual('waitingOn', {
+  ref: 'Todo',
+  localField: '_id',
+  foreignField: 'askedFrom',
+  match: { completed: false },
+});
+todoSchema.index({ askedFrom: 1 }, { sparse: true });
+
 todoSchema.set('toJSON', { virtuals: true });
 todoSchema.set('toObject', { virtuals: true });
 

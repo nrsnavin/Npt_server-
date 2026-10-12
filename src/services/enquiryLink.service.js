@@ -31,6 +31,10 @@ export async function requireEnquiry(enquiryId, user, { what, customer } = {}) {
   if (enquiry.stage === CLOSED_STAGE) {
     throw ApiError.badRequest(`${enquiry.number} is closed. Raise a new enquiry for new work.`);
   }
+  /* A quotation, a sample or an order is the buyer's: the prospect is made a customer first. */
+  if (!enquiry.customer) {
+    throw ApiError.badRequest(`${enquiry.number} is a prospect's enquiry — convert it to a customer first`);
+  }
   if (customer && String(customer) !== String(enquiry.customer)) {
     throw ApiError.badRequest(`${enquiry.number} is for a different customer`);
   }

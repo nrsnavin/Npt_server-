@@ -14,7 +14,7 @@ import { HANDOFFS, TILE_KIND, findHandoff } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
+  WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
   updateHandoff, mayWorkOnHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
@@ -28,6 +28,7 @@ import { ownershipFilter } from '../services/ownership.service.js';
  */
 
 const TASK_POPULATE = [
+  WAITING_ON_POPULATE,
   { path: 'attachment', select: 'key filename size' },
   { path: 'resultFile', select: 'key filename size' },
   { path: 'createdBy', select: 'name department' },

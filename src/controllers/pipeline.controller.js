@@ -10,6 +10,8 @@ import Enquiry, {
   CLOSED_STATUSES, ENQUIRY_STAGE_ORDER, ENQUIRY_STATUSES, fallsBack, furthestStage, stageLabel,
 } from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
+import Todo from '../models/Todo.js';
+import CustomerMessage from '../models/CustomerMessage.js';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -227,7 +229,7 @@ export const exportEnquiries = asyncHandler(async (req, res) => {
   await sendCsv(res, 'enquiries', rows, [
     ['Number', (row) => row.number],
     ['Date', (row) => row.enquiryDate],
-    ['Customer', (row) => row.customer?.name],
+    ['Customer', (row) => row.customer?.name || (row.prospect?.name ? `${row.prospect.name} (prospect)` : '')],
     ['Customer code', (row) => row.customer?.code],
     ['Model', (row) => row.requirement?.modelNumber],
     ['Category', (row) => row.requirement?.category],
@@ -795,7 +797,7 @@ export async function createEnquiryRecord(input, user) {
 }
 
 /** The fields an enquiry search looks at on the enquiry itself. */
-const ENQUIRY_SEARCH_FIELDS = ['number', 'requirement.modelNumber', 'remarks'];
+const ENQUIRY_SEARCH_FIELDS = ['number', 'requirement.modelNumber', 'remarks', 'prospect.name'];
 
 /**
  * The filters an enquiry list understands, in one place — the list, the tally and the export.
@@ -986,7 +988,7 @@ export const enquiryBoard = asyncHandler(async (req, res) => {
 
 export const getEnquiry = asyncHandler(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id)
-    .populate('customer', 'code name mobile email assignedTo')
+    .populate('customer', 'code name mobile whatsapp email assignedTo contacts deliveryContact accountsContact')
     .populate('assignedTo', 'name email')
     .populate(mouldWithPhoto('mould', 'mouldCode name category sizeMm material hookType'))
     /* The registers the requirement names [§28], so a screen can say what was asked for
@@ -1010,15 +1012,43 @@ export const getEnquiry = asyncHandler(async (req, res) => {
   res.json({ success: true, data: enquiry });
 });
 
-export const createEnquiry = asyncHandler(transactional(async (req, res) => {
-  const customer = await Customer.findById(req.body.customer);
-  if (!customer) throw ApiError.badRequest('That customer does not exist');
-  if (!ownsRecord(req.user, customer)) {
-    throw ApiError.forbidden('That customer belongs to another marketing person');
+/**
+ * Who an enquiry is for: a customer the caller may raise work on, or — before there is an
+ * account — a prospect, owned by whoever takes it down (or the marketing person an administrator
+ * names). A prospect whose number is already a customer's is sent to that customer instead, so
+ * the register does not grow a second record for one buyer.
+ */
+async function buyerOf(body, user) {
+  if (body.customer) {
+    const customer = await Customer.findById(body.customer);
+    if (!customer) throw ApiError.badRequest('That customer does not exist');
+    if (!ownsRecord(user, customer)) {
+      throw ApiError.forbidden('That customer belongs to another marketing person');
+    }
+    return { customer, owner: customer.assignedTo, prospect: undefined };
   }
+  const prospect = body.prospect;
+  const known = await findDuplicateCustomer({ mobile: prospect.mobile, whatsapp: prospect.whatsapp });
+  if (known) {
+    throw ApiError.conflict(
+      `${known.name} (${known.code}) is already a customer with that ${known.matchedOn} — raise the enquiry on them`,
+      ownsRecord(user, known) ? { existing: { _id: known._id, name: known.name, code: known.code } } : undefined
+    );
+  }
+  const owner = body.assignedTo || user._id;
+  if (String(owner) !== String(user._id)) await assertReassignment(user._id, owner, user);
+  else await assertCanOwnBuyer(owner);
+  return { customer: null, owner, prospect };
+}
 
+export const createEnquiry = asyncHandler(transactional(async (req, res) => {
+  const buyer = await buyerOf(req.body, req.user);
   const enquiry = await createEnquiryRecord(
-    { ...req.body, assignedTo: req.body.assignedTo || customer.assignedTo },
+    {
+      ...req.body,
+      ...(buyer.customer ? {} : { customer: undefined, prospect: buyer.prospect }),
+      assignedTo: req.body.assignedTo || buyer.owner,
+    },
     req.user
   );
 
@@ -1026,16 +1056,60 @@ export const createEnquiry = asyncHandler(transactional(async (req, res) => {
 }));
 
 /**
+ * The prospect becomes a customer: a new one made from the form (filled from the prospect), or
+ * an existing one the caller owns. Every enquiry of the same conversation that is still a
+ * prospect's moves with it, and so do their department tasks — the buyer is one buyer.
+ */
+export const convertEnquiryToCustomer = asyncHandler(transactional((req, res) =>
+  withCreateLocks(req.body.customer ? [`enquiry-convert:${req.params.id}`] : [...customerKeys(req.body), `enquiry-convert:${req.params.id}`], async () => {
+    const enquiry = await Enquiry.findById(req.params.id);
+    if (!enquiry) throw ApiError.notFound('Enquiry not found');
+    if (!ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+    if (enquiry.customer) throw ApiError.conflict(`${enquiry.number} is already a customer's enquiry`);
+
+    let customer;
+    if (req.body.customer) {
+      customer = await Customer.findById(req.body.customer);
+      if (!customer) throw ApiError.badRequest('That customer does not exist');
+      if (!ownsRecord(req.user, customer)) throw ApiError.forbidden('That customer belongs to another marketing person');
+    } else {
+      const duplicate = await findDuplicateCustomer(req.body);
+      if (duplicate) {
+        throw ApiError.conflict(
+          `${duplicate.name} (${duplicate.code}) already exists with the same ${duplicate.matchedOn} — link the enquiry to them instead`,
+          ownsRecord(req.user, duplicate) ? { existing: { _id: duplicate._id, name: duplicate.name, code: duplicate.code } } : undefined
+        );
+      }
+      const owner = req.body.assignedTo || enquiry.assignedTo;
+      await assertCanOwnBuyer(owner);
+      customer = await Customer.create({ ...req.body, code: await nextNumber('CUST'), assignedTo: owner });
+    }
+
+    const together = enquiry.groupRef
+      ? await Enquiry.find({ groupRef: enquiry.groupRef, customer: null })
+      : [enquiry];
+    for (const row of together) {
+      const before = snapshot(row);
+      row.customer = customer._id;
+      row.prospect = { ...(row.prospect?.toObject?.() || row.prospect || {}), convertedAt: new Date() };
+      await row.save();
+      await recordChange({ model: 'Enquiry', doc: row, before, by: req.user, note: `Converted to customer ${customer.code}` });
+    }
+    const moved = { enquiry: { $in: together.map((row) => row._id) }, customer: null };
+    await Todo.updateMany(moved, { $set: { customer: customer._id } }, { keepVersion: true });
+    await CustomerMessage.updateMany(moved, { $set: { customer: customer._id } });
+
+    res.status(201).json({ success: true, data: { customer, enquiries: together.map((row) => row._id) } });
+  })));
+
+/**
  * Creates several enquiries from one conversation — one per model, sharing a group
  * reference so follow-up keeps them together while sample and price stay answerable
  * per model.
  */
 export const createEnquiryGroup = asyncHandler(transactional(async (req, res) => {
-  const customer = await Customer.findById(req.body.customer);
-  if (!customer) throw ApiError.badRequest('That customer does not exist');
-  if (!ownsRecord(req.user, customer)) {
-    throw ApiError.forbidden('That customer belongs to another marketing person');
-  }
+  const buyer = await buyerOf(req.body, req.user);
+  const customer = buyer.customer;
 
   /*
    * Every model is judged first: a group that stops half way is worse than one refused.
@@ -1045,13 +1119,13 @@ export const createEnquiryGroup = asyncHandler(transactional(async (req, res) =>
    * three enquiries assigned to somebody else — the same request answered two different ways
    * depending on how many models were on it.
    */
-  const assignedTo = req.body.assignedTo || customer.assignedTo;
-  if (req.body.assignedTo) await assertReassignment(customer.assignedTo, req.body.assignedTo, req.user);
+  const assignedTo = req.body.assignedTo || buyer.owner;
+  if (customer && req.body.assignedTo) await assertReassignment(customer.assignedTo, req.body.assignedTo, req.user);
 
   const items = req.body.enquiries.map((item) => ({
     ...req.body.shared,
     ...item,
-    customer: customer._id,
+    ...(customer ? { customer: customer._id } : { prospect: buyer.prospect }),
     assignedTo,
   }));
   for (const item of items) await assertEnquiryValid(item);
@@ -1076,6 +1150,9 @@ export const updateEnquiry = asyncHandler(transactional(async (req, res) => {
 
   await assertReassignment(enquiry.assignedTo, req.body.assignedTo, req.user);
   assertFutureFollowUp(req.body.nextFollowUpDate);
+  if (req.body.prospect && enquiry.customer) {
+    throw ApiError.badRequest(`${enquiry.number} is a customer's enquiry — correct the customer's own record`);
+  }
 
   expectVersion(enquiry, req.body);
   const before = snapshot(enquiry);
@@ -1239,6 +1316,10 @@ async function moveEnquiry(enquiry, body, user) {
 
   assertFutureFollowUp(nextFollowUpDate);
   assertSaysWhatIsWanted(enquiry, status);
+  /* A sample, a costing or an order is raised for a customer: a prospect is converted first. */
+  if (!enquiry.customer && ['sample_required', 'pricing_required', 'won'].includes(status)) {
+    throw ApiError.badRequest(`${enquiry.number} is a prospect's enquiry — convert it to a customer first`);
+  }
 
   const from = enquiry.status;
   enquiry.status = status;

@@ -87,7 +87,7 @@ export function renderEnquiryPdf(enquiry) {
   return render((doc) => {
     letterhead(doc, 'Enquiry details', enquiry.number);
     facts(doc, [
-      ['Customer', enquiry.customer?.name],
+      ['Customer', enquiry.customer?.name || enquiry.prospect?.name],
       ['Enquiry date', day(enquiry.enquiryDate || enquiry.createdAt)],
       ['Required by', day(enquiry.requiredDeliveryDate)],
       ['Target price', enquiry.targetPrice ? `Rs. ${Number(enquiry.targetPrice).toFixed(2)} per piece` : null], /* Helvetica has no ₹ glyph — the quotation prints figures the same way. */

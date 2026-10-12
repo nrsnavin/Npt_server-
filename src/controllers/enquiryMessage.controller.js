@@ -45,6 +45,12 @@ async function readable(req) {
 const addressFor = (channel, customer) =>
   channel === 'whatsapp' ? customer?.whatsapp || customer?.mobile : customer?.email;
 
+/** What a prospect has sent on WhatsApp, matched on the numbers taken down on the enquiry. */
+function prospectThreads(prospect) {
+  const numbers = [...new Set([prospect?.whatsapp, prospect?.mobile].filter(Boolean))];
+  return numbers.length ? WhatsappThread.find({ number: { $in: numbers } }).select('messages number').lean() : [];
+}
+
 const escapeHtml = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
 /**
@@ -58,7 +64,8 @@ export const sendEnquiryMessage = asyncHandler(async (req, res) => {
   }
 
   const { channel, subject, body, attachments = [] } = req.body;
-  const customer = await Customer.findById(enquiry.customer);
+  /* Before conversion the buyer is the prospect taken down on the enquiry. */
+  const customer = enquiry.customer ? await Customer.findById(enquiry.customer) : enquiry.prospect?.toObject?.() || enquiry.prospect;
   /* Every paper fetched and checked before anything goes: a bad pick refuses the whole message
      rather than sending the words without the invoice they promise. */
   const papers = [];
@@ -79,7 +86,7 @@ export const sendEnquiryMessage = asyncHandler(async (req, res) => {
   }
 
   const base = {
-    customer: customer._id,
+    customer: enquiry.customer ? customer._id : undefined,
     enquiry: enquiry._id,
     event: DIRECT_MESSAGE,
     channel,
@@ -176,7 +183,9 @@ export const listEnquiryMessages = asyncHandler(async (req, res) => {
       .sort('-sentAt')
       .limit(100)
       .lean(),
-    WhatsappThread.find({ customer: enquiry.customer }).select('messages number').lean(),
+    enquiry.customer
+      ? WhatsappThread.find({ customer: enquiry.customer }).select('messages number').lean()
+      : prospectThreads(enquiry.prospect),
   ]);
 
   const inbound = threads.flatMap((thread) =>

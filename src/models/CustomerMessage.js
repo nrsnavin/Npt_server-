@@ -23,7 +23,9 @@ export const SKIP_REASONS = [
  */
 const customerMessageSchema = new mongoose.Schema(
   {
-    customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true, index: true },
+    /* A prospect's enquiry has no customer yet: its messages hang off the enquiry, and are moved
+       onto the customer when it is converted [pipeline.controller `convertEnquiryToCustomer`]. */
+    customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required() { return !this.enquiry; }, index: true },
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
     /** The record the update is about. One per module as later phases land. */
     sample: { type: mongoose.Schema.Types.ObjectId, ref: 'Sample', index: true },

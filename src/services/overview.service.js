@@ -6,7 +6,7 @@ import { findHandoff } from '../config/handoffs.js';
 import { marketingStatusLabel, marketingStatusOf } from '../config/marketingStatuses.js';
 import { customerScope, isOwnershipScoped, ownershipFilter } from './ownership.service.js';
 import { departmentsOf, isManagement } from '../utils/departments.js';
-import { endOfDayIST } from './handoff.service.js';
+import { WAITING_ON_POPULATE, endOfDayIST, startOfDayIST } from './handoff.service.js';
 import { DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import ApiError from '../utils/ApiError.js';
 
@@ -48,7 +48,7 @@ export async function overviewFor(user) {
     Quotation.countDocuments({ ...ownershipFilter(user), status: { $in: LIVE_QUOTES } }),
     Enquiry.countDocuments({ ...active, ...isNew }),
     Enquiry.find({ ...active, ...isNew })
-      .select('number customer assignedTo requirement.modelNumber enquiryDate createdAt')
+      .select('number customer prospect.name assignedTo requirement.modelNumber enquiryDate createdAt')
       .populate([{ path: 'customer', select: 'name code' }, { path: 'assignedTo', select: 'name' }])
       .sort({ createdAt: -1 })
       .limit(6)
@@ -69,7 +69,8 @@ export const TASK_STATES = ['open', 'done', 'all'];
 
 /**
  * The department tasks this person follows: Admin every one; a marketing person those on their
- * own enquiries and customers, and the ones they raised; anyone else their department's.
+ * own enquiries (and team tasks on their own customers), the ones they raised and the ones given
+ * to them; anyone else their department's.
  *
  * Filtered by department and by state — open (the default), done, or all — so Admin can read
  * any one department's tasks, finished ones included. A department outside what this person
@@ -89,7 +90,18 @@ export async function trackedTasks(user, { department, state = 'open', limit = 3
         Enquiry.find(ownershipFilter(user)).distinct('_id'),
         Customer.find(customerScope(user)).distinct('_id'),
       ]);
-      filter.$or = [{ createdBy: user._id }, { user: user._id }, { enquiry: { $in: enquiries } }, { customer: { $in: customers } }];
+      /*
+       * Their own enquiries only. A task on a colleague's enquiry is not theirs to follow even
+       * when the buyer is theirs or shared with them — a delegated enquiry leaves the customer
+       * with its first owner [delegation.service], and every task on it then showed up on both
+       * dashboards. The customer still decides a team task raised without an enquiry.
+       */
+      filter.$or = [
+        { createdBy: user._id },
+        { user: user._id },
+        { enquiry: { $in: enquiries } },
+        { enquiry: null, customer: { $in: customers } },
+      ];
     } else {
       filter.department = { $in: departmentsOf(user) };
     }
@@ -112,6 +124,7 @@ export async function trackedTasks(user, { department, state = 'open', limit = 3
       { path: 'updates.by', select: 'name' },
       { path: 'outcome.by', select: 'name' },
       { path: 'attachment', select: 'key filename size' },
+      WAITING_ON_POPULATE,
     ])
     .sort(state === 'open' ? { dueDate: 1, createdAt: 1 } : { completed: 1, completedAt: -1, createdAt: -1 })
     .limit(Math.min(Math.max(Number(limit) || 300, 1), 500))
@@ -152,7 +165,7 @@ export async function partiesFor(user, { filter = 'all', page = 1, limit = 50, s
   const named = String(search || '').trim();
   const match = named ? { name: new RegExp(named.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') } : {};
   const [customers, enquiries] = await Promise.all([
-    Customer.find({ ...customerScope(user), ...match }).select('name code assignedTo updatedAt').populate('assignedTo', 'name').sort({ name: 1 }).lean(),
+    Customer.find({ ...customerScope(user), ...match }).select('name code assignedTo updatedAt followUp').populate('assignedTo', 'name').sort({ name: 1 }).lean(),
     Enquiry.find(activeEnquiries(user))
       .select('customer marketingStatus status stage nextFollowUpDate nextAction requirement.modelNumber items.modelNumber updatedAt')
       .sort({ updatedAt: -1 })
@@ -189,7 +202,10 @@ export async function partiesFor(user, { filter = 'all', page = 1, limit = 50, s
       status: enquiry ? marketingStatusLabel(statusKey) : 'Follow-up pending',
       line: enquiry ? (enquiry.nextAction || `Model: ${model || 'Not specified'}`) : 'Contact customer and update status',
       isNew: fresh.has(String(customer._id)),
-      followUp: soonest.get(String(customer._id)) || null,
+      /* The sooner of the customer's own follow-up and any of its enquiries'. */
+      followUp: [soonest.get(String(customer._id)), customer.followUp?.due && new Date(customer.followUp.due)]
+        .filter(Boolean).sort((a, b) => a - b)[0] || null,
+      customerFollowUp: customer.followUp ? { due: customer.followUp.due, note: customer.followUp.note || null, priority: customer.followUp.priority } : null,
       lastActivity: lastActivity || null,
     };
   });
@@ -205,5 +221,71 @@ export async function partiesFor(user, { filter = 'all', page = 1, limit = 50, s
     pages: Math.max(1, Math.ceil(kept.length / size)),
     counts,
     filter: chosen,
+  };
+}
+
+/* ------------------------------ Today's actions ------------------------------ */
+
+const ACTION_TYPE_LABELS = { call: 'Call', whatsapp: 'WhatsApp', email: 'Email', meeting: 'Meeting', visit: 'Visit', send_quote: 'Pricing', send_sample: 'Sample' };
+
+/**
+ * The card beside the customer list: what this person has to chase — every open customer
+ * follow-up (set from the list, worked from the card), and the enquiries whose next action is
+ * due by tonight. Soonest first; "pending" is what is due by tonight, overdue included.
+ */
+export async function followUpsFor(user, { limit = 60 } = {}) {
+  const now = new Date();
+  const tonight = endOfDayIST(now);
+  const today = startOfDayIST(now);
+  const [customers, enquiries] = await Promise.all([
+    Customer.find({ ...customerScope(user), 'followUp.due': { $exists: true } })
+      .select('name code followUp')
+      .sort({ 'followUp.due': 1 })
+      .limit(200)
+      .lean(),
+    Enquiry.find({ ...openForMarketing(user), nextFollowUpDate: { $lte: tonight } })
+      .select('number customer prospect nextAction nextActionType nextFollowUpDate requirement.modelNumber items.modelNumber')
+      .populate('customer', 'name')
+      .sort({ nextFollowUpDate: 1 })
+      .limit(200)
+      .lean(),
+  ]);
+  const when = (due) => (due < today ? 'overdue' : due <= tonight ? 'today' : 'upcoming');
+  const items = [
+    ...customers.map((customer) => {
+      const due = new Date(customer.followUp.due);
+      return {
+        kind: 'customer',
+        _id: `customer:${customer._id}`,
+        customer: { _id: customer._id, name: customer.name, code: customer.code },
+        title: customer.followUp.note || 'Follow up',
+        context: customer.code,
+        due,
+        state: when(due),
+        tag: customer.followUp.priority === 'high' ? 'High' : 'Follow-up',
+      };
+    }),
+    ...enquiries.map((enquiry) => {
+      const due = new Date(enquiry.nextFollowUpDate);
+      const model = enquiry.requirement?.modelNumber || enquiry.items?.find((item) => item.modelNumber)?.modelNumber;
+      return {
+        kind: 'enquiry',
+        _id: `enquiry:${enquiry._id}`,
+        enquiry: { _id: enquiry._id, number: enquiry.number },
+        customer: enquiry.customer ? { _id: enquiry.customer._id, name: enquiry.customer.name } : null,
+        prospect: enquiry.customer ? null : enquiry.prospect?.name || null,
+        title: enquiry.nextAction || 'Follow up',
+        context: [enquiry.number, model].filter(Boolean).join(' · '),
+        due,
+        state: when(due),
+        tag: ACTION_TYPE_LABELS[enquiry.nextActionType] || 'Enquiry',
+      };
+    }),
+  ].sort((a, b) => a.due - b.due);
+  return {
+    pending: items.filter((item) => item.state !== 'upcoming').length,
+    overdue: items.filter((item) => item.state === 'overdue').length,
+    items: items.slice(0, Math.min(Math.max(Number(limit) || 60, 1), 200)),
+    total: items.length,
   };
 }

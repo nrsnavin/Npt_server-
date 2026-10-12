@@ -1,4 +1,5 @@
-import { dashboardOverview, dashboardParties, dashboardTasks } from '../controllers/overview.controller.js';
+import { dashboardFollowUps, dashboardOverview, dashboardParties, dashboardTasks } from '../controllers/overview.controller.js';
+import { customerFollowUp, customerFollowUpHistory } from '../controllers/customerFollowUp.controller.js';
 import { Router } from 'express';
 import { enquiryTimeline, listEnquiryMessages, sendEnquiryMessage, listEnquiryDocuments } from '../controllers/enquiryMessage.controller.js';
 import {
@@ -16,6 +17,7 @@ import {
   exportCustomers,
   exportEnquiries,
   bulkReassign,
+  convertEnquiryToCustomer,
 } from '../controllers/pipeline.controller.js';
 import {
   listMoulds, getMould, createMould, updateMould, exportMoulds, setMouldPhoto,
@@ -38,6 +40,8 @@ import {
   buyerCardConfirmSchema,
   enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema, enquiryActivitySchema, enquiryDelegateSchema, enquiryMessageSchema, enquiryMarketingStatusSchema,
   bulkReassignSchema,
+  enquiryConvertSchema,
+  customerFollowUpSchema,
 } from '../validators/pipeline.schemas.js';
 import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validators/mould.schemas.js';
 import { materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
@@ -150,6 +154,9 @@ router.patch('/customers/:id', requireModule('customers', 'write'), validate(cus
 router.post('/customers/:id/site', requireModule('customers', 'write'), pinSite);
 router.delete('/customers/:id/site', requireModule('customers', 'write'), clearSite);
 /* Admin's word on the buyer's credit — Watch or Hold by hand, with the reason, or cleared. */
+// The relationship's own follow-up: set from the customer list, logged and closed from Today's actions.
+router.get('/customers/:id/follow-up', requireModule('customers'), customerFollowUpHistory);
+router.post('/customers/:id/follow-up', requireModule('customers', 'write'), validate(customerFollowUpSchema), customerFollowUp);
 router.post('/customers/:id/credit', requireModule('customers', 'write'), validate(creditSchema), setCustomerCredit);
 
 /*
@@ -216,6 +223,7 @@ router.get('/dashboard/marketing', requireModule('enquiries'), marketingDashboar
 router.get('/dashboard/overview', requireModule('enquiries'), dashboardOverview);
 router.get('/dashboard/tasks', dashboardTasks);
 router.get('/dashboard/parties', requireModule('customers'), dashboardParties);
+router.get('/dashboard/follow-ups', requireModule('customers'), dashboardFollowUps);
 /* Calls, WhatsApps, emails, visits and meetings across the book — marketing's Activities page. */
 router.get('/enquiries/activities', requireModule('enquiries'), listEnquiryActivities);
 router.get('/enquiries/activity-types', requireModule('enquiries'), enquiryActivityTypes);
@@ -225,6 +233,8 @@ router.post('/enquiries/group', requireModule('enquiries', 'write'), validate(en
 /* No module gate: a department that holds or held the enquiry may read it — checked inside. */
 router.get('/enquiries/:id', getEnquiry);
 router.patch('/enquiries/:id', requireModule('enquiries', 'write'), validate(enquiryUpdateSchema), updateEnquiry);
+// A prospect's enquiry becomes a customer's: a new customer from the form, or one already on the register.
+router.post('/enquiries/:id/customer', requireModule('enquiries', 'write'), validate(enquiryConvertSchema), convertEnquiryToCustomer);
 router.post('/enquiries/:id/status', requireModule('enquiries', 'write'), validate(enquiryStatusSchema), setEnquiryStatus);
 /*
  * The named actions [§C.1]. What a marketing person actually does — raise a sample, ask for a

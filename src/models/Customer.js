@@ -36,6 +36,28 @@ const contactSchema = new mongoose.Schema(
   { _id: true }
 );
 
+/** A contact for one job — delivery or accounts: the order contact, or a person of its own. */
+const roleContactSchema = new mongoose.Schema(
+  {
+    sameAsOrder: { type: Boolean, default: false },
+    name: { type: String, trim: true, maxlength: 120 },
+    phone: { type: String, trim: true, set: (v) => normalisePhone(v) || v || undefined },
+  },
+  { _id: false }
+);
+
+/** One line of a customer follow-up's history: set, a call logged, or closed. */
+const followUpEntrySchema = new mongoose.Schema(
+  {
+    kind: { type: String, enum: ['set', 'log', 'close'], required: true },
+    note: { type: String, trim: true, maxlength: 1000 },
+    due: Date,
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    at: { type: Date, default: Date.now },
+  },
+  { _id: true }
+);
+
 /**
  * One master record per customer [BLUEPRINT §2]. Created when marketing registers a buyer or
  * one arrives from IndiaMART or a visiting card, so the master means "companies we are actively
@@ -85,6 +107,14 @@ const customerSchema = new mongoose.Schema(
     gstin: { type: String, uppercase: true, trim: true },
 
     contacts: [contactSchema],
+
+    /*
+     * Who receives the goods, and who settles the bill — each the order contact unless the buyer
+     * says otherwise. Optional: most buyers have one person for all three. Shown together on the
+     * enquiry as the buyer's contact card [web: components/BuyerContactCard.jsx].
+     */
+    deliveryContact: { type: roleContactSchema, default: undefined },
+    accountsContact: { type: roleContactSchema, default: undefined },
 
     /** The one marketing person who owns this relationship [§29]. */
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -207,6 +237,27 @@ const customerSchema = new mongoose.Schema(
       email: { type: Boolean, default: true },
     },
 
+    /*
+     * The relationship's own follow-up, apart from any enquiry's: "call Galaxy on Friday about
+     * the new season". Set from the customer list, worked from its Today's actions card
+     * [controllers/customerFollowUp.controller.js] — each call logged, then closed. Absent when
+     * nothing is open; the log keeps every one that was.
+     */
+    followUp: {
+      type: new mongoose.Schema(
+        {
+          due: { type: Date, required: true },
+          note: { type: String, trim: true, maxlength: 500 },
+          priority: { type: String, enum: ['normal', 'high'], default: 'normal' },
+          setBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          setAt: Date,
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+    followUpLog: { type: [followUpEntrySchema], default: undefined },
+
     status: { type: String, enum: ['active', 'on_hold', 'inactive'], default: 'active' },
     notes: String,
   },
@@ -217,6 +268,7 @@ customerSchema.index({ name: 'text', code: 'text', gstin: 'text' });
 // The de-duplication rule [§41.2] is a number lookup, so both numbers are indexed now.
 customerSchema.index({ mobile: 1 });
 customerSchema.index({ whatsapp: 1 });
+customerSchema.index({ 'followUp.due': 1 }, { sparse: true });
 
 /** §8: present and null until the WhatsApp front door lands, so nothing is migrated then. */
 withConversationRef(customerSchema);
