@@ -444,39 +444,36 @@ async function requestsOfOrder(order) {
   return Todo.find({
     kind: 'invoice_dispatch',
     $or: [{ order: order._id }, ...(sameEnquiry ? [{ enquiry: order.enquiry, order: { $exists: false } }] : [])],
-  }).sort({ createdAt: 1 }).lean();
+  }).sort({ createdAt: 1 }).populate('order', 'number').lean();
 }
 
 const statusLabel = (kind, key) => findHandoff(kind)?.form?.statuses?.find((entry) => entry.key === key)?.label || (key || '').replace(/_/g, ' ');
 
-/**
- * Everything about how an SO's goods went, in one answer: each dispatch request with where it
- * stands, the trips it went on with the vehicle, driver and whether it was delivered, and the LR
- * details Reception keeps — invoice, LR number, transporter and the LR copy.
- */
-export async function dispatchDetailsForOrder(order) {
-  const requests = await requestsOfOrder(order);
+const TRIP_MODES_SAID = { own_vehicle: 'Own vehicle', transport: 'Transport', party_collects: 'Party collected', courier: 'Courier' };
+
+/** Dispatch requests and LR tasks, with the trips each request went on, in the words a screen shows. */
+async function describeDispatch(requests, lrTasks) {
   const ids = requests.map((task) => task._id);
-  const [trips, lrTasks] = await Promise.all([
-    ids.length
-      ? Trip.find({ 'stops.task': { $in: ids } }).sort({ date: 1 }).populate([{ path: 'vehicle', select: 'number kind' }, { path: 'transporter', select: 'name phone' }]).lean()
-      : [],
-    Todo.find({
-      kind: 'lr_copy',
-      $or: [{ order: order._id }, ...(requests.some((task) => !task.order) ? [{ enquiry: order.enquiry, order: { $exists: false } }] : [])],
-    }).sort({ createdAt: 1 }).select('status brief completed resultFile createdAt').populate('resultFile', 'key filename').lean(),
-  ]);
-  const MODE = { own_vehicle: 'Own vehicle', transport: 'Transport', party_collects: 'Party collected', courier: 'Courier' };
+  const trips = ids.length
+    ? await Trip.find({ 'stops.task': { $in: ids } }).sort({ date: 1 }).populate([{ path: 'vehicle', select: 'number kind' }, { path: 'transporter', select: 'name phone' }]).lean()
+    : [];
   return {
-    order: { _id: order._id, number: order.number },
-    requests: requests.map((task) => {
-      const legs = trips.flatMap((trip) => trip.stops.filter((stop) => String(stop.task) === String(task._id)).map((stop) => ({
+    requests: requests.map((task) => ({
+      _id: task._id,
+      order: task.order?.number ? { _id: task.order._id, number: task.order.number } : null,
+      status: task.status,
+      statusLabel: statusLabel('invoice_dispatch', task.status),
+      completed: Boolean(task.completed),
+      raisedAt: task.createdAt,
+      quantity: task.brief?.quantity || '',
+      remark: (task.statusHistory || []).filter((entry) => entry.note).at(-1)?.note || task.notes || '',
+      trips: trips.flatMap((trip) => trip.stops.filter((stop) => String(stop.task) === String(task._id)).map((stop) => ({
         trip: trip.number,
         tripId: trip._id,
         date: trip.date,
         status: trip.status,
         leftAt: trip.leftAt || null,
-        mode: MODE[trip.mode] || trip.mode,
+        mode: TRIP_MODES_SAID[trip.mode] || trip.mode,
         goesBy: trip.mode === 'transport' ? trip.transporter?.name || '' : trip.vehicle?.number || '',
         driver: [trip.driverName, trip.driverPhone].filter(Boolean).join(' · '),
         quantity: stop.quantity ?? null,
@@ -484,20 +481,11 @@ export async function dispatchDetailsForOrder(order) {
         delivery: stop.status,
         note: stop.note || '',
         at: stop.at || null,
-      })));
-      return {
-        _id: task._id,
-        status: task.status,
-        statusLabel: statusLabel('invoice_dispatch', task.status),
-        completed: Boolean(task.completed),
-        raisedAt: task.createdAt,
-        quantity: task.brief?.quantity || '',
-        remark: (task.statusHistory || []).filter((entry) => entry.note).at(-1)?.note || task.notes || '',
-        trips: legs,
-      };
-    }),
+      }))),
+    })),
     lr: lrTasks.map((task) => ({
       _id: task._id,
+      order: task.order?.number ? { _id: task.order._id, number: task.order.number } : null,
       status: task.status,
       statusLabel: statusLabel('lr_copy', task.status),
       completed: Boolean(task.completed),
@@ -506,6 +494,44 @@ export async function dispatchDetailsForOrder(order) {
       transporter: task.brief?.transporter || '',
       lrCopy: task.resultFile || null,
     })),
+  };
+}
+
+const LR_SELECT = 'status brief completed resultFile createdAt order';
+
+/**
+ * Everything about how an SO's goods went, in one answer: each dispatch request with where it
+ * stands, the trips it went on with the vehicle, driver and whether it was delivered, and the LR
+ * details Reception keeps — invoice, LR number, transporter and the LR copy.
+ */
+export async function dispatchDetailsForOrder(order) {
+  const requests = await requestsOfOrder(order);
+  const lrTasks = await Todo.find({
+    kind: 'lr_copy',
+    $or: [{ order: order._id }, ...(requests.some((task) => !task.order) ? [{ enquiry: order.enquiry, order: { $exists: false } }] : [])],
+  }).sort({ createdAt: 1 }).select(LR_SELECT).populate('resultFile', 'key filename').lean();
+  return { order: { _id: order._id, number: order.number }, ...(await describeDispatch(requests, lrTasks)) };
+}
+
+/**
+ * What an enquiry led to, on its own page: its sales orders, its QC records (for those with the
+ * quality grant) and how its goods went — every dispatch request, trip and LR, each with its SO.
+ */
+export async function enquiryRecords(enquiry, { withQc }) {
+  const [orders, requests, lrTasks, qc] = await Promise.all([
+    SalesOrder.find({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('number status customerPo.number lines.modelNumber lines.quantity createdAt').lean(),
+    Todo.find({ enquiry: enquiry._id, kind: 'invoice_dispatch' }).sort({ createdAt: 1 }).populate('order', 'number').lean(),
+    Todo.find({ enquiry: enquiry._id, kind: 'lr_copy' }).sort({ createdAt: 1 }).select(LR_SELECT).populate([{ path: 'resultFile', select: 'key filename' }, { path: 'order', select: 'number' }]).lean(),
+    withQc ? populateQc(QcRecord.find({ enquiry: enquiry._id }).sort({ inspectedAt: -1 }).limit(100)) : null,
+  ]);
+  return {
+    orders: orders.map((row) => ({
+      _id: row._id, number: row.number, status: row.status, buyerPo: row.customerPo?.number || '',
+      models: (row.lines || []).map((line) => line.modelNumber).filter(Boolean).join(', '),
+      quantity: (row.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0),
+    })),
+    qc,
+    dispatch: await describeDispatch(requests, lrTasks),
   };
 }
 
@@ -520,5 +546,99 @@ export async function qcForOrder(order) {
       const last = latest.get(String(line._id));
       return { line: line._id, modelNumber: line.modelNumber, verdict: last?.verdict || null, record: last ? { _id: last._id, number: last.number } : null };
     }),
+  };
+}
+
+/* ------------------------------------------------------- QC sheet prefill --- */
+
+const MATERIAL_WORDS = { pp: 'PP', hips: 'HIPS', abs: 'ABS', pc: 'Polycarbonate', ps: 'PS', k_resin: 'K-resin' };
+const printTypeOf = (text) => {
+  const said = String(text || '').toLowerCase();
+  if (!said) return undefined;
+  if (/pad/.test(said)) return 'pad';
+  if (/screen/.test(said)) return 'screen';
+  if (/foil|stamp/.test(said)) return 'hot_stamp';
+  if (/size/.test(said)) return 'size_marker';
+  if (/^(no|none|nil|-)$/.test(said)) return 'none';
+  return undefined;
+};
+
+/**
+ * What a QC sheet can start with, from where it is opened: the task gives the enquiry, the enquiry
+ * gives its SO, the SO's line (or the enquiry's item, before there is an SO) gives the model, size,
+ * mould, resin and colour, hook, clips and print, the mould gives the cavities and the part weight,
+ * and the line's quantity the lot. Only what is known is sent; the form fills its empty boxes with it.
+ *
+ * A line is used when it is picked, or when the SO (or the enquiry) has only one — with several and
+ * none picked, the choices come back and the per-model figures wait for the pick.
+ */
+export async function qcPrefill({ task: taskId, enquiry: enquiryId, order: orderId, orderLine, item: itemId }) {
+  let enquiryRef = enquiryId;
+  let orderRef = orderId;
+  if (taskId) {
+    const task = await Todo.findById(taskId).select('enquiry order').lean();
+    if (!task) throw ApiError.notFound('Task not found');
+    enquiryRef = enquiryRef || task.enquiry;
+    orderRef = orderRef || task.order;
+  }
+  const parts = (prefix) => [
+    { path: `${prefix}.mould`, select: 'mouldCode name sizeMm hookType cavities activeCavities partWeightGrams material' },
+    { path: `${prefix}.materialRef`, select: 'name colour supplier type' },
+    { path: `${prefix}.hookRef`, select: 'name colour' },
+    { path: `${prefix}.clipRef`, select: 'name colour' },
+    { path: `${prefix}.printRef`, select: 'name colour' },
+  ];
+  let order = orderRef ? await SalesOrder.findById(orderRef).populate(parts('lines')).populate('customer', 'name').lean() : null;
+  if (orderRef && !order) throw ApiError.notFound('Order not found');
+  enquiryRef = enquiryRef || order?.enquiry;
+  const enquiry = enquiryRef ? await Enquiry.findById(enquiryRef).select('number customer items mould').populate(parts('items')).populate('customer', 'name').lean() : null;
+  if (enquiryRef && !enquiry) throw ApiError.notFound('Enquiry not found');
+  if (!order && enquiry) {
+    const newest = await orderOnEnquiry(enquiry._id);
+    order = newest ? await SalesOrder.findById(newest._id).populate(parts('lines')).populate('customer', 'name').lean() : null;
+  }
+
+  const rows = order ? order.lines || [] : enquiry?.items || [];
+  const lineKind = order ? 'order' : 'enquiry';
+  const wanted = order ? orderLine : itemId;
+  const row = wanted ? rows.find((entry) => String(entry._id) === String(wanted)) : rows.length === 1 ? rows[0] : null;
+  if (wanted && !row) throw ApiError.badRequest(order ? `That line is not on ${order.number}` : 'That item is not on the enquiry');
+
+  const fields = {};
+  if (row) {
+    const mould = row.mould?.mouldCode ? row.mould : null;
+    const hasHook = Boolean(row.hookRef) || ['swivel', 'metal_swivel'].includes(mould?.hookType);
+    const hasClips = Boolean(row.clipRef) || mould?.hookType === 'clip';
+    const sizeMm = row.sizeMm || mould?.sizeMm;
+    const cavities = mould ? (mould.activeCavities ?? mould.cavities) : null;
+    Object.assign(fields, {
+      modelNumber: row.modelNumber || mould?.mouldCode,
+      size: sizeMm ? `${sizeMm} mm` : undefined,
+      mould: mould?._id,
+      mouldingType: mould ? (hasHook || hasClips ? 'injection_assembly' : 'injection') : undefined,
+      cavities: cavities ? (mould.cavities && cavities < mould.cavities ? `${cavities} of ${mould.cavities}` : `All ${cavities}`) : undefined,
+      resin: {
+        material: row.materialRef?._id,
+        name: row.materialRef?.name || MATERIAL_WORDS[row.material || mould?.material],
+        colour: row.colour || row.materialRef?.colour,
+        supplier: row.materialRef?.supplier,
+      },
+      hook: { type: row.hookRef?.name || (mould?.hookType ? mould.hookType.replace(/_/g, ' ') : undefined), finish: row.hookRef?.colour },
+      clip: { type: row.clipRef?.name },
+      print: { type: printTypeOf(row.printRef?.name || row.printing), colour: row.printRef?.colour, artwork: row.printRef?.name || row.printing },
+      weight: mould?.partWeightGrams ? { target: mould.partWeightGrams } : undefined,
+      measurements: sizeMm ? [{ name: 'Width', unit: 'mm', target: sizeMm }] : undefined,
+      lotSize: row.quantity || undefined,
+    });
+  }
+  const label = (entry) => [entry.modelNumber || entry.mould?.mouldCode, entry.colour, entry.quantity && `${entry.quantity} pcs`].filter(Boolean).join(' · ') || 'Item';
+  return {
+    enquiry: enquiry ? { _id: enquiry._id, number: enquiry.number } : null,
+    customer: order?.customer?.name || enquiry?.customer?.name || null,
+    order: order ? { _id: order._id, number: order.number, buyerPo: order.customerPo?.number || '' } : null,
+    lineKind,
+    line: row ? row._id : null,
+    lines: rows.map((entry) => ({ _id: entry._id, label: label(entry) })),
+    fields: JSON.parse(JSON.stringify(fields)),
   };
 }

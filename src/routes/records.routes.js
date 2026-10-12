@@ -5,7 +5,7 @@ import ApiError from '../utils/ApiError.js';
 import { accessLevel } from '../services/access.service.js';
 import { levelSatisfies } from '../config/modules.js';
 import {
-  approveQc, createMachine, createMaintenance, createQc, dispatchRegisterHandler, finishRunHandler, getQc, listMachines,
+  approveQc, enquiryRecordsHandler, qcPrefillHandler, createMachine, createMaintenance, createQc, dispatchRegisterHandler, finishRunHandler, getQc, listMachines,
   listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine,
 } from '../controllers/records.controller.js';
 import {
@@ -26,6 +26,7 @@ const anyModule = (pairs) => (req, _res, next) =>
 
 router.get('/qc-records', requireModule('quality'), listQc);
 router.post('/qc-records', requireModule('quality', 'write'), validate(qcRecordSchema), createQc);
+router.get('/qc-records/prefill', requireModule('quality', 'write'), qcPrefillHandler);
 router.get('/qc-records/:id', requireModule('quality'), getQc);
 router.get('/qc-records/:id/certificate', requireModule('quality'), qcCertificate);
 router.post('/qc-records/:id/approve', requireModule('quality', 'write'), approveQc);
@@ -48,5 +49,6 @@ router.get('/dispatch-register', requireModule('dispatch'), dispatchRegisterHand
 /* What an SO links to: its QC sheets (the quality grant) and how its goods went (the order's own grant). */
 router.get('/orders/:id/qc-records', requireModule('quality'), orderQcHandler);
 router.get('/orders/:id/dispatch-details', requireModule('orders'), orderDispatchHandler);
+router.get('/enquiries/:id/records', enquiryRecordsHandler);
 
 export default router;

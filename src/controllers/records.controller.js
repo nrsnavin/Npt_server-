@@ -2,6 +2,9 @@ import mongoose from 'mongoose';
 import QcRecord from '../models/QcRecord.js';
 import SalesOrder from '../models/SalesOrder.js';
 import { ownsRecord } from '../services/ownership.service.js';
+import { canRead } from '../services/access.service.js';
+import { mayHandOff } from '../services/handoff.service.js';
+import Enquiry from '../models/Enquiry.js';
 import Machine from '../models/Machine.js';
 import MouldRun from '../models/MouldRun.js';
 import ApiError from '../utils/ApiError.js';
@@ -13,7 +16,7 @@ import { sendCsv } from '../utils/csv.js';
 import { accessLevel } from '../services/access.service.js';
 import { levelSatisfies } from '../config/modules.js';
 import {
-  REGISTER_COLUMNS, approveQcRecord, createQcRecord, dispatchDetailsForOrder, dispatchRegister, finishRun, qcForOrder, listQcRecords, listRuns, maintenanceHistory,
+  REGISTER_COLUMNS, approveQcRecord, createQcRecord, dispatchDetailsForOrder, dispatchRegister, enquiryRecords, finishRun, qcForOrder, qcPrefill, listQcRecords, listRuns, maintenanceHistory,
   mouldHistory, populateQc, populateRun, recordMaintenance, renderQcCertificate, startRun,
 } from '../services/records.service.js';
 
@@ -121,4 +124,23 @@ export const orderQcHandler = asyncHandler(async (req, res) => {
 });
 export const orderDispatchHandler = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await dispatchDetailsForOrder(await visibleOrder(req)) });
+});
+
+/** What a new QC sheet starts with, from the task, enquiry, SO and line it is opened from. */
+export const qcPrefillHandler = asyncHandler(async (req, res) => {
+  const ids = Object.fromEntries(['task', 'enquiry', 'order', 'orderLine', 'item'].map((key) => [key, req.query[key]]).filter(([, value]) => value));
+  if (Object.values(ids).some((value) => !mongoose.isValidObjectId(value))) throw ApiError.badRequest('Not a valid id');
+  res.json({ success: true, data: await qcPrefill(ids) });
+});
+
+/**
+ * What an enquiry led to — its SOs, QC sheets and dispatch — for whoever may open the enquiry: the
+ * same rule as the enquiry's own page. The QC sheets only with the quality grant.
+ */
+export const enquiryRecordsHandler = asyncHandler(async (req, res) => {
+  const enquiry = mongoose.isValidObjectId(req.params.id) ? await Enquiry.findById(req.params.id).select('number customer assignedTo') : null;
+  if (!enquiry) throw ApiError.notFound('Enquiry not found');
+  const mayRead = canRead(req.user, 'enquiries') ? ownsRecord(req.user, enquiry) : await mayHandOff(req.user, enquiry);
+  if (!mayRead) throw ApiError.notFound('Enquiry not found');
+  res.json({ success: true, data: await enquiryRecords(enquiry, { withQc: levelSatisfies(accessLevel(req.user, 'quality'), 'read') }) });
 });
