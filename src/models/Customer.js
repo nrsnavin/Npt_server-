@@ -4,6 +4,9 @@ import mongoose from 'mongoose';
 import { normalisePhone } from '../utils/phone.js';
 import { withConversationRef } from './conversationRef.js';
 
+/** How a buyer's goods usually travel [services/dispatchPlanning.service.js]. */
+export const DELIVERY_MODES = ['own_vehicle', 'transport', 'party_collects', 'courier'];
+
 export const CUSTOMER_TYPES = [
   'garment_factory',
   'exporter',
@@ -65,6 +68,12 @@ const customerSchema = new mongoose.Schema(
     state: { type: String, trim: true },
     pincode: { type: String, trim: true },
     country: { type: String, trim: true, default: 'India' },
+
+    /* How the goods usually go, and with whom — what the trip planner groups buyers by
+       [services/dispatchPlanning.service.js]. Kept by the dispatch desk as much as by marketing. */
+    deliveryMode: { type: String, enum: DELIVERY_MODES },
+    usualTransporter: { type: mongoose.Schema.Types.ObjectId, ref: 'Transporter' },
+    deliveryRoute: { type: mongoose.Schema.Types.ObjectId, ref: 'DeliveryRoute' },
 
     /** Stored in E.164 so the WhatsApp de-duplication rule can match on them later. */
     mobile: { type: String, trim: true, set: (v) => normalisePhone(v) || v || undefined },

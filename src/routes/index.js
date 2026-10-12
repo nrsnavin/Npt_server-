@@ -10,6 +10,7 @@ import orderRoutes from './order.routes.js';
 import sampleRoutes from './sample.routes.js';
 import whatsappRoutes from './whatsapp.routes.js';
 import queryRoutes from './query.routes.js';
+import dispatchPlanningRoutes from './dispatchPlanning.routes.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
 import { globalSearch } from '../controllers/search.controller.js';
 import { inbox } from '../controllers/inbox.controller.js';
@@ -91,6 +92,8 @@ router.use('/', pricingRoutes);
  */
 router.use('/', orderRoutes);
 router.use('/', queryRoutes);
+/* Dispatch planning: the trip planner and its transporter and route lists. */
+router.use('/', dispatchPlanningRoutes);
 router.use('/', pipelineRoutes);
 
 export default router;
