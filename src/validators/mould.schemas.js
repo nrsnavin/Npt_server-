@@ -138,6 +138,8 @@ export const mouldUpdateSchema = z
 
     cavities: z.number().int().positive().optional(),
     activeCavities: z.number().int().nonnegative().optional(),
+    /* Null switches the shot-count reminder off. */
+    maintenanceEveryShots: z.number().int().nonnegative().nullable().optional(),
 
     partWeightGrams: pieceWeight().optional(),
     runnerWeightGrams: weight.optional(),

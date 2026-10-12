@@ -279,6 +279,14 @@ test('one run at a time on a machine and on a mould; finishing adds its shots to
   assert.equal(history.mould.shotsSinceMaintenance, 0);
   assert.equal(history.mould.maintenanceDue, false);
   assert.equal(history.maintenance.length, 1);
+  /* QC sheets on the mould are Quality's: production reads them, the tool room does not. */
+  await api('/api/qc-records', { method: 'POST', as: 'priya', body: { ...SHEET, mould: mould._id } });
+  assert.equal((await api(`/api/moulds/${mould._id}/history`, { as: 'siva' })).json.data.qc.length, 1);
+  assert.equal((await api(`/api/moulds/${mould._id}/history`, { as: 'murali' })).json.data.qc.length, 0);
+  /* The interval can be set, and switched off, on the mould's own edit. */
+  const reminder = await api(`/api/moulds/${mould._id}`, { method: 'PATCH', as: 'siva', body: { maintenanceEveryShots: null } });
+  assert.equal(reminder.status, 200, reminder.json.message);
+  assert.equal(reminder.json.data.maintenanceEveryShots ?? null, null);
   /* The machine it was on sees it in its own history too. */
   const onMachine = (await api(`/api/machines/${machine._id}`, { as: 'siva' })).json.data;
   assert.ok(onMachine.maintenance.some((row) => row.asset === 'mould'));

@@ -8,6 +8,8 @@ import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { transactional } from '../utils/transaction.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { sendCsv } from '../utils/csv.js';
+import { accessLevel } from '../services/access.service.js';
+import { levelSatisfies } from '../config/modules.js';
 import {
   REGISTER_COLUMNS, approveQcRecord, createQcRecord, dispatchRegister, finishRun, listQcRecords, listRuns, maintenanceHistory,
   mouldHistory, populateQc, populateRun, recordMaintenance, renderQcCertificate, startRun,
@@ -88,7 +90,10 @@ export const finishRunHandler = asyncHandler(transactional(async (req, res) => {
 }));
 export const mouldHistoryHandler = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) throw ApiError.notFound('Mould not found');
-  res.json({ success: true, data: await mouldHistory(req.params.id) });
+  const history = await mouldHistory(req.params.id);
+  /* The tool room reads the register without the quality grant; the QC sheets stay Quality's. */
+  if (!levelSatisfies(accessLevel(req.user, 'quality'), 'read')) history.qc = [];
+  res.json({ success: true, data: history });
 });
 
 const indiaToday = (offset = 0) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(Date.now() + offset * 86400000));
