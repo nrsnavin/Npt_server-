@@ -13,7 +13,7 @@ const date = z.coerce.date().optional();
 
 export const qcRecordSchema = z.object({
   stage: z.enum(QC_STAGE_KEYS),
-  enquiry: optionalId, order: optionalId, task: optionalId, run: optionalId,
+  enquiry: optionalId, order: optionalId, orderLine: optionalId, task: optionalId, run: optionalId,
   mould: optionalId, modelNumber: text(80), size: text(40), mouldingType: z.enum(MOULDING_TYPE_KEYS).optional(),
   cavities: text(60), machine: optionalId, shift: z.enum(SHIFTS).optional(), operator: text(80), producedOn: date,
   resin: z.object({

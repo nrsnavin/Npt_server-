@@ -1,5 +1,7 @@
 import mongoose from 'mongoose';
 import QcRecord from '../models/QcRecord.js';
+import SalesOrder from '../models/SalesOrder.js';
+import { ownsRecord } from '../services/ownership.service.js';
 import Machine from '../models/Machine.js';
 import MouldRun from '../models/MouldRun.js';
 import ApiError from '../utils/ApiError.js';
@@ -11,7 +13,7 @@ import { sendCsv } from '../utils/csv.js';
 import { accessLevel } from '../services/access.service.js';
 import { levelSatisfies } from '../config/modules.js';
 import {
-  REGISTER_COLUMNS, approveQcRecord, createQcRecord, dispatchRegister, finishRun, listQcRecords, listRuns, maintenanceHistory,
+  REGISTER_COLUMNS, approveQcRecord, createQcRecord, dispatchDetailsForOrder, dispatchRegister, finishRun, qcForOrder, listQcRecords, listRuns, maintenanceHistory,
   mouldHistory, populateQc, populateRun, recordMaintenance, renderQcCertificate, startRun,
 } from '../services/records.service.js';
 
@@ -105,4 +107,18 @@ export const dispatchRegisterHandler = asyncHandler(async (req, res) => {
   const rows = await dispatchRegister({ from, to });
   if (req.query.format === 'csv') return sendCsv(res, 'dispatch-register', rows, REGISTER_COLUMNS.map(([key, label]) => [label, (row) => row[key]]));
   return res.json({ success: true, data: rows, meta: { from, to } });
+});
+
+/** The SO, as its own screen would load it: someone else's order is not found, not forbidden. */
+const visibleOrder = async (req) => {
+  const order = mongoose.isValidObjectId(req.params.id) ? await SalesOrder.findById(req.params.id).select('number enquiry customer assignedTo lines._id lines.modelNumber') : null;
+  if (!order || !ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+  return order;
+};
+export const orderQcHandler = asyncHandler(async (req, res) => {
+  const { rows, lines } = await qcForOrder(await visibleOrder(req));
+  res.json({ success: true, data: rows, lines });
+});
+export const orderDispatchHandler = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await dispatchDetailsForOrder(await visibleOrder(req)) });
 });

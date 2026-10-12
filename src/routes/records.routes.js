@@ -6,7 +6,7 @@ import { accessLevel } from '../services/access.service.js';
 import { levelSatisfies } from '../config/modules.js';
 import {
   approveQc, createMachine, createMaintenance, createQc, dispatchRegisterHandler, finishRunHandler, getQc, listMachines,
-  listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, qcCertificate, startRunHandler, updateMachine,
+  listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine,
 } from '../controllers/records.controller.js';
 import {
   machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runStartSchema,
@@ -44,5 +44,9 @@ router.post('/mould-runs/:id/finish', requireModule('production', 'write'), vali
 router.get('/moulds/:id/history', requireModule('moulds'), mouldHistoryHandler);
 
 router.get('/dispatch-register', requireModule('dispatch'), dispatchRegisterHandler);
+
+/* What an SO links to: its QC sheets (the quality grant) and how its goods went (the order's own grant). */
+router.get('/orders/:id/qc-records', requireModule('quality'), orderQcHandler);
+router.get('/orders/:id/dispatch-details', requireModule('orders'), orderDispatchHandler);
 
 export default router;

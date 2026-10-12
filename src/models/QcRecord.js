@@ -66,6 +66,8 @@ const qcRecordSchema = new mongoose.Schema(
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', index: true },
     order: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder', index: true },
+    /* The line of the order the lot is for — a line lives inside the order, so a plain id. */
+    orderLine: { type: mongoose.Schema.Types.ObjectId },
     task: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo', index: true },
     run: { type: mongoose.Schema.Types.ObjectId, ref: 'MouldRun', index: true },
 

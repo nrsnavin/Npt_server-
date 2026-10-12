@@ -6,6 +6,8 @@ import Mould from '../models/Mould.js';
 import Enquiry from '../models/Enquiry.js';
 import Todo from '../models/Todo.js';
 import Trip from '../models/Trip.js';
+import SalesOrder from '../models/SalesOrder.js';
+import { findHandoff } from '../config/handoffs.js';
 import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
 import { withCreateLocks } from './operationLock.service.js';
@@ -56,6 +58,44 @@ export function workOut(record) {
 
 const failedOf = (record) => new QcRecord(record).failedTests;
 
+/** The SO an enquiry's work belongs to: its newest sales order, as the department forms read it. */
+export const orderOnEnquiry = (enquiryId) => (enquiryId
+  ? SalesOrder.findOne({ enquiry: enquiryId }).sort({ createdAt: -1 }).select('number enquiry customer lines._id lines.modelNumber lines.mould lines.colour').lean()
+  : null);
+
+/**
+ * Ties a QC record to its sales order. Picked: it must exist and be on the same enquiry, and the
+ * line must be one of its lines — the model and mould come off the line when the sheet left them
+ * empty. Not picked: the enquiry's SO, so a sheet filled from an enquiry still lands on the order.
+ */
+async function linkOrder(record) {
+  let order;
+  if (record.order) {
+    order = await SalesOrder.findById(record.order).select('number enquiry customer lines._id lines.modelNumber lines.mould lines.colour').lean();
+    if (!order) throw ApiError.badRequest('That sales order was not found');
+    if (record.enquiry && order.enquiry && String(order.enquiry) !== String(record.enquiry)) {
+      throw ApiError.badRequest(`${order.number} is on another enquiry — pick the SO of this enquiry`);
+    }
+  } else {
+    order = await orderOnEnquiry(record.enquiry);
+  }
+  if (!order) {
+    if (record.orderLine) throw ApiError.badRequest('Pick the sales order the line is on');
+    return;
+  }
+  record.order = order._id;
+  record.enquiry = record.enquiry || order.enquiry;
+  record.customer = record.customer || order.customer;
+  if (record.orderLine) {
+    const line = (order.lines || []).find((row) => String(row._id) === String(record.orderLine));
+    if (!line) throw ApiError.badRequest(`That line is not on ${order.number}`);
+    record.modelNumber = record.modelNumber || line.modelNumber;
+    record.mould = record.mould || line.mould;
+  } else if (order.lines?.length === 1) {
+    record.orderLine = order.lines[0]._id;
+  }
+}
+
 export async function createQcRecord(body, user) {
   const record = workOut(body);
   if (record.rejected > (record.sampleSize ?? Infinity)) throw ApiError.badRequest('More rejected than were sampled — check the figures');
@@ -67,12 +107,14 @@ export async function createQcRecord(body, user) {
   if (record.verdict === 'passed_with_deviation' && String(record.remarks || '').trim().length < 5) {
     throw ApiError.badRequest('Say why it passes with a deviation');
   }
-  /* The task first: the enquiry comes off it, and the buyer off the enquiry. */
+  /* The task first: the enquiry (and its SO) come off it, and the buyer off the enquiry. */
   if (record.task) {
-    const task = await Todo.findById(record.task).select('kind enquiry').lean();
+    const task = await Todo.findById(record.task).select('kind enquiry order').lean();
     if (!task || !['quality_check', 'quality_issue'].includes(task.kind)) throw ApiError.badRequest('A QC record answers a Quality task');
     record.enquiry = record.enquiry || task.enquiry;
+    record.order = record.order || task.order;
   }
+  await linkOrder(record);
   if (record.enquiry) {
     const enquiry = await Enquiry.findById(record.enquiry).select('customer').lean();
     if (!enquiry) throw ApiError.badRequest('That enquiry was not found');
@@ -101,13 +143,15 @@ export async function approveQcRecord(record, user) {
 
 const QC_POPULATE = [
   { path: 'enquiry', select: 'number' }, { path: 'customer', select: 'name code' }, { path: 'mould', select: 'mouldCode name' },
+  { path: 'order', select: 'number customerPo.number status' },
   { path: 'machine', select: 'code name' }, { path: 'resin.material', select: 'name grade' }, { path: 'inspectedBy', select: 'name' },
   { path: 'approvedBy', select: 'name' }, { path: 'run', select: 'number' }, { path: 'task', select: 'kind title' },
 ];
 export const populateQc = (query) => query.populate(QC_POPULATE);
 
-export async function listQcRecords({ stage, verdict, mould, enquiry, from, to, page = 1, limit = 25 }) {
+export async function listQcRecords({ stage, verdict, mould, enquiry, order, from, to, page = 1, limit = 25 }) {
   const filter = {};
+  if (order) filter.order = order;
   if (stage) filter.stage = stage;
   if (verdict) filter.verdict = verdict;
   if (mould) filter.mould = mould;
@@ -134,6 +178,8 @@ export async function renderQcCertificate(record) {
       ['Stage', label(QC_STAGES, record.stage)],
       ['Buyer', record.customer?.name],
       ['Enquiry', record.enquiry?.number],
+      ['Sales order', record.order?.number],
+      ['Buyer PO', record.order?.customerPo?.number],
       ['Model / size', [record.modelNumber || record.mould?.mouldCode, record.size].filter(Boolean).join(' · ')],
       ['Moulding', record.mouldingType && label(MOULDING_TYPES, record.mouldingType)],
       ['Resin', [record.resin?.name || record.resin?.material?.name, record.resin?.grade, record.resin?.colour, record.resin?.batch && `batch ${record.resin.batch}`].filter(Boolean).join(' · ')],
@@ -336,16 +382,32 @@ export async function dispatchRegister({ from, to }) {
     .populate([{ path: 'vehicle', select: 'number' }, { path: 'transporter', select: 'name' }, { path: 'stops.customer', select: 'name city' }, { path: 'stops.enquiry', select: 'number' }])
     .lean();
   const enquiryIds = trips.flatMap((trip) => trip.stops.map((stop) => stop.enquiry?._id)).filter(Boolean);
-  const lrTasks = await Todo.find({ enquiry: { $in: enquiryIds }, kind: 'lr_copy' }).sort({ createdAt: -1 }).select('enquiry brief status').lean();
+  const stopTasks = trips.flatMap((trip) => trip.stops.map((stop) => stop.task)).filter(Boolean);
+  const [lrTasks, requests] = await Promise.all([
+    Todo.find({ enquiry: { $in: enquiryIds }, kind: 'lr_copy' }).sort({ createdAt: -1 }).select('enquiry brief status').lean(),
+    Todo.find({ _id: { $in: stopTasks } }).select('order').populate('order', 'number customerPo.number').lean(),
+  ]);
   const lrByEnquiry = new Map();
   for (const task of lrTasks) if (!lrByEnquiry.has(String(task.enquiry))) lrByEnquiry.set(String(task.enquiry), task);
+  /* The SO on the dispatch request; a request raised before tasks carried one, the enquiry's SO. */
+  const orderByTask = new Map(requests.filter((task) => task.order).map((task) => [String(task._id), task.order]));
+  const missing = [...new Set(trips.flatMap((trip) => trip.stops.filter((stop) => !orderByTask.has(String(stop.task)) && stop.enquiry).map((stop) => String(stop.enquiry._id))))];
+  const fallback = new Map();
+  if (missing.length) {
+    const orders = await SalesOrder.find({ enquiry: { $in: missing } }).sort({ createdAt: -1 }).select('number enquiry customerPo.number').lean();
+    for (const row of orders) if (!fallback.has(String(row.enquiry))) fallback.set(String(row.enquiry), row);
+  }
   const MODE = { own_vehicle: 'Own vehicle', transport: 'Transport', party_collects: 'Party collected', courier: 'Courier' };
   return trips.flatMap((trip) => trip.stops.map((stop) => {
     const lr = stop.enquiry ? lrByEnquiry.get(String(stop.enquiry._id)) : null;
+    const so = orderByTask.get(String(stop.task)) || (stop.enquiry ? fallback.get(String(stop.enquiry._id)) : null);
     return {
       date: indiaDay(new Date(trip.leftAt)),
       trip: trip.number,
       tripId: trip._id,
+      order: so?.number || '',
+      orderId: so?._id || null,
+      buyerPo: so?.customerPo?.number || '',
       customer: stop.customer?.name || '',
       city: stop.customer?.city || '',
       enquiry: stop.enquiry?.number || '',
@@ -365,7 +427,98 @@ export async function dispatchRegister({ from, to }) {
 }
 
 export const REGISTER_COLUMNS = [
-  ['date', 'Date'], ['trip', 'Trip'], ['customer', 'Buyer'], ['city', 'City'], ['enquiry', 'Enquiry'], ['model', 'Model'],
+  ['date', 'Date'], ['trip', 'Trip'], ['customer', 'Buyer'], ['city', 'City'], ['order', 'Sales order'], ['buyerPo', 'Buyer PO'], ['enquiry', 'Enquiry'], ['model', 'Model'],
   ['quantity', 'Quantity'], ['cartons', 'Cartons'], ['mode', 'Went by'], ['goesBy', 'Vehicle / transporter'], ['driver', 'Driver'],
   ['invoiceNumber', 'Invoice'], ['lrNumber', 'LR / docket'], ['transporter', 'Transporter (LR)'], ['delivery', 'Delivery'],
 ];
+
+/* ------------------------------------------------------ what an SO links to --- */
+
+/**
+ * The dispatch requests an SO went out on: the ones that carry it, and — for requests raised before
+ * tasks carried their SO — the enquiry's requests with none, when this is the enquiry's SO.
+ */
+async function requestsOfOrder(order) {
+  const newest = order.enquiry ? await orderOnEnquiry(order.enquiry) : null;
+  const sameEnquiry = newest && String(newest._id) === String(order._id);
+  return Todo.find({
+    kind: 'invoice_dispatch',
+    $or: [{ order: order._id }, ...(sameEnquiry ? [{ enquiry: order.enquiry, order: { $exists: false } }] : [])],
+  }).sort({ createdAt: 1 }).lean();
+}
+
+const statusLabel = (kind, key) => findHandoff(kind)?.form?.statuses?.find((entry) => entry.key === key)?.label || (key || '').replace(/_/g, ' ');
+
+/**
+ * Everything about how an SO's goods went, in one answer: each dispatch request with where it
+ * stands, the trips it went on with the vehicle, driver and whether it was delivered, and the LR
+ * details Reception keeps — invoice, LR number, transporter and the LR copy.
+ */
+export async function dispatchDetailsForOrder(order) {
+  const requests = await requestsOfOrder(order);
+  const ids = requests.map((task) => task._id);
+  const [trips, lrTasks] = await Promise.all([
+    ids.length
+      ? Trip.find({ 'stops.task': { $in: ids } }).sort({ date: 1 }).populate([{ path: 'vehicle', select: 'number kind' }, { path: 'transporter', select: 'name phone' }]).lean()
+      : [],
+    Todo.find({
+      kind: 'lr_copy',
+      $or: [{ order: order._id }, ...(requests.some((task) => !task.order) ? [{ enquiry: order.enquiry, order: { $exists: false } }] : [])],
+    }).sort({ createdAt: 1 }).select('status brief completed resultFile createdAt').lean(),
+  ]);
+  const MODE = { own_vehicle: 'Own vehicle', transport: 'Transport', party_collects: 'Party collected', courier: 'Courier' };
+  return {
+    order: { _id: order._id, number: order.number },
+    requests: requests.map((task) => {
+      const legs = trips.flatMap((trip) => trip.stops.filter((stop) => String(stop.task) === String(task._id)).map((stop) => ({
+        trip: trip.number,
+        tripId: trip._id,
+        date: trip.date,
+        status: trip.status,
+        leftAt: trip.leftAt || null,
+        mode: MODE[trip.mode] || trip.mode,
+        goesBy: trip.mode === 'transport' ? trip.transporter?.name || '' : trip.vehicle?.number || '',
+        driver: [trip.driverName, trip.driverPhone].filter(Boolean).join(' · '),
+        quantity: stop.quantity ?? null,
+        cartons: stop.cartons ?? null,
+        delivery: stop.status,
+        note: stop.note || '',
+        at: stop.at || null,
+      })));
+      return {
+        _id: task._id,
+        status: task.status,
+        statusLabel: statusLabel('invoice_dispatch', task.status),
+        completed: Boolean(task.completed),
+        raisedAt: task.createdAt,
+        quantity: task.brief?.quantity || '',
+        remark: (task.statusHistory || []).filter((entry) => entry.note).at(-1)?.note || task.notes || '',
+        trips: legs,
+      };
+    }),
+    lr: lrTasks.map((task) => ({
+      _id: task._id,
+      status: task.status,
+      statusLabel: statusLabel('lr_copy', task.status),
+      completed: Boolean(task.completed),
+      invoiceNumber: task.brief?.invoiceNumber || '',
+      lrNumber: task.brief?.lrNumber || '',
+      transporter: task.brief?.transporter || '',
+      lrCopy: task.resultFile || null,
+    })),
+  };
+}
+
+/** An SO's QC records, newest first, with the latest verdict per line of the order. */
+export async function qcForOrder(order) {
+  const rows = await populateQc(QcRecord.find({ order: order._id }).sort({ inspectedAt: -1 }).limit(100));
+  const latest = new Map();
+  for (const row of rows) if (row.orderLine && !latest.has(String(row.orderLine))) latest.set(String(row.orderLine), row);
+  return {
+    rows,
+    lines: (order.lines || []).map((line) => {
+      const last = latest.get(String(line._id));
+      return { line: line._id, modelNumber: line.modelNumber, verdict: last?.verdict || null, record: last ? { _id: last._id, number: last.number } : null };
+    }),
+  };
+}
