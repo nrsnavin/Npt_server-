@@ -84,6 +84,32 @@ const PAYMENT_TERMS = [
 
 const DISPATCH_SCHEDULES = ['Today Dispatch', 'Today Evening Dispatch', 'Tomorrow Dispatch', 'Tomorrow First Dispatch', 'Top Most Urgent Dispatch'];
 
+/**
+ * The Quality team's workflow, on every Quality task — the plant's own list:
+ * Complaint Received → Under Checking → Attended → Corrective Action → Replacement In Progress →
+ * Replaced → Resolved → Task Closed. Each move with a remark, told to the enquiry's marketing
+ * person and Admin. On a complaint (Quality Issue) the open statuses mark the enquiry as having an
+ * issue until it is Resolved; a routine Quality Check runs the same steps without the flag.
+ */
+function qualityWorkflow({ complaint }) {
+  const open = (key, label) => ({ key, label, ...(complaint ? { issue: true } : {}) });
+  return {
+    remarkRequired: true,
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'What was found, what was done for the buyer' },
+    statuses: [
+      open('received', 'Complaint Received'),
+      open('checking', 'Under Checking'),
+      open('attended', 'Attended'),
+      open('corrective_action', 'Corrective Action'),
+      open('replacement', 'Replacement In Progress'),
+      open('replaced', 'Replaced'),
+      { key: 'resolved', label: 'Resolved' },
+      { key: 'closed', label: 'Task Closed', done: true },
+    ],
+  };
+}
+
 const paymentFollowUp = {
   title: 'Payment Follow-up Tracker',
   submit: 'Save Follow-up',
@@ -232,24 +258,12 @@ export const TASK_FORMS = {
       { key: 'problem', label: 'What is wrong with the tool', required: true },
     ],
   },
-  quality_check: { team: 'Quality Team', asks: modelAndQuantity },
+  /* Every Quality team task runs the same workflow [qualityWorkflow]; only a complaint flags the enquiry. */
+  quality_check: { team: 'Quality Team', asks: modelAndQuantity, ...qualityWorkflow({ complaint: false }) },
   quality_issue: {
     team: 'Quality Team',
     asks: [...modelAndQuantity, { key: 'problem', label: 'The problem', required: true }],
-    remarkRequired: true,
-    notifyStatus: true,
-    remark: { label: 'Remarks', placeholder: 'What was found, what was done for the buyer' },
-    /* A complaint is an issue on the enquiry until it is resolved. */
-    statuses: [
-      { key: 'received', label: 'Complaint Received', issue: true },
-      { key: 'checking', label: 'Under Checking', issue: true },
-      { key: 'attended', label: 'Attended', issue: true },
-      { key: 'corrective_action', label: 'Corrective Action', issue: true },
-      { key: 'replacement', label: 'Replacement In Progress', issue: true },
-      { key: 'replaced', label: 'Replaced', issue: true },
-      { key: 'resolved', label: 'Resolved' },
-      { key: 'closed', label: 'Task Closed', done: true },
-    ],
+    ...qualityWorkflow({ complaint: true }),
   },
   invoice_dispatch: {
     title: 'Send Dispatch Request',

@@ -433,6 +433,26 @@ test('a Quality complaint moves Complaint Received → … → Task Closed with 
   assert.equal((await Todo.findById(task._id)).completed, true);
 });
 
+test('a Quality Check runs the same Quality workflow, with remarks and notices — but is not a complaint on the enquiry', async () => {
+  const { buttons } = (await api('/api/handoffs', { as: 'kavi' })).json.data;
+  assert.deepEqual(buttons.find((button) => button.key === 'quality_check').form.statuses.map((entry) => entry.label), [
+    'Complaint Received', 'Under Checking', 'Attended', 'Corrective Action', 'Replacement In Progress', 'Replaced', 'Resolved', 'Task Closed',
+  ]);
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'quality_check', note: 'Check the lot before it goes' } });
+  assert.equal(sent.status, 201, sent.json.message);
+  const task = await Todo.findById(sent.json.data.task._id);
+  assert.equal(task.status, 'received', 'starts at the first step');
+  const move = (status, note) => api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'kavi', body: { status, ...(note ? { note } : {}) } });
+  assert.equal((await move('checking')).status, 400, 'no remark');
+  assert.equal((await move('checking', 'Pulling 50 pcs from the lot')).status, 200);
+  const [notice] = await noticesOf('nandhini');
+  assert.equal(notice.statusLabel, 'Under Checking');
+  const issues = (await listed()).progress.issues.filter((issue) => issue.department === 'quality' && issue.label.startsWith('Quality Check'));
+  assert.deepEqual(issues, [], 'a routine check is not an issue');
+  assert.equal((await move('closed', 'Lot passed')).status, 200);
+  assert.equal((await Todo.findById(task._id)).completed, true);
+});
+
 /* ------------------------------ Accounts ------------------------------ */
 
 test('Accounts’ task moves Payment Approval Required → … → Task Closed with remarks; Hold is an issue on the enquiry', async () => {
