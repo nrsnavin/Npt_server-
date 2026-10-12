@@ -1,6 +1,7 @@
 import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
+import qcStandardsSchema from './qcStandards.schema.js';
 import { normalisePhone } from '../utils/phone.js';
 import { withConversationRef } from './conversationRef.js';
 
@@ -134,13 +135,22 @@ const customerSchema = new mongoose.Schema(
           place: { name: String, state: String, distanceKm: Number },
           setBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
           setAt: { type: Date, required: true },
-          fromQuery: { type: mongoose.Schema.Types.ObjectId, ref: 'Query', required: true },
+          /* Where the pin came from: a query check-in (fromQuery) or the buyer's own WhatsApp share (fromThread). */
+          source: { type: String, enum: ['query', 'whatsapp'], default: 'query' },
+          fromQuery: { type: mongoose.Schema.Types.ObjectId, ref: 'Query', required() { return this.source !== 'whatsapp'; } },
+          fromThread: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsappThread' },
           fromMessage: { type: mongoose.Schema.Types.ObjectId, required: true },
         },
         { _id: false }
       ),
       default: undefined,
     },
+
+    /** A buyer's own test standards, where they ask for more than the model's — these win on the QC sheet. */
+    qcStandards: { type: qcStandardsSchema, default: undefined },
+
+    /** When the buyer was asked on WhatsApp to share their location — the next one they share is pinned. */
+    locationAskedAt: Date,
 
     creditTermsDays: { type: Number, min: 0, default: 0 },
     paymentTerms: { type: String, trim: true },

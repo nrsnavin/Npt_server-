@@ -16,6 +16,8 @@ export const handoffSchema = z.object({
   addToOpen: z.boolean().optional(),
   /** The task's due date, when the person raising it names one. */
   requiredDate: z.string().trim().max(40).optional().or(z.literal('')),
+  /** Which of the enquiry's sales orders the task is for, when it has several; else its newest. */
+  order: z.string().regex(/^[0-9a-f]{24}$/i, 'Not a valid id').optional().or(z.literal('')).transform((value) => value || undefined),
 });
 
 /** A department task raised for a team without an enquiry; a customer may be named. */

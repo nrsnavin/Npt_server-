@@ -139,6 +139,44 @@ const qcRecordSchema = new mongoose.Schema(
     },
     drop: { heightCm: { type: Number, min: 0 }, drops: { type: Number, min: 0 }, result: passFail },
     colourMatch: { against: { type: String, trim: true, maxlength: 120 }, result: passFail },
+    /* Hook turns: swivel cycles the hook took without loosening or breaking. */
+    hookTurns: { required: { type: Number, min: 0 }, achieved: { type: Number, min: 0 }, result: passFail },
+    /* UV / colour-fastness: hours under the lamp, and whether the colour held. */
+    uv: { hours: { type: Number, min: 0 }, result: passFail },
+    /* Shrinkage: the mould's dimension against the piece's, worked out as a percent. */
+    shrinkage: { mouldMm: { type: Number, min: 0 }, partMm: { type: Number, min: 0 }, percent: Number, maxPercent: { type: Number, min: 0 }, result: passFail },
+
+    /* The resin as it went in: moisture (dried enough?) and melt-flow (the grade it claims to be). */
+    resinChecks: {
+      moisturePercent: { type: Number, min: 0, max: 100 },
+      moistureMaxPercent: { type: Number, min: 0, max: 100 },
+      moistureResult: passFail,
+      mfi: { type: Number, min: 0 },
+      mfiMin: { type: Number, min: 0 },
+      mfiMax: { type: Number, min: 0 },
+      mfiResult: passFail,
+    },
+
+    /* Packing: pieces per carton against the standard, labels right, the carton survives a drop. */
+    packing: {
+      piecesPerCarton: { type: Number, min: 0 },
+      piecesFound: { type: Number, min: 0 },
+      cartonsChecked: { type: Number, min: 0 },
+      labels: passFail,
+      result: passFail,
+    },
+    cartonDrop: { heightCm: { type: Number, min: 0 }, drops: { type: Number, min: 0 }, result: passFail },
+
+    /* Sampling by AQL [utils/aql.js]: the plan the lot size and AQL give, and whether the rejects are within it. */
+    aql: { type: Number, enum: [0.65, 1, 1.5, 2.5, 4, 6.5] },
+    aqlPlan: { letter: String, sampleSize: Number, accept: Number, reject: Number },
+    aqlResult: passFail,
+    /* Where the minimums came from — the model's standards, the buyer's — as the sheet was opened. */
+    standardsFrom: { type: String, trim: true, maxlength: 200 },
+    /* The SO line's inspection this sheet wrote [models/Inspection.js] — so the line's quality standing,
+       its holds and the consignment's pre-dispatch check stay right without a second form. */
+    inspection: { type: mongoose.Schema.Types.ObjectId, ref: 'Inspection' },
+    inspectionNote: { type: String, trim: true, maxlength: 300 },
 
     /* The sample. */
     lotSize: { type: Number, min: 0 },
@@ -171,6 +209,9 @@ qcRecordSchema.virtual('failedTests').get(function failedTests() {
     ['Breaking strength', this.breaking?.result], ['Hang load', this.hangLoad?.result], ['Drop', this.drop?.result],
     ['Hook pull', this.hook?.result], ['Clip grip', this.clip?.result], ['Print adhesion', this.print?.adhesion],
     ['Print registration', this.print?.registration], ['Weight', this.weight?.result], ['Colour match', this.colourMatch?.result],
+    ['Hook turns', this.hookTurns?.result], ['UV / colour-fastness', this.uv?.result], ['Shrinkage', this.shrinkage?.result],
+    ['Resin moisture', this.resinChecks?.moistureResult], ['Melt-flow (MFI)', this.resinChecks?.mfiResult],
+    ['Packing', this.packing?.result], ['Carton drop', this.cartonDrop?.result], ['AQL sample', this.aqlResult],
     ...(this.measurements || []).map((row) => [row.name, row.result]),
   ];
   return checks.filter(([, result]) => result === 'fail').map(([name]) => name);

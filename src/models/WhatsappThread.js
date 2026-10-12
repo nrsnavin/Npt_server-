@@ -53,6 +53,8 @@ const inboundMessageSchema = new mongoose.Schema(
     /** Photos and artwork arrive on the same thread [§41.6] — the URLs the provider gave us. */
     /* Twilio gives a `url`; Meta gives an `id`, exchanged for the file when it is fetched. */
     media: [{ url: String, id: String, contentType: String, filename: String }],
+    /** A location the buyer shared — pinned on the customer when it was asked for [services/customerLocation.service.js]. */
+    location: { lat: Number, lng: Number, name: String, address: String },
     /** The provider's timestamp where it sent one, not when our webhook happened to run. */
     receivedAt: { type: Date, default: Date.now, index: true },
     /** What the sender calls themselves on WhatsApp. Never trusted for matching. */

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { qcStandardsInput } from './qcStandards.zod.js';
 import {
   HANGER_CATEGORIES, HOOK_TYPES, MATERIALS, MOULD_OWNERSHIP, MOULD_STATUSES,
 } from '../models/Mould.js';
@@ -67,6 +68,8 @@ const mouldFields = z.object({
     status: z.enum(MOULD_STATUSES).optional(),
     /* Maintenance due every this many shots [services/records.service.js]. */
     maintenanceEveryShots: z.number().int().nonnegative().nullable().optional(),
+    /* What the model is tested against [QC records]. */
+    qcStandards: qcStandardsInput,
     ownedBy: z.enum(MOULD_OWNERSHIP).optional(),
     /**
      * Nullable as well as optional, and it has to be both.
@@ -140,6 +143,8 @@ export const mouldUpdateSchema = z
     activeCavities: z.number().int().nonnegative().optional(),
     /* Null switches the shot-count reminder off. */
     maintenanceEveryShots: z.number().int().nonnegative().nullable().optional(),
+    /* What the model is tested against [QC records]. */
+    qcStandards: qcStandardsInput,
 
     partWeightGrams: pieceWeight().optional(),
     runnerWeightGrams: weight.optional(),

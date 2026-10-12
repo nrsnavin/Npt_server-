@@ -52,6 +52,9 @@ const departmentName = (key) => findDepartment(key)?.label || String(key || '').
 
 const fail = (message) => { throw ApiError.badRequest(message); };
 
+/** Work that belongs to one sales order: with several open on the enquiry, the person raising it names which. */
+export const ORDER_BOUND_KINDS = ['ask_edd', 'ask_assembling_edd', 'invoice_dispatch', 'lr_copy', 'quality_check', 'quality_issue'];
+
 /** Admin, or the Admin department: sees and may act on everything. */
 const isAdmin = isManagement;
 
@@ -443,7 +446,7 @@ export function moveEnquiry(request) {
 }
 
 async function moveEnquiryChecked({
-  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask, addToOpen = false, keepStage = false,
+  enquiry, kind, note, fields, brief, priority, requiredDate, user, system = false, openRecords = true, finishes = [], parentTask, addToOpen = false, keepStage = false, order: pickedOrder,
 }) {
   const handoff = findHandoff(kind);
   if (!handoff?.department || handoff.stage === CLOSED_STAGE) fail('That button does not raise a department task');
@@ -488,8 +491,24 @@ async function moveEnquiryChecked({
   }
   const holder = await holderOf(enquiry._id);
   /* The enquiry's sales order, carried on the task: what a dispatch, an LR or a QC sheet is for. */
-  const { default: SalesOrder } = await import('../models/SalesOrder.js');
-  const order = await SalesOrder.findOne({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('_id').lean();
+  const { default: SalesOrder, OPEN_ORDER_STATUSES } = await import('../models/SalesOrder.js');
+  /*
+   * The SO the task is for. Picked on the form: it must be this enquiry's. Raised by another task
+   * (Dispatched → LR copy): that task's SO. Otherwise the enquiry's only open SO — and with several
+   * open, a person raising work that belongs to one SO is asked which, rather than the newest being
+   * assumed and the dispatch or the QC sheet landing on the wrong order.
+   */
+  let order = null;
+  if (pickedOrder) {
+    order = await SalesOrder.findOne({ _id: pickedOrder, enquiry: enquiry._id }).select('_id').lean();
+    if (!order) fail('That sales order is not on this enquiry');
+  } else {
+    const open = await SalesOrder.find({ enquiry: enquiry._id, status: { $in: OPEN_ORDER_STATUSES } }).sort({ createdAt: -1 }).select('_id number').lean();
+    if (open.length > 1 && ORDER_BOUND_KINDS.includes(kind) && !system) {
+      fail(`This enquiry has ${open.length} open sales orders (${open.map((row) => row.number).join(', ')}) — pick which one this is for`);
+    }
+    order = open[0] || await SalesOrder.findOne({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('_id').lean();
+  }
   const task = await Todo.create({
     enquiry: enquiry._id,
     customer: enquiry.customer?._id || enquiry.customer,
@@ -726,7 +745,7 @@ export async function closeEnquiryAutomatically({ enquiry, note }) {
  * One button pressed on the enquiry screen. Returns the task (or the record, for the buttons
  * that only record). `enquiry` must be a document with `customer` populated or an id.
  */
-export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, addToOpen, user }) {
+export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, addToOpen, order, user }) {
   const handoff = findHandoff(kind);
   if (!handoff || handoff.hidden) fail('That is not one of the buttons');
 
@@ -736,7 +755,7 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
   }
 
   /* Every button that names a department raises that department's task. */
-  if (handoff.department) return moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, user });
+  if (handoff.department) return moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, order, user });
 
   if (!(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
 
@@ -971,7 +990,7 @@ export async function setTaskStatus(task, user, { status, note, date }) {
     const enquiry = await enquiryOfTask(task);
     await moveEnquiry({
       enquiry, kind: step.raises, note: `${user.name}: ${text}`, user, system: true, openRecords: false,
-      requiredDate: new Date(), parentTask: task._id,
+      requiredDate: new Date(), parentTask: task._id, order: task.order,
     });
   }
   task.status = status;
@@ -1018,7 +1037,7 @@ export async function askFromTask(task, user, { kind, note, brief, priority, req
   const asking = departmentName(task.department);
   const raised = await moveEnquiry({
     enquiry, kind, note: `${asking} asks (${user.name}): ${text}`, user, system: true, openRecords: false,
-    brief, priority, requiredDate, addToOpen: true, keepStage: true,
+    brief, priority, requiredDate, addToOpen: true, keepStage: true, order: task.order,
   });
   /* The task asked remembers who asked, so its moves are told back here [noticeStatus]. */
   if (raised?._id) await Todo.updateOne({ _id: raised._id }, { $addToSet: { askedFrom: task._id } }, { keepVersion: true });
@@ -1067,7 +1086,7 @@ async function raiseNextFrom(task, user, step, text) {
   if (findHandoff(step.next)?.asks?.some((field) => field.key === 'dispatchedOn')) brief.dispatchedOn = indiaDay(new Date());
   try {
     return await moveEnquiry({
-      enquiry, kind: step.next, note: `${step.label} by ${user.name}${text ? ` — ${text}` : ''}`, user, system: true, openRecords: false, brief,
+      enquiry, kind: step.next, note: `${step.label} by ${user.name}${text ? ` — ${text}` : ''}`, user, system: true, openRecords: false, brief, order: task.order,
     });
   } catch (error) {
     if (error?.statusCode !== 400 && error?.statusCode !== 409) throw error;
@@ -1276,7 +1295,7 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
   } else if (step.next) {
     const enquiry = await enquiryOfTask(task);
     try {
-      next = await moveEnquiry({ enquiry, kind: step.next, note: `${step.label} by ${user.name}`, user, system: true });
+      next = await moveEnquiry({ enquiry, kind: step.next, note: `${step.label} by ${user.name}`, user, system: true, order: task.order });
     } catch (error) {
       if (error?.statusCode !== 400 && error?.statusCode !== 409) throw error;
       nextProblem = error.message;
@@ -1972,4 +1991,30 @@ export async function enquiriesAtStages(department, scope = {}) {
 export async function allDepartmentFigures(departments, { now = new Date() } = {}) {
   const rows = await Promise.all(departments.map((key) => departmentFigures(key, { now })));
   return rows.map(({ openFilter, ...numbers }) => numbers);
+}
+
+/**
+ * A lot failed QC, or is held: the open dispatch request on its enquiry (and SO) hears it — a line on
+ * the request, and a notice to Dispatch, the marketing person and Admin. **Dispatch is not held.**
+ * The plant decides whether the goods go; this makes sure nobody sends them without knowing.
+ * With no request open yet, the Quality task the sheet answers carries the notice instead.
+ */
+export async function warnDispatchOfQc(record, user) {
+  const verdict = record.verdict === 'on_hold' ? 'on hold' : 'rejected';
+  const failed = record.failedTests?.length ? ` — failed ${record.failedTests.join(', ')}` : '';
+  const note = `QC ${record.number}: ${verdict}${failed}. Dispatch is not held — check with Quality before loading.`;
+  const requests = await Todo.find({
+    kind: 'invoice_dispatch', completed: false, enquiry: record.enquiry,
+    ...(record.order ? { $or: [{ order: record.order }, { order: { $exists: false } }] } : {}),
+  });
+  const step = (task) => ({ key: task.status || 'qc', label: `QC ${verdict}` });
+  for (const request of requests) {
+    await Todo.updateOne({ _id: request._id }, { $push: { updates: { note, by: user._id, at: new Date() } } }, { keepVersion: true });
+    await noticeStatus(request, user, { step: step(request), note, also: await peopleOn(request) });
+  }
+  if (!requests.length && record.task) {
+    const task = await Todo.findById(record.task);
+    if (task) await noticeStatus(task, user, { step: step(task), note });
+  }
+  return requests.length;
 }

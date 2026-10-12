@@ -56,6 +56,10 @@ const materialSchema = new mongoose.Schema(
     /** When the rate above was last confirmed, so a stale one can be spotted. */
     rateUpdatedAt: Date,
 
+    /* Kilograms in the store [models/StockMovement.js]: receipts add, runs take what they used. */
+    stockKg: { type: Number, default: 0 },
+    /* Below this, production is asked to reorder. */
+    reorderKg: { type: Number, min: 0 },
     isActive: { type: Boolean, default: true },
     notes: String,
   },

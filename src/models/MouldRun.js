@@ -18,6 +18,8 @@ const mouldRunSchema = new mongoose.Schema(
     machine: { type: mongoose.Schema.Types.ObjectId, ref: 'Machine', index: true },
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
     order: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder', index: true },
+    /* The SO line the run makes — its good pieces are added to that line's produced count when it ends. */
+    orderLine: { type: mongoose.Schema.Types.ObjectId },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', index: true },
     modelNumber: { type: String, trim: true, maxlength: 80 },
     colour: { type: String, trim: true, maxlength: 60 },
@@ -48,6 +50,10 @@ const mouldRunSchema = new mongoose.Schema(
 
     /* Set once, when the run's shots are added to the mould — so a correction cannot add them twice. */
     shotsCounted: { type: Number, min: 0 },
+    /* Set once each, so a run's pieces reach the SO line, and its resin leaves the store, only once. */
+    producedAdded: { type: Number, min: 0 },
+    productionNote: { type: String, trim: true, maxlength: 300 },
+    resinIssued: { type: Number, min: 0 },
     startedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     endedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

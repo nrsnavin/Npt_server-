@@ -66,7 +66,7 @@ export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) =>
   const enquiry = await enquiryFor(req);
   const task = await sendHandoff({
     enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, brief: req.body.brief,
-    priority: req.body.priority, requiredDate: req.body.requiredDate || undefined, addToOpen: req.body.addToOpen === true, user: req.user,
+    priority: req.body.priority, requiredDate: req.body.requiredDate || undefined, addToOpen: req.body.addToOpen === true, order: req.body.order, user: req.user,
   });
   res.status(201).json({
     success: true,

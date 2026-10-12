@@ -1,4 +1,8 @@
 import Customer from '../models/Customer.js';
+import QcRecord from '../models/QcRecord.js';
+import Trip from '../models/Trip.js';
+import MouldRun from '../models/MouldRun.js';
+import Machine from '../models/Machine.js';
 import Enquiry from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
 import SalesOrder from '../models/SalesOrder.js';
@@ -183,12 +187,70 @@ export const globalSearch = asyncHandler(async (req, res) => {
       scope: () => ({}),
       select: 'mouldCode name category sizeMm material status',
       sort: 'mouldCode',
-      link: () => '/moulds',
+      /* To the mould itself — its shot life, runs, maintenance and QC — not the list it is on. */
+      link: (row) => `/moulds/${row._id}`,
       title: (row) => `${row.mouldCode} — ${row.name}`,
       subtitle: (row) =>
         [readable(row.category), readable(row.material), row.sizeMm && `${row.sizeMm}mm`]
           .filter(Boolean)
           .join(' · '),
+    },
+    /* The plant's records: a QC sheet by its number, model or resin batch; a trip; a run; a press. */
+    {
+      key: 'qc',
+      label: 'QC records',
+      module: 'quality',
+      model: QcRecord,
+      fields: ['number', 'modelNumber', 'resin.batch'],
+      related: true,
+      scope: () => ({}),
+      select: 'number stage verdict modelNumber inspectedAt customer',
+      populate: { path: 'customer', select: 'name' },
+      sort: '-inspectedAt',
+      link: (row) => `/qc-records/${row._id}`,
+      title: (row) => row.number,
+      subtitle: (row) => [row.customer?.name, row.modelNumber, readable(row.verdict)].filter(Boolean).join(' · '),
+    },
+    {
+      key: 'trips',
+      label: 'Trips',
+      module: 'dispatch',
+      model: Trip,
+      fields: ['number', 'driverName'],
+      scope: () => ({}),
+      select: 'number date status driverName',
+      sort: '-date',
+      link: (row) => `/dispatch/trips/${row._id}`,
+      title: (row) => row.number,
+      subtitle: (row) => [row.date, readable(row.status), row.driverName].filter(Boolean).join(' · '),
+    },
+    {
+      key: 'runs',
+      label: 'Mould runs',
+      module: 'production',
+      model: MouldRun,
+      fields: ['number', 'modelNumber', 'resin.batch'],
+      related: true,
+      scope: () => ({}),
+      select: 'number status modelNumber startedAt customer',
+      populate: { path: 'customer', select: 'name' },
+      sort: '-startedAt',
+      link: () => '/mould-runs',
+      title: (row) => row.number,
+      subtitle: (row) => [row.customer?.name || 'Stock', row.modelNumber, readable(row.status)].filter(Boolean).join(' · '),
+    },
+    {
+      key: 'machines',
+      label: 'Machines',
+      module: 'production',
+      model: Machine,
+      fields: ['code', 'name', 'make'],
+      scope: () => ({}),
+      select: 'code name tonnage status',
+      sort: 'code',
+      link: (row) => `/machines/${row._id}`,
+      title: (row) => `${row.code}${row.name ? ` — ${row.name}` : ''}`,
+      subtitle: (row) => [row.tonnage && `${row.tonnage}T`, readable(row.status)].filter(Boolean).join(' · '),
     },
   ];
 

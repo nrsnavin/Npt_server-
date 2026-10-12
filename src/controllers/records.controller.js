@@ -1,7 +1,10 @@
 import mongoose from 'mongoose';
 import QcRecord from '../models/QcRecord.js';
 import SalesOrder from '../models/SalesOrder.js';
-import { ownsRecord } from '../services/ownership.service.js';
+import { ownsCustomer, ownsRecord } from '../services/ownership.service.js';
+import { isManagement } from '../utils/departments.js';
+import Customer from '../models/Customer.js';
+import { askForLocation } from '../services/customerLocation.service.js';
 import { canRead } from '../services/access.service.js';
 import { mayHandOff } from '../services/handoff.service.js';
 import Enquiry from '../models/Enquiry.js';
@@ -11,12 +14,13 @@ import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { transactional } from '../utils/transaction.js';
+import { withOrderLock } from '../services/operationLock.service.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { sendCsv } from '../utils/csv.js';
 import { accessLevel } from '../services/access.service.js';
 import { levelSatisfies } from '../config/modules.js';
 import {
-  REGISTER_COLUMNS, approveQcRecord, createQcRecord, dispatchDetailsForOrder, dispatchRegister, enquiryRecords, finishRun, qcForOrder, qcPrefill, listQcRecords, listRuns, maintenanceHistory,
+  REGISTER_COLUMNS, qcReport, moveStock, setupChecklist, stockBook, approveQcRecord, createQcRecord, dispatchDetailsForOrder, dispatchRegister, enquiryRecords, finishRun, qcForOrder, qcPrefill, listQcRecords, listRuns, maintenanceHistory,
   mouldHistory, populateQc, populateRun, recordMaintenance, renderQcCertificate, startRun,
 } from '../services/records.service.js';
 
@@ -89,10 +93,12 @@ export const startRunHandler = asyncHandler(transactional(async (req, res) => {
   const run = await startRun(req.body, req.user);
   res.status(201).json({ success: true, data: await populateRun(MouldRun.findById(run._id)) });
 }));
-export const finishRunHandler = asyncHandler(transactional(async (req, res) => {
+/* Under the SO's lock when the run makes an SO line: its pieces join the line's count with nobody else writing it. */
+const runOrder = async (req) => (mongoose.isValidObjectId(req.params.id) ? (await MouldRun.findById(req.params.id).select('order').lean())?.order : null) || `run:${req.params.id}`;
+export const finishRunHandler = asyncHandler(withOrderLock(runOrder, transactional(async (req, res) => {
   const run = await finishRun(await byId(MouldRun, req.params.id, 'Run'), req.body, req.user);
   res.json({ success: true, data: await populateRun(MouldRun.findById(run._id)) });
-}));
+})));
 export const mouldHistoryHandler = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) throw ApiError.notFound('Mould not found');
   const history = await mouldHistory(req.params.id);
@@ -143,4 +149,36 @@ export const enquiryRecordsHandler = asyncHandler(async (req, res) => {
   const mayRead = canRead(req.user, 'enquiries') ? ownsRecord(req.user, enquiry) : await mayHandOff(req.user, enquiry);
   if (!mayRead) throw ApiError.notFound('Enquiry not found');
   res.json({ success: true, data: await enquiryRecords(enquiry, { withQc: levelSatisfies(accessLevel(req.user, 'quality'), 'read') }) });
+});
+
+/** Where the rejects come from — the last 30 days unless a span is picked, at most a year. */
+export const qcReportHandler = asyncHandler(async (req, res) => {
+  const from = DAY.test(req.query.from || '') ? req.query.from : indiaToday(-29);
+  const to = DAY.test(req.query.to || '') ? req.query.to : indiaToday();
+  if ((new Date(to) - new Date(from)) / 86400000 > 366) throw ApiError.badRequest('Pick at most a year at a time');
+  res.json({ success: true, data: await qcReport({ from, to }) });
+});
+
+export const stockBookHandler = asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw ApiError.notFound('Material not found');
+  res.json({ success: true, data: await stockBook(req.params.id, req.query) });
+});
+export const moveStockHandler = asyncHandler(transactional(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw ApiError.notFound('Material not found');
+  const { material, movement } = await moveStock(req.params.id, req.body, req.user);
+  res.status(201).json({ success: true, data: { material, movement } });
+}));
+
+/** Ask the buyer on WhatsApp for their delivery location — the next one they share is pinned. */
+export const askLocationHandler = asyncHandler(async (req, res) => {
+  const customer = mongoose.isValidObjectId(req.params.id) ? await Customer.findById(req.params.id).select('name mobile whatsapp notifications assignedTo sharedWith') : null;
+  if (!customer || !ownsCustomer(req.user, customer)) throw ApiError.notFound('Customer not found');
+  const message = await askForLocation(customer, req.user);
+  res.status(201).json({ success: true, data: { message: message._id, recipient: message.recipient, at: message.createdAt } });
+});
+
+/** What the plant still has to fill in before the newer screens do anything — Admin's checklist. */
+export const setupChecklistHandler = asyncHandler(async (req, res) => {
+  if (!isManagement(req.user)) throw ApiError.forbidden('Only Admin sees the setup checklist');
+  res.json({ success: true, data: await setupChecklist() });
 });

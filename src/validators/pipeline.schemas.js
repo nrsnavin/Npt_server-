@@ -1,4 +1,5 @@
 import { DOCUMENT_TYPES } from '../services/enquiryDocuments.service.js';
+import { qcStandardsInput } from './qcStandards.zod.js';
 import { MARKETING_STATUS_KEYS } from '../config/marketingStatuses.js';
 import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS } from '../models/Mould.js';
@@ -143,6 +144,8 @@ export const customerSchema = z.object({
    */
   assignedTo: objectId,
   creditTermsDays: z.number().nonnegative().optional(),
+  /* The buyer's own test standards, where they ask for more than the model's [QC records]. */
+  qcStandards: qcStandardsInput,
   paymentTerms: z.string().optional(),
   rating: z.enum(RATINGS).optional(),
   source: z.enum(CUSTOMER_SOURCES).optional(),
