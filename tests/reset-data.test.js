@@ -229,3 +229,58 @@ test('--keep-users keeps every login and clears everything else', async () => {
   assert.deepEqual(users.map((user) => user.email), ['nandhini@np.com', 'rsnavin1@gmail.com'], 'every account stays');
   assert.equal(users.find((user) => user.email === 'nandhini@np.com').role, 'member', 'nobody is promoted');
 });
+
+test('a fresh start: two accounts, the customers and the masters stay — everything else goes', async () => {
+  const names = Object.keys(mongoose.models).sort();
+  const others = names.filter((name) => name !== 'User');
+  await makeUsers();
+  const User = mongoose.models.User;
+  await User.create({ name: 'Info', email: 'info@navinplastic.com', password: 'Passw0rd@123', department: 'marketing' });
+  const nandhini = await User.findOne({ email: 'nandhini@np.com' });
+  await seedEverything(others);
+  const db = mongoose.connection;
+  const coll = (name) => db.collection(mongoose.models[name].collection.collectionName);
+  /* A customer owned by somebody who goes, with a follow-up and a business total; a mould photo; the customer numbering. */
+  await coll('Customer').insertOne({ code: 'CUST-2026-0007', name: 'Sri Velan Garments', assignedTo: nandhini._id, followUp: { due: new Date(), note: 'Call' }, totalBusinessValue: 125000, credit: { status: 'hold' } });
+  await coll('Attachment').insertOne({ _probe: 'mould photo', mould: new mongoose.Types.ObjectId(), key: 'moulds/m-101.jpg' });
+  await coll('Counter').insertOne({ key: 'CUST-2026', seq: 7 });
+  await coll('Counter').insertOne({ key: 'ENQ-2026', seq: 41 });
+
+  const output = reset(['--keep=rsnavin1@gmail.com,info@navinplastic.com', '--keep-customers', '--keep-masters', '--confirm']);
+  assert.match(output, /now holds 2 users, the customers and the masters, and nothing else/);
+
+  const after = await countsByModel(others);
+  const MASTERS = ['Mould', 'Material', 'Component', 'TradedItem', 'Machine', 'DeliveryRoute', 'Transporter', 'Vehicle'];
+  for (const name of [...MASTERS, 'Customer']) assert.ok(after[name] >= 1, `${name} should have been kept`);
+  const gone = others.filter((name) => ![...MASTERS, 'Customer', 'Attachment', 'Counter'].includes(name) && after[name] > 0);
+  assert.deepEqual(gone, [], `these are working data and should have gone:\n  ${gone.join('\n  ')}`);
+
+  assert.deepEqual((await coll('Attachment').find().toArray()).map((row) => row._probe), ['mould photo'], 'only the master photos stay');
+  assert.deepEqual((await coll('Counter').find().toArray()).map((row) => row.key), ['CUST-2026'], 'the customer numbering carries on; the rest restarts');
+
+  const users = await User.find().select('email role').sort('email').lean();
+  assert.deepEqual(users.map((user) => user.email), ['info@navinplastic.com', 'rsnavin1@gmail.com']);
+  assert.equal(users.find((user) => user.email === 'info@navinplastic.com').role, 'member', 'already an admin among them — nobody promoted');
+
+  const velan = await coll('Customer').findOne({ code: 'CUST-2026-0007' });
+  const navin = await User.findOne({ email: 'rsnavin1@gmail.com' });
+  assert.equal(String(velan.assignedTo), String(navin._id), 'handed to the first account kept');
+  assert.equal(velan.followUp, undefined);
+  assert.equal(velan.totalBusinessValue, 0);
+  assert.equal(velan.credit.status, 'good');
+});
+
+test('a fresh start with a kept account that does not exist deletes nothing', async () => {
+  await makeUsers();
+  let failed = false;
+  let output = '';
+  try {
+    reset(['--keep=rsnavin1@gmail.com,info@navinplastic.co', '--keep-customers', '--keep-masters', '--confirm']);
+  } catch (error) {
+    failed = true;
+    output = `${error.stdout || ''}${error.stderr || ''}`;
+  }
+  assert.ok(failed);
+  assert.match(output, /No account with the email info@navinplastic\.co /);
+  assert.equal(await mongoose.models.User.countDocuments(), 2);
+});

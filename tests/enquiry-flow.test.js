@@ -73,6 +73,9 @@ test.after(async () => {
   await mongo?.stop();
 });
 
+const inOpenList = async () =>
+  (await api('/api/enquiries?open=true&limit=100', { as: 'nandhini' })).json.data.some((row) => String(row._id) === String(enquiry._id));
+
 test('the sales order uploaded: the enquiry reads Production, and Production has its task', async () => {
   const raised = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'PO 4471 received', brief: { models: 'NPT-400S', quantity: 10000 } } });
   assert.equal(raised.status, 201, raised.json.message);
@@ -84,7 +87,14 @@ test('the sales order uploaded: the enquiry reads Production, and Production has
   const after = await state();
   assert.equal(after.stage, 'production_edd');
   assert.equal(after.marketingStatus, 'production');
+  assert.equal(after.status, 'won', 'the order is booked — the sales stage reads Won, not PO expected');
   assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'ask_edd', completed: false }), 1, 'Production’s task is raised');
+});
+
+test('a payment follow-up raised during production does not take over the stage', async () => {
+  const followUp = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'my_payment_followup', note: 'Advance pending', brief: {} } });
+  assert.equal(followUp.status, 201, followUp.json.message);
+  assert.equal((await state()).stage, 'production_edd', 'still at Production');
 });
 
 test('Production finished with it: the enquiry reads Dispatch', async () => {
@@ -95,6 +105,7 @@ test('Production finished with it: the enquiry reads Dispatch', async () => {
   const after = await state();
   assert.equal(after.stage, 'invoice_dispatch');
   assert.equal(after.marketingStatus, 'dispatch');
+  assert.ok(await inOpenList(), 'a won order in the plant is still on the Open list');
 });
 
 test('the LR uploaded: the enquiry reads LR Sent and is closed; the LR task stays open to say delivered', async () => {
@@ -117,4 +128,45 @@ test('the LR uploaded: the enquiry reads LR Sent and is closed; the LR task stay
 
   const again = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'quality_check', note: 'Check it', brief: {} } });
   assert.equal(again.status, 400, 'nothing more is sent on a closed enquiry');
+  assert.equal(await inOpenList(), false, 'closed by its LR, it leaves the Open list');
+});
+
+test('marketing status chosen by hand moves the stage and the sales stage with it', async () => {
+  const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
+  const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'Kanchi Textiles', mobile: '9840099002', assignedTo: me } })).json.data;
+  const fresh = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customer._id, requirement: { modelNumber: 'NPT-380' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const set = await api(`/api/enquiries/${fresh._id}/marketing-status`, { method: 'POST', as: 'nandhini', body: { status: 'dispatch' } });
+  assert.equal(set.status, 200, set.json.message);
+  const row = await Enquiry.findById(fresh._id).select('stage status marketingStatus').lean();
+  assert.deepEqual([row.marketingStatus, row.stage, row.status], ['dispatch', 'invoice_dispatch', 'won']);
+
+  /* The desks that list enquiries at A/C Clarify find one by its open task, whatever its stage. */
+  const ac = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ac_clarify', note: 'Check the advance', brief: {} } });
+  assert.equal(ac.status, 201, ac.json.message);
+  assert.equal((await Enquiry.findById(fresh._id).select('stage').lean()).stage, 'invoice_dispatch');
+  const listed = await api('/api/enquiries?stage=ac_clarify', { as: 'admin' });
+  assert.ok(listed.json.data.some((entry) => String(entry._id) === String(fresh._id)), 'listed at A/C Clarify by its task');
+});
+
+test('the realign script brings old enquiries into line, once', async () => {
+  const { planRealign, applyRealign } = await import('../src/services/enquiryAlign.service.js');
+  const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
+  const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'Old Buyer', mobile: '9840099003', assignedTo: me } })).json.data;
+  const old = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customer._id, requirement: { modelNumber: 'NPT-300' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  /* As the live ones were: LR Copy by marketing's word, still at Pricing / Quote and PO expected. */
+  await Enquiry.updateOne({ _id: old._id }, { $set: { marketingStatus: 'lr_copy', stage: 'pricing_quote', status: 'po_expected' } });
+  const plan = await planRealign();
+  const mine = plan.find((change) => String(change.id) === String(old._id));
+  assert.deepEqual([mine.stage, mine.status], [['pricing_quote', 'lr_copy'], ['po_expected', 'won']]);
+  await applyRealign(plan);
+  const row = await Enquiry.findById(old._id).select('stage status statusHistory').lean();
+  assert.deepEqual([row.stage, row.status], ['lr_copy', 'won']);
+  assert.equal(row.statusHistory.at(-1).note, 'Realigned with the marketing status');
+  assert.equal((await planRealign()).length, 0, 'a second run finds nothing');
 });

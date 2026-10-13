@@ -44,6 +44,8 @@
     "import:materials": "node scripts/import-materials.js",
     "import:aux": "node scripts/import-aux.js",
     "import:customers": "node scripts/import-customers.js",
+    "realign-enquiries": "node scripts/realign-enquiries.js",
+    "reset:fresh-start": "node scripts/reset-data.js --keep=rsnavin1@gmail.com,info@navinplastic.com --keep-customers --keep-masters",
     "workflow-load-test": "node tests/load/workflow-load.mjs"
   },
   "dependencies": {

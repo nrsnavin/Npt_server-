@@ -362,6 +362,7 @@ test('a task passed to another department goes with its own queue, and tells tha
 });
 
 test('my payment follow-up goes on the To-do of whoever raises it', async () => {
+  const before = (await Enquiry.findById(enquiryId)).stage;
   const own = await send('my_payment_followup', 'Call their accounts on Monday', nandhini);
   assert.equal(own.json.data.task.user?._id, await me(nandhini), 'the marketing person’s own');
   assert.equal(own.json.data.task.department, 'marketing');
@@ -372,7 +373,8 @@ test('my payment follow-up goes on the To-do of whoever raises it', async () => 
   assert.equal(json.data.task.department, 'management');
   const mine = (await api('/api/workspace/todos?scope=mine&status=open', { token: admin })).json.data;
   assert.ok(mine.some((task) => task._id === json.data.task._id), 'on Admin’s own tasks');
-  assert.equal((await Enquiry.findById(enquiryId)).stage, 'my_payment_followup');
+  /* Side work: the order is still where it was in the plant, and the follow-up is found by its task. */
+  assert.equal((await Enquiry.findById(enquiryId)).stage, before, 'a payment follow-up does not move the order');
 });
 
 test('the enquiry lists everything, who has it now, and whether you may move it', async () => {
@@ -383,7 +385,8 @@ test('the enquiry lists everything, who has it now, and whether you may move it'
     assert.ok(kinds.has(kind), `${kind} is listed`);
   }
   assert.equal(json.data.at(-1).kind, 'new_enquiry', 'where it started');
-  assert.equal(json.stage, 'my_payment_followup');
+  assert.equal(json.stage, (await Enquiry.findById(enquiryId)).stage);
+  assert.notEqual(json.stage, 'my_payment_followup', 'side work never takes the stage over');
   assert.equal(json.holder.kind, 'new_enquiry', 'the marketing person has had it all along');
   assert.equal(json.mayMove, true, 'the marketing person may raise tasks from the tiles');
 

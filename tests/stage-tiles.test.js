@@ -95,7 +95,8 @@ test('clicking a department raises its task; the enquiry stays with its marketin
     });
     assert.equal(sent.status, 201, JSON.stringify(sent.json));
     assert.equal(sent.json.data.task.department, tile(key).department, `${key}: a task for its department`);
-    assert.equal(sent.json.data.stage, key, 'the stage says where the work is');
+    /* Audit is side work: once past the sales stages it leaves the stage where the order is. */
+    assert.equal(sent.json.data.stage, key === 'audit' ? 'mould' : key, 'the stage says where the work is');
     const now = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { token: admin })).json;
     assert.equal(now.holder?.department, 'marketing', `${key}: the enquiry is still marketing’s`);
   }
