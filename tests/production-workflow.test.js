@@ -400,6 +400,23 @@ test('uploading the LR (a photo will do) sends it to the buyer by email and What
 
   const labels = (await noticesOf('nandhini')).slice(0, 2).map((notice) => notice.statusLabel);
   assert.deepEqual(labels, ['LR Copy Sent to Customer', 'LR Copy Received'], 'marketing sees both moves');
+
+  /* The LR uploaded is the end of the enquiry: it reads LR Sent and is closed [config/handoffs.js whenResult]. */
+  const { default: Enquiry } = await import('../src/models/Enquiry.js');
+  const closed = await Enquiry.findById(enquiry._id).select('stage marketingStatus heldBy').lean();
+  assert.deepEqual([closed.stage, closed.marketingStatus, closed.heldBy], ['closed', 'lr_sent', undefined]);
+  assert.equal((await Todo.findById(lrTask._id)).completed, false, 'the LR task stays open to say delivered');
+});
+
+test('the enquiry closed by its LR takes nothing more; the rest of the plant’s work goes on a fresh one', async () => {
+  const refused = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'quality_check', note: 'Check it', brief: {} } });
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.message, /closed/);
+  enquiry = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: enquiry.customer?._id || enquiry.customer, requirement: { modelNumber: 'UTJRSH-1' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  assert.ok(enquiry?._id, 'a fresh enquiry for what follows');
 });
 
 test('the LR behind its signed link opens without a session, and a forged link does not', async () => {

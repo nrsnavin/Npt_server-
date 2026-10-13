@@ -52,12 +52,16 @@ const BUTTONS = [
   },
   {
     key: 'po_so', label: 'PO & SO', department: 'order_confirmation', stage: 'po_so',
+    /* The SO uploaded: the enquiry reads Production, whether or not Production's task could be raised yet. */
+    whenDone: { stage: 'production_edd', marketing: 'production' },
     hint: 'The buyer’s PO is in — raise and send the sales order',
     records: [{ key: 'poNumber', label: 'Customer PO number' }, { key: 'soNumber', label: 'Sales order number' }],
     opens: 'orders',
   },
   {
     key: 'ask_edd', label: 'Ask EDD', department: 'production', stage: 'production_edd',
+    /* Production finished with it: the enquiry reads Dispatch. */
+    whenDone: { stage: 'invoice_dispatch', marketing: 'dispatch' },
     hint: 'When will production finish?',
     records: [{ key: 'edd', label: 'Expected date', type: 'date' }, { key: 'pending', label: 'Pending quantity' }],
   },
@@ -106,6 +110,8 @@ const BUTTONS = [
   {
     /* Reception's: the LR copy and the dispatch details once the goods have gone. */
     key: 'lr_copy', label: 'LR Copy', department: 'reception', stage: 'lr_copy',
+    /* The LR uploaded: the enquiry reads LR Sent and is closed — the LR task stays open to say delivered. */
+    whenResult: { marketing: 'lr_sent', close: true },
     hint: 'Upload the LR copy, send it to the buyer and track the delivery',
     records: [{ key: 'lrNumber', label: 'LR / docket number' }],
   },

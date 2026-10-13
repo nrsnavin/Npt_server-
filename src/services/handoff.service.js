@@ -132,7 +132,7 @@ async function backToSender(task, { title, notes, user }) {
  * collide with, or make stale, the copy a marketing person has open. The document in hand is
  * brought up to date too, for whoever replies with it.
  */
-async function moveStage(enquiry, to, { user, task, note, heldBy }) {
+async function moveStage(enquiry, to, { user, task, note, heldBy, marketing: said }) {
   const set = {};
   const unset = {};
   if (heldBy === null) unset.heldBy = 1;
@@ -146,8 +146,12 @@ async function moveStage(enquiry, to, { user, task, note, heldBy }) {
   if (Object.keys(set).length) update.$set = set;
   if (Object.keys(unset).length) update.$unset = unset;
   if (entry) update.$push = { stageHistory: entry };
-  /* Marketing's words follow the task raised — Sample requested … Production, Mould, QC, LR Copy. */
-  const follows = task?.kind && followTask(task.kind, marketingStatusOf(enquiry));
+  /*
+   * Marketing's words follow the task raised — Sample requested … Production, Mould, QC, LR Copy
+   * — or are said outright by the rule that moved the enquiry [config/handoffs.js `whenDone`].
+   */
+  const current = marketingStatusOf(enquiry);
+  const follows = said ? (said !== current ? said : null) : task?.kind && followTask(task.kind, current);
   const marketing = follows
     ? { from: enquiry.marketingStatus || null, to: follows, at: new Date(), by: user?._id, note: task.title }
     : null;
@@ -717,8 +721,8 @@ async function returnToMarketing({ enquiry, note, fields, user, system }) {
 }
 
 /** Closing ends everything still open on the enquiry, the holding task included, and says so. */
-async function closeOpenTasks(enquiryId, why, user) {
-  const open = await Todo.find({ enquiry: enquiryId, kind: { $exists: true }, completed: false });
+async function closeOpenTasks(enquiryId, why, user, { except } = {}) {
+  const open = await Todo.find({ enquiry: enquiryId, kind: { $exists: true }, completed: false, ...(except ? { _id: { $ne: except } } : {}) });
   for (const task of open) {
     task.completed = true;
     task.completedAt = new Date();
@@ -732,7 +736,7 @@ async function closeOpenTasks(enquiryId, why, user) {
  * Closes an enquiry on nobody's behalf — paid in full with nothing left to send. Recorded as a
  * Task Closed like the button, by the system, with why.
  */
-export async function closeEnquiryAutomatically({ enquiry, note }) {
+export async function closeEnquiryAutomatically({ enquiry, note, marketing, except }) {
   if (enquiry.stage === CLOSED_STAGE) return null;
   const record = await Todo.create({
     enquiry: enquiry._id,
@@ -747,9 +751,25 @@ export async function closeEnquiryAutomatically({ enquiry, note }) {
     outcome: { result: 'done', note, at: new Date() },
     link: `/enquiries/${enquiry._id}`,
   });
-  await closeOpenTasks(enquiry._id, note);
-  await moveStage(enquiry, CLOSED_STAGE, { task: record, note, heldBy: null });
+  await closeOpenTasks(enquiry._id, note, undefined, { except });
+  await moveStage(enquiry, CLOSED_STAGE, { task: record, note, heldBy: null, marketing });
   return record;
+}
+
+/**
+ * Where a task's own rule moves the enquiry [config/handoffs.js `whenDone`, `whenResult`]: the
+ * SO uploaded reads Production, Production finished reads Dispatch, the LR uploaded reads LR
+ * Sent and closes the enquiry. A closed enquiry is left closed.
+ */
+async function reachEnquiry(task, user, reach, note) {
+  if (!reach || !task.enquiry) return;
+  const enquiry = await enquiryOfTask(task);
+  if (!enquiry || enquiry.stage === CLOSED_STAGE) return;
+  if (reach.close) {
+    await closeEnquiryAutomatically({ enquiry, note: note || task.title, marketing: reach.marketing, except: task._id });
+    return;
+  }
+  await moveStage(enquiry, reach.stage || null, { user, task, note: note || task.title, marketing: reach.marketing });
 }
 
 /**
@@ -875,6 +895,8 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
   };
   await task.save();
 
+  /* The enquiry moves where this task's finishing says it does — before anybody is told. */
+  await reachEnquiry(task, user, handoff?.whenDone, text);
   if (closesNow && handoff?.form?.notifyStatus) await noticeStatus(task, user, { step: closing, note: text });
   const details = (handoff?.records || []).filter((field) => kept[field.key]).map((field) => `${field.label}: ${kept[field.key]}`);
   /* A clarification's answer goes back onto the task that asked; anything else, to its sender. */
@@ -1380,6 +1402,8 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
       nextProblem = error.message;
     }
   }
+  /* The work uploaded is itself a move for the enquiry — the LR reads LR Sent and closes it. */
+  await reachEnquiry(task, user, findHandoff(task.kind)?.whenResult, String(note || '').trim() || `${step.label} — uploaded`);
   return { task: done, next, nextProblem };
 }
 
