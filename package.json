@@ -43,6 +43,7 @@
     "register-team": "node scripts/register-team.js",
     "import:materials": "node scripts/import-materials.js",
     "import:aux": "node scripts/import-aux.js",
+    "import:customers": "node scripts/import-customers.js",
     "workflow-load-test": "node tests/load/workflow-load.mjs"
   },
   "dependencies": {
