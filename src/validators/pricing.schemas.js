@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MATERIALS, cutGrams } from '../models/Mould.js';
+import { HANGER_CATEGORIES, MATERIALS, cutGrams } from '../models/Mould.js';
 import { FREIGHT_TERMS } from '../models/Quotation.js';
 import { objectId } from './schemas.js';
 
@@ -106,6 +106,9 @@ export const quotationCostSchema = z
     clipRef: objectId.nullable().optional(),
     printRef: objectId.nullable().optional(),
     tradedItem: objectId.nullable().optional(),
+    /* The product details confirmed on the sheet; null or '' clears one. */
+    category: z.enum(HANGER_CATEGORIES).nullable().optional(),
+    packing: z.string().max(200).optional(),
     remarks: z.string().optional(),
   })
   .extend(versioned);
