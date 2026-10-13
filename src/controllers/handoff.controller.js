@@ -153,6 +153,8 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     stageHistory: enquiry.stageHistory,
     holder,
     mayMove: enquiry.stage !== CLOSED_STAGE && (await mayMove(req.user, enquiry, holder)),
+    /* An LR has been uploaded: the screen offers to close the enquiry [web: CloseAfterLr]. */
+    lrUploaded: tasks.some((task) => task.kind === 'lr_copy' && task.resultFile),
     /* When the goods will be ready — Production's EDD and the order lines' own dates. */
     production: await productionDates(enquiry._id),
   });

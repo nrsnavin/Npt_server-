@@ -216,6 +216,14 @@ export async function createSampleRequest(
   { autoCreated = false } = {}
 ) {
   if (enquiry) {
+    /*
+     * Two requests on one enquiry in the same instant both looked, both found none and both
+     * raised a sample. Writing the enquiry first makes them collide on one record: inside a
+     * transaction the second is retried and then finds the first's sample; outside one, the
+     * write is harmless.
+     */
+    const { default: Enquiry } = await import('../models/Enquiry.js');
+    await Enquiry.updateOne({ _id: enquiry._id }, { $set: { sampleAskedAt: new Date() } }, { timestamps: false });
     const existing = await openSampleFor(enquiry._id);
     if (existing) return { sample: existing, created: false };
   }

@@ -737,9 +737,16 @@ async function returnToMarketing({ enquiry, note, fields, user, system }) {
   return task;
 }
 
-/** Closing ends everything still open on the enquiry, the holding task included, and says so. */
+/**
+ * Closing ends everything still open on the enquiry, the holding task included, and says so —
+ * except an LR task whose copy is in: Reception still says In Transit and Delivered on it.
+ */
 async function closeOpenTasks(enquiryId, why, user, { except } = {}) {
-  const open = await Todo.find({ enquiry: enquiryId, kind: { $exists: true }, completed: false, ...(except ? { _id: { $ne: except } } : {}) });
+  const open = await Todo.find({
+    enquiry: enquiryId, kind: { $exists: true }, completed: false,
+    $nor: [{ kind: 'lr_copy', resultFile: { $exists: true } }],
+    ...(except ? { _id: { $ne: except } } : {}),
+  });
   for (const task of open) {
     task.completed = true;
     task.completedAt = new Date();
@@ -776,7 +783,8 @@ export async function closeEnquiryAutomatically({ enquiry, note, marketing, exce
 /**
  * Where a task's own rule moves the enquiry [config/handoffs.js `whenDone`, `whenResult`]: the
  * SO uploaded reads Production, Production finished reads Dispatch, the LR uploaded reads LR
- * Sent and closes the enquiry. A closed enquiry is left closed.
+ * Sent — and is closed by a person, with the Close the enquiry screen offers once an LR is in.
+ * A closed enquiry is left closed.
  */
 async function reachEnquiry(task, user, reach, note) {
   if (!reach || !task.enquiry) return;

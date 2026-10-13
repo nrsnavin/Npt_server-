@@ -1,8 +1,8 @@
 /**
  * The enquiry's status follows the plant's work on its own [config/handoffs.js `whenDone`,
  * `whenResult`; services/handoff.service.js `reachEnquiry`]: the sales order uploaded reads
- * Production; Production finished reads Dispatch; the LR uploaded reads LR Sent and closes the
- * enquiry — with the LR task left open to say delivered.
+ * Production; Production finished reads Dispatch; the LR uploaded reads LR Sent, and the enquiry
+ * is closed by a person with the Close the screen then offers — the LR task left open to say delivered.
  *
  *   node --test tests/enquiry-flow.test.js
  */
@@ -108,27 +108,42 @@ test('Production finished with it: the enquiry reads Dispatch', async () => {
   assert.ok(await inOpenList(), 'a won order in the plant is still on the Open list');
 });
 
-test('the LR uploaded: the enquiry reads LR Sent and is closed; the LR task stays open to say delivered', async () => {
+test('the LR uploaded: the enquiry reads LR Sent and stays open, with Close offered', async () => {
   const dispatch = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Send all 10,000', brief: { model: 'NPT-400S', quantity: 10000 } } });
   assert.equal(dispatch.status, 201, dispatch.json.message);
   const lr = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'lr_copy', note: 'Send the LR to the buyer', brief: { invoiceNumber: 'INV-2026-0412' } } });
   assert.equal(lr.status, 201, lr.json.message);
   assert.equal((await state()).marketingStatus, 'lr_copy');
+  assert.equal((await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json.lrUploaded, false, 'no Close before an LR is in');
 
   const sent = await upload('rekha', lr.json.data.task._id, { bytes: PNG, type: 'image/png', name: 'LR-55021.png', note: 'LR 55021 · VRL' });
   assert.equal(sent.status, 200, sent.json.message);
   const after = await state();
+  assert.equal(after.marketingStatus, 'lr_sent');
+  assert.equal(after.stage, 'lr_copy', 'not closed on its own — another lorry may still go');
+  assert.equal((await Todo.findById(dispatch.json.data.task._id)).completed, false, 'the dispatch task is still open');
+  assert.ok(await inOpenList(), 'still on the Open list until somebody closes it');
+  const listed = await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' });
+  assert.equal(listed.json.lrUploaded, true, 'the screen offers Close');
+  assert.equal(listed.json.mayMove, true);
+});
+
+test('Close after the LR: everything but the LR task ends, and the enquiry takes nothing more', async () => {
+  const lr = await Todo.findOne({ enquiry: enquiry._id, kind: 'lr_copy' });
+  const closed = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'task_closed', note: 'LR sent to the buyer — order complete' } });
+  assert.ok([200, 201].includes(closed.status), closed.json.message);
+  const after = await state();
   assert.equal(after.stage, 'closed');
   assert.equal(after.marketingStatus, 'lr_sent');
   assert.equal(after.heldBy, undefined, 'nobody holds a closed enquiry');
-  assert.equal((await Todo.findById(dispatch.json.data.task._id)).completed, true, 'the dispatch task is closed with the enquiry');
-  const lrTask = await Todo.findById(lr.json.data.task._id);
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false }), 0, 'the dispatch task is closed with the enquiry');
+  const lrTask = await Todo.findById(lr._id);
   assert.equal(lrTask.completed, false, 'Reception can still say In Transit and Delivered');
   assert.ok(['received', 'sent'].includes(lrTask.status), lrTask.status);
 
   const again = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'quality_check', note: 'Check it', brief: {} } });
   assert.equal(again.status, 400, 'nothing more is sent on a closed enquiry');
-  assert.equal(await inOpenList(), false, 'closed by its LR, it leaves the Open list');
+  assert.equal(await inOpenList(), false, 'closed, it leaves the Open list');
 });
 
 test('marketing status chosen by hand moves the stage and the sales stage with it', async () => {
