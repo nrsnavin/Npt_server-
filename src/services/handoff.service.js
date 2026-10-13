@@ -2026,6 +2026,18 @@ const LIST_POPULATE = [
   { path: 'enquiry', select: 'number stage requirement.modelNumber requirement.colour' },
 ];
 
+/*
+ * The dashboards read tasks as plain objects — a desk of a few hundred tasks, each with nine
+ * records joined in, spent most of its time building full documents nobody saves. The fields the
+ * model works out are added back, so the reply reads exactly as it did.
+ */
+const plainTask = (row) => Object.assign(row, {
+  id: String(row._id),
+  isEscalated: Boolean(row.escalation?.at) && !row.completed,
+  unclaimed: !row.user,
+});
+const plainTasks = (rows) => rows.map(plainTask);
+
 /**
  * One department's dashboard: its figures, the work on its queue (late first, then by due
  * time), what it finished lately, and — the marketing question, asked by every department —
@@ -2036,17 +2048,17 @@ export async function departmentDashboard(department, { now = new Date() } = {})
   const { openFilter, ...numbers } = figures;
   const week = new Date(now.getTime() - 7 * DAY_MS);
 
-  const [queue, recentlyDone, waitingOnOthers, cameBack] = await Promise.all([
-    Todo.find(openFilter).sort({ dueDate: 1, createdAt: 1 }).limit(100).populate(LIST_POPULATE),
+  const [queue, recentlyDone, waitingOnOthers, cameBack] = (await Promise.all([
+    Todo.find(openFilter).sort({ dueDate: 1, createdAt: 1 }).limit(100).populate(LIST_POPULATE).lean(),
     Todo.find({ kind: { $exists: true }, department, completed: true, completedAt: { $gte: week } })
-      .sort({ completedAt: -1 }).limit(20).populate(LIST_POPULATE),
+      .sort({ completedAt: -1 }).limit(20).populate(LIST_POPULATE).lean(),
     Todo.find({ kind: { $exists: true }, fromDepartment: department, department: { $ne: department }, completed: false })
-      .sort({ dueDate: 1 }).limit(50).populate(LIST_POPULATE),
+      .sort({ dueDate: 1 }).limit(50).populate(LIST_POPULATE).lean(),
     Todo.find({
       kind: { $exists: true }, fromDepartment: department, department: { $ne: department },
       completed: true, completedAt: { $gte: week },
-    }).sort({ completedAt: -1 }).limit(20).populate(LIST_POPULATE),
-  ]);
+    }).sort({ completedAt: -1 }).limit(20).populate(LIST_POPULATE).lean(),
+  ])).map(plainTasks);
 
   return { figures: numbers, queue, recentlyDone, waitingOnOthers, cameBack };
 }
@@ -2078,7 +2090,9 @@ export async function enquiriesHeldBy(department, user, { now = new Date(), limi
         select: 'number stage status customer assignedTo requirement.modelNumber requirement.colour items.modelNumber nextFollowUpDate nextAction targetPrice',
         populate: [{ path: 'customer', select: 'code name' }, { path: 'assignedTo', select: 'name' }],
       },
-    ]);
+    ])
+    .lean()
+    .then(plainTasks);
 
   const ids = tasks.map((task) => task.enquiry?._id).filter(Boolean);
   const [{ default: Sample }, { default: Quotation }, { default: SalesOrder }] = await Promise.all([
@@ -2109,7 +2123,7 @@ export async function enquiriesHeldBy(department, user, { now = new Date(), limi
     const pick = (row) => (row ? { _id: row._id, number: row.number, status: row.status } : null);
     return {
       task,
-      enquiry: { ...task.enquiry.toObject(), stageLabel: stageLabel(task.enquiry.stage) },
+      enquiry: { ...task.enquiry, id: String(task.enquiry._id), stageLabel: stageLabel(task.enquiry.stage) },
       since: task.createdAt,
       late: Boolean(task.dueDate && task.dueDate < now),
       dueToday: Boolean(task.dueDate && task.dueDate >= now && task.dueDate <= endOfDayIST(now)),

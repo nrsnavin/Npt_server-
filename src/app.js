@@ -95,6 +95,12 @@ app.use(morgan(accessLog));
 const credentialLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 50,
+  /*
+   * Only the wrong answers count. Counting every sign-in meant fifty colleagues behind the
+   * office's one address signing in at nine o'clock locked the fifty-first out for a quarter of
+   * an hour; fifty wrong guesses from one address is still where guessing stops.
+   */
+  skipSuccessfulRequests: true,
   store: new SharedRateStore('credentials'),
   standardHeaders: true,
   legacyHeaders: false,

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import bcrypt from 'bcryptjs';
+import { checkPassword, hashPassword } from '../utils/password.js';
 import { env, isProduction } from '../config/env.js';
 import ApiError from '../utils/ApiError.js';
 import OtpToken from '../models/OtpToken.js';
@@ -72,7 +72,7 @@ export async function issueOtp({ identifier, channel, purpose = 'login', user, r
     identifier,
     channel,
     purpose,
-    codeHash: await bcrypt.hash(code, 10),
+    codeHash: await hashPassword(code, 10),
     user: user?._id,
     expiresAt: new Date(Date.now() + env.otp.ttlMinutes * 60 * 1000),
     requestIp,
@@ -122,7 +122,7 @@ export async function verifyOtp({ identifier, code, purpose = 'login' }) {
     throw ApiError.badRequest('Too many incorrect attempts. Please request a new code.');
   }
 
-  if (!(await bcrypt.compare(String(code), token.codeHash))) {
+  if (!(await checkPassword(String(code), token.codeHash))) {
     token.attempts += 1;
     const remaining = env.otp.maxAttempts - token.attempts;
 

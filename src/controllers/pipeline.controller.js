@@ -1536,9 +1536,14 @@ export const logEnquiryActivity = asyncHandler(transactional(async (req, res) =>
     throw ApiError.badRequest('A call that has not happened yet is a follow-up date, not a log entry');
   }
 
+  /*
+   * A won order in the plant is still followed — the advance, the dispatch date — so it takes a
+   * next step until its LR closes it. A lost or closed enquiry does not.
+   */
   const settingNext = Boolean(nextAction || nextFollowUpDate);
-  if (settingNext && CLOSED_STATUSES.includes(enquiry.status)) {
-    throw ApiError.badRequest(`A ${enquiry.status} enquiry has to be reopened before it gets a next step`);
+  const finished = enquiry.status === 'lost' || enquiry.stage === CLOSED_STAGE;
+  if (settingNext && finished) {
+    throw ApiError.badRequest(`A ${enquiry.status === 'lost' ? 'lost' : 'closed'} enquiry has to be reopened before it gets a next step`);
   }
   assertFutureFollowUp(nextFollowUpDate);
 

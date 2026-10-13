@@ -220,3 +220,18 @@ test('a marketing status chosen on a lost enquiry leaves its stage where it was'
   const row = await rowOf(fresh._id);
   assert.deepEqual([row.stage, row.status], [before.stage, 'lost'], 'a lost enquiry is not sent to Invoice & Dispatch');
 });
+
+test('a won order still in the plant takes a call with a next step; a closed one does not', async () => {
+  const fresh = await freshEnquiry('NPT-440');
+  const set = await api(`/api/enquiries/${fresh._id}/marketing-status`, { method: 'POST', as: 'nandhini', body: { status: 'production' } });
+  assert.equal(set.status, 200, set.json.message);
+  assert.equal((await rowOf(fresh._id)).status, 'won');
+  const next = { type: 'call', note: 'Asked about the advance', nextAction: 'Collect the advance', nextFollowUpDate: new Date(Date.now() + 2 * 86400000).toISOString() };
+  const logged = await api(`/api/enquiries/${fresh._id}/activities`, { method: 'POST', as: 'nandhini', body: next });
+  assert.equal(logged.status, 201, logged.json.message);
+
+  await Enquiry.updateOne({ _id: fresh._id }, { $set: { stage: 'closed' } });
+  const refused = await api(`/api/enquiries/${fresh._id}/activities`, { method: 'POST', as: 'nandhini', body: next });
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.message, /closed enquiry has to be reopened/);
+});
