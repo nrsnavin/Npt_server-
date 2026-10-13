@@ -2,7 +2,7 @@
   "name": "npt-server",
   "version": "1.0.0",
   "private": true,
-  "description": "NPT CRM + ERP API — CRM, manufacturing, inventory and accounts for a hanger manufacturing business",
+  "description": "NPT CRM + ERP API \u2014 CRM, manufacturing, inventory and accounts for a hanger manufacturing business",
   "type": "module",
   "main": "src/server.js",
   "engines": {
@@ -46,7 +46,9 @@
     "import:customers": "node scripts/import-customers.js",
     "realign-enquiries": "node scripts/realign-enquiries.js",
     "reset:fresh-start": "node scripts/reset-data.js --keep=rsnavin1@gmail.com,info@navinplastic.com --keep-customers --keep-masters",
-    "workflow-load-test": "node tests/load/workflow-load.mjs"
+    "workflow-load-test": "node tests/load/workflow-load.mjs",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-include='src/**' tests/*.test.js",
+    "load-test:50": "node tests/load/workflow-load.mjs --users=50 --think=2000 --instances=2"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",
