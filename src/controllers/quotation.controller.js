@@ -202,6 +202,8 @@ export function linesForEnquiry(enquiry) {
     printRef: item.printRef,
     material: item.material,
     colour: item.colour,
+    category: item.category,
+    packing: item.packing,
   }));
 }
 
@@ -586,8 +588,12 @@ export const costLine = asyncHandler(transactional(async (req, res) => {
 
   const {
     cost, markupPercent, unitPrice, minimumOverride, printing, procurement, mould,
-    materialRef, hookRef, clipRef, printRef, remarks, tradedItem,
+    materialRef, hookRef, clipRef, printRef, remarks, tradedItem, category, packing,
   } = withoutVersion(req.body);
+
+  /* The product details confirmed on the sheet — what the enquiry did not ask for. */
+  if (category !== undefined) line.category = category || undefined;
+  if (packing !== undefined) line.packing = packing.trim() || undefined;
 
   if (sent && unitPrice !== undefined && unitPrice !== line.unitPrice) {
     throw ApiError.badRequest(`${quotation.number} has gone to the buyer — change the price through a revision`);

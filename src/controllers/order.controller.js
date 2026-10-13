@@ -526,7 +526,9 @@ export const orderFromQuotation = asyncHandler(transactional(async (req, res) =>
           ...registersFromQuoteLine(line, asked),
           colour: asked.colour,
           printing: asked.printing,
-          packing: asked.packing || quotation.packing,
+          /* The product details confirmed on the costing sheet, unless the PO says otherwise. */
+          category: asked.category || line.category,
+          packing: asked.packing || line.packing || quotation.packing,
           quantity: asked.quantity,
           /* The rate that was offered, unless the buyer negotiated one on the PO itself. */
           unitPrice: asked.unitPrice ?? line.unitPrice,

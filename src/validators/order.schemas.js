@@ -148,6 +148,7 @@ export const orderFromQuotationSchema = z.object({
         colour: z.string().optional(),
         printing: z.string().optional(),
         packing: z.string().optional(),
+        category: z.enum(HANGER_CATEGORIES).optional(),
         /*
          * The registers, where the PO specifies something the costing did not. Left out, the
          * line inherits whatever the costing behind the quote was built on — which is the

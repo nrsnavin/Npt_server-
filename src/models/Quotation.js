@@ -2,7 +2,7 @@ import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import belongsToEnquiry from './belongsToEnquiry.js';
-import { MATERIALS } from './Mould.js';
+import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
 import { MINIMUM_TIER, minimumFor, tiersFor } from '../services/pricing.service.js';
 
 /**
@@ -117,6 +117,14 @@ const lineSchema = new mongoose.Schema(
     clipRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
     printRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
     material: { type: String, enum: MATERIALS },
+    /**
+     * The product details the buyer gave — or did not. An enquiry asks for the category, hook,
+     * clip and packing only on a new development; for anything else they arrive here empty, and
+     * the costing sheet asks whoever prices it to confirm them before the quote goes out
+     * [web: components/ProductDetailsConfirm.jsx]. They travel onto the sales order's line.
+     */
+    category: { type: String, enum: HANGER_CATEGORIES },
+    packing: { type: String, trim: true },
     /** The trading master's row, for a bought-in item; its inward price is copied onto `cost`. */
     tradedItem: { type: mongoose.Schema.Types.ObjectId, ref: 'TradedItem' },
     /** Made here, or bought in and resold. */
