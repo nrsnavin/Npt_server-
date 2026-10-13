@@ -36,6 +36,8 @@ export const MARKETING_STATUSES = [
   { key: 'qc', label: 'QC' },
   { key: 'dispatch', label: 'Dispatch' },
   { key: 'lr_copy', label: 'LR Copy' },
+  /* The LR uploaded and on its way to the buyer — the enquiry is closed at this [handoffs `whenResult`]. */
+  { key: 'lr_sent', label: 'LR Sent' },
   { key: 'task_closed', label: 'Task Closed' },
 ];
 
@@ -80,7 +82,7 @@ export const FROM_TASK = {
   invoice_dispatch: 'dispatch',
   lr_copy: 'lr_copy',
 };
-export const PLANT_STATUSES = ['production', 'mould', 'assembling', 'qc', 'dispatch', 'lr_copy'];
+export const PLANT_STATUSES = ['production', 'mould', 'assembling', 'qc', 'dispatch', 'lr_copy', 'lr_sent'];
 
 /** The marketing status a task raised moves the enquiry to, or null when it stays. */
 export function followTask(kind, current) {
