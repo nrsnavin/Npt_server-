@@ -193,7 +193,7 @@ export async function handleStaffMessage({ staff, from, body, media = [], provid
         await reply(from, 'The photo could not be fetched. Please send it again.');
         continue;
       }
-      const imageKey = await put({ buffer: image.buffer, mimeType: image.mimeType || photo.contentType });
+      const imageKey = await put({ buffer: image.buffer, mimeType: image.mimeType || photo.contentType, verify: false });
       const card = await BuyerCard.create({
         sender: staff._id, via: 'whatsapp', from, providerId: id, caption: body || undefined,
         imageKey, mimeType: image.mimeType || photo.contentType,

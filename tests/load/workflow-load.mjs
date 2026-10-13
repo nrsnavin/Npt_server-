@@ -1,5 +1,5 @@
 /**
- * Twenty people working the enquiry workflow at the same time, on a replica set.
+ * Twenty people (or `--users=N`) working the enquiry workflow at the same time, on a replica set.
  *
  * Starts its own throwaway replica set and a real API process, so it never touches a real
  * deployment. Twenty accounts across the departments — eight in marketing, the rest in SO,
@@ -16,6 +16,8 @@
  *
  *   node tests/load/workflow-load.mjs            the full run (about three minutes)
  *   node tests/load/workflow-load.mjs --quick    a smoke check
+ *   node tests/load/workflow-load.mjs --users=50 --seconds=180              fifty, flat out
+ *   node tests/load/workflow-load.mjs --users=50 --think=3000               fifty at a working pace
  *
  * What it holds the API to, and exits non-zero if any fails:
  *   - no 5xx, and the API process is still running at the end
@@ -28,7 +30,17 @@ import { performance } from 'node:perf_hooks';
 import { startStack, client, pct } from './stack.mjs';
 
 const QUICK = process.argv.includes('--quick');
-const SECONDS = QUICK ? 20 : 120;
+const option = (name, fallback) => Number(process.argv.find((arg) => arg.startsWith(`--${name}=`))?.split('=')[1]) || fallback;
+const SECONDS = option('seconds', QUICK ? 20 : 120);
+/* How many people: `--users=50`. Four in ten are marketing, the rest spread over the departments. */
+const USERS = option('users', 20);
+/*
+ * `--think=3000`: each person pauses about that long between actions (half to one and a half
+ * times it), as people do — reading a screen, typing a remark. Without it every person clicks
+ * as fast as the API answers, which is a stress test rather than a working office.
+ */
+const THINK = option('think', 0);
+const pause = () => (THINK ? new Promise((resolve) => setTimeout(resolve, THINK * (0.5 + Math.random()))) : null);
 const failures = [];
 const check = (ok, what) => {
   console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${what}`);
@@ -36,17 +48,23 @@ const check = (ok, what) => {
 };
 
 console.log('Starting a throwaway replica set and API…');
-const stack = await startStack({ replSet: true });
-const { call, timings, statuses } = client(stack.base);
+/* `--instances=2`: two API processes, as `pm2 start -i 2` runs them on a two-vCPU server. */
+const INSTANCES = option('instances', 1);
+const stack = await startStack({ replSet: true, instances: INSTANCES });
+const { call, timings, statuses, reasons } = client(stack.bases);
 
 const signIn = async (email, password) => (await call('/api/auth/login', { method: 'POST', body: { email, password } })).json.data?.token;
 const admin = await signIn('rsnavin1@gmail.com', 'Admin@12345');
 if (!admin) throw new Error('admin sign-in failed');
 
-const TEAM = [
-  ...Array(8).fill('marketing'),
+const DEPARTMENTS = [
   'order_confirmation', 'order_confirmation', 'production', 'production', 'assembling', 'mould',
   'quality', 'despatch', 'despatch', 'reception', 'accounts', 'sampling',
+];
+const MARKETING = Math.round(USERS * 0.4);
+const TEAM = [
+  ...Array(MARKETING).fill('marketing'),
+  ...Array.from({ length: USERS - MARKETING }, (_, i) => DEPARTMENTS[i % DEPARTMENTS.length]),
 ];
 const run = Date.now().toString(36);
 const people = [];
@@ -54,8 +72,11 @@ for (const [i, department] of TEAM.entries()) {
   const email = `wf${i}.${run}@npt.test`;
   const made = await call('/api/users', { method: 'POST', token: admin, body: { name: `Workflow ${department} ${i}`, email, password: 'Load@123456', department } });
   if (made.status !== 201) throw new Error(`user ${i}: ${made.status} ${made.json.message}`);
-  people.push({ department, token: await signIn(email, 'Load@123456'), id: made.json.data._id || made.json.data.id });
+  people.push({ department, email, id: made.json.data._id || made.json.data.id });
 }
+/* Everybody signs in at the same moment, as the office does at nine — through one address. */
+await Promise.all(people.map(async (person) => { person.token = await signIn(person.email, 'Load@123456'); }));
+if (people.some((person) => !person.token)) throw new Error(`${people.filter((person) => !person.token).length} people could not sign in`);
 console.log(`  ${people.length} people signed in`);
 
 /* What marketing has raised, by the department that works it — shared, as a real office's lists are. */
@@ -131,14 +152,17 @@ async function departmentStep(person) {
   }
 }
 
-console.log(`Twenty people working for ${SECONDS} s…`);
+console.log(`${people.length} people working for ${SECONDS} s…`);
 const stopAt = performance.now() + SECONDS * 1000;
 let steps = 0;
 const rssBefore = stack.rss();
 await Promise.all(people.map(async (person) => {
+  /* At a working pace people do not all click in the same millisecond: each starts somewhere in the first pause. */
+  if (THINK) await new Promise((resolve) => setTimeout(resolve, Math.random() * THINK));
   while (performance.now() < stopAt) {
     await (person.department === 'marketing' ? marketingStep(person) : departmentStep(person));
     steps += 1;
+    await pause();
   }
 }));
 console.log(`  ${steps} steps, ${enquiries.length} enquiries, API memory ${rssBefore} → ${stack.rss()} MB`);
@@ -155,7 +179,10 @@ for (const [key, count] of statuses) {
 }
 console.log(`  ${[...byStatus].sort((a, b) => a[0] - b[0]).map(([status, count]) => `${status}: ${count}`).join(' · ')}`);
 const refusals = [...statuses].filter(([key]) => Number(key.split(' ').at(-1)) >= 400);
-for (const [key, count] of refusals.sort((a, b) => b[1] - a[1]).slice(0, 12)) console.log(`    ${count} × ${key}`);
+for (const [key, count] of refusals.sort((a, b) => b[1] - a[1]).slice(0, 12)) {
+  console.log(`    ${count} × ${key}`);
+  for (const said of reasons.get(key) || []) console.log(`        “${said}”`);
+}
 
 console.log('\nTimings (p50 / p95 ms)');
 for (const [label, list] of [...timings].sort()) console.log(`  ${label.padEnd(48)} ${String(Math.round(pct(list, 50))).padStart(5)} / ${String(Math.round(pct(list, 95))).padStart(5)}  (${list.length})`);

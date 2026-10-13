@@ -401,14 +401,22 @@ test('uploading the LR (a photo will do) sends it to the buyer by email and What
   const labels = (await noticesOf('nandhini')).slice(0, 2).map((notice) => notice.statusLabel);
   assert.deepEqual(labels, ['LR Copy Sent to Customer', 'LR Copy Received'], 'marketing sees both moves');
 
-  /* The LR uploaded is the end of the enquiry: it reads LR Sent and is closed [config/handoffs.js whenResult]. */
+  /* The LR uploaded reads LR Sent; the enquiry stays open until a person closes it [config/handoffs.js whenResult]. */
   const { default: Enquiry } = await import('../src/models/Enquiry.js');
+  const sentOnly = await Enquiry.findById(enquiry._id).select('stage marketingStatus').lean();
+  assert.equal(sentOnly.marketingStatus, 'lr_sent');
+  assert.notEqual(sentOnly.stage, 'closed', 'an LR does not close the enquiry on its own');
+  const listed = await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' });
+  assert.equal(listed.json.lrUploaded, true, 'the screen is told an LR is in, so it offers Close');
+
+  const closing = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'task_closed', note: 'LR sent to the buyer — order complete' } });
+  assert.ok([200, 201].includes(closing.status), closing.json.message);
   const closed = await Enquiry.findById(enquiry._id).select('stage marketingStatus heldBy').lean();
   assert.deepEqual([closed.stage, closed.marketingStatus, closed.heldBy], ['closed', 'lr_sent', undefined]);
   assert.equal((await Todo.findById(lrTask._id)).completed, false, 'the LR task stays open to say delivered');
 });
 
-test('the enquiry closed by its LR takes nothing more; the rest of the plant’s work goes on a fresh one', async () => {
+test('the enquiry closed after its LR takes nothing more; the rest of the plant’s work goes on a fresh one', async () => {
   const refused = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'quality_check', note: 'Check it', brief: {} } });
   assert.equal(refused.status, 400);
   assert.match(refused.json.message, /closed/);

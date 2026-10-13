@@ -161,7 +161,7 @@ test('a file that is nowhere reads as missing rather than breaking', async () =>
 });
 
 test('removing a file removes it from S3', async () => {
-  const key = await storage.put({ buffer: Buffer.from('temp'), mimeType: 'image/png' });
+  const key = await storage.put({ buffer: Buffer.from('89504e470d0a1a0a74656d70', 'hex'), mimeType: 'image/png' });
   assert.ok(objects.has(`uploads/${key}`));
   await storage.remove(key);
   assert.equal(objects.has(`uploads/${key}`), false);

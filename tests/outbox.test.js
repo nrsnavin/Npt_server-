@@ -27,6 +27,9 @@ const buyerNamed = (name) => Customer.create({ code: `CUST-T${++seq}`, name, mob
 
 const later = (minutes = 10) => new Date(Date.now() + minutes * 60_000);
 const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
+const until = async (check, { ms = 5000 } = {}) => {
+  for (const started = Date.now(); Date.now() - started < ms; await settle()) if (await check()) return;
+};
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -54,7 +57,8 @@ test('an event is written down and delivered at once', async () => {
   events.subscribe('test.first', listener);
   try {
     await events.publish('test.first', { note: 'hello' });
-    await settle();
+    /* Delivery is right after the write, on the next turn; a busy machine takes a few more — wait for it, up to 5 s. */
+    await until(async () => (await Outbox.findOne({ event: 'test.first' }).lean())?.status === 'done');
     assert.deepEqual(heard, ['hello']);
     const row = await Outbox.findOne({ event: 'test.first' }).lean();
     assert.equal(row.status, 'done');

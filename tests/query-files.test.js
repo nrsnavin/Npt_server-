@@ -282,7 +282,8 @@ test('the reading is never saved on the query or the file', async () => {
 
 test('a file that cannot be read says why, without asking the model', async () => {
   const query = await raise();
-  await post(query._id, { name: 'old-price-list.doc', type: 'application/msword', bytes: 'binary word' });
+  /* An old Word file: the OLE header it really starts with, then nothing a reader can use. */
+  await post(query._id, { name: 'old-price-list.doc', type: 'application/msword', bytes: Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.from('binary word')]) });
   const gist = await open(query._id);
   assert.equal(fileCalls.length, 0);
   assert.equal(gist.files[0].says, null);

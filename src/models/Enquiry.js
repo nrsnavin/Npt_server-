@@ -436,6 +436,14 @@ const enquirySchema = new mongoose.Schema(
     activities: { type: [activitySchema], default: () => [] },
     /** When the buyer was last spoken to — kept so a list can sort on it without unwinding. */
     lastActivityAt: { type: Date, index: true },
+    /*
+     * When a sample was last asked for on it. Written before the "one open sample" check
+     * [sampling.service `createSampleRequest`] so two requests at the same instant write the same
+     * record: the database makes the second one wait and look again, and it finds the first.
+     */
+    sampleAskedAt: { type: Date },
+    /* The same, for the quotation the automation raises [costingRequest.service `ensureCostingFor`]. */
+    quotationAskedAt: { type: Date },
 
     estimatedValue: { type: Number, min: 0 },
     probability: { type: Number, min: 0, max: 100 },

@@ -241,8 +241,11 @@ test('a fresh start: two accounts, the customers and the masters stay — everyt
   const db = mongoose.connection;
   const coll = (name) => db.collection(mongoose.models[name].collection.collectionName);
   /* A customer owned by somebody who goes, with a follow-up and a business total; a mould photo; the customer numbering. */
-  await coll('Customer').insertOne({ code: 'CUST-2026-0007', name: 'Sri Velan Garments', assignedTo: nandhini._id, followUp: { due: new Date(), note: 'Call' }, totalBusinessValue: 125000, credit: { status: 'hold' } });
+  await coll('Customer').insertOne({ code: 'CUST-2026-0007', name: 'Sri Velan Garments', assignedTo: nandhini._id, followUp: { due: new Date(), note: 'Call' }, totalBusinessValue: 125000, outstandingAmount: 48000, sharedWith: [nandhini._id], credit: { status: 'hold', override: { status: 'hold', reason: 'Cheque bounced', by: nandhini._id }, derived: { status: 'hold', reason: '60 days overdue' } } });
   await coll('Attachment').insertOne({ _probe: 'mould photo', mould: new mongoose.Types.ObjectId(), key: 'moulds/m-101.jpg' });
+  /* The customer's own papers stay with it; a paper on one of its enquiries goes with the enquiry. */
+  await coll('Attachment').insertOne({ _probe: 'customer GST certificate', customer: new mongoose.Types.ObjectId(), key: 'customers/gst.pdf' });
+  await coll('Attachment').insertOne({ _probe: 'enquiry drawing', customer: new mongoose.Types.ObjectId(), enquiry: new mongoose.Types.ObjectId(), key: 'enquiries/drawing.pdf' });
   await coll('Counter').insertOne({ key: 'CUST-2026', seq: 7 });
   await coll('Counter').insertOne({ key: 'ENQ-2026', seq: 41 });
 
@@ -255,7 +258,7 @@ test('a fresh start: two accounts, the customers and the masters stay — everyt
   const gone = others.filter((name) => ![...MASTERS, 'Customer', 'Attachment', 'Counter'].includes(name) && after[name] > 0);
   assert.deepEqual(gone, [], `these are working data and should have gone:\n  ${gone.join('\n  ')}`);
 
-  assert.deepEqual((await coll('Attachment').find().toArray()).map((row) => row._probe), ['mould photo'], 'only the master photos stay');
+  assert.deepEqual((await coll('Attachment').find().toArray()).map((row) => row._probe).sort(), ['customer GST certificate', 'mould photo'], 'the master photos and the customers’ own papers stay');
   assert.deepEqual((await coll('Counter').find().toArray()).map((row) => row.key), ['CUST-2026'], 'the customer numbering carries on; the rest restarts');
 
   const users = await User.find().select('email role').sort('email').lean();
@@ -268,6 +271,10 @@ test('a fresh start: two accounts, the customers and the masters stay — everyt
   assert.equal(velan.followUp, undefined);
   assert.equal(velan.totalBusinessValue, 0);
   assert.equal(velan.credit.status, 'good');
+  assert.equal(velan.outstandingAmount, 0, 'nothing is owed once the receivables are gone');
+  assert.equal(velan.credit.override, undefined, 'a hold set on bills that no longer exist goes too');
+  assert.equal(velan.credit.derived, undefined);
+  assert.deepEqual(velan.sharedWith, [], 'no share with a deleted account');
 });
 
 test('a fresh start with a kept account that does not exist deletes nothing', async () => {

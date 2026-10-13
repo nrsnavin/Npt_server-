@@ -1,7 +1,7 @@
 import { cacheDelete } from '../services/cache.service.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
-import bcrypt from 'bcryptjs';
+import { checkPassword, hashPassword as bcryptHash } from '../utils/password.js';
 import { normalisePhone } from '../utils/phone.js';
 import { DEPARTMENT_KEYS, MODULE_KEYS, ACCESS_LEVELS } from '../config/modules.js';
 
@@ -66,7 +66,7 @@ const userSchema = new mongoose.Schema(
 
 userSchema.pre('save', async function hashPassword(next) {
   if (!this.isModified('password') || !this.password) return next();
-  this.password = await bcrypt.hash(this.password, 10);
+  this.password = await bcryptHash(this.password, 10);
   /*
    * Every session issued before this moment ends. People change a password because they think
    * somebody else has it, and a seven-day token taken before the change kept working after it.
@@ -84,7 +84,7 @@ userSchema.methods.issuedBeforePasswordChange = function issuedBeforePasswordCha
 
 userSchema.methods.comparePassword = function comparePassword(candidate) {
   if (!this.password) return false;
-  return bcrypt.compare(candidate, this.password);
+  return checkPassword(candidate, this.password);
 };
 
 userSchema.methods.hasPassword = function hasPassword() {

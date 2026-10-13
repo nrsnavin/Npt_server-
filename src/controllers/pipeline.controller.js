@@ -1421,10 +1421,10 @@ export const setEnquiryMarketingStatus = asyncHandler(transactional(async (req, 
   /*
    * The other two columns follow marketing's word: an order status puts the enquiry at that
    * stage, and from PO received on it is Won [config/marketingStatuses.js]. A closed enquiry
-   * stays closed.
+   * stays closed, and a lost one stays where it was lost.
    */
   const stage = STAGE_FOR_MARKETING[status];
-  if (stage && enquiry.stage !== CLOSED_STAGE && enquiry.stage !== stage) {
+  if (stage && enquiry.stage !== CLOSED_STAGE && enquiry.status !== 'lost' && enquiry.stage !== stage) {
     enquiry.stageHistory = [...(enquiry.stageHistory || []), { from: enquiry.stage, to: stage, at: new Date(), by: req.user._id, note: `Marketing status: ${marketingStatusLabel(status)}` }];
     enquiry.stage = stage;
   }
@@ -1536,9 +1536,14 @@ export const logEnquiryActivity = asyncHandler(transactional(async (req, res) =>
     throw ApiError.badRequest('A call that has not happened yet is a follow-up date, not a log entry');
   }
 
+  /*
+   * A won order in the plant is still followed — the advance, the dispatch date — so it takes a
+   * next step until its LR closes it. A lost or closed enquiry does not.
+   */
   const settingNext = Boolean(nextAction || nextFollowUpDate);
-  if (settingNext && CLOSED_STATUSES.includes(enquiry.status)) {
-    throw ApiError.badRequest(`A ${enquiry.status} enquiry has to be reopened before it gets a next step`);
+  const finished = enquiry.status === 'lost' || enquiry.stage === CLOSED_STAGE;
+  if (settingNext && finished) {
+    throw ApiError.badRequest(`A ${enquiry.status === 'lost' ? 'lost' : 'closed'} enquiry has to be reopened before it gets a next step`);
   }
   assertFutureFollowUp(nextFollowUpDate);
 

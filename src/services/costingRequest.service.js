@@ -9,6 +9,13 @@ import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
  * enquiry asks about and waits for the Quotation department to cost it.
  */
 export async function ensureCostingFor(enquiry) {
+  /*
+   * Written before the look, so two requests in the same instant collide on the enquiry and the
+   * second, retried, finds the first's quotation — rather than relying on the quote counter
+   * happening to be written in the same transaction.
+   */
+  const { default: Enquiry } = await import('../models/Enquiry.js');
+  await Enquiry.updateOne({ _id: enquiry._id }, { $set: { quotationAskedAt: new Date() } }, { timestamps: false });
   const existing = await Quotation.findOne({ enquiry: enquiry._id, status: { $nin: CLOSED_QUOTATION_STATUSES } });
   if (existing) return { quotation: existing, created: false };
 

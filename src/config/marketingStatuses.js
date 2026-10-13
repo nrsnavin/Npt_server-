@@ -36,7 +36,7 @@ export const MARKETING_STATUSES = [
   { key: 'qc', label: 'QC' },
   { key: 'dispatch', label: 'Dispatch' },
   { key: 'lr_copy', label: 'LR Copy' },
-  /* The LR uploaded and on its way to the buyer — the enquiry is closed at this [handoffs `whenResult`]. */
+  /* The LR uploaded and on its way to the buyer [handoffs `whenResult`]; closed by hand once every lorry has gone. */
   { key: 'lr_sent', label: 'LR Sent' },
   { key: 'task_closed', label: 'Task Closed' },
 ];

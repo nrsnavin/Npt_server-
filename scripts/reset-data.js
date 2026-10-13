@@ -186,12 +186,18 @@ async function run() {
   ];
   const targets = registered.filter((name) => !SPARED.includes(name) && !kept.includes(name));
   /*
-   * Within two collections, part stays: the photos of the moulds and trading items kept, and the
+   * Within two collections, part stays: the photos of the moulds and trading items kept and the
+   * customers' own papers, and the
    * running number behind the customer codes kept — without it the next customer would be
    * CUST-2026-0001 again and collide with the one already there.
    */
+  const keptPapers = [
+    ...(keepMasters ? [{ mould: { $exists: true } }, { tradedItem: { $exists: true } }] : []),
+    /* A customer's own papers (GST certificate, price agreement) stay with the customer; one on its enquiry or order goes with that. */
+    ...(keepCustomers ? [{ customer: { $exists: true }, enquiry: { $exists: false }, sample: { $exists: false }, salesOrder: { $exists: false }, query: { $exists: false }, task: { $exists: false } }] : []),
+  ];
   const partly = {
-    Attachment: keepMasters ? { mould: { $exists: false }, tradedItem: { $exists: false } } : {},
+    Attachment: keptPapers.length ? { $nor: keptPapers } : {},
     Counter: keepCustomers ? { key: { $not: /^CUST-/ } } : {},
   };
   const scope = (name) => partly[name] || {};
@@ -255,10 +261,12 @@ async function run() {
   if (keepCustomers) {
     const Customer = mongoose.models.Customer;
     await Customer.updateMany({}, {
-      $unset: { followUp: 1, followUpLog: 1, lastOrderDate: 1 },
-      $set: { totalBusinessValue: 0, 'credit.status': 'good' },
+      /* A hold set on bills that no longer exist, or worked out from them, goes with the bills. */
+      $unset: { followUp: 1, followUpLog: 1, lastOrderDate: 1, 'credit.override': 1, 'credit.derived': 1 },
+      $set: { totalBusinessValue: 0, outstandingAmount: 0, 'credit.status': 'good' },
     });
     const owners = (await User.find().select('_id').lean()).map((user) => user._id);
+    await Customer.updateMany({}, { $pull: { sharedWith: { $nin: owners } } });
     const { modifiedCount } = await Customer.updateMany({ assignedTo: { $nin: owners } }, { $set: { assignedTo: survivor._id } });
     if (modifiedCount) console.log(`  handed ${modifiedCount} customers to ${survivor.email} — their owner was deleted`);
   }

@@ -10,7 +10,11 @@ import { nextNumber } from './numbering.service.js';
  * the same company written twice, and "Ruby Fashions DA" is not "Ruby Fashions".
  */
 
-export const nameKey = (name) => String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+export const nameKey = (name) => {
+  const plain = String(name || '').toLowerCase();
+  /* Letters in any script count: a name written in Tamil is its own name, not a blank that matches every other. */
+  return plain.normalize('NFKC').replace(/[^\p{L}\p{M}\p{N}]+/gu, '');
+};
 
 /** The list's names as `{ line, name }`, blanks left out. */
 export function readNames(text) {

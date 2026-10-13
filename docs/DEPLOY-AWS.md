@@ -412,9 +412,28 @@ sudo certbot renew --dry-run
 ```bash
 sudo npm install -g pm2
 cd /srv/npt/server
-pm2 start src/server.js --name npt-api --node-args="--max-old-space-size=512" --max-memory-restart 800M
+pm2 start ecosystem.config.cjs     # two API processes, one per vCPU — see the file for why
 pm2 save
 pm2 startup systemd -u ubuntu --hp /home/ubuntu    # run the line it prints
+```
+
+**One process or two.** The 50-person load test (`npm run load-test:50`: fifty people, a pause
+of about two seconds between actions, everybody signing in at once) passes on either, on two
+cores:
+
+| API processes | Slowest 5% of reads | Slowest 5% of writes | Fifty sign-ins at once | Flat-out capacity |
+| --- | --- | --- | --- | --- |
+| 1 | 0.63 s | 0.53 s | up to 5.4 s | about 23 actions a second |
+| 2 | 0.48 s | 0.37 s | up to 2.6 s | about 32 actions a second |
+
+`ecosystem.config.cjs` starts two, for the headroom. Two processes beside MongoDB want a 4 GB
+server (t3.medium); on a 2 GB t3.small set `API_INSTANCES=1` before `pm2 start`. With two, also
+set `REDIS_URL` so rate limits and the signed-in-user cache are shared ([SCALING.md](SCALING.md) §4).
+
+The single-process command, if you prefer it:
+
+```bash
+pm2 start src/server.js --name npt-api --node-args="--max-old-space-size=512" --max-memory-restart 800M
 ```
 
 ```bash

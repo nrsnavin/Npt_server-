@@ -110,8 +110,11 @@ const BUTTONS = [
   {
     /* Reception's: the LR copy and the dispatch details once the goods have gone. */
     key: 'lr_copy', label: 'LR Copy', department: 'reception', stage: 'lr_copy',
-    /* The LR uploaded: the enquiry reads LR Sent and is closed — the LR task stays open to say delivered. */
-    whenResult: { marketing: 'lr_sent', close: true },
+    /*
+     * The LR uploaded: the enquiry reads LR Sent. It is not closed on its own — an order can go
+     * in more than one lorry — and the enquiry screen offers Close once an LR is in.
+     */
+    whenResult: { marketing: 'lr_sent' },
     hint: 'Upload the LR copy, send it to the buyer and track the delivery',
     records: [{ key: 'lrNumber', label: 'LR / docket number' }],
   },

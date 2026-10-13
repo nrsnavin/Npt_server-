@@ -2,7 +2,7 @@
 import './config/timezone.js';
 import app from './app.js';
 import { installProcessGuards } from './config/processGuards.js';
-import { env, isProduction, secretProblem } from './config/env.js';
+import { corsProblem, env, isProduction, secretProblem } from './config/env.js';
 import { startBackground } from './background.js';
 import { connectCache, disconnectCache } from './services/cache.service.js';
 import { connectDatabase, disconnectDatabase } from './config/db.js';
@@ -58,6 +58,8 @@ async function start() {
     /* Before anything else: a production server on the development secret must not come up. */
     const secret = secretProblem();
     if (secret) throw new Error(secret);
+    const cors = corsProblem();
+    if (cors) throw new Error(cors);
     checkOtpDelivery();
 
     await connectDatabase();

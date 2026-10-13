@@ -1,5 +1,6 @@
 import { pingOnSignIn } from '../services/whatsappPing.service.js';
 import bcrypt from 'bcryptjs';
+import { checkPassword } from '../utils/password.js';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -111,7 +112,7 @@ export const login = asyncHandler(async (req, res) => {
   const user = await User.findOne({ email }).select('+password');
   const matches = user?.password
     ? await user.comparePassword(password)
-    : await bcrypt.compare(password, NO_ACCOUNT_HASH).then(() => false);
+    : await checkPassword(password, NO_ACCOUNT_HASH).then(() => false);
   if (!user || !matches) {
     throw ApiError.unauthorized('Invalid email or password');
   }

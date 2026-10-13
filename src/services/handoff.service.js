@@ -2,7 +2,7 @@ import { withCreateLocks } from './operationLock.service.js';
 import Todo, { PRIORITIES } from '../models/Todo.js';
 import Enquiry from '../models/Enquiry.js';
 import { CLOSED_STAGE, SALES_STAGE_KEYS, SIDE_STAGES, STAGES, stageLabel } from '../config/enquiryStages.js';
-import { followTask, marketingStatusOf, meansWon } from '../config/marketingStatuses.js';
+import { followTask, marketingRank, marketingStatusOf, meansWon } from '../config/marketingStatuses.js';
 import { findDepartment } from '../config/modules.js';
 import { HANDOFFS, findHandoff } from '../config/handoffs.js';
 import { canRead } from './access.service.js';
@@ -163,7 +163,7 @@ async function moveStage(enquiry, to, { user, task, note, heldBy, marketing: sai
    * The order is won when a rule says so on the order's own evidence — the SO uploaded
    * [config/handoffs.js whenDone] — not merely because Production was asked for a date.
    */
-  const won = said && marketing && meansWon(marketing.to) && !['won', 'lost'].includes(enquiry.status)
+  const won = said && meansWon(said) && !['won', 'lost'].includes(enquiry.status)
     ? { from: enquiry.status, to: 'won', by: user?._id, note: `${task?.title || 'Order booked'}` }
     : null;
   if (won) {
@@ -737,9 +737,16 @@ async function returnToMarketing({ enquiry, note, fields, user, system }) {
   return task;
 }
 
-/** Closing ends everything still open on the enquiry, the holding task included, and says so. */
+/**
+ * Closing ends everything still open on the enquiry, the holding task included, and says so —
+ * except an LR task whose copy is in: Reception still says In Transit and Delivered on it.
+ */
 async function closeOpenTasks(enquiryId, why, user, { except } = {}) {
-  const open = await Todo.find({ enquiry: enquiryId, kind: { $exists: true }, completed: false, ...(except ? { _id: { $ne: except } } : {}) });
+  const open = await Todo.find({
+    enquiry: enquiryId, kind: { $exists: true }, completed: false,
+    $nor: [{ kind: 'lr_copy', resultFile: { $exists: true } }],
+    ...(except ? { _id: { $ne: except } } : {}),
+  });
   for (const task of open) {
     task.completed = true;
     task.completedAt = new Date();
@@ -776,12 +783,22 @@ export async function closeEnquiryAutomatically({ enquiry, note, marketing, exce
 /**
  * Where a task's own rule moves the enquiry [config/handoffs.js `whenDone`, `whenResult`]: the
  * SO uploaded reads Production, Production finished reads Dispatch, the LR uploaded reads LR
- * Sent and closes the enquiry. A closed enquiry is left closed.
+ * Sent — and is closed by a person, with the Close the enquiry screen offers once an LR is in.
+ * A closed enquiry is left closed.
  */
 async function reachEnquiry(task, user, reach, note) {
   if (!reach || !task.enquiry) return;
   const enquiry = await enquiryOfTask(task);
   if (!enquiry || enquiry.stage === CLOSED_STAGE) return;
+  /*
+   * Only ever forward. Production closing its task after the goods have gone must not pull an
+   * enquiry at LR Copy back to Dispatch; what it still says — the order is won — stands.
+   */
+  const current = marketingStatusOf(enquiry);
+  if (reach.marketing && marketingRank(reach.marketing) < marketingRank(current)) {
+    await moveStage(enquiry, null, { user, task, note: note || task.title, marketing: current });
+    return;
+  }
   if (reach.close) {
     await closeEnquiryAutomatically({ enquiry, note: note || task.title, marketing: reach.marketing, except: task._id });
     return;
@@ -2017,6 +2034,18 @@ const LIST_POPULATE = [
   { path: 'enquiry', select: 'number stage requirement.modelNumber requirement.colour' },
 ];
 
+/*
+ * The dashboards read tasks as plain objects — a desk of a few hundred tasks, each with nine
+ * records joined in, spent most of its time building full documents nobody saves. The fields the
+ * model works out are added back, so the reply reads exactly as it did.
+ */
+const plainTask = (row) => Object.assign(row, {
+  id: String(row._id),
+  isEscalated: Boolean(row.escalation?.at) && !row.completed,
+  unclaimed: !row.user,
+});
+const plainTasks = (rows) => rows.map(plainTask);
+
 /**
  * One department's dashboard: its figures, the work on its queue (late first, then by due
  * time), what it finished lately, and — the marketing question, asked by every department —
@@ -2027,17 +2056,17 @@ export async function departmentDashboard(department, { now = new Date() } = {})
   const { openFilter, ...numbers } = figures;
   const week = new Date(now.getTime() - 7 * DAY_MS);
 
-  const [queue, recentlyDone, waitingOnOthers, cameBack] = await Promise.all([
-    Todo.find(openFilter).sort({ dueDate: 1, createdAt: 1 }).limit(100).populate(LIST_POPULATE),
+  const [queue, recentlyDone, waitingOnOthers, cameBack] = (await Promise.all([
+    Todo.find(openFilter).sort({ dueDate: 1, createdAt: 1 }).limit(100).populate(LIST_POPULATE).lean(),
     Todo.find({ kind: { $exists: true }, department, completed: true, completedAt: { $gte: week } })
-      .sort({ completedAt: -1 }).limit(20).populate(LIST_POPULATE),
+      .sort({ completedAt: -1 }).limit(20).populate(LIST_POPULATE).lean(),
     Todo.find({ kind: { $exists: true }, fromDepartment: department, department: { $ne: department }, completed: false })
-      .sort({ dueDate: 1 }).limit(50).populate(LIST_POPULATE),
+      .sort({ dueDate: 1 }).limit(50).populate(LIST_POPULATE).lean(),
     Todo.find({
       kind: { $exists: true }, fromDepartment: department, department: { $ne: department },
       completed: true, completedAt: { $gte: week },
-    }).sort({ completedAt: -1 }).limit(20).populate(LIST_POPULATE),
-  ]);
+    }).sort({ completedAt: -1 }).limit(20).populate(LIST_POPULATE).lean(),
+  ])).map(plainTasks);
 
   return { figures: numbers, queue, recentlyDone, waitingOnOthers, cameBack };
 }
@@ -2069,7 +2098,9 @@ export async function enquiriesHeldBy(department, user, { now = new Date(), limi
         select: 'number stage status customer assignedTo requirement.modelNumber requirement.colour items.modelNumber nextFollowUpDate nextAction targetPrice',
         populate: [{ path: 'customer', select: 'code name' }, { path: 'assignedTo', select: 'name' }],
       },
-    ]);
+    ])
+    .lean()
+    .then(plainTasks);
 
   const ids = tasks.map((task) => task.enquiry?._id).filter(Boolean);
   const [{ default: Sample }, { default: Quotation }, { default: SalesOrder }] = await Promise.all([
@@ -2100,7 +2131,7 @@ export async function enquiriesHeldBy(department, user, { now = new Date(), limi
     const pick = (row) => (row ? { _id: row._id, number: row.number, status: row.status } : null);
     return {
       task,
-      enquiry: { ...task.enquiry.toObject(), stageLabel: stageLabel(task.enquiry.stage) },
+      enquiry: { ...task.enquiry, id: String(task.enquiry._id), stageLabel: stageLabel(task.enquiry.stage) },
       since: task.createdAt,
       late: Boolean(task.dueDate && task.dueDate < now),
       dueToday: Boolean(task.dueDate && task.dueDate >= now && task.dueDate <= endOfDayIST(now)),
