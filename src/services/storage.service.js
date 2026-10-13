@@ -3,6 +3,7 @@ import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ApiError from '../utils/ApiError.js';
 import { deleteObject, getObjectBuffer, objectStream, putObject, s3Configured } from './storage.s3.js';
 
 /**
@@ -73,8 +74,38 @@ export const EXTENSIONS = {
 /** True for a file this store will accept, by type and size. */
 export const isAllowed = (mimeType) => ALLOWED_TYPES.includes(mimeType);
 
-/** Writes one file and returns the key it can be read back by. */
-export async function put({ buffer, mimeType }) {
+/*
+ * What a file of each kind starts with. The type an upload claims is the browser's word — a
+ * renamed page of script can claim to be a PNG — so the first bytes are checked against it
+ * before anything is stored. A kind with no signature here is taken at its word.
+ */
+const SIGNATURES = {
+  'image/jpeg': (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
+  'image/png': (b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  'image/webp': (b) => b.subarray(0, 4).toString('latin1') === 'RIFF' && b.subarray(8, 12).toString('latin1') === 'WEBP',
+  'image/heic': (b) => b.subarray(4, 8).toString('latin1') === 'ftyp',
+  'image/heif': (b) => b.subarray(4, 8).toString('latin1') === 'ftyp',
+  /* A PDF may carry a few bytes of junk before its header; readers accept it within the first kilobyte. */
+  'application/pdf': (b) => b.subarray(0, 1024).includes('%PDF-'),
+  'application/msword': (b) => b.subarray(0, 4).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0])),
+  'application/vnd.ms-excel': (b) => b.subarray(0, 4).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0])),
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': (b) => b.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])),
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': (b) => b.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04])),
+};
+
+/** True when the bytes look like the kind of file they claim to be (or the kind has no signature). */
+export const contentMatches = (buffer, mimeType) => !SIGNATURES[mimeType] || Boolean(buffer?.length && SIGNATURES[mimeType](buffer));
+
+const KIND_WORDS = { 'application/pdf': 'a PDF', 'image/jpeg': 'a JPEG photo', 'image/png': 'a PNG picture', 'image/webp': 'a WebP picture' };
+
+/**
+ * Writes one file and returns the key it can be read back by. `verify: false` only for bytes
+ * that came from a provider, not a person's upload.
+ */
+export async function put({ buffer, mimeType, verify = true }) {
+  if (verify && !contentMatches(buffer, mimeType)) {
+    throw ApiError.badRequest(`That file is not really ${KIND_WORDS[mimeType] || `a ${mimeType} file`} — it may have been renamed. Save it again in its own format and attach that.`);
+  }
   const key = `${randomBytes(16).toString('hex')}${EXTENSIONS[mimeType] || ''}`;
   if (s3Configured()) {
     await putObject(key, buffer, mimeType);

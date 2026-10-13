@@ -199,3 +199,15 @@ export function secretProblem(secret = env.jwtSecret, nodeEnv = env.nodeEnv) {
   if (String(secret).length < 32) return 'JWT_SECRET is too short to be safe — use at least 32 characters (openssl rand -base64 48)';
   return null;
 }
+
+/**
+ * The browsers' allow-list, for a production server: a `*` lets any website call the API with
+ * a signed-in person's session, so a production server refuses to start on one — name the app's
+ * own address (CORS_ORIGIN=https://crm.example.com) instead.
+ */
+export function corsProblem(origins = env.corsOrigin, nodeEnv = env.nodeEnv) {
+  if (nodeEnv !== 'production') return null;
+  if (!origins?.length) return 'CORS_ORIGIN is not set. Set it to the web app’s address, e.g. https://crm.navinplastic.com';
+  if (origins.includes('*')) return 'CORS_ORIGIN is "*", which lets any website use a signed-in person’s session. Set it to the web app’s own address.';
+  return null;
+}
