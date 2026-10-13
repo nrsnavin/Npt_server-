@@ -42,6 +42,8 @@ test('the list reads a name a line, blanks left out, and names are matched by th
   assert.equal(service.nameKey('K R D'), service.nameKey('KRD'));
   assert.notEqual(service.nameKey('Ruby Fashions DA'), service.nameKey('Ruby Fashions'));
   assert.equal(service.nameKey('S & S Clothing'), service.nameKey('S&S Clothing'));
+  assert.notEqual(service.nameKey('ஸ்ரீ முருகன்'), service.nameKey('ஸ்ரீ வேலன்'), 'two names in Tamil are two names, not two blanks');
+  assert.ok(service.nameKey('ஸ்ரீ முருகன்'));
 });
 
 test('the plan: add the new, keep the one already there, add a repeated name once; the second run adds nothing', async () => {

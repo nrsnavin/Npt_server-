@@ -170,3 +170,53 @@ test('the realign script brings old enquiries into line, once', async () => {
   assert.equal(row.statusHistory.at(-1).note, 'Realigned with the marketing status');
   assert.equal((await planRealign()).length, 0, 'a second run finds nothing');
 });
+
+/* ------------------------------ Audit regressions ------------------------------ */
+
+let buyers = 10;
+async function freshEnquiry(model = 'NPT-410') {
+  const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
+  buyers += 1;
+  const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: `Audit Buyer ${buyers}`, mobile: `98400991${String(buyers).padStart(2, '0')}`, assignedTo: me } })).json.data;
+  return (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customer._id, requirement: { modelNumber: model }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+}
+const rowOf = (id) => Enquiry.findById(id).select('stage status marketingStatus').lean();
+
+test('the SO uploaded after Production was already asked still books the order as Won', async () => {
+  const fresh = await freshEnquiry();
+  const po = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'PO in', brief: { models: 'NPT-410', quantity: 5000 } } });
+  assert.equal(po.status, 201, po.json.message);
+  const edd = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'When can you make it?', brief: { model: 'NPT-410', quantity: 5000 } } });
+  assert.equal(edd.status, 201, edd.json.message);
+  assert.equal((await rowOf(fresh._id)).marketingStatus, 'production', 'asking Production already reads Production');
+
+  const sent = await upload('priya', po.json.data.task._id, { bytes: PDF, type: 'application/pdf', name: 'SO-0300.pdf', note: 'SO 0300' });
+  assert.equal(sent.status, 200, sent.json.message);
+  assert.equal((await rowOf(fresh._id)).status, 'won', 'the SO is the evidence the order is booked');
+});
+
+test('Production closing its task late does not pull an enquiry back from LR Copy to Dispatch', async () => {
+  const fresh = await freshEnquiry('NPT-420');
+  const edd = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Make 3,000', brief: { model: 'NPT-420', quantity: 3000 } } });
+  assert.equal(edd.status, 201, edd.json.message);
+  /* Meanwhile the goods went and the LR is being sent. */
+  await Enquiry.updateOne({ _id: fresh._id }, { $set: { stage: 'lr_copy', marketingStatus: 'lr_copy', status: 'won' } });
+
+  const closed = await api(`/api/workspace/todos/${edd.json.data.task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'closed', note: 'Closing my task' } });
+  assert.equal(closed.status, 200, closed.json.message);
+  const row = await rowOf(fresh._id);
+  assert.deepEqual([row.stage, row.marketingStatus], ['lr_copy', 'lr_copy'], 'a finished task only ever moves the enquiry forward');
+});
+
+test('a marketing status chosen on a lost enquiry leaves its stage where it was', async () => {
+  const fresh = await freshEnquiry('NPT-430');
+  await Enquiry.updateOne({ _id: fresh._id }, { $set: { status: 'lost' } });
+  const before = await rowOf(fresh._id);
+  const set = await api(`/api/enquiries/${fresh._id}/marketing-status`, { method: 'POST', as: 'nandhini', body: { status: 'dispatch' } });
+  assert.equal(set.status, 200, set.json.message);
+  const row = await rowOf(fresh._id);
+  assert.deepEqual([row.stage, row.status], [before.stage, 'lost'], 'a lost enquiry is not sent to Invoice & Dispatch');
+});

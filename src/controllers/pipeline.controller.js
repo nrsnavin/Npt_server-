@@ -1421,10 +1421,10 @@ export const setEnquiryMarketingStatus = asyncHandler(transactional(async (req, 
   /*
    * The other two columns follow marketing's word: an order status puts the enquiry at that
    * stage, and from PO received on it is Won [config/marketingStatuses.js]. A closed enquiry
-   * stays closed.
+   * stays closed, and a lost one stays where it was lost.
    */
   const stage = STAGE_FOR_MARKETING[status];
-  if (stage && enquiry.stage !== CLOSED_STAGE && enquiry.stage !== stage) {
+  if (stage && enquiry.stage !== CLOSED_STAGE && enquiry.status !== 'lost' && enquiry.stage !== stage) {
     enquiry.stageHistory = [...(enquiry.stageHistory || []), { from: enquiry.stage, to: stage, at: new Date(), by: req.user._id, note: `Marketing status: ${marketingStatusLabel(status)}` }];
     enquiry.stage = stage;
   }

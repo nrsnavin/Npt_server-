@@ -2,7 +2,7 @@ import { withCreateLocks } from './operationLock.service.js';
 import Todo, { PRIORITIES } from '../models/Todo.js';
 import Enquiry from '../models/Enquiry.js';
 import { CLOSED_STAGE, SALES_STAGE_KEYS, SIDE_STAGES, STAGES, stageLabel } from '../config/enquiryStages.js';
-import { followTask, marketingStatusOf, meansWon } from '../config/marketingStatuses.js';
+import { followTask, marketingRank, marketingStatusOf, meansWon } from '../config/marketingStatuses.js';
 import { findDepartment } from '../config/modules.js';
 import { HANDOFFS, findHandoff } from '../config/handoffs.js';
 import { canRead } from './access.service.js';
@@ -163,7 +163,7 @@ async function moveStage(enquiry, to, { user, task, note, heldBy, marketing: sai
    * The order is won when a rule says so on the order's own evidence — the SO uploaded
    * [config/handoffs.js whenDone] — not merely because Production was asked for a date.
    */
-  const won = said && marketing && meansWon(marketing.to) && !['won', 'lost'].includes(enquiry.status)
+  const won = said && meansWon(said) && !['won', 'lost'].includes(enquiry.status)
     ? { from: enquiry.status, to: 'won', by: user?._id, note: `${task?.title || 'Order booked'}` }
     : null;
   if (won) {
@@ -782,6 +782,15 @@ async function reachEnquiry(task, user, reach, note) {
   if (!reach || !task.enquiry) return;
   const enquiry = await enquiryOfTask(task);
   if (!enquiry || enquiry.stage === CLOSED_STAGE) return;
+  /*
+   * Only ever forward. Production closing its task after the goods have gone must not pull an
+   * enquiry at LR Copy back to Dispatch; what it still says — the order is won — stands.
+   */
+  const current = marketingStatusOf(enquiry);
+  if (reach.marketing && marketingRank(reach.marketing) < marketingRank(current)) {
+    await moveStage(enquiry, null, { user, task, note: note || task.title, marketing: current });
+    return;
+  }
   if (reach.close) {
     await closeEnquiryAutomatically({ enquiry, note: note || task.title, marketing: reach.marketing, except: task._id });
     return;

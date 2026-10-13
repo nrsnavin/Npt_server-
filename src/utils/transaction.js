@@ -105,6 +105,16 @@ const runDetached = (fn) =>
  */
 export const MAX_TRANSACTION_ATTEMPTS = 6;
 
+/**
+ * More room for a real write conflict — two people writing the same record, each attempt
+ * losing to another. Twenty receipts on one material at once settle in turn; at six tries the
+ * unlucky one was told to try again while the others went through. A block that catches a
+ * database error and spins (above) never reports a write conflict, so it still stops at six.
+ */
+export const MAX_CONFLICT_ATTEMPTS = 20;
+const isWriteConflict = (error) =>
+  error?.code === 112 || error?.codeName === 'WriteConflict' || /WriteConflict/.test(error?.message || '');
+
 /** A short random pause before attempt `n`, so two requests that collided do not collide again in step. */
 const backoff = (n) => new Promise((resolve) => setTimeout(resolve, Math.min(200, 10 * 2 ** n) * (0.5 + Math.random())));
 
@@ -123,8 +133,9 @@ export async function inTransaction(work, { label } = {}) {
         ? mongoose.connection.transaction(
             async () => {
               attempts += 1;
-              if (attempts > MAX_TRANSACTION_ATTEMPTS) {
-                console.error(`[transaction] gave up after ${MAX_TRANSACTION_ATTEMPTS} attempts${label ? ` on ${label}` : ''}: ${lastError?.codeName || lastError?.message || 'conflict at commit'}`);
+              const limit = isWriteConflict(lastError) ? MAX_CONFLICT_ATTEMPTS : MAX_TRANSACTION_ATTEMPTS;
+              if (attempts > limit) {
+                console.error(`[transaction] gave up after ${limit} attempts${label ? ` on ${label}` : ''}: ${lastError?.codeName || lastError?.message || 'conflict at commit'}`);
                 throw ApiError.conflict('Several people are changing the same records right now. Wait a moment and try again.');
               }
               if (attempts > 1) await backoff(attempts);
