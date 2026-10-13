@@ -424,3 +424,23 @@ test('quantities are read the way people write them', async () => {
   assert.equal(parseQuantity(''), null);
   assert.equal(parseQuantity('a few thousand'), null);
 });
+
+test('an admin’s screenshot makes a draft too, and the admin hands the buyer to a salesperson', async () => {
+  const ADMIN_PHONE = '+919876500099';
+  const profile = await api('/api/auth/me', { method: 'PATCH', token: admin, body: { phone: ADMIN_PHONE } });
+  assert.equal(profile.status, 200, profile.json.message);
+
+  cardReply = chat({ company: 'Kovai Fashions', contactName: 'Prabhu', mobile: '+91 90030 44556', productInterest: '450mm kids hangers' });
+  const arrived = await whatsapp(ADMIN_PHONE, { photo: true });
+  assert.equal(arrived.json.outcome, 'buyer_card', 'an admin is staff, so the picture is a draft, not a buyer’s message');
+  const draft = await readCardOf(admin);
+  assert.equal(draft.sender.name, 'Navin R');
+  assert.match(latestReply(), /Saved as a draft enquiry from this chat:[\s\S]*Kovai Fashions/);
+
+  const me = (await api('/api/auth/me', { token: nandhini })).json.data;
+  const nandhiniId = String(me.id ?? me._id);
+  const done = await finish(draft._id, { ...theRest, source: 'whatsapp', assignedTo: nandhiniId }, admin);
+  assert.equal(done.status, 200, done.json.message);
+  assert.equal(String(done.json.data.customer.assignedTo), nandhiniId, 'the buyer goes to the salesperson the admin chose');
+  assert.ok(await Enquiry.exists({ _id: done.json.data.enquiry._id }));
+});
