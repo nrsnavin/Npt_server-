@@ -455,5 +455,6 @@ test('choosing a stage is not overruled by the open-only view', async () => {
 
 test('the open-only view still works on its own', async () => {
   const { json } = await api('/api/enquiries?open=true', { token: admin });
-  assert.ok(json.data.every((row) => !['won', 'lost'].includes(row.status)));
+  /* Open is still being worked: never lost, never closed — a won order stays until its LR closes it. */
+  assert.ok(json.data.every((row) => row.status !== 'lost' && row.stage !== 'closed'));
 });

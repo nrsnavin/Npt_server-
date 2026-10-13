@@ -4,7 +4,7 @@ import { customerMap } from '../services/customerMap.service.js';
 import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import Customer from '../models/Customer.js';
 import {
-  MARKETING_STATUSES, MARKETING_STATUS_KEYS, marketingStatusLabel, marketingStatusOf, salesStatusesFor,
+  MARKETING_STATUSES, MARKETING_STATUS_KEYS, STAGE_FOR_MARKETING, marketingStatusLabel, marketingStatusOf, meansWon, salesStatusesFor,
 } from '../config/marketingStatuses.js';
 import Enquiry, {
   CLOSED_STATUSES, ENQUIRY_STAGE_ORDER, ENQUIRY_STATUSES, fallsBack, furthestStage, stageLabel,
@@ -37,7 +37,8 @@ import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { applySpec, buildSpec } from '../services/registers.service.js';
 import { hasRequirement } from '../models/requirement.schema.js';
 import { transactional } from '../utils/transaction.js';
-import { STAGE_KEYS } from '../config/enquiryStages.js';
+import { CLOSED_STAGE, SIDE_STAGES, STAGE_KEYS } from '../config/enquiryStages.js';
+import { HANDOFFS } from '../config/handoffs.js';
 import { enquiryProgress, ensureHolder, mayHandOff } from '../services/handoff.service.js';
 import { delegateEnquiry, delegationTargets, mayDelegate } from '../services/delegation.service.js';
 import { canRead } from '../services/access.service.js';
@@ -861,7 +862,13 @@ async function enquiryFilters(req, { withStatus = true } = {}) {
    */
   if (req.query.stage) {
     const stages = String(req.query.stage).split(',').filter((key) => STAGE_KEYS.includes(key));
-    if (stages.length) filter.stage = { $in: stages };
+    /* Side work (A/C Clarify, Audit, payment follow-ups) is found by its open task as well as by stage. */
+    const side = stages.filter((key) => SIDE_STAGES.includes(key));
+    if (side.length) {
+      const kinds = HANDOFFS.filter((handoff) => side.includes(handoff.stage)).map((handoff) => handoff.key);
+      const open = await Todo.distinct('enquiry', { kind: { $in: kinds }, completed: false, enquiry: { $ne: null } });
+      filter.$and = [...(filter.$and || []), { $or: [{ stage: { $in: stages } }, { _id: { $in: open } }] }];
+    } else if (stages.length) filter.stage = { $in: stages };
   }
 
   if (withStatus) {
@@ -874,7 +881,15 @@ async function enquiryFilters(req, { withStatus = true } = {}) {
      * open ones, and the only signal that the click had missed was a count that did not match.
      */
     if (req.query.status) filter.status = { $in: String(req.query.status).split(',') };
-    else if (req.query.open === 'true') filter.status = { $nin: CLOSED_STATUSES };
+    /*
+     * Open means still being worked: not lost, not closed. A won order in the plant is open until
+     * its LR closes it [config/handoffs.js lr_copy whenResult] — marketing follows it to the end.
+     * The overview's tile counts the same [services/overview.service.js activeEnquiries].
+     */
+    else if (req.query.open === 'true') {
+      filter.status = { $ne: 'lost' };
+      filter.$and = [...(filter.$and || []), { stage: { $ne: CLOSED_STAGE } }];
+    }
   }
 
   // The follow-up list marketing works from each morning [§37].
@@ -1402,6 +1417,21 @@ export const setEnquiryMarketingStatus = asyncHandler(transactional(async (req, 
     enquiry.status !== salesMove &&
     !CLOSED_STATUSES.includes(enquiry.status) &&
     !fallsBack(enquiry, salesMove);
+
+  /*
+   * The other two columns follow marketing's word: an order status puts the enquiry at that
+   * stage, and from PO received on it is Won [config/marketingStatuses.js]. A closed enquiry
+   * stays closed.
+   */
+  const stage = STAGE_FOR_MARKETING[status];
+  if (stage && enquiry.stage !== CLOSED_STAGE && enquiry.stage !== stage) {
+    enquiry.stageHistory = [...(enquiry.stageHistory || []), { from: enquiry.stage, to: stage, at: new Date(), by: req.user._id, note: `Marketing status: ${marketingStatusLabel(status)}` }];
+    enquiry.stage = stage;
+  }
+  if (!moves && meansWon(status) && !['won', 'lost'].includes(enquiry.status)) {
+    enquiry.statusHistory.push({ from: enquiry.status, to: 'won', by: req.user._id, note: `Marketing status: ${marketingStatusLabel(status)}` });
+    enquiry.status = 'won';
+  }
 
   if (moves) {
     await moveEnquiry(enquiry, { status: salesMove, note: `Marketing status: ${marketingStatusLabel(status)}` }, req.user);

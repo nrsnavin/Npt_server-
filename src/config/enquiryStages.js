@@ -31,6 +31,16 @@ export const STAGES = [
 
 export const CLOSED_STAGE = 'closed';
 
+/**
+ * Work alongside the order rather than a step of it — the money, the account, the audit. Once
+ * the enquiry is past the sales stages these no longer take over its stage: an enquiry at
+ * Dispatch with a payment follow-up open is still at Dispatch [handoff.service `moveEnquiry`].
+ * The desks that list "enquiries at A/C Clarify / Audit" find them by their open task instead
+ * [pipeline.controller list filter].
+ */
+export const SIDE_STAGES = ['ac_clarify', 'audit', 'my_payment_followup', 'team_payment_followup'];
+export const SALES_STAGE_KEYS = ['enquiry', 'sample', 'pricing_quote', 'po_so'];
+
 export const STAGE_KEYS = [...STAGES.map((stage) => stage.key), CLOSED_STAGE];
 
 export const stageLabel = (key) =>

@@ -84,6 +84,23 @@ export const FROM_TASK = {
 };
 export const PLANT_STATUSES = ['production', 'mould', 'assembling', 'qc', 'dispatch', 'lr_copy', 'lr_sent'];
 
+/**
+ * Where the enquiry stands, by marketing's word, so the list's three columns never disagree:
+ * the stage each of the order's statuses means, and from PO received on, the sales status is Won.
+ */
+export const STAGE_FOR_MARKETING = {
+  po_received: 'po_so',
+  sales_order_sent: 'po_so',
+  production: 'production_edd',
+  mould: 'mould',
+  assembling: 'assembling',
+  qc: 'quality',
+  dispatch: 'invoice_dispatch',
+  lr_copy: 'lr_copy',
+  lr_sent: 'lr_copy',
+};
+export const meansWon = (key) => key !== 'task_closed' && marketingRank(key) >= marketingRank('po_received');
+
 /** The marketing status a task raised moves the enquiry to, or null when it stays. */
 export function followTask(kind, current) {
   const follows = FROM_TASK[kind];

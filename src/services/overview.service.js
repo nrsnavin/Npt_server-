@@ -25,11 +25,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const activeEnquiries = (user) => ({ ...ownershipFilter(user), stage: { $ne: 'closed' }, status: { $ne: 'lost' } });
 
 /*
- * Open for marketing — the Enquiries list's own "Open" and "Due now" [pipeline.controller]: not won
- * or lost. A won enquiry still in the plant is active work, but it is not a follow-up, and the
- * tiles link to those lists — a tile saying 4 over a list of 3 reads as a bug.
+ * Open for marketing — the Enquiries list's own "Open" and "Due now" [pipeline.controller]: not
+ * closed, not lost. A won order is followed through the plant until its LR closes it, so it
+ * counts until then. The tiles link to those lists — a tile saying 4 over a list of 3 reads as a bug.
  */
-const openForMarketing = (user) => ({ ...activeEnquiries(user), status: { $nin: CLOSED_STATUSES } });
+const openForMarketing = (user) => activeEnquiries(user);
 
 /** Marketing's first step — an enquiry nobody has verified and moved on yet. */
 const isNew = { $or: [{ marketingStatus: 'enquiry_received' }, { marketingStatus: null, status: { $in: ['new', 'requirement_clarification'] } }] };

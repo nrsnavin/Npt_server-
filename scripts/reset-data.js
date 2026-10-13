@@ -7,9 +7,17 @@
  *   npm run reset-data -- --keep=someone@x.com --confirm
  *   npm run reset-data -- --keep-registers --confirm
  *   npm run reset-data -- --keep-users --confirm    # every login stays; all the data goes
+ *   npm run reset-data -- --keep=a@x.com,b@x.com --keep-customers --keep-masters --confirm
+ *   npm run reset:fresh-start -- --confirm          # the same, for rsnavin1@gmail.com and info@navinplastic.com
  *
  * Options:
- *   --keep=<email>    the one account to survive (default: rsnavin1@gmail.com)
+ *   --keep=<email>[,<email>…]  the accounts to survive (default: rsnavin1@gmail.com); every one
+ *                     must exist, or nothing is deleted
+ *   --keep-customers  keep the customer register (their contacts, addresses, owners); what
+ *                     happened with them — follow-ups, credit status, business totals — is reset,
+ *                     and a customer whose owner is deleted goes to the first account kept
+ *   --keep-masters    keep every master: the registers below, plus machines, delivery routes,
+ *                     transporters and vehicles, and the mould / trading-item photos
  *   --confirm         required to delete anything; without it this is a dry run
  *   --keep-users      keep every user account (with its department and password), not only one —
  *                     for clearing the working data while everybody can still sign in
@@ -63,6 +71,9 @@ const DEFAULT_KEEP = 'rsnavin1@gmail.com';
  * actually wants.
  */
 const REGISTERS = ['Mould', 'Material', 'Component', 'TradedItem'];
+
+/** The registers and the dispatch masters — what `--keep-masters` spares. */
+const MASTERS = [...REGISTERS, 'Machine', 'DeliveryRoute', 'Transporter', 'Vehicle'];
 
 /**
  * Handled separately, not skipped. Listed here so a reader can see there is no third category.
@@ -135,10 +146,12 @@ const LABELS = {
 const label = (name) => LABELS[name] || `${name}s`;
 
 async function run() {
-  const keep = argument('keep', DEFAULT_KEEP).toLowerCase();
+  const keeps = argument('keep', DEFAULT_KEEP).toLowerCase().split(',').map((email) => email.trim()).filter(Boolean);
   const confirmed = flag('confirm');
-  const keepRegisters = flag('keep-registers') || flag('keep-catalogue');
+  const keepMasters = flag('keep-masters');
+  const keepRegisters = keepMasters || flag('keep-registers') || flag('keep-catalogue');
   const keepUsers = flag('keep-users');
+  const keepCustomers = flag('keep-customers');
 
   await connectDatabase();
   const registered = await loadModels();
@@ -148,10 +161,13 @@ async function run() {
    * Checked first, and the run stops here if it fails. Deleting every other account before
    * discovering the survivor was misspelled leaves a database nobody can sign in to.
    */
-  const survivor = await User.findOne({ email: keep });
-  if (!survivor) {
+  const found = await User.find({ email: { $in: keeps } });
+  const survivors = keeps.map((email) => found.find((user) => user.email === email)).filter(Boolean);
+  const survivor = survivors[0];
+  const missing = keeps.filter((email) => !found.some((user) => user.email === email));
+  if (missing.length) {
     const known = await User.find().select('email').sort('email').lean();
-    console.error(`\nNo account with the email ${keep} in ${mongoose.connection.name}.`);
+    console.error(`\nNo account with the email ${missing.join(', ')} in ${mongoose.connection.name}.`);
     console.error('Nothing has been deleted. The accounts that exist are:\n');
     known.forEach((user) => console.error(`  ${user.email}`));
     console.error(
@@ -163,9 +179,22 @@ async function run() {
     return;
   }
 
-  const targets = registered.filter(
-    (name) => !SPARED.includes(name) && !(keepRegisters && REGISTERS.includes(name))
-  );
+  const kept = [
+    ...(keepRegisters ? REGISTERS : []),
+    ...(keepMasters ? MASTERS : []),
+    ...(keepCustomers ? ['Customer'] : []),
+  ];
+  const targets = registered.filter((name) => !SPARED.includes(name) && !kept.includes(name));
+  /*
+   * Within two collections, part stays: the photos of the moulds and trading items kept, and the
+   * running number behind the customer codes kept — without it the next customer would be
+   * CUST-2026-0001 again and collide with the one already there.
+   */
+  const partly = {
+    Attachment: keepMasters ? { mould: { $exists: false }, tradedItem: { $exists: false } } : {},
+    Counter: keepCustomers ? { key: { $not: /^CUST-/ } } : {},
+  };
+  const scope = (name) => partly[name] || {};
 
   /*
    * Counted one at a time, not in parallel.
@@ -178,9 +207,9 @@ async function run() {
    */
   const counts = [];
   for (const name of targets) {
-    counts.push([name, await mongoose.models[name].countDocuments()]);
+    counts.push([name, await mongoose.models[name].countDocuments(scope(name))]);
   }
-  const otherUsers = keepUsers ? 0 : await User.countDocuments({ _id: { $ne: survivor._id } });
+  const otherUsers = keepUsers ? 0 : await User.countDocuments({ _id: { $nin: survivors.map((user) => user._id) } });
   const total = counts.reduce((sum, [, count]) => sum + count, 0) + otherUsers;
 
   console.log(`\n${confirmed ? 'Deleting' : 'Would delete'} from "${mongoose.connection.name}":\n`);
@@ -196,9 +225,11 @@ async function run() {
   if (!total) console.log('\n  (this database is already empty apart from the account below)');
 
   if (keepUsers) console.log(`\nKeeping: every user account (${await User.countDocuments()}), so everybody can still sign in`);
-  else console.log(`\nKeeping: ${survivor.name} <${survivor.email}> (${survivor.role})`);
-  if (keepRegisters) {
-    console.log(`Keeping: the registers — ${REGISTERS.map(label).join(', ')} — untouched.`);
+  else survivors.forEach((user) => console.log(`\nKeeping: ${user.name} <${user.email}> (${user.role})`));
+  if (keepMasters) console.log(`Keeping: the masters — ${MASTERS.map(label).join(', ')} — and their photos.`);
+  else if (keepRegisters) console.log(`Keeping: the registers — ${REGISTERS.map(label).join(', ')} — untouched.`);
+  if (keepCustomers) {
+    console.log(`Keeping: the ${await mongoose.models.Customer.countDocuments()} customers — follow-ups, credit status and business totals reset.`);
   }
 
   if (!confirmed) {
@@ -208,27 +239,43 @@ async function run() {
   }
 
   for (const name of targets) {
-    const { deletedCount } = await mongoose.models[name].deleteMany({});
+    const { deletedCount } = await mongoose.models[name].deleteMany(scope(name));
     if (deletedCount) console.log(`  cleared ${label(name)} (${deletedCount})`);
   }
 
   if (!keepUsers) {
-    const { deletedCount } = await User.deleteMany({ _id: { $ne: survivor._id } });
+    const { deletedCount } = await User.deleteMany({ _id: { $nin: survivors.map((user) => user._id) } });
     if (deletedCount) console.log(`  cleared other accounts (${deletedCount})`);
   }
 
   /*
-   * The survivor is made an admin on the way out. It is the only account left, so anything
-   * less locks the whole system: no one to grant a module, no one to add a colleague back.
+   * The customers stay as the register they are; what happened with them goes with the rest of
+   * the working data, and one whose owner was deleted is handed to the first account kept.
    */
-  if (!keepUsers && survivor.role !== 'admin') {
-    survivor.role = 'admin';
-    await survivor.save();
-    console.log(`  promoted ${survivor.email} to admin — it is the only account left`);
+  if (keepCustomers) {
+    const Customer = mongoose.models.Customer;
+    await Customer.updateMany({}, {
+      $unset: { followUp: 1, followUpLog: 1, lastOrderDate: 1 },
+      $set: { totalBusinessValue: 0, 'credit.status': 'good' },
+    });
+    const owners = (await User.find().select('_id').lean()).map((user) => user._id);
+    const { modifiedCount } = await Customer.updateMany({ assignedTo: { $nin: owners } }, { $set: { assignedTo: survivor._id } });
+    if (modifiedCount) console.log(`  handed ${modifiedCount} customers to ${survivor.email} — their owner was deleted`);
   }
 
-  const people = keepUsers ? 'its users' : 'one user';
-  const left = keepRegisters ? `${people} and the registers, and nothing else` : `${people} and nothing else`;
+  /*
+   * One survivor is made an admin on the way out when none is. They are the only accounts left,
+   * so anything less locks the whole system: no one to grant a module, no one to add a colleague.
+   */
+  if (!keepUsers && !survivors.some((user) => user.role === 'admin')) {
+    survivor.role = 'admin';
+    await survivor.save();
+    console.log(`  promoted ${survivor.email} to admin — no account left was one`);
+  }
+
+  const people = keepUsers ? 'its users' : survivors.length === 1 ? 'one user' : `${survivors.length} users`;
+  const also = [keepCustomers && 'the customers', keepMasters ? 'the masters' : keepRegisters && 'the registers'].filter(Boolean);
+  const left = `${people}${also.length ? `, ${also.join(' and ')},` : ''} and nothing else`;
   console.log(`\nDone. "${mongoose.connection.name}" now holds ${left}.\n`);
 }
 

@@ -1,8 +1,8 @@
 import { withCreateLocks } from './operationLock.service.js';
 import Todo, { PRIORITIES } from '../models/Todo.js';
 import Enquiry from '../models/Enquiry.js';
-import { CLOSED_STAGE, STAGES, stageLabel } from '../config/enquiryStages.js';
-import { followTask, marketingStatusOf } from '../config/marketingStatuses.js';
+import { CLOSED_STAGE, SALES_STAGE_KEYS, SIDE_STAGES, STAGES, stageLabel } from '../config/enquiryStages.js';
+import { followTask, marketingStatusOf, meansWon } from '../config/marketingStatuses.js';
 import { findDepartment } from '../config/modules.js';
 import { HANDOFFS, findHandoff } from '../config/handoffs.js';
 import { canRead } from './access.service.js';
@@ -159,6 +159,17 @@ async function moveStage(enquiry, to, { user, task, note, heldBy, marketing: sai
     update.$set = { ...(update.$set || {}), marketingStatus: follows };
     update.$push = { ...(update.$push || {}), marketingStatusHistory: marketing };
   }
+  /*
+   * The order is won when a rule says so on the order's own evidence — the SO uploaded
+   * [config/handoffs.js whenDone] — not merely because Production was asked for a date.
+   */
+  const won = said && marketing && meansWon(marketing.to) && !['won', 'lost'].includes(enquiry.status)
+    ? { from: enquiry.status, to: 'won', by: user?._id, note: `${task?.title || 'Order booked'}` }
+    : null;
+  if (won) {
+    update.$set = { ...(update.$set || {}), status: 'won' };
+    update.$push = { ...(update.$push || {}), statusHistory: won };
+  }
   if (!Object.keys(update).length) return;
   await Enquiry.updateOne({ _id: enquiry._id }, update, { timestamps: false, keepVersion: true });
 
@@ -170,6 +181,10 @@ async function moveStage(enquiry, to, { user, task, note, heldBy, marketing: sai
   if (marketing) {
     enquiry.marketingStatus = marketing.to;
     enquiry.unmarkModified('marketingStatus');
+  }
+  if (won) {
+    enquiry.status = 'won';
+    enquiry.unmarkModified('status');
   }
   if (heldBy !== undefined) {
     enquiry.heldBy = heldBy || undefined;
@@ -542,7 +557,9 @@ async function moveEnquiryChecked({
     link: `/enquiries/${enquiry._id}`,
   });
   /* Asked from another department's task (Dispatch asking Production), the enquiry stays where it is. */
-  if (!keepStage) await moveStage(enquiry, handoff.stage, { user, task, note: text || handoff.label });
+  /* Work alongside the order (money, account, audit) does not take over the stage once the order is under way. */
+  const aside = SIDE_STAGES.includes(handoff.stage) && enquiry.stage && !SALES_STAGE_KEYS.includes(enquiry.stage);
+  if (!keepStage) await moveStage(enquiry, aside ? null : handoff.stage, { user, task, note: text || handoff.label });
   if (openRecords) await openWorkRecord(kind, enquiry, asked);
 
   await publish(EVENTS.HANDOFF_SENT, { task, enquiry, by: user });
