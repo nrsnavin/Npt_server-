@@ -250,3 +250,19 @@ test('a won order still in the plant takes a call with a next step; a closed one
   assert.equal(refused.status, 400);
   assert.match(refused.json.message, /closed enquiry has to be reopened/);
 });
+
+test('an LR uploaded on an enquiry with no SO does not make it Won, nor close it', async () => {
+  const fresh = await freshEnquiry('NPT-450');
+  const before = (await rowOf(fresh._id)).status;
+  const dispatch = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Send it', brief: { model: 'NPT-450', quantity: 500 } } });
+  assert.equal(dispatch.status, 201, dispatch.json.message);
+  const lr = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'lr_copy', note: 'LR please', brief: { invoiceNumber: 'INV-450' } } });
+  assert.equal(lr.status, 201, lr.json.message);
+  const sent = await upload('rekha', lr.json.data.task._id, { bytes: PNG, type: 'image/png', name: 'LR-450.png', note: 'LR 450' });
+  assert.equal(sent.status, 200, sent.json.message);
+  const row = await rowOf(fresh._id);
+  assert.equal(row.marketingStatus, 'lr_sent');
+  assert.equal(row.status, before, 'the sales stage is left as it was — only the SO marks an order Won');
+  assert.notEqual(row.status, 'won');
+  assert.notEqual(row.stage, 'closed');
+});

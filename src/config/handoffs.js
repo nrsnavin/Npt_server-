@@ -52,8 +52,11 @@ const BUTTONS = [
   },
   {
     key: 'po_so', label: 'PO & SO', department: 'order_confirmation', stage: 'po_so',
-    /* The SO uploaded: the enquiry reads Production, whether or not Production's task could be raised yet. */
-    whenDone: { stage: 'production_edd', marketing: 'production' },
+    /*
+     * The SO uploaded: the order is booked — the enquiry reads Production and is Won, whether or
+     * not Production's task could be raised yet. The only automatic move that marks it Won.
+     */
+    whenDone: { stage: 'production_edd', marketing: 'production', won: true },
     hint: 'The buyer’s PO is in — raise and send the sales order',
     records: [{ key: 'poNumber', label: 'Customer PO number' }, { key: 'soNumber', label: 'Sales order number' }],
     opens: 'orders',

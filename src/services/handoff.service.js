@@ -2,7 +2,7 @@ import { withCreateLocks } from './operationLock.service.js';
 import Todo, { PRIORITIES } from '../models/Todo.js';
 import Enquiry from '../models/Enquiry.js';
 import { CLOSED_STAGE, SALES_STAGE_KEYS, SIDE_STAGES, STAGES, stageLabel } from '../config/enquiryStages.js';
-import { followTask, marketingRank, marketingStatusOf, meansWon } from '../config/marketingStatuses.js';
+import { followTask, marketingRank, marketingStatusOf } from '../config/marketingStatuses.js';
 import { findDepartment } from '../config/modules.js';
 import { HANDOFFS, findHandoff } from '../config/handoffs.js';
 import { canRead } from './access.service.js';
@@ -132,7 +132,7 @@ async function backToSender(task, { title, notes, user }) {
  * collide with, or make stale, the copy a marketing person has open. The document in hand is
  * brought up to date too, for whoever replies with it.
  */
-async function moveStage(enquiry, to, { user, task, note, heldBy, marketing: said }) {
+async function moveStage(enquiry, to, { user, task, note, heldBy, marketing: said, won: wins = false }) {
   const set = {};
   const unset = {};
   if (heldBy === null) unset.heldBy = 1;
@@ -160,10 +160,11 @@ async function moveStage(enquiry, to, { user, task, note, heldBy, marketing: sai
     update.$push = { ...(update.$push || {}), marketingStatusHistory: marketing };
   }
   /*
-   * The order is won when a rule says so on the order's own evidence — the SO uploaded
-   * [config/handoffs.js whenDone] — not merely because Production was asked for a date.
+   * The order is won on its own evidence alone — the SO uploaded [config/handoffs.js po_so
+   * `whenDone.won`]. Not because Production was asked for a date, and not because an LR was
+   * uploaded: an LR says the goods left, not that the order was booked.
    */
-  const won = said && meansWon(said) && !['won', 'lost'].includes(enquiry.status)
+  const won = wins && !['won', 'lost'].includes(enquiry.status)
     ? { from: enquiry.status, to: 'won', by: user?._id, note: `${task?.title || 'Order booked'}` }
     : null;
   if (won) {
@@ -792,18 +793,19 @@ async function reachEnquiry(task, user, reach, note) {
   if (!enquiry || enquiry.stage === CLOSED_STAGE) return;
   /*
    * Only ever forward. Production closing its task after the goods have gone must not pull an
-   * enquiry at LR Copy back to Dispatch; what it still says — the order is won — stands.
+   * enquiry at LR Copy back to Dispatch; what it still says — an SO uploaded late is still the
+   * order booked — stands.
    */
   const current = marketingStatusOf(enquiry);
   if (reach.marketing && marketingRank(reach.marketing) < marketingRank(current)) {
-    await moveStage(enquiry, null, { user, task, note: note || task.title, marketing: current });
+    await moveStage(enquiry, null, { user, task, note: note || task.title, marketing: current, won: Boolean(reach.won) });
     return;
   }
   if (reach.close) {
     await closeEnquiryAutomatically({ enquiry, note: note || task.title, marketing: reach.marketing, except: task._id });
     return;
   }
-  await moveStage(enquiry, reach.stage || null, { user, task, note: note || task.title, marketing: reach.marketing });
+  await moveStage(enquiry, reach.stage || null, { user, task, note: note || task.title, marketing: reach.marketing, won: Boolean(reach.won) });
 }
 
 /**
