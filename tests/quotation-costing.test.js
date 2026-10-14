@@ -517,7 +517,10 @@ test('the document heads with the logo and the plant’s own address', async () 
   for (const line of ['NAVIN PLASTIC TECH', 'No:1/110-F, Kaniyampoondi,', 'Vanjipalayam (Post), Tirupur-641663', 'Ph: 0421 - 4334690 / Mob: 9944423690', '39269069']) {
     assert.ok(printed.includes(line), `the quote prints ${line}`);
   }
-  assert.match(bytes.toString('latin1'), /\/Subtype \/Image/, 'the logo is embedded');
+  const images = bytes.toString('latin1').match(/\/Subtype \/Image/g) || [];
+  assert.ok(images.length >= 2, 'the logo and the seal are embedded');
+  const at = printed.indexOf('Authorized Signature');
+  assert.ok(at >= 0, 'the signature box is printed');
 });
 
 /* --------------------------------- The list --------------------------------- */

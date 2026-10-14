@@ -100,7 +100,7 @@ const ROW_HEIGHT = 46;
 
 /* The foot: its caption row, and the remarks and signature box under it (room for the seal). */
 const FOOT_LABEL = 14;
-const FOOT_BODY = 64;
+const FOOT_BODY = 86;
 const FOOT = FOOT_LABEL + FOOT_BODY;
 
 /** The left edge of each column and its width, resolved once. */
