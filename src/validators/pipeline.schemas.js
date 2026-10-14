@@ -339,6 +339,27 @@ export const buyerCardConfirmSchema = z.object({
   nextFollowUpDate: z.string().trim().max(40).optional(),
   estimatedValue: z.number().nonnegative().nullable().optional(),
   assignedTo: objectId.optional(),
+  /* The model asked about, on the enquiry it makes. */
+  modelNumber: z.string().trim().max(120).optional(),
+  /* A customer already on the register to raise the enquiry on, instead of making a new one. */
+  customer: objectId.optional(),
+  /* Every model asked about — the draft's list, read from the picture and corrected. */
+  items: z.array(z.object({
+    mould: objectId.optional(),
+    modelNumber: z.string().trim().max(120).optional(),
+    isNewDevelopment: z.boolean().optional(),
+    quantity: z.number().int().nonnegative().nullable().optional(),
+    colour: z.string().trim().max(80).optional(),
+  })).max(20).optional(),
+  /*
+   * The next step as a department task, raised on the new enquiry in the same save: a sample,
+   * or a quotation. The answers are the task form's own [config/departmentTaskForms.js].
+   */
+  task: z.object({
+    kind: z.enum(['sample_request', 'create_quotation']),
+    note: z.string().trim().max(1000).optional(),
+    brief: z.record(z.string(), z.any()).optional(),
+  }).optional(),
 });
 
 /** A message to the buyer from the enquiry: WhatsApp, or an email with a subject. */

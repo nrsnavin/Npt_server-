@@ -183,10 +183,10 @@ test('a reply on WhatsApp does not finish the draft — finishing it is done in 
   assert.equal((await readCardOf(nandhini))._id, draft._id, 'still a draft');
 });
 
-test('the salesperson must give the next step, when, and how they met them', async () => {
+test('the salesperson must give when to follow up and how they met them; the next step may wait', async () => {
   const draft = await readCardOf(nandhini);
   const cases = [
-    [{}, /next step/],
+    [{}, /when to follow up/],
     [{ nextAction: 'Call him' }, /when to follow up/],
     [{ nextAction: 'Call him', nextFollowUpDate: inDays(-1) }, /cannot be in the past/],
     [{ nextAction: 'Call him', nextFollowUpDate: inDays(1) }, /how we met them/],
@@ -231,6 +231,159 @@ test('a double tap on Confirm makes one customer, and the second tap is told it 
   assert.equal(await Customer.countDocuments({ name: 'Double Tap Fabrics' }), 1);
 });
 
+test('a sample as the next step: the enquiry is made checked, with the sample task raised on it', async () => {
+  cardReply = card({ company: 'Sample Step Fabrics', mobile: '9840077101' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+
+  const noModel = await finish(draft._id, { ...theRest, nextAction: 'Send sample', task: { kind: 'sample_request', brief: { items: [{ quantity: '2' }] } } });
+  assert.equal(noModel.status, 400, 'a sample needs its model');
+  assert.match(noModel.json.message, /Mould \/ model is needed/);
+  assert.equal(await Customer.countDocuments({ name: 'Sample Step Fabrics' }), 0, 'the whole save is undone');
+
+  const done = await finish(draft._id, {
+    ...theRest,
+    nextAction: 'Send sample',
+    nextActionType: 'send_sample',
+    modelNumber: 'NH-400',
+    task: { kind: 'sample_request', note: 'Black, compulsory', brief: { items: [{ model: 'NH-400', colour: 'Black', colourType: 'Compulsory colour', quantity: '2' }] } },
+  });
+  assert.equal(done.status, 200, done.json.message);
+  assert.equal(done.json.data.task.kind, 'sample_request');
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.ok(enquiry.checkedAt, 'read through by whoever saved the draft');
+  assert.equal(enquiry.requirement.modelNumber, 'NH-400');
+  assert.equal(enquiry.stage, 'sample', 'the enquiry is with Sampling');
+  const Todo = mongoose.model('Todo');
+  const sampleTask = await Todo.findOne({ enquiry: enquiry._id, kind: 'sample_request' });
+  assert.ok(sampleTask, 'the Sampling task is raised');
+  assert.equal(sampleTask.brief.items[0].model, 'NH-400');
+});
+
+test('a quotation as the next step raises the Quotation task; photos only set the next step', async () => {
+  cardReply = card({ company: 'Quote Step Fabrics', mobile: '9840077102' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const quoteDraft = await readCardOf(nandhini);
+  const quoted = await finish(quoteDraft._id, {
+    ...theRest, nextAction: 'Send quotation', nextActionType: 'send_quote', modelNumber: 'NH-420',
+    task: { kind: 'create_quotation', brief: { models: 'NH-420', quantity: '5000', targetPrice: '4.5' } },
+  });
+  assert.equal(quoted.status, 200, quoted.json.message);
+  const Todo = mongoose.model('Todo');
+  const quoteTask = await Todo.findOne({ enquiry: quoted.json.data.enquiry._id, kind: 'create_quotation' });
+  assert.equal(quoteTask?.brief?.quantity, '5000');
+
+  cardReply = card({ company: 'Photo Step Fabrics', mobile: '9840077103' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const photoDraft = await readCardOf(nandhini);
+  const photos = await finish(photoDraft._id, { ...theRest, nextAction: 'Send photos', nextActionType: 'whatsapp', modelNumber: 'NH-380' });
+  assert.equal(photos.status, 200, photos.json.message);
+  assert.equal(photos.json.data.task, null, 'no department task for photos');
+  const enquiry = await Enquiry.findById(photos.json.data.enquiry._id);
+  assert.equal(enquiry.nextAction, 'Send photos');
+  assert.equal(enquiry.requirement.modelNumber, 'NH-380');
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: { $in: ['sample_request', 'create_quotation'] } }), 0);
+});
+
+test('a draft is saved without a next step; the enquiry has none set yet', async () => {
+  cardReply = card({ company: 'No Step Yet Fabrics', mobile: '9840077104' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  const done = await finish(draft._id, { nextFollowUpDate: inDays(2), source: 'trade_show' });
+  assert.equal(done.status, 200, done.json.message);
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.equal(enquiry.nextAction, undefined);
+  assert.equal(enquiry.nextActionType, undefined);
+});
+
+test('a chat asking for several models: each is read, matched to the master, and saved as the enquiry’s models', async () => {
+  const Mould = mongoose.model('Mould');
+  const TradedItem = (await import('../src/models/TradedItem.js')).default;
+  const [ncp] = await Mould.create([
+    { mouldCode: 'NCP-25', name: '25cm shirt hanger', category: 'shirt', sizeMm: 250, partWeightGrams: 20, cycleTimeSeconds: 30 },
+    { mouldCode: 'NCP-27', name: '27cm shirt hanger', category: 'shirt', sizeMm: 270, partWeightGrams: 22, cycleTimeSeconds: 30 },
+    { mouldCode: 'VS-400', name: '400mm velvet suit hanger', category: 'suit', sizeMm: 400, partWeightGrams: 60, cycleTimeSeconds: 40 },
+    { mouldCode: 'VS-450', name: '450mm velvet suit hanger', category: 'suit', sizeMm: 450, partWeightGrams: 65, cycleTimeSeconds: 40 },
+  ]);
+  await TradedItem.create({ modelNumber: 'MAU-35 WB', description: 'Wooden look trouser', price: 9, inwardPrice: 6.5 });
+  const { forgetCatalogue } = await import('../src/services/modelCatalogue.service.js');
+  forgetCatalogue();
+  const vs400 = await Mould.findOne({ mouldCode: 'VS-400' });
+
+  cardReply = [
+    card({
+      kind: 'chat', contactName: 'Ravi', mobile: '9840077201', company: 'Multi Model Tex',
+      models: [
+        { asked: 'NCP 25', quantity: '5000 pcs', colour: 'Black' },
+        { asked: '400mm velvet suit hanger', quantity: '2k', colour: 'Maroon' },
+        { asked: 'mau 35 wb', quantity: '', colour: '' },
+        { asked: 'the round one from last time', quantity: '', colour: '' },
+      ],
+    }),
+    /* The model's pick for what the codes did not settle: the velvet suit is VS-400; the round one is nobody's guess. */
+    { picks: [{ request: 0, ref: `m${vs400._id}` }, { request: 1, ref: 'none' }] },
+  ];
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  const models = draft.reading.models;
+  assert.equal(models.length, 4);
+  assert.deepEqual([models[0].code, models[0].matchedBy, String(models[0].mould)], ['NCP-25', 'code', String(ncp._id)]);
+  assert.equal(models[0].quantity, 5000);
+  assert.deepEqual([models[1].code, models[1].matchedBy, models[1].quantity], ['VS-400', 'model', 2000]);
+  assert.deepEqual([models[2].code, Boolean(models[2].tradedItem)], ['MAU-35 WB', true]);
+  assert.equal(models[3].code, undefined, 'not placed: left for the salesperson');
+
+  /* The second call gave the model only the shortlists, and only codes from them could be answered. */
+  const matching = sent.at(-1);
+  assert.match(matching.system, /Never invent a code/);
+  const offered = matching.output_config.format.schema.properties.picks.items.properties.ref.enum;
+  assert.ok(offered.includes(`m${vs400._id}`) && offered.includes('none'));
+  assert.ok(!offered.some((ref) => ref.startsWith('m') && ref === `m${ncp._id}`), 'a code already settled is not asked about');
+
+  /* Saved with no list sent: the matched models become the enquiry's models. */
+  const done = await finish(draft._id, theRest);
+  assert.equal(done.status, 200, done.json.message);
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.equal(enquiry.items.length, 4);
+  assert.equal(String(enquiry.items[0].mould), String(ncp._id));
+  assert.equal(enquiry.items[0].quantity, 5000);
+  assert.equal(String(enquiry.items[1].mould), String(vs400._id));
+  assert.equal(enquiry.items[2].modelNumber, 'MAU-35 WB');
+  assert.equal(enquiry.items[3].modelNumber, 'the round one from last time');
+});
+
+test('the salesperson’s own list of models is what the enquiry gets', async () => {
+  cardReply = card({ company: 'Own List Fabrics', mobile: '9840077202', models: [{ asked: 'NCP 25', quantity: '', colour: '' }] });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  const ncp27 = await mongoose.model('Mould').findOne({ mouldCode: 'NCP-27' });
+  const done = await finish(draft._id, {
+    ...theRest,
+    items: [{ mould: String(ncp27._id), quantity: 3000, colour: 'White' }, { modelNumber: 'Buyer sample 7' }],
+  });
+  assert.equal(done.status, 200, done.json.message);
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.deepEqual(enquiry.items.map((row) => row.mould ? String(row.mould) : row.modelNumber), [String(ncp27._id), 'Buyer sample 7']);
+  assert.equal(enquiry.items[0].colour, 'White');
+});
+
+test('the draft’s model dropdown lists both masters, and finds by code or name', async () => {
+  const listed = await api('/api/buyer-cards/models', { token: nandhini });
+  assert.equal(listed.status, 200);
+  const codes = listed.json.data.map((row) => row.code);
+  assert.ok(codes.includes('NCP-25') && codes.includes('MAU-35 WB'), 'moulds and trading items in one list');
+  const traded = listed.json.data.find((row) => row.code === 'MAU-35 WB');
+  assert.equal(traded.kind, 'traded');
+
+  const velvet = (await api('/api/buyer-cards/models?search=velvet', { token: nandhini })).json.data.map((row) => row.code);
+  assert.deepEqual(velvet.slice(0, 2).sort(), ['VS-400', 'VS-450']);
+  assert.equal((await api('/api/buyer-cards/models?search=ncp 25', { token: nandhini })).json.data[0].code, 'NCP-25');
+
+  const one = await api(`/api/buyer-cards/models?ref=${traded.ref}`, { token: nandhini });
+  assert.equal(one.json.data.code, 'MAU-35 WB');
+  assert.equal((await api('/api/buyer-cards/models?ref=mnothing', { token: nandhini })).status, 404);
+});
+
 test('a draft can be dropped', async () => {
   cardReply = card({ company: 'Drop Me Textiles', mobile: '9840099999' });
   await whatsapp(NANDHINI_PHONE, { photo: true });
@@ -250,7 +403,72 @@ test('a buyer the plant already has is flagged on the draft and not added twice'
   assert.equal(tried.status, 409);
   assert.match(tried.json.message, /Raise the enquiry on that customer/);
   assert.equal(await Customer.countDocuments({ mobile: '+919840011223' }), 1);
+
+  /* Picked on the draft: the enquiry goes on the customer the plant already has. */
+  const existing = draft.matchedCustomer._id || draft.matchedCustomer;
+  const onIt = await finish(draft._id, { ...theRest, customer: String(existing) });
+  assert.equal(onIt.status, 200, onIt.json.message);
+  assert.equal(String(onIt.json.data.customer._id), String(existing));
+  assert.equal(await Customer.countDocuments({ mobile: '+919840011223' }), 1, 'no second customer');
+  const enquiry = await Enquiry.findById(onIt.json.data.enquiry._id);
+  assert.equal(String(enquiry.customer), String(existing));
+  const saved = (await api(`/api/buyer-cards/${draft._id}`, { token: nandhini })).json.data;
+  assert.equal(saved.status, 'confirmed');
+});
+
+test('a draft goes only on a customer the person may work', async () => {
+  const arunUser = await mongoose.model('User').findOne({ email: 'arun@np.com' });
+  const arunsBuyer = await Customer.create({ code: 'CUST-ARUN-1', name: 'Arun Own Buyer', mobile: '+919840077301', assignedTo: arunUser._id });
+
+  cardReply = card({ company: 'Someone Else', mobile: '9840077302' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  const refused = await finish(draft._id, { ...theRest, customer: String(arunsBuyer._id) });
+  assert.equal(refused.status, 403);
+  assert.match(refused.json.message, /belongs to another marketing person/);
   await api(`/api/buyer-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
+});
+
+test('a draft is offered the customers and master models it may already be', async () => {
+  const suggest = (query) => api(`/api/buyer-cards/suggestions?${new URLSearchParams(query)}`, { token: nandhini });
+
+  /* A name spelt a little differently is still offered, from her own customers. */
+  const alike = await suggest({ company: 'Sri Murugan Garment' });
+  assert.equal(alike.status, 200);
+  const smg = alike.json.data.customers.find((row) => row.name === 'Sri Murugan Garments');
+  assert.ok(smg, 'a similar name is suggested');
+  assert.equal(smg.why, 'Similar name');
+  assert.equal(smg.mayUse, true);
+
+  /* The same number is the buyer for certain. */
+  const sameNumber = (await suggest({ company: 'Unrelated Name', mobile: '98400 11223' })).json.data.customers[0];
+  assert.deepEqual([sameNumber.name, sameNumber.why, sameNumber.score], ['Sri Murugan Garments', 'Same phone number', 100]);
+
+  /* Another salesperson's customer: never offered on a name alone, named — not usable — on the number. */
+  assert.ok(!(await suggest({ company: 'Arun Own Buyer' })).json.data.customers.some((row) => row.name === 'Arun Own Buyer'));
+  const his = (await suggest({ mobile: '9840077301' })).json.data.customers[0];
+  assert.deepEqual([his.name, his.mayUse, his.holder], ['Arun Own Buyer', false, 'Arun K']);
+
+  /* One list of master models for each model row. */
+  const params = new URLSearchParams([['asked', 'ncp 25 black'], ['asked', 'velvet suit 400mm'], ['asked', '']]);
+  const models = (await api(`/api/buyer-cards/suggestions?${params}`, { token: nandhini })).json.data.models;
+  assert.equal(models.length, 3);
+  assert.equal(models[0][0].code, 'NCP-25');
+  assert.equal(models[0][0].kind, 'mould');
+  assert.equal(models[1][0].code, 'VS-400');
+  assert.deepEqual(models[2], [], 'no words, no suggestions');
+});
+
+test('a model not made yet goes on the enquiry as a new development', async () => {
+  cardReply = card({ company: 'New Dev Fabrics', mobile: '9840077303' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  const done = await finish(draft._id, { ...theRest, items: [{ isNewDevelopment: true, modelNumber: 'Round velvet hanger, 380mm', quantity: 2000 }] });
+  assert.equal(done.status, 200, done.json.message);
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.equal(enquiry.items[0].isNewDevelopment, true);
+  assert.equal(enquiry.items[0].modelNumber, 'Round velvet hanger, 380mm');
+  assert.equal(enquiry.isNewDevelopment, true, 'the first model is the enquiry’s own');
 });
 
 test('a draft from someone outside marketing goes to the marketing rotation when finished', async () => {

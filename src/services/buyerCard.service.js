@@ -9,6 +9,7 @@ import { fetchMedia, isWhatsAppConfigured, sendWhatsApp } from '../providers/wha
 import { normalisePhone } from '../utils/phone.js';
 import { env } from '../config/env.js';
 import { recordChange } from './audit.service.js';
+import { ownsRecord } from './ownership.service.js';
 import { createBuyer, customerByContact, ownerForNewBuyer, raiseFirstEnquiry } from './intake.service.js';
 
 /**
@@ -106,10 +107,21 @@ function mergeInto(target, reading, image) {
   const current = target.reading?.toObject?.() || target.reading || {};
   const merged = { ...current };
   for (const [key, value] of Object.entries(reading)) {
-    if (key === 'notes') continue;
+    if (key === 'notes' || key === 'models') continue;
     if (merged[key] === undefined || merged[key] === '' || merged[key] === null) merged[key] = value;
   }
   if (reading.notes) merged.notes = [current.notes, reading.notes].filter(Boolean).join(' ').slice(0, 600);
+  /* The models a later screenshot names join the list, each once. */
+  if (reading.models?.length) {
+    const plain = (rows) => (rows || []).map((row) => (row?.toObject ? row.toObject() : row));
+    const list = plain(current.models);
+    const seen = new Set(list.map((row) => (row.code || row.asked).toLowerCase()));
+    for (const row of reading.models) {
+      const key = (row.code || row.asked).toLowerCase();
+      if (!seen.has(key) && list.length < 10) { seen.add(key); list.push(row); }
+    }
+    merged.models = list;
+  }
   target.reading = merged;
   target.moreImages = [...(target.moreImages || []), image];
 }
@@ -212,10 +224,12 @@ export async function handleStaffMessage({ staff, from, body, media = [], provid
 }
 
 /** Why a card cannot become a customer as it stands, or null. The same checks, however it is confirmed. */
-export function confirmProblem(fields) {
-  if (!fields.company || String(fields.company).trim().length < 2) return 'A customer needs a company name.';
-  if (!fields.mobile && !fields.email && !fields.whatsapp) return 'A customer needs a phone number or an email to reach them on.';
-  if (!String(fields.nextAction || '').trim()) return 'Say what the next step is.';
+export function confirmProblem(fields, { existing = false } = {}) {
+  /* Onto a customer already on the register: their name and numbers are already there. */
+  if (!existing) {
+    if (!fields.company || String(fields.company).trim().length < 2) return 'A customer needs a company name.';
+    if (!fields.mobile && !fields.email && !fields.whatsapp) return 'A customer needs a phone number or an email to reach them on.';
+  }
   if (!fields.nextFollowUpDate) return 'Say when to follow up.';
   const due = new Date(fields.nextFollowUpDate);
   const today = new Date();
@@ -246,7 +260,32 @@ export async function confirmCard(card, user, edits = {}, options = {}) {
   });
 }
 
-async function confirmCardChecked(card, user, edits = {}, { owner } = {}) {
+/**
+ * The enquiry's models: what the salesperson's list says, or — when no list was sent — what was
+ * read and matched [buyerCard.llm `matchModels`]. A matched mould is named by its tool; a code
+ * on the trading master, or words nobody could place, by the model number.
+ */
+export function enquiryItemsFrom(items, reading) {
+  const rows = items ?? (reading?.models || []).map((model) => (model?.toObject ? model.toObject() : model)).map((model) => ({
+    mould: model.mould ? String(model.mould) : undefined,
+    modelNumber: model.mould ? undefined : model.code || model.asked,
+    quantity: model.quantity,
+    colour: model.colour,
+  }));
+  return (rows || [])
+    .map((row) => ({
+      /* A model not made yet: a new development, described in the buyer's or the salesperson's words. */
+      ...(row.isNewDevelopment && !row.mould ? { isNewDevelopment: true } : {}),
+      ...(row.mould ? { mould: String(row.mould) } : {}),
+      ...(String(row.modelNumber || '').trim() ? { modelNumber: String(row.modelNumber).trim() } : {}),
+      ...(Number(row.quantity) > 0 ? { quantity: Number(row.quantity) } : {}),
+      ...(String(row.colour || '').trim() ? { colour: String(row.colour).trim() } : {}),
+    }))
+    .filter((row) => row.mould || row.modelNumber)
+    .slice(0, 20);
+}
+
+async function confirmCardChecked(card, user, edits = {}, { owner, items, customer: existingId } = {}) {
   if (!OPEN_CARD_STATUSES.includes(card.status) || card.status === 'reading') {
     const error = new Error(card.status === 'reading' ? 'This card is still being read.' : `This card was already ${card.status}.`);
     error.status = 409;
@@ -254,7 +293,8 @@ async function confirmCardChecked(card, user, edits = {}, { owner } = {}) {
   }
 
   const fields = { ...(card.reading?.toObject?.() || card.reading || {}), ...edits };
-  for (const key of ['mobile', 'whatsapp']) {
+  /* On a customer already on the register the draft's numbers are not used, so not checked. */
+  for (const key of existingId ? [] : ['mobile', 'whatsapp']) {
     if (fields[key]) {
       const phone = normalisePhone(fields[key]);
       if (!phone) {
@@ -265,14 +305,33 @@ async function confirmCardChecked(card, user, edits = {}, { owner } = {}) {
       fields[key] = phone;
     }
   }
-  const problem = confirmProblem(fields);
+  const problem = confirmProblem(fields, { existing: Boolean(existingId) });
   if (problem) {
     const error = new Error(problem);
     error.status = 400;
     throw error;
   }
 
-  const duplicate = await existingFor(fields);
+  /*
+   * The buyer is already a customer — picked on the draft, often the one the app found by their
+   * number: the enquiry goes on them, and no second customer is made.
+   */
+  let existing = null;
+  if (existingId) {
+    existing = await Customer.findById(existingId);
+    if (!existing) {
+      const error = new Error('That customer is not on the register.');
+      error.status = 400;
+      throw error;
+    }
+    if (!ownsRecord(user, existing)) {
+      const error = new Error(`${existing.name} belongs to another marketing person — ask them, or Admin, to raise it.`);
+      error.status = 403;
+      throw error;
+    }
+  }
+
+  const duplicate = existing ? null : await existingFor(fields);
   if (duplicate) {
     const error = new Error(`This buyer is already customer ${duplicate.code} (${duplicate.name}). Raise the enquiry on that customer.`);
     error.status = 409;
@@ -290,7 +349,7 @@ async function confirmCardChecked(card, user, edits = {}, { owner } = {}) {
     chosen.rotated ? `Assigned to ${chosen.rotated} by rotation.` : '',
   ].filter(Boolean).join(' ');
 
-  const customer = await createBuyer(fields, {
+  const customer = existing || await createBuyer(fields, {
     assignedTo: chosen.user,
     source: fields.source,
     notes: how,
@@ -303,12 +362,15 @@ async function confirmCardChecked(card, user, edits = {}, { owner } = {}) {
     fields.notes && `${card.kind === 'chat' ? 'The conversation' : 'On the card'}: ${fields.notes}`,
   ].filter(Boolean).join('. ');
 
+  const models = enquiryItemsFrom(items, card.reading);
   const enquiry = await raiseFirstEnquiry({
     customer,
+    ...(models.length ? { items: models } : {}),
     remarks: wants || `New buyer from a ${card.kind === 'chat' ? 'chat screenshot' : 'card'} — find out what they want.`,
     /* The salesperson's own next step — not one the app made up. */
-    nextAction: String(fields.nextAction).trim(),
-    nextActionType: fields.nextActionType || 'call',
+    /* Optional: a draft can be saved before the next step is known, and set on the enquiry later. */
+    nextAction: String(fields.nextAction || '').trim() || undefined,
+    nextActionType: fields.nextActionType || (String(fields.nextAction || '').trim() ? 'call' : undefined),
     nextFollowUpDate: new Date(fields.nextFollowUpDate),
     source: fields.source,
     by: user,
@@ -324,7 +386,7 @@ async function confirmCardChecked(card, user, edits = {}, { owner } = {}) {
   card.decidedBy = user._id;
   card.decidedAt = new Date();
   await card.save();
-  await recordChange({ model: 'Customer', doc: customer, by: user, action: 'created', note: 'Created from a visiting card' });
+  if (!existing) await recordChange({ model: 'Customer', doc: customer, by: user, action: 'created', note: 'Created from a visiting card' });
   return { customer, enquiry };
 }
 

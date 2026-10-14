@@ -404,6 +404,15 @@ function keptBrief(kind, brief = {}, { strict = true } = {}) {
   return kept;
 }
 
+/**
+ * A task's answers checked before anything is made — the same checks raising it makes, for a
+ * caller that creates the enquiry first and must not leave it behind when the form is short
+ * [buyerCard.controller `confirmBuyerCard`].
+ */
+export function assertTaskAnswers(kind, brief, note) {
+  assertNote(kind, keptBrief(kind, brief), note);
+}
+
 /** A form that needs the instruction filled in some cases — Sampling, beyond three pieces. */
 function assertNote(kind, asked, note) {
   const rule = findHandoff(kind)?.form?.noteRequired;

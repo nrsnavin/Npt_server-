@@ -18,6 +18,25 @@ export const CARD_STATUSES = ['reading', 'ready', 'unreadable', 'confirmed', 'di
 /** Still waiting on somebody. */
 export const OPEN_CARD_STATUSES = ['reading', 'ready', 'unreadable'];
 
+/**
+ * One hanger model the buyer asked about: their words, and the plant's code it was matched to —
+ * by the code itself, or by the model choosing from a shortlist [buyerCard.llm `matchModels`].
+ * No code: nobody could place it, and the salesperson picks one.
+ */
+const askedModelSchema = new mongoose.Schema(
+  {
+    asked: { type: String, trim: true, required: true },
+    quantity: { type: Number, min: 0 },
+    colour: { type: String, trim: true },
+    code: { type: String, trim: true },
+    name: { type: String, trim: true },
+    mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould' },
+    tradedItem: { type: mongoose.Schema.Types.ObjectId, ref: 'TradedItem' },
+    matchedBy: { type: String, enum: ['code', 'model'] },
+  },
+  { _id: false }
+);
+
 /** What was read off the card. Every field optional: a card with only a phone is still a card. */
 const readingSchema = new mongoose.Schema(
   {
@@ -32,6 +51,8 @@ const readingSchema = new mongoose.Schema(
     productInterest: { type: String, trim: true },
     estimatedQuantity: { type: Number, min: 0 },
     notes: { type: String, trim: true },
+    /* Each model the buyer asked about — a chat often names several. */
+    models: { type: [askedModelSchema], default: undefined },
   },
   { _id: false }
 );
