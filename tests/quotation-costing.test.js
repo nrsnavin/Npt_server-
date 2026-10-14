@@ -510,6 +510,16 @@ test('the document names no cost, margin or minimum [§8]', async () => {
   }
 });
 
+test('the document heads with the logo and the plant’s own address', async () => {
+  const made = await toCost();
+  const bytes = await pdfOf(made._id);
+  const printed = await printedText(bytes);
+  for (const line of ['NAVIN PLASTIC TECH', 'No:1/110-F, Kaniyampoondi,', 'Vanjipalayam (Post), Tirupur-641663', 'Ph: 0421 - 4334690 / Mob: 9944423690', '39269069']) {
+    assert.ok(printed.includes(line), `the quote prints ${line}`);
+  }
+  assert.match(bytes.toString('latin1'), /\/Subtype \/Image/, 'the logo is embedded');
+});
+
 /* --------------------------------- The list --------------------------------- */
 
 test('the list cannot be ordered by a figure that is not a column', async () => {
@@ -532,8 +542,37 @@ test('raised already costed: the costing person’s choices and the calculated p
   assert.equal(line.unitPrice, 9, 'beside the price offered');
 });
 
+test('raised already costed as a trade hanger: the inward price typed on the sheet is the cost', async () => {
+  const raised = await toCost([{
+    modelNumber: 'TR-RAISED-1', procurement: 'trade', markupPercent: 10,
+    cost: { inwardPrice: 4.7, gramWeight: 0, rawMaterialRate: 0, jobWorkCost: 0, packingCost: 0, hookCost: 0, metalClipsCost: 0, printingCost: 0, otherCost: 0 },
+  }], admin);
+  const line = raised.lines[0];
+  assert.equal(line.cost.inwardPrice, 4.7);
+  assert.equal(Math.round(line.totalCost * 100) / 100, 4.7);
+  assert.equal(line.calculatedSellingPrice, priceAt(4.7, 10));
+});
+
 test('a cost sent by marketing while raising a quotation is ignored [§8]', async () => {
   const raised = await toCost([{ mould: light, materialRef: pp._id, cost: { packingCost: 0.25 } }], nandhini);
   const seen = await api(`/api/quotations/${raised._id}`, { token: admin });
   assert.notEqual(seen.json.data.lines[0].cost.packingCost, 0.25, 'only the Quotation department and Admin set a cost');
+});
+
+test('a trade hanger carries no material cost — the inward price already has the resin in it', async () => {
+  const made = await toCost([{ modelNumber: 'TR-SUIT-450' }]);
+  const line = made.lines[0]._id;
+  const costed = await cost(made._id, line, {
+    procurement: 'trade',
+    cost: { inwardPrice: 5, gramWeight: 20, rawMaterialRate: 100, packingCost: 0.3, otherCost: 0.2 },
+    markupPercent: 10,
+  });
+  assert.equal(costed.status, 200, costed.json.message);
+  const saved = costed.json.data.lines[0];
+  assert.equal(saved.materialCost, 0, '20 g × ₹100/kg is not added to a bought-in piece');
+  assert.equal(Math.round(saved.totalCost * 100) / 100, 5.5, 'inward ₹5 + packing ₹0.30 + misc ₹0.20');
+  assert.equal(saved.calculatedSellingPrice, priceAt(5.5, 10));
+
+  const made2 = await cost(made._id, line, { expectedUpdatedAt: costed.json.data.updatedAt, procurement: 'manufacture' });
+  assert.equal(made2.json.data.lines[0].materialCost, 2, 'made here, the same 20 g counts again');
 });

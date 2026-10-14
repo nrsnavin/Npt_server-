@@ -149,7 +149,9 @@ test('the dialog opens pre-filled: to the primary contact, with the quote’s mo
   assert.match(email.body, /NH-400 — ₹7\.50 per piece \(minimum 5,000 pcs\)/);
   assert.match(email.body, /NH-450V — ₹9\.25 per piece/);
   assert.match(email.body, /Payment terms: 30 days\./);
-  assert.match(email.body, /Regards,\nNandhini S\nNavin Plastic Tech\n\+919876500011/, 'signed by the sender');
+  assert.doesNotMatch(email.body, /Regards,/, 'no sign-off in the draft — every customer email ends with the plant’s footer');
+  const { customerEmail } = await import('../src/services/emailSignature.js');
+  assert.match(customerEmail(email.body).text, /Thanks & Regards\nSenthil kumar\. A\nManaging Director/, 'the footer signs it when it goes');
   assert.match(whatsapp.body, /Dear R\. Senthil,[\s\S]*NH-400/);
   assert.equal(attachment, `${made.number.replaceAll('/', '-')}.pdf`);
 });

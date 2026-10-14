@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import PDFDocument from 'pdfkit';
 import company from '../config/company.js';
 import { FREIGHT_TERMS } from '../models/Quotation.js';
@@ -31,6 +32,32 @@ import { FREIGHT_TERMS } from '../models/Quotation.js';
  * [§10] and a stored PDF is a copy that stops agreeing with the record it came from — the
  * document is a *view* of the quotation, and the quotation is the truth.
  */
+
+/**
+ * The NAVIN HANGERS logo, trimmed to its edges, at the head of the sender's box. Read once; a
+ * missing file prints the box without it rather than failing the quotation.
+ */
+const LOGO = (() => {
+  try {
+    return fs.readFileSync(new URL('../assets/navin-hangers-logo.png', import.meta.url));
+  } catch {
+    return null;
+  }
+})();
+/**
+ * The company seal with the signature on it, printed in the Authorized Signature box. Optional:
+ * without the file the box prints empty for a hand signature, as it always has.
+ */
+const SEAL = (() => {
+  try {
+    return fs.readFileSync(new URL('../assets/authorised-signature.png', import.meta.url));
+  } catch {
+    return null;
+  }
+})();
+
+/* The logo's own proportions, 457 × 175 px. */
+const LOGO_RATIO = 457 / 175;
 
 /* The page grid, in points. A4 is 595.28 × 841.89. */
 const PAGE = { size: 'A4', margin: 36 };
@@ -70,6 +97,11 @@ const COLUMN_WEIGHTS = {
 
 /** One row of the item table. Tall enough for a photograph to be worth printing. */
 const ROW_HEIGHT = 46;
+
+/* The foot: its caption row, and the remarks and signature box under it (room for the seal). */
+const FOOT_LABEL = 14;
+const FOOT_BODY = 64;
+const FOOT = FOOT_LABEL + FOOT_BODY;
 
 /** The left edge of each column and its width, resolved once. */
 function columns() {
@@ -232,15 +264,29 @@ function parties(doc, quotation, y) {
   const senderHeight = 64;
   box(doc, LEFT, y, half, senderHeight);
 
+  /* A small logo on the left, centred on the box's height; the name and address beside it. */
+  let textX = LEFT + 6;
+  if (LOGO) {
+    const logoHeight = 17;
+    const logoWidth = logoHeight * LOGO_RATIO;
+    try {
+      doc.image(LOGO, LEFT + 6, y + (senderHeight - logoHeight) / 2, { width: logoWidth, height: logoHeight });
+      textX = LEFT + 6 + logoWidth + 12;
+    } catch {
+      /* An unreadable logo leaves the box as it was. */
+    }
+  }
+  const textWidth = LEFT + half - 6 - textX;
+
   doc.font('Helvetica-Bold').fontSize(10).fillColor(LABEL_BLUE);
-  doc.text(company.name.toUpperCase(), LEFT + 6, y + 5, { width: half - 12, lineBreak: false });
+  doc.text(company.name.toUpperCase(), textX, y + 9, { width: textWidth, lineBreak: false });
 
   doc.font('Helvetica').fontSize(7.5).fillColor(INK);
   const senderLines = [
     ...company.addressLines,
-    [company.phone && `Ph: ${company.phone}`, company.email].filter(Boolean).join('  /  '),
+    [company.phone && `Ph: ${company.phone}`, company.mobile && `Mob: ${company.mobile}`].filter(Boolean).join(' / '),
   ].filter(Boolean);
-  doc.text(senderLines.join('\n'), LEFT + 6, y + 18, { width: half - 12, lineGap: 1.5 });
+  doc.text(senderLines.join('\n'), textX, y + 23, { width: textWidth, lineGap: 2 });
 
   /* The buyer. `M/s` is printed on the form, so it is drawn as part of the form. */
   const toY = y + senderHeight;
@@ -393,7 +439,7 @@ function table(doc, quotation, y, photos, resins) {
   for (const [index, line] of lines.entries()) {
     /* A row that will not fit whole starts a page of its own, with the head repeated — half a
        photograph across a page break is worse than a shorter first page. */
-    if (cursor + ROW_HEIGHT + noteHeight > BOTTOM - 60) {
+    if (cursor + ROW_HEIGHT + noteHeight > BOTTOM - FOOT) {
       doc.addPage();
       cursor = tableHead(doc, PAGE.margin);
     }
@@ -401,7 +447,7 @@ function table(doc, quotation, y, photos, resins) {
   }
 
   /* The blank remainder, ruled the same way. */
-  const blankTo = BOTTOM - 60 - noteHeight;
+  const blankTo = BOTTOM - FOOT - noteHeight;
   if (blankTo > cursor) {
     rowRules(doc, cursor, blankTo - cursor);
     doc.moveTo(LEFT, blankTo).lineTo(RIGHT, blankTo).stroke();
@@ -431,8 +477,8 @@ function table(doc, quotation, y, photos, resins) {
  * signed.
  */
 function foot(doc, quotation, y) {
-  const labelHeight = 14;
-  const bodyHeight = 46;
+  const labelHeight = FOOT_LABEL;
+  const bodyHeight = FOOT_BODY;
   const split = LEFT + WIDTH * 0.63;
   const rightWidth = RIGHT - split;
 
@@ -458,6 +504,14 @@ function foot(doc, quotation, y) {
 
   doc.font('Helvetica-BoldOblique').fontSize(8).fillColor(LABEL_BLUE);
   doc.text('Authorized Signature', split, bodyY + 4, { width: rightWidth, align: 'center' });
+
+  if (SEAL) {
+    try {
+      doc.image(SEAL, split + 4, bodyY + 15, { fit: [rightWidth - 8, bodyHeight - 30], align: 'center', valign: 'center' });
+    } catch {
+      /* An unreadable seal leaves the box for a hand signature. */
+    }
+  }
 
   /* Who to ask about it. A quotation signed by nobody is one the buyer rings the switchboard
      about; the person who priced it is the person who can answer. */

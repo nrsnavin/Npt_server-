@@ -26,6 +26,8 @@ const lineCost = z.object({
   printingCost: money.optional(),
   packingCost: money.optional(),
   otherCost: money.optional(),
+  /* A trade line's bought-in price, typed over the trading master's. */
+  inwardPrice: money.optional(),
 }).strict();
 
 const quotationLine = z.object({
