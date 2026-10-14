@@ -1,4 +1,6 @@
 import BuyerCard, { OPEN_CARD_STATUSES } from '../models/BuyerCard.js';
+import Enquiry from '../models/Enquiry.js';
+import { ownsRecord } from '../services/ownership.service.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { isOwnershipScoped } from '../services/ownership.service.js';
@@ -55,6 +57,38 @@ export const getBuyerCard = asyncHandler(async (req, res) => {
 /** The picture — `?n=1`, `?n=2` for the later screenshots of a long chat. */
 export const buyerCardImage = asyncHandler(async (req, res) => {
   const card = await cardFor(req);
+  const n = Number(req.query.n) || 0;
+  const image = n === 0 ? card : card.moreImages?.[n - 1];
+  if (!image) throw ApiError.notFound('Photo not found');
+  const stream = streamOf(image.imageKey);
+  if (!stream) throw ApiError.notFound('Photo not found');
+  res.setHeader('Content-Type', image.mimeType);
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  stream.on('error', () => res.destroy());
+  stream.pipe(res);
+});
+
+/**
+ * The picture an enquiry was read from — the chat screenshot or the card — for whoever works the
+ * enquiry, who is not always the colleague who sent it in [the dashboard's "View screenshot"].
+ */
+async function sourceCardOf(req) {
+  const enquiry = await Enquiry.findById(req.params.id).select('assignedTo customer');
+  if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+  return BuyerCard.findOne({ enquiry: enquiry._id }).sort({ createdAt: 1 });
+}
+
+export const enquirySource = asyncHandler(async (req, res) => {
+  const card = await sourceCardOf(req);
+  res.json({
+    success: true,
+    data: card ? { kind: card.kind || 'card', images: 1 + (card.moreImages?.length || 0), at: card.createdAt } : null,
+  });
+});
+
+export const enquirySourceImage = asyncHandler(async (req, res) => {
+  const card = await sourceCardOf(req);
+  if (!card) throw ApiError.notFound('This enquiry was not read from a picture');
   const n = Number(req.query.n) || 0;
   const image = n === 0 ? card : card.moreImages?.[n - 1];
   if (!image) throw ApiError.notFound('Photo not found');
