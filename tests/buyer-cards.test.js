@@ -183,10 +183,10 @@ test('a reply on WhatsApp does not finish the draft — finishing it is done in 
   assert.equal((await readCardOf(nandhini))._id, draft._id, 'still a draft');
 });
 
-test('the salesperson must give the next step, when, and how they met them', async () => {
+test('the salesperson must give when to follow up and how they met them; the next step may wait', async () => {
   const draft = await readCardOf(nandhini);
   const cases = [
-    [{}, /next step/],
+    [{}, /when to follow up/],
     [{ nextAction: 'Call him' }, /when to follow up/],
     [{ nextAction: 'Call him', nextFollowUpDate: inDays(-1) }, /cannot be in the past/],
     [{ nextAction: 'Call him', nextFollowUpDate: inDays(1) }, /how we met them/],
@@ -283,6 +283,17 @@ test('a quotation as the next step raises the Quotation task; photos only set th
   assert.equal(enquiry.nextAction, 'Send photos');
   assert.equal(enquiry.requirement.modelNumber, 'NH-380');
   assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: { $in: ['sample_request', 'create_quotation'] } }), 0);
+});
+
+test('a draft is saved without a next step; the enquiry has none set yet', async () => {
+  cardReply = card({ company: 'No Step Yet Fabrics', mobile: '9840077104' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  const done = await finish(draft._id, { nextFollowUpDate: inDays(2), source: 'trade_show' });
+  assert.equal(done.status, 200, done.json.message);
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.equal(enquiry.nextAction, undefined);
+  assert.equal(enquiry.nextActionType, undefined);
 });
 
 test('a draft can be dropped', async () => {

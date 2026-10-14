@@ -215,7 +215,6 @@ export async function handleStaffMessage({ staff, from, body, media = [], provid
 export function confirmProblem(fields) {
   if (!fields.company || String(fields.company).trim().length < 2) return 'A customer needs a company name.';
   if (!fields.mobile && !fields.email && !fields.whatsapp) return 'A customer needs a phone number or an email to reach them on.';
-  if (!String(fields.nextAction || '').trim()) return 'Say what the next step is.';
   if (!fields.nextFollowUpDate) return 'Say when to follow up.';
   const due = new Date(fields.nextFollowUpDate);
   const today = new Date();
@@ -307,8 +306,9 @@ async function confirmCardChecked(card, user, edits = {}, { owner } = {}) {
     customer,
     remarks: wants || `New buyer from a ${card.kind === 'chat' ? 'chat screenshot' : 'card'} — find out what they want.`,
     /* The salesperson's own next step — not one the app made up. */
-    nextAction: String(fields.nextAction).trim(),
-    nextActionType: fields.nextActionType || 'call',
+    /* Optional: a draft can be saved before the next step is known, and set on the enquiry later. */
+    nextAction: String(fields.nextAction || '').trim() || undefined,
+    nextActionType: fields.nextActionType || (String(fields.nextAction || '').trim() ? 'call' : undefined),
     nextFollowUpDate: new Date(fields.nextFollowUpDate),
     source: fields.source,
     by: user,
