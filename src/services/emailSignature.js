@@ -4,10 +4,14 @@ import { company } from '../config/company.js';
  * The footer on every email a customer receives — quotations, sample updates, LR copies and the
  * papers sent from an enquiry. One place, so every mail signs off the same way.
  *
- * Each line can be changed per deployment from `.env` without a code change. The logo is the
- * NAVIN HANGERS wordmark drawn in the email itself; set EMAIL_LOGO_URL to a public https image to
- * show the logo file instead (mail clients block images that are not on a public address).
+ * The footer is the plant's own signature image (name, title, logo, contacts and address in one
+ * picture), under the closing line. Set EMAIL_SIGNATURE_IMAGE_URL to another public https image to
+ * change it, or to an empty value to draw the footer in the email instead — from the lines below,
+ * each changeable from `.env`, with the NAVIN HANGERS wordmark (or EMAIL_LOGO_URL's image).
+ * The plain-text part always carries the lines as text, for mail clients that show no HTML.
  */
+const SIGNATURE_IMAGE = 'https://ci3.googleusercontent.com/mail-sig/AIorK4y2RCh8rKo9jT88RVlN72pPs57x1QAWwwOvzTI5zOhwnDNhYtFwOWEu_neBCcAZQLJ5EcoRDkM';
+
 export const signature = {
   closing: process.env.EMAIL_SIGNOFF || 'Thanks & Regards',
   name: process.env.EMAIL_SIGNER_NAME || 'Senthil kumar. A',
@@ -20,6 +24,8 @@ export const signature = {
   address: (process.env.EMAIL_COMPANY_ADDRESS || '1/110-F, Kaniyampoondi,|Vanjipalayam Post, Tirupur-641663,|Tamilnadu, India.')
     .split('|').map((line) => line.trim()).filter(Boolean),
   logoUrl: process.env.EMAIL_LOGO_URL || '',
+  /* `??`, not `||`: an empty value in `.env` turns the image off. */
+  imageUrl: (process.env.EMAIL_SIGNATURE_IMAGE_URL ?? SIGNATURE_IMAGE).trim(),
 };
 
 const ORANGE = '#F28C3A';
@@ -53,8 +59,21 @@ const wordmark = () => (signature.logoUrl
       <td style="vertical-align:middle;font:800 20px/1.05 Arial,Helvetica,sans-serif;color:${TEAL};letter-spacing:.5px">NAVIN<br>HANGERS</td>
     </tr></table>`);
 
+/**
+ * The signature image under the closing line. The alt text says who and how to reach them, for a
+ * mail client that holds images back until the reader allows them.
+ */
+function signatureImage() {
+  const alt = `${signature.name}, ${signature.title} — ${signature.company} · ${signature.mobile} · ${signature.email} · ${signature.website}`;
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="border-collapse:collapse;margin-top:24px;max-width:600px;width:100%">
+  <tr><td style="font:italic 700 14px/1.4 Arial,Helvetica,sans-serif;color:#1d2b33;padding-bottom:10px">${escape(signature.closing)}</td></tr>
+  <tr><td><img src="${escape(signature.imageUrl)}" alt="${escape(alt)}" width="600" style="display:block;border:0;width:100%;max-width:600px;height:auto"></td></tr>
+</table>`;
+}
+
 /** The footer as HTML: tables and inline styles, which every mail client draws the same. */
 export function signatureHtml() {
+  if (signature.imageUrl) return signatureImage();
   const row = (icon, text, href) => `<tr><td style="padding:2px 8px 2px 0;color:${ORANGE};font-size:12px;vertical-align:top">${icon}</td>
     <td style="padding:2px 0;font:12px/1.5 Arial,Helvetica,sans-serif;color:${GREY}">${href ? `<a href="${escape(href)}" style="color:${GREY};text-decoration:none">${escape(text)}</a>` : escape(text)}</td></tr>`;
   const digits = (phone) => `tel:${String(phone).replace(/[^\d+]/g, '')}`;

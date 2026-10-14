@@ -6,12 +6,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { company } from '../src/config/company.js';
-import { customerEmail, signatureText, withoutSignOff } from '../src/services/emailSignature.js';
+import { customerEmail, signature, signatureText, withoutSignOff } from '../src/services/emailSignature.js';
 
-test('a customer email ends with the plant’s footer, as text and as HTML', () => {
+test('a customer email ends with the plant’s signature image, and the lines as text', () => {
   const mail = customerEmail('Dear Ravi,\n\nPlease find the LR copy attached.');
   assert.ok(mail.text.startsWith('Dear Ravi,'));
   assert.ok(mail.text.endsWith(signatureText()));
+  assert.ok(mail.html.includes('Thanks &amp; Regards'));
+  assert.match(mail.html, /<img src="https:\/\/ci3\.googleusercontent\.com\/mail-sig\/[^"]+" alt="Senthil kumar\. A, Managing Director — NAVIN PLASTIC TECH · \+91-99444 23690/);
+});
+
+test('with the image turned off, the footer is drawn in the email', () => {
+  const image = signature.imageUrl;
+  signature.imageUrl = '';
+  const mail = customerEmail('Dear Ravi,\n\nPlease find the LR copy attached.');
+  signature.imageUrl = image;
+  assert.ok(!mail.html.includes('<img'));
   for (const part of ['Thanks &amp; Regards', 'Senthil kumar. A', 'Managing Director', 'NAVIN', 'HANGERS', '+91-99444 23690', '+91-421-4334690', 'info@navinplastic.com', 'www.navinplastic.com', 'NAVIN PLASTIC TECH', 'Vanjipalayam Post, Tirupur-641663']) {
     assert.ok(mail.html.includes(part), `the footer shows ${part}`);
   }
