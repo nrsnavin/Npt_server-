@@ -25,7 +25,7 @@ import {
 } from '../controllers/mould.controller.js';
 import {
   listMaterials, getMaterial, createMaterial, updateMaterial, exportMaterials, materialPricings,
-  listMaterialColours,
+  listMaterialColours, bulkMaterialRates,
 } from '../controllers/material.controller.js';
 import {
   listComponents, getComponent, createComponent, updateComponent, exportComponents,
@@ -45,7 +45,7 @@ import {
   customerFollowUpSchema,
 } from '../validators/pipeline.schemas.js';
 import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validators/mould.schemas.js';
-import { materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
+import { materialBulkRatesSchema, materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
 import { tradedItemSchema, tradedItemUpdateSchema } from '../validators/tradedItem.schemas.js';
 import {
   createTradedItem, exportTradedItems, getTradedItem, importTradedItems, listTradedItems,
@@ -104,6 +104,8 @@ router.get('/materials/export', requireModule('materials'), exportMaterials);
 router.get('/materials/colours', requireModule('materials'), listMaterialColours);
 router.get('/materials', requireModule('materials'), listMaterials);
 router.post('/materials', requireModule('materials', 'write'), validate(materialSchema), createMaterial);
+/* The supplier's revised list: several rates in one save. Above `/:id`. */
+router.post('/materials/bulk-rates', requireModule('materials', 'write'), validate(materialBulkRatesSchema), bulkMaterialRates);
 router.get('/materials/:id', requireModule('materials'), getMaterial);
 router.get('/materials/:id/pricings', requireModule('materials'), materialPricings);
 router.patch('/materials/:id', requireModule('materials', 'write'), validate(materialUpdateSchema), updateMaterial);
