@@ -516,3 +516,24 @@ test('the list cannot be ordered by a figure that is not a column', async () => 
   const refused = await api('/api/quotations?sort=totalCost', { token: admin });
   assert.equal(refused.status, 400);
 });
+
+test('raised already costed: the costing person’s choices and the calculated price are kept', async () => {
+  const lines = [{
+    mould: light, materialRef: pp._id, markupPercent: 15, unitPrice: 9,
+    /* "No hook" and a packing figure for this job, decided in the quote form. */
+    cost: { hookCost: 0, packingCost: 0.25 },
+  }];
+  const raised = await toCost(lines, admin);
+  const line = raised.lines[0];
+  assert.equal(line.cost.packingCost, 0.25);
+  assert.equal(line.cost.hookCost, 0);
+  assert.equal(line.cost.rawMaterialRate, 96, 'the register still fills what was not decided');
+  assert.equal(line.calculatedSellingPrice, priceAt(line.totalCost, 15), 'the price the arithmetic gives, at the form’s markup');
+  assert.equal(line.unitPrice, 9, 'beside the price offered');
+});
+
+test('a cost sent by marketing while raising a quotation is ignored [§8]', async () => {
+  const raised = await toCost([{ mould: light, materialRef: pp._id, cost: { packingCost: 0.25 } }], nandhini);
+  const seen = await api(`/api/quotations/${raised._id}`, { token: admin });
+  assert.notEqual(seen.json.data.lines[0].cost.packingCost, 0.25, 'only the Quotation department and Admin set a cost');
+});

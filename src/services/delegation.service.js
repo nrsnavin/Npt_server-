@@ -1,6 +1,8 @@
 import Customer from '../models/Customer.js';
 import { isManagement } from '../utils/departments.js';
 import Dispatch from '../models/Dispatch.js';
+import Enquiry from '../models/Enquiry.js';
+import { CLOSED_STAGE } from '../config/enquiryStages.js';
 import Quotation from '../models/Quotation.js';
 import Receivable from '../models/Receivable.js';
 import SalesOrder from '../models/SalesOrder.js';
@@ -109,4 +111,47 @@ export async function delegateEnquiry({ enquiry, to, note, user }) {
 
   const previous = from ? await User.findById(from).select('name') : null;
   return { enquiry, to: { _id: target._id, name: target.name }, from: previous, moved };
+}
+
+/**
+ * Handing a buyer to another marketing person — the customer and every enquiry of theirs still
+ * being worked [web: components/CustomerPanel.jsx]. Admin's decision, as for one enquiry.
+ *
+ * Each open enquiry goes through `delegateEnquiry`, so its tasks, samples, quotations, orders and
+ * the rest move exactly as they would one at a time; a lost or closed enquiry stays where it was,
+ * with the person who worked it. The customer's own follow-up goes with the customer.
+ */
+export async function delegateCustomer({ customer, to, note, user }) {
+  if (!mayDelegate(user)) throw ApiError.forbidden('Only Admin can hand a customer to someone else');
+  const from = idOf(customer.assignedTo);
+  if (idOf(to) === from) throw ApiError.badRequest('They already hold this customer');
+
+  const target = (await delegationTargets({ assignedTo: customer.assignedTo }, user)).find((person) => idOf(person._id) === idOf(to));
+  if (!target) {
+    throw ApiError.badRequest('A customer can only be handed to an active marketing person, an Admin, or yourself');
+  }
+
+  customer.assignedTo = target._id;
+  customer.sharedWith = (customer.sharedWith || []).filter((shared) => idOf(shared) !== idOf(target._id));
+  await customer.save();
+
+  const open = await Enquiry.find({ customer: customer._id, status: { $ne: 'lost' }, stage: { $ne: CLOSED_STAGE } });
+  const enquiries = [];
+  for (const enquiry of open) {
+    if (idOf(enquiry.assignedTo) === idOf(target._id)) continue;
+    await delegateEnquiry({ enquiry, to: target._id, note, user });
+    enquiries.push(enquiry.number);
+  }
+
+  afterCommit(async () => {
+    if (idOf(target._id) === idOf(user._id)) return;
+    await sendPush([target._id], {
+      title: `${customer.name} is yours now`,
+      body: `${user.name || 'Admin'} handed you ${customer.name}${enquiries.length ? ` and ${enquiries.length} open ${enquiries.length === 1 ? 'enquiry' : 'enquiries'}` : ''}${note ? ` — ${note.slice(0, 200)}` : ''}`,
+      link: `/customers/${customer._id}`,
+    }).catch((error) => console.error(`[delegation] push not sent: ${error.message}`));
+  });
+
+  const previous = from ? await User.findById(from).select('name') : null;
+  return { customer, to: { _id: target._id, name: target.name }, from: previous, enquiries };
 }

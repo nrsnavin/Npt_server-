@@ -35,3 +35,18 @@ export const materialUpdateSchema = materialSchema
   .partial()
   .omit({ code: true })
   .extend(versioned);
+
+/**
+ * New rates for several materials at once — the supplier's revised price list, typed in one
+ * go [controllers/material.controller.js `bulkMaterialRates`]. Only the rate travels.
+ */
+export const materialBulkRatesSchema = z.object({
+  rates: z
+    .array(z.object({
+      id: z.string().regex(/^[0-9a-f]{24}$/i, 'Not a valid id'),
+      ratePerKg: z.number().positive('A rate must be more than zero').max(100000),
+    }))
+    .min(1, 'Enter at least one new price')
+    .max(500)
+    .refine((rows) => new Set(rows.map((row) => row.id)).size === rows.length, 'A material is listed twice'),
+});

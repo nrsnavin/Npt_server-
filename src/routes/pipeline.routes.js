@@ -1,5 +1,6 @@
 import { dashboardFollowUps, dashboardOverview, dashboardParties, dashboardTasks } from '../controllers/overview.controller.js';
 import { customerFollowUp, customerFollowUpHistory } from '../controllers/customerFollowUp.controller.js';
+import { customerPanel, delegateCustomerTo } from '../controllers/customerPanel.controller.js';
 import { Router } from 'express';
 import { enquiryTimeline, listEnquiryMessages, sendEnquiryMessage, listEnquiryDocuments } from '../controllers/enquiryMessage.controller.js';
 import {
@@ -24,7 +25,7 @@ import {
 } from '../controllers/mould.controller.js';
 import {
   listMaterials, getMaterial, createMaterial, updateMaterial, exportMaterials, materialPricings,
-  listMaterialColours,
+  listMaterialColours, bulkMaterialRates,
 } from '../controllers/material.controller.js';
 import {
   listComponents, getComponent, createComponent, updateComponent, exportComponents,
@@ -44,7 +45,7 @@ import {
   customerFollowUpSchema,
 } from '../validators/pipeline.schemas.js';
 import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validators/mould.schemas.js';
-import { materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
+import { materialBulkRatesSchema, materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
 import { tradedItemSchema, tradedItemUpdateSchema } from '../validators/tradedItem.schemas.js';
 import {
   createTradedItem, exportTradedItems, getTradedItem, importTradedItems, listTradedItems,
@@ -103,6 +104,8 @@ router.get('/materials/export', requireModule('materials'), exportMaterials);
 router.get('/materials/colours', requireModule('materials'), listMaterialColours);
 router.get('/materials', requireModule('materials'), listMaterials);
 router.post('/materials', requireModule('materials', 'write'), validate(materialSchema), createMaterial);
+/* The supplier's revised list: several rates in one save. Above `/:id`. */
+router.post('/materials/bulk-rates', requireModule('materials', 'write'), validate(materialBulkRatesSchema), bulkMaterialRates);
 router.get('/materials/:id', requireModule('materials'), getMaterial);
 router.get('/materials/:id/pricings', requireModule('materials'), materialPricings);
 router.patch('/materials/:id', requireModule('materials', 'write'), validate(materialUpdateSchema), updateMaterial);
@@ -159,6 +162,9 @@ router.post('/customers/:id/site', requireModule('customers', 'write'), pinSite)
 router.delete('/customers/:id/site', requireModule('customers', 'write'), clearSite);
 /* Admin's word on the buyer's credit — Watch or Hold by hand, with the reason, or cleared. */
 // The relationship's own follow-up: set from the customer list, logged and closed from Today's actions.
+/* The side panel off a party master row: the buyer, their open work, and handing them on. */
+router.get('/customers/:id/panel', requireModule('customers'), customerPanel);
+router.post('/customers/:id/delegate', requireModule('customers', 'write'), validate(enquiryDelegateSchema), delegateCustomerTo);
 router.get('/customers/:id/follow-up', requireModule('customers'), customerFollowUpHistory);
 router.post('/customers/:id/follow-up', requireModule('customers', 'write'), validate(customerFollowUpSchema), customerFollowUp);
 router.post('/customers/:id/credit', requireModule('customers', 'write'), validate(creditSchema), setCustomerCredit);

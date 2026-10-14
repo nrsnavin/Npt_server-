@@ -131,6 +131,34 @@ export const updateMaterial = asyncHandler(transactional(async (req, res) => {
 }));
 
 /**
+ * Several rates in one save: the supplier's revised list. Every change is dated and audited as
+ * a single edit would be; a rate given unchanged is left alone, so its date does not move. All
+ * of it or none — a list half-applied would leave the register quoting two price lists at once.
+ */
+export const bulkMaterialRates = asyncHandler(transactional(async (req, res) => {
+  const { rates } = req.body;
+  const found = await Material.find({ _id: { $in: rates.map((row) => row.id) } });
+  const byId = new Map(found.map((material) => [String(material._id), material]));
+  const missing = rates.filter((row) => !byId.has(String(row.id)));
+  if (missing.length) throw ApiError.badRequest(`${missing.length === 1 ? 'A material is' : `${missing.length} materials are`} no longer on the register — reload and try again`);
+
+  const now = new Date();
+  const changed = [];
+  for (const row of rates) {
+    const material = byId.get(String(row.id));
+    if (material.ratePerKg === row.ratePerKg) continue;
+    const before = snapshot(material);
+    const from = material.ratePerKg;
+    material.ratePerKg = row.ratePerKg;
+    material.rateUpdatedAt = now;
+    await material.save();
+    await recordChange({ model: 'Material', doc: material, before, by: req.user, note: 'Bulk price update' });
+    changed.push({ _id: material._id, name: material.name, code: material.code, from, to: row.ratePerKg });
+  }
+  res.json({ success: true, data: { updated: changed.length, unchanged: rates.length - changed.length, changed } });
+}));
+
+/**
  * What is priced against this material, so a rate change can be judged before it is made.
  *
  * A costing keeps the rate it was built on — that is deliberate, a quotation must not re-price

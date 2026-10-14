@@ -33,7 +33,7 @@ What the load test found and what changed:
   unchanged.
 - **Department desks built full documents** for a few hundred tasks on every load. They read
   plain objects now.
-- **A won order could not take a call with a next step.** It can now, until its LR closes it.
+- **A won order could not take a call with a next step.** It can now, until it is closed.
 
 ## Security
 

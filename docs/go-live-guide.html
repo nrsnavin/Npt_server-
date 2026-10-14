@@ -1,0 +1,970 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NPT CRM Go-Live Guide</title>
+<!-- Source of docs/Go-Live-Guide.pdf. Rebuild: node docs/build-go-live-pdf.mjs -->
+<style>
+  :root {
+    --ink: #17211d; --muted: #5a6762; --rule: #d9e1dd; --panel: #f3f7f5;
+    --teal: #0f6e64; --teal-soft: #e3f1ee; --code: #1b2925; --code-ink: #e6f2ee;
+    --warn: #8a4f00; --warn-bg: #fdf5e6; --ok: #1f6b3a; --ok-bg: #e9f5ec;
+    --wa: #1f7a53; --wa-soft: #e6f3ec;
+  }
+  @page { size: A4; margin: 18mm 17mm 18mm 17mm; }
+  * { box-sizing: border-box; }
+  html, body { background: #fff; }
+  body {
+    font-family: "Liberation Sans", "DejaVu Sans", Arial, sans-serif;
+    color: var(--ink); font-size: 10pt; line-height: 1.5; margin: 0;
+  }
+  h1, h2, h3 { line-height: 1.25; margin: 0; }
+  h2.part {
+    font-size: 19pt; color: var(--teal); padding-bottom: 6px;
+    border-bottom: 2px solid var(--teal); margin: 0 0 12px; break-after: avoid;
+  }
+  h2.part .num { color: var(--muted); font-weight: normal; margin-right: 6px; }
+  h2.part.wa { color: var(--wa); border-color: var(--wa); }
+  h3 { font-size: 12pt; margin: 16px 0 6px; break-after: avoid; }
+  h4 { font-size: 10.3pt; margin: 12px 0 4px; break-after: avoid; }
+  p { margin: 0 0 7px; }
+  section.part { margin-top: 22px; }
+  section.part.newpage { break-before: page; margin-top: 0; }
+  section.part > h2.part + * { break-before: avoid; }
+  ul, ol { margin: 0 0 8px; padding-left: 20px; }
+  li { margin: 0 0 3px; }
+  code { font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; font-size: 8.6pt;
+         background: var(--panel); border: 1px solid var(--rule); border-radius: 3px; padding: 0 3px; }
+  pre {
+    font-family: "DejaVu Sans Mono", "Liberation Mono", monospace; font-size: 8.2pt; line-height: 1.45;
+    background: var(--code); color: var(--code-ink); padding: 9px 11px; border-radius: 5px;
+    margin: 4px 0 10px; white-space: pre-wrap; word-break: break-word; orphans: 4; widows: 4;
+  }
+  pre .c { color: #8fb3a8; }
+  table { width: 100%; border-collapse: collapse; margin: 4px 0 12px; font-size: 8.9pt; }
+  tr { break-inside: avoid; }
+  th { background: var(--teal); color: #fff; text-align: left; padding: 5px 7px; font-weight: bold; }
+  td { border-bottom: 1px solid var(--rule); padding: 5px 7px; vertical-align: top; }
+  tr:nth-child(even) td { background: #fafcfb; }
+  .wa-table th { background: var(--wa); }
+  td code, th code { font-size: 8pt; }
+  .note, .warn, .ok, .tip {
+    border-radius: 5px; padding: 8px 11px; margin: 6px 0 11px; break-inside: avoid; font-size: 9.4pt;
+  }
+  .note { background: var(--panel); border-left: 4px solid var(--teal); }
+  .warn { background: var(--warn-bg); border-left: 4px solid #c27a10; color: #4a2c00; }
+  .ok { background: var(--ok-bg); border-left: 4px solid #2f8a4e; }
+  .tip { background: var(--wa-soft); border-left: 4px solid var(--wa); }
+  .note b:first-child, .warn b:first-child, .ok b:first-child, .tip b:first-child { display: inline; }
+  .muted { color: var(--muted); }
+  .small { font-size: 8.6pt; }
+  .steps > li { margin-bottom: 7px; }
+  .where { color: var(--muted); font-size: 8.8pt; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .card { border: 1px solid var(--rule); border-radius: 6px; padding: 9px 11px; break-inside: avoid; }
+  .card h4 { margin-top: 0; }
+  .tag { display: inline-block; font-size: 7.6pt; font-weight: bold; padding: 1px 6px; border-radius: 9px;
+         background: var(--teal-soft); color: var(--teal); vertical-align: middle; margin-left: 4px; }
+  .tag.rec { background: var(--ok-bg); color: var(--ok); }
+  .tag.no { background: #fbe9e7; color: #9b2c1c; }
+  .check { list-style: none; padding-left: 2px; }
+  .check li::before { content: "☐  "; color: var(--teal); }
+
+  /* Cover */
+  .cover { height: 255mm; display: flex; flex-direction: column; }
+  .cover .band { background: var(--teal); color: #fff; padding: 28px 26px 24px; border-radius: 8px; }
+  .cover .band .kicker { font-size: 10pt; letter-spacing: .08em; text-transform: uppercase; opacity: .85; }
+  .cover .band h1 { font-size: 27pt; margin: 8px 0 8px; }
+  .cover .band .sub { font-size: 11.5pt; opacity: .95; }
+  .cover .meta { margin: 14px 2px 18px; color: var(--muted); font-size: 9.5pt; }
+  .diagram { border: 1px solid var(--rule); border-radius: 8px; padding: 14px; background: var(--panel); }
+  .diagram .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .box { background: #fff; border: 1.5px solid var(--teal); border-radius: 6px; padding: 6px 9px; font-size: 8.8pt; text-align: center; }
+  .box b { display: block; font-size: 9.2pt; }
+  .box.wa { border-color: var(--wa); }
+  .arrow { color: var(--muted); font-size: 12pt; }
+  .toc { margin-top: 18px; columns: 2; column-gap: 22px; font-size: 9.6pt; }
+  .toc div { break-inside: avoid; padding: 3px 0; border-bottom: 1px dotted var(--rule); }
+  .toc .n { color: var(--teal); font-weight: bold; display: inline-block; width: 22px; }
+  .cover .foot { margin-top: auto; font-size: 8.6pt; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 8px; }
+</style>
+</head>
+<body>
+
+<!-- ============================== COVER ============================== -->
+<div class="cover">
+  <div class="band">
+    <div class="kicker">Navin Plastic Tech · CRM / ERP</div>
+    <h1>Going live on AWS</h1>
+    <div class="sub">Choose the EC2 server, connect your domain, install the app with HTTPS,
+      and switch on WhatsApp. Every step, in order.</div>
+  </div>
+  <div class="meta">Version of 13 October 2026 · Written for the code on <code>main</code> of
+    <code>Npt_server-</code> and <code>Npt_web-</code> · About 2 hours of work, plus 1–3 days waiting on Meta for WhatsApp.</div>
+
+  <div class="diagram">
+    <div class="small muted" style="margin-bottom:6px"><b>What you will end up with</b> — one server in AWS Mumbai</div>
+    <div class="row">
+      <div class="box"><b>Staff browser / phone</b>crm.navinplastic.com</div>
+      <span class="arrow">→</span>
+      <div class="box" style="flex:1"><b>EC2 server (Ubuntu 24.04)</b>
+        Nginx + HTTPS → React app (static files)<br>
+        Nginx → Node API under pm2 (port 5000)<br>
+        MongoDB 8 (local only) · nightly backup to S3</div>
+      <span class="arrow">←</span>
+      <div class="box wa"><b>Meta WhatsApp</b>webhook to api.navinplastic.com</div>
+    </div>
+  </div>
+
+  <div class="toc">
+    <div><span class="n">1</span>Before you start: values to collect</div>
+    <div><span class="n">2</span>EC2 options and monthly cost</div>
+    <div><span class="n">3</span>Launch (or resize) the instance</div>
+    <div><span class="n">4</span>Domain and DNS settings</div>
+    <div><span class="n">5</span>Server setup: Node, MongoDB, swap</div>
+    <div><span class="n">5B</span>Or: MongoDB Atlas instead</div>
+    <div><span class="n">6</span>Install the API and the web app</div>
+    <div><span class="n">7</span>Nginx and HTTPS certificates</div>
+    <div><span class="n">8</span>Keep it running, first admin, checks</div>
+    <div><span class="n">9</span>Backups and the disk alarm</div>
+    <div><span class="n">10</span>Deploying updates</div>
+    <div><span class="n">11</span>WhatsApp: Meta account and number</div>
+    <div><span class="n">12</span>WhatsApp: token, server, webhook</div>
+    <div><span class="n">13</span>WhatsApp: message templates</div>
+    <div><span class="n">14</span>WhatsApp: screenshots to draft enquiries</div>
+    <div><span class="n">15</span>Test it end to end</div>
+    <div><span class="n">16</span>Troubleshooting</div>
+    <div><span class="n">A</span>Go-live checklist</div>
+  </div>
+
+  <div class="foot">
+    The example names <code>crm.navinplastic.com</code> and <code>api.navinplastic.com</code> are used throughout.
+    Replace them with your real domain everywhere you see them. <code>&lt;ELASTIC_IP&gt;</code> means your server's fixed IP address.
+    AWS prices are approximate on-demand prices for the Mumbai region, in US dollars, before 18% GST; check the AWS Pricing Calculator before you commit.
+  </div>
+</div>
+
+<!-- ============================== 1 ============================== -->
+<section class="part newpage">
+  <h2 class="part"><span class="num">1</span>Before you start</h2>
+
+  <h3>What you need in hand</h3>
+  <ul class="check">
+    <li>An AWS account with a payment card, signed in as an admin (not the root user for daily work).</li>
+    <li>Access to the domain's DNS panel, wherever the domain was bought (Hostinger, GoDaddy, BigRock…).</li>
+    <li>Access to both GitHub repositories, <code>nrsnavin/Npt_server-</code> and <code>nrsnavin/Npt_web-</code>.</li>
+    <li>The company email account's SMTP details (for sign-in codes and quotation emails).</li>
+    <li>For WhatsApp: a Meta (Facebook) login with admin rights on the business, the GST certificate or Udyam registration, and a phone number that is <b>not</b> on the WhatsApp app.</li>
+    <li>On Windows: PowerShell or PuTTY for SSH. On Mac/Linux: the Terminal.</li>
+  </ul>
+
+  <h3>Fill this in as you go</h3>
+  <p>Keep this sheet private. It holds passwords. Never paste these values into WhatsApp, email or a ticket.</p>
+  <table>
+    <tr><th style="width:34%">Value</th><th style="width:38%">Where it comes from</th><th>Yours</th></tr>
+    <tr><td>Web app address</td><td>You choose (Part 4)</td><td>crm.____________</td></tr>
+    <tr><td>API address</td><td>You choose (Part 4)</td><td>api.____________</td></tr>
+    <tr><td>Elastic IP</td><td>AWS, Part 3</td><td></td></tr>
+    <tr><td>SSH key file <code>npt-erp.pem</code></td><td>AWS, Part 3 (keep 2 copies offline)</td><td></td></tr>
+    <tr><td>MongoDB admin password</td><td>You make up, Part 5</td><td></td></tr>
+    <tr><td><code>JWT_SECRET</code></td><td><code>openssl rand -base64 48</code>, Part 6</td><td></td></tr>
+    <tr><td>SMTP host / user / password</td><td>Your mail provider</td><td></td></tr>
+    <tr><td><code>META_WA_TOKEN</code></td><td>Meta, Part 12</td><td></td></tr>
+    <tr><td><code>META_WA_PHONE_NUMBER_ID</code></td><td>Meta, Part 12</td><td></td></tr>
+    <tr><td><code>META_WA_APP_SECRET</code></td><td>Meta, Part 12</td><td></td></tr>
+    <tr><td><code>META_WA_VERIFY_TOKEN</code></td><td><code>openssl rand -hex 32</code>, Part 12</td><td></td></tr>
+    <tr><td><code>ANTHROPIC_API_KEY</code> (optional)</td><td>console.anthropic.com, Part 14</td><td></td></tr>
+  </table>
+
+  <h3>How to read the commands</h3>
+  <ul>
+    <li>Grey-on-dark boxes are commands. Copy them one box at a time and press Enter.</li>
+    <li>If a box starts with <code>cd</code>, the folder matters. If not, the command works from anywhere.</li>
+    <li>In <code>nano</code> (the text editor): save with <b>Ctrl O</b>, then <b>Enter</b>; exit with <b>Ctrl X</b>.</li>
+    <li>Lines starting with <code>#</code> are comments; they do nothing if pasted.</li>
+  </ul>
+</section>
+
+<!-- ============================== 2 ============================== -->
+<section class="part newpage">
+  <h2 class="part"><span class="num">2</span>EC2 options and monthly cost</h2>
+
+  <p>The app needs memory more than CPU: MongoDB, two Node processes and Nginx share the box. The figures below come from the app's own load tests
+    (<code>npm run load-test:50</code>: fifty people signing in at once and working the enquiry flow).</p>
+
+  <h3>Instance size</h3>
+  <table>
+    <tr><th>Type</th><th>vCPU / RAM</th><th>Approx. per month</th><th>Who it suits</th><th>Verdict</th></tr>
+    <tr><td><code>t2.micro</code> / <code>t3.micro</code></td><td>1–2 / 1 GB</td><td>$8–9 (free tier for 12 months)</td>
+      <td>Trying the app alone</td><td><span class="tag no">Not for staff use</span><br><span class="small">MongoDB + Node on 1 GB gets killed for memory during imports and builds; it looks like the app randomly dying.</span></td></tr>
+    <tr><td><code>t3.small</code></td><td>2 / 2 GB</td><td>about $16</td>
+      <td>Up to 25 people at once</td><td><span class="tag rec">Recommended start</span><br><span class="small">Run 1 API process and the 2 GB swap file.</span></td></tr>
+    <tr><td><code>t3a.small</code></td><td>2 / 2 GB</td><td>about $15</td><td>Same as t3.small</td><td>AMD version, ~10% cheaper, same steps</td></tr>
+    <tr><td><code>t4g.small</code></td><td>2 / 2 GB (ARM)</td><td>about $13</td><td>Same as t3.small</td><td>Cheapest 2 GB. Pick the <b>arm64</b> Ubuntu image; every step here works unchanged</td></tr>
+    <tr><td><code>t3.medium</code></td><td>2 / 4 GB</td><td>about $33</td>
+      <td>25–50 people at once</td><td><span class="tag">Growth</span><br><span class="small">Run 2 API processes (the default) and Redis.</span></td></tr>
+  </table>
+
+  <div class="note"><b>Measured on 2 cores, 50 people:</b> one API process kept the slowest 5% of reads at 0.63 s and handled about 23 actions a second;
+    two processes did 0.48 s and about 32 actions a second. Neither produced an error. Start on <code>t3.small</code> and resize later in five minutes (Part 3) if it feels slow.</div>
+
+  <h3>Other monthly costs</h3>
+  <table>
+    <tr><th>Item</th><th>Size</th><th>Approx. per month</th></tr>
+    <tr><td>Disk (EBS gp3)</td><td>40 GB lasts about 3 years of photos and documents</td><td>about $3.70</td></tr>
+    <tr><td>Fixed public IP (Elastic IP)</td><td>1 address. AWS charges for every public IPv4 address, attached or not</td><td>about $3.70</td></tr>
+    <tr><td>Backups in S3</td><td>about 6–8 GB after a year</td><td>under $0.50</td></tr>
+    <tr><td>Data out to the internet</td><td>first 100 GB a month free; this app uses a few GB</td><td>$0</td></tr>
+    <tr><td>WhatsApp (Meta, not AWS)</td><td>charged per message by Meta; replies to a buyer within 24 h of their message are free</td><td>depends on volume</td></tr>
+  </table>
+  <p><b>Typical total on t3.small: about $24 a month</b> plus 18% GST (AWS India bills through AISPL). A 1-year Compute Savings Plan lowers the instance part by roughly a third once you are sure of the size.</p>
+
+  <h3>Three ways to host it</h3>
+  <div class="cols">
+    <div class="card"><h4>A. One EC2 server <span class="tag rec">this guide</span></h4>
+      <p class="small">API, web app and MongoDB on one box. Cheapest and simplest. You own patching and backups (Part 9 sets those up).</p>
+      <p class="small"><b>Cost:</b> about $24/month.</p></div>
+    <div class="card"><h4>B. EC2 + MongoDB Atlas</h4>
+      <p class="small">The database moves to MongoDB's managed service in Mumbai (<code>ap-south-1</code>), with its own backups and a replica set built in.
+        Skip the MongoDB steps in Part 5 and follow Part 5B instead. Choose this when losing a day of data is not acceptable.</p>
+      <p class="small"><b>Cost:</b> EC2 as above, plus Atlas: Flex about $8–30/month, a dedicated M10 about $57/month.</p></div>
+  </div>
+  <div class="card" style="margin-top:10px"><h4>C. Amazon Lightsail</h4>
+    <p class="small">The same Ubuntu server as a fixed bundle: the 2 GB plan (about $12/month) and 4 GB plan (about $24/month) include the IP address, disk and data transfer.
+      Every command in this guide works; only the console screens differ (Networking tab for the firewall and a static IP). Simpler billing, fewer AWS features later.</p></div>
+
+  <div class="ok"><b>Recommendation:</b> Option A on <code>t3.small</code> (or <code>t4g.small</code>), 40 GB gp3, in Mumbai. Move to <code>t3.medium</code> when more than 25 people use it at the same time.</div>
+</section>
+
+<!-- ============================== 3 ============================== -->
+<section class="part">
+  <h2 class="part"><span class="num">3</span>Launch (or resize) the instance</h2>
+
+  <h3>3.1 Pick the region</h3>
+  <p>Top-right of the AWS console, choose <b>Asia Pacific (Mumbai) ap-south-1</b>. It is the closest to Tiruppur, so every click is faster.</p>
+
+  <h3>3.2 Launch</h3>
+  <p><span class="where">EC2 → Instances → Launch instances</span></p>
+  <table>
+    <tr><th style="width:28%">Field</th><th>Value</th></tr>
+    <tr><td>Name</td><td><code>npt-erp</code></td></tr>
+    <tr><td>Application and OS image</td><td><b>Ubuntu Server 24.04 LTS</b>, 64-bit (x86) — or 64-bit (Arm) if you chose <code>t4g.small</code></td></tr>
+    <tr><td>Instance type</td><td><code>t3.small</code> (see Part 2)</td></tr>
+    <tr><td>Key pair</td><td>Create new → name <code>npt-erp</code>, type RSA, format <code>.pem</code> (or <code>.ppk</code> for PuTTY). Download it and keep two copies offline. It is the only way in.</td></tr>
+    <tr><td>Network settings</td><td>Create security group <code>npt-erp-sg</code> with the rules in 3.3</td></tr>
+    <tr><td>Storage</td><td><b>40 GiB, gp3</b></td></tr>
+  </table>
+  <p>Click <b>Launch instance</b>.</p>
+
+  <h3>3.3 Security group (the firewall)</h3>
+  <table>
+    <tr><th>Type</th><th>Port</th><th>Source</th><th>Why</th></tr>
+    <tr><td>SSH</td><td>22</td><td><b>My IP</b></td><td>Never <code>0.0.0.0/0</code>: an open SSH port is attacked within minutes. Update it if your office IP changes.</td></tr>
+    <tr><td>HTTP</td><td>80</td><td>Anywhere (0.0.0.0/0)</td><td>Needed for the HTTPS certificate; then redirects to HTTPS</td></tr>
+    <tr><td>HTTPS</td><td>443</td><td>Anywhere (0.0.0.0/0)</td><td>The app and the WhatsApp webhook</td></tr>
+  </table>
+  <div class="warn"><b>Do not open port 27017 (MongoDB) or 5000 (the API).</b> Both stay private to the server; Nginx is the only way in from outside.</div>
+
+  <h3>3.4 Fixed IP address (Elastic IP)</h3>
+  <ol class="steps">
+    <li><span class="where">EC2 → Network &amp; Security → Elastic IPs → Allocate Elastic IP address</span> → Allocate.</li>
+    <li>Select it → <b>Actions → Associate Elastic IP address</b> → choose the <code>npt-erp</code> instance → Associate.</li>
+    <li>Write the address on your sheet as <code>&lt;ELASTIC_IP&gt;</code>. Without it, the IP changes on every stop/start and your domain points at nothing.</li>
+  </ol>
+
+  <h3>3.5 Already running on a t2.micro? Resize it</h3>
+  <p>No reinstall is needed. Data, disk and Elastic IP stay as they are. Expect about 5 minutes of downtime, so do it outside working hours.</p>
+  <ol class="steps">
+    <li>Take a backup first: <span class="where">EC2 → Volumes → select the volume → Actions → Create snapshot</span>.</li>
+    <li><span class="where">EC2 → Instances → select it → Instance state → Stop instance</span>. Wait for <b>Stopped</b>.</li>
+    <li><span class="where">Actions → Instance settings → Change instance type</span> → <code>t3.small</code> → Apply.</li>
+    <li><b>Instance state → Start instance</b>. Then on the server: <code>pm2 status</code> should show <code>npt-api</code> online.</li>
+  </ol>
+  <p class="small muted">Ubuntu 22.04/24.04 images already have the drivers a t3 needs. Moving x86 → ARM (t4g) is not a resize; that needs a new instance.</p>
+
+  <h3>3.6 Connect over SSH</h3>
+<pre><span class="c"># Mac / Linux / Windows PowerShell — run from the folder holding the key</span>
+chmod 400 npt-erp.pem            <span class="c"># Mac/Linux only</span>
+ssh -i npt-erp.pem ubuntu@&lt;ELASTIC_IP&gt;</pre>
+  <p>Answer <code>yes</code> to the fingerprint question the first time. You are in when the prompt reads <code>ubuntu@ip-…:~$</code>.</p>
+</section>
+
+<!-- ============================== 4 ============================== -->
+<section class="part">
+  <h2 class="part"><span class="num">4</span>Domain and DNS settings</h2>
+
+  <p>The app uses two names on your domain: one for the screens people open, one for the API (which the WhatsApp webhook also calls).
+    Do this <b>right after Part 3</b>: DNS takes minutes to an hour to spread, and HTTPS certificates (Part 7) cannot be issued until it has.</p>
+
+  <table>
+    <tr><th>Name</th><th>Example</th><th>What it serves</th></tr>
+    <tr><td>Web app</td><td><code>crm.navinplastic.com</code></td><td>The React screens staff open in a browser or install as an app</td></tr>
+    <tr><td>API</td><td><code>api.navinplastic.com</code></td><td>The server the screens talk to; WhatsApp posts messages here</td></tr>
+  </table>
+
+  <h3>4.1 Add two A records at your DNS provider</h3>
+  <p><span class="where">Hostinger: Domains → your domain → DNS / Nameservers → DNS records.
+    GoDaddy: My Products → Domain → DNS → Add New Record. Others: look for "DNS management" or "Zone editor".</span></p>
+  <table>
+    <tr><th>Type</th><th>Name / Host</th><th>Points to / Value</th><th>TTL</th></tr>
+    <tr><td>A</td><td><code>crm</code></td><td><code>&lt;ELASTIC_IP&gt;</code></td><td>300 (or the lowest offered)</td></tr>
+    <tr><td>A</td><td><code>api</code></td><td><code>&lt;ELASTIC_IP&gt;</code></td><td>300</td></tr>
+  </table>
+  <ul>
+    <li>Type only <code>crm</code> in the Name box, not <code>crm.navinplastic.com</code>; the panel adds the domain itself.</li>
+    <li>If a <code>crm</code> or <code>api</code> record already exists (A or CNAME), edit it instead of adding a second one.</li>
+    <li><b>Leave MX, TXT, SPF and DKIM records alone.</b> They carry your company email. Adding subdomains does not affect email; deleting the wrong row does.</li>
+    <li>Optional: to send people who type the bare domain to the CRM, add a redirect in the DNS panel ("Forwarding") from <code>navinplastic.com</code> to <code>https://crm.navinplastic.com</code>. Only do this if the bare domain does not already host your company website.</li>
+  </ul>
+
+  <h3>4.2 Using Route 53 instead (optional)</h3>
+  <p>Only if you want AWS to hold the DNS (about $0.50/month): <span class="where">Route 53 → Hosted zones → Create hosted zone</span> for <code>navinplastic.com</code>,
+    copy <b>every</b> existing record (especially MX and TXT for email) into it, add the two A records above, then replace the nameservers at your registrar with the four
+    Route 53 shows. Copy the email records first, or company email stops. If unsure, stay with 4.1.</p>
+
+  <h3>4.3 Check that the names resolve</h3>
+<pre><span class="c"># On the server, or any Mac/Linux terminal</span>
+dig +short crm.navinplastic.com
+dig +short api.navinplastic.com
+<span class="c"># On Windows</span>
+nslookup crm.navinplastic.com</pre>
+  <p>Both must print <code>&lt;ELASTIC_IP&gt;</code> before you run the certificate step in Part 7. If they print nothing, wait 10 minutes and try again.</p>
+
+  <h3>4.4 Where the domain names go in the app</h3>
+  <p>The same two names appear in several places. A mismatch in any one shows up as a confusing error, so set them all exactly as below: <code>https://</code>, no trailing slash.</p>
+  <table>
+    <tr><th style="width:30%">Setting</th><th style="width:30%">File</th><th>Value</th></tr>
+    <tr><td><code>CORS_ORIGIN</code></td><td>server <code>.env</code></td><td><code>https://crm.navinplastic.com</code></td></tr>
+    <tr><td><code>APP_URL</code></td><td>server <code>.env</code></td><td><code>https://crm.navinplastic.com</code> (links in emails and WhatsApp)</td></tr>
+    <tr><td><code>PUBLIC_API_URL</code></td><td>server <code>.env</code></td><td><code>https://api.navinplastic.com/api</code> (PDF links WhatsApp downloads)</td></tr>
+    <tr><td><code>VITE_API_URL</code></td><td>web <code>.env.production</code></td><td><code>https://api.navinplastic.com/api</code> (built in; rebuild after a change)</td></tr>
+    <tr><td><code>server_name</code></td><td>Nginx config</td><td>one block each for <code>crm.…</code> and <code>api.…</code></td></tr>
+    <tr><td><code>connect-src</code></td><td>Nginx security snippet</td><td><code>https://api.navinplastic.com</code></td></tr>
+    <tr><td>Callback URL</td><td>Meta app → WhatsApp → Configuration</td><td><code>https://api.navinplastic.com/api/whatsapp/inbound</code></td></tr>
+  </table>
+</section>
+
+<!-- ============================== 5 ============================== -->
+<section class="part">
+  <h2 class="part"><span class="num">5</span>Server setup: Node, MongoDB, swap</h2>
+
+  <h3>5.1 Updates, tools and the firewall</h3>
+<pre>sudo apt update &amp;&amp; sudo apt upgrade -y
+sudo apt install -y git nginx ufw curl
+sudo ufw allow OpenSSH
+sudo ufw allow 'Nginx Full'
+sudo ufw --force enable</pre>
+
+  <h3>5.2 Swap file (stops builds from crashing a 2 GB server)</h3>
+<pre>sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+free -m        <span class="c"># the Swap line should show about 2047</span></pre>
+
+  <h3>5.3 Node.js 22</h3>
+<pre>curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+node -v        <span class="c"># v22.x</span></pre>
+
+  <h3>5.4 MongoDB 8</h3>
+  <p class="small muted">Using MongoDB Atlas (option B)? Skip 5.4–5.6 and follow Part 5B on the next pages.</p>
+<pre>curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | \
+  sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | \
+  sudo tee /etc/apt/sources.list.d/mongodb-org-8.0.list
+sudo apt update &amp;&amp; sudo apt install -y mongodb-org
+sudo systemctl enable --now mongod
+grep bindIp /etc/mongod.conf     <span class="c"># must say 127.0.0.1</span></pre>
+
+  <h3>5.5 Create the database admin</h3>
+  <p>Make up a long password with letters and digits only (symbols like <code>@ : /</code> break the connection string). Write it on your sheet.</p>
+<pre>mongosh --eval 'db.getSiblingDB("admin").createUser({ user: "nptadmin", pwd: "PUT-YOUR-LONG-PASSWORD", roles: [{ role: "root", db: "admin" }] })'</pre>
+
+  <h3>5.6 Turn on passwords and transactions</h3>
+  <p>The app saves related records together (an order and its number, a customer and its first enquiry). MongoDB does that only as a <b>replica set</b>, so this
+    makes the single server a one-node replica set. Same data, same port.</p>
+<pre>openssl rand -base64 756 | sudo tee /etc/mongod-keyfile &gt;/dev/null
+sudo chown mongodb:mongodb /etc/mongod-keyfile
+sudo chmod 400 /etc/mongod-keyfile
+sudo nano /etc/mongod.conf</pre>
+  <p>Find the line <code>#security:</code> and replace it (and any <code>#replication:</code> line) with these lines, keeping the two-space indents:</p>
+<pre>security:
+  authorization: enabled
+  keyFile: /etc/mongod-keyfile
+replication:
+  replSetName: rs0</pre>
+<pre>sudo systemctl restart mongod
+mongosh -u nptadmin -p --authenticationDatabase admin \
+  --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "127.0.0.1:27017" }] })'
+<span class="c"># It asks for the password; the answer should include  ok: 1</span></pre>
+
+  <h3>5.7 Redis (only with two API processes, on t3.medium)</h3>
+<pre>sudo apt install -y redis-server
+sudo systemctl enable --now redis-server
+redis-cli ping      <span class="c"># PONG</span></pre>
+  <p>Then add <code>REDIS_URL=redis://127.0.0.1:6379</code> to the server <code>.env</code> in Part 6. On t3.small with one API process, skip Redis.</p>
+</section>
+
+<!-- ============================== 5B ============================== -->
+<section class="part newpage">
+  <h2 class="part"><span class="num">5B</span>Or: MongoDB Atlas instead of 5.4–5.6</h2>
+  <p>Choose this if you want MongoDB's own service to run the database (option B in Part 2): backups, updates and recovery are
+    done for you, and the server keeps all its memory for the app. Skip Parts 5.4, 5.5 and 5.6 and do this instead.
+    Everything else in the guide stays the same.</p>
+
+  <table>
+    <tr><th>Atlas tier</th><th>Approx. per month</th><th>Fits</th></tr>
+    <tr><td><b>Flex</b> <span class="tag rec">start here</span></td><td>about $8, capped at $30</td><td>Up to 5 GB of data. This app's database is under 0.5 GB in year one (photos and PDFs stay on the server or S3)</td></tr>
+    <tr><td><b>M10</b> (dedicated)</td><td>about $57</td><td>When you need restore to a chosen minute, or the data passes about 4 GB</td></tr>
+  </table>
+  <p class="small muted">Prices are list estimates; Mumbai can differ slightly. Check the pricing page in Atlas before you choose.</p>
+
+  <h3>5B.1 Create the cluster</h3>
+  <ol class="steps">
+    <li>Sign up at <code>cloud.mongodb.com</code> with the company email. Create an organisation <i>Navin Plastic Tech</i> and a project <i>NPT CRM</i>.</li>
+    <li><b>Create cluster</b> → choose <b>Flex</b> → provider <b>AWS</b> → region <b>Mumbai (ap-south-1)</b>, the same region as the server. Name it <code>npt</code>. Create.</li>
+  </ol>
+
+  <h3>5B.2 A database user</h3>
+  <ol class="steps">
+    <li><span class="where">Security → Database Access → Add new database user</span>.</li>
+    <li>Authentication: Password. Username <code>nptapp</code>. Click <b>Autogenerate secure password</b> and copy it to your sheet.</li>
+    <li>Role: <b>Read and write to any database</b>. Add user.</li>
+  </ol>
+
+  <h3>5B.3 Let only your server in</h3>
+  <ol class="steps">
+    <li><span class="where">Security → Network Access → Add IP address</span>.</li>
+    <li>Enter your <code>&lt;ELASTIC_IP&gt;</code> with a comment <i>npt-erp server</i>. Confirm.</li>
+  </ol>
+  <div class="warn"><b>Never add <code>0.0.0.0/0</code> ("allow from anywhere").</b> With only the server's IP listed, nobody else can even try the password.
+    If you rebuild the server with a new IP, add the new one here and remove the old.</div>
+
+  <h3>5B.4 The connection string</h3>
+  <ol class="steps">
+    <li>On the cluster, <b>Connect → Drivers</b> → Node.js. Copy the string; it looks like
+      <code>mongodb+srv://nptapp:&lt;password&gt;@npt.xxxxx.mongodb.net/?retryWrites=true&amp;w=majority&amp;appName=npt</code></li>
+    <li>Replace <code>&lt;password&gt;</code> with the generated one, and put the database name <code>npt_erp</code> after <code>.net/</code>.</li>
+    <li>In the server's <code>.env</code> (Part 6.2), use it as <code>MONGO_URI</code>:</li>
+  </ol>
+<pre>MONGO_URI=mongodb+srv://nptapp:THE-GENERATED-PASSWORD@npt.xxxxx.mongodb.net/npt_erp?retryWrites=true&amp;w=majority&amp;appName=npt</pre>
+  <p class="small">No <code>replicaSet=</code> part is needed: Atlas is already a replica set, so transactions work. Check after Part 8 that
+    <code>/health/ready</code> shows <code>"transactions": true</code>.</p>
+
+  <h3>5B.5 Moving data you already have</h3>
+  <p>Only if a database is already running on a server (for example the current t2.micro). Install the tools, copy, then switch:</p>
+<pre>sudo apt install -y mongodb-database-tools    <span class="c"># on the old server, if mongodump is missing</span>
+mongodump --uri="mongodb://nptadmin:OLD-PASSWORD@127.0.0.1:27017/npt_erp?authSource=admin" --archive=npt.archive --gzip
+mongorestore --uri="mongodb+srv://nptapp:THE-GENERATED-PASSWORD@npt.xxxxx.mongodb.net" --archive=npt.archive --gzip --nsInclude='npt_erp.*'
+<span class="c"># then set MONGO_URI to the Atlas string in .env and:</span>
+pm2 reload npt-api --update-env</pre>
+  <p class="small">Do it outside working hours: anything saved between the dump and the switch would be left behind on the old database.
+    The old server's own Network Access entry (its IP) must be added in 5B.3 for the restore to connect.</p>
+
+  <h3>5B.6 What changes elsewhere in this guide</h3>
+  <ul>
+    <li><b>Part 9 backups:</b> remove the two <code>mongodump</code> lines from <code>backup.sh</code>; Atlas backs the database up. Keep the S3 sync of <code>uploads/</code> — the photos and PDFs are still on the server.</li>
+    <li><b>Part 9.3 restore:</b> done from the Atlas screen (<span class="where">Cluster → Backup → Restore</span>), not with <code>mongorestore</code>.</li>
+    <li><b>Server size:</b> without MongoDB on it, a <code>t3.small</code> has room for two API processes; Redis (5.7) is then recommended.</li>
+    <li><b>Monitoring:</b> Atlas emails you on high load or a full disk; set your email under <span class="where">Project → Alerts</span>.</li>
+  </ul>
+</section>
+
+<!-- ============================== 6 ============================== -->
+<section class="part">
+  <h2 class="part"><span class="num">6</span>Install the API and the web app</h2>
+
+  <h3>6.1 Get the code</h3>
+  <p>The repositories are private, so git asks for a username and password. Use your GitHub username and a <b>fine-grained personal access token</b>
+    (<span class="where">GitHub → Settings → Developer settings → Personal access tokens → Fine-grained → Generate</span>; only these two repositories; Contents: Read-only).</p>
+<pre>sudo mkdir -p /srv/npt &amp;&amp; sudo chown ubuntu:ubuntu /srv/npt
+cd /srv/npt
+git config --global credential.helper store     <span class="c"># remembers the token for later updates</span>
+git clone https://github.com/nrsnavin/Npt_server-.git server
+git clone https://github.com/nrsnavin/Npt_web-.git web</pre>
+
+  <h3>6.2 The API settings file</h3>
+<pre>cd /srv/npt/server
+npm ci --omit=dev
+openssl rand -base64 48        <span class="c"># copy the output: it is your JWT_SECRET</span>
+nano .env</pre>
+  <p>Paste this, then replace every capitalised placeholder:</p>
+<pre>NODE_ENV=production
+PORT=5000
+<span class="c"># Database (Part 5). With Atlas, paste Atlas's connection string instead.</span>
+MONGO_URI=mongodb://nptadmin:PUT-YOUR-LONG-PASSWORD@127.0.0.1:27017/npt_erp?authSource=admin&amp;replicaSet=rs0
+
+<span class="c"># Sign-in security. The API refuses to start with a short or default value.</span>
+JWT_SECRET=PASTE-THE-48-CHARACTER-STRING
+JWT_EXPIRES_IN=7d
+
+<span class="c"># Your domain (Part 4). https://, no trailing slash.</span>
+CORS_ORIGIN=https://crm.navinplastic.com
+APP_URL=https://crm.navinplastic.com
+PUBLIC_API_URL=https://api.navinplastic.com/api
+
+<span class="c"># REDIS_URL=redis://127.0.0.1:6379      # only with two processes (Part 5.7)</span>
+
+<span class="c"># Email: sign-in codes, quotations, LR copies.</span>
+<span class="c"># Hostinger mail: smtp.hostinger.com / 465. Google Workspace: smtp.gmail.com / 587 + an App Password.</span>
+SMTP_HOST=smtp.hostinger.com
+SMTP_PORT=465
+SMTP_USER=info@navinplastic.com
+SMTP_PASSWORD=THE-MAILBOX-PASSWORD
+SMTP_FROM=Navin Plastic Tech &lt;info@navinplastic.com&gt;
+DEFAULT_COUNTRY_CODE=+91
+OTP_EXPOSE_IN_RESPONSE=false
+
+<span class="c"># WhatsApp goes here later (Part 12). Optional extras:</span>
+<span class="c"># ANTHROPIC_API_KEY=      reads screenshots and visiting cards (Part 14)</span>
+<span class="c"># INDIAMART_CRM_KEY=      the IndiaMART lead feed</span></pre>
+<pre>chmod 600 .env       <span class="c"># only you can read it</span></pre>
+  <div class="warn"><b>Never commit <code>.env</code> to git or send it to anyone.</b> If a password was ever shared in chat or email, change it at the source before going live.</div>
+
+  <h3>6.3 Build the web app</h3>
+  <p>The API address is baked into the build, so set it before building:</p>
+<pre>cd /srv/npt/web
+npm ci
+echo 'VITE_API_URL=https://api.navinplastic.com/api' &gt; .env.production
+npm run build        <span class="c"># creates /srv/npt/web/dist — takes 1–3 minutes</span></pre>
+</section>
+
+<!-- ============================== 7 ============================== -->
+<section class="part">
+  <h2 class="part"><span class="num">7</span>Nginx and HTTPS certificates</h2>
+
+  <h3>7.1 Security headers (one shared snippet)</h3>
+<pre>sudo nano /etc/nginx/snippets/npt-security.conf</pre>
+<pre>add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "DENY" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://api.navinplastic.com; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'" always;</pre>
+
+  <h3>7.2 The two sites</h3>
+<pre>sudo nano /etc/nginx/sites-available/npt</pre>
+<pre><span class="c"># The web app</span>
+server {
+    listen 80;
+    server_name crm.navinplastic.com;
+    root /srv/npt/web/dist;
+    index index.html;
+    include snippets/npt-security.conf;
+
+    location / { try_files $uri $uri/ /index.html; }      <span class="c"># reload on any screen works</span>
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+        include snippets/npt-security.conf;
+    }
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        include snippets/npt-security.conf;
+        try_files $uri @previous;                          <span class="c"># tabs open across a deploy</span>
+    }
+    location @previous {
+        root /srv/npt/web/dist.old;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        include snippets/npt-security.conf;
+    }
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+}
+
+<span class="c"># The API (and the WhatsApp webhook)</span>
+server {
+    listen 80;
+    server_name api.navinplastic.com;
+    client_max_body_size 25M;                              <span class="c"># phone photos and PDFs</span>
+
+    location / {
+        proxy_pass http://127.0.0.1:5000;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+}</pre>
+<pre>sudo ln -s /etc/nginx/sites-available/npt /etc/nginx/sites-enabled/
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t &amp;&amp; sudo systemctl reload nginx      <span class="c"># must say "syntax is ok"</span></pre>
+
+  <h3>7.3 Free HTTPS certificates (Let's Encrypt)</h3>
+  <p>Only after Part 4.3 shows both names pointing at your Elastic IP:</p>
+<pre>sudo snap install --classic certbot
+sudo ln -sf /snap/bin/certbot /usr/bin/certbot
+sudo certbot --nginx -d crm.navinplastic.com -d api.navinplastic.com
+sudo certbot renew --dry-run       <span class="c"># proves automatic renewal works</span></pre>
+  <p>Give an email for expiry notices, agree to the terms, and choose <b>redirect</b> if asked. Certificates renew by themselves every 60–90 days.</p>
+  <p class="small muted">After HTTPS works for a week, you may add <code>add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;</code> to the snippet. Browsers then refuse plain http for a year, so add it only once HTTPS is solid.</p>
+</section>
+
+<!-- ============================== 8 ============================== -->
+<section class="part">
+  <h2 class="part"><span class="num">8</span>Keep it running, first admin, checks</h2>
+
+  <h3>8.1 Start the API with pm2</h3>
+<pre>sudo npm install -g pm2
+cd /srv/npt/server
+<span class="c"># t3.small (2 GB): one API process</span>
+API_INSTANCES=1 pm2 start ecosystem.config.cjs
+<span class="c"># t3.medium (4 GB) with Redis: two processes, the default</span>
+<span class="c"># pm2 start ecosystem.config.cjs</span>
+pm2 save
+pm2 startup systemd -u ubuntu --hp /home/ubuntu
+<span class="c"># it prints one "sudo env PATH=..." line: copy and run that line too</span></pre>
+  <div class="note"><b>Why the number is on the command line:</b> pm2 reads <code>API_INSTANCES</code> when it starts, not from <code>.env</code>. After <code>pm2 save</code> it remembers the count, and later reloads keep it.
+    To change from one to two processes later: <code>pm2 delete npt-api</code>, then <code>pm2 start ecosystem.config.cjs</code> and <code>pm2 save</code>.</div>
+<pre>pm2 status                       <span class="c"># npt-api: online</span>
+pm2 logs npt-api --lines 30      <span class="c"># ends with "listening on port 5000" and "MongoDB connected"</span></pre>
+
+  <h3>8.2 Create the first admin</h3>
+<pre>cd /srv/npt/server
+npm run create-user -- rsnavin1@gmail.com 'A-STRONG-PASSWORD' --role=admin --name="Navin R"</pre>
+  <p>Open <b>https://crm.navinplastic.com</b> and sign in. Then add staff under <b>Masters &amp; Access → Users</b>, with each person's department and WhatsApp number.</p>
+  <div class="warn"><b>Do not run <code>npm run seed</code> on the live server.</b> It deletes all users and loads demo data.</div>
+
+  <h3>8.3 Health checks</h3>
+<pre>curl -s https://api.navinplastic.com/health          <span class="c"># the API is up</span>
+curl -s https://api.navinplastic.com/health/ready    <span class="c"># up + database; shows "transactions": true</span>
+sudo systemctl status mongod nginx --no-pager
+df -h /  &amp;&amp;  free -m</pre>
+  <p><code>"transactions": true</code> confirms Part 5.6 worked. <code>delivery.whatsapp</code> reads <code>console</code> until Part 12 is done, then <code>meta</code>.</p>
+</section>
+
+<!-- ============================== 9 ============================== -->
+<section class="part">
+  <h2 class="part"><span class="num">9</span>Backups and the disk alarm</h2>
+  <p>The database and the uploaded files cannot be rebuilt from git. A backup on the same disk is not a backup, so both go to S3 every night.</p>
+
+  <h3>9.1 An S3 bucket and a backup user</h3>
+  <ol class="steps">
+    <li><span class="where">S3 → Create bucket</span>: name <code>npt-erp-backups-&lt;something unique&gt;</code>, region Mumbai, <b>Block all public access</b> on, <b>Bucket versioning: Enable</b>.</li>
+    <li><span class="where">IAM → Users → Create user</span> <code>npt-backup</code> → attach a policy allowing <code>s3:PutObject</code>, <code>s3:GetObject</code>, <code>s3:ListBucket</code> on that bucket only → <b>Security credentials → Create access key</b> (type "Command Line Interface").</li>
+    <li>Optional saving: in the bucket, add a lifecycle rule moving <code>uploads/</code> to Standard-IA after 30 days and expiring old versions after 90.</li>
+  </ol>
+<pre>sudo snap install aws-cli --classic
+aws configure          <span class="c"># paste the key and secret; region ap-south-1; output json</span></pre>
+
+  <h3>9.2 The nightly script</h3>
+<pre>mkdir -p /srv/npt/backups
+nano /srv/npt/backup.sh</pre>
+<pre>#!/bin/bash
+set -euo pipefail
+STAMP=$(date +%F-%H%M)
+OUT=/srv/npt/backups
+BUCKET=s3://npt-erp-backups-YOURNAME
+mongodump --uri="mongodb://nptadmin:PUT-YOUR-LONG-PASSWORD@127.0.0.1:27017/npt_erp?authSource=admin" \
+  --archive="$OUT/npt-$STAMP.archive" --gzip
+find "$OUT" -type f -name '*.archive' -mtime +14 -delete      <span class="c"># keep 14 nights on the box</span>
+aws s3 sync "$OUT" "$BUCKET/db/" --exclude '*.log'
+aws s3 sync /srv/npt/server/uploads "$BUCKET/uploads/"</pre>
+<pre>chmod 700 /srv/npt/backup.sh
+/srv/npt/backup.sh             <span class="c"># run once now; check the files appear in S3</span>
+crontab -e                     <span class="c"># add the line below: every night at 2 am</span>
+0 2 * * * /srv/npt/backup.sh &gt;&gt; /srv/npt/backups/backup.log 2&gt;&amp;1</pre>
+  <p class="small muted">The server clock is UTC: 2 am UTC is 7:30 am in India. Use <code>30 20 * * *</code> for 2 am India time.</p>
+
+  <h3>9.3 Restore (test this once before you need it)</h3>
+<pre>mongorestore --uri="mongodb://nptadmin:PUT-YOUR-LONG-PASSWORD@127.0.0.1:27017/?authSource=admin" \
+  --archive=/srv/npt/backups/npt-2026-10-13-0200.archive --gzip --drop</pre>
+
+  <h3>9.4 Disk alarm</h3>
+  <p>A full disk stops MongoDB and the whole app. Simplest check: <code>df -h /</code> every week, and grow the disk at 75%
+    (<span class="where">EC2 → Volumes → Modify</span>, then <code>sudo growpart /dev/nvme0n1 1 &amp;&amp; sudo resize2fs /dev/nvme0n1p1</code>, no downtime).
+    For an automatic email, install the CloudWatch agent with the <code>disk used_percent</code> metric and create an alarm at 75%.</p>
+  <p>Also: <span class="where">EC2 → Elastic Block Store → Lifecycle Manager</span> can snapshot the whole disk every night (a few dollars a month) as a second layer.</p>
+</section>
+
+<!-- ============================== 10 ============================== -->
+<section class="part">
+  <h2 class="part"><span class="num">10</span>Deploying updates</h2>
+  <p>When new work is merged to <code>main</code>, put it on the server with one script.</p>
+<pre>nano /srv/npt/deploy.sh</pre>
+<pre>#!/bin/bash
+set -euo pipefail
+echo "→ API"
+cd /srv/npt/server
+git pull origin main
+npm ci --omit=dev
+pm2 reload npt-api --update-env       <span class="c"># new process starts before the old stops</span>
+
+echo "→ Web"
+cd /srv/npt/web
+git pull origin main
+npm ci
+rm -rf dist.old &amp;&amp; cp -r dist dist.old   <span class="c"># keep the previous build for open tabs</span>
+npm run build
+echo "✓ deployed"</pre>
+<pre>chmod +x /srv/npt/deploy.sh
+/srv/npt/deploy.sh
+curl -s https://api.navinplastic.com/health/ready</pre>
+  <ul>
+    <li>Deploy outside busy hours when you can. A reload drops no requests, but a bad release affects everyone.</li>
+    <li>Staff do not need to do anything; open screens pick up the new version on their next page change.</li>
+    <li><b>Data scripts (migrations) never run by themselves.</b> When a release note asks for one: take a backup (Part 9), run it once without <code>--confirm</code> to see what it would change, then with <code>--confirm</code>.</li>
+    <li>Roll back the web app: <code>cd /srv/npt/web &amp;&amp; mv dist dist.bad &amp;&amp; mv dist.old dist</code>.
+      Roll back the API: <code>cd /srv/npt/server &amp;&amp; git reset --hard &lt;previous commit&gt; &amp;&amp; npm ci --omit=dev &amp;&amp; pm2 reload npt-api</code>.</li>
+  </ul>
+  <div class="note"><b>Automatic deploys (later).</b> A GitHub self-hosted runner on the box can run <code>deploy/on-box.sh</code> after each merge, with a health check and automatic rollback.
+    The full steps are in <code>docs/DEPLOY-AWS.md</code> §11 in the server repository. Start with the manual script; add the runner once things are stable.</div>
+</section>
+
+<!-- ============================== 11 ============================== -->
+<section class="part newpage">
+  <h2 class="part wa"><span class="num">11</span>WhatsApp: Meta account and number</h2>
+  <p>The app talks to WhatsApp through <b>Meta's WhatsApp Cloud API</b> directly, with no middleman. Once set up it:</p>
+  <ul>
+    <li>sends quotations, LR copies, sample updates and trip notices to buyers, with the PDF;</li>
+    <li>sends department-task notices to staff on their own numbers;</li>
+    <li>receives buyer replies and photos into the WhatsApp inbox, and staff screenshots into Draft enquiries;</li>
+    <li>can send sign-in codes to people who sign in with a phone number.</li>
+  </ul>
+  <p>Until it is set up, the app still works; messages it would have sent are written to the server log instead.</p>
+  <div class="tip"><b>Do Parts 3–8 first.</b> Meta needs the API live on HTTPS (Part 7) before the webhook in Part 12 can be verified. You can start Meta's business verification (step 2 below) on day one, because that is the slow part.</div>
+
+  <p class="small muted">Meta renames its screens often. Look for the words in quotes rather than an exact path.</p>
+  <ol class="steps">
+    <li><b>Business portfolio.</b> Open <code>business.facebook.com</code>, create or choose the portfolio <i>Navin Plastic Tech</i>. Fill in the legal name, address and website exactly as on the GST certificate.</li>
+    <li><b>Business verification.</b> Settings → "Security centre" → "Start verification". Upload the GST certificate or Udyam registration. Meta usually answers in 1–2 working days.</li>
+    <li><b>Create the app.</b> <code>developers.facebook.com</code> → "My Apps" → "Create app" → type "Business" → name <i>NPT CRM</i> → link it to the Navin Plastic Tech portfolio.</li>
+    <li><b>Add WhatsApp.</b> On the app dashboard, WhatsApp → "Set up". Meta creates a WhatsApp Business Account and a free test number.</li>
+    <li><b>Add your real number.</b> WhatsApp → "API Setup" → "Add phone number": display name <i>Navin Plastic Tech</i>, category <i>Manufacturing</i>, then confirm the number with the code Meta sends by SMS or call.
+      <br><span class="small">The number must not be on the WhatsApp or WhatsApp Business app. If it is, delete the account in that app first (Settings → Account → Delete account) and wait a few minutes.</span></li>
+    <li><b>Display name.</b> Meta reviews it, usually within a day. Until then, messages show the number instead of the name.</li>
+    <li><b>Billing.</b> WhatsApp Manager (<code>business.facebook.com/wa/manage</code>) → "Payment settings" → add a card. Without it, only replies inside a buyer's 24-hour window go out.</li>
+  </ol>
+</section>
+
+<!-- ============================== 12 ============================== -->
+<section class="part">
+  <h2 class="part wa"><span class="num">12</span>WhatsApp: token, server, webhook</h2>
+
+  <h3>12.1 Get the four values from Meta</h3>
+  <p>Use a <b>System User</b> token. The temporary token on the API Setup page expires in 24 hours, and sending stops when it does.</p>
+  <ol class="steps">
+    <li><b>System user.</b> Business settings → Users → "System users" → "Add" → name <i>npt-server</i>, role Admin.</li>
+    <li><b>Assign assets.</b> On that user, "Assign assets": the app <i>NPT CRM</i> (full control) and the WhatsApp account (full control).</li>
+    <li><b>Token.</b> "Generate new token" → app <i>NPT CRM</i> → expiry <b>Never</b> → tick <code>whatsapp_business_messaging</code> and <code>whatsapp_business_management</code> → Generate. Copy it at once; Meta shows it only once.</li>
+    <li><b>Phone number ID.</b> App → WhatsApp → "API Setup" → choose your real number in "From" → copy the "Phone number ID" (a long ID, not your phone number).</li>
+    <li><b>App secret.</b> App settings → "Basic" → "App secret" → Show → copy.</li>
+    <li><b>Verify token.</b> On the server run <code>openssl rand -hex 32</code> and copy the output.</li>
+  </ol>
+  <table class="wa-table">
+    <tr><th>Setting</th><th>Looks like</th><th>From</th></tr>
+    <tr><td><code>META_WA_TOKEN</code></td><td>starts <code>EAA…</code>, very long</td><td>System users → Generate token</td></tr>
+    <tr><td><code>META_WA_PHONE_NUMBER_ID</code></td><td>15–16 digits</td><td>App → WhatsApp → API Setup</td></tr>
+    <tr><td><code>META_WA_APP_SECRET</code></td><td>32 letters and digits</td><td>App settings → Basic</td></tr>
+    <tr><td><code>META_WA_VERIFY_TOKEN</code></td><td>64 letters and digits</td><td>You, with <code>openssl rand -hex 32</code></td></tr>
+  </table>
+  <div class="warn">Anyone holding the token can send WhatsApp messages as Navin Plastic Tech. Keep it only in the server's <code>.env</code>.</div>
+
+  <h3>12.2 Put them on the server</h3>
+<pre>cd /srv/npt/server
+nano .env</pre>
+  <p>Add this block (no quotes, no spaces around <code>=</code>):</p>
+<pre>WHATSAPP_PROVIDER=meta
+META_WA_TOKEN=EAA...
+META_WA_PHONE_NUMBER_ID=1234567890123456
+META_WA_APP_SECRET=...
+META_WA_VERIFY_TOKEN=...
+META_WA_TEMPLATE_LANGUAGE=en
+<span class="c"># already set in Part 6: PUBLIC_API_URL=https://api.navinplastic.com/api</span></pre>
+<pre>pm2 reload npt-api --update-env
+curl -s https://api.navinplastic.com/health/ready     <span class="c"># "whatsapp":"meta" under delivery</span></pre>
+
+  <h3>12.3 Connect the webhook (messages coming in)</h3>
+  <ol class="steps">
+    <li>developers.facebook.com → your app → WhatsApp → "Configuration" → Webhook → "Edit".</li>
+    <li>Callback URL: <code>https://api.navinplastic.com/api/whatsapp/inbound</code><br>Verify token: the same value as <code>META_WA_VERIFY_TOKEN</code>.</li>
+    <li>"Verify and save". The server log (<code>pm2 logs npt-api</code>) shows <code>webhook verified by Meta</code>.</li>
+    <li>"Webhook fields" → "Manage" → subscribe to <b>messages</b> (it carries incoming messages and delivery reports).</li>
+    <li><b>Switch the app to Live.</b> App settings → Basic → add a privacy policy URL (a page on your website) → set "App mode" to Live. In development mode Meta sends webhooks only for people with a role on the app.</li>
+    <li><b>Give staff the inbox.</b> In the CRM: Masters &amp; Access → Users → the person → Access → <b>WhatsApp inbox</b>: read to see it, write to reply and turn chats into enquiries.</li>
+  </ol>
+  <p class="small">Every webhook post is checked against <code>META_WA_APP_SECRET</code>; a post without Meta's signature is refused, so the address can be public.</p>
+  <p class="small">If messages still do not arrive, link the app to the WhatsApp account and register the number from the server (the WABA ID is in WhatsApp Manager; the PIN is a 6-digit PIN you choose):</p>
+<pre>cd /srv/npt/server &amp;&amp; set -a &amp;&amp; . ./.env &amp;&amp; set +a
+curl -X POST "https://graph.facebook.com/v23.0/&lt;WABA_ID&gt;/subscribed_apps" -H "Authorization: Bearer $META_WA_TOKEN"
+curl -X POST "https://graph.facebook.com/v23.0/$META_WA_PHONE_NUMBER_ID/register" \
+  -H "Authorization: Bearer $META_WA_TOKEN" -H "Content-Type: application/json" \
+  -d '{"messaging_product":"whatsapp","pin":"123456"}'</pre>
+</section>
+
+<!-- ============================== 13 ============================== -->
+<section class="part">
+  <h2 class="part wa"><span class="num">13</span>WhatsApp: message templates</h2>
+  <p>WhatsApp allows free text only within 24 hours of the person's own last message. Anything the app sends first (a quotation, an LR copy, a task notice) must use a template Meta has approved.</p>
+  <ol class="steps">
+    <li>WhatsApp Manager → "Message templates" → "Create template".</li>
+    <li>For each row: choose the category, type the name exactly, language <b>English</b>, paste the body, and give a sample value for every <code>{{n}}</code>.</li>
+    <li>Submit. Most are approved within minutes, some within 24 hours.</li>
+    <li>As each is approved, add its line to <code>.env</code> and run <code>pm2 reload npt-api --update-env</code>.</li>
+  </ol>
+  <p>Keep the placeholders in the order shown; the app fills <code>{{1}}</code>, <code>{{2}}</code>… in that order. You may change the words around them.</p>
+  <table class="wa-table">
+    <tr><th style="width:27%">.env setting</th><th style="width:17%">Template name</th><th style="width:11%">Category</th><th>Body to paste</th></tr>
+    <tr><td><code>WHATSAPP_TEMPLATE_QUOTE</code></td><td><code>quotation_sent</code></td><td>Utility</td><td>Dear {{1}}, please find our quotation {{2}} here: {{3}} — Navin Plastic Tech</td></tr>
+    <tr><td><code>WHATSAPP_TEMPLATE_LR_COPY</code></td><td><code>lr_copy_sent</code></td><td>Utility</td><td>Dear {{1}}, your goods for {{2}} are dispatched. LR copy: {{3}} — Navin Plastic Tech</td></tr>
+    <tr><td><code>WHATSAPP_TEMPLATE_TRIP</code></td><td><code>trip_update</code></td><td>Utility</td><td>Dear {{1}}, {{2}} is on its way: {{3}} — Navin Plastic Tech</td></tr>
+    <tr><td><code>WHATSAPP_TEMPLATE_LOCATION</code></td><td><code>location_request</code></td><td>Utility</td><td>Dear {{1}}, please share your delivery location in this chat so our vehicle can reach you. — Navin Plastic Tech</td></tr>
+    <tr><td><code>WHATSAPP_TEMPLATE_SAMPLE_READY</code></td><td><code>sample_ready</code></td><td>Utility</td><td>Dear {{1}}, sample {{2}} is ready: {{3}}, {{4}}, quantity {{5}}. {{6}} — Navin Plastic Tech</td></tr>
+    <tr><td><code>WHATSAPP_TEMPLATE_SAMPLE_DISPATCHED</code></td><td><code>sample_dispatched</code></td><td>Utility</td><td>Dear {{1}}, sample {{2}} ({{3}}, {{4}}, quantity {{5}}) is sent by {{6}}, AWB {{7}}. — Navin Plastic Tech</td></tr>
+    <tr><td><code>WHATSAPP_TEMPLATE_TASK</code></td><td><code>task_update</code></td><td>Utility</td><td>Task update: {{1}}. {{2}}. Open it: {{3}} — Navin Plastic Tech</td></tr>
+    <tr><td><code>WHATSAPP_TEMPLATE_TAG</code></td><td><code>query_tagged</code></td><td>Utility</td><td>{{1}} tagged you on query {{2}}. Open it: {{3}} — Navin Plastic Tech</td></tr>
+    <tr><td><code>WHATSAPP_TEMPLATE_OTP</code></td><td><code>sign_in_code</code></td><td>Authentication</td><td>Meta's ready-made body, with a "Copy code" button</td></tr>
+  </table>
+  <p>Once approved, the <code>.env</code> lines are:</p>
+<pre>WHATSAPP_TEMPLATE_QUOTE=quotation_sent
+WHATSAPP_TEMPLATE_LR_COPY=lr_copy_sent
+WHATSAPP_TEMPLATE_TRIP=trip_update
+WHATSAPP_TEMPLATE_LOCATION=location_request
+WHATSAPP_TEMPLATE_SAMPLE_READY=sample_ready
+WHATSAPP_TEMPLATE_SAMPLE_DISPATCHED=sample_dispatched
+WHATSAPP_TEMPLATE_TASK=task_update
+WHATSAPP_TEMPLATE_TAG=query_tagged
+WHATSAPP_TEMPLATE_OTP=sign_in_code</pre>
+  <p class="small">Chose "English (US)"? Set <code>META_WA_TEMPLATE_LANGUAGE=en_US</code>, or write it after the name (<code>quotation_sent:en_US</code>).
+    Start with Quote, LR copy and Task; they carry most of the daily traffic. OTP is needed only if staff sign in with a phone number.</p>
+</section>
+
+<!-- ============================== 14 ============================== -->
+<section class="part">
+  <h2 class="part wa"><span class="num">14</span>WhatsApp: screenshots to draft enquiries</h2>
+  <p>A salesperson or admin forwards a buyer's chat screenshot or visiting card to the business number. The app reads it into a <b>draft enquiry</b> and replies with
+    what it read. Nothing becomes a customer until a person checks and confirms it.</p>
+
+  <h3>Turn it on</h3>
+  <ol class="steps">
+    <li>Get an API key at <code>console.anthropic.com</code> (Settings → API keys) and add it to <code>.env</code>:
+<pre>ANTHROPIC_API_KEY=sk-ant-...</pre></li>
+    <li>Put each salesperson's and admin's WhatsApp number on their user profile: Masters &amp; Access → Users → the person → Phone.
+      <b>This is how the app knows a photo is from staff.</b> A photo from any other number is treated as a buyer's message and goes to the inbox.</li>
+    <li><code>pm2 reload npt-api --update-env</code>.</li>
+  </ol>
+
+  <h3>How staff use it</h3>
+  <ol class="steps">
+    <li>Screenshot the buyer's chat so the name or number at the top shows, or photograph their visiting card.</li>
+    <li>Send it to the business number, up to 3 photos in one message. A caption is optional and is read too.</li>
+    <li>Within about a minute, the app replies with what it read (company, name, mobile, email, place, product, quantity) and a link to the draft.</li>
+    <li>Open the link (or Enquiries → Draft enquiries), correct anything wrong, and fill in the next step, follow-up date and how you met them.
+      An admin can choose the salesperson in the <b>Marketing person</b> field.</li>
+    <li>Click <b>Confirm</b>: the customer and first enquiry are created.</li>
+  </ol>
+  <ul class="small">
+    <li><b>Long chats:</b> send the screenshot with the buyer's name first; ones sent within 10 minutes join the same draft.</li>
+    <li><b>Existing buyers:</b> if the phone or email already belongs to a customer, the reply says so and Confirm is refused; raise the enquiry on that customer.</li>
+    <li><b>No key or blurred photo:</b> the draft is still saved, with the reason, for typing in by hand.</li>
+    <li><b>Without WhatsApp:</b> the same reading works by uploading the photo on the Draft enquiries screen.</li>
+  </ul>
+</section>
+
+<!-- ============================== 15 ============================== -->
+<section class="part newpage">
+  <h2 class="part wa"><span class="num">15</span>Test it end to end</h2>
+  <p>Use your own phone as the "buyer". Do these in order; the first that fails tells you where to look.</p>
+  <table class="wa-table">
+    <tr><th style="width:4%">#</th><th style="width:24%">Test</th><th>How</th><th style="width:26%">Pass when</th></tr>
+    <tr><td>1</td><td>Web app on HTTPS</td><td>Open https://crm.navinplastic.com and sign in</td><td>Padlock in the address bar; dashboard loads</td></tr>
+    <tr><td>2</td><td>API and database</td><td><code>curl -s https://api.navinplastic.com/health/ready</code></td><td><code>"transactions": true</code></td></tr>
+    <tr><td>3</td><td>Email</td><td>Sign out; "Forgot password" for your email</td><td>The email arrives</td></tr>
+    <tr><td>4</td><td>Server sees Meta</td><td>Same health URL</td><td><code>"whatsapp": "meta"</code></td></tr>
+    <tr><td>5</td><td>Sending</td><td>Add <code>WHATSAPP_LOGIN_PING=&lt;your mobile&gt;</code> to <code>.env</code>, reload, sign in</td><td>Meta's <code>hello_world</code> arrives. Then remove the line</td></tr>
+    <tr><td>6</td><td>Webhook</td><td>Send "Hi" from your phone to the business number</td><td>It appears in the WhatsApp inbox in seconds</td></tr>
+    <tr><td>7</td><td>Replies</td><td>Answer it from the inbox</td><td>It arrives on your phone</td></tr>
+    <tr><td>8</td><td>Templates + PDF</td><td>Test customer with your mobile → quotation → send by WhatsApp → tap the link</td><td>Message arrives; PDF opens; send log reads Sent</td></tr>
+    <tr><td>9</td><td>Staff notices</td><td>Your mobile on a staff profile; raise a department task to them</td><td>The task notice arrives</td></tr>
+    <tr><td>10</td><td>Screenshots</td><td>From a staff phone, send a visiting card photo</td><td>Reply with what was read; draft appears</td></tr>
+  </table>
+<pre>pm2 logs npt-api | grep -i whatsapp      <span class="c"># watch while testing; Ctrl C to stop</span></pre>
+</section>
+
+<!-- ============================== 16 ============================== -->
+<section class="part newpage">
+  <h2 class="part"><span class="num">16</span>Troubleshooting</h2>
+
+  <h3>Server and domain</h3>
+  <table>
+    <tr><th style="width:36%">What you see</th><th>Cause and fix</th></tr>
+    <tr><td>Browser says "site can't be reached"</td><td>DNS not pointing yet (<code>dig</code>, Part 4.3), or ports 80/443 missing from the security group</td></tr>
+    <tr><td>Certbot fails: "DNS problem" or "connection refused"</td><td>The names do not resolve to the Elastic IP yet, or port 80 is closed. Wait, check, retry</td></tr>
+    <tr><td>Every action fails; browser console says CORS</td><td><code>CORS_ORIGIN</code> must equal the web address exactly: <code>https://</code>, no trailing slash. Reload with <code>--update-env</code></td></tr>
+    <tr><td>Screens load but nothing saves (404s)</td><td><code>VITE_API_URL</code> was wrong when built. Fix <code>.env.production</code> and run <code>npm run build</code> again</td></tr>
+    <tr><td>Reloading a page gives Nginx 404</td><td>The <code>try_files</code> line is missing from the web app's server block</td></tr>
+    <tr><td>Photo uploads fail around 1 MB</td><td><code>client_max_body_size 25M;</code> missing from the API block</td></tr>
+    <tr><td><code>pm2 status</code> shows restarts climbing</td><td><code>pm2 logs npt-api</code>: usually a wrong <code>MONGO_URI</code> password or a missing <code>.env</code> value; the log names it</td></tr>
+    <tr><td>API refuses to start: CORS or JWT message</td><td>In production the API needs a real <code>CORS_ORIGIN</code> (not <code>*</code>) and a <code>JWT_SECRET</code> of 32+ characters</td></tr>
+    <tr><td>Whole server freezes during a build</td><td>Out of memory: check swap is on (<code>free -m</code>); on t3.small run one API process (<code>pm2 status</code> shows one <code>npt-api</code> row)</td></tr>
+    <tr><td><code>"transactions": false</code></td><td>Part 5.6 not done, or <code>&amp;replicaSet=rs0</code> missing from <code>MONGO_URI</code></td></tr>
+    <tr><td>Sign-in codes/emails never arrive</td><td>SMTP host, port or password; the log names the setting. Gmail needs an App Password</td></tr>
+  </table>
+
+  <h3>WhatsApp</h3>
+  <p class="small">A failed send shows its reason on the send log in the app; <code>pm2 logs npt-api</code> has Meta's error code.</p>
+  <table class="wa-table">
+    <tr><th style="width:30%">What you see</th><th style="width:34%">Cause</th><th>Fix</th></tr>
+    <tr><td>Health shows <code>whatsapp: console</code></td><td>Token or phone number ID missing, or no reload</td><td>Check both lines; <code>pm2 reload npt-api --update-env</code></td></tr>
+    <tr><td>"Callback URL couldn't be validated"</td><td>Verify token differs, not set, or API not on HTTPS</td><td>Paste the token again without spaces; reload; retry</td></tr>
+    <tr><td>Verified, but nothing reaches the inbox</td><td>Not subscribed to <b>messages</b>, app not Live, or app not linked</td><td>Part 12.3 steps 4–5, then the subscribe command</td></tr>
+    <tr><td>401 "Bad webhook signature"</td><td><code>META_WA_APP_SECRET</code> wrong</td><td>Copy it again from App settings → Basic</td></tr>
+    <tr><td>Error 190</td><td>Token expired (the 24-hour one)</td><td>System User token with expiry Never</td></tr>
+    <tr><td>Error 10 or 200</td><td>Token lacks WhatsApp permission</td><td>Generate again with <code>whatsapp_business_messaging</code></td></tr>
+    <tr><td>Error 100 / 131030</td><td>Wrong phone number ID / still the test number</td><td>Copy the ID under your real number</td></tr>
+    <tr><td>Error 133010</td><td>Number not registered for the Cloud API</td><td>The register command in Part 12.3</td></tr>
+    <tr><td>Error 131047 or 470</td><td>Outside 24 hours with no template</td><td>Approve and set that template (Part 13)</td></tr>
+    <tr><td>Error 132001 / 132000</td><td>Template name/language wrong / placeholder count differs</td><td>Match the name exactly; recreate with the Part 13 placeholders</td></tr>
+    <tr><td>Error 131052</td><td>Meta could not download the PDF</td><td><code>PUBLIC_API_URL</code> must be the public HTTPS API address</td></tr>
+    <tr><td>Error 131026</td><td>The buyer's number is not on WhatsApp</td><td>Check the number on the customer record</td></tr>
+  </table>
+</section>
+
+<!-- ============================== A ============================== -->
+<section class="part newpage">
+  <h2 class="part"><span class="num">A</span>Go-live checklist</h2>
+  <h3>Server</h3>
+  <ul class="check">
+    <li>t3.small (or larger) in Mumbai, 40 GB gp3, Elastic IP attached</li>
+    <li>Security group: SSH from your IP only; 80 and 443 open; 27017 and 5000 closed</li>
+    <li>Swap on (<code>free -m</code>), firewall on (<code>sudo ufw status</code>)</li>
+    <li>MongoDB with a password and replica set: health shows <code>"transactions": true</code></li>
+    <li><code>.env</code> filled, <code>chmod 600</code>, not in git; <code>OTP_EXPOSE_IN_RESPONSE=false</code></li>
+    <li>pm2 running and saved; <code>pm2 startup</code> line run (survives a reboot: test with <code>sudo reboot</code>)</li>
+  </ul>
+  <h3>Domain</h3>
+  <ul class="check">
+    <li>A records for <code>crm</code> and <code>api</code> point at the Elastic IP; email records untouched</li>
+    <li>HTTPS padlock on both names; <code>certbot renew --dry-run</code> succeeded</li>
+    <li><code>CORS_ORIGIN</code>, <code>APP_URL</code>, <code>PUBLIC_API_URL</code>, <code>VITE_API_URL</code> and the Nginx CSP all use the same names</li>
+  </ul>
+  <h3>Data safety</h3>
+  <ul class="check">
+    <li>Nightly backup to S3 runs (check the bucket the next morning); versioning on</li>
+    <li>A restore was tried once on purpose</li>
+    <li>Weekly <code>df -h /</code> or a CloudWatch disk alarm at 75%</li>
+  </ul>
+  <h3>WhatsApp</h3>
+  <ul class="check">
+    <li>Business verified; display name approved; billing card added</li>
+    <li>Permanent System User token; health shows <code>"whatsapp": "meta"</code></li>
+    <li>Webhook verified, <b>messages</b> subscribed, app Live</li>
+    <li>Quote, LR copy and Task templates approved and set</li>
+    <li>Staff numbers on their user profiles; WhatsApp inbox access granted</li>
+    <li>All ten tests in Part 15 pass</li>
+  </ul>
+  <h3>People</h3>
+  <ul class="check">
+    <li>Admin account created; staff added with departments</li>
+    <li>Staff told the address: https://crm.navinplastic.com (on phones: browser menu → "Install app" / "Add to Home screen")</li>
+  </ul>
+  <div class="note" style="margin-top:14px">More detail: <code>docs/DEPLOY-AWS.md</code> (server, automatic deploys), <code>docs/SCALING.md</code> (growing beyond one server)
+    and <code>docs/PRODUCTION-READINESS.md</code> (load and security test results) in the server repository.</div>
+</section>
+
+</body>
+</html>
