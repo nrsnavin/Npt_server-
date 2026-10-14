@@ -136,7 +136,12 @@ test('Admin hands it on; the enquiry, its open task and its sample go with it �
   assert.equal(read.json.data.customer.name ? 'has contact' : '', 'has contact', 'the buyer’s contact travels on the enquiry');
   assert.equal((await api(`/api/customers/${customer}`, { token: priya })).status, 404, 'the customer record is not theirs');
   assert.ok(!(await api('/api/customers', { token: priya })).json.data.some((row) => String(row._id) === String(customer)), 'nor in their list');
-  assert.equal((await api(`/api/customers/${customer}`, { token: nandhini })).status, 200, 'still the allocated owner’s');
+  const hers = await api(`/api/customers/${customer}`, { token: nandhini });
+  assert.equal(hers.status, 200, 'still the allocated owner’s');
+  assert.ok(!hers.json.data.timeline.enquiries.some((row) => String(row._id) === String(enquiry._id)), 'without the enquiry handed on');
+  const map = await api(`/api/customers/${customer}/map`, { token: nandhini });
+  assert.equal(map.status, 200, map.json.message);
+  assert.ok(!JSON.stringify(map.json.data).includes(String(enquiry._id)), 'nor on the buyer’s map');
   assert.ok(!(await api('/api/enquiries', { token: nandhini })).json.data.some((row) => String(row._id) === String(enquiry._id)), 'the enquiry is gone from her list');
   assert.ok((await api('/api/enquiries', { token: admin })).json.data.some((row) => String(row._id) === String(enquiry._id)), 'Admin sees every one');
 });

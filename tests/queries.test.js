@@ -225,11 +225,12 @@ test('naming one person does not put their colleagues in', async () => {
 
 /* ------------------------------- The grant ------------------------------- */
 
-test('being asked grants sight of the buyer — except to a salesperson, who sees only their own', async () => {
+test('being asked lets a participant open the buyer from the query — a salesperson too, but not in their list', async () => {
   /*
-   * A participant outside marketing can open the customer the thread names: despatch asked where
-   * a load went needs the delivery address. A marketing person sees only the buyers allocated to
-   * them — being in a thread about another salesperson's buyer shows them the thread, not the buyer.
+   * A participant can open the customer the thread names: despatch asked where a load went needs
+   * the delivery address. A marketing person is the one exception-holder: another salesperson's
+   * buyer opens for them from the query, but never joins their customer list, and its enquiries
+   * and samples stay hidden.
    */
   const before = await api(`/api/customers/${customerId}`, { token: kavitha });
   assert.equal(before.status, 200, 'despatch is not ownership-scoped');
@@ -244,11 +245,16 @@ test('being asked grants sight of the buyer — except to a salesperson, who see
     body: { user: await whoIs(priya) },
   });
   assert.equal(added.status, 201, added.json.message);
-  assert.equal(added.json.granted.customer, false, 'the answer says the buyer was not opened to them');
+  assert.equal(added.json.granted.customer, true, 'the answer says the buyer opens for them');
   assert.ok(added.json.granted.people >= 1);
 
   assert.equal((await api(`/api/queries/${json.data._id}`, { token: priya })).status, 200, 'they are in the thread');
-  assert.equal((await api(`/api/customers/${customerId}`, { token: priya })).status, 404, 'and still not the buyer');
+  const opened = await api(`/api/customers/${customerId}`, { token: priya });
+  assert.equal(opened.status, 200, 'and can open the buyer from it');
+  assert.equal(opened.json.data.timeline.total, 0, 'without the buyer’s enquiries');
+  assert.equal(opened.json.data.timeline.sampleTotal, 0, 'or samples');
+  assert.ok(!(await api('/api/customers', { token: priya })).json.data.some((row) => String(row._id) === String(customerId)),
+    'and the buyer is not in their customer list');
 });
 
 test('the grant lets them read the buyer, never edit it', async () => {

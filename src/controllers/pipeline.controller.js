@@ -17,7 +17,7 @@ import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { nextNumber } from '../services/numbering.service.js';
 import {
-  customerScope, narrowToOwner, ownershipFilter, ownsCustomer, ownsRecord,
+  customerScope, mayOpenCustomer, narrowToOwner, ownershipFilter, ownsCustomer, ownsRecord,
 } from '../services/ownership.service.js';
 import {
   assertCanOwnBuyer,
@@ -309,7 +309,7 @@ export const listCustomers = asyncHandler(async (req, res) => {
 export const getCustomerMap = asyncHandler(async (req, res) => {
   const customer = await Customer.findById(req.params.id).select('_id name code assignedTo status');
   if (!customer) throw ApiError.notFound('Customer not found');
-  if (!ownsCustomer(req.user, customer)) throw ApiError.notFound('Customer not found');
+  if (!(await mayOpenCustomer(req.user, customer))) throw ApiError.notFound('Customer not found');
 
   res.json({ success: true, data: await customerMap(customer, req.user) });
 });
@@ -320,8 +320,8 @@ export const getCustomer = asyncHandler(async (req, res) => {
     /* Who stood at the gate — the pin's whole claim to being right. */
     .populate('site.setBy', 'name');
   if (!customer) throw ApiError.notFound('Customer not found');
-  /* A salesperson's own customers only [ownership.service `ownsCustomer`]. */
-  if (!ownsCustomer(req.user, customer)) throw ApiError.notFound('Customer not found');
+  /* A salesperson's own customers — or one a query they are in is about [ownership.service `mayOpenCustomer`]. */
+  if (!(await mayOpenCustomer(req.user, customer))) throw ApiError.notFound('Customer not found');
 
   /*
    * The timeline the blueprint asks for [§2]. It grows as later modules land.
@@ -331,7 +331,12 @@ export const getCustomer = asyncHandler(async (req, res) => {
    * screen quietly disagreed with the business. The rest come from `/enquiries?customer=`,
    * which is the same list this is a preview of.
    */
-  const filter = { customer: customer._id };
+  /*
+   * Narrowed as the lists are: a salesperson sees their own enquiries and samples of this buyer —
+   * not one delegated to a colleague, and none at all when the buyer opened through a query.
+   */
+  const filter = { customer: customer._id, ...ownershipFilter(req.user) };
+  const sampleFilter = { customer: customer._id, ...ownershipFilter(req.user, 'requestedBy') };
   const [enquiries, total, samples, sampleTotal] = await Promise.all([
     Enquiry.find(filter)
       .select('number enquiryDate status requirement.modelNumber estimatedValue')
@@ -344,11 +349,11 @@ export const getCustomer = asyncHandler(async (req, res) => {
      * leaving samples out while they exist is what sends marketing back to asking the bench,
      * which is the phone call this CRM is measured on not needing [§40].
      */
-    Sample.find(filter)
+    Sample.find(sampleFilter)
       .select('number requestedAt status modelNumber quantity purpose requiredDate enquiry')
       .sort('-requestedAt')
       .limit(TIMELINE_PAGE),
-    Sample.countDocuments(filter),
+    Sample.countDocuments(sampleFilter),
   ]);
 
   res.json({

@@ -6,7 +6,7 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { transactional } from '../utils/transaction.js';
 import { CLOSED_STAGE } from '../config/enquiryStages.js';
 import { marketingStatusLabel, marketingStatusOf } from '../config/marketingStatuses.js';
-import { ownershipFilter, ownsCustomer } from '../services/ownership.service.js';
+import { mayOpenCustomer, ownershipFilter } from '../services/ownership.service.js';
 import { delegateCustomer, delegationTargets, mayDelegate } from '../services/delegation.service.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 
@@ -25,8 +25,8 @@ const OPEN_ENQUIRIES = 20;
 
 async function readableCustomer(req) {
   const customer = await Customer.findById(req.params.id).populate('assignedTo', 'name');
-  /* Theirs, or shared with them — the same 404 as the customer page for anybody else. */
-  if (!customer || !ownsCustomer(req.user, customer)) throw ApiError.notFound('Customer not found');
+  /* Theirs, or one a query they are in is about — the same 404 as the customer page for anybody else. */
+  if (!customer || !(await mayOpenCustomer(req.user, customer))) throw ApiError.notFound('Customer not found');
   return customer;
 }
 
