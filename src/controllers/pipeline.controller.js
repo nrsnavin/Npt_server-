@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import { customerSummaries } from '../services/customerSummary.service.js';
 import { customerMap } from '../services/customerMap.service.js';
-import Mould, { mouldWithPhoto } from '../models/Mould.js';
+import Mould, { MATERIALS, mouldWithPhoto } from '../models/Mould.js';
 import Customer from '../models/Customer.js';
 import {
   MARKETING_STATUSES, MARKETING_STATUS_KEYS, STAGE_FOR_MARKETING, marketingStatusLabel, marketingStatusOf, salesStatusesFor,
@@ -1013,7 +1013,8 @@ export const getEnquiry = asyncHandler(async (req, res) => {
     .populate('requirement.clipRef', 'name code colour kind')
     .populate('requirement.printRef', 'name code kind')
     .populate('activities.by', 'name')
-    .populate('handovers.from handovers.to handovers.by', 'name');
+    .populate('handovers.from handovers.to handovers.by', 'name')
+    .populate('checkedBy', 'name');
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   /*
    * Read by whoever may read enquiries (marketing, their own), and by a department that holds or
@@ -1056,6 +1057,9 @@ async function buyerOf(body, user) {
   return { customer: null, owner, prospect };
 }
 
+/** Marked checked by whoever is acting, now. */
+const checkedNow = (user) => ({ checkedAt: new Date(), checkedBy: user._id });
+
 export const createEnquiry = asyncHandler(transactional(async (req, res) => {
   const buyer = await buyerOf(req.body, req.user);
   const enquiry = await createEnquiryRecord(
@@ -1063,6 +1067,8 @@ export const createEnquiry = asyncHandler(transactional(async (req, res) => {
       ...req.body,
       ...(buyer.customer ? {} : { customer: undefined, prospect: buyer.prospect }),
       assignedTo: req.body.assignedTo || buyer.owner,
+      /* Typed in by a person on the form: what they typed is what they checked. */
+      ...checkedNow(req.user),
     },
     req.user
   );
@@ -1149,7 +1155,7 @@ export const createEnquiryGroup = asyncHandler(transactional(async (req, res) =>
   const created = [];
 
   for (const item of items) {
-    created.push(await createEnquiryRecord({ ...item, groupRef }, req.user));
+    created.push(await createEnquiryRecord({ ...item, groupRef, ...checkedNow(req.user) }, req.user));
   }
 
   res.status(201).json({ success: true, data: { groupRef, enquiries: created } });
@@ -1398,6 +1404,91 @@ export const setEnquiryStatus = asyncHandler(transactional(async (req, res) => {
  * "Quotation preparing" opens the quotation — by moving the sales status through the same door
  * a stage move uses. Only forward: an enquiry already further on is not pulled back.
  */
+/**
+ * "Save & Mark as Checked" [the dashboard's enquiry panel]: what was captured, corrected, and
+ * the enquiry marked as read through. The departments can be asked for things from then on
+ * [handoff.controller `sendEnquiryHandoff`].
+ *
+ * A corrected company name or number is the buyer's, so it goes on the customer's own record —
+ * a name misread off a photo is fixed once, for every enquiry, quote and order that shows it.
+ * Before there is a customer, the prospect carries them.
+ */
+export const checkEnquiry = asyncHandler(transactional(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id);
+  if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+  expectVersion(enquiry, req.body);
+  const { company, contactPerson, whatsapp, modelNumber, quantity, materialColour, remarks } = withoutVersion(req.body);
+  const before = snapshot(enquiry);
+
+  if (enquiry.customer) {
+    const customer = await Customer.findById(enquiry.customer);
+    if (customer) {
+      const buyerBefore = snapshot(customer);
+      const touches = company !== undefined || contactPerson !== undefined || whatsapp !== undefined;
+      if (touches && !ownsRecord(req.user, customer)) {
+        throw ApiError.forbidden(`${customer.name} belongs to another marketing person — they correct the customer`);
+      }
+      if (company) customer.name = company;
+      if (whatsapp !== undefined) {
+        const number = normalisePhone(whatsapp) || whatsapp || undefined;
+        if (number && number !== customer.whatsapp) {
+          const known = await findDuplicateCustomer({ whatsapp: number }, customer._id);
+          if (known) throw ApiError.conflict(`${known.name} (${known.code}) already has that number`);
+        }
+        customer.whatsapp = number;
+      }
+      if (contactPerson !== undefined) {
+        const contacts = customer.contacts || [];
+        const primary = contacts.find((contact) => contact.isPrimary) || contacts[0];
+        if (primary) primary.name = contactPerson || primary.name;
+        else if (contactPerson) customer.contacts = [{ name: contactPerson, whatsapp: customer.whatsapp, isPrimary: true }];
+      }
+      if (customer.isModified()) {
+        await customer.save();
+        await recordChange({ model: 'Customer', doc: customer, before: buyerBefore, by: req.user });
+      }
+    }
+  } else {
+    enquiry.prospect = {
+      ...(enquiry.prospect?.toObject?.() ?? enquiry.prospect ?? {}),
+      ...(company ? { name: company } : {}),
+      ...(contactPerson !== undefined ? { contactPerson: contactPerson || undefined } : {}),
+      ...(whatsapp !== undefined ? { whatsapp: whatsapp || undefined } : {}),
+    };
+  }
+
+  /* "PP black": a resin the registers know, then the colour; otherwise it is all the colour. */
+  const spec = {};
+  if (modelNumber !== undefined) spec.modelNumber = modelNumber || undefined;
+  if (quantity !== undefined) spec.quantity = quantity ?? undefined;
+  if (materialColour !== undefined) {
+    const [first, ...rest] = String(materialColour || '').trim().split(/\s+/);
+    const material = MATERIALS.find((value) => value === String(first || '').toLowerCase().replace(/\s+/g, '_'));
+    spec.material = material || enquiry.requirement?.material;
+    spec.colour = (material ? rest.join(' ') : String(materialColour || '').trim()) || undefined;
+  }
+  if (Object.keys(spec).length) {
+    const requirement = await applySpec(
+      { ...(enquiry.requirement?.toObject?.() ?? enquiry.requirement), mould: enquiry.mould },
+      spec
+    );
+    delete requirement.mould;
+    enquiry.requirement = { ...(enquiry.requirement?.toObject?.() ?? enquiry.requirement), ...requirement };
+  }
+  if (remarks !== undefined) enquiry.remarks = remarks || undefined;
+
+  enquiry.checkedAt = new Date();
+  enquiry.checkedBy = req.user._id;
+  await enquiry.save();
+  await recordChange({ model: 'Enquiry', doc: enquiry, before, by: req.user });
+
+  const saved = await Enquiry.findById(enquiry._id)
+    .populate('customer', 'code name mobile whatsapp email assignedTo contacts')
+    .populate('assignedTo', 'name email')
+    .populate('checkedBy', 'name');
+  res.json({ success: true, data: saved });
+}));
+
 export const setEnquiryMarketingStatus = asyncHandler(transactional(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);
   if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');

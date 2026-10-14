@@ -1,5 +1,5 @@
 import Customer from '../models/Customer.js';
-import Enquiry, { CLOSED_STATUSES } from '../models/Enquiry.js';
+import Enquiry, { CLOSED_STATUSES, checkPending } from '../models/Enquiry.js';
 import Quotation, { CLOSED_QUOTATION_STATUSES, QUOTATION_STATUSES } from '../models/Quotation.js';
 import Todo from '../models/Todo.js';
 import { findHandoff } from '../config/handoffs.js';
@@ -48,15 +48,16 @@ export async function overviewFor(user) {
     Quotation.countDocuments({ ...ownershipFilter(user), status: { $in: LIVE_QUOTES } }),
     Enquiry.countDocuments({ ...active, ...isNew }),
     Enquiry.find({ ...active, ...isNew })
-      .select('number customer prospect.name assignedTo requirement.modelNumber enquiryDate createdAt')
+      .select('number customer prospect.name assignedTo requirement.modelNumber enquiryDate createdAt checkedAt marketingStatus status stage')
       .populate([{ path: 'customer', select: 'name code' }, { path: 'assignedTo', select: 'name' }])
       .sort({ createdAt: -1 })
-      .limit(6)
+      .limit(20)
       .lean(),
   ]);
   return {
     figures: { customers, dueToday, activeEnquiries: openCount, quotations },
-    newEnquiries: { total: newCount, rows: fresh },
+    /* Each says whether it still waits to be checked [Enquiry `checkPending`]. */
+    newEnquiries: { total: newCount, rows: fresh.map((row) => ({ ...row, checkPending: checkPending(row) })) },
   };
 }
 

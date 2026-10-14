@@ -1,4 +1,4 @@
-import Enquiry from '../models/Enquiry.js';
+import Enquiry, { checkPending } from '../models/Enquiry.js';
 import Todo from '../models/Todo.js';
 import Attachment from '../models/Attachment.js';
 import { bufferOf, put, remove, safeFilename } from '../services/storage.service.js';
@@ -66,6 +66,10 @@ async function enquiryFor(req) {
 
 export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) => {
   const enquiry = await enquiryFor(req);
+  /* Nothing goes to a department on details nobody has checked [Enquiry `checkPending`]. */
+  if (checkPending(enquiry)) {
+    throw ApiError.conflict(`Check ${enquiry.number} first — correct the details and press Save & Mark as Checked`);
+  }
   const task = await sendHandoff({
     enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, brief: req.body.brief,
     priority: req.body.priority, requiredDate: req.body.requiredDate || undefined, addToOpen: req.body.addToOpen === true, order: req.body.order, user: req.user,

@@ -4,7 +4,7 @@ import { customerPanel, delegateCustomerTo } from '../controllers/customerPanel.
 import { Router } from 'express';
 import { enquiryTimeline, listEnquiryMessages, sendEnquiryMessage, listEnquiryDocuments } from '../controllers/enquiryMessage.controller.js';
 import {
-  listBuyerCards, getBuyerCard, buyerCardImage, uploadBuyerCard, confirmBuyerCard, discardBuyerCard,
+  listBuyerCards, getBuyerCard, buyerCardImage, enquirySource, enquirySourceImage, uploadBuyerCard, confirmBuyerCard, discardBuyerCard,
 } from '../controllers/buyerCard.controller.js';
 import { clearSite, pinSite } from '../controllers/customerSite.controller.js';
 import {
@@ -13,7 +13,7 @@ import {
   enquiryOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, applyEnquiryAction, listEnquiryActions,
-  logEnquiryActivity, setEnquiryMarketingStatus, listEnquiryActivities, enquiryActivityTypes, delegateEnquiryTo, listDelegationTargets, promoteToMould, enquiryPipeline,
+  logEnquiryActivity, setEnquiryMarketingStatus, checkEnquiry, listEnquiryActivities, enquiryActivityTypes, delegateEnquiryTo, listDelegationTargets, promoteToMould, enquiryPipeline,
   enquiryBoard,
   exportCustomers,
   exportEnquiries,
@@ -39,7 +39,7 @@ import { validate } from '../middleware/validate.js';
 import {
   customerSchema, customerUpdateSchema,
   buyerCardConfirmSchema,
-  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema, enquiryActivitySchema, enquiryDelegateSchema, enquiryMessageSchema, enquiryMarketingStatusSchema,
+  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema, enquiryActivitySchema, enquiryDelegateSchema, enquiryMessageSchema, enquiryMarketingStatusSchema, enquiryCheckSchema,
   bulkReassignSchema,
   enquiryConvertSchema,
   customerFollowUpSchema,
@@ -262,6 +262,10 @@ router.get('/enquiries/:id/attachables', listEnquiryDocuments);
 router.post('/enquiries/:id/messages', requireModule('enquiries', 'write'), validate(enquiryMessageSchema), sendEnquiryMessage);
 /* Marketing's own status for the enquiry — the dropdown on the enquiry and the list. */
 router.post('/enquiries/:id/marketing-status', requireModule('enquiries', 'write'), validate(enquiryMarketingStatusSchema), setEnquiryMarketingStatus);
+/* "Save & Mark as Checked", and the picture it was read from [the dashboard's enquiry panel]. */
+router.post('/enquiries/:id/check', requireModule('enquiries', 'write'), validate(enquiryCheckSchema), checkEnquiry);
+router.get('/enquiries/:id/source', requireModule('enquiries'), enquirySource);
+router.get('/enquiries/:id/source/image', requireModule('enquiries'), enquirySourceImage);
 /* Everything that happened on the enquiry, for whoever may open it. */
 router.get('/enquiries/:id/timeline', enquiryTimeline);
 /* Handing it to another marketing person or an Admin, at any stage — Admin only [services/delegation.service.js]. */

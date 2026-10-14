@@ -453,6 +453,15 @@ const enquirySchema = new mongoose.Schema(
     holdReason: String,
 
     source: { type: String, enum: CUSTOMER_SOURCES, default: 'manual' },
+
+    /**
+     * When somebody read the captured details through, corrected them and said they are right —
+     * "Save & Mark as Checked" on the dashboard's enquiry panel. Until then the departments are
+     * not asked for anything on it [`checkPending`]: an enquiry read off a photo can name the
+     * wrong company, number or model, and a sample made from a misread is the costly mistake.
+     */
+    checkedAt: Date,
+    checkedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     /** Shared by enquiries raised together from one conversation. */
     groupRef: { type: String, index: true },
   },
@@ -516,6 +525,21 @@ enquirySchema.post('save', async function moveHolderDueDate(doc) {
   if (!doc.$locals.followUpMoved || !doc.nextFollowUpDate) return;
   const { syncOwnerDueDate } = await import('../services/handoff.service.js');
   await syncOwnerDueDate(doc);
+});
+
+/**
+ * Still waiting to be checked: never marked, and still where it arrived — at Enquiry received, on
+ * the first stage. One already moved on (and every enquiry from before the check existed that
+ * has) was worked by somebody, so it is not held back.
+ */
+export const checkPending = (enquiry) =>
+  Boolean(enquiry) && !enquiry.checkedAt &&
+  !CLOSED_STATUSES.includes(enquiry.status) &&
+  marketingStatusOf(enquiry) === 'enquiry_received' &&
+  (enquiry.stage || 'enquiry') === 'enquiry';
+
+enquirySchema.virtual('checkPending').get(function pending() {
+  return checkPending(this);
 });
 
 enquirySchema.virtual('isOpen').get(function isOpen() {

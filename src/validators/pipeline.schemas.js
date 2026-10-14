@@ -358,6 +358,18 @@ export const enquiryMessageSchema = z
     path: ['subject'],
   });
 
+/** "Save & Mark as Checked" — the captured details as corrected [pipeline.controller `checkEnquiry`]. */
+export const enquiryCheckSchema = z.object({
+  company: z.string().trim().min(1, 'Name the company').max(160).optional(),
+  contactPerson: z.string().trim().max(120).optional(),
+  whatsapp: z.string().trim().max(30).optional(),
+  modelNumber: z.string().trim().max(120).optional(),
+  quantity: z.union([z.null(), z.coerce.number().min(0).max(100000000)]).optional(),
+  materialColour: z.string().trim().max(120).optional(),
+  remarks: z.string().trim().max(2000).optional(),
+  expectedUpdatedAt: z.coerce.date().optional(),
+});
+
 /** The enquiry's marketing status [config/marketingStatuses.js]. */
 export const enquiryMarketingStatusSchema = z.object({
   status: z.enum(MARKETING_STATUS_KEYS),
