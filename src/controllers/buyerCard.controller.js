@@ -9,6 +9,7 @@ import { assertCanOwnBuyer } from '../services/assignment.service.js';
 import { streamOf } from '../services/storage.service.js';
 import { cardFromUpload, confirmCard, discardCard } from '../services/buyerCard.service.js';
 import { cardModelConfigured } from '../services/buyerCard.llm.js';
+import { catalogue, shortlist } from '../services/modelCatalogue.service.js';
 import { transactional } from '../utils/transaction.js';
 
 /**
@@ -37,6 +38,7 @@ async function cardFor(req) {
 const asApi = (error) => {
   if (error.status === 400) return ApiError.badRequest(error.message);
   if (error.status === 409) return ApiError.conflict(error.message);
+  if (error.status === 403) return ApiError.forbidden(error.message);
   return error;
 };
 
@@ -48,6 +50,32 @@ export const listBuyerCards = asyncHandler(async (req, res) => {
     BuyerCard.countDocuments({ ...scope(req.user), status: { $in: OPEN_CARD_STATUSES } }),
   ]);
   res.json({ success: true, data, waiting, reading: cardModelConfigured() });
+});
+
+/**
+ * The plant's models, both masters in one list — the moulds made here and the trading items
+ * bought in — for the model dropdown on a draft. `?search=` finds by code or name; `?ref=` reads
+ * back one already picked (`m<id>` a mould, `t<id>` a trading item).
+ */
+export const draftModels = asyncHandler(async (req, res) => {
+  const rows = await catalogue();
+  const shown = (row) => ({ ref: row.ref, kind: row.kind, id: row.id, code: row.code, name: row.name || undefined });
+  if (req.query.ref) {
+    const row = rows.find((entry) => entry.ref === String(req.query.ref));
+    if (!row) throw ApiError.notFound('That model is not on the master.');
+    return res.json({ success: true, data: shown(row) });
+  }
+  const search = String(req.query.search || '').trim().toLowerCase().slice(0, 80);
+  const PAGE = 20;
+  let found;
+  if (!search) found = [...rows].sort((a, b) => String(a.code).localeCompare(String(b.code)));
+  else {
+    /* What the code or name says outright first, then what the buyer's words could mean. */
+    const plain = rows.filter((row) => `${row.code} ${row.name || ''}`.toLowerCase().includes(search));
+    const likely = shortlist(search, rows, { limit: PAGE }).map((entry) => entry.row);
+    found = [...new Map([...plain, ...likely].map((row) => [row.ref, row])).values()];
+  }
+  res.json({ success: true, data: found.slice(0, PAGE).map(shown), pagination: { total: found.length, limit: PAGE } });
 });
 
 export const getBuyerCard = asyncHandler(async (req, res) => {
@@ -120,13 +148,13 @@ export const uploadBuyerCard = asyncHandler(async (req, res) => {
  */
 export const confirmBuyerCard = asyncHandler(transactional(async (req, res) => {
   const card = await cardFor(req);
-  const { assignedTo, task, modelNumber, items, ...edits } = req.body;
+  const { assignedTo, task, modelNumber, items, customer, ...edits } = req.body;
   const owner = assignedTo ? (await assertCanOwnBuyer(assignedTo))._id : undefined;
   /* The task's form first: a short one is said before the customer and enquiry are made. */
   if (task) assertTaskAnswers(task.kind, task.brief, task.note);
   let made;
   try {
-    made = await confirmCard(card, req.user, edits, { owner, items });
+    made = await confirmCard(card, req.user, edits, { owner, items, customer });
   } catch (error) {
     throw asApi(error);
   }

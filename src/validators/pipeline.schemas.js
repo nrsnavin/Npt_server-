@@ -341,10 +341,13 @@ export const buyerCardConfirmSchema = z.object({
   assignedTo: objectId.optional(),
   /* The model asked about, on the enquiry it makes. */
   modelNumber: z.string().trim().max(120).optional(),
+  /* A customer already on the register to raise the enquiry on, instead of making a new one. */
+  customer: objectId.optional(),
   /* Every model asked about — the draft's list, read from the picture and corrected. */
   items: z.array(z.object({
     mould: objectId.optional(),
     modelNumber: z.string().trim().max(120).optional(),
+    isNewDevelopment: z.boolean().optional(),
     quantity: z.number().int().nonnegative().nullable().optional(),
     colour: z.string().trim().max(80).optional(),
   })).max(20).optional(),

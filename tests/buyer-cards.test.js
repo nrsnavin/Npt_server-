@@ -367,6 +367,23 @@ test('the salesperson’s own list of models is what the enquiry gets', async ()
   assert.equal(enquiry.items[0].colour, 'White');
 });
 
+test('the draft’s model dropdown lists both masters, and finds by code or name', async () => {
+  const listed = await api('/api/buyer-cards/models', { token: nandhini });
+  assert.equal(listed.status, 200);
+  const codes = listed.json.data.map((row) => row.code);
+  assert.ok(codes.includes('NCP-25') && codes.includes('MAU-35 WB'), 'moulds and trading items in one list');
+  const traded = listed.json.data.find((row) => row.code === 'MAU-35 WB');
+  assert.equal(traded.kind, 'traded');
+
+  const velvet = (await api('/api/buyer-cards/models?search=velvet', { token: nandhini })).json.data.map((row) => row.code);
+  assert.deepEqual(velvet.slice(0, 2).sort(), ['VS-400', 'VS-450']);
+  assert.equal((await api('/api/buyer-cards/models?search=ncp 25', { token: nandhini })).json.data[0].code, 'NCP-25');
+
+  const one = await api(`/api/buyer-cards/models?ref=${traded.ref}`, { token: nandhini });
+  assert.equal(one.json.data.code, 'MAU-35 WB');
+  assert.equal((await api('/api/buyer-cards/models?ref=mnothing', { token: nandhini })).status, 404);
+});
+
 test('a draft can be dropped', async () => {
   cardReply = card({ company: 'Drop Me Textiles', mobile: '9840099999' });
   await whatsapp(NANDHINI_PHONE, { photo: true });
@@ -386,7 +403,42 @@ test('a buyer the plant already has is flagged on the draft and not added twice'
   assert.equal(tried.status, 409);
   assert.match(tried.json.message, /Raise the enquiry on that customer/);
   assert.equal(await Customer.countDocuments({ mobile: '+919840011223' }), 1);
+
+  /* Picked on the draft: the enquiry goes on the customer the plant already has. */
+  const existing = draft.matchedCustomer._id || draft.matchedCustomer;
+  const onIt = await finish(draft._id, { ...theRest, customer: String(existing) });
+  assert.equal(onIt.status, 200, onIt.json.message);
+  assert.equal(String(onIt.json.data.customer._id), String(existing));
+  assert.equal(await Customer.countDocuments({ mobile: '+919840011223' }), 1, 'no second customer');
+  const enquiry = await Enquiry.findById(onIt.json.data.enquiry._id);
+  assert.equal(String(enquiry.customer), String(existing));
+  const saved = (await api(`/api/buyer-cards/${draft._id}`, { token: nandhini })).json.data;
+  assert.equal(saved.status, 'confirmed');
+});
+
+test('a draft goes only on a customer the person may work', async () => {
+  const arunUser = await mongoose.model('User').findOne({ email: 'arun@np.com' });
+  const arunsBuyer = await Customer.create({ code: 'CUST-ARUN-1', name: 'Arun Own Buyer', mobile: '+919840077301', assignedTo: arunUser._id });
+
+  cardReply = card({ company: 'Someone Else', mobile: '9840077302' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  const refused = await finish(draft._id, { ...theRest, customer: String(arunsBuyer._id) });
+  assert.equal(refused.status, 403);
+  assert.match(refused.json.message, /belongs to another marketing person/);
   await api(`/api/buyer-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
+});
+
+test('a model not made yet goes on the enquiry as a new development', async () => {
+  cardReply = card({ company: 'New Dev Fabrics', mobile: '9840077303' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  const done = await finish(draft._id, { ...theRest, items: [{ isNewDevelopment: true, modelNumber: 'Round velvet hanger, 380mm', quantity: 2000 }] });
+  assert.equal(done.status, 200, done.json.message);
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.equal(enquiry.items[0].isNewDevelopment, true);
+  assert.equal(enquiry.items[0].modelNumber, 'Round velvet hanger, 380mm');
+  assert.equal(enquiry.isNewDevelopment, true, 'the first model is the enquiry’s own');
 });
 
 test('a draft from someone outside marketing goes to the marketing rotation when finished', async () => {

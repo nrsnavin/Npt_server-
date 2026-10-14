@@ -4,7 +4,7 @@ import { customerPanel, delegateCustomerTo } from '../controllers/customerPanel.
 import { Router } from 'express';
 import { enquiryTimeline, listEnquiryMessages, sendEnquiryMessage, listEnquiryDocuments } from '../controllers/enquiryMessage.controller.js';
 import {
-  listBuyerCards, getBuyerCard, buyerCardImage, enquirySource, enquirySourceImage, uploadBuyerCard, confirmBuyerCard, discardBuyerCard,
+  listBuyerCards, draftModels, getBuyerCard, buyerCardImage, enquirySource, enquirySourceImage, uploadBuyerCard, confirmBuyerCard, discardBuyerCard,
 } from '../controllers/buyerCard.controller.js';
 import { clearSite, pinSite } from '../controllers/customerSite.controller.js';
 import {
@@ -175,6 +175,7 @@ router.post('/customers/:id/credit', requireModule('customers', 'write'), valida
  */
 router.get('/buyer-cards', requireModule('customers'), listBuyerCards);
 router.post('/buyer-cards', requireModule('customers', 'write'), singleImage('image'), uploadBuyerCard);
+router.get('/buyer-cards/models', requireModule('customers'), draftModels);
 router.get('/buyer-cards/:id', requireModule('customers'), getBuyerCard);
 router.get('/buyer-cards/:id/image', requireModule('customers'), buyerCardImage);
 router.post(
