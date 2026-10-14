@@ -127,7 +127,7 @@ async function partsFrom(body) {
  * A new line, from a request or an enquiry item, with the registers resolved and the cost
  * prefilled. A price given with it is the offer; without one the line waits for costing.
  */
-async function lineFrom(input = {}, { fallbackModel } = {}) {
+async function lineFrom(input = {}, { fallbackModel, mayCost = false } = {}) {
   const mouldId = input.mould || undefined;
   const mould = mouldId ? await Mould.findById(mouldId) : null;
   if (mouldId && !mould) throw ApiError.badRequest('That mould is not on the register');
@@ -152,7 +152,12 @@ async function lineFrom(input = {}, { fallbackModel } = {}) {
     procurement: traded ? 'trade' : input.procurement,
     printing: input.printing,
     markupPercent: input.markupPercent,
-    cost: { ...costingFrom(mould, material, parts), ...(traded ? { inwardPrice: traded.inwardPrice } : {}) },
+    cost: {
+      ...costingFrom(mould, material, parts),
+      ...(traded ? { inwardPrice: traded.inwardPrice } : {}),
+      /* What the costing person decided over the registers — a piece sold with no hook costs none. */
+      ...(mayCost && input.cost ? input.cost : {}),
+    },
     quantity: input.quantity,
     moq: input.moq ?? mould?.moq ?? traded?.moq ?? 0,
     colour: input.colour ?? traded?.colour,
@@ -528,7 +533,8 @@ export async function newQuotation(fields, user, { system = false } = {}) {
     }))
     : fromEnquiry;
   if (asked.length > MAX_LINES) throw ApiError.badRequest(`A quotation holds ${MAX_LINES} models`);
-  const lines = await Promise.all(asked.map((row) => lineFrom(row)));
+  const mayCost = Boolean(user) && seesCosting(user);
+  const lines = await Promise.all(asked.map((row) => lineFrom(row, { mayCost })));
 
   const { lines: _l, customer: _c, enquiry: _e, assignedTo: _a, ...terms } = fields;
   const quotation = new Quotation({
@@ -541,7 +547,12 @@ export async function newQuotation(fields, user, { system = false } = {}) {
     requestedBy: user?._id || owner,
     number: await nextQuoteNumber(),
   });
-  for (const line of quotation.lines) if (line.unitPrice != null) settleLine(line);
+  for (const line of quotation.lines) {
+    /* Costed as it was raised: the price the arithmetic gives, beside the one offered. */
+    if (line.totalCost) line.calculatedSellingPrice = priceFrom(line);
+    if (line.unitPrice != null) settleLine(line);
+  }
+  if (mayCost && quotation.lines.some((line) => line.totalCost)) quotation.costedBy = user._id;
   quotation.status = undefined;
   quotation.statusHistory = [];
   quotation.$locals.by = user?._id;

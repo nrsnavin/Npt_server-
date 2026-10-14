@@ -16,8 +16,22 @@ const weight = z.number().nonnegative().transform(cutGrams);
  * One line, as a request names it. With an `_id` it is a line already on the quotation (its
  * offer fields change); without one it is a new model, resolved against the registers.
  */
+/* The cost lines a costing person may set while raising a quotation — "No hook" is a hook cost of 0. */
+const lineCost = z.object({
+  gramWeight: weight.optional(),
+  rawMaterialRate: money.optional(),
+  jobWorkCost: money.optional(),
+  hookCost: money.optional(),
+  metalClipsCost: money.optional(),
+  printingCost: money.optional(),
+  packingCost: money.optional(),
+  otherCost: money.optional(),
+}).strict();
+
 const quotationLine = z.object({
   _id: objectId.optional(),
+  /* Honoured only for the Quotation department and Admin; anybody else's is ignored. */
+  cost: lineCost.optional(),
   mould: objectId.optional(),
   modelNumber: z.string().trim().max(120).optional(),
   materialRef: objectId.optional(),
