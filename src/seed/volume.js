@@ -6,7 +6,9 @@
  *   npm run seed:demo            # includes this (the full set)
  *   npm run seed:volume          # adds the hundred to a database already seeded, keeping everything there
  *
- * Driven through the app's own services rather than written as records — `moveEnquiry` raises
+ * On the buyers already on the customer master and the models already on the mould register and
+ * trading master — nothing is invented: a demo database gets them on its seeded buyers, a working
+ * one on its own. Driven through the app's own services rather than written as records — `moveEnquiry` raises
  * each department's task the way the enquiry screen does, `setTaskStatus` walks it through that
  * department's own statuses, a sample request opens a sample, a quotation request a costing —
  * so what a dashboard shows here is what it shows on a working Tuesday, not a tableau. A step
@@ -44,36 +46,6 @@ const days = (offset, hour = 11) => {
 };
 const iso = (date) => date.toISOString().slice(0, 10);
 const pick = (list, n) => list[n % list.length];
-
-/* ------------------------------------ The buyers ------------------------------------ */
-
-/** Twenty-four more buyers, the trade the plant actually sells to, spread over the salespeople. */
-const BUYERS = [
-  ['Kumaran Knits', 'garment_factory', 'Tiruppur', 'Tamil Nadu', '641603', 'A'],
-  ['Velan Textiles', 'garment_factory', 'Tiruppur', 'Tamil Nadu', '641607', 'B'],
-  ['Sri Murugan Garments', 'garment_factory', 'Tiruppur', 'Tamil Nadu', '641602', 'A'],
-  ['Pioneer Exports', 'exporter', 'Tiruppur', 'Tamil Nadu', '641604', 'A'],
-  ['Eastman Global', 'exporter', 'Tiruppur', 'Tamil Nadu', '641605', 'A'],
-  ['Royal Classic Mills', 'garment_factory', 'Tiruppur', 'Tamil Nadu', '641606', 'B'],
-  ['Prem Group', 'exporter', 'Tiruppur', 'Tamil Nadu', '641601', 'A'],
-  ['Best Corporation', 'exporter', 'Tiruppur', 'Tamil Nadu', '641603', 'A'],
-  ['Annai Apparels', 'garment_factory', 'Coimbatore', 'Tamil Nadu', '641018', 'C'],
-  ['Lakshmi Hosiery', 'garment_factory', 'Coimbatore', 'Tamil Nadu', '641012', 'B'],
-  ['Bombay Dyeing Stores', 'retailer', 'Mumbai', 'Maharashtra', '400001', 'B'],
-  ['Westside Sourcing', 'buying_house', 'Bengaluru', 'Karnataka', '560001', 'A'],
-  ['Arvind Fashions', 'buying_house', 'Bengaluru', 'Karnataka', '560068', 'A'],
-  ['Shahi Exports', 'exporter', 'Bengaluru', 'Karnataka', '560058', 'A'],
-  ['Gokaldas Images', 'exporter', 'Bengaluru', 'Karnataka', '560022', 'A'],
-  ['Madura Garments', 'garment_factory', 'Chennai', 'Tamil Nadu', '600032', 'B'],
-  ['Pothys Retail', 'retailer', 'Chennai', 'Tamil Nadu', '600017', 'B'],
-  ['RmKV Silks', 'retailer', 'Chennai', 'Tamil Nadu', '600017', 'C'],
-  ['Texport Overseas', 'exporter', 'Chennai', 'Tamil Nadu', '600058', 'A'],
-  ['Alok Industries', 'garment_factory', 'Surat', 'Gujarat', '395003', 'B'],
-  ['Raymond Retail', 'retailer', 'Mumbai', 'Maharashtra', '400013', 'A'],
-  ['Mandhana Industries', 'garment_factory', 'Mumbai', 'Maharashtra', '400002', 'C'],
-  ['Zara Sourcing Asia', 'overseas_buyer', 'Colombo', '', '00100', 'A'],
-  ['Al Noor Trading LLC', 'overseas_buyer', 'Dubai', '', '', 'B'],
-];
 
 const COLOURS = ['White', 'Black', 'Ivory', 'Navy', 'Charcoal', 'Beige', 'Grey', 'Natural', 'Transparent', 'Maroon'];
 const QUANTITIES = [2000, 5000, 8000, 10000, 12000, 15000, 20000, 25000, 30000, 50000];
@@ -171,6 +143,7 @@ const statusesOf = (kind) => findHandoff(kind)?.form?.statuses || [];
 
 export async function seedVolume({ byEmail, log = console.log }) {
   const admin = byEmail['rsnavin1@gmail.com'];
+  /* The salespeople: whoever holds the buyers; the demo accounts only when nobody does. */
   const sellers = ['marketing@npthangers.com', 'marketing2@npthangers.com', 'marketing3@npthangers.com']
     .map((email) => byEmail[email]).filter(Boolean);
   const who = (department) => Object.values(byEmail).find((user) => user.department === department || user.extraDepartments?.includes(department)) || admin;
@@ -185,30 +158,18 @@ export async function seedVolume({ byEmail, log = console.log }) {
   const traded = await TradedItem.find({ isActive: { $ne: false } }).limit(6).lean();
   if (!moulds.length) throw new Error('Seed the mould register first — an enquiry names a tool');
 
-  /* The buyers: those already on the master, and the trade above, split over the salespeople. */
-  const existing = await Customer.find().sort({ createdAt: 1 });
-  const customers = [...existing];
-  for (const [index, [name, customerType, city, state, pincode, rating]] of BUYERS.entries()) {
-    if (customers.some((row) => row.name === name)) continue;
-    const owner = pick(sellers, index);
-    const mobile = `98${String(40100000 + index * 731).padStart(8, '0')}`;
-    customers.push(await Customer.create({
-      code: await nextNumber('CUST'),
-      name, customerType, city, state, pincode, rating,
-      country: state ? 'India' : city === 'Dubai' ? 'United Arab Emirates' : 'Sri Lanka',
-      mobile, whatsapp: mobile,
-      email: `purchase@${name.toLowerCase().replace(/[^a-z]+/g, '')}.com`,
-      assignedTo: owner._id,
-      creditTermsDays: [0, 30, 45][index % 3],
-      paymentTerms: ['Advance', '30 days from invoice', '45 days from invoice'][index % 3],
-      source: pick(SOURCES, index),
-      contacts: [{ name: ['Karthik', 'Divya', 'Suresh', 'Bhuvana', 'Ravi', 'Meena'][index % 6], designation: 'Purchase', mobile, isPrimary: true }],
-      lastOrderDate: index % 2 ? days(-10 - index * 3) : undefined,
-    }));
+  /* The buyers already on the master, and whoever on the marketing team holds them. */
+  const customers = await Customer.find({ status: { $ne: 'blacklisted' } }).sort({ createdAt: 1 });
+  if (!customers.length) throw new Error('No customers on the master — add the buyers first; the enquiries are raised on them');
+  const owners = new Map();
+  for (const customer of customers) {
+    const owner = Object.values(byEmail).find((user) => String(user._id) === String(customer.assignedTo));
+    if (owner && !owners.has(String(owner._id))) owners.set(String(owner._id), owner);
   }
-  const byOwner = (owner) => customers.filter((row) => String(row.assignedTo) === String(owner._id));
+  if (owners.size) sellers.splice(0, sellers.length, ...owners.values());
+  if (!sellers.length) sellers.push(admin);
 
-  const made = { customers: customers.length - existing.length, drafts: 0, enquiries: 0, tasks: 0, samples: 0, quotations: 0, orders: 0, consignments: 0, receivables: 0 };
+  const made = { customers: customers.length, drafts: 0, enquiries: 0, tasks: 0, samples: 0, quotations: 0, orders: 0, consignments: 0, receivables: 0 };
   const stages = {};
   const skipped = [];
   let turn = 0;
@@ -246,19 +207,18 @@ export async function seedVolume({ byEmail, log = console.log }) {
 
   /** An enquiry as marketing raised it: a buyer, one to three models, a date it came in. */
   async function raise(row, n) {
-    const owner = pick(sellers, n);
-    const mine = byOwner(owner);
-    const customer = pick(mine.length ? mine : customers, Math.floor(n / sellers.length));
+    /* Round the buyers, so the work spreads over them; the enquiry is its buyer's salesperson's. */
+    const customer = pick(customers, n);
+    const owner = owners.get(String(customer.assignedTo)) || pick(sellers, n);
     const ago = 2 + (n * 7) % 85;
     const lines = 1 + (n % 3 === 0 ? 2 : n % 2);
+    /* The models: a tool off the mould register, or every seventh line a bought-in item off the trading master. */
     const items = Array.from({ length: lines }, (_, i) => {
       const useTraded = traded.length && (n + i) % 7 === 3;
       const mould = useTraded ? null : pick(moulds, n + i);
-      const newDevelopment = !useTraded && (n + i) % 11 === 5;
       return {
-        ...(mould && !newDevelopment ? { mould: mould._id, modelNumber: mould.mouldCode, category: mould.category, sizeMm: mould.sizeMm } : {}),
+        ...(mould ? { mould: mould._id, modelNumber: mould.mouldCode, category: mould.category, sizeMm: mould.sizeMm } : {}),
         ...(useTraded ? { modelNumber: traded[(n + i) % traded.length].modelNumber } : {}),
-        ...(newDevelopment ? { isNewDevelopment: true, modelNumber: `${pick(['Matte', 'Glossy', 'Frosted'], n)} ${pick([380, 400, 420], i)}mm — new finish`, category: mould.category, sizeMm: mould.sizeMm } : {}),
         material: 'plastic',
         colour: pick(COLOURS, n + i),
         quantity: pick(QUANTITIES, n + i),
@@ -554,7 +514,7 @@ if (runDirectly) {
     }
     console.log(`Connected to "${mongoose.connection.name}". Adding a hundred enquiries across every stage...`);
     const result = await seedVolume({ byEmail });
-    console.log(`  ${result.enquiries} enquiries on ${result.customers} new buyers (+${result.drafts} drafts), ${result.tasks} department tasks across ${result.departments} departments.`);
+    console.log(`  ${result.enquiries} enquiries on the ${result.customers} buyers already on the master (+${result.drafts} drafts), ${result.tasks} department tasks across ${result.departments} departments.`);
     console.log(`  ${result.samples} samples, ${result.quotations} quotations, ${result.orders} sales orders, ${result.consignments} consignments, ${result.receivables} receivables.`);
     console.log(`  By stage: ${Object.entries(result.stages).map(([stage, count]) => `${stage} ${count}`).join(', ')}.`);
     for (const reason of result.skipped) console.log(`    (skipped — ${reason})`);

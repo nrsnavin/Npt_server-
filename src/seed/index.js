@@ -466,7 +466,7 @@ async function seed() {
   for (const reason of departmentWork.skipped) console.log(`    (not raised — ${reason})`);
   if (volume) {
     console.log(
-      `  Volume: ${volume.enquiries} more enquiries on ${volume.customers} more buyers (+${volume.drafts} drafts), ` +
+      `  Volume: ${volume.enquiries} more enquiries on the ${volume.customers} buyers already on the master (+${volume.drafts} drafts), ` +
         `${volume.tasks} department tasks across ${volume.departments} departments; ${volume.samples} samples, ` +
         `${volume.quotations} quotations, ${volume.orders} sales orders, ${volume.consignments} consignments, ${volume.receivables} receivables.`
     );
