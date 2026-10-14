@@ -165,8 +165,12 @@ const lineSchema = new mongoose.Schema(
   { _id: true }
 );
 
-/** Grams × ₹/kg ÷ 1000. */
+/**
+ * Grams × ₹/kg ÷ 1000 — for a piece made here. A bought-in (trade) hanger is costed at what the
+ * supplier is paid; the resin is in that price already, so none is added on top of it.
+ */
 lineSchema.virtual('materialCost').get(function materialCost() {
+  if (this.procurement === 'trade') return 0;
   const { gramWeight, rawMaterialRate } = this.cost || {};
   if (!gramWeight || !rawMaterialRate) return 0;
   return (gramWeight * rawMaterialRate) / 1000;

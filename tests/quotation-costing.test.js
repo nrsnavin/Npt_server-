@@ -537,3 +537,21 @@ test('a cost sent by marketing while raising a quotation is ignored [§8]', asyn
   const seen = await api(`/api/quotations/${raised._id}`, { token: admin });
   assert.notEqual(seen.json.data.lines[0].cost.packingCost, 0.25, 'only the Quotation department and Admin set a cost');
 });
+
+test('a trade hanger carries no material cost — the inward price already has the resin in it', async () => {
+  const made = await toCost([{ modelNumber: 'TR-SUIT-450' }]);
+  const line = made.lines[0]._id;
+  const costed = await cost(made._id, line, {
+    procurement: 'trade',
+    cost: { inwardPrice: 5, gramWeight: 20, rawMaterialRate: 100, packingCost: 0.3, otherCost: 0.2 },
+    markupPercent: 10,
+  });
+  assert.equal(costed.status, 200, costed.json.message);
+  const saved = costed.json.data.lines[0];
+  assert.equal(saved.materialCost, 0, '20 g × ₹100/kg is not added to a bought-in piece');
+  assert.equal(Math.round(saved.totalCost * 100) / 100, 5.5, 'inward ₹5 + packing ₹0.30 + misc ₹0.20');
+  assert.equal(saved.calculatedSellingPrice, priceAt(5.5, 10));
+
+  const made2 = await cost(made._id, line, { expectedUpdatedAt: costed.json.data.updatedAt, procurement: 'manufacture' });
+  assert.equal(made2.json.data.lines[0].materialCost, 2, 'made here, the same 20 g counts again');
+});
