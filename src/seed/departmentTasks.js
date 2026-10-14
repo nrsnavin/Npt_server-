@@ -65,7 +65,7 @@ async function linkRegisters() {
 }
 
 /** The form's answers, filled from the enquiry the way the screen fills them. */
-function answersFor(kind, prefill, extra = {}) {
+export function answersFor(kind, prefill, extra = {}) {
   const read = (path) => path?.split('.').reduce((value, key) => (value == null ? undefined : value[key]), prefill);
   const brief = {};
   for (const field of findHandoff(kind)?.asks || []) {
