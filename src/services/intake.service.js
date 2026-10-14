@@ -72,7 +72,7 @@ export async function createBuyer(fields, { assignedTo, source, conversation, no
  * with a next step and a date so it lands on somebody's due list.
  */
 export async function raiseFirstEnquiry({
-  customer, remarks, nextAction, nextActionType, nextFollowUpDate, source, conversation, by = null,
+  customer, remarks, nextAction, nextActionType, nextFollowUpDate, source, conversation, items, by = null,
 }) {
   /* A call, unless said otherwise — when there is a next step at all; a draft may save without one. */
   if (nextAction && !nextActionType) nextActionType = 'call';
@@ -87,6 +87,8 @@ export async function raiseFirstEnquiry({
       nextFollowUpDate,
       source,
       conversation,
+      /* The models the buyer asked about, when the picture or the salesperson named them. */
+      ...(items?.length ? { items } : {}),
     },
     by
   );

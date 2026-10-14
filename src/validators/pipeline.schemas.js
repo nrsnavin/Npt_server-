@@ -341,6 +341,13 @@ export const buyerCardConfirmSchema = z.object({
   assignedTo: objectId.optional(),
   /* The model asked about, on the enquiry it makes. */
   modelNumber: z.string().trim().max(120).optional(),
+  /* Every model asked about — the draft's list, read from the picture and corrected. */
+  items: z.array(z.object({
+    mould: objectId.optional(),
+    modelNumber: z.string().trim().max(120).optional(),
+    quantity: z.number().int().nonnegative().nullable().optional(),
+    colour: z.string().trim().max(80).optional(),
+  })).max(20).optional(),
   /*
    * The next step as a department task, raised on the new enquiry in the same save: a sample,
    * or a quotation. The answers are the task form's own [config/departmentTaskForms.js].

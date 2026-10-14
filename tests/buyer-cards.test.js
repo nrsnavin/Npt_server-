@@ -296,6 +296,77 @@ test('a draft is saved without a next step; the enquiry has none set yet', async
   assert.equal(enquiry.nextActionType, undefined);
 });
 
+test('a chat asking for several models: each is read, matched to the master, and saved as the enquiry’s models', async () => {
+  const Mould = mongoose.model('Mould');
+  const TradedItem = (await import('../src/models/TradedItem.js')).default;
+  const [ncp] = await Mould.create([
+    { mouldCode: 'NCP-25', name: '25cm shirt hanger', category: 'shirt', sizeMm: 250, partWeightGrams: 20, cycleTimeSeconds: 30 },
+    { mouldCode: 'NCP-27', name: '27cm shirt hanger', category: 'shirt', sizeMm: 270, partWeightGrams: 22, cycleTimeSeconds: 30 },
+    { mouldCode: 'VS-400', name: '400mm velvet suit hanger', category: 'suit', sizeMm: 400, partWeightGrams: 60, cycleTimeSeconds: 40 },
+    { mouldCode: 'VS-450', name: '450mm velvet suit hanger', category: 'suit', sizeMm: 450, partWeightGrams: 65, cycleTimeSeconds: 40 },
+  ]);
+  await TradedItem.create({ modelNumber: 'MAU-35 WB', description: 'Wooden look trouser', price: 9, inwardPrice: 6.5 });
+  const { forgetCatalogue } = await import('../src/services/modelCatalogue.service.js');
+  forgetCatalogue();
+  const vs400 = await Mould.findOne({ mouldCode: 'VS-400' });
+
+  cardReply = [
+    card({
+      kind: 'chat', contactName: 'Ravi', mobile: '9840077201', company: 'Multi Model Tex',
+      models: [
+        { asked: 'NCP 25', quantity: '5000 pcs', colour: 'Black' },
+        { asked: '400mm velvet suit hanger', quantity: '2k', colour: 'Maroon' },
+        { asked: 'mau 35 wb', quantity: '', colour: '' },
+        { asked: 'the round one from last time', quantity: '', colour: '' },
+      ],
+    }),
+    /* The model's pick for what the codes did not settle: the velvet suit is VS-400; the round one is nobody's guess. */
+    { picks: [{ request: 0, ref: `m${vs400._id}` }, { request: 1, ref: 'none' }] },
+  ];
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  const models = draft.reading.models;
+  assert.equal(models.length, 4);
+  assert.deepEqual([models[0].code, models[0].matchedBy, String(models[0].mould)], ['NCP-25', 'code', String(ncp._id)]);
+  assert.equal(models[0].quantity, 5000);
+  assert.deepEqual([models[1].code, models[1].matchedBy, models[1].quantity], ['VS-400', 'model', 2000]);
+  assert.deepEqual([models[2].code, Boolean(models[2].tradedItem)], ['MAU-35 WB', true]);
+  assert.equal(models[3].code, undefined, 'not placed: left for the salesperson');
+
+  /* The second call gave the model only the shortlists, and only codes from them could be answered. */
+  const matching = sent.at(-1);
+  assert.match(matching.system, /Never invent a code/);
+  const offered = matching.output_config.format.schema.properties.picks.items.properties.ref.enum;
+  assert.ok(offered.includes(`m${vs400._id}`) && offered.includes('none'));
+  assert.ok(!offered.some((ref) => ref.startsWith('m') && ref === `m${ncp._id}`), 'a code already settled is not asked about');
+
+  /* Saved with no list sent: the matched models become the enquiry's models. */
+  const done = await finish(draft._id, theRest);
+  assert.equal(done.status, 200, done.json.message);
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.equal(enquiry.items.length, 4);
+  assert.equal(String(enquiry.items[0].mould), String(ncp._id));
+  assert.equal(enquiry.items[0].quantity, 5000);
+  assert.equal(String(enquiry.items[1].mould), String(vs400._id));
+  assert.equal(enquiry.items[2].modelNumber, 'MAU-35 WB');
+  assert.equal(enquiry.items[3].modelNumber, 'the round one from last time');
+});
+
+test('the salesperson’s own list of models is what the enquiry gets', async () => {
+  cardReply = card({ company: 'Own List Fabrics', mobile: '9840077202', models: [{ asked: 'NCP 25', quantity: '', colour: '' }] });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  const ncp27 = await mongoose.model('Mould').findOne({ mouldCode: 'NCP-27' });
+  const done = await finish(draft._id, {
+    ...theRest,
+    items: [{ mould: String(ncp27._id), quantity: 3000, colour: 'White' }, { modelNumber: 'Buyer sample 7' }],
+  });
+  assert.equal(done.status, 200, done.json.message);
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.deepEqual(enquiry.items.map((row) => row.mould ? String(row.mould) : row.modelNumber), [String(ncp27._id), 'Buyer sample 7']);
+  assert.equal(enquiry.items[0].colour, 'White');
+});
+
 test('a draft can be dropped', async () => {
   cardReply = card({ company: 'Drop Me Textiles', mobile: '9840099999' });
   await whatsapp(NANDHINI_PHONE, { photo: true });

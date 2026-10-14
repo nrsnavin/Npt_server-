@@ -106,10 +106,21 @@ function mergeInto(target, reading, image) {
   const current = target.reading?.toObject?.() || target.reading || {};
   const merged = { ...current };
   for (const [key, value] of Object.entries(reading)) {
-    if (key === 'notes') continue;
+    if (key === 'notes' || key === 'models') continue;
     if (merged[key] === undefined || merged[key] === '' || merged[key] === null) merged[key] = value;
   }
   if (reading.notes) merged.notes = [current.notes, reading.notes].filter(Boolean).join(' ').slice(0, 600);
+  /* The models a later screenshot names join the list, each once. */
+  if (reading.models?.length) {
+    const plain = (rows) => (rows || []).map((row) => (row?.toObject ? row.toObject() : row));
+    const list = plain(current.models);
+    const seen = new Set(list.map((row) => (row.code || row.asked).toLowerCase()));
+    for (const row of reading.models) {
+      const key = (row.code || row.asked).toLowerCase();
+      if (!seen.has(key) && list.length < 10) { seen.add(key); list.push(row); }
+    }
+    merged.models = list;
+  }
   target.reading = merged;
   target.moreImages = [...(target.moreImages || []), image];
 }
@@ -245,7 +256,30 @@ export async function confirmCard(card, user, edits = {}, options = {}) {
   });
 }
 
-async function confirmCardChecked(card, user, edits = {}, { owner } = {}) {
+/**
+ * The enquiry's models: what the salesperson's list says, or — when no list was sent — what was
+ * read and matched [buyerCard.llm `matchModels`]. A matched mould is named by its tool; a code
+ * on the trading master, or words nobody could place, by the model number.
+ */
+export function enquiryItemsFrom(items, reading) {
+  const rows = items ?? (reading?.models || []).map((model) => (model?.toObject ? model.toObject() : model)).map((model) => ({
+    mould: model.mould ? String(model.mould) : undefined,
+    modelNumber: model.mould ? undefined : model.code || model.asked,
+    quantity: model.quantity,
+    colour: model.colour,
+  }));
+  return (rows || [])
+    .map((row) => ({
+      ...(row.mould ? { mould: String(row.mould) } : {}),
+      ...(String(row.modelNumber || '').trim() ? { modelNumber: String(row.modelNumber).trim() } : {}),
+      ...(Number(row.quantity) > 0 ? { quantity: Number(row.quantity) } : {}),
+      ...(String(row.colour || '').trim() ? { colour: String(row.colour).trim() } : {}),
+    }))
+    .filter((row) => row.mould || row.modelNumber)
+    .slice(0, 20);
+}
+
+async function confirmCardChecked(card, user, edits = {}, { owner, items } = {}) {
   if (!OPEN_CARD_STATUSES.includes(card.status) || card.status === 'reading') {
     const error = new Error(card.status === 'reading' ? 'This card is still being read.' : `This card was already ${card.status}.`);
     error.status = 409;
@@ -302,8 +336,10 @@ async function confirmCardChecked(card, user, edits = {}, { owner } = {}) {
     fields.notes && `${card.kind === 'chat' ? 'The conversation' : 'On the card'}: ${fields.notes}`,
   ].filter(Boolean).join('. ');
 
+  const models = enquiryItemsFrom(items, card.reading);
   const enquiry = await raiseFirstEnquiry({
     customer,
+    ...(models.length ? { items: models } : {}),
     remarks: wants || `New buyer from a ${card.kind === 'chat' ? 'chat screenshot' : 'card'} — find out what they want.`,
     /* The salesperson's own next step — not one the app made up. */
     /* Optional: a draft can be saved before the next step is known, and set on the enquiry later. */

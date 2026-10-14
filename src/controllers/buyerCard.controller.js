@@ -120,20 +120,20 @@ export const uploadBuyerCard = asyncHandler(async (req, res) => {
  */
 export const confirmBuyerCard = asyncHandler(transactional(async (req, res) => {
   const card = await cardFor(req);
-  const { assignedTo, task, modelNumber, ...edits } = req.body;
+  const { assignedTo, task, modelNumber, items, ...edits } = req.body;
   const owner = assignedTo ? (await assertCanOwnBuyer(assignedTo))._id : undefined;
   /* The task's form first: a short one is said before the customer and enquiry are made. */
   if (task) assertTaskAnswers(task.kind, task.brief, task.note);
   let made;
   try {
-    made = await confirmCard(card, req.user, edits, { owner });
+    made = await confirmCard(card, req.user, edits, { owner, items });
   } catch (error) {
     throw asApi(error);
   }
   let raised = null;
   if (made.enquiry && (modelNumber || task)) {
     const enquiry = await Enquiry.findById(made.enquiry._id).populate('customer', 'code name');
-    if (modelNumber) enquiry.requirement = { ...(enquiry.requirement?.toObject?.() ?? enquiry.requirement ?? {}), modelNumber };
+    if (modelNumber && !items?.length) enquiry.requirement = { ...(enquiry.requirement?.toObject?.() ?? enquiry.requirement ?? {}), modelNumber };
     if (task) {
       enquiry.checkedAt = new Date();
       enquiry.checkedBy = req.user._id;
