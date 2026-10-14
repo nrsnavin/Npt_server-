@@ -912,8 +912,12 @@ test('a quotation whose photograph has gone still prints', async () => {
 
   const bytes = Buffer.from(await response.arrayBuffer());
   assert.match(await textOf(bytes), /PRICE QUOTE/);
-  /* And the cell is simply empty — no half-written image object left behind. */
-  assert.doesNotMatch(bytes.toString('latin1'), /\/Subtype\s*\/Image/);
+  /* And the cell is simply empty — no half-written image object left behind: the document
+     carries only the letterhead's own images, as one with no photograph at all does. */
+  const images = (pdf) => (pdf.toString('latin1').match(/\/Subtype\s*\/Image/g) || []).length;
+  const plain = await quote({ lines: [{ modelNumber: 'NH-PLAIN', unitPrice: 4.9 }] });
+  const bare = await fetch(`${baseUrl}/api/quotations/${plain._id}/pdf`, { headers: { Authorization: `Bearer ${nandhini}` } });
+  assert.equal(images(bytes), images(Buffer.from(await bare.arrayBuffer())));
 });
 
 test('an eight-model quotation does not spill blank pages', async () => {

@@ -14,15 +14,16 @@ export const company = {
   tagline: process.env.COMPANY_TAGLINE || 'Garment Hangers · Injection Moulding',
   addressLines: (
     process.env.COMPANY_ADDRESS ||
-    'SF No. 285/2, Kunnathur Road|Tiruppur — 641 606|Tamil Nadu, India'
+    'No:1/110-F, Kaniyampoondi,|Vanjipalayam (Post), Tirupur-641663'
   )
     .split('|')
     .map((line) => line.trim())
     .filter(Boolean),
   gstin: process.env.COMPANY_GSTIN || '33AAAFN1234K1ZP',
-  phone: process.env.COMPANY_PHONE || '+91 421 000 0000',
-  email: process.env.COMPANY_EMAIL || 'sales@navinhangers.com',
-  website: process.env.COMPANY_WEBSITE || 'www.navinhangers.com',
+  phone: process.env.COMPANY_PHONE || '0421 - 4334690',
+  mobile: process.env.COMPANY_MOBILE || '9944423690',
+  email: process.env.COMPANY_EMAIL || 'info@navinplastic.com',
+  website: process.env.COMPANY_WEBSITE || 'www.navinplastic.com',
 
   /**
    * The tariff heading the plant quotes under.

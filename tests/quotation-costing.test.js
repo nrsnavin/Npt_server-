@@ -510,6 +510,16 @@ test('the document names no cost, margin or minimum [§8]', async () => {
   }
 });
 
+test('the document heads with the logo and the plant’s own address', async () => {
+  const made = await toCost();
+  const bytes = await pdfOf(made._id);
+  const printed = await printedText(bytes);
+  for (const line of ['NAVIN PLASTIC TECH', 'No:1/110-F, Kaniyampoondi,', 'Vanjipalayam (Post), Tirupur-641663', 'Ph: 0421 - 4334690 / Mob: 9944423690', '39269069']) {
+    assert.ok(printed.includes(line), `the quote prints ${line}`);
+  }
+  assert.match(bytes.toString('latin1'), /\/Subtype \/Image/, 'the logo is embedded');
+});
+
 /* --------------------------------- The list --------------------------------- */
 
 test('the list cannot be ordered by a figure that is not a column', async () => {

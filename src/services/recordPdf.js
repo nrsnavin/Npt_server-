@@ -32,7 +32,7 @@ export function render(draw) {
 export function letterhead(doc, title, reference) {
   doc.fillColor(INK).font('Helvetica-Bold').fontSize(16).text(company.name, MARGIN, MARGIN);
   doc.font('Helvetica').fontSize(8.5).fillColor(MUTED);
-  const lines = [company.tagline, ...(company.addressLines || []), [company.phone, company.email].filter(Boolean).join('  ·  '), company.gstin && `GSTIN ${company.gstin}`];
+  const lines = [company.tagline, ...(company.addressLines || []), [company.phone && `Ph: ${company.phone}`, company.mobile && `Mob: ${company.mobile}`, company.email].filter(Boolean).join('  ·  '), company.gstin && `GSTIN ${company.gstin}`];
   for (const line of lines.filter(Boolean)) doc.text(line);
   doc.moveDown(0.6);
   doc.moveTo(MARGIN, doc.y).lineTo(MARGIN + WIDTH, doc.y).strokeColor(RULE).lineWidth(0.75).stroke();
