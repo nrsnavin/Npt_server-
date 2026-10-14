@@ -1,13 +1,13 @@
 import Enquiry from '../models/Enquiry.js';
 import { CLOSED_STAGE } from '../config/enquiryStages.js';
-import { STAGE_FOR_MARKETING, marketingStatusOf, meansWon } from '../config/marketingStatuses.js';
+import { STAGE_FOR_MARKETING, marketingStatusOf } from '../config/marketingStatuses.js';
 
 /**
  * Brings the enquiries already on the books into line with their marketing status
  * [scripts/realign-enquiries.js] — the same rule the app now applies as it goes
- * [config/marketingStatuses.js STAGE_FOR_MARKETING, meansWon]: an order status puts the enquiry
- * at that stage, and from PO received on it is Won. A closed enquiry keeps its stage; a lost one
- * stays lost.
+ * [config/marketingStatuses.js STAGE_FOR_MARKETING]: an order status puts the enquiry at that
+ * stage. A closed enquiry keeps its stage; a lost one stays lost. It never marks an enquiry Won —
+ * only the sales order uploaded does [config/handoffs.js po_so].
  */
 
 /** What would change on each enquiry: `{ id, number, marketing, stage: [from, to]?, status: [from, to]? }`. */
@@ -19,7 +19,6 @@ export async function planRealign() {
     const change = { id: enquiry._id, number: enquiry.number, marketing };
     const stage = STAGE_FOR_MARKETING[marketing];
     if (stage && enquiry.stage !== CLOSED_STAGE && enquiry.stage !== stage) change.stage = [enquiry.stage, stage];
-    if (meansWon(marketing) && !['won', 'lost'].includes(enquiry.status)) change.status = [enquiry.status, 'won'];
     if (change.stage || change.status) plan.push(change);
   }
   return plan;

@@ -146,7 +146,7 @@ test('Close after the LR: everything but the LR task ends, and the enquiry takes
   assert.equal(await inOpenList(), false, 'closed, it leaves the Open list');
 });
 
-test('marketing status chosen by hand moves the stage and the sales stage with it', async () => {
+test('marketing status chosen by hand moves the stage, and never marks the order Won', async () => {
   const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
   const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'Kanchi Textiles', mobile: '9840099002', assignedTo: me } })).json.data;
   const fresh = (await api('/api/enquiries', {
@@ -156,7 +156,8 @@ test('marketing status chosen by hand moves the stage and the sales stage with i
   const set = await api(`/api/enquiries/${fresh._id}/marketing-status`, { method: 'POST', as: 'nandhini', body: { status: 'dispatch' } });
   assert.equal(set.status, 200, set.json.message);
   const row = await Enquiry.findById(fresh._id).select('stage status marketingStatus').lean();
-  assert.deepEqual([row.marketingStatus, row.stage, row.status], ['dispatch', 'invoice_dispatch', 'won']);
+  assert.deepEqual([row.marketingStatus, row.stage], ['dispatch', 'invoice_dispatch']);
+  assert.notEqual(row.status, 'won', 'only the sales order uploaded marks an order Won');
 
   /* The desks that list enquiries at A/C Clarify find one by its open task, whatever its stage. */
   const ac = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ac_clarify', note: 'Check the advance', brief: {} } });
@@ -164,6 +165,10 @@ test('marketing status chosen by hand moves the stage and the sales stage with i
   assert.equal((await Enquiry.findById(fresh._id).select('stage').lean()).stage, 'invoice_dispatch');
   const listed = await api('/api/enquiries?stage=ac_clarify', { as: 'admin' });
   assert.ok(listed.json.data.some((entry) => String(entry._id) === String(fresh._id)), 'listed at A/C Clarify by its task');
+
+  const po = await api(`/api/enquiries/${fresh._id}/marketing-status`, { method: 'POST', as: 'nandhini', body: { status: 'po_received' } });
+  assert.equal(po.status, 200, po.json.message);
+  assert.notEqual((await Enquiry.findById(fresh._id).select('status').lean()).status, 'won', 'not even PO received picked by hand');
 });
 
 test('the realign script brings old enquiries into line, once', async () => {
@@ -178,11 +183,11 @@ test('the realign script brings old enquiries into line, once', async () => {
   await Enquiry.updateOne({ _id: old._id }, { $set: { marketingStatus: 'lr_copy', stage: 'pricing_quote', status: 'po_expected' } });
   const plan = await planRealign();
   const mine = plan.find((change) => String(change.id) === String(old._id));
-  assert.deepEqual([mine.stage, mine.status], [['pricing_quote', 'lr_copy'], ['po_expected', 'won']]);
+  assert.deepEqual([mine.stage, mine.status], [['pricing_quote', 'lr_copy'], undefined], 'the stage only — Won is the SO’s to give');
   await applyRealign(plan);
-  const row = await Enquiry.findById(old._id).select('stage status statusHistory').lean();
-  assert.deepEqual([row.stage, row.status], ['lr_copy', 'won']);
-  assert.equal(row.statusHistory.at(-1).note, 'Realigned with the marketing status');
+  const row = await Enquiry.findById(old._id).select('stage status stageHistory').lean();
+  assert.deepEqual([row.stage, row.status], ['lr_copy', 'po_expected']);
+  assert.equal(row.stageHistory.at(-1).note, 'Realigned with the marketing status');
   assert.equal((await planRealign()).length, 0, 'a second run finds nothing');
 });
 
@@ -240,7 +245,8 @@ test('a won order still in the plant takes a call with a next step; a closed one
   const fresh = await freshEnquiry('NPT-440');
   const set = await api(`/api/enquiries/${fresh._id}/marketing-status`, { method: 'POST', as: 'nandhini', body: { status: 'production' } });
   assert.equal(set.status, 200, set.json.message);
-  assert.equal((await rowOf(fresh._id)).status, 'won');
+  /* Won as the SO upload makes it [handoffs po_so] — a status picked by hand no longer does. */
+  await Enquiry.updateOne({ _id: fresh._id }, { $set: { status: 'won' } });
   const next = { type: 'call', note: 'Asked about the advance', nextAction: 'Collect the advance', nextFollowUpDate: new Date(Date.now() + 2 * 86400000).toISOString() };
   const logged = await api(`/api/enquiries/${fresh._id}/activities`, { method: 'POST', as: 'nandhini', body: next });
   assert.equal(logged.status, 201, logged.json.message);
@@ -265,4 +271,41 @@ test('an LR uploaded on an enquiry with no SO does not make it Won, nor close it
   assert.equal(row.status, before, 'the sales stage is left as it was — only the SO marks an order Won');
   assert.notEqual(row.status, 'won');
   assert.notEqual(row.stage, 'closed');
+});
+
+test('the reopen script puts back what the old LR rule closed or marked Won, and nothing else', async () => {
+  const { applyLrReopen, planLrReopen } = await import('../src/services/lrReopen.service.js');
+  const lrClosed = await freshEnquiry('NPT-460');
+  const handWon = await freshEnquiry('NPT-461');
+  const paidOff = await freshEnquiry('NPT-462');
+  const fake = new mongoose.Types.ObjectId();
+
+  /* As the old rule left one: the system's Task Closed after an LR upload, and Won on the LR's say-so. */
+  const closer = await Todo.create({ enquiry: lrClosed._id, kind: 'task_closed', system: true, department: 'management', title: 'Task Closed — NPT-460', notes: 'LR 460', completed: true });
+  await Todo.create({ enquiry: lrClosed._id, kind: 'lr_copy', department: 'reception', title: 'LR Copy — NPT-460', resultFile: fake });
+  await Enquiry.updateOne({ _id: lrClosed._id }, {
+    $set: { stage: 'closed', status: 'won' },
+    $push: {
+      stageHistory: { from: 'lr_copy', to: 'closed', task: closer._id, note: 'LR 460' },
+      statusHistory: { from: 'po_expected', to: 'won', note: 'LR Copy — NPT-460' },
+    },
+  });
+  /* Won by a person on the sales stage itself: theirs to keep. */
+  await Enquiry.updateOne({ _id: handWon._id }, { $set: { status: 'won' }, $push: { statusHistory: { from: 'negotiation', to: 'won', note: 'Buyer confirmed on the phone' } } });
+  /* Closed because it was paid in full: a real close. */
+  const paid = await Todo.create({ enquiry: paidOff._id, kind: 'task_closed', system: true, department: 'management', title: 'Task Closed — NPT-462', notes: 'Paid in full — ₹10,000 received, nothing left to send.', completed: true });
+  await Todo.create({ enquiry: paidOff._id, kind: 'lr_copy', department: 'reception', title: 'LR Copy — NPT-462', resultFile: fake });
+  await Enquiry.updateOne({ _id: paidOff._id }, { $set: { stage: 'closed' }, $push: { stageHistory: { from: 'lr_copy', to: 'closed', task: paid._id, note: 'Paid in full — ₹10,000 received, nothing left to send.' } } });
+
+  const plan = await planLrReopen();
+  const mine = plan.find((change) => String(change.id) === String(lrClosed._id));
+  assert.deepEqual([mine.stage, mine.status], [['closed', 'lr_copy'], ['won', 'po_expected']]);
+  assert.ok(!plan.some((change) => String(change.id) === String(handWon._id)), 'a person’s Won stays');
+  assert.ok(!plan.some((change) => String(change.id) === String(paidOff._id)), 'paid in full stays closed');
+
+  await applyLrReopen(plan);
+  const row = await Enquiry.findById(lrClosed._id).select('stage status stageHistory').lean();
+  assert.deepEqual([row.stage, row.status], ['lr_copy', 'po_expected']);
+  assert.match(row.stageHistory.at(-1).note, /^Reopened/);
+  assert.ok(!(await planLrReopen()).some((change) => String(change.id) === String(lrClosed._id)), 'a second run finds it done');
 });

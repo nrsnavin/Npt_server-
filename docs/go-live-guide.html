@@ -122,6 +122,7 @@
     <div><span class="n">3</span>Launch (or resize) the instance</div>
     <div><span class="n">4</span>Domain and DNS settings</div>
     <div><span class="n">5</span>Server setup: Node, MongoDB, swap</div>
+    <div><span class="n">5B</span>Or: MongoDB Atlas instead</div>
     <div><span class="n">6</span>Install the API and the web app</div>
     <div><span class="n">7</span>Nginx and HTTPS certificates</div>
     <div><span class="n">8</span>Keep it running, first admin, checks</div>
@@ -225,8 +226,8 @@
       <p class="small"><b>Cost:</b> about $24/month.</p></div>
     <div class="card"><h4>B. EC2 + MongoDB Atlas</h4>
       <p class="small">The database moves to MongoDB's managed service in Mumbai (<code>ap-south-1</code>), with its own backups and a replica set built in.
-        Skip the MongoDB steps in Part 5 and put Atlas's connection string in <code>MONGO_URI</code>. Choose this when losing a day of data is not acceptable.</p>
-      <p class="small"><b>Cost:</b> EC2 as above, plus Atlas: a dedicated M10 is roughly $55–60/month. Check atlas pricing for the current tiers.</p></div>
+        Skip the MongoDB steps in Part 5 and follow Part 5B instead. Choose this when losing a day of data is not acceptable.</p>
+      <p class="small"><b>Cost:</b> EC2 as above, plus Atlas: Flex about $8–30/month, a dedicated M10 about $57/month.</p></div>
   </div>
   <div class="card" style="margin-top:10px"><h4>C. Amazon Lightsail</h4>
     <p class="small">The same Ubuntu server as a fixed bundle: the 2 GB plan (about $12/month) and 4 GB plan (about $24/month) include the IP address, disk and data transfer.
@@ -368,7 +369,7 @@ sudo apt install -y nodejs
 node -v        <span class="c"># v22.x</span></pre>
 
   <h3>5.4 MongoDB 8</h3>
-  <p class="small muted">Skip 5.4–5.6 if you chose MongoDB Atlas (option B).</p>
+  <p class="small muted">Using MongoDB Atlas (option B)? Skip 5.4–5.6 and follow Part 5B on the next pages.</p>
 <pre>curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | \
   sudo gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
 echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" | \
@@ -404,6 +405,71 @@ mongosh -u nptadmin -p --authenticationDatabase admin \
 sudo systemctl enable --now redis-server
 redis-cli ping      <span class="c"># PONG</span></pre>
   <p>Then add <code>REDIS_URL=redis://127.0.0.1:6379</code> to the server <code>.env</code> in Part 6. On t3.small with one API process, skip Redis.</p>
+</section>
+
+<!-- ============================== 5B ============================== -->
+<section class="part newpage">
+  <h2 class="part"><span class="num">5B</span>Or: MongoDB Atlas instead of 5.4–5.6</h2>
+  <p>Choose this if you want MongoDB's own service to run the database (option B in Part 2): backups, updates and recovery are
+    done for you, and the server keeps all its memory for the app. Skip Parts 5.4, 5.5 and 5.6 and do this instead.
+    Everything else in the guide stays the same.</p>
+
+  <table>
+    <tr><th>Atlas tier</th><th>Approx. per month</th><th>Fits</th></tr>
+    <tr><td><b>Flex</b> <span class="tag rec">start here</span></td><td>about $8, capped at $30</td><td>Up to 5 GB of data. This app's database is under 0.5 GB in year one (photos and PDFs stay on the server or S3)</td></tr>
+    <tr><td><b>M10</b> (dedicated)</td><td>about $57</td><td>When you need restore to a chosen minute, or the data passes about 4 GB</td></tr>
+  </table>
+  <p class="small muted">Prices are list estimates; Mumbai can differ slightly. Check the pricing page in Atlas before you choose.</p>
+
+  <h3>5B.1 Create the cluster</h3>
+  <ol class="steps">
+    <li>Sign up at <code>cloud.mongodb.com</code> with the company email. Create an organisation <i>Navin Plastic Tech</i> and a project <i>NPT CRM</i>.</li>
+    <li><b>Create cluster</b> → choose <b>Flex</b> → provider <b>AWS</b> → region <b>Mumbai (ap-south-1)</b>, the same region as the server. Name it <code>npt</code>. Create.</li>
+  </ol>
+
+  <h3>5B.2 A database user</h3>
+  <ol class="steps">
+    <li><span class="where">Security → Database Access → Add new database user</span>.</li>
+    <li>Authentication: Password. Username <code>nptapp</code>. Click <b>Autogenerate secure password</b> and copy it to your sheet.</li>
+    <li>Role: <b>Read and write to any database</b>. Add user.</li>
+  </ol>
+
+  <h3>5B.3 Let only your server in</h3>
+  <ol class="steps">
+    <li><span class="where">Security → Network Access → Add IP address</span>.</li>
+    <li>Enter your <code>&lt;ELASTIC_IP&gt;</code> with a comment <i>npt-erp server</i>. Confirm.</li>
+  </ol>
+  <div class="warn"><b>Never add <code>0.0.0.0/0</code> ("allow from anywhere").</b> With only the server's IP listed, nobody else can even try the password.
+    If you rebuild the server with a new IP, add the new one here and remove the old.</div>
+
+  <h3>5B.4 The connection string</h3>
+  <ol class="steps">
+    <li>On the cluster, <b>Connect → Drivers</b> → Node.js. Copy the string; it looks like
+      <code>mongodb+srv://nptapp:&lt;password&gt;@npt.xxxxx.mongodb.net/?retryWrites=true&amp;w=majority&amp;appName=npt</code></li>
+    <li>Replace <code>&lt;password&gt;</code> with the generated one, and put the database name <code>npt_erp</code> after <code>.net/</code>.</li>
+    <li>In the server's <code>.env</code> (Part 6.2), use it as <code>MONGO_URI</code>:</li>
+  </ol>
+<pre>MONGO_URI=mongodb+srv://nptapp:THE-GENERATED-PASSWORD@npt.xxxxx.mongodb.net/npt_erp?retryWrites=true&amp;w=majority&amp;appName=npt</pre>
+  <p class="small">No <code>replicaSet=</code> part is needed: Atlas is already a replica set, so transactions work. Check after Part 8 that
+    <code>/health/ready</code> shows <code>"transactions": true</code>.</p>
+
+  <h3>5B.5 Moving data you already have</h3>
+  <p>Only if a database is already running on a server (for example the current t2.micro). Install the tools, copy, then switch:</p>
+<pre>sudo apt install -y mongodb-database-tools    <span class="c"># on the old server, if mongodump is missing</span>
+mongodump --uri="mongodb://nptadmin:OLD-PASSWORD@127.0.0.1:27017/npt_erp?authSource=admin" --archive=npt.archive --gzip
+mongorestore --uri="mongodb+srv://nptapp:THE-GENERATED-PASSWORD@npt.xxxxx.mongodb.net" --archive=npt.archive --gzip --nsInclude='npt_erp.*'
+<span class="c"># then set MONGO_URI to the Atlas string in .env and:</span>
+pm2 reload npt-api --update-env</pre>
+  <p class="small">Do it outside working hours: anything saved between the dump and the switch would be left behind on the old database.
+    The old server's own Network Access entry (its IP) must be added in 5B.3 for the restore to connect.</p>
+
+  <h3>5B.6 What changes elsewhere in this guide</h3>
+  <ul>
+    <li><b>Part 9 backups:</b> remove the two <code>mongodump</code> lines from <code>backup.sh</code>; Atlas backs the database up. Keep the S3 sync of <code>uploads/</code> — the photos and PDFs are still on the server.</li>
+    <li><b>Part 9.3 restore:</b> done from the Atlas screen (<span class="where">Cluster → Backup → Restore</span>), not with <code>mongorestore</code>.</li>
+    <li><b>Server size:</b> without MongoDB on it, a <code>t3.small</code> has room for two API processes; Redis (5.7) is then recommended.</li>
+    <li><b>Monitoring:</b> Atlas emails you on high load or a full disk; set your email under <span class="where">Project → Alerts</span>.</li>
+  </ul>
 </section>
 
 <!-- ============================== 6 ============================== -->

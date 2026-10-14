@@ -2,8 +2,8 @@
  * Brings every enquiry's Stage and Sales stage into line with its marketing status
  * [services/enquiryAlign.service.js] — for the enquiries raised before the app kept the three
  * columns together. An order status puts the enquiry at that stage (Dispatch → Invoice &
- * Dispatch); from PO received on, the sales stage is Won. Closed and lost enquiries are left as
- * they are.
+ * Dispatch). It never marks an enquiry Won — only the sales order uploaded does. Closed and lost
+ * enquiries are left as they are.
  *
  * Usage:
  *   npm run realign-enquiries               # dry run: what would change

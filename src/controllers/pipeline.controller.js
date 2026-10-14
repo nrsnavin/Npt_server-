@@ -4,7 +4,7 @@ import { customerMap } from '../services/customerMap.service.js';
 import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import Customer from '../models/Customer.js';
 import {
-  MARKETING_STATUSES, MARKETING_STATUS_KEYS, STAGE_FOR_MARKETING, marketingStatusLabel, marketingStatusOf, meansWon, salesStatusesFor,
+  MARKETING_STATUSES, MARKETING_STATUS_KEYS, STAGE_FOR_MARKETING, marketingStatusLabel, marketingStatusOf, salesStatusesFor,
 } from '../config/marketingStatuses.js';
 import Enquiry, {
   CLOSED_STATUSES, ENQUIRY_STAGE_ORDER, ENQUIRY_STATUSES, fallsBack, furthestStage, stageLabel,
@@ -1419,20 +1419,16 @@ export const setEnquiryMarketingStatus = asyncHandler(transactional(async (req, 
     !fallsBack(enquiry, salesMove);
 
   /*
-   * The other two columns follow marketing's word: an order status puts the enquiry at that
-   * stage, and from PO received on it is Won [config/marketingStatuses.js]. A closed enquiry
-   * stays closed, and a lost one stays where it was lost.
+   * The stage follows marketing's word: an order status puts the enquiry at that stage
+   * [config/marketingStatuses.js]. A closed enquiry stays closed, and a lost one stays where it
+   * was lost. Won is not marketing's word to give: only the sales order uploaded marks an order
+   * booked [config/handoffs.js po_so], so a status picked by hand never does.
    */
   const stage = STAGE_FOR_MARKETING[status];
   if (stage && enquiry.stage !== CLOSED_STAGE && enquiry.status !== 'lost' && enquiry.stage !== stage) {
     enquiry.stageHistory = [...(enquiry.stageHistory || []), { from: enquiry.stage, to: stage, at: new Date(), by: req.user._id, note: `Marketing status: ${marketingStatusLabel(status)}` }];
     enquiry.stage = stage;
   }
-  if (!moves && meansWon(status) && !['won', 'lost'].includes(enquiry.status)) {
-    enquiry.statusHistory.push({ from: enquiry.status, to: 'won', by: req.user._id, note: `Marketing status: ${marketingStatusLabel(status)}` });
-    enquiry.status = 'won';
-  }
-
   if (moves) {
     await moveEnquiry(enquiry, { status: salesMove, note: `Marketing status: ${marketingStatusLabel(status)}` }, req.user);
   } else {
