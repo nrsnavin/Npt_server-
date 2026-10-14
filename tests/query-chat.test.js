@@ -441,7 +441,7 @@ test('a marketing colleague in the thread still cannot pin a buyer they do not o
 const tag = (id, body, mentions, token = kavitha) =>
   api(`/api/queries/${id}/messages`, { method: 'POST', token, body: { body, mentions } });
 
-test('tagging somebody outside the thread brings them in, grants the buyer, and tells them', async () => {
+test('tagging somebody outside the thread brings them in and tells them — a salesperson still sees only their own buyers', async () => {
   const query = await raise();
   const arunId = await whoIs(arun);
 
@@ -459,7 +459,7 @@ test('tagging somebody outside the thread brings them in, grants the buyer, and 
   );
 
   assert.equal((await api(`/api/queries/${query._id}`, { token: arun })).status, 200, 'and can open it');
-  assert.equal((await api(`/api/customers/${customerId}`, { token: arun })).status, 200, 'and the buyer');
+  assert.equal((await api(`/api/customers/${customerId}`, { token: arun })).status, 404, 'but not another salesperson’s buyer');
 
   const todos = (await api('/api/workspace/todos', { token: arun })).json.data;
   const task = todos.find((row) => row.title === `Kavitha D tagged you in ${query.number}`);

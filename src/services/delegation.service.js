@@ -94,10 +94,6 @@ export async function delegateEnquiry({ enquiry, to, note, user }) {
       moved.receivables = (await Receivable.updateMany({ order: { $in: orders }, ...mine('assignedTo') }, { $set: { assignedTo: target._id } })).modifiedCount;
     }
   }
-  await Customer.updateOne(
-    { _id: enquiry.customer?._id || enquiry.customer, assignedTo: { $ne: target._id } },
-    { $addToSet: { sharedWith: target._id } }
-  );
 
   afterCommit(async () => {
     if (idOf(target._id) === idOf(user._id)) return;
