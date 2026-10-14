@@ -532,6 +532,17 @@ test('raised already costed: the costing person’s choices and the calculated p
   assert.equal(line.unitPrice, 9, 'beside the price offered');
 });
 
+test('raised already costed as a trade hanger: the inward price typed on the sheet is the cost', async () => {
+  const raised = await toCost([{
+    modelNumber: 'TR-RAISED-1', procurement: 'trade', markupPercent: 10,
+    cost: { inwardPrice: 4.7, gramWeight: 0, rawMaterialRate: 0, jobWorkCost: 0, packingCost: 0, hookCost: 0, metalClipsCost: 0, printingCost: 0, otherCost: 0 },
+  }], admin);
+  const line = raised.lines[0];
+  assert.equal(line.cost.inwardPrice, 4.7);
+  assert.equal(Math.round(line.totalCost * 100) / 100, 4.7);
+  assert.equal(line.calculatedSellingPrice, priceAt(4.7, 10));
+});
+
 test('a cost sent by marketing while raising a quotation is ignored [§8]', async () => {
   const raised = await toCost([{ mould: light, materialRef: pp._id, cost: { packingCost: 0.25 } }], nandhini);
   const seen = await api(`/api/quotations/${raised._id}`, { token: admin });
