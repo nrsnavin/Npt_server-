@@ -8,7 +8,7 @@ import Dispatch from '../models/Dispatch.js';
 import Query, { roomFilter, seesEveryQuery } from '../models/Query.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
-import { ownershipFilter, ownsCustomer, ownsRecord } from '../services/ownership.service.js';
+import { mayOpenCustomer, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { canRead } from '../services/access.service.js';
 
 /**
@@ -51,7 +51,7 @@ const SOURCES = [
 export const customerTimeline = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) throw ApiError.notFound('Customer not found');
   const customer = await Customer.findById(req.params.id);
-  if (!customer || !ownsCustomer(req.user, customer)) throw ApiError.notFound('Customer not found');
+  if (!customer || !(await mayOpenCustomer(req.user, customer))) throw ApiError.notFound('Customer not found');
 
   const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 50);
   const before = req.query.before ? new Date(req.query.before) : null;

@@ -6,6 +6,7 @@ import Dispatch from '../models/Dispatch.js';
 import Receivable from '../models/Receivable.js';
 import Query, { roomFilter, seesEveryQuery } from '../models/Query.js';
 import { canRead } from './access.service.js';
+import { ownershipFilter } from './ownership.service.js';
 
 /**
  * One buyer's whole relationship, gathered for a picture rather than a table [§2].
@@ -39,6 +40,8 @@ const node = (id, label, sublabel, status) => ({ id: String(id), label, sublabel
 
 export async function customerMap(customer, user) {
   const of = { customer: customer._id };
+  /* A salesperson's own of each — not one delegated to a colleague [ownership.service]. */
+  const mine = (field = 'assignedTo') => ({ ...of, ...ownershipFilter(user, field) });
 
   /*
    * Each strand is a promise or an empty array decided by the grant, so the gate is one
@@ -50,35 +53,35 @@ export async function customerMap(customer, user) {
   const [enquiries, samples, quotations, orders, consignments, receivables, queries] =
     await Promise.all([
       may('enquiries')
-        ? Enquiry.find(of)
+        ? Enquiry.find(mine())
           .select('number status enquiryDate requirement.modelNumber')
           .sort('-enquiryDate')
           .limit(PER_STRAND)
         : [],
 
       may('samples')
-        ? Sample.find(of)
+        ? Sample.find(mine('requestedBy'))
           .select('number status requestedAt modelNumber')
           .sort('-requestedAt')
           .limit(PER_STRAND)
         : [],
 
       may('pricing')
-        ? Quotation.find(of)
+        ? Quotation.find(mine())
           .select('number status validUntil createdAt')
           .sort('-createdAt')
           .limit(PER_STRAND)
         : [],
 
       may('orders')
-        ? SalesOrder.find(of)
+        ? SalesOrder.find(mine())
           .select('number status orderDate')
           .sort('-orderDate')
           .limit(PER_STRAND)
         : [],
 
       may('dispatch')
-        ? Dispatch.find(of)
+        ? Dispatch.find(mine())
           .select('number status dispatchDate createdAt')
           .sort('-createdAt')
           .limit(PER_STRAND)
@@ -91,7 +94,7 @@ export async function customerMap(customer, user) {
        * exactly how this branch first drew three nodes with no state on any of them.
        */
       may('payments')
-        ? Receivable.find(of)
+        ? Receivable.find(mine())
           .select('number invoice receipts dueBy judgement')
           .sort('-dueBy')
           .limit(PER_STRAND)

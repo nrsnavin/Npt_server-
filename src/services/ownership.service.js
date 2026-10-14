@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import ApiError from '../utils/ApiError.js';
 import { findDepartment } from '../config/modules.js';
 import { isManagement } from '../utils/departments.js';
+import Query, { roomFilter } from '../models/Query.js';
 
 /**
  * Record-level ownership, which sits *below* module access.
@@ -58,6 +59,19 @@ export const customerScope = (user) => ownershipFilter(user);
 
 /** True when this user may open this particular buyer: allocated to them, or not a salesperson. */
 export const ownsCustomer = (user, customer) => ownsRecord(user, customer);
+
+/**
+ * Opening a buyer's record, with the one exception to the rule above: a salesperson in a query
+ * about another salesperson's buyer — raised it, named on it, tagged, or their department asked —
+ * may open that buyer from the query, to answer it. Read-only, and only the record: the buyer
+ * stays out of their customer list, and its enquiries, samples and prices stay hidden.
+ * Checked against the threads as they are now, so leaving the thread closes the door again.
+ */
+export async function mayOpenCustomer(user, customer) {
+  if (ownsCustomer(user, customer)) return true;
+  if (!customer?._id) return false;
+  return Boolean(await Query.exists({ customer: customer._id, ...roomFilter(user) }));
+}
 
 /**
  * Narrowing a list to one colleague's records, which may only ever narrow.

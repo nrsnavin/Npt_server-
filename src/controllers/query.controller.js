@@ -53,8 +53,9 @@ import { transactional } from '../utils/transaction.js';
  *   thread reach the person who actually knows. The cost is that the list only grows, so the
  *   signature above is what keeps it accountable rather than a rule nobody can audit.
  *
- *   **Not for salespeople.** A marketing person sees only the buyers allocated to them; being
- *   in a thread about another salesperson's buyer shows them the thread, not the buyer.
+ *   **For salespeople, the record only.** A marketing person's list holds only the buyers
+ *   allocated to them. In a thread about another salesperson's buyer they may open that buyer
+ *   from the thread [ownership.service `mayOpenCustomer`] — never its enquiries or samples.
  *
  *   **Reading is not writing.** The grant lets a participant open the buyer. It does not let
  *   them change the buyer, and it does not carry §8's prices or §29's enquiries with it — see
@@ -1087,15 +1088,13 @@ export const addParticipant = asyncHandler(async (req, res) => {
     data: await withRefs(query),
     /*
      * What that press actually did, said back. Adding somebody to a thread also lets them open
-     * the buyer — unless they are a salesperson, who sees only the buyers allocated to them —
-     * and a consequence nobody is told about is one they meet later as a colleague who knows
-     * something they should not have.
+     * the buyer, and a consequence nobody is told about is one they meet later as a colleague
+     * who knows something they should not have.
      */
     granted: {
       people: granted.length,
-      /* A salesperson is shown the thread, never another salesperson's buyer [ownership.service]. */
-      customer: (await User.find({ _id: { $in: granted } }).select('role department extraDepartments').lean())
-        .some((person) => !isOwnershipScoped(person)),
+      /* Opens from the thread for everyone in it — for a salesperson, not in their list [ownership.service]. */
+      customer: true,
     },
   });
 });
