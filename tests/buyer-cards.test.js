@@ -231,6 +231,60 @@ test('a double tap on Confirm makes one customer, and the second tap is told it 
   assert.equal(await Customer.countDocuments({ name: 'Double Tap Fabrics' }), 1);
 });
 
+test('a sample as the next step: the enquiry is made checked, with the sample task raised on it', async () => {
+  cardReply = card({ company: 'Sample Step Fabrics', mobile: '9840077101' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+
+  const noModel = await finish(draft._id, { ...theRest, nextAction: 'Send sample', task: { kind: 'sample_request', brief: { items: [{ quantity: '2' }] } } });
+  assert.equal(noModel.status, 400, 'a sample needs its model');
+  assert.match(noModel.json.message, /Mould \/ model is needed/);
+  assert.equal(await Customer.countDocuments({ name: 'Sample Step Fabrics' }), 0, 'the whole save is undone');
+
+  const done = await finish(draft._id, {
+    ...theRest,
+    nextAction: 'Send sample',
+    nextActionType: 'send_sample',
+    modelNumber: 'NH-400',
+    task: { kind: 'sample_request', note: 'Black, compulsory', brief: { items: [{ model: 'NH-400', colour: 'Black', colourType: 'Compulsory colour', quantity: '2' }] } },
+  });
+  assert.equal(done.status, 200, done.json.message);
+  assert.equal(done.json.data.task.kind, 'sample_request');
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.ok(enquiry.checkedAt, 'read through by whoever saved the draft');
+  assert.equal(enquiry.requirement.modelNumber, 'NH-400');
+  assert.equal(enquiry.stage, 'sample', 'the enquiry is with Sampling');
+  const Todo = mongoose.model('Todo');
+  const sampleTask = await Todo.findOne({ enquiry: enquiry._id, kind: 'sample_request' });
+  assert.ok(sampleTask, 'the Sampling task is raised');
+  assert.equal(sampleTask.brief.items[0].model, 'NH-400');
+});
+
+test('a quotation as the next step raises the Quotation task; photos only set the next step', async () => {
+  cardReply = card({ company: 'Quote Step Fabrics', mobile: '9840077102' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const quoteDraft = await readCardOf(nandhini);
+  const quoted = await finish(quoteDraft._id, {
+    ...theRest, nextAction: 'Send quotation', nextActionType: 'send_quote', modelNumber: 'NH-420',
+    task: { kind: 'create_quotation', brief: { models: 'NH-420', quantity: '5000', targetPrice: '4.5' } },
+  });
+  assert.equal(quoted.status, 200, quoted.json.message);
+  const Todo = mongoose.model('Todo');
+  const quoteTask = await Todo.findOne({ enquiry: quoted.json.data.enquiry._id, kind: 'create_quotation' });
+  assert.equal(quoteTask?.brief?.quantity, '5000');
+
+  cardReply = card({ company: 'Photo Step Fabrics', mobile: '9840077103' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const photoDraft = await readCardOf(nandhini);
+  const photos = await finish(photoDraft._id, { ...theRest, nextAction: 'Send photos', nextActionType: 'whatsapp', modelNumber: 'NH-380' });
+  assert.equal(photos.status, 200, photos.json.message);
+  assert.equal(photos.json.data.task, null, 'no department task for photos');
+  const enquiry = await Enquiry.findById(photos.json.data.enquiry._id);
+  assert.equal(enquiry.nextAction, 'Send photos');
+  assert.equal(enquiry.requirement.modelNumber, 'NH-380');
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: { $in: ['sample_request', 'create_quotation'] } }), 0);
+});
+
 test('a draft can be dropped', async () => {
   cardReply = card({ company: 'Drop Me Textiles', mobile: '9840099999' });
   await whatsapp(NANDHINI_PHONE, { photo: true });

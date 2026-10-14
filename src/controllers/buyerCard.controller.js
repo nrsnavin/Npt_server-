@@ -1,6 +1,7 @@
 import BuyerCard, { OPEN_CARD_STATUSES } from '../models/BuyerCard.js';
 import Enquiry from '../models/Enquiry.js';
 import { ownsRecord } from '../services/ownership.service.js';
+import { assertTaskAnswers, sendHandoff } from '../services/handoff.service.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { isOwnershipScoped } from '../services/ownership.service.js';
@@ -111,17 +112,42 @@ export const uploadBuyerCard = asyncHandler(async (req, res) => {
   res.status(201).json({ success: true, data: await card.populate(POPULATE) });
 });
 
+/**
+ * Saving a draft: the customer and the enquiry — and, when the next step is a sample or a
+ * quotation, that department's task on it, in the same save. The person saving has just read
+ * the details through, so the enquiry is marked checked for the task to be raised [Enquiry
+ * `checkPending`]; a task the department cannot take undoes the whole save.
+ */
 export const confirmBuyerCard = asyncHandler(transactional(async (req, res) => {
   const card = await cardFor(req);
-  const { assignedTo, ...edits } = req.body;
+  const { assignedTo, task, modelNumber, ...edits } = req.body;
   const owner = assignedTo ? (await assertCanOwnBuyer(assignedTo))._id : undefined;
+  /* The task's form first: a short one is said before the customer and enquiry are made. */
+  if (task) assertTaskAnswers(task.kind, task.brief, task.note);
   let made;
   try {
     made = await confirmCard(card, req.user, edits, { owner });
   } catch (error) {
     throw asApi(error);
   }
-  res.json({ success: true, data: { ...made, card: await (made.card || card).populate(POPULATE) } });
+  let raised = null;
+  if (made.enquiry && (modelNumber || task)) {
+    const enquiry = await Enquiry.findById(made.enquiry._id).populate('customer', 'code name');
+    if (modelNumber) enquiry.requirement = { ...(enquiry.requirement?.toObject?.() ?? enquiry.requirement ?? {}), modelNumber };
+    if (task) {
+      enquiry.checkedAt = new Date();
+      enquiry.checkedBy = req.user._id;
+    }
+    await enquiry.save();
+    if (task) {
+      raised = await sendHandoff({ enquiry, kind: task.kind, note: task.note, brief: task.brief, user: req.user });
+    }
+    made.enquiry = enquiry;
+  }
+  res.json({
+    success: true,
+    data: { ...made, card: await (made.card || card).populate(POPULATE), task: raised ? { _id: raised._id, kind: raised.kind, title: raised.title } : null },
+  });
 }));
 
 export const discardBuyerCard = asyncHandler(async (req, res) => {
