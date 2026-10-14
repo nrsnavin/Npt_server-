@@ -62,7 +62,7 @@ export const forgetCatalogue = () => { kept = null; };
 const FILLER = new Set(['hanger', 'hangers', 'mm', 'cm', 'inch', 'the', 'a', 'one', 'pcs', 'pc', 'nos', 'no', 'model', 'type', 'with', 'and', 'for']);
 
 /** How alike two keys are: shared three-letter runs over all of them (0 to 1). */
-function trigramLikeness(a, b) {
+export function trigramLikeness(a, b) {
   if (!a || !b) return 0;
   const grams = (text) => {
     const padded = `  ${text} `;

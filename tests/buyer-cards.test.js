@@ -429,6 +429,36 @@ test('a draft goes only on a customer the person may work', async () => {
   await api(`/api/buyer-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
 });
 
+test('a draft is offered the customers and master models it may already be', async () => {
+  const suggest = (query) => api(`/api/buyer-cards/suggestions?${new URLSearchParams(query)}`, { token: nandhini });
+
+  /* A name spelt a little differently is still offered, from her own customers. */
+  const alike = await suggest({ company: 'Sri Murugan Garment' });
+  assert.equal(alike.status, 200);
+  const smg = alike.json.data.customers.find((row) => row.name === 'Sri Murugan Garments');
+  assert.ok(smg, 'a similar name is suggested');
+  assert.equal(smg.why, 'Similar name');
+  assert.equal(smg.mayUse, true);
+
+  /* The same number is the buyer for certain. */
+  const sameNumber = (await suggest({ company: 'Unrelated Name', mobile: '98400 11223' })).json.data.customers[0];
+  assert.deepEqual([sameNumber.name, sameNumber.why, sameNumber.score], ['Sri Murugan Garments', 'Same phone number', 100]);
+
+  /* Another salesperson's customer: never offered on a name alone, named — not usable — on the number. */
+  assert.ok(!(await suggest({ company: 'Arun Own Buyer' })).json.data.customers.some((row) => row.name === 'Arun Own Buyer'));
+  const his = (await suggest({ mobile: '9840077301' })).json.data.customers[0];
+  assert.deepEqual([his.name, his.mayUse, his.holder], ['Arun Own Buyer', false, 'Arun K']);
+
+  /* One list of master models for each model row. */
+  const params = new URLSearchParams([['asked', 'ncp 25 black'], ['asked', 'velvet suit 400mm'], ['asked', '']]);
+  const models = (await api(`/api/buyer-cards/suggestions?${params}`, { token: nandhini })).json.data.models;
+  assert.equal(models.length, 3);
+  assert.equal(models[0][0].code, 'NCP-25');
+  assert.equal(models[0][0].kind, 'mould');
+  assert.equal(models[1][0].code, 'VS-400');
+  assert.deepEqual(models[2], [], 'no words, no suggestions');
+});
+
 test('a model not made yet goes on the enquiry as a new development', async () => {
   cardReply = card({ company: 'New Dev Fabrics', mobile: '9840077303' });
   await whatsapp(NANDHINI_PHONE, { photo: true });

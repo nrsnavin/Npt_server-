@@ -10,6 +10,7 @@ import { streamOf } from '../services/storage.service.js';
 import { cardFromUpload, confirmCard, discardCard } from '../services/buyerCard.service.js';
 import { cardModelConfigured } from '../services/buyerCard.llm.js';
 import { catalogue, shortlist } from '../services/modelCatalogue.service.js';
+import { customerSuggestions, modelSuggestions } from '../services/draftSuggestions.service.js';
 import { transactional } from '../utils/transaction.js';
 
 /**
@@ -76,6 +77,21 @@ export const draftModels = asyncHandler(async (req, res) => {
     found = [...new Map([...plain, ...likely].map((row) => [row.ref, row])).values()];
   }
   res.json({ success: true, data: found.slice(0, PAGE).map(shown), pagination: { total: found.length, limit: PAGE } });
+});
+
+/**
+ * What the draft may already be on the master as: `?company=&mobile=&whatsapp=&email=&city=` for
+ * the customers the buyer could be, and one `asked=` per model row for the master models each
+ * could mean — sent as the draft reads now, so an edit brings fresh suggestions.
+ */
+export const draftSuggestions = asyncHandler(async (req, res) => {
+  const text = (name, most = 120) => String([].concat(req.query[name] ?? '')[0] || '').slice(0, most);
+  const asked = [].concat(req.query.asked ?? []).slice(0, 20).map((words) => String(words || ''));
+  const [customers, models] = await Promise.all([
+    customerSuggestions({ company: text('company'), mobile: text('mobile', 30), whatsapp: text('whatsapp', 30), email: text('email'), city: text('city', 60) }, req.user),
+    modelSuggestions(asked),
+  ]);
+  res.json({ success: true, data: { customers, models } });
 });
 
 export const getBuyerCard = asyncHandler(async (req, res) => {
