@@ -61,6 +61,33 @@ export async function delegationTargets(enquiry, user) {
   return people;
 }
 
+/**
+ * Everything on the enquiry that was the old owner's, now the new one's: the open tasks on
+ * their list (the holding task among them), the samples, quotations, orders, consignments and
+ * receivables — so nothing of the enquiry stays on a list its new owner cannot see. Used by
+ * delegation and by a change of owner on the enquiry itself.
+ */
+export async function moveWorkWith({ enquiry, from, to }) {
+  const moved = { tasks: 0, samples: 0, quotations: 0, orders: 0, dispatches: 0, receivables: 0 };
+  const previous = idOf(from);
+  if (!previous || previous === idOf(to)) return moved;
+  const mine = (field) => ({ [field]: previous });
+  moved.tasks = (await Todo.updateMany(
+    { enquiry: enquiry._id, completed: false, ...mine('user') },
+    { $set: { user: to } }
+  )).modifiedCount;
+  moved.samples = (await Sample.updateMany({ enquiry: enquiry._id, ...mine('requestedBy') }, { $set: { requestedBy: to } })).modifiedCount;
+  moved.quotations = (await Quotation.updateMany({ enquiry: enquiry._id, ...mine('assignedTo') }, { $set: { assignedTo: to } })).modifiedCount;
+
+  const orders = (await SalesOrder.find({ enquiry: enquiry._id }).select('_id')).map((row) => row._id);
+  if (orders.length) {
+    moved.orders = (await SalesOrder.updateMany({ _id: { $in: orders }, ...mine('assignedTo') }, { $set: { assignedTo: to } })).modifiedCount;
+    moved.dispatches = (await Dispatch.updateMany({ order: { $in: orders }, ...mine('assignedTo') }, { $set: { assignedTo: to } })).modifiedCount;
+    moved.receivables = (await Receivable.updateMany({ order: { $in: orders }, ...mine('assignedTo') }, { $set: { assignedTo: to } })).modifiedCount;
+  }
+  return moved;
+}
+
 export async function delegateEnquiry({ enquiry, to, note, user }) {
   if (!mayDelegate(user, enquiry)) {
     throw ApiError.forbidden('Only Admin can hand an enquiry to someone else');
@@ -77,23 +104,7 @@ export async function delegateEnquiry({ enquiry, to, note, user }) {
   enquiry.handovers.push({ from: from || undefined, to: target._id, by: user._id, note: note || undefined });
   await enquiry.save();
 
-  const moved = { tasks: 0, samples: 0, quotations: 0, orders: 0, dispatches: 0, receivables: 0 };
-  if (from) {
-    const mine = (field) => ({ [field]: from });
-    moved.tasks = (await Todo.updateMany(
-      { enquiry: enquiry._id, completed: false, ...mine('user') },
-      { $set: { user: target._id } }
-    )).modifiedCount;
-    moved.samples = (await Sample.updateMany({ enquiry: enquiry._id, ...mine('requestedBy') }, { $set: { requestedBy: target._id } })).modifiedCount;
-    moved.quotations = (await Quotation.updateMany({ enquiry: enquiry._id, ...mine('assignedTo') }, { $set: { assignedTo: target._id } })).modifiedCount;
-
-    const orders = (await SalesOrder.find({ enquiry: enquiry._id }).select('_id')).map((row) => row._id);
-    if (orders.length) {
-      moved.orders = (await SalesOrder.updateMany({ _id: { $in: orders }, ...mine('assignedTo') }, { $set: { assignedTo: target._id } })).modifiedCount;
-      moved.dispatches = (await Dispatch.updateMany({ order: { $in: orders }, ...mine('assignedTo') }, { $set: { assignedTo: target._id } })).modifiedCount;
-      moved.receivables = (await Receivable.updateMany({ order: { $in: orders }, ...mine('assignedTo') }, { $set: { assignedTo: target._id } })).modifiedCount;
-    }
-  }
+  const moved = await moveWorkWith({ enquiry, from, to: target._id });
 
   afterCommit(async () => {
     if (idOf(target._id) === idOf(user._id)) return;
@@ -130,6 +141,8 @@ export async function delegateCustomer({ customer, to, note, user }) {
   customer.assignedTo = target._id;
   customer.sharedWith = (customer.sharedWith || []).filter((shared) => idOf(shared) !== idOf(target._id));
   await customer.save();
+  /* The buyer's own open tasks on the old owner's list — a follow-up raised on the buyer alone — go too. */
+  if (from) await Todo.updateMany({ customer: customer._id, enquiry: null, completed: false, user: from }, { $set: { user: target._id } });
 
   const open = await Enquiry.find({ customer: customer._id, status: { $ne: 'lost' }, stage: { $ne: CLOSED_STAGE } });
   const enquiries = [];

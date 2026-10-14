@@ -5,6 +5,7 @@ import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
 import { raiseTask, resolveTasks } from './task.service.js';
 import { whenTransactionEnds } from '../utils/transaction.js';
+import { settleCollectionTasks } from './collections.service.js';
 
 /**
  * Money before work, on the order's payment terms.
@@ -195,5 +196,7 @@ export async function afterPayment(orderId) {
   }
   /* The advance is in: now the balance due before dispatch, if any, goes on the desk. */
   await askForNext(order, standing);
+  /* And a chase with nothing left to chase ends — the collector is not left pressing Paid. */
+  await settleCollectionTasks(order._id).catch((error) => console.error(`[payments] collection tasks not settled on ${order.number}: ${error.message}`));
   return standing;
 }

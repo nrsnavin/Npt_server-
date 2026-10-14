@@ -13,6 +13,7 @@ import ApiError from '../utils/ApiError.js';
 import { dispatchBalance } from './enquiryGates.service.js';
 import * as paymentPresets from './paymentGates.service.js';
 import { assertEnquiryPaidFor } from './paymentGates.service.js';
+import { COLLECTION_KINDS, receivablesOf } from './collections.service.js';
 import { MATERIALS } from '../models/Mould.js';
 import { askToRecordReceipt, endOfIndiaDay, logCollectionCall } from './collections.service.js';
 
@@ -162,7 +163,7 @@ async function moveStage(enquiry, to, { user, task, note, heldBy, marketing: sai
   const current = marketingStatusOf(enquiry);
   const follows = said ? (said !== current ? said : null) : task?.kind && followTask(task.kind, current);
   const marketing = follows
-    ? { from: enquiry.marketingStatus || null, to: follows, at: new Date(), by: user?._id, note: task.title }
+    ? { from: enquiry.marketingStatus || null, to: follows, at: new Date(), by: user?._id, note: task?.title || note }
     : null;
   if (marketing) {
     update.$set = { ...(update.$set || {}), marketingStatus: follows };
@@ -758,7 +759,9 @@ async function returnToMarketing({ enquiry, note, fields, user, system }) {
 
 /**
  * Closing ends everything still open on the enquiry, the holding task included, and says so —
- * except an LR task whose copy is in: Reception still says In Transit and Delivered on it.
+ * except an LR task whose copy is in: Reception still says In Transit and Delivered on it, and
+ * except a collection or PRT case while money is still owed: the enquiry's work is over, the
+ * chase is not, and it closes on its own when the money comes [collections `settleCollectionTasks`].
  */
 async function closeOpenTasks(enquiryId, why, user, { except } = {}) {
   const open = await Todo.find({
@@ -767,12 +770,30 @@ async function closeOpenTasks(enquiryId, why, user, { except } = {}) {
     ...(except ? { _id: { $ne: except } } : {}),
   });
   for (const task of open) {
+    if (COLLECTION_KINDS.includes(task.kind) && (await receivablesOf(task)).length) {
+      task.updates = [...(task.updates || []), { kind: 'notice', statusLabel: 'Enquiry closed', text: why, note: `The enquiry was closed (${why}) — this case stays open until the money is in.`, by: user?._id, at: new Date() }];
+      await task.save();
+      continue;
+    }
     task.completed = true;
     task.completedAt = new Date();
     if (user) task.completedBy = user._id;
     task.outcome = { result: 'done', note: `Closed with the enquiry: ${why}`, by: user?._id, at: new Date() };
     await task.save();
   }
+}
+
+/**
+ * Something another record says about the enquiry, written on it: the order booked (won), or
+ * what marketing's word for it now is. `forward` keeps a marketing status from pulling the
+ * enquiry back — an accepted quotation reads Price approved only on an enquiry not past it.
+ */
+export async function markEnquiry(enquiry, { marketing, won = false, user, note, forward = false } = {}) {
+  if (!enquiry || enquiry.stage === CLOSED_STAGE) return;
+  let said = marketing;
+  if (said && forward && marketingRank(said) <= marketingRank(marketingStatusOf(enquiry))) said = undefined;
+  if (!said && !won) return;
+  await moveStage(enquiry, null, { user, note, marketing: said, won });
 }
 
 /**
@@ -1111,6 +1132,8 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
   if (step.next && !step.pdf && task.enquiry) await raiseNextFrom(task, user, step, text);
+  /* Goods said to have gone from the task alone: the consignment and its invoice still have to be recorded. */
+  if (step.next === 'lr_copy' && task.order) await remindConsignment(task, user, step);
   /* Production or Assembly saying the goods are ready reaches the Dispatch request waiting on them. */
   if (step.readyForDispatch && task.enquiry) await tellDispatchReady(task, user, step, text);
   /* The Mould team saying the tool is ready reaches Production. */
@@ -1124,6 +1147,30 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
   if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { [dateField]: readyDate } : {} });
   return task;
+}
+
+/**
+ * Dispatch marked the goods gone on its task, but the order has no consignment behind it: the
+ * invoice, the receivable Payment Collection chases and the order's dispatched quantity all come
+ * from the consignment [controllers/dispatch.controller], so whoever said it has gone is asked to
+ * record it — once per order.
+ */
+async function remindConsignment(task, user, step) {
+  const { default: Dispatch } = await import('../models/Dispatch.js');
+  const { default: SalesOrder } = await import('../models/SalesOrder.js');
+  const { raiseTask } = await import('./task.service.js');
+  const orderId = task.order?._id || task.order;
+  if (await Dispatch.exists({ order: orderId, status: { $ne: 'cancelled' } })) return;
+  const order = await SalesOrder.findById(orderId).select('number');
+  await raiseTask({
+    user: user._id,
+    title: `Record the consignment for ${order?.number || 'the order'} — ${step.label} on the task, nothing on the Dispatch screen`,
+    notes: 'The invoice, what the buyer owes and the order\'s dispatched quantity all come from the consignment. Raise it on the Dispatch screen with the invoice number, date and value, and mark it dispatched there.',
+    priority: 'high',
+    dueDate: new Date(),
+    link: `/orders/${orderId}`,
+    originKey: `record-consignment:${orderId}`,
+  }).catch(() => null);
 }
 
 /**

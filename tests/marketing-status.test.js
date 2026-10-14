@@ -231,3 +231,13 @@ test('raising a department task moves the marketing status: the sales ones forwa
   assert.equal(again.json.data.addedTo, true, 'added to Production’s open task');
   assert.equal(await status(), 'task_closed', 'nothing pulls it back out of Task Closed');
 });
+
+test('a Quality Issue reads QC, as a Quality Check does', async () => {
+  const enquiry = await raise();
+  const ask = (kind, extra = {}) => api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', token: admin, body: { kind, note: `${kind} please`, ...extra },
+  });
+  assert.equal((await ask('ask_edd')).status, 201);
+  assert.equal((await ask('quality_issue', { brief: { problem: 'Hooks pulling out under load' } })).status, 201);
+  assert.equal((await read(enquiry._id)).marketingStatus, 'qc');
+});

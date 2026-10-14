@@ -1,4 +1,3 @@
-import { publicEnquiryDocument } from '../controllers/enquiryMessage.controller.js';
 import { Router } from 'express';
 
 import authRoutes from './auth.routes.js';
@@ -20,8 +19,7 @@ import { ask, status as jarvisStatus } from '../controllers/jarvis.controller.js
 import { listStates, listCities } from '../controllers/place.controller.js';
 import { indiamartStatus, runIndiamartSync } from '../controllers/indiamart.controller.js';
 import { inboundWebhook, verifyWebhook } from '../controllers/whatsapp.controller.js';
-import { publicQuotationPdf } from '../controllers/quotation.controller.js';
-import { publicTaskFile } from '../controllers/handoff.controller.js';
+import publicRoutes from './public.routes.js';
 import { authenticate, authorize } from '../middleware/auth.js';
 
 const router = Router();
@@ -40,12 +38,8 @@ router.use('/samples', sampleRoutes);
  */
 router.get('/whatsapp/inbound', verifyWebhook);
 router.post('/whatsapp/inbound', inboundWebhook);
-/* A sent quotation's PDF behind a signed, expiring link — what WhatsApp fetches. No session. */
-router.get('/public/quotations/:id/:expires/:signature/:file', publicQuotationPdf);
-/* A department task's uploaded work (the LR copy), for WhatsApp to fetch. */
-router.get('/public/files/:id/:expires/:signature/:file', publicTaskFile);
-/* An enquiry's paper sent on WhatsApp [services/enquiryDocuments.service.js] — signed, it lapses in 30 days. */
-router.get('/public/documents/:id/:expires/:signature/:file', publicEnquiryDocument);
+/* Documents behind signed, expiring links — what WhatsApp fetches. No session [routes/public.routes.js]. */
+router.use('/public', publicRoutes);
 router.use('/whatsapp', whatsappRoutes);
 /*
  * One search across everything [§32]. Not inside a module's routes because it belongs to no

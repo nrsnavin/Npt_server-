@@ -22,13 +22,13 @@ import { renderQuotationPdf } from '../services/quotationPdf.js';
 import { bufferOf } from '../services/storage.service.js';
 import { allVisibleTo, assertMayCost, seesCosting, visibleTo } from '../services/pricingVisibility.js';
 import { hasRequirement } from '../models/requirement.schema.js';
-import { createHmac, timingSafeEqual } from 'node:crypto';
 import CustomerMessage from '../models/CustomerMessage.js';
 import { draftQuoteMessages, recipientOf, sendProblem } from '../services/quotationMessage.js';
 import { sendEmail } from '../services/notification.service.js';
 import { requireEnquiry } from '../services/enquiryLink.service.js';
 import { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } from '../providers/whatsapp.js';
 import { env, isProduction } from '../config/env.js';
+import { linkProblem, publicApiBase, signatureOf } from '../utils/signedLink.js';
 import { normalisePhone } from '../utils/phone.js';
 import { transactional } from '../utils/transaction.js';
 import { customerEmail } from '../services/emailSignature.js';
@@ -960,22 +960,22 @@ export const quotationPdf = asyncHandler(async (req, res) => {
 
 /* A signed link to one quotation's PDF, for WhatsApp, which fetches documents by URL. */
 const PDF_LINK_DAYS = 30;
-const pdfSignature = (id, expires) =>
-  createHmac('sha256', env.jwtSecret).update(`quotation-pdf:${id}:${expires}`).digest('hex');
+const PDF_LINK_KIND = 'quotation-pdf';
 
 export function publicPdfUrl(req, quotation) {
   const expires = Date.now() + PDF_LINK_DAYS * 86400000;
-  const base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
-  return `${base}/public/quotations/${quotation._id}/${expires}/${pdfSignature(quotation._id, expires)}/${fileSafeNumber(quotation.number)}.pdf`;
+  return `${publicApiBase(req)}/public/quotations/${quotation._id}/${expires}/${signatureOf(PDF_LINK_KIND, quotation._id, expires)}/${fileSafeNumber(quotation.number)}.pdf`;
 }
 
 /** The PDF behind a signed link. No session: the signature is the permission. */
 export const publicQuotationPdf = asyncHandler(async (req, res) => {
   const { id, expires, signature } = req.params;
-  const expected = Buffer.from(pdfSignature(id, expires));
-  const given = Buffer.from(String(signature || ''));
-  const valid = given.length === expected.length && timingSafeEqual(given, expected) && Number(expires) > Date.now();
-  if (!valid) throw ApiError.notFound('This link has expired. Ask for the quotation again.');
+  const problem = linkProblem(PDF_LINK_KIND, id, expires, signature);
+  if (problem) {
+    /* The reply says only "expired"; the log says which, for the person running the server. */
+    console.warn(`[public-link] quotation ${id} refused: ${problem === 'signature' ? 'signature does not match — the link was made under another JWT_SECRET' : 'link past its date'}`);
+    throw ApiError.notFound('This link has expired. Ask for the quotation again.');
+  }
 
   const quotation = await loadForPdf(id).catch(() => null);
   if (!quotation) throw ApiError.notFound('This link has expired. Ask for the quotation again.');
