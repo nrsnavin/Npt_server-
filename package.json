@@ -39,6 +39,7 @@
     "migrate:confirm-receipts": "node scripts/migrate-confirm-receipts.js",
     "migrate:all": "node scripts/migrate-all.js",
     "seed:demo": "node src/seed/index.js --keep-users --full",
+    "seed:volume": "node src/seed/volume.js",
     "import:mould-sheet": "node scripts/import-mould-sheet.js",
     "register-team": "node scripts/register-team.js",
     "import:materials": "node scripts/import-materials.js",

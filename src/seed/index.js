@@ -31,6 +31,7 @@ import { seedQueries } from './queries.js';
 import { seedTradedItems } from './tradedItems.js';
 import { FULL, few } from './size.js';
 import { seedDepartmentTasks } from './departmentTasks.js';
+import { seedVolume } from './volume.js';
 import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
 import Mould from '../models/Mould.js';
@@ -65,8 +66,11 @@ const PEOPLE = [
   // A second marketing account, so the ownership rule [§29] is visible: neither of them
   // can open the other's customers or enquiries.
   { name: 'Arun K', email: 'marketing2@npthangers.com', password: 'Mktg@654321', department: 'marketing', phone: '9876500004' },
+  { name: 'Karthik M', email: 'marketing3@npthangers.com', password: 'Mktg@987654', department: 'marketing', phone: '9876500016' },
   { name: 'Meera Sampling', email: 'sampling@npthangers.com', password: 'Sample@1234', department: 'sampling', phone: '9876500003' },
   { name: 'Priya Orders', email: 'orders@npthangers.com', password: 'Orders@1234', department: 'order_confirmation', phone: '9876500005' },
+  { name: 'Sivakumar Quotes', email: 'quotation@npthangers.com', password: 'Quote@12345', department: 'quotation', phone: '9876500017' },
+  { name: 'Devi Printing', email: 'printing@npthangers.com', password: 'Print@12345', department: 'printing', phone: '9876500018' },
   { name: 'Ramesh Plant', email: 'production@npthangers.com', password: 'Prod@123456', department: 'production', phone: '9876500006' },
   { name: 'Sunil Quality', email: 'quality@npthangers.com', password: 'Qual@123456', department: 'quality', phone: '9876500007' },
   { name: 'Anita Despatch', email: 'despatch@npthangers.com', password: 'Desp@123456', department: 'despatch', phone: '9876500008' },
@@ -363,6 +367,16 @@ async function seed() {
     recovery: byEmail['prt@npthangers.com'],
   });
 
+  /*
+   * The full set only: a hundred enquiries across every stage and department, on top of the
+   * hand-picked ones above. The small set stays small enough to read.
+   */
+  let volume = null;
+  if (FULL || process.argv.includes('--volume')) {
+    console.log('Adding a hundred enquiries across every stage and department...');
+    volume = await seedVolume({ byEmail });
+  }
+
   const labels = Object.fromEntries(DEPARTMENTS.map((d) => [d.key, d.label]));
 
   console.log(
@@ -450,6 +464,15 @@ async function seed() {
       `filled from the enquiries — ${departmentWork.linked} enquiries linked to a resin, hook, clip and print.`
   );
   for (const reason of departmentWork.skipped) console.log(`    (not raised — ${reason})`);
+  if (volume) {
+    console.log(
+      `  Volume: ${volume.enquiries} more enquiries on the ${volume.customers} buyers already on the master (+${volume.drafts} drafts), ` +
+        `${volume.tasks} department tasks across ${volume.departments} departments; ${volume.samples} samples, ` +
+        `${volume.quotations} quotations, ${volume.orders} sales orders, ${volume.consignments} consignments, ${volume.receivables} receivables.`
+    );
+    console.log(`    By stage: ${Object.entries(volume.stages).map(([stage, count]) => `${stage} ${count}`).join(', ')}.`);
+    for (const reason of volume.skipped) console.log(`    (skipped — ${reason})`);
+  }
   console.log('\nOr sign in with a code sent to any of those emails or phone numbers.');
   console.log('Without SMTP/Twilio configured the code is printed to the API console.');
 
