@@ -15,6 +15,7 @@ import { QUEUE_STATUSES } from './sampleDashboard.controller.js';
 import { marketingStatusLabel } from '../config/marketingStatuses.js';
 import { documentFile, documentFromLink, documentsFor, documentUrl } from '../services/enquiryDocuments.service.js';
 import { safeFilename } from '../services/storage.service.js';
+import { customerEmail } from '../services/emailSignature.js';
 
 /**
  * Writing to the buyer from the enquiry, on the company's WhatsApp number and the company's
@@ -51,7 +52,6 @@ function prospectThreads(prospect) {
   return numbers.length ? WhatsappThread.find({ number: { $in: numbers } }).select('messages number').lean() : [];
 }
 
-const escapeHtml = (text) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
 /**
  * Sends one message to the buyer and records it twice: the words in the customer message log
@@ -104,8 +104,8 @@ export const sendEnquiryMessage = asyncHandler(async (req, res) => {
       const result = await sendEmail({
         to: address,
         subject,
-        text: body,
-        html: `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:560px;white-space:pre-wrap">${escapeHtml(body)}</div>`,
+        /* Signed with the plant's footer [services/emailSignature.js]. */
+        ...customerEmail(body),
         attachments: papers.map((paper) => ({ filename: paper.filename, content: paper.buffer, contentType: paper.mimeType })),
       });
       delivery = { providerId: result.messageId, providerStatus: result.delivered ? 'sent' : 'logged' };

@@ -31,6 +31,7 @@ import { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } from '../provide
 import { env, isProduction } from '../config/env.js';
 import { normalisePhone } from '../utils/phone.js';
 import { transactional } from '../utils/transaction.js';
+import { customerEmail } from '../services/emailSignature.js';
 
 /**
  * Quotations — the costing and the offer on one record [BLUEPRINT §7–§10; models/Quotation.js].
@@ -1021,7 +1022,6 @@ export const sendPreview = asyncHandler(async (req, res) => {
   });
 });
 
-const escapeHtml = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 /** Sends the quotation the way the dialog left it; each channel delivered and logged on its own. */
 async function deliverQuotation(req, quotation, { email, whatsapp }) {
@@ -1042,8 +1042,8 @@ async function deliverQuotation(req, quotation, { email, whatsapp }) {
         const sent = await sendEmail({
           to,
           subject: email.subject,
-          text: email.body,
-          html: `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:560px;white-space:pre-wrap">${escapeHtml(email.body)}</div>`,
+          /* Signed with the plant's footer [services/emailSignature.js]. */
+          ...customerEmail(email.body),
           attachments: [{ filename: `${fileSafeNumber(quotation.number)}.pdf`, content: pdf, contentType: 'application/pdf' }],
         });
         results.push(await CustomerMessage.create({ ...log, status: 'sent', providerId: sent.messageId, providerStatus: sent.delivered ? 'sent' : 'logged' }));

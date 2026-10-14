@@ -40,13 +40,6 @@ export function draftQuoteMessages({ quotation, customer, sender }) {
     quotation.paymentTerms && `Payment terms: ${quotation.paymentTerms}.`,
     quotation.isExport ? null : company.gstNote && `${company.gstNote}.`,
   ].filter(Boolean);
-  const signature = [
-    'Regards,',
-    sender?.name,
-    company.name,
-    sender?.phone || company.phone,
-  ].filter(Boolean);
-
   const subject = `Quotation ${quotation.number} — ${company.name}`;
 
   const email = [
@@ -59,8 +52,7 @@ export function draftQuoteMessages({ quotation, customer, sender }) {
     ...terms,
     '',
     'Please let us know if you have any questions, or if you would like samples.',
-    '',
-    ...signature,
+    /* No sign-off here: every customer email ends with the plant's footer [services/emailSignature.js]. */
   ].join('\n');
 
   const whatsapp = [

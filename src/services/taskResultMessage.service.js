@@ -10,6 +10,7 @@ import { recipientOf } from './quotationMessage.js';
 import { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } from '../providers/whatsapp.js';
 import { normalisePhone } from '../utils/phone.js';
 import { signedPath } from '../utils/signedLink.js';
+import { customerEmail } from './emailSignature.js';
 
 /**
  * The work a department uploaded, sent to the buyer — Dispatch's LR copy, by email (attached)
@@ -21,7 +22,6 @@ import { signedPath } from '../utils/signedLink.js';
  * results say what went and what did not.
  */
 
-const escapeHtml = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 /** The public link WhatsApp fetches the file from. */
 export const publicFileUrl = (baseUrl, attachment) =>
@@ -62,8 +62,8 @@ export async function sendResultToCustomer({ task, attachment, user, baseUrl }) 
       const sent = await sendEmail({
         to: email,
         subject: draft.subject,
-        text: draft.body,
-        html: `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:560px;white-space:pre-wrap">${escapeHtml(draft.body)}</div>`,
+        /* Signed with the plant's footer [services/emailSignature.js]. */
+        ...customerEmail(draft.body),
         attachments: content ? [{ filename: attachment.filename, content, contentType: attachment.mimeType }] : [],
       });
       results.push(await CustomerMessage.create({

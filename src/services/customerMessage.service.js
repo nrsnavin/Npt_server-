@@ -5,6 +5,7 @@ import { TEMPLATES, contextFor, render } from './customerMessage.templates.js';
 import { sendEmail } from './notification.service.js';
 import { isWhatsAppConfigured, sendWhatsApp } from '../providers/whatsapp.js';
 import { isProduction } from '../config/env.js';
+import { customerEmail } from './emailSignature.js';
 
 /**
  * Sending an update to a customer, and recording that it happened [BLUEPRINT §42].
@@ -71,10 +72,8 @@ async function deliver({ channel, address, draft, event, context }) {
     const result = await sendEmail({
       to: address,
       subject: draft.subject,
-      text: draft.body,
-      html: `<div style="font-family:system-ui,-apple-system,Segoe UI,sans-serif;max-width:520px;white-space:pre-wrap">${draft.body
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')}</div>`,
+      /* Signed with the plant's footer [services/emailSignature.js]. */
+      ...customerEmail(draft.body),
     });
     return { providerId: result.messageId, providerStatus: result.delivered ? 'sent' : 'logged' };
   }
