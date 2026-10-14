@@ -19,7 +19,7 @@ export const company = {
     .split('|')
     .map((line) => line.trim())
     .filter(Boolean),
-  gstin: process.env.COMPANY_GSTIN || '33AAAFN1234K1ZP',
+  gstin: process.env.COMPANY_GSTIN || '33BCEPS2165M1ZC',
   phone: process.env.COMPANY_PHONE || '0421 - 4334690',
   mobile: process.env.COMPANY_MOBILE || '9944423690',
   email: process.env.COMPANY_EMAIL || 'info@navinplastic.com',
