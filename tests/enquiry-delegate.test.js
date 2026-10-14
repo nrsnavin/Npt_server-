@@ -96,7 +96,7 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-test('Admin hands it on; the enquiry, its open task and its sample go with it, and the buyer opens for them', async () => {
+test('Admin hands it on; the enquiry, its open task and its sample go with it — the buyer stays with whom it is allocated to', async () => {
   const enquiry = await raise();
   const acted = await api(`/api/enquiries/${enquiry._id}/actions`, { method: 'POST', token: nandhini, body: { action: 'raise_sample' } });
   assert.equal(acted.status, 200, acted.json.message);
@@ -132,7 +132,13 @@ test('Admin hands it on; the enquiry, its open task and its sample go with it, a
   const open = await mongoose.connection.collection('todos')
     .find({ enquiry: new mongoose.Types.ObjectId(enquiry._id), completed: false, user: { $exists: true } }).toArray();
   assert.ok(open.every((task) => String(task.user) !== ids.nandhini), 'no open task left with the old owner');
-  assert.equal((await api(`/api/customers/${customer}`, { token: priya })).status, 200, 'the buyer opens for the new owner');
+  /* Only the enquiry moved: the buyer is still allocated to Nandhini, and only she (and Admin) see it. */
+  assert.equal(read.json.data.customer.name ? 'has contact' : '', 'has contact', 'the buyer’s contact travels on the enquiry');
+  assert.equal((await api(`/api/customers/${customer}`, { token: priya })).status, 404, 'the customer record is not theirs');
+  assert.ok(!(await api('/api/customers', { token: priya })).json.data.some((row) => String(row._id) === String(customer)), 'nor in their list');
+  assert.equal((await api(`/api/customers/${customer}`, { token: nandhini })).status, 200, 'still the allocated owner’s');
+  assert.ok(!(await api('/api/enquiries', { token: nandhini })).json.data.some((row) => String(row._id) === String(enquiry._id)), 'the enquiry is gone from her list');
+  assert.ok((await api('/api/enquiries', { token: admin })).json.data.some((row) => String(row._id) === String(enquiry._id)), 'Admin sees every one');
 });
 
 test('who may hand it on, and to whom', async () => {
@@ -185,4 +191,24 @@ test('Admin may take an enquiry themselves, or hand it to another Admin', async 
 
   const back = await delegate(enquiry._id, { to: ids.nandhini }, admin);
   assert.equal(back.status, 200, 'and back to marketing when done');
+});
+
+test('a salesperson who also quotes opens another’s enquiry only for the quotation on it — never in their list', async () => {
+  const enquiry = await raise();
+  assert.equal((await api(`/api/enquiries/${enquiry._id}`, { token: priya })).status, 404, 'Nandhini’s, not hers');
+
+  const User = mongoose.connection.collection('users');
+  await User.updateOne({ _id: new mongoose.Types.ObjectId(ids.priya) }, { $set: { extraDepartments: ['quotation'] } });
+  try {
+    assert.equal((await api(`/api/enquiries/${enquiry._id}`, { token: priya })).status, 404, 'sitting in Quotation is not enough');
+    await mongoose.connection.collection('todos').insertOne({
+      title: 'Quote it', department: 'quotation', kind: 'create_quotation', completed: false,
+      enquiry: new mongoose.Types.ObjectId(enquiry._id), createdAt: new Date(), updatedAt: new Date(),
+    });
+    assert.equal((await api(`/api/enquiries/${enquiry._id}`, { token: priya })).status, 200, 'Quotation’s work on it opens it');
+    assert.ok(!(await api('/api/enquiries', { token: priya })).json.data.some((row) => String(row._id) === String(enquiry._id)),
+      'but her own list stays her own');
+  } finally {
+    await User.updateOne({ _id: new mongoose.Types.ObjectId(ids.priya) }, { $unset: { extraDepartments: 1 } });
+  }
 });

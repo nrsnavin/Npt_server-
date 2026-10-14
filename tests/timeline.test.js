@@ -126,12 +126,11 @@ test('paged by date, with nothing repeated or skipped', async () => {
   assert.equal(all.length, 5);
 });
 
-test('somebody in the room through a question sees the questions, and nothing else of the buyer', async () => {
-  /* Arun is in marketing, and the questions were asked of marketing — so the buyer is shared with
-     him. The enquiry and the sample are Nandhini's, and a shared question does not share them. */
+test('another salesperson’s buyer has no timeline for them, even when asked about it in a question', async () => {
+  /* Arun is in marketing, and the questions were asked of marketing — but the buyer is Nandhini's,
+     and a salesperson sees only the buyers allocated to them. */
   const shared = await api(`/api/customers/${customerId}/timeline`, { token: arun });
-  assert.equal(shared.status, 200, shared.json.message);
-  assert.deepEqual([...new Set(shared.json.data.map((event) => event.kind))], ['query']);
+  assert.equal(shared.status, 404, 'not his buyer');
 
   /* Despatch is not narrowed to its own buyers, so it sees what its modules let it — never the
      enquiries, which it has no access to. */

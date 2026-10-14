@@ -225,19 +225,18 @@ test('naming one person does not put their colleagues in', async () => {
 
 /* ------------------------------- The grant ------------------------------- */
 
-test('being asked grants sight of the buyer, and says so', async () => {
+test('being asked grants sight of the buyer — except to a salesperson, who sees only their own', async () => {
   /*
-   * The decision this module rests on: a participant can open the customer the thread names.
-   * Despatch asked where a load went needs the delivery address, and a thread they cannot
-   * follow through to the record is a thread they cannot answer.
+   * A participant outside marketing can open the customer the thread names: despatch asked where
+   * a load went needs the delivery address. A marketing person sees only the buyers allocated to
+   * them — being in a thread about another salesperson's buyer shows them the thread, not the buyer.
    */
   const before = await api(`/api/customers/${customerId}`, { token: kavitha });
-  assert.equal(before.status, 200, 'despatch is not ownership-scoped, so this is not the proof');
+  assert.equal(before.status, 200, 'despatch is not ownership-scoped');
 
-  /* Proved on somebody who *is* scoped: another marketing person, added by name. */
   const { json } = await raise();
   const blind = await api(`/api/customers/${customerId}`, { token: priya });
-  assert.equal(blind.status, 404, 'before being added, the buyer is invisible to them');
+  assert.equal(blind.status, 404, 'another salesperson’s buyer is invisible to them');
 
   const added = await api(`/api/queries/${json.data._id}/participants`, {
     method: 'POST',
@@ -245,11 +244,11 @@ test('being asked grants sight of the buyer, and says so', async () => {
     body: { user: await whoIs(priya) },
   });
   assert.equal(added.status, 201, added.json.message);
-  assert.equal(added.json.granted.customer, true, 'the answer says what the press granted');
+  assert.equal(added.json.granted.customer, false, 'the answer says the buyer was not opened to them');
   assert.ok(added.json.granted.people >= 1);
 
-  const now = await api(`/api/customers/${customerId}`, { token: priya });
-  assert.equal(now.status, 200, 'and now they can open the buyer');
+  assert.equal((await api(`/api/queries/${json.data._id}`, { token: priya })).status, 200, 'they are in the thread');
+  assert.equal((await api(`/api/customers/${customerId}`, { token: priya })).status, 404, 'and still not the buyer');
 });
 
 test('the grant lets them read the buyer, never edit it', async () => {

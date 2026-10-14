@@ -98,7 +98,16 @@ export async function mayMove(user, enquiry, holder) {
  */
 export async function mayHandOff(user, enquiry) {
   if (await mayMove(user, enquiry)) return true;
-  if (isOwnershipScoped(user)) return false;
+  if (isOwnershipScoped(user)) {
+    /*
+     * A salesperson who also sits in another department — quotation, sampling — opens another
+     * salesperson's enquiry only for that department's work on it, never as a salesperson.
+     */
+    const other = departmentsOf(user).filter((key) => key !== 'marketing');
+    return Boolean(other.length && (await Todo.exists({
+      enquiry: enquiry._id, department: { $in: other }, kind: { $exists: true },
+    })));
+  }
   if (canRead(user, 'enquiries') && ownsRecord(user, enquiry)) return true;
   const mine = departmentsOf(user);
   return Boolean(mine.length && (await Todo.exists({

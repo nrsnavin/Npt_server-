@@ -320,7 +320,7 @@ export const getCustomer = asyncHandler(async (req, res) => {
     /* Who stood at the gate — the pin's whole claim to being right. */
     .populate('site.setBy', 'name');
   if (!customer) throw ApiError.notFound('Customer not found');
-  /* Theirs, or shared with them by a query they are a participant on — see `sharedWith`. */
+  /* A salesperson's own customers only [ownership.service `ownsCustomer`]. */
   if (!ownsCustomer(req.user, customer)) throw ApiError.notFound('Customer not found');
 
   /*
@@ -937,7 +937,8 @@ export const listEnquiries = asyncHandler(async (req, res) => {
   const [data, total, stages] = await Promise.all([
     Enquiry.find(filter)
       .select('-activities')
-      .populate('customer', 'code name')
+      /* Whose the buyer is, so a delegated enquiry does not link to a buyer its holder may not open. */
+      .populate('customer', 'code name assignedTo')
       .populate('assignedTo', 'name')
       .populate(mouldWithPhoto())
       .sort(sort)
@@ -1021,9 +1022,8 @@ export const getEnquiry = asyncHandler(async (req, res) => {
    * held it — Production, Quality, Dispatch and Accounts work an enquiry without the enquiry
    * module, and its task links here. Assigned work only: one they never touched stays hidden.
    */
-  const mayRead = canRead(req.user, 'enquiries')
-    ? ownsRecord(req.user, enquiry)
-    : await mayHandOff(req.user, enquiry);
+  const mayRead = (canRead(req.user, 'enquiries') && ownsRecord(req.user, enquiry))
+    || await mayHandOff(req.user, enquiry);
   if (!mayRead) throw ApiError.notFound('Enquiry not found');
   res.json({ success: true, data: enquiry });
 });

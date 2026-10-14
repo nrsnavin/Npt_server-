@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import ApiError from '../utils/ApiError.js';
 import { findDepartment } from '../config/modules.js';
+import { isManagement } from '../utils/departments.js';
 
 /**
  * Record-level ownership, which sits *below* module access.
@@ -16,8 +17,14 @@ import { findDepartment } from '../config/modules.js';
  */
 const OWNED_BY_DEPARTMENT = ['marketing'];
 
+/**
+ * A marketing person: marketing as their main department. Someone whose main work is quoting or
+ * sampling for every salesperson, and who sells a little besides, is not narrowed to a book of
+ * their own — their department's work spans every book. Admin and management, by role or by
+ * any department they sit in, see every book.
+ */
 export const isOwnershipScoped = (user) =>
-  user?.role !== 'admin' && OWNED_BY_DEPARTMENT.includes(user?.department);
+  Boolean(user) && !isManagement(user) && OWNED_BY_DEPARTMENT.includes(user.department);
 
 /**
  * A mongo filter fragment restricting a query to the caller's own records, or `{}` when
@@ -39,31 +46,18 @@ export const ownsRecord = (user, record, field = 'assignedTo') => {
 };
 
 /**
- * Customers, which have a second way in: a query about them put you in the room.
+ * Customers: a marketing person sees the customers allocated to them, and no others.
  *
- * Its own pair of helpers rather than a widening of the two above, and the split is the point.
- * `ownershipFilter` answers for leads, enquiries, samples, orders and consignments, none of
- * which carry `sharedWith` — folding the grant into it would either query a field that does not
- * exist on five collections or quietly widen all of them. A customer is the one record a query
- * shares, so a customer is the one record with a different rule.
- *
- * What it grants is the customer record. §8's price visibility and §29's hold on enquiries are
- * separate judgements and are not shared by this — see `sharedWith` on the model.
+ * A query about a buyer, or one of the buyer's enquiries delegated to them, used to open the
+ * customer record too [`sharedWith` on the model]. It no longer does for marketing — the
+ * customer is one salesperson's, and Admin decides whose [delegation.service `delegateCustomer`].
+ * A delegated enquiry is still theirs to work, contact details and all, on the enquiry itself.
+ * Every other department sees the customers its module grant allows, as before.
  */
-export const customerScope = (user) =>
-  isOwnershipScoped(user)
-    ? { $or: [{ assignedTo: user._id }, { sharedWith: user._id }] }
-    : {};
+export const customerScope = (user) => ownershipFilter(user);
 
-/** True when this user may open this particular buyer — theirs, or shared with them. */
-export const ownsCustomer = (user, customer) => {
-  if (!isOwnershipScoped(user)) return true;
-  if (ownerId(customer?.assignedTo) === ownerId(user._id)) return true;
-
-  return (customer?.sharedWith || []).some(
-    (shared) => ownerId(shared) === ownerId(user._id)
-  );
-};
+/** True when this user may open this particular buyer: allocated to them, or not a salesperson. */
+export const ownsCustomer = (user, customer) => ownsRecord(user, customer);
 
 /**
  * Narrowing a list to one colleague's records, which may only ever narrow.

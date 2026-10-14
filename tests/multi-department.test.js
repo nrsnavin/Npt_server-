@@ -103,6 +103,8 @@ test('hand-over rights follow every department; whose buyers you see follows the
     'a quotation person who also does marketing is not narrowed to a book of their own');
   assert.equal(isOwnershipScoped({ department: 'marketing', extraDepartments: ['quotation'] }), true);
   assert.equal(isManagement({ department: 'accounts', extraDepartments: ['management'] }), true, 'Admin through an extra department');
+  assert.equal(isOwnershipScoped({ department: 'marketing', extraDepartments: ['management'] }), false, 'and so sees every book');
+  assert.equal(isOwnershipScoped({ department: 'marketing', role: 'admin' }), false);
 });
 
 test('adding a department adds its access and takes none away; resetting gives every department’s', async () => {
