@@ -157,8 +157,11 @@ const FILTERS = {
 export const PARTY_FILTERS = Object.keys(FILTERS);
 
 /**
- * Every customer this person may see, each with where its newest live enquiry stands — or that
+ * The buyers allocated to this person, each with where its newest live enquiry stands — or that
  * it has none and wants a call. Counted per chip so the chips can say how many; paged.
+ *
+ * Their own, for everyone — Admin included. The dashboard is a day's work, and Admin's day is
+ * the buyers on Admin's own list; every buyer, with delegation, is the Masters page.
  */
 export async function partiesFor(user, { filter = 'all', page = 1, limit = 50, search = '' } = {}) {
   const now = new Date();
@@ -166,7 +169,7 @@ export async function partiesFor(user, { filter = 'all', page = 1, limit = 50, s
   const named = String(search || '').trim();
   const match = named ? { name: new RegExp(named.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') } : {};
   const [customers, enquiries] = await Promise.all([
-    Customer.find({ ...customerScope(user), ...match }).select('name code assignedTo updatedAt followUp').populate('assignedTo', 'name').sort({ name: 1 }).lean(),
+    Customer.find({ assignedTo: user._id, ...match }).select('name code assignedTo updatedAt followUp').populate('assignedTo', 'name').sort({ name: 1 }).lean(),
     Enquiry.find(activeEnquiries(user))
       .select('customer marketingStatus status stage nextFollowUpDate nextAction requirement.modelNumber items.modelNumber updatedAt')
       .sort({ updatedAt: -1 })

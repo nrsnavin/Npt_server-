@@ -120,7 +120,9 @@ test('the party master: every customer with where it stands, by chip', async () 
   assert.deepEqual(fresh.rows.map((row) => row.name), ['Aruna Knits']);
   const found = (await api('/api/dashboard/parties?search=bala', { as: 'nandhini' })).json.data;
   assert.deepEqual(found.rows.map((row) => row.name), ['Bala Garments']);
-  assert.equal((await api('/api/dashboard/parties', { as: 'admin' })).json.data.total, 4);
+  /* Admin's dashboard list is Admin's own buyers too — none here; every buyer is on the Masters page. */
+  assert.equal((await api('/api/dashboard/parties', { as: 'admin' })).json.data.total, 0, 'Admin sees only buyers allocated to Admin');
+  assert.equal((await api('/api/customers', { as: 'admin' })).json.data.length, 4, 'the Masters list still shows every buyer to Admin');
   assert.equal((await api('/api/dashboard/parties', { as: 'siva' })).status, 403, 'Production has no customer grant');
 });
 
