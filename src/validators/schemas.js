@@ -237,3 +237,11 @@ export const pushSubscribeSchema = z.object({
 });
 
 export const pushUnsubscribeSchema = z.object({ endpoint: z.string().url().max(1000) });
+
+/* ----------------------------- Settings ----------------------------- */
+
+/** Admin's security policy: a device PIN for everyone, and the idle minutes before the lock. */
+export const securityPolicySchema = z.object({
+  pinRequired: z.boolean().optional(),
+  lockAfterMinutes: z.number().int().min(1).max(240).optional(),
+});

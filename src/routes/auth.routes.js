@@ -14,6 +14,7 @@ import {
   forgotPassword,
   checkPasswordLink,
   resetPassword,
+  switched,
 } from '../controllers/auth.controller.js';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -67,6 +68,8 @@ router.get('/password/reset/:token', checkPasswordLink);
 router.post('/password/reset', validate(resetPasswordSchema), resetPassword);
 
 router.get('/me', authenticate, me);
+/* The device switched to this account; a sign-in for the record [controllers/auth.controller.js `switched`]. */
+router.post('/switched', authenticate, switched);
 router.patch('/me', authenticate, validate(updateProfileSchema), updateProfile);
 router.post('/change-password', authenticate, validate(changePasswordSchema), changePassword);
 

@@ -12,6 +12,7 @@ import { moduleAccessFor } from '../services/access.service.js';
 import { departmentsOf } from '../utils/departments.js';
 import { inspectLink, redeemLink, sendReset } from '../services/passwordLink.service.js';
 import PasswordToken from '../models/PasswordToken.js';
+import { securityPolicy } from '../services/settings.service.js';
 
 const publicUser = (user) => ({
   id: user._id,
@@ -179,7 +180,27 @@ export const verifyLoginOtp = asyncHandler(async (req, res) => {
 });
 
 export const me = asyncHandler(async (req, res) => {
-  res.json({ success: true, data: publicUser(await withPassword(User.findById(req.user._id))) });
+  const user = publicUser(await withPassword(User.findById(req.user._id)));
+  res.json({
+    success: true,
+    data: {
+      ...user,
+      /* The plant's security policy, for the app to follow [services/settings.service.js]. */
+      policy: await securityPolicy(),
+      /* When this sign-in lapses, so a switched-to account can say "signed in too long ago". */
+      sessionExpiresAt: req.session?.expiresAt || null,
+    },
+  });
+});
+
+/**
+ * The app switched to this account from another one signed in on the same device — recorded as
+ * a sign-in, so "last login" on the users list stays honest. Nothing is issued: the token the
+ * app kept is the session.
+ */
+export const switched = asyncHandler(async (req, res) => {
+  await User.updateOne({ _id: req.user._id }, { $set: { lastLoginAt: new Date(), lastLoginMethod: 'switch' } });
+  res.json({ success: true, data: { at: new Date() } });
 });
 
 export const updateProfile = asyncHandler(async (req, res) => {
