@@ -633,7 +633,17 @@ test('a picture that is neither a card nor a chat says so and adds nothing', asy
 });
 
 test('quantities are read the way people write them', async () => {
-  const { parseQuantity } = await import('../src/services/buyerCard.llm.js');
+  const { parseQuantity, tidyReading } = await import('../src/services/buyerCard.llm.js');
+  /* The number typed into the chat's message box is the buyer's — over the header's, and it is their WhatsApp. */
+  const typed = tidyReading({ kind: 'chat', contactName: 'Senthil', mobile: '+91 90000 00000', typedNumber: '98400 11223', notes: 'Asked for 400mm hangers' });
+  assert.equal(typed.mobile, '+919840011223');
+  assert.equal(typed.whatsapp, '+919840011223');
+  assert.equal(typed.typedNumber, undefined, 'not a field of its own on the card');
+  const header = tidyReading({ kind: 'chat', contactName: 'Senthil', mobile: '+91 90000 00000', typedNumber: '' });
+  assert.equal(header.mobile, '+919000000000', 'without one, the header stands');
+  assert.equal(header.whatsapp, undefined);
+  const words = tidyReading({ kind: 'chat', mobile: '+91 90000 00000', typedNumber: 'ok will send' });
+  assert.equal(words.mobile, '+919000000000', 'words in the box are not a number');
   assert.equal(parseQuantity('5000 pcs'), 5000);
   assert.equal(parseQuantity('5,000'), 5000);
   assert.equal(parseQuantity('5k'), 5000);
