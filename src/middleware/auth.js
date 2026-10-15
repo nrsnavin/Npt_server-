@@ -49,6 +49,8 @@ export const authenticate = asyncHandler(async (req, _res, next) => {
   }
 
   req.user = user;
+  /* The token's own dates, for the app to say when this sign-in lapses. */
+  req.session = { issuedAt: payload.iat ? new Date(payload.iat * 1000) : null, expiresAt: payload.exp ? new Date(payload.exp * 1000) : null };
   return next();
 });
 

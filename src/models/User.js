@@ -57,7 +57,7 @@ const userSchema = new mongoose.Schema(
     phoneVerified: { type: Boolean, default: false },
     isActive: { type: Boolean, default: true },
     lastLoginAt: { type: Date },
-    lastLoginMethod: { type: String, enum: ['password', 'email_otp', 'sms_otp'] },
+    lastLoginMethod: { type: String, enum: ['password', 'email_otp', 'sms_otp', 'switch'] },
     /** Sessions issued before this are refused; see the save hook. */
     passwordChangedAt: { type: Date },
   },
