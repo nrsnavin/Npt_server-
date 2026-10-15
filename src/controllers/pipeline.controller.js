@@ -516,6 +516,9 @@ async function ownersOf(Model, req, res) {
 
 /** Who holds enquiries — see `ownersOf`. */
 export const enquiryOwners = asyncHandler((req, res) => ownersOf(Enquiry, req, res));
+/* Who holds buyers, with how many each — Admin's picker on the dashboard's party master. A
+   marketing person is answered with one name, their own, so no picker is drawn for them. */
+export const customerOwners = asyncHandler((req, res) => ownersOf(Customer, req, res));
 
 /**
  * Who a new customer may be given to: the marketing team.

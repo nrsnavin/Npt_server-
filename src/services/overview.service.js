@@ -161,15 +161,18 @@ export const PARTY_FILTERS = Object.keys(FILTERS);
  * it has none and wants a call. Counted per chip so the chips can say how many; paged.
  *
  * Their own, for everyone — Admin included. The dashboard is a day's work, and Admin's day is
- * the buyers on Admin's own list; every buyer, with delegation, is the Masters page.
+ * the buyers on Admin's own list; every buyer, with delegation, is the Masters page. Admin may
+ * ask for one colleague's list instead (`owner`), to see a marketing person's day as they see
+ * it; anyone else asking is answered with their own.
  */
-export async function partiesFor(user, { filter = 'all', page = 1, limit = 50, search = '' } = {}) {
+export async function partiesFor(user, { filter = 'all', page = 1, limit = 50, search = '', owner } = {}) {
   const now = new Date();
   const ctx = { tonight: endOfDayIST(now), weekAgo: new Date(now.getTime() - 7 * DAY_MS) };
   const named = String(search || '').trim();
   const match = named ? { name: new RegExp(named.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') } : {};
+  const whose = isManagement(user) && owner && /^[0-9a-f]{24}$/i.test(String(owner)) ? owner : user._id;
   const [customers, enquiries] = await Promise.all([
-    Customer.find({ assignedTo: user._id, ...match }).select('name code assignedTo updatedAt followUp').populate('assignedTo', 'name').sort({ name: 1 }).lean(),
+    Customer.find({ assignedTo: whose, ...match }).select('name code assignedTo updatedAt followUp').populate('assignedTo', 'name').sort({ name: 1 }).lean(),
     Enquiry.find(activeEnquiries(user))
       .select('customer marketingStatus status stage nextFollowUpDate nextAction requirement.modelNumber items.modelNumber updatedAt')
       .sort({ updatedAt: -1 })

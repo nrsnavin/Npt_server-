@@ -11,6 +11,7 @@ import {
   listCustomers, getCustomer, getCustomerMap, createCustomer, updateCustomer, checkDuplicateCustomer,
   marketingRoster,
   enquiryOwners,
+  customerOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, applyEnquiryAction, listEnquiryActions,
   logEnquiryActivity, setEnquiryMarketingStatus, checkEnquiry, listEnquiryActivities, enquiryActivityTypes, delegateEnquiryTo, listDelegationTargets, promoteToMould, enquiryPipeline,
@@ -149,6 +150,7 @@ router.get('/customers/check-duplicate', requireModule('customers'), checkDuplic
  * on the read grant: it is a list of names, and anybody who can open the form needs it.
  */
 router.get('/customers/team', requireModule('customers'), marketingRoster);
+router.get('/customers/owners', requireModule('customers'), customerOwners);
 router.get('/customers', requireModule('customers'), listCustomers);
 router.post('/customers', requireModule('customers', 'write'), validate(customerSchema), createCustomer);
 /* The map view's own request — see `getCustomerMap` for why it is not part of the detail. */

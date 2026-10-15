@@ -123,6 +123,16 @@ test('the party master: every customer with where it stands, by chip', async () 
   /* Admin's dashboard list is Admin's own buyers too — none here; every buyer is on the Masters page. */
   assert.equal((await api('/api/dashboard/parties', { as: 'admin' })).json.data.total, 0, 'Admin sees only buyers allocated to Admin');
   assert.equal((await api('/api/customers', { as: 'admin' })).json.data.length, 4, 'the Masters list still shows every buyer to Admin');
+
+  /* Admin may look at one colleague's list; a marketing person asking for a colleague's gets their own. */
+  const theirs = (await api(`/api/dashboard/parties?owner=${ids.nandhini}`, { as: 'admin' })).json.data;
+  assert.deepEqual(theirs.rows.map((row) => row.name), ['Aruna Knits', 'Bala Garments', 'Deva Fashions']);
+  assert.equal(theirs.counts.production, 1, 'the chips count that list');
+  const refused = (await api(`/api/dashboard/parties?owner=${ids.arun}`, { as: 'nandhini' })).json.data;
+  assert.deepEqual(refused.rows.map((row) => row.name), ['Aruna Knits', 'Bala Garments', 'Deva Fashions'], 'still their own');
+  const owners = (await api('/api/customers/owners', { as: 'admin' })).json.data;
+  assert.deepEqual(owners.map((row) => [row.name, row.count]), [['Arun K', 1], ['Nandhini S', 3]], 'who holds buyers, with how many');
+  assert.deepEqual((await api('/api/customers/owners', { as: 'nandhini' })).json.data.map((row) => row.name), ['Nandhini S'], 'one name: no picker');
   assert.equal((await api('/api/dashboard/parties', { as: 'siva' })).status, 403, 'Production has no customer grant');
 });
 
