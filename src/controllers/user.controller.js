@@ -8,8 +8,9 @@ import {
   normaliseGrants,
 } from '../services/access.service.js';
 import { defaultAccessForAll, findDepartment, LEVEL_RANK } from '../config/modules.js';
-import { departmentsOf } from '../utils/departments.js';
-import { resolveIdentifier } from '../services/otp.service.js';
+import { departmentsOf, isManagement } from '../utils/departments.js';
+import { env } from '../config/env.js';
+import { issueOtp, resolveIdentifier, verifyOtp } from '../services/otp.service.js';
 import { transferBook, workloadOf } from '../services/offboarding.service.js';
 import { recordChange } from '../services/audit.service.js';
 import { listParams } from '../utils/query.js';
@@ -348,4 +349,107 @@ export const remove = asyncHandler(async (req, res) => withOwnerLocks([req.param
   await user.save();
 
   res.json({ success: true, data: { ...publicUser(user), transferred: moved } });
+}));
+
+/* ------------------------------ Deleting an account ------------------------------ */
+
+/**
+ * The checks every removal shares: not oneself, not the last active admin. An administrator's
+ * account — the admin role, or the Admin department — is the one a stolen session would go for,
+ * so deleting one takes a code sent to the acting admin's own email as well.
+ */
+async function removable(req) {
+  const user = await User.findById(req.params.id);
+  if (!user) throw ApiError.notFound('User not found');
+  if (String(user._id) === String(req.user._id)) throw ApiError.badRequest('You cannot delete your own account');
+  if (isManagement(user)) {
+    const otherAdmins = await User.countDocuments({ _id: { $ne: user._id }, isActive: true, $or: [{ role: 'admin' }, { department: 'management' }, { extraDepartments: 'management' }] });
+    if (otherAdmins === 0) throw ApiError.badRequest('This is the last active admin');
+  }
+  return user;
+}
+
+const maskEmail = (email) => {
+  const [name, domain] = String(email || '').split('@');
+  if (!domain) return email;
+  return `${name.slice(0, 2)}${'*'.repeat(Math.max(1, name.length - 2))}@${domain}`;
+};
+
+/**
+ * Step one of deleting an administrator: a code goes to the acting admin's email. Asked for a
+ * member, nothing is sent — the delete needs no code — and the reply says so.
+ */
+export const requestDeleteCode = asyncHandler(async (req, res) => {
+  const user = await removable(req);
+  if (!isManagement(user)) return res.json({ success: true, data: { required: false } });
+  if (!req.user.email) throw ApiError.badRequest('Your account has no email address to send the code to. Add one under My account first.');
+  const issued = await issueOtp({ identifier: String(req.user.email).toLowerCase(), channel: 'email', purpose: 'delete_admin', user: req.user, requestIp: req.ip });
+  res.json({
+    success: true,
+    message: `A code is on its way to ${maskEmail(req.user.email)}.`,
+    data: {
+      required: true,
+      sentTo: maskEmail(req.user.email),
+      expiresInMinutes: env.otp.ttlMinutes,
+      expiresAt: issued.expiresAt,
+      ...(issued.devCode ? { devCode: issued.devCode } : {}),
+    },
+  });
+});
+
+/**
+ * Deletes the account for good. Open work goes to a colleague first (the same transfer as
+ * offboarding); what the person did stays on the records, by id, as history. An administrator's
+ * account needs the emailed code [`requestDeleteCode`].
+ */
+export const destroy = asyncHandler(async (req, res) => withOwnerLocks([req.params.id, req.body?.transferTo], async () => {
+  const user = await removable(req);
+  const transferTo = req.body?.transferTo;
+
+  if (isManagement(user)) {
+    const code = String(req.body?.code || '').trim();
+    if (!code) {
+      throw ApiError.badRequest('Deleting an administrator needs the code sent to your email.', { otpRequired: true });
+    }
+    await verifyOtp({ identifier: String(req.user.email || '').toLowerCase(), code, purpose: 'delete_admin' });
+  }
+
+  const held = await workloadOf(user._id);
+  if (held.open > 0 && !transferTo) {
+    throw ApiError.badRequest(
+      `${user.name} still owns ${held.open} open ${held.open === 1 ? 'record' : 'records'}. ` +
+        'Name a colleague to transfer them to, or the work stops appearing on anybody’s screen.'
+    );
+  }
+
+  let moved = null;
+  if (held.open > 0) {
+    if (String(transferTo) === String(user._id)) throw ApiError.badRequest('Transfer the work to somebody else');
+    const successor = await User.findById(transferTo);
+    if (!successor) throw ApiError.badRequest('That colleague does not exist');
+    if (successor.isActive === false) throw ApiError.badRequest(`${successor.name} is not active, so the work would go nowhere`);
+    const buyers = ['customers', 'enquiries', 'quotations', 'orders'].some((key) => held[key] > 0);
+    if (buyers && !(await canOwnBuyer(successor))) {
+      throw ApiError.badRequest(
+        `${successor.name} is not in marketing, and this book holds buyers. Choose somebody in marketing, or an administrator.`
+      );
+    }
+    moved = await transferBook(user._id, successor._id);
+  }
+
+  /* Deactivated first: that drops the signed-in copy every server holds, so a session of theirs stops at once. */
+  user.isActive = false;
+  await user.save();
+  const gone = publicUser(user);
+  await recordChange({
+    model: 'User',
+    doc: user,
+    by: req.user,
+    action: 'deleted',
+    label: user.name,
+    note: `${user.email || user.name} deleted by ${req.user.name}${moved ? `; book transferred: ${JSON.stringify(moved)}` : ''}`,
+  });
+  await User.deleteOne({ _id: user._id });
+
+  res.json({ success: true, data: { ...gone, deleted: true, transferred: moved } });
 }));

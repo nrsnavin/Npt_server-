@@ -137,6 +137,7 @@ const OTP_SUBJECTS = {
   login: 'Your NPT Hangers sign-in code',
   verify_email: 'Verify your email address',
   verify_phone: 'Verify your phone number',
+  delete_admin: 'Confirm deleting an administrator account',
 };
 
 /** Sends a code over whichever channel matches the identifier. */
