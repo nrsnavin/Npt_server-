@@ -43,6 +43,10 @@ const SYSTEM = [
   '  on the right are from our salesperson; messages on the left are from the buyer.',
   '- contactName: the name in the header (or one the buyer gives). mobile: the header\'s number, or',
   '  a number the buyer shares. company: only if the business is named in the chat.',
+  '- typedNumber: our salesperson types the buyer\'s phone number into the message box at the',
+  '  bottom of the screen (the unsent "Type a message" field) before taking the screenshot. When',
+  '  that box holds a phone number, copy it exactly as typedNumber — it is the buyer\'s number and',
+  '  counts over the header. Leave typedNumber empty when the box is empty or holds other words.',
   '- productInterest: what the buyer asks for, in a few words (e.g. "400mm shirt hangers, black").',
   '- quantity: the quantity they mention, as written (e.g. "5000 pcs"), or empty.',
   '- models: one entry for each separate hanger model the buyer asks about — a buyer often asks',
@@ -56,7 +60,7 @@ const SYSTEM = [
   '  empty and still fill productInterest, quantity and notes from what it shows.',
 ].join('\n');
 
-const FIELDS = ['company', 'contactName', 'designation', 'mobile', 'whatsapp', 'email', 'city', 'state', 'productInterest', 'quantity', 'notes'];
+const FIELDS = ['company', 'contactName', 'designation', 'mobile', 'whatsapp', 'typedNumber', 'email', 'city', 'state', 'productInterest', 'quantity', 'notes'];
 
 /** As many models as one reading keeps — a long list is a catalogue, not an enquiry. */
 export const MOST_MODELS = 10;
@@ -86,7 +90,7 @@ const FORMAT = {
 const askedModel = z.object({ asked: z.string().max(300), quantity: z.string().max(100), colour: z.string().max(100) });
 const answerSchema = z.object({
   kind: z.enum(IMAGE_KINDS),
-  ...Object.fromEntries(FIELDS.map((field) => [field, z.string().max(field === 'notes' ? 800 : 300)])),
+  ...Object.fromEntries(FIELDS.map((field) => [field, field === 'typedNumber' ? z.string().max(300).optional().default('') : z.string().max(field === 'notes' ? 800 : 300)])),
   /* Optional on the way back: a reading from before models were asked for is still a reading. */
   models: z.array(askedModel).max(40).optional().default([]),
 });
@@ -113,13 +117,23 @@ export function tidyReading(answer) {
     const value = String(answer?.[field] || '').replace(/\s+/g, ' ').trim();
     if (value) out[field] = value.slice(0, field === 'notes' ? 600 : 160);
   }
-  for (const field of ['mobile', 'whatsapp']) {
+  for (const field of ['mobile', 'whatsapp', 'typedNumber']) {
     if (out[field]) {
       const phone = normalisePhone(out[field]);
       if (phone) out[field] = phone;
       else delete out[field];
     }
   }
+  /*
+   * The number our salesperson typed into the chat's message box before the screenshot is the
+   * buyer's number — the one they are chatting on — whatever the header says: a saved name shows
+   * no number, and a forwarded chat's header is somebody else's. It is their WhatsApp too.
+   */
+  if (out.typedNumber) {
+    out.mobile = out.typedNumber;
+    out.whatsapp = out.typedNumber;
+  }
+  delete out.typedNumber;
   if (out.email && !EMAIL.test(out.email)) delete out.email;
   if (out.email) out.email = out.email.toLowerCase();
   const quantity = parseQuantity(answer?.quantity);

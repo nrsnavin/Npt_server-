@@ -10,6 +10,8 @@ import {
   remove,
   workload,
   resendInvitation,
+  requestDeleteCode,
+  destroy,
 } from '../controllers/user.controller.js';
 import { adminOnly, authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -34,5 +36,8 @@ router.post('/:id/access/reset', requireModule('users', 'write'), resetAccessToD
 router.post('/:id/invitation', requireModule('users', 'write'), resendInvitation);
 router.get('/:id/workload', requireModule('users'), workload);
 router.delete('/:id', requireModule('users', 'write'), adminOnly, remove);
+/* Deleting for good: the code for an administrator's account, then the delete itself. */
+router.post('/:id/delete/code', requireModule('users', 'write'), adminOnly, requestDeleteCode);
+router.post('/:id/delete', requireModule('users', 'write'), adminOnly, destroy);
 
 export default router;

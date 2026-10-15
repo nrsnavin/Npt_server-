@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 
 export const OTP_CHANNELS = ['email', 'sms'];
-export const OTP_PURPOSES = ['login', 'verify_email', 'verify_phone'];
+export const OTP_PURPOSES = ['login', 'verify_email', 'verify_phone', 'delete_admin'];
 
 /**
  * A one-time passcode issued to an email address or phone number.
