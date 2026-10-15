@@ -30,8 +30,18 @@ Web: `src/auth/accounts.js`, `src/auth/pinCrypto.js`, `src/auth/idle.js`, `src/c
   per seal) encrypts it (AES-GCM, a nonce per seal). The PIN never leaves the browser and is
   never sent to the server.
 - Locking drops the plain token from storage and keeps the seal: while locked, the browser holds
-  nothing a request could use. Unlocking opens the seal back into the token and the app carries
-  on where it was.
+  nothing at rest a request could use. The tab itself keeps the token in memory, so the page
+  stays mounted (inert and unseen) under the lock screen: a half-filled form is still there after
+  the PIN, an upload under way finishes. A reload asks for the PIN.
+- A PIN-protected account is locked whenever it is not the one in use: switching away, signing
+  out of another account, or adding one drops its plain token, so nobody handed the tab can
+  switch back into it without the PIN.
+- Tabs follow each other: a lock or unlock in one tab is the whole browser's; a switch in
+  another tab reloads this one into the new person.
+- Ways to lock: the account menu's **Lock now**, **Ctrl+L** (⌘L) or **Ctrl+Shift+L** (for the
+  browsers that keep Ctrl+L for the address bar), and "Lock the app" in the command palette.
+- The login route while locked shows the lock screen, not a fresh sign-in; the login page lists
+  the other accounts on the device under **Continue as**.
 - The lock fires after the policy's minutes with no pointer, key, touch, scroll or non-GET
   request, shared across tabs through `npt.lastActivity`; a tab reopened after longer locks at
   once. **Lock now** is on the account menu.
