@@ -16,7 +16,7 @@ export const dashboardTasks = asyncHandler(async (req, res) => {
 export const dashboardParties = asyncHandler(async (req, res) => {
   res.json({
     success: true,
-    data: await partiesFor(req.user, { filter: req.query.filter, page: req.query.page, limit: req.query.limit, search: req.query.search }),
+    data: await partiesFor(req.user, { filter: req.query.filter, page: req.query.page, limit: req.query.limit, search: req.query.search, owner: req.query.owner }),
   });
 });
 
