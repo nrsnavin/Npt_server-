@@ -257,6 +257,42 @@ test('a quotation goes as the PDF itself, with the edited words as its caption',
   assert.match(logged.providerId, /^wamid\.TEST/);
 });
 
+test('the sent link opens the PDF — under /api, and at the root for a server whose PUBLIC_API_URL stopped at the host', async () => {
+  const made = await quote();
+  assert.equal((await sendQuote(made._id, { body: 'Dear Senthil,\nOur quote is attached.' })).status, 200);
+  const [message] = sentTo('919840011223');
+  const path = new URL(message.document.link).pathname;
+  assert.match(path, /^\/api\/public\/quotations\//);
+
+  const underApi = await fetch(`${baseUrl}${path}`);
+  assert.equal(underApi.status, 200, await underApi.text());
+  assert.equal(underApi.headers.get('content-type'), 'application/pdf');
+
+  /* The link a host-only PUBLIC_API_URL once produced: the same path without /api. */
+  const atRoot = await fetch(`${baseUrl}${path.replace(/^\/api/, '')}`);
+  assert.equal(atRoot.status, 200, 'already-sent links keep working');
+  assert.equal(atRoot.headers.get('content-type'), 'application/pdf');
+
+  const bent = await fetch(`${baseUrl}${path.replace(/\/([0-9a-f]{64})\//, (_, hex) => `/${hex.replace(/^./, (c) => (c === '0' ? '1' : '0'))}/`)}`);
+  assert.equal(bent.status, 404, 'a bent signature is refused at both addresses');
+  assert.match((await bent.json()).message, /expired/);
+});
+
+test('PUBLIC_API_URL set without /api still makes a link that opens', async () => {
+  const was = process.env.PUBLIC_API_URL;
+  process.env.PUBLIC_API_URL = 'https://api.npthangers.test/';
+  try {
+    const made = await quote();
+    assert.equal((await sendQuote(made._id, { body: 'Our quote is attached.' })).status, 200);
+    const [message] = sentTo('919840011223');
+    assert.match(message.document.link, new RegExp(`^https://api\\.npthangers\\.test/api/public/quotations/${made._id}/`));
+    const opened = await fetch(`${baseUrl}${new URL(message.document.link).pathname}`);
+    assert.equal(opened.status, 200);
+  } finally {
+    process.env.PUBLIC_API_URL = was;
+  }
+});
+
 test('words too long for a caption go first, then the PDF', async () => {
   const made = await quote();
   const long = `Dear Senthil,\n${'Our rates hold for thirty days. '.repeat(40)}`;

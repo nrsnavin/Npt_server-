@@ -514,6 +514,14 @@ test('the four tiers ring once each, and reach further as it gets later', async 
   assert.equal(third.escalationLevel, 3);
   const escalated = await Todo.find({ originKey: `payment-tier-3:${receivable._id}` });
   assert.ok(escalated.length >= 2, 'a week overdue should reach more than one person');
+
+  /* Overdue money is a case for Payment Collection, not only a notice: one open task per order. */
+  const cases = await Todo.find({ originKey: `collect-overdue:${receivable.order._id || receivable.order}`, completed: false });
+  assert.equal(cases.length, 1, 'one collection case on the order');
+  assert.equal(cases[0].kind, 'team_payment_followup');
+  assert.equal(cases[0].department, 'payment_collection');
+  await escalate({ now: new Date(receivable.dueBy.getTime() + 9 * 86400000) });
+  assert.equal(await Todo.countDocuments({ originKey: `collect-overdue:${receivable.order._id || receivable.order}` }), 1, 'the next sweep does not open a second case');
 });
 
 test('a settled receivable escalates to nobody', async () => {
@@ -540,7 +548,8 @@ test('the day screen groups by the call to make, not by how much is owed', async
     assert.ok(Array.isArray(json.data[group]), `${group} is missing`);
   }
   /* And a receivable appears in exactly one group — two would read as two things to do. */
-  const ids = Object.values(json.data).flat().map((row) => row._id);
+  const ids = ['broken', 'overdue', 'soon', 'promised'].flatMap((group) => json.data[group]).map((row) => String(row._id));
+  assert.ok(ids.length >= 1, 'something is owed');
   assert.equal(new Set(ids).size, ids.length);
 
   for (const key of ['open', 'outstanding', 'overdue', 'overdueValue', 'broken', 'awaitingAdvance']) {

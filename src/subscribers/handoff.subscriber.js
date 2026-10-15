@@ -4,7 +4,8 @@ import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
 import { env } from '../config/env.js';
 import { EVENTS, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
-import { describeHandoff, finishQuotationTasks, finishSampleTasks, holderOf, moveEnquiry } from '../services/handoff.service.js';
+import { describeHandoff, finishQuotationTasks, finishSampleTasks, holderOf, markEnquiry, moveEnquiry } from '../services/handoff.service.js';
+import { CLOSED_STAGE, STAGE_KEYS } from '../config/enquiryStages.js';
 import { sendPush } from '../services/push.service.js';
 import { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } from '../providers/whatsapp.js';
 
@@ -74,6 +75,8 @@ function dueWords(due) {
  * "won" must not pull a job back out of production.
  */
 const SALES_STAGES = ['enquiry', 'sample', 'pricing_quote', 'po_so'];
+/* Every stage an order can be under way at — from PO & SO on, the side stages included. */
+const ORDER_STAGES = STAGE_KEYS.filter((key) => key !== CLOSED_STAGE && !['enquiry', 'sample', 'pricing_quote'].includes(key));
 
 const STATUS_MOVES = {
   sample_required: 'sample_request',
@@ -222,15 +225,21 @@ export function registerHandoffSubscribers() {
     })
   );
 
-  /* The sales order released to the plant: Sales / SO is done, Production has it. */
+  /*
+   * The sales order released to the plant: the order is booked, so the enquiry is Won on that
+   * evidence; Sales / SO is done and Production has it — from whichever sales stage the enquiry
+   * was at, since an order raised straight off an accepted quotation never passed PO & SO.
+   */
   subscribe(
     EVENTS.ORDER_RELEASED,
     safely('production has the enquiry', async ({ orderId, by }) => {
       const { default: SalesOrder } = await import('../models/SalesOrder.js');
       const order = await SalesOrder.findById(orderId).select('number enquiry customerPo');
       if (!order?.enquiry) return;
+      const enquiry = await Enquiry.findById(order.enquiry);
+      if (enquiry) await markEnquiry(enquiry, { won: true, user: by?._id ? by : undefined, note: `${order.number} released to production` });
       await moveWhenAt(order.enquiry, {
-        at: ['po_so'], kind: 'ask_edd', by, finishes: ['po_so'],
+        at: SALES_STAGES, kind: 'ask_edd', by, finishes: ['po_so'],
         fields: { poNumber: order.customerPo?.number, soNumber: order.number },
         note: `${order.number} released to production`,
       });
@@ -247,8 +256,10 @@ export function registerHandoffSubscribers() {
       const order = dispatch && await SalesOrder.findById(dispatch.order).select('enquiry');
       if (!order?.enquiry) return;
       const sent = (dispatch.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0);
+      /* From wherever the order was — a lorry leaving while the enquiry still reads Production
+         is still a lorry leaving: Reception gets the LR copy, Dispatch's request (if any) is done. */
       await moveWhenAt(order.enquiry, {
-        at: ['invoice_dispatch'], kind: 'lr_copy', by, finishes: ['invoice_dispatch'],
+        at: ORDER_STAGES, kind: 'lr_copy', by, finishes: ['invoice_dispatch'],
         fields: { invoiceNumber: dispatch.invoice?.number, quantitySent: sent ? String(sent) : undefined, transporter: dispatch.transporter },
         note: `${dispatch.number} has left the plant`,
       });

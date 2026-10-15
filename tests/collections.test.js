@@ -309,11 +309,13 @@ test('PRT works the case in the field; what it collects waits for Accounts befor
   row = await Receivable.findById(receivable._id);
   assert.equal(row.confirmedReceived, 20000);
 
-  /* PRT's last word, and the day screen's "With PRT". */
+  /* The confirmed money ends the case by itself — PRT is not left pressing Closed on a paid order. */
   const day = (await api('/api/payments/day', { as: 'admin' })).json;
   assert.ok(day.data.recovery.every((card) => card.kind === 'prt_recovery'));
-  assert.equal((await move('senthil', prt._id, 'closed', 'Collected in full')).status, 200);
-  assert.equal((await Todo.findById(prt._id)).completed, true);
+  const ended = await Todo.findById(prt._id);
+  assert.equal(ended.completed, true, 'paid in full, confirmed, closes the PRT case');
+  assert.match(ended.outcome?.note || '', /Paid in full/);
+  assert.equal((await move('senthil', prt._id, 'closed', 'Collected in full')).status, 409, 'nothing left to close');
 });
 
 test('a dispute sends A/C Clarify to Accounts and flags the enquiry; a case raised on the buyer alone escalates too', async () => {

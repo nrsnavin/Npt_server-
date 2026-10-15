@@ -301,3 +301,73 @@ test('a department without the enquiry module opens the enquiries it works, and 
   const change = await api(`/api/enquiries/${worked}`, { method: 'PATCH', as: 'siva', body: { remarks: 'x' } });
   assert.equal(change.status, 403, 'reading is not editing');
 });
+
+/* ------------------------------ 6. The records move the enquiry from wherever it is ------------------------------ */
+
+test('goods leaving while the enquiry still reads Production raise the LR copy all the same', async () => {
+  const enquiry = await inProduction();
+  const order = await orderOn(enquiry, { quantity: 500 });
+  await publish(EVENTS.DISPATCH_LEFT, { dispatchId: (await consignment(order, 500))._id });
+  assert.ok(await until(async () => Boolean(await openTask(enquiry, 'lr_copy'))), 'Reception has the LR copy task');
+  assert.equal((await Enquiry.findById(enquiry)).stage, 'lr_copy');
+});
+
+test('an order released off an accepted quotation marks the enquiry Won and gives Production its task', async () => {
+  const enquiry = await freshEnquiry();
+  assert.equal((await send(enquiry, 'create_quotation')).status, 201);
+  assert.equal((await Enquiry.findById(enquiry)).stage, 'pricing_quote');
+  const order = await orderOn(enquiry, { status: 'approved_for_production' });
+  await publish(EVENTS.ORDER_RELEASED, { orderId: order._id });
+  assert.ok(await until(async () => Boolean(await openTask(enquiry, 'ask_edd'))), 'Production has its task');
+  const after = await Enquiry.findById(enquiry);
+  assert.equal(after.status, 'won', 'the order booked is the evidence');
+  assert.equal(after.stage, 'production_edd');
+});
+
+test('the buyer accepting the quotation reads PO awaiting, and never pulls an enquiry back', async () => {
+  /* Acceptance moves the sales status to PO expected [subscribers/quotation.subscriber.js], which
+     marketing reads as PO awaiting — one past Price approved, which is the buyer still deciding. */
+  const enquiry = await freshEnquiry();
+  await publish(EVENTS.QUOTATION_ACCEPTED, { quotation: { enquiry, number: 'NP/26-27/9' } });
+  assert.ok(await until(async () => (await Enquiry.findById(enquiry)).marketingStatus === 'po_awaiting'));
+  const later = await inProduction();
+  await publish(EVENTS.QUOTATION_ACCEPTED, { quotation: { enquiry: later } });
+  await settle(); await settle();
+  assert.equal((await Enquiry.findById(later)).marketingStatus, 'production', 'already past it');
+});
+
+test('Dispatched on the task with no consignment behind it asks Dispatch to record one', async () => {
+  const enquiry = await inProduction();
+  const order = await orderOn(enquiry, { quantity: 1000 });
+  const task = (await send(enquiry, 'invoice_dispatch')).json.data.task;
+  const moved = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'anita', body: { status: 'dispatched', note: 'Gone on VRL this evening' } });
+  assert.equal(moved.status, 200, moved.json.message);
+  const reminder = await Todo.findOne({ originKey: `record-consignment:${order._id}` });
+  assert.ok(reminder, 'Dispatch is asked to record the consignment');
+  assert.equal(String(reminder.user), id.anita);
+  assert.ok(await openTask(enquiry, 'lr_copy'), 'and the LR copy is raised as before');
+});
+
+test('closing the enquiry leaves a collection case open while money is owed; paid in full settles it', async () => {
+  const enquiry = await inProduction();
+  const order = await orderOn(enquiry, { quantity: 1000 });
+  const owed = await Receivable.create({
+    number: `RCV-T-${Math.floor(Math.random() * 1e6)}`, customer: customerId, order: order._id, assignedTo: id.nandhini,
+    invoice: { number: 'INV-T-9', value: 7500, date: new Date() }, dueBy: new Date(Date.now() - 5 * 86400000),
+  });
+  const chase = (await send(enquiry, 'team_payment_followup')).json.data.task;
+  const closed = await send(enquiry, 'task_closed', 'admin', { note: 'Delivered in full — closing' });
+  assert.ok(closed.status < 300, closed.json.message);
+  assert.equal((await Enquiry.findById(enquiry)).stage, 'closed');
+  const still = await Todo.findById(chase._id);
+  assert.equal(still.completed, false, 'the chase is not over because the enquiry is');
+  assert.match(still.updates.at(-1).note, /stays open until the money is in/);
+
+  owed.receipts.push({ amount: 7500, receivedAt: new Date(), mode: 'neft', reference: 'NEFT-T-1', recordedBy: id.kiran, confirmed: { by: id.kiran, at: new Date() } });
+  await owed.save();
+  const { afterPayment } = await import('../src/services/paymentGates.service.js');
+  await afterPayment(order._id);
+  const settled = await Todo.findById(chase._id);
+  assert.equal(settled.completed, true, 'paid in full ends the chase');
+  assert.match(settled.outcome.note, /Paid in full/);
+});

@@ -3,7 +3,7 @@ import Todo from '../models/Todo.js';
 import Attachment from '../models/Attachment.js';
 import { bufferOf, put, remove, safeFilename } from '../services/storage.service.js';
 import { sendResultToCustomer } from '../services/taskResultMessage.service.js';
-import { signatureValid } from '../utils/signedLink.js';
+import { publicApiBase, signatureValid } from '../utils/signedLink.js';
 import ApiError from '../utils/ApiError.js';
 import { inDepartment, isManagement } from '../utils/departments.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -204,7 +204,10 @@ export const handoffStatus = asyncHandler(transactional(async (req, res) => {
 /** A task's uploaded work behind a signed link — what WhatsApp fetches. No session: the signature is the permission. */
 export const publicTaskFile = asyncHandler(async (req, res) => {
   const { id, expires, signature } = req.params;
-  if (!signatureValid('task-file', id, expires, signature)) throw ApiError.notFound('This link has expired.');
+  if (!signatureValid('task-file', id, expires, signature)) {
+    console.warn(`[public-link] task file ${id} refused: ${Number(expires) > Date.now() ? 'signature does not match — the link was made under another JWT_SECRET' : 'link past its date'}`);
+    throw ApiError.notFound('This link has expired.');
+  }
   const attachment = await Attachment.findById(id).catch(() => null);
   if (!attachment?.task) throw ApiError.notFound('This link has expired.');
   const buffer = await bufferOf(attachment.key);
@@ -323,7 +326,7 @@ export const handoffResult = asyncHandler(async (req, res) => {
     /* The LR copy goes on to the buyer, by email and WhatsApp, and the task says it went. */
     let sent = null;
     if (form.sendResult) {
-      const baseUrl = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
+      const baseUrl = publicApiBase(req);
       sent = await sendResultToCustomer({ task: done, attachment, user: req.user, baseUrl });
       done = await markResultSent(done, req.user, sent);
     }

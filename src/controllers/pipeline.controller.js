@@ -40,7 +40,7 @@ import { transactional } from '../utils/transaction.js';
 import { CLOSED_STAGE, SIDE_STAGES, STAGE_KEYS } from '../config/enquiryStages.js';
 import { HANDOFFS } from '../config/handoffs.js';
 import { enquiryProgress, ensureHolder, mayHandOff } from '../services/handoff.service.js';
-import { delegateEnquiry, delegationTargets, mayDelegate } from '../services/delegation.service.js';
+import { delegateEnquiry, delegationTargets, mayDelegate, moveWorkWith } from '../services/delegation.service.js';
 import { canRead } from '../services/access.service.js';
 import { ENQUIRY_ACTIVITY_KEYS, ENQUIRY_ACTIVITY_TYPES } from '../config/enquiryActivities.js';
 
@@ -1223,6 +1223,12 @@ export const updateEnquiry = asyncHandler(transactional(async (req, res) => {
     });
   }
 
+  /* A change of owner on the form is a hand-over like any other: recorded, and the work goes with it. */
+  const previousOwner = String(enquiry.assignedTo || '');
+  const newOwner = patch.assignedTo && String(patch.assignedTo) !== previousOwner ? String(patch.assignedTo) : null;
+  if (newOwner) {
+    enquiry.handovers.push({ from: previousOwner || undefined, to: newOwner, by: req.user._id, note: 'Owner changed on the enquiry' });
+  }
   Object.assign(enquiry, patch);
   /*
    * No next-action guard on a correction either, and that is not laxity — it is the other half
@@ -1231,6 +1237,7 @@ export const updateEnquiry = asyncHandler(transactional(async (req, res) => {
    * create door had just allowed to be empty.
    */
   await enquiry.save();
+  if (newOwner) await moveWorkWith({ enquiry, from: previousOwner, to: newOwner });
   await recordChange({ model: 'Enquiry', doc: enquiry, before, by: req.user });
 
   res.json({ success: true, data: enquiry });

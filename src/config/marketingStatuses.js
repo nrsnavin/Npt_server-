@@ -79,6 +79,7 @@ export const FROM_TASK = {
   ask_assembling_edd: 'assembling',
   ask_printing: 'assembling',
   quality_check: 'qc',
+  quality_issue: 'qc',
   invoice_dispatch: 'dispatch',
   lr_copy: 'lr_copy',
 };

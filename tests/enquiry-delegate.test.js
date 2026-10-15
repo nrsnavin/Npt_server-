@@ -217,3 +217,14 @@ test('a salesperson who also quotes opens another’s enquiry only for the quota
     await User.updateOne({ _id: new mongoose.Types.ObjectId(ids.priya) }, { $unset: { extraDepartments: 1 } });
   }
 });
+
+test('a change of owner on the enquiry form moves its work the way a hand-over does', async () => {
+  const enquiry = await raise();
+  const edited = await api(`/api/enquiries/${enquiry._id}`, { method: 'PATCH', token: admin, body: { assignedTo: ids.priya, expectedUpdatedAt: enquiry.updatedAt } });
+  assert.equal(edited.status, 200, edited.json.message);
+  const holder = await mongoose.connection.collection('todos').findOne({ enquiry: new mongoose.Types.ObjectId(enquiry._id), holds: true, completed: false });
+  assert.equal(String(holder.user), ids.priya, 'the holding task is on the new owner’s list');
+  assert.equal(edited.json.data.handovers.length, 1, 'recorded as a hand-over');
+  assert.equal((await api(`/api/enquiries/${enquiry._id}`, { token: priya })).status, 200);
+  assert.equal((await api(`/api/enquiries/${enquiry._id}`, { token: nandhini })).status, 404);
+});

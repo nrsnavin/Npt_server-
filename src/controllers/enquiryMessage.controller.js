@@ -16,6 +16,7 @@ import { marketingStatusLabel } from '../config/marketingStatuses.js';
 import { documentFile, documentFromLink, documentsFor, documentUrl } from '../services/enquiryDocuments.service.js';
 import { safeFilename } from '../services/storage.service.js';
 import { customerEmail } from '../services/emailSignature.js';
+import { publicApiBase } from '../utils/signedLink.js';
 
 /**
  * Writing to the buyer from the enquiry, on the company's WhatsApp number and the company's
@@ -96,7 +97,7 @@ export const sendEnquiryMessage = asyncHandler(async (req, res) => {
     sentBy: req.user._id,
     ...(papers.length ? { attachments: papers.map(({ type, label, filename }) => ({ type, label, filename })) } : {}),
   };
-  const baseUrl = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
+  const baseUrl = publicApiBase(req);
 
   let delivery;
   try {

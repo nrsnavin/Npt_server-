@@ -5,6 +5,8 @@ import Customer from '../models/Customer.js';
 import User from '../models/User.js';
 import { nextNumber } from './numbering.service.js';
 import { raiseTask } from './task.service.js';
+import Todo from '../models/Todo.js';
+import { COLLECTION_KINDS } from './collections.service.js';
 
 /**
  * Raising what is owed, and chasing it [§20, §25].
@@ -153,6 +155,40 @@ export async function orderPosition(orderId) {
   };
 }
 
+/**
+ * The Team Payment Follow-up case on the order, once there is money due and nobody has one open:
+ * on the Payment Collection desk for anyone there to take, with the buyer's contact filled in —
+ * the same case a marketing person raises by hand [config/departmentTaskForms `paymentFollowUp`].
+ * A case already open on the order (theirs, PRT's, or marketing's own) is left to run.
+ */
+async function openCollectionCase(receivable, rung, now) {
+  const order = receivable.order;
+  const open = await Todo.exists({ order: order._id, kind: { $in: COLLECTION_KINDS }, completed: false });
+  if (open) return null;
+  const originKey = `collect-overdue:${order._id}`;
+  if (await Todo.exists({ originKey, completed: false })) return null;
+  const customer = receivable.customer;
+  const amount = `₹${Math.round(receivable.balance).toLocaleString('en-IN')}`;
+  const contact = customer?.whatsapp || customer?.mobile || undefined;
+  return Todo.create({
+    kind: 'team_payment_followup',
+    department: 'payment_collection',
+    title: `Team Payment Follow-up — ${customer?.name || 'the buyer'} · ${receivable.invoice?.number || receivable.number}`,
+    notes: `${rung.label}: ${amount} on ${receivable.invoice?.number || receivable.number}${order.number ? ` (${order.number})` : ''}. Raised by the app when the invoice fell due.`,
+    brief: { ...(contact ? { contact } : {}), status: 'Other', commitment: 'This Week' },
+    status: 'assigned',
+    statusHistory: [{ status: 'assigned', note: 'Opened when the invoice fell due', at: now }],
+    enquiry: order.enquiry || undefined,
+    customer: customer?._id || receivable.customer || undefined,
+    order: order._id,
+    dueDate: now,
+    priority: rung.level >= 3 ? 'high' : 'normal',
+    link: `/payments/${receivable._id}`,
+    originKey,
+    system: true,
+  });
+}
+
 /** Which tier a receivable has reached, or 0. Walks the ladder so the rungs cannot drift. */
 export function tierFor(receivable, now = new Date()) {
   if (receivable.balance <= 0 || receivable.judgement) return 0;
@@ -184,8 +220,8 @@ export async function runPaymentEscalations({ now = new Date() } = {}) {
     judgement: { $exists: false },
     escalationLevel: { $lt: 4 },
   })
-    .populate('customer', 'code name')
-    .populate('order', 'number')
+    .populate('customer', 'code name whatsapp mobile')
+    .populate('order', 'number enquiry')
     .limit(1000);
 
   await applyPaymentPositions(due);
@@ -246,6 +282,9 @@ export async function runPaymentEscalations({ now = new Date() } = {}) {
         }).catch(() => null)
       )
     );
+
+    /* From the due date, the chase is Payment Collection's case, not only a reminder on a list. */
+    if (rung.tellsAccounts && receivable.order?._id) await openCollectionCase(receivable, rung, now);
 
     receivable.escalationLevel = tier;
     await receivable.save();

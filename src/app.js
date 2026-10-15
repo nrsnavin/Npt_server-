@@ -14,6 +14,7 @@ import { SharedRateStore } from './services/cache.service.js';
 import routes from './routes/index.js';
 import healthRoutes from './routes/health.routes.js';
 import { notFoundHandler, errorHandler } from './middleware/error.js';
+import publicRoutes from './routes/public.routes.js';
 import ApiError from './utils/ApiError.js';
 import { redactUrl } from './utils/redact.js';
 import { registerSamplingSubscribers } from './subscribers/sampling.subscriber.js';
@@ -186,6 +187,13 @@ app.use('/api', (req, _res, next) => {
 });
 
 app.use('/api', routes);
+/*
+ * The signed document links once more at the root. A server whose PUBLIC_API_URL stopped at the
+ * host (https://api.example.com, no /api) sent buyers links to /public/… — which answered
+ * "Route not found", so the quotation never opened and WhatsApp could not attach it. New links
+ * carry /api whatever the setting says [utils/signedLink.js]; this keeps the sent ones working.
+ */
+app.use('/public', publicRoutes);
 
 // Cross-module automation: completing a stage creates the next department's task [§C.1].
 // Registered once here rather than inside a module, so the modules stay unaware of each other.

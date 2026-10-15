@@ -104,6 +104,30 @@ export async function askToRecordReceipt(task, user, step) {
   }).catch(() => null);
 }
 
+/**
+ * The money is in: every collection or PRT case on the order that has nothing left to chase is
+ * finished, by the app, saying so — the receipt stops the chase, as the design says, without a
+ * collector having to find the task and press Paid [docs/PAYMENT-COLLECTION-WORKFLOW.md §1].
+ */
+export async function settleCollectionTasks(orderId, { by } = {}) {
+  if (!orderId) return [];
+  const { completeHandoff } = await import('./handoff.service.js');
+  const open = await Todo.find({ order: idOf(orderId), kind: { $in: COLLECTION_KINDS }, completed: false });
+  if (!open.length) return [];
+  /* Paid means confirmed: a receipt PRT wrote from the field is money Accounts has not seen yet,
+     and the case — and the dispatch gate's own ask — stay open until it has. Every receivable on
+     the order, not only the owing ones: a fully receipted, unconfirmed invoice is not owing by
+     the ledger's filter, and it is exactly the one this must wait for. */
+  const rows = await Receivable.find({ order: idOf(orderId) });
+  await applyPaymentPositions(rows);
+  if (rows.some((row) => row.balance > 0 || row.awaitingConfirmation > 0)) return [];
+  const settled = [];
+  for (const task of open) {
+    settled.push(await completeHandoff(task, by || {}, { note: 'Paid in full — nothing left to chase', system: true, quiet: true }));
+  }
+  return settled;
+}
+
 /* ------------------------------ The sweep ------------------------------ */
 
 /** The app, as the actor on a notice it writes itself. */
