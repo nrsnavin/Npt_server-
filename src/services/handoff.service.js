@@ -603,8 +603,9 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
   const picked = await pickedMember(kind, brief);
   const asked = keptBrief(kind, picked.brief, { strict: true });
   assertNote(kind, asked, note);
+  /* The instruction is optional when the form's answers — the model, the material, the quantity — say what the team should do. */
   const text = String(note || '').trim();
-  if (text.length < 3) fail('Say what the team should do');
+  if (text.length < 3 && !Object.keys(asked).length) fail('Say what the team should do, or fill in what it is about');
   const form = handoff.form || {};
   const due = requiredDue(requiredDate) || (form.dueFrom && requiredDue(asked[form.dueFrom], 'That date')) || endOfDayIST(new Date());
 
@@ -627,7 +628,7 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
     fromDepartment: user.department || undefined,
     createdBy: user._id,
     title: `${handoff.label} — ${buyer ? buyer.name : 'team task'}`,
-    notes: text,
+    notes: text || undefined,
     ...(Object.keys(asked).length ? { brief: asked } : {}),
     ...(form.statuses?.length ? { status: form.statuses[0].key, statusHistory: [{ status: form.statuses[0].key, by: user._id, at: new Date() }] } : {}),
     dueDate: due,

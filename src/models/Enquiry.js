@@ -478,6 +478,15 @@ enquirySchema.pre('validate', function alignItems() {
 });
 
 /*
+ * A prospect reached on one number is reached on WhatsApp on the same number unless somebody
+ * says otherwise: a chat read off a photo names the number it came from and rarely a second one,
+ * and a draft with a blank WhatsApp box is a draft nobody can message from.
+ */
+enquirySchema.pre('validate', function whatsappFollowsMobile() {
+  if (this.prospect?.mobile && !this.prospect.whatsapp) this.prospect.whatsapp = this.prospect.mobile;
+});
+
+/*
  * A new enquiry starts at the stage its status says (an IndiaMART lead is at Enquiry). After
  * that the stage moves only with the department holding it [services/handoff.service.js] —
  * a status change that hands work on (sample required, pricing required, won) moves it through

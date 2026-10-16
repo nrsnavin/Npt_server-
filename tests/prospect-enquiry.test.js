@@ -183,3 +183,10 @@ test('the customer form keeps delivery and accounts contacts', async () => {
   assert.equal(edited.status, 200, edited.json.message);
   assert.equal(edited.json.data.accountsContact.sameAsOrder, true);
 });
+
+test('a prospect reached on one number is on WhatsApp on the same number unless another is given', async () => {
+  const onlyMobile = await prospectEnquiry('nandhini', { name: 'One Number Knits', mobile: '9840070031' });
+  assert.equal(onlyMobile.prospect.whatsapp, '+919840070031', 'the draft can be messaged from');
+  const both = await prospectEnquiry('nandhini', { name: 'Two Numbers Knits', mobile: '9840070032', whatsapp: '9840070033' });
+  assert.equal(both.prospect.whatsapp, '+919840070033', 'a WhatsApp number of its own stands');
+});
