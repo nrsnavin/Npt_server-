@@ -1012,7 +1012,8 @@ export const enquiryBoard = asyncHandler(async (req, res) => {
 
 export const getEnquiry = asyncHandler(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id)
-    .populate('customer', 'code name mobile whatsapp email assignedTo contacts deliveryContact accountsContact')
+    /* The buyer's own marketing person by name: the draft screen offers them as the owner. */
+    .populate({ path: 'customer', select: 'code name mobile whatsapp email assignedTo contacts deliveryContact accountsContact', populate: { path: 'assignedTo', select: 'name' } })
     .populate('assignedTo', 'name email')
     .populate(mouldWithPhoto('mould', 'mouldCode name category sizeMm material hookType'))
     /* The registers the requirement names [§28], so a screen can say what was asked for
@@ -1432,11 +1433,14 @@ export const checkEnquiry = asyncHandler(transactional(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);
   if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
   expectVersion(enquiry, req.body);
-  const { company, contactPerson, whatsapp, modelNumber, quantity, materialColour, remarks } = withoutVersion(req.body);
+  const { company, contactPerson, whatsapp, modelNumber, quantity, materialColour, remarks, assignedTo } = withoutVersion(req.body);
   const before = snapshot(enquiry);
+  const firstCheck = !enquiry.checkedAt;
+  let buyer = null;
 
   if (enquiry.customer) {
     const customer = await Customer.findById(enquiry.customer);
+    buyer = customer;
     if (customer) {
       const buyerBefore = snapshot(customer);
       const touches = company !== undefined || contactPerson !== undefined || whatsapp !== undefined;
@@ -1492,13 +1496,30 @@ export const checkEnquiry = asyncHandler(transactional(async (req, res) => {
   }
   if (remarks !== undefined) enquiry.remarks = remarks || undefined;
 
+  /*
+   * Whose the enquiry is, decided on the draft screen. A name chosen on it is handed to; with
+   * none chosen, a draft on an existing customer goes to that customer's marketing person at
+   * its first check — the buyer is theirs, and an enquiry read off a photo landed on whoever
+   * captured it. Before the check is recorded, because the owner of a draft may hand it on
+   * only while it is still a draft [delegation `mayDelegate`].
+   */
+  const ownerId = (value) => String(value?._id || value || '');
+  const owner = ownerId(enquiry.assignedTo);
+  let handTo = assignedTo && ownerId(assignedTo) !== owner ? assignedTo : null;
+  let why = handTo ? 'Assigned while checking the enquiry' : null;
+  if (!handTo && firstCheck && buyer?.assignedTo && ownerId(buyer.assignedTo) !== owner) {
+    handTo = buyer.assignedTo;
+    why = `${buyer.name} is their buyer`;
+  }
+  if (handTo) await delegateEnquiry({ enquiry, to: handTo, note: why, user: req.user });
+
   enquiry.checkedAt = new Date();
   enquiry.checkedBy = req.user._id;
   await enquiry.save();
   await recordChange({ model: 'Enquiry', doc: enquiry, before, by: req.user });
 
   const saved = await Enquiry.findById(enquiry._id)
-    .populate('customer', 'code name mobile whatsapp email assignedTo contacts')
+    .populate({ path: 'customer', select: 'code name mobile whatsapp email assignedTo contacts', populate: { path: 'assignedTo', select: 'name' } })
     .populate('assignedTo', 'name email')
     .populate('checkedBy', 'name');
   res.json({ success: true, data: saved });
@@ -1754,7 +1775,8 @@ export const delegateEnquiryTo = asyncHandler(transactional(async (req, res) => 
 
 /** Who this enquiry may be handed to — empty when the reader may not hand it on. */
 export const listDelegationTargets = asyncHandler(async (req, res) => {
-  const enquiry = await Enquiry.findById(req.params.id).select('assignedTo');
+  /* What `mayDelegate` reads to know a draft from a worked enquiry, besides whose it is. */
+  const enquiry = await Enquiry.findById(req.params.id).select('assignedTo status marketingStatus stage checkedAt');
   if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
   const may = mayDelegate(req.user, enquiry);
   res.json({ success: true, data: may ? await delegationTargets(enquiry, req.user) : [], mayDelegate: may });

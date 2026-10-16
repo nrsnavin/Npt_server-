@@ -388,6 +388,8 @@ export const enquiryCheckSchema = z.object({
   quantity: z.union([z.null(), z.coerce.number().min(0).max(100000000)]).optional(),
   materialColour: z.string().trim().max(120).optional(),
   remarks: z.string().trim().max(2000).optional(),
+  /** Whose the enquiry is — a marketing person or an Admin [delegation.service]. */
+  assignedTo: objectId.optional(),
   expectedUpdatedAt: z.coerce.date().optional(),
 });
 

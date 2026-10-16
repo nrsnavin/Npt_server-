@@ -72,7 +72,7 @@ test.before(async () => {
   admin = await signIn('admin@np.com', 'Admin@12345');
   nandhini = await person('Nandhini S', 'nandhini@np.com', 'marketing');
   priya = await person('Priya K', 'priya@np.com', 'marketing');
-  ids = { nandhini: await me(nandhini), priya: await me(priya) };
+  ids = { admin: await me(admin), nandhini: await me(nandhini), priya: await me(priya) };
 
   const made = await api('/api/customers', {
     method: 'POST',
@@ -187,4 +187,68 @@ test('the picture an enquiry was read from is shown to whoever works it', async 
 
   const stranger = await api(`/api/enquiries/${enquiry._id}/source`, { token: priya });
   assert.equal(stranger.status, 404, 'not the sender’s to read once it is somebody else’s enquiry');
+});
+
+/* ---------------- Whose the draft is, decided on the draft screen ---------------- */
+
+/** A customer of Priya's, and a draft on it captured by Admin — as a photo read at the desk lands. */
+const priyasDraft = async () => {
+  const made = await api('/api/customers', {
+    method: 'POST', token: priya,
+    body: { assignedTo: ids.priya, name: `Priya Buyer ${Date.now()}`, mobile: `98${String(Date.now()).slice(-8)}` },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  const { status, json } = await api('/api/enquiries', {
+    method: 'POST', token: admin,
+    body: { customer: made.json.data._id, requirement: { modelNumber: 'PTR - 322' }, nextAction: 'Call the buyer', nextFollowUpDate: inDays(3) },
+  });
+  assert.equal(status, 201, json.message);
+  /* Raised on the buyer, the form already hands it to Priya; a photo captured at Admin's desk
+     can land on Admin — which is the case the draft screen exists to correct. */
+  const Enquiry = (await import('../src/models/Enquiry.js')).default;
+  await Enquiry.updateOne({ _id: json.data._id }, { $unset: { checkedAt: 1, checkedBy: 1 }, $set: { assignedTo: ids.admin } });
+  return { enquiry: json.data, customer: made.json.data };
+};
+
+test('a draft on an existing customer goes to the customer’s marketing person when it is checked', async () => {
+  const { enquiry, customer } = await priyasDraft();
+  const read = await api(`/api/enquiries/${enquiry._id}`, { token: admin });
+  assert.equal(read.json.data.customer.assignedTo.name, 'Priya K', 'the draft screen is told whose buyer it is');
+  assert.equal(String(read.json.data.assignedTo._id), ids.admin, 'captured by Admin, so Admin’s for now');
+
+  const checked = await api(`/api/enquiries/${enquiry._id}/check`, { method: 'POST', token: admin, body: { company: customer.name } });
+  assert.equal(checked.status, 200, checked.json.message);
+  assert.equal(String(checked.json.data.assignedTo._id), ids.priya, 'the buyer’s marketing person holds it');
+  const full = (await api(`/api/enquiries/${enquiry._id}`, { token: admin })).json.data;
+  assert.equal(full.handovers.length, 1);
+  assert.match(full.handovers[0].note, /is their buyer/);
+  assert.equal(String(full.handovers[0].to._id), ids.priya);
+});
+
+test('a name chosen on the draft screen wins over the buyer’s marketing person', async () => {
+  const { enquiry, customer } = await priyasDraft();
+  const checked = await api(`/api/enquiries/${enquiry._id}/check`, {
+    method: 'POST', token: admin, body: { company: customer.name, assignedTo: ids.nandhini },
+  });
+  assert.equal(checked.status, 200, checked.json.message);
+  assert.equal(String(checked.json.data.assignedTo._id), ids.nandhini);
+  const full = (await api(`/api/enquiries/${enquiry._id}`, { token: admin })).json.data;
+  assert.match(full.handovers.at(-1).note, /Assigned while checking/);
+});
+
+test('the owner of a draft may hand it on while it is a draft; once checked, only Admin may', async () => {
+  const enquiry = await unchecked();
+  const may = await api(`/api/enquiries/${enquiry._id}/delegate`, { token: nandhini });
+  assert.equal(may.json.mayDelegate, true, 'Nandhini captured it and may say whose it is');
+  assert.ok(may.json.data.some((person) => String(person._id) === ids.priya));
+
+  const handed = await api(`/api/enquiries/${enquiry._id}/check`, { method: 'POST', token: nandhini, body: { assignedTo: ids.priya } });
+  assert.equal(handed.status, 200, handed.json.message);
+  assert.equal(String(handed.json.data.assignedTo._id), ids.priya);
+
+  /* Checked and Priya's now: Priya may not pass it on herself. */
+  const later = await api(`/api/enquiries/${enquiry._id}/delegate`, { token: priya });
+  assert.equal(later.json.mayDelegate, false);
+  const refused = await api(`/api/enquiries/${enquiry._id}/delegate`, { method: 'POST', token: priya, body: { to: ids.nandhini } });
+  assert.equal(refused.status, 403);
 });
