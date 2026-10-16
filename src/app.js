@@ -193,7 +193,14 @@ app.use('/api', routes);
  * "Route not found", so the quotation never opened and WhatsApp could not attach it. New links
  * carry /api whatever the setting says [utils/signedLink.js]; this keeps the sent ones working.
  */
-app.use('/public', publicRoutes);
+app.use('/public', rateLimit({
+  windowMs: 60 * 1000,
+  max: requestsPerMinute,
+  keyGenerator: callerKey,
+  store: new SharedRateStore('public'),
+  standardHeaders: true,
+  legacyHeaders: false,
+}), publicRoutes);
 
 // Cross-module automation: completing a stage creates the next department's task [§C.1].
 // Registered once here rather than inside a module, so the modules stay unaware of each other.

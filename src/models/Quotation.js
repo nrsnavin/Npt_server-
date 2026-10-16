@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import belongsToEnquiry from './belongsToEnquiry.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
 import { MINIMUM_TIER, minimumFor, tiersFor } from '../services/pricing.service.js';
+import { startOfIndiaDay } from '../utils/indiaDay.js';
 
 /**
  * A quotation: the costing and the offer in one record [BLUEPRINT §7, §9, §10].
@@ -27,6 +28,8 @@ import { MINIMUM_TIER, minimumFor, tiersFor } from '../services/pricing.service.
  *   revised           a new price after sending, not yet sent
  *   accepted          the buyer said yes — the order is raised from here
  *   rejected          the buyer said no
+ *   withdrawn         the plant pulled it: the enquiry behind it was closed or lost before the
+ *                     buyer answered [services/costingRequest.service.js `withdrawQuotationsFor`]
  *
  * `approved` is kept only so older records still read; nothing writes it now.
  */
@@ -39,10 +42,11 @@ export const QUOTATION_STATUSES = [
   'revised',
   'accepted',
   'rejected',
+  'withdrawn',
 ];
 
-/** The customer has answered; the quote stops being live. */
-export const CLOSED_QUOTATION_STATUSES = ['accepted', 'rejected'];
+/** The quote has stopped being live: the customer answered, or the plant withdrew it. */
+export const CLOSED_QUOTATION_STATUSES = ['accepted', 'rejected', 'withdrawn'];
 
 /** Before it ever went out — where it may still be edited freely. */
 export const UNSENT_STATUSES = ['costing', 'draft', 'approval_pending', 'approved'];
@@ -81,7 +85,12 @@ const statusChangeSchema = new mongoose.Schema(
 const costSchema = new mongoose.Schema(
   {
     gramWeight: { type: Number, min: 0 },
-    /** ₹ per kilo, copied from the register when picked so a later rate change cannot reach back. */
+    /**
+     * ₹ per kilo. Read from the register at every costing until the quotation is sent, so a
+     * draft is always costed at today's rate; from then on it is what the offer was built on,
+     * and a later rate change cannot reach back [quotation.controller `refreshRates`]. The
+     * hook, clip, print and inward-price figures below follow the same rule.
+     */
     rawMaterialRate: { type: Number, min: 0 },
     jobWorkCost: { type: Number, min: 0, default: 0 },
     hookCost: { type: Number, min: 0, default: 0 },
@@ -156,6 +165,12 @@ const lineSchema = new mongoose.Schema(
     status: { type: String, enum: LINE_STATUSES, default: 'requested' },
     /** The price Admin signed off below the minimum. Any lower price needs signing again. */
     approvedPrice: { type: Number, min: 0 },
+    /**
+     * The floor the price was signed against. A re-cost that raises the floor above it lapses
+     * the signature: Admin cleared ₹7 against a ₹7.60 floor, not against whatever the floor
+     * becomes once a hook is added to the cost.
+     */
+    approvedFloor: { type: Number, min: 0 },
     approvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     approvedAt: Date,
     /** The price Admin refused, and why. */
@@ -239,9 +254,9 @@ lineSchema.set('toObject', { virtuals: true });
  * Where a line's price stands, worked out again after its price or its cost moved [§9].
  *
  * A price at or over the minimum is cleared. One under it is cleared only if Admin signed off
- * at that price or lower; otherwise it waits. A price Admin refused stays refused until somebody
- * changes it. A line with no cost has no minimum, so its price is cleared — the repeat job
- * quoted from a known rate.
+ * at that price or lower, against a floor no lower than today's; otherwise it waits. A price
+ * Admin refused stays refused until somebody changes it. A line with no cost has no minimum, so
+ * its price is cleared — the repeat job quoted from a known rate.
  */
 export function settleLine(line) {
   if (line.unitPrice == null) {
@@ -250,9 +265,12 @@ export function settleLine(line) {
   }
   const floor = line.minimumSellingPrice;
   const under = floor != null && line.unitPrice < floor;
+  /* A signature stands for the floor Admin saw. A cost that has risen since is a new question. */
+  const signed = line.approvedPrice != null && line.unitPrice >= line.approvedPrice
+    && (line.approvedFloor == null || floor == null || floor <= line.approvedFloor);
   if (!under) {
     line.status = 'approved';
-  } else if (line.approvedPrice != null && line.unitPrice >= line.approvedPrice) {
+  } else if (signed) {
     line.status = 'approved';
   } else if (line.rejectedPrice != null && line.unitPrice === line.rejectedPrice) {
     line.status = 'rejected';
@@ -353,6 +371,10 @@ const quotationSchema = new mongoose.Schema(
     sentAt: Date,
     respondedAt: Date,
     rejectionNote: String,
+    /** Which revision the buyer accepted — the one that had gone to them when they said yes. */
+    acceptedRevision: Number,
+    /** The answer came after the validity date on the document had passed. */
+    answeredAfterValidity: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
@@ -422,10 +444,16 @@ quotationSchema.virtual('needsApproval').get(function needsApproval() {
   return this.status === 'approval_pending';
 });
 
-/** A quote nobody can accept any more, because the date on it has passed. */
+/**
+ * The date on the document has passed. It cannot be sent as it stands; an answer recorded now
+ * is marked as having come after the validity [`answeredAfterValidity`].
+ */
+export const validityPassed = (quotation, now = new Date()) =>
+  Boolean(quotation.validUntil) && new Date(quotation.validUntil) < startOfIndiaDay(now);
+
 quotationSchema.virtual('isExpired').get(function isExpired() {
-  if (!this.validUntil || CLOSED_QUOTATION_STATUSES.includes(this.status)) return false;
-  return new Date(this.validUntil) < new Date();
+  if (CLOSED_QUOTATION_STATUSES.includes(this.status)) return false;
+  return validityPassed(this);
 });
 
 quotationSchema.set('toJSON', { virtuals: true });

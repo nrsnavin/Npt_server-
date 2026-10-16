@@ -114,6 +114,7 @@ async function main() {
     if (!enquiry) { note('Quotation with no enquiry', quotation.number); continue; }
     const open = (tasksOf.get(id(enquiry)) || []).some((task) => ['create_quotation', 'price_negotiation'].includes(task.kind) && !task.completed);
     if (['sent', 'accepted', 'rejected'].includes(quotation.status) && open) note('Quotation sent but its pricing task is still open', `${quotation.number} (${quotation.status})`);
+    if (!['accepted', 'rejected', 'withdrawn'].includes(quotation.status) && enquiry.stage === CLOSED_STAGE) note('Open quotation on a closed enquiry', `${quotation.number} (${quotation.status})`);
   }
   for (const order of orders) {
     const enquiry = E.get(id(order.enquiry));

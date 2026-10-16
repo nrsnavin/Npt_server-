@@ -48,7 +48,7 @@ export const env = {
      * Returns the code in the API response so a developer without SMTP or Twilio
      * can still sign in. Ignored outside development.
      */
-    exposeInResponse: process.env.OTP_EXPOSE_IN_RESPONSE === 'true',
+    exposeInResponse: process.env.OTP_EXPOSE_IN_RESPONSE === 'true' && process.env.NODE_ENV !== 'production',
   },
 
   /**
@@ -185,6 +185,13 @@ export const env = {
 export const escalationIntervalMinutes = Number(process.env.ESCALATION_INTERVAL_MINUTES ?? 60);
 
 export const isProduction = env.nodeEnv === 'production';
+/*
+ * Only an explicit development or test environment is treated as one. A server started with
+ * NODE_ENV unset is somebody's production that forgot a line — it must not show stack traces,
+ * run on the development secret, or hand out one-time codes in replies.
+ */
+export const nodeEnvSet = Boolean(process.env.NODE_ENV);
+export const isDevelopment = ['development', 'test'].includes(process.env.NODE_ENV);
 
 /**
  * The one secret everything hangs off: every session, and the signed links WhatsApp fetches
@@ -193,8 +200,9 @@ export const isProduction = env.nodeEnv === 'production';
  * to start on the default or on anything short enough to guess; development keeps the convenience.
  */
 export const DEV_SECRET = 'npt-dev-secret-change-me';
-export function secretProblem(secret = env.jwtSecret, nodeEnv = env.nodeEnv) {
-  if (nodeEnv !== 'production') return null;
+export function secretProblem(secret = env.jwtSecret, nodeEnv = process.env.NODE_ENV) {
+  /* Development and test keep the convenience; anything else — production, staging, or unset — is checked. */
+  if (nodeEnv === 'development' || nodeEnv === 'test') return null;
   if (!secret || secret === DEV_SECRET) return 'JWT_SECRET is not set. Generate one with: openssl rand -base64 48';
   if (String(secret).length < 32) return 'JWT_SECRET is too short to be safe — use at least 32 characters (openssl rand -base64 48)';
   return null;

@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { isProduction } from '../config/env.js';
+import { isDevelopment, isProduction } from '../config/env.js';
 import ApiError from '../utils/ApiError.js';
 
 export function notFoundHandler(req, _res, next) {
@@ -80,6 +80,7 @@ export function errorHandler(err, req, res, _next) {
     success: false,
     message: error.message,
     ...(error.details ? { details: error.details } : {}),
-    ...(isProduction ? {} : { stack: err.stack }),
+    /* A stack trace only where a developer is reading: never on a server whose NODE_ENV was left unset. */
+    ...(isDevelopment ? { stack: err.stack } : {}),
   });
 }

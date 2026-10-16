@@ -26,6 +26,11 @@ test('production refuses the default or a short JWT secret; development does not
   assert.equal(secretProblem('a-long-random-secret-of-forty-eight-characters-x', 'production'), null);
   assert.equal(secretProblem(DEV_SECRET, 'development'), null);
   assert.equal(secretProblem(DEV_SECRET, 'test'), null);
+  /* NODE_ENV left unset is a live server that forgot a line, not a developer's laptop. */
+  assert.match(secretProblem(DEV_SECRET, undefined), /JWT_SECRET is not set/);
+  assert.match(secretProblem('short-secret', ''), /too short/);
+  assert.equal(secretProblem('a-long-random-secret-of-forty-eight-characters-x', undefined), null);
+  assert.match(secretProblem(DEV_SECRET, 'staging'), /JWT_SECRET is not set/);
 });
 
 test('the access log keeps the route and loses the token', () => {

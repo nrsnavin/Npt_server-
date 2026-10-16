@@ -1,7 +1,7 @@
 import { MANAGEMENT_QUERY } from '../utils/departments.js';
-import Sample, { NOT_ESCALATED_STATUSES } from '../models/Sample.js';
+import Sample, { NOT_ESCALATED_STATUSES, lateBefore, lateSince } from '../models/Sample.js';
 import User from '../models/User.js';
-import { raiseTask } from './task.service.js';
+import { raiseDepartmentTask, raiseTask } from './task.service.js';
 
 /**
  * The sampling escalation [BLUEPRINT §25].
@@ -28,14 +28,17 @@ const DAY = 24 * 60 * 60 * 1000;
  * Both thresholds are strict, because §25 writes them that way: the date is *crossed*, and
  * the manager hears at *more than* a day. Comparing whole days instead would make a sample
  * due at nine this morning "a day late" tonight, and wake the manager for it.
+ *
+ * "Crossed" is the one rule every sampling screen uses [models/Sample.js `isLate`]: the
+ * morning after the day the sample was wanted, not the minute its time passed.
  */
 export const LEVELS = [
   { level: 1, afterMs: 0, label: 'overdue' },
   { level: 2, afterMs: DAY, label: 'more than a day overdue' },
 ];
 
-/** How late a sample is in milliseconds. Negative until its date is crossed. */
-const lateBy = (sample, now) => now - new Date(sample.requiredDate).getTime();
+/** How late a sample is in milliseconds. Negative until the morning after its date. */
+const lateBy = (sample, now) => now - lateSince(sample.requiredDate).getTime();
 
 /** How late it is in whole days, for saying so in the task. */
 export const daysLate = (sample, now) => Math.floor(lateBy(sample, now) / DAY);
@@ -48,33 +51,36 @@ export function levelFor(sample, now) {
   return LEVELS.reduce((highest, tier) => (late > tier.afterMs ? tier.level : highest), 0);
 }
 
+const originKey = (sample, level) => `sample:${sample._id}:escalation:${level}`;
+
 /**
- * Who hears about it.
+ * Who hears about it, and raises their task.
  *
  * The blueprint names a "sampling in-charge" and a "manager"; this organisation has neither
- * as a title. The bench is everyone who can work a sample, and the manager is management —
- * which is how the plant is actually arranged, and stays correct if titles arrive later.
+ * as a title. The manager is management, which is how the plant is actually arranged, and
+ * stays correct if titles arrive later.
+ *
+ * Tier one used to task everyone on the bench, one copy each: six samples late on a bad
+ * morning and four people made thirty tasks, which is how a task list stops being read. Now
+ * the sample's own bench member is tasked when it has one, and when it has nobody it is one
+ * task on the bench's shared queue, for whoever picks it up. The person waiting on it hears
+ * either way.
  */
-async function recipientsFor(level, sample) {
-  const bench = await User.find({
-    isActive: { $ne: false },
-    moduleAccess: { $elemMatch: { module: 'samples', level: 'write' } },
-  }).select('_id');
+async function raiseFor(level, sample, { title, notes }) {
+  const base = { title, notes, priority: 'high', link: `/samples/${sample._id}`, originKey: originKey(sample, level) };
+  const raised = [];
 
   if (level === 1) {
-    // The people who can act, and the person waiting on it.
-    return [...bench.map((user) => user._id), sample.requestedBy].filter(Boolean);
+    if (sample.assignedTo) raised.push(await raiseTask({ user: sample.assignedTo, ...base }));
+    else raised.push(await raiseDepartmentTask({ department: 'sampling', ...base }));
+    if (sample.requestedBy) raised.push(await raiseTask({ user: sample.requestedBy, ...base }));
+    return raised.filter(Boolean);
   }
 
-  const managers = await User.find({
-    isActive: { $ne: false },
-    ...MANAGEMENT_QUERY,
-  }).select('_id');
-
-  return managers.map((user) => user._id);
+  const managers = await User.find({ isActive: { $ne: false }, ...MANAGEMENT_QUERY }).select('_id');
+  for (const manager of managers) raised.push(await raiseTask({ user: manager._id, ...base }));
+  return raised.filter(Boolean);
 }
-
-const originKey = (sample, level) => `sample:${sample._id}:escalation:${level}`;
 
 /**
  * Raises whatever escalations are now due, and returns what it did.
@@ -86,9 +92,9 @@ const originKey = (sample, level) => `sample:${sample._id}:escalation:${level}`;
  */
 export async function runSamplingEscalations({ now = Date.now() } = {}) {
   const candidates = await Sample.find({
-    requiredDate: { $lt: new Date(now) },
+    requiredDate: { $lt: lateBefore(now) },
     status: { $nin: NOT_ESCALATED_STATUSES },
-  }).select('number modelNumber requiredDate status requestedBy escalationLevel customer');
+  }).select('number modelNumber requiredDate status requestedBy assignedTo escalationLevel customer');
 
   const raised = [];
 
@@ -98,26 +104,16 @@ export async function runSamplingEscalations({ now = Date.now() } = {}) {
 
     const late = daysLate(sample, now);
     const tier = LEVELS.find((entry) => entry.level === level);
-    const recipients = await recipientsFor(level, sample);
-
-    await Promise.all(
-      recipients.map((user) =>
-        raiseTask({
-          user,
-          title: `${sample.number} is ${tier.label}`,
-          notes:
-            `${sample.modelNumber || 'New development'} · due ${new Date(sample.requiredDate).toDateString()}` +
-            `${late > 0 ? ` · ${late} day${late === 1 ? '' : 's'} late` : ''}`,
-          priority: 'high',
-          link: `/samples/${sample._id}`,
-          originKey: originKey(sample, level),
-        })
-      )
-    );
+    const tasks = await raiseFor(level, sample, {
+      title: `${sample.number} is ${tier.label}`,
+      notes:
+        `${sample.modelNumber || 'New development'} · due ${new Date(sample.requiredDate).toDateString()}` +
+        `${late > 0 ? ` · ${late} day${late === 1 ? '' : 's'} late` : ''}`,
+    });
 
     sample.escalationLevel = level;
     await sample.save();
-    raised.push({ sample: sample.number, level, recipients: recipients.length });
+    raised.push({ sample: sample.number, level, recipients: tasks.length });
   }
 
   return raised;

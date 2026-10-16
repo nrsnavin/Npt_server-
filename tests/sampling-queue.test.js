@@ -116,6 +116,32 @@ test('a new request is on the queue with who asked, what for, and the tiles coun
   assert.deepEqual(data.statuses.map((entry) => entry.key), ['received', 'not_available', 'under_process', 'ready', 'sent', 'closed']);
 });
 
+test('the tiles count exactly what they are called: late, due today, ready to send', async () => {
+  const Sample = mongoose.model('Sample');
+  const { sample: late } = await requestSample();
+  await Sample.updateOne({ _id: late._id }, { requiredDate: new Date(Date.now() - 2 * 86400000) });
+  const { sample: ready } = await requestSample();
+  await move(ready._id, { status: 'sample_ready' });
+  /* Not available, overdue by the date: the bench has answered, so it is marketing's turn, not late. */
+  const { sample: unavailable } = await requestSample();
+  await move(unavailable._id, { status: 'not_available', note: 'No stock of this resin this month' });
+  await Sample.updateOne({ _id: unavailable._id }, { requiredDate: new Date(Date.now() - 2 * 86400000) });
+
+  const data = await queue();
+  const row = (id) => data.rows.find((entry) => String(entry._id) === String(id));
+  assert.equal(row(late._id).late, true);
+  assert.equal(row(late._id).dueToday, false, 'late is not also due today');
+  assert.equal(row(unavailable._id).late, false, 'not available is not late');
+  assert.equal(row(unavailable._id).highlighted, true, 'but it is still highlighted');
+  assert.equal(row(ready._id).queueStatus, 'ready');
+
+  assert.deepEqual(Object.keys(data.tiles), ['open', 'late', 'dueToday', 'readyToSend', 'internalTags']);
+  assert.equal(data.tiles.late, data.rows.filter((entry) => entry.late).length);
+  assert.equal(data.tiles.dueToday, data.rows.filter((entry) => entry.dueToday).length);
+  assert.equal(data.tiles.readyToSend, data.rows.filter((entry) => !entry.closed && entry.queueStatus === 'ready').length);
+  assert.ok(data.tiles.readyToSend >= 1);
+});
+
 test('not available needs a reason, and goes back to marketing as an urgent task', async () => {
   const { sample } = await requestSample();
 

@@ -169,12 +169,22 @@ test('the first price is Rev 0, in the history from the start', async () => {
   assert.equal(made.revisions[0].lines[0].unitPrice, 7.5);
 });
 
+/** Rev 0 has to reach the buyer before there is anything to revise. */
+const sendIt = async (id, token = nandhini) => {
+  const sent = await api(`/api/quotations/${id}/send`, { method: 'POST', token, body: {} });
+  assert.equal(sent.status, 200, sent.json.message);
+  return sent.json.data;
+};
+
 test('every revision stays — Rev 0 ₹7.50, Rev 1 ₹7.30, Rev 2 ₹7.20', async () => {
   const made = await quote();
+  await sendIt(made._id);
 
   for (const price of [7.3, 7.2]) {
     const revised = await reviseTo(made._id, price, { note: 'Buyer pushed back' });
     assert.equal(revised.status, 200, revised.json.message);
+    /* Each one goes out before the next: a revision is of an offer the buyer saw. */
+    await sendIt(made._id);
   }
 
   const { json } = await api(`/api/quotations/${made._id}`, { token: nandhini });
@@ -642,6 +652,7 @@ test('a revision records every line, not just the price that moved', async () =>
       { modelNumber: 'NH-450', quantity: 10000, unitPrice: 8.2 },
     ],
   });
+  await sendIt(made._id);
 
   const revised = await api(`/api/quotations/${made._id}/revisions`, {
     method: 'POST',
@@ -696,6 +707,7 @@ test('the history is frozen — a later edit does not rewrite what Rev 0 said', 
    * say. A revision list that cannot disagree with the current price is not a history.
    */
   const made = await quote({ unitPrice: 7.5 });
+  await sendIt(made._id);
   await reviseTo(made._id, 6.9, { note: 'Discount' });
 
   const { json } = await api(`/api/quotations/${made._id}`, { token: nandhini });
@@ -1159,6 +1171,7 @@ test('forty quotes raised at the same moment get forty different numbers, none s
 
 test('a revision keeps its quote’s number', async () => {
   const made = await quote();
+  await sendIt(made._id);
   const revised = await reviseTo(made._id, 7.1);
   assert.equal(revised.status, 200, revised.json.message);
   assert.equal(revised.json.data.number, made.number);
@@ -1253,4 +1266,231 @@ test('a save waits its turn for the owner’s lock instead of failing', async ()
     clearTimeout(held);
     await release();
   }
+});
+
+/* ---------------------- Audit fixes, October 2026 [docs/QUOTATION-AUDIT.md] ---------------------- */
+
+const Todo = () => mongoose.model('Todo');
+const QuotationModel = () => mongoose.model('Quotation');
+const settle = (ms = 250) => new Promise((resolve) => setTimeout(resolve, ms));
+const enquiryIdOf = (quotation) => String(quotation.enquiry?._id || quotation.enquiry);
+
+test('the buyer’s answer is to the revision they hold, not to one that has not gone out', async () => {
+  const made = await quote({ unitPrice: 7.5 });
+  await sendIt(made._id);
+  const revised = await reviseTo(made._id, 7.2, { note: 'Pushed back' });
+  assert.equal(revised.json.data.status, 'revised');
+
+  /* Rev 1 is on the record and not with the buyer: an answer now would be to figures they never saw. */
+  const early = await api(`/api/quotations/${made._id}/response`, { method: 'POST', token: nandhini, body: { accepted: true } });
+  assert.equal(early.status, 400, early.json.message);
+  assert.match(early.json.message, /Rev 1 .* has not gone to the buyer/);
+
+  await sendIt(made._id);
+  const accepted = await api(`/api/quotations/${made._id}/response`, { method: 'POST', token: nandhini, body: { accepted: true } });
+  assert.equal(accepted.status, 200, accepted.json.message);
+  assert.equal(accepted.json.data.acceptedRevision, 1, 'which revision was accepted is on the record');
+  assert.equal(accepted.json.data.answeredAfterValidity, false);
+});
+
+test('Admin’s signature lapses when the cost rises after sign-off', async () => {
+  const made = await costedQuote({ minimum: 7, price: 6.5 });
+  assert.equal(made.lines[0].status, 'approval_pending');
+  const signed = await decide(made._id, made.lines[0]._id, { approve: true });
+  assert.equal(signed.status, 200, signed.json.message);
+  assert.equal(signed.json.data.lines[0].status, 'approved');
+  assert.equal(signed.json.data.lines[0].approvedFloor, 7, 'the floor as Admin saw it');
+
+  /* The same floor, re-saved: the signature stands. */
+  const same = await costIt(made._id, made.lines[0]._id, { minimumOverride: 7 });
+  assert.equal(same.json.data.lines[0].status, 'approved');
+
+  /* The floor rises above what was signed: back to Admin. */
+  const risen = await costIt(made._id, made.lines[0]._id, { minimumOverride: 7.5 });
+  assert.equal(risen.status, 200, risen.json.message);
+  assert.equal(risen.json.data.lines[0].status, 'approval_pending', 'a signature does not cover a cost it never saw');
+  assert.equal(risen.json.data.status, 'approval_pending');
+});
+
+test('the document prints the tax line from the record, and until when the price holds', async () => {
+  const bytes = async (id) => Buffer.from(await (await fetch(`${baseUrl}/api/quotations/${id}/pdf`, { headers: { Authorization: `Bearer ${nandhini}` } })).arrayBuffer());
+
+  const domestic = await quote({ gstPercent: 12, validUntil: inDays(20) });
+  const printed = await textOf(await bytes(domestic._id));
+  assert.match(printed, /GST 12% EXTRA/);
+  assert.doesNotMatch(printed, /GST 18% EXTRA/);
+  assert.match(printed, /Valid until \d\d\/\d\d\/\d{4}/, 'the buyer is told the date they are held to');
+
+  const exported = await quote({ isExport: true });
+  const abroad = await textOf(await bytes(exported._id));
+  assert.match(abroad, /GST NOT APPLICABLE/);
+  assert.doesNotMatch(abroad, /GST 18% EXTRA/);
+});
+
+test('losing the enquiry withdraws its unsent quotation and clears Admin’s signature request', async () => {
+  const made = await costedQuote({ minimum: 7, price: 6.5 });
+  await settle();
+  assert.ok(await Todo().findOne({ originKey: `pricing:${made._id}:approval`, completed: false }), 'Admin was asked to sign');
+
+  const lost = await api(`/api/enquiries/${enquiryIdOf(made)}/status`, { method: 'POST', token: nandhini, body: { status: 'lost', lostReason: 'price' } });
+  assert.equal(lost.status, 200, lost.json.message);
+  await settle(400);
+
+  const after = (await api(`/api/quotations/${made._id}`, { token: admin })).json.data;
+  assert.equal(after.status, 'withdrawn');
+  assert.match(after.statusHistory.at(-1).note, /was lost/);
+  assert.equal(await Todo().countDocuments({ originKey: `pricing:${made._id}:approval`, completed: false }), 0, 'and the request is gone');
+
+  const inbox = await api('/api/inbox', { token: admin });
+  assert.ok(!inbox.json.data.items.some((item) => item.link === `/quotations/${made._id}`), 'nor is it in the inbox');
+
+  const late = await decide(made._id, made.lines[0]._id, { approve: true });
+  assert.equal(late.status, 400);
+  assert.match(late.json.message, /nothing left to sign/);
+});
+
+test('Task Closed on the enquiry withdraws a draft but leaves a sent quotation as the record of the offer', async () => {
+  /* Task Closed needs the enquiry checked first, as every button does. */
+  const check = async (quotation) => {
+    const checked = await api(`/api/enquiries/${enquiryIdOf(quotation)}/check`, { method: 'POST', token: nandhini, body: {} });
+    assert.equal(checked.status, 200, checked.json.message);
+  };
+  const draft = await quote({ unitPrice: 7.5 });
+  await check(draft);
+  const closedDraft = await api(`/api/enquiries/${enquiryIdOf(draft)}/handoffs`, { method: 'POST', token: admin, body: { kind: 'task_closed', note: 'Buyer went elsewhere' } });
+  assert.ok(closedDraft.status < 300, closedDraft.json.message);
+  const gone = (await api(`/api/quotations/${draft._id}`, { token: nandhini })).json.data;
+  assert.equal(gone.status, 'withdrawn');
+  assert.match(gone.statusHistory.at(-1).note, /closed: Buyer went elsewhere/);
+
+  const sent = await quote({ unitPrice: 7.5 });
+  await check(sent);
+  await sendIt(sent._id);
+  await settle();
+  assert.ok(await Todo().findOne({ originKey: `quotation:${sent._id}:follow-up`, completed: false }), 'the chase was set');
+  const closedSent = await api(`/api/enquiries/${enquiryIdOf(sent)}/handoffs`, { method: 'POST', token: admin, body: { kind: 'task_closed', note: 'Order placed outside the system' } });
+  assert.ok(closedSent.status < 300, closedSent.json.message);
+  const kept = (await api(`/api/quotations/${sent._id}`, { token: nandhini })).json.data;
+  assert.equal(kept.status, 'sent', 'what was offered stays a fact');
+  assert.equal(await Todo().countDocuments({ originKey: `quotation:${sent._id}:follow-up`, completed: false }), 0, 'but nobody chases it');
+});
+
+test('an expired quotation cannot be sent; an answer after the validity is recorded as late', async () => {
+  const stale = await quote({ unitPrice: 7.5, validUntil: inDays(5) });
+  await QuotationModel().updateOne({ _id: stale._id }, { validUntil: new Date(Date.now() - 3 * DAY) });
+  const refused = await api(`/api/quotations/${stale._id}/send`, { method: 'POST', token: nandhini, body: {} });
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.message, /validity .* passed/);
+
+  const live = await quote({ unitPrice: 7.5, validUntil: inDays(5) });
+  await sendIt(live._id);
+  await QuotationModel().updateOne({ _id: live._id }, { validUntil: new Date(Date.now() - 3 * DAY) });
+  const answered = await api(`/api/quotations/${live._id}/response`, { method: 'POST', token: nandhini, body: { accepted: true, note: 'Rang them' } });
+  assert.equal(answered.status, 200, answered.json.message);
+  assert.equal(answered.json.data.status, 'accepted');
+  assert.equal(answered.json.data.answeredAfterValidity, true);
+  assert.match(answered.json.data.statusHistory.at(-1).note, /Rang them — after the validity passed on/);
+});
+
+test('a prospect’s enquiry reaching pricing tasks its owner to convert first, instead of failing silently', async () => {
+  const enquiry = await api('/api/enquiries', {
+    method: 'POST', token: nandhini,
+    body: { prospect: { name: 'Fresh Fashions', mobile: '9840077001' }, requirement: { modelNumber: 'NH-400' }, ...followUp },
+  });
+  assert.equal(enquiry.status, 201, enquiry.json.message);
+  /*
+   * The status button refuses a prospect; the automation does not. An approved sample moves the
+   * enquiry to pricing from inside the sampling subscriber, past the controller's guard, and
+   * that is the event that used to throw in the outbox eight times and then go quiet.
+   */
+  const { EVENTS, publish } = await import('../src/services/events.service.js');
+  const Enquiry = mongoose.model('Enquiry');
+  await publish(EVENTS.ENQUIRY_PRICING_REQUIRED, { enquiry: await Enquiry.findById(enquiry.json.data._id) });
+  await settle(400);
+
+  const task = await Todo().findOne({ originKey: `pricing:${enquiry.json.data._id}:convert-first`, completed: false }).lean();
+  assert.ok(task, 'the owner is told what to do first');
+  assert.match(task.title, /Convert Fresh Fashions to a customer/);
+  assert.equal(String(task.user), await tokenOwnerId(nandhini));
+  assert.equal(await QuotationModel().countDocuments({ enquiry: enquiry.json.data._id }), 0, 'and no quotation was raised on a prospect');
+});
+
+test('re-quoting after a refusal carries the costing across, but not the price', async () => {
+  const first = await toCost();
+  /* A floor under the default price (cost + 20% = 3.75), so the draft is sendable as costed. */
+  const costed = await costIt(first._id, first.lines[0]._id, { cost: COST, markupPercent: 20, minimumOverride: 3.5 });
+  assert.equal(costed.status, 200, costed.json.message);
+  await sendIt(first._id);
+  const refused = await api(`/api/quotations/${first._id}/response`, { method: 'POST', token: nandhini, body: { accepted: false, note: 'Too high against the incumbent' } });
+  assert.equal(refused.json.data.status, 'rejected');
+
+  const again = await api('/api/quotations', {
+    method: 'POST', token: admin,
+    body: { customer, enquiry: enquiryIdOf(first), paymentTerms: '30 days', validUntil: inDays(30) },
+  });
+  assert.equal(again.status, 201, again.json.message);
+  const line = again.json.data.lines[0];
+  assert.equal(line.modelNumber, 'NH-400');
+  assert.equal(line.cost.gramWeight, 22, 'the build-up came across');
+  assert.equal(line.cost.rawMaterialRate, 95);
+  assert.equal(line.markupPercent, 20);
+  assert.equal(line.minimumOverride, 3.5);
+  assert.equal(line.unitPrice, undefined, 'the refused price did not');
+  assert.equal(again.json.data.status, 'costing', 'so it is the Quotation department’s to re-price');
+  assert.match(again.json.data.statusHistory[0].note, new RegExp(`Costing carried from ${first.number.replace(/\//g, '\\/')}`));
+});
+
+test('a revision needs an offer the buyer saw; before that the draft is edited', async () => {
+  const made = await quote({ unitPrice: 7.5 });
+  const early = await reviseTo(made._id, 7.2);
+  assert.equal(early.status, 400);
+  assert.match(early.json.message, /has not gone to the buyer yet/);
+  assert.equal((await api(`/api/quotations/${made._id}`, { token: nandhini })).json.data.revision, 0, 'the first thing the buyer sees is Rev 0');
+});
+
+test('a line’s remarks are part of the offer: after sending they change through a revision', async () => {
+  const made = await quote({ unitPrice: 7.5 });
+  await sendIt(made._id);
+  const edited = await api(`/api/quotations/${made._id}`, {
+    method: 'PATCH', token: nandhini, body: { lines: [{ _id: made.lines[0]._id, remarks: 'Price excludes printing' }] },
+  });
+  assert.equal(edited.status, 400);
+  assert.match(edited.json.message, /through a revision/);
+});
+
+test('Admin’s reason for refusing a price is for whoever may see costing; marketing sees that it was refused', async () => {
+  const made = await costedQuote({ minimum: 7, price: 6.5 });
+  const refused = await decide(made._id, made.lines[0]._id, { approve: false, note: 'Costs 3.09 to make, cannot go under 3.40' });
+  assert.equal(refused.status, 200, refused.json.message);
+
+  const marketing = (await api(`/api/quotations/${made._id}`, { token: nandhini })).json.data;
+  assert.equal(marketing.lines[0].status, 'rejected');
+  assert.equal(marketing.lines[0].rejectionNote, 'Admin refused this price');
+  assert.ok(!JSON.stringify(marketing.statusHistory).includes('3.09'), 'the history carries no figure');
+  assert.equal(marketing.statusHistory.at(-1).note, 'Refused NH-400');
+
+  const costing = (await api(`/api/quotations/${made._id}`, { token: admin })).json.data;
+  assert.equal(costing.lines[0].rejectionNote, 'Costs 3.09 to make, cannot go under 3.40');
+});
+
+test('the follow-up chase has a day even when the document has no validity', async () => {
+  const made = await quote({ unitPrice: 7.5, validUntil: undefined });
+  assert.equal(made.validUntil, undefined);
+  await sendIt(made._id);
+  await settle();
+  const chase = await Todo().findOne({ originKey: `quotation:${made._id}:follow-up`, completed: false }).lean();
+  assert.ok(chase?.dueDate, 'a chase with no day sits on the list forever');
+  const days = (new Date(chase.dueDate) - Date.now()) / DAY;
+  assert.ok(days > 6 && days <= 7.1, `due in ${days.toFixed(1)} days`);
+});
+
+test('two sends at once deliver once: the second finds it already sent', async () => {
+  const made = await quote({ unitPrice: 7.5 });
+  const results = await Promise.all([
+    api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} }),
+    api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: {} }),
+  ]);
+  assert.deepEqual(results.map((row) => row.status).sort(), [200, 400]);
+  const after = (await api(`/api/quotations/${made._id}`, { token: nandhini })).json.data;
+  assert.equal(after.statusHistory.filter((entry) => entry.to === 'sent').length, 1, 'sent once');
 });

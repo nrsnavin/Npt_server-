@@ -131,6 +131,17 @@ const asDate = (value) => {
   return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}`;
 };
 
+/**
+ * The tax line, from the record rather than the company's standing note: an export quotation
+ * carries no GST, and one entered at 12% does not say 18%. The standing note is the fallback
+ * for a record that names no rate.
+ */
+export function taxNoteFor(quotation) {
+  if (quotation.isExport) return 'EXPORT — GST NOT APPLICABLE';
+  if (quotation.gstPercent != null && quotation.gstPercent !== '') return `GST ${quotation.gstPercent}% EXTRA`;
+  return company.gstNote;
+}
+
 const FREIGHT_LABELS = {
   ex_factory: 'EX-Factory',
   fob: 'FOB',
@@ -243,7 +254,7 @@ function parties(doc, quotation, y) {
   value(doc, customer.city, rightX + splitWidth, ry + 11, splitWidth, { bold: false, size: 8 });
   ry += rows[3];
 
-  /* Delivery terms. */
+  /* Delivery terms, and until when the price holds — the date the buyer is held to. */
   box(doc, rightX, ry, rightWidth, rows[4]);
   caption(
     doc,
@@ -252,6 +263,9 @@ function parties(doc, quotation, y) {
     ry,
     rightWidth
   );
+  if (quotation.validUntil) {
+    value(doc, `Valid until ${asDate(quotation.validUntil)}`, rightX, ry + 9, rightWidth - 4, { bold: false, size: 7, align: 'right' });
+  }
 
   /*
    * ---- left: the sender, then the buyer, sharing the right half's height ----
@@ -462,7 +476,7 @@ function table(doc, quotation, y, photos, resins) {
   doc.rect(descX, cursor, descWidth, noteHeight).fillColor(BANNER).fill();
   box(doc, descX, cursor, descWidth, noteHeight);
   doc.font('Helvetica-BoldOblique').fontSize(11).fillColor(LABEL_BLUE);
-  doc.text(company.gstNote, descX, cursor + 7, { width: descWidth, align: 'center' });
+  doc.text(taxNoteFor(quotation), descX, cursor + 7, { width: descWidth, align: 'center' });
 
   return cursor + noteHeight;
 }

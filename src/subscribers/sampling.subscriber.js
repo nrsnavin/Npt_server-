@@ -1,10 +1,10 @@
 import Enquiry, { fallsBack } from '../models/Enquiry.js';
-import Sample, { CLOSED_SAMPLE_STATUSES } from '../models/Sample.js';
+import { SAMPLE_STATUSES } from '../models/Sample.js';
 import User from '../models/User.js';
 import {
   EVENTS, publish, statusEvent, subscribe as busSubscribe, unsubscribe,
 } from '../services/events.service.js';
-import { createSampleForEnquiry } from '../services/sampling.service.js';
+import { cancelOpenSamples, createSampleForEnquiry } from '../services/sampling.service.js';
 import { raiseTask, resolveTasks } from '../services/task.service.js';
 import { AUTOMATIC, notifyCustomer } from '../services/customerMessage.service.js';
 
@@ -226,28 +226,12 @@ export function registerSamplingSubscribers() {
        * A lost enquiry's sample is work nobody will buy. Left open it stays on the bench and
        * escalates as overdue forever, which is how an escalation list stops being read.
        *
-       * Only losing does this. A won enquiry may still be waiting on a sample the customer
-       * asked for, and cancelling that would destroy the record of what was sent.
+       * Losing cancels every open sample, the one with the buyer included. A won enquiry may
+       * still be waiting on a sample the customer asked for, and cancelling that would destroy
+       * the record of what was sent. Closing the enquiry (Task Closed, or the automatic close)
+       * cancels only what is still on the bench [services/handoff.service.js `closeOpenTasks`].
        */
-      const open = await Sample.find({
-        enquiry: enquiry._id,
-        status: { $nin: CLOSED_SAMPLE_STATUSES },
-      });
-
-      for (const sample of open) {
-        const from = sample.status;
-        sample.status = 'cancelled';
-        sample.statusHistory.push({
-          from,
-          to: 'cancelled',
-          note: `${enquiry.number} was lost`,
-        });
-        await sample.save();
-
-        for (const kind of ['prepare', 'acknowledged', 'ready', 'feedback']) {
-          await resolveTasks(key(sample, kind));
-        }
-      }
+      await cancelOpenSamples(enquiry, { note: `${enquiry.number} was lost`, statuses: SAMPLE_STATUSES });
     })
   );
 

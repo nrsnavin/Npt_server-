@@ -53,6 +53,7 @@ export const EVENTS = {
   QUOTATION_APPROVAL_REQUIRED: 'quotation.approval_required',
   QUOTATION_ACCEPTED: 'quotation.accepted',
   QUOTATION_REJECTED: 'quotation.rejected',
+  QUOTATION_WITHDRAWN: 'quotation.withdrawn',
 
   SAMPLE_CREATED: 'sample.created',
   SAMPLE_STATUS_CHANGED: 'sample.status_changed',

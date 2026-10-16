@@ -41,6 +41,8 @@ export const CONFIDENTIAL = [
   'markupPercent',
   'minimumSellingPrice',
   'minimumOverride',
+  /* The floor a price was signed against is the floor. */
+  'approvedFloor',
   /*
    * The tier table is the cost base in disguise. Three prices in a fixed 10 / 15 / 20 ratio
    * let anyone divide back to the cost in one step, so publishing them would undo the rest of
@@ -124,6 +126,11 @@ export function visibleTo(quotation, user) {
     /* Whether, not where: a price under its minimum, and whether it waits on Admin. */
     seen.belowMinimum = Boolean(line.belowMinimum);
     seen.needsApproval = line.status === 'approval_pending';
+    /*
+     * Admin's reason for refusing a price is written for whoever costed it, and it is written
+     * in cost ("7.20 to make, cannot go under 7.90"). Marketing sees that it was refused.
+     */
+    if (seen.rejectionNote) seen.rejectionNote = 'Admin refused this price';
     return seen;
   });
 

@@ -1,6 +1,10 @@
 import Enquiry, { fallsBack } from '../models/Enquiry.js';
 import { EVENTS, publish, statusEvent, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
 import { raiseTask, resolveTasks } from '../services/task.service.js';
+import { withdrawQuotationsFor } from '../services/costingRequest.service.js';
+
+/** The chase when the document carries no validity date: a week, not never. */
+const FOLLOW_UP_DAYS = 7;
 
 /**
  * The quotation module's edge back into the enquiry [BLUEPRINT §C.1, §10].
@@ -109,11 +113,23 @@ export function registerQuotationSubscribers() {
         notes: quotation.soleLine
           ? `Rev ${quotation.revision} at ₹${quotation.soleLine.unitPrice} went out. Ask what they think.`
           : `Rev ${quotation.revision} went out — ${quotation.lineCount} models. Ask what they think.`,
-        dueDate: quotation.validUntil,
+        dueDate: quotation.validUntil || new Date(Date.now() + FOLLOW_UP_DAYS * 86400000),
         priority: 'normal',
         link: `/quotations/${quotation._id}`,
         originKey: key(quotation, 'follow-up'),
       });
+    })
+  );
+
+  /*
+   * A lost enquiry's quotation is a price for nothing. Unsent, it is withdrawn and off every
+   * queue; sent, it stays as the record of what was offered, but nobody chases it. The close
+   * (Task Closed, the automatic close) does the same from handoff `closeOpenTasks`.
+   */
+  subscribe(
+    EVENTS.ENQUIRY_LOST,
+    safely('withdraw the quotation behind a lost enquiry', async ({ enquiry }) => {
+      await withdrawQuotationsFor(enquiry, { note: `${enquiry.number} was lost` });
     })
   );
 
