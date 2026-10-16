@@ -110,6 +110,41 @@ export function costingFrom(mould, material, parts = {}) {
   return filled;
 }
 
+const RATE_FIELDS = {
+  rawMaterialRate: 'material', hookCost: 'hook', metalClipsCost: 'clip', printingCost: 'print', inwardPrice: 'inward price',
+};
+
+/**
+ * The registers' rates as they stand today, written onto a line that still names them.
+ *
+ * Until the quotation goes to the buyer, every costing reads the live rate list: a sheet
+ * drafted last week is costed at this week's resin price, not at whatever was copied when the
+ * resin was picked. A rate typed over a part the line names by its register is overwritten at
+ * the next costing — clear the register to keep a figure of your own. Once the quotation is
+ * sent, the rates on the line are what the offer was built on and stay as copied [`costLine`].
+ *
+ * Returns the registers whose rate moved, by name and never by figure: the history line is read
+ * by marketing [§8].
+ */
+async function refreshRates(line) {
+  const refs = [line.hookRef, line.clipRef, line.printRef].filter(Boolean);
+  const [resin, parts, item] = await Promise.all([
+    line.materialRef ? Material.findById(line.materialRef) : null,
+    refs.length ? Component.find({ _id: { $in: refs } }) : [],
+    line.tradedItem ? TradedItem.findById(line.tradedItem) : null,
+  ]);
+  const byKind = Object.fromEntries(parts.map((part) => [part.kind, part]));
+  const before = line.cost?.toObject?.() ?? { ...(line.cost || {}) };
+  const next = { ...before };
+  if (resin) next.rawMaterialRate = resin.ratePerKg;
+  if (byKind.hook) next.hookCost = byKind.hook.ratePerPiece;
+  if (byKind.clip) next.metalClipsCost = byKind.clip.ratePerPiece;
+  if (byKind.print) next.printingCost = byKind.print.ratePerPiece;
+  if (item) next.inwardPrice = item.inwardPrice;
+  line.cost = next;
+  return Object.keys(RATE_FIELDS).filter((field) => next[field] !== undefined && before[field] !== next[field]).map((field) => RATE_FIELDS[field]);
+}
+
 /** The parts named on a request, refusing one not on its register or of the wrong kind. */
 async function partsFrom(body) {
   const wanted = [['hook', body.hookRef], ['clip', body.clipRef], ['print', body.printRef]].filter(([, id]) => id);
@@ -584,6 +619,8 @@ export async function newQuotation(fields, user, { system = false } = {}) {
   const mayCost = Boolean(user) && seesCosting(user);
   const lines = await Promise.all(asked.map((row) => lineFrom(row, { mayCost })));
   const seeded = previous ? seedCosting(lines, previous) : 0;
+  /* The costing came across; the rates are today's. */
+  if (seeded) await Promise.all(lines.map((line) => refreshRates(line)));
 
   const { lines: _l, customer: _c, enquiry: _e, assignedTo: _a, ...terms } = fields;
   const quotation = new Quotation({
@@ -700,6 +737,9 @@ export const costLine = asyncHandler(transactional(async (req, res) => {
     if (!line.modelNumber) line.modelNumber = item.modelNumber;
   }
 
+  /* Today's rates for everything the line names on a register, until the buyer has the price. */
+  const moved = sent ? [] : await refreshRates(line);
+  /* What the costing person typed over them wins this time. */
   if (cost) line.cost = { ...line.cost?.toObject?.(), ...cost };
   if (markupPercent !== undefined) line.markupPercent = markupPercent;
   if (minimumOverride !== undefined) line.minimumOverride = minimumOverride;
@@ -724,7 +764,9 @@ export const costLine = asyncHandler(transactional(async (req, res) => {
   }
   quotation.costedBy = req.user._id;
   quotation.$locals.by = req.user._id;
-  quotation.$locals.note = line.modelNumber ? `Costed ${line.modelNumber}` : 'Costed';
+  quotation.$locals.note = `${line.modelNumber ? `Costed ${line.modelNumber}` : 'Costed'}${
+    moved.length ? ` — ${moved.join(', ')} rate${moved.length === 1 ? '' : 's'} taken from today's register` : ''
+  }`;
   followRevisionZero(quotation, req.user);
 
   const was = quotation.status;

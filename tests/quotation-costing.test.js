@@ -579,3 +579,73 @@ test('a trade hanger carries no material cost — the inward price already has t
   const made2 = await cost(made._id, line, { expectedUpdatedAt: costed.json.data.updatedAt, procurement: 'manufacture' });
   assert.equal(made2.json.data.lines[0].materialCost, 2, 'made here, the same 20 g counts again');
 });
+
+/* -------------------- Live rates until the buyer has the price -------------------- */
+
+const create = async (path, body) => (await api(path, { method: 'POST', token: admin, body })).json.data;
+
+test('every costing reads today’s register rates until the quotation is sent; after that they stay as the offer was built', async () => {
+  const resin = await create('/api/materials', { name: 'PP Live', code: 'PP-LIVE', type: 'pp', colour: 'Natural', ratePerKg: 96 });
+  const part = await create('/api/components', { kind: 'hook', name: 'Live hook', code: 'HK-LIVE', ratePerPiece: 1.4 });
+  const madeQuote = await toCost([{ mould: light, materialRef: resin._id, hookRef: part._id, modelNumber: 'NH-300' }]);
+  const lineId = madeQuote.lines[0]._id;
+
+  const first = await cost(madeQuote._id, lineId, { markupPercent: 15 });
+  assert.equal(first.status, 200, first.json.message);
+  assert.equal(first.json.data.lines[0].cost.rawMaterialRate, 96, 'picked at the register’s rate');
+  assert.equal(first.json.data.lines[0].cost.hookCost, 1.4);
+
+  /* The rate list moves while the sheet is still a draft. */
+  await api(`/api/materials/${resin._id}`, { method: 'PATCH', token: admin, body: { ratePerKg: 104 } });
+  await api(`/api/components/${part._id}`, { method: 'PATCH', token: admin, body: { ratePerPiece: 1.6 } });
+
+  const again = await cost(madeQuote._id, lineId, { markupPercent: 15 });
+  assert.equal(again.status, 200, again.json.message);
+  assert.equal(again.json.data.lines[0].cost.rawMaterialRate, 104, 'costed at today’s resin rate, not the one copied last week');
+  assert.equal(again.json.data.lines[0].cost.hookCost, 1.6, 'and today’s hook rate');
+  const note = again.json.data.statusHistory.at(-1)?.note || '';
+  assert.match(note, /material, hook rates taken from today.s register/);
+  assert.ok(!/104|1\.6/.test(note), 'the history names the register, never the figure');
+
+  /* A figure typed over a register part wins this costing; the next costing reads the register again. */
+  const typed = await cost(madeQuote._id, lineId, { cost: { hookCost: 2 } });
+  assert.equal(typed.json.data.lines[0].cost.hookCost, 2);
+  const reread = await cost(madeQuote._id, lineId, { markupPercent: 15 });
+  assert.equal(reread.json.data.lines[0].cost.hookCost, 1.6);
+
+  /*
+   * The price was set at the first costing and stands [costLine]; at today's rates it is under
+   * the floor, which is §9 doing its job. Priced again at today's calculated figure, it goes.
+   */
+  const repriced = await cost(madeQuote._id, lineId, { unitPrice: reread.json.data.lines[0].calculatedSellingPrice });
+  assert.equal(repriced.json.data.lines[0].status, 'approved', repriced.json.message);
+
+  /* Sent: what the offer was built on stays, whatever the register does next. */
+  const sent = await send(madeQuote._id);
+  assert.equal(sent.status, 200, sent.json.message);
+  await api(`/api/materials/${resin._id}`, { method: 'PATCH', token: admin, body: { ratePerKg: 130 } });
+  const after = await cost(madeQuote._id, lineId, { markupPercent: 15 });
+  assert.equal(after.status, 200, after.json.message);
+  assert.equal(after.json.data.lines[0].cost.rawMaterialRate, 104, 'a rate change cannot reach back into a sent quotation');
+});
+
+test('a re-quote carries the previous costing at today’s rates', async () => {
+  const resin = await create('/api/materials', { name: 'HIPS Live', code: 'HIPS-LIVE', type: 'hips', colour: 'White', ratePerKg: 118 });
+  const first = await toCost([{ mould: light, materialRef: resin._id, modelNumber: 'NH-300' }]);
+  const costed = await cost(first._id, first.lines[0]._id, { markupPercent: 15 });
+  assert.equal(costed.status, 200, costed.json.message);
+  assert.equal((await send(first._id)).status, 200);
+  const refused = await api(`/api/quotations/${first._id}/response`, { method: 'POST', token: nandhini, body: { accepted: false, note: 'Too dear' } });
+  assert.equal(refused.json.data.status, 'rejected');
+
+  await api(`/api/materials/${resin._id}`, { method: 'PATCH', token: admin, body: { ratePerKg: 125 } });
+  const again = await api('/api/quotations', {
+    method: 'POST', token: admin,
+    body: { customer, enquiry: String(first.enquiry?._id || first.enquiry), paymentTerms: '30 days', validUntil: inDays(30) },
+  });
+  assert.equal(again.status, 201, again.json.message);
+  const line = again.json.data.lines[0];
+  assert.equal(String(line.materialRef?._id || line.materialRef), String(resin._id), 'the resin came across');
+  assert.equal(line.markupPercent, 15);
+  assert.equal(line.cost.rawMaterialRate, 125, 'at today’s rate, not last month’s');
+});

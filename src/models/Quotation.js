@@ -85,7 +85,12 @@ const statusChangeSchema = new mongoose.Schema(
 const costSchema = new mongoose.Schema(
   {
     gramWeight: { type: Number, min: 0 },
-    /** ₹ per kilo, copied from the register when picked so a later rate change cannot reach back. */
+    /**
+     * ₹ per kilo. Read from the register at every costing until the quotation is sent, so a
+     * draft is always costed at today's rate; from then on it is what the offer was built on,
+     * and a later rate change cannot reach back [quotation.controller `refreshRates`]. The
+     * hook, clip, print and inward-price figures below follow the same rule.
+     */
     rawMaterialRate: { type: Number, min: 0 },
     jobWorkCost: { type: Number, min: 0, default: 0 },
     hookCost: { type: Number, min: 0, default: 0 },

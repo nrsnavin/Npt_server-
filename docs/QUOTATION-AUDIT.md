@@ -15,8 +15,14 @@ raised from it. Read with `docs/BLUEPRINT.md` §7–§10 and `docs/WORKFLOW-AUDI
 - The cost base never reaches marketing: the cost, margin, markup, floor and the tier table are
   stripped per line, the registers' rates and the trading master's inward price with them; a
   refusal to send names the models and never a figure.
-- Rates copied from the registers when picked, so a later rate change cannot reach back into a
-  price already given. Prices rounded **up** to five paise on one step for the whole sheet.
+- **Live rates until the buyer has the price.** Every costing reads the material, hook, clip,
+  print and inward-price rates from the registers as they stand that day (`refreshRates`); the
+  history line names which registers moved, never the figure. A rate typed over a part the line
+  names by its register is overwritten at the next costing — clear the register to keep a figure
+  of your own. Once the quotation is sent, the rates on the line are what the offer was built on
+  and a later rate change cannot reach back; a re-cost after sending records the new cost beside
+  the unchanged offer. A re-quote after a refusal carries the costing at today's rates. Prices
+  rounded **up** to five paise on one step for the whole sheet.
 - §9 is enforced per line: under the floor waits on Admin; a floor under the cost is refused; a
   refused price stays refused until it moves; a lower price after sign-off needs signing again.
 - A sent quotation is frozen: the offer and the document terms change only through a revision,
