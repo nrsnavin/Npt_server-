@@ -49,6 +49,34 @@ export const WITH_CUSTOMER_STATUSES = ['dispatched', 'delivered', 'customer_feed
  */
 export const NOT_ESCALATED_STATUSES = [...CLOSED_SAMPLE_STATUSES, ...WITH_CUSTOMER_STATUSES, 'not_available'];
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const IST_OFFSET_MS = 330 * 60 * 1000;
+
+/** The start of the day in India that `now` falls in, as an instant. */
+export function startOfIndiaDay(now = new Date()) {
+  const local = new Date(new Date(now).getTime() + IST_OFFSET_MS);
+  local.setUTCHours(0, 0, 0, 0);
+  return new Date(local.getTime() - IST_OFFSET_MS);
+}
+
+/**
+ * One rule for "late", on every screen and in the sweep: a sample is late from the morning
+ * after the day it was wanted. A request due at five is not late at ten past five — the bench
+ * has the evening — and it is late at breakfast the next day. The queue, the day screen, the
+ * dashboard, the register's overdue filter and the §25 escalation all read this and nothing
+ * else, so a request cannot be "today" on one screen and red on another.
+ *
+ * `lateBefore(now)` is the instant a due date has to be before to count as late now;
+ * `lateSince(due)` is the instant a due date becomes late. A sample the customer holds, one the
+ * bench has said it cannot make, and a closed one are never late [`NOT_ESCALATED_STATUSES`].
+ */
+export const lateBefore = (now = new Date()) => startOfIndiaDay(now);
+export const lateSince = (due) => new Date(startOfIndiaDay(due).getTime() + DAY_MS);
+export function isLate(sample, now = new Date()) {
+  if (!sample?.requiredDate || NOT_ESCALATED_STATUSES.includes(sample.status)) return false;
+  return new Date(sample.requiredDate) < lateBefore(now);
+}
+
 /**
  * A request that is finished with *for the purpose of raising another one* [§4, §6].
  *
@@ -444,12 +472,11 @@ sampleSchema.virtual('isOpen').get(function isOpen() {
 });
 
 /**
- * Overdue drives the escalation in §25: sampling escalates the moment the required date is
- * crossed, and again a day later. Computed rather than stored, so it can never go stale.
+ * Overdue drives the escalation in §25: sampling escalates the morning after the required
+ * date, and again a day later [`isLate`]. Computed rather than stored, so it can never go stale.
  */
 sampleSchema.virtual('isOverdue').get(function isOverdue() {
-  if (!this.requiredDate || NOT_ESCALATED_STATUSES.includes(this.status)) return false;
-  return this.requiredDate < new Date();
+  return isLate(this);
 });
 
 /**

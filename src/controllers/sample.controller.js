@@ -1,6 +1,6 @@
 import Sample, {
   BACKWARD_REASON_MIN, CLOSED_SAMPLE_STATUSES, FEEDBACK_STATUSES, NOT_ESCALATED_STATUSES,
-  ON_THE_BENCH_STATUSES, isBackwardSampleMove, SAMPLE_STATUSES, WITH_CUSTOMER_STATUSES,
+  ON_THE_BENCH_STATUSES, isBackwardSampleMove, lateBefore, SAMPLE_STATUSES, WITH_CUSTOMER_STATUSES,
 } from '../models/Sample.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
@@ -10,7 +10,7 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { canWrite } from '../services/access.service.js';
 import { EVENTS, publish, sampleStatusEvent } from '../services/events.service.js';
-import { createSampleRequest, defaultRequiredDate } from '../services/sampling.service.js';
+import { createSampleRequest, defaultRequiredDate, UNSENT_SAMPLE_STATUSES } from '../services/sampling.service.js';
 import { assertAssignable } from '../services/assignment.service.js';
 import { applySpec, buildSpec } from '../services/registers.service.js';
 import { stalledSamples, stallAfterDays } from '../services/anomaly.service.js';
@@ -120,7 +120,7 @@ function sampleFilters(req, { withStatus = true } = {}) {
    * overdue, so on a board the exclusion is expressed as columns instead, by the screen.
    */
   if (req.query.overdue === 'true') {
-    filter.requiredDate = { $lt: new Date() };
+    filter.requiredDate = { $lt: lateBefore() };
     if (withStatus) filter.status = { $nin: NOT_ESCALATED_STATUSES };
   }
 
@@ -468,10 +468,25 @@ export const updateSample = asyncHandler(transactional(async (req, res) => {
   if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) {
     throw ApiError.badRequest(`A ${sample.status} sample can no longer be edited`);
   }
+  /*
+   * Once the bag has gone, what was in it is a fact. The approved-sample check [§13] compares
+   * an order against this record, and the colour history compares `dispatchedColour` against
+   * `colour`; a specification that can be rewritten after dispatch lets both be made to lie.
+   * Remarks and the reference picture stay open; everything else waits for the next attempt.
+   */
+  if (!UNSENT_SAMPLE_STATUSES.includes(sample.status)) {
+    const changed = Object.keys(withoutVersion(req.body)).filter((field) => !AFTER_DISPATCH_FIELDS.has(field));
+    if (changed.length) {
+      throw ApiError.badRequest(
+        `${sample.number} has gone to the customer, so its specification is locked. ` +
+          'Only remarks and the reference picture can change; raise the next attempt for anything else.'
+      );
+    }
+  }
 
   // `assignedTo` is reachable here as well as through the assign action, and reached the
   // field with no check at all. A rule enforced on one door and not the other is not a rule.
-  if (req.body.assignedTo) await assertAssignable(req.body.assignedTo);
+  if (req.body.assignedTo) await assertBenchMember(req.body.assignedTo);
 
   expectVersion(sample, req.body);
   const before = snapshot(sample);
@@ -492,6 +507,22 @@ export const updateSample = asyncHandler(transactional(async (req, res) => {
   res.json({ success: true, data: await withRefs(sample) });
 }));
 
+/** What may still change on a sample the customer holds [`updateSample`]. */
+const AFTER_DISPATCH_FIELDS = new Set(['remarks', 'referenceImageUrl', 'expectedUpdatedAt']);
+
+/**
+ * The bench is whoever can work a sample. Anyone active used to pass, so a request could be
+ * handed to a marketing person — who then had it under "mine" on a screen they never open,
+ * while the bench's shared list no longer showed it. Nobody's queue, with a name on it.
+ */
+async function assertBenchMember(assignTo) {
+  const member = await assertAssignable(assignTo);
+  if (!canWrite(member, 'samples')) {
+    throw ApiError.badRequest(`${member.name} does not work samples, so the request would sit on nobody's bench`);
+  }
+  return member;
+}
+
 /** Picking a request off the shared queue, or handing it to a colleague. */
 export const assignSample = asyncHandler(transactional(async (req, res) => {
   const sample = await Sample.findById(req.params.id);
@@ -505,7 +536,10 @@ export const assignSample = asyncHandler(transactional(async (req, res) => {
    * shared list waiting to be picked up. It is on no screen at all.
    */
   const named = req.body.assignedTo;
-  if (named) await assertAssignable(named);
+  if (named) await assertBenchMember(named);
+  else if (named !== null && !canWrite(req.user, 'samples')) {
+    throw ApiError.forbidden('Only somebody who works samples can take a request');
+  }
 
   sample.assignedTo = named === null ? null : named || req.user._id;
   await sample.save();

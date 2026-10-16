@@ -1,6 +1,6 @@
 import Sample, {
-  CLOSED_SAMPLE_STATUSES, IN_WORK_STATUSES, NOT_ESCALATED_STATUSES, SAMPLE_NEXT_STEP,
-  WITH_CUSTOMER_STATUSES,
+  CLOSED_SAMPLE_STATUSES, IN_WORK_STATUSES, SAMPLE_NEXT_STEP, WITH_CUSTOMER_STATUSES,
+  isLate, startOfIndiaDay,
 } from '../models/Sample.js';
 import Query from '../models/Query.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -36,8 +36,7 @@ export const sampleDashboard = asyncHandler(async (req, res) => {
   const now = Date.now();
   const scope = ownershipFilter(req.user, 'requestedBy');
 
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
+  const startOfToday = startOfIndiaDay(now);
   const endOfToday = new Date(startOfToday.getTime() + DAY);
 
   const samples = await Sample.find(scope)
@@ -58,12 +57,8 @@ export const sampleDashboard = asyncHandler(async (req, res) => {
 
   /* ------------------------------- The three tiles ------------------------------- */
 
-  const overdue = open.filter(
-    (sample) =>
-      sample.requiredDate &&
-      new Date(sample.requiredDate) < new Date(now) &&
-      !NOT_ESCALATED_STATUSES.includes(sample.status)
-  );
+  /* The one rule [models/Sample.js `isLate`]: late from the morning after the day wanted. */
+  const overdue = open.filter((sample) => isLate(sample, now));
 
   const dueToday = open.filter(
     (sample) =>
@@ -291,10 +286,7 @@ export const sampleDay = asyncHandler(async (req, res) => {
     link: `/samples/${sample._id}`,
   });
 
-  const isOverdue = (sample) =>
-    sample.requiredDate &&
-    new Date(sample.requiredDate) < new Date(now) &&
-    !NOT_ESCALATED_STATUSES.includes(sample.status);
+  const isOverdue = (sample) => isLate(sample, now);
 
   /* Oldest first throughout: the queue is worked from the top, and the top is what has waited. */
   const oldestFirst = (a, b) =>
@@ -398,8 +390,7 @@ export const sampleQueue = asyncHandler(async (req, res) => {
   const now = Date.now();
   const scope = ownershipFilter(req.user, 'requestedBy');
 
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
+  const startOfToday = startOfIndiaDay(now);
   const endOfToday = new Date(startOfToday.getTime() + DAY);
   const closedSince = new Date(now - CLOSED_SHOWN_DAYS * DAY);
 
@@ -429,8 +420,12 @@ export const sampleQueue = asyncHandler(async (req, res) => {
     const closed = queueStatus === 'closed' || CLOSED_SAMPLE_STATUSES.includes(sample.status);
     const unsent = ['received', 'not_available', 'under_process', 'ready'].includes(queueStatus);
     const due = sample.requiredDate ? new Date(sample.requiredDate) : null;
-    const late = Boolean(!closed && unsent && due && due < startOfToday);
-    const dueToday = Boolean(!closed && unsent && due && due >= startOfToday && due < endOfToday);
+    /*
+     * Late by the one rule [models/Sample.js `isLate`], which leaves out "not available": the
+     * bench has answered, and the turn is marketing's. It is highlighted on its own below.
+     */
+    const late = isLate(sample, now);
+    const dueToday = Boolean(!closed && unsent && !late && due && due >= startOfToday && due < endOfToday);
     const urgent = !closed && (late || dueToday || (sample.escalationLevel || 0) > 0);
     const items = sample.items?.length ? sample.items : [sample];
     const lastNote = [...(sample.statusHistory || [])].reverse().find((entry) => entry.note)?.note;
@@ -491,10 +486,12 @@ export const sampleQueue = asyncHandler(async (req, res) => {
     success: true,
     data: {
       rows: [...open, ...rows.filter((row) => row.closed)],
+      /* Each tile counts exactly what it is called; a row is in at most one of the first three. */
       tiles: {
         open: open.length,
-        dueToday: unsentOpen.filter((row) => row.dueToday || row.late).length,
-        urgentDispatch: unsentOpen.filter((row) => row.queueStatus === 'ready' || row.late || row.dueToday).length,
+        late: unsentOpen.filter((row) => row.late).length,
+        dueToday: unsentOpen.filter((row) => row.dueToday).length,
+        readyToSend: unsentOpen.filter((row) => row.queueStatus === 'ready').length,
         internalTags,
       },
       statuses: QUEUE_STATUSES.map(({ key, label }) => ({ key, label })),

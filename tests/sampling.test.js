@@ -665,6 +665,67 @@ test('a modification on a closed enquiry cannot be re-sampled', async () => {
   assert.match(json.message, /is closed/);
 });
 
+/* ------------------------- After the bag has gone ------------------------- */
+
+test('once a sample is with the buyer its specification is locked; remarks stay open', async () => {
+  /*
+   * The approved-sample check [§13] compares an order against this record, and the colour
+   * history compares the dispatched shade against `colour`. Both could be made to lie by
+   * editing the specification after dispatch.
+   */
+  const enquiry = await raiseEnquiry();
+  const sample = await requestSample(enquiry._id);
+  await dispatchSample(sample._id);
+
+  for (const body of [{ colour: 'Black' }, { colourMandatory: false }, { modelNumber: 'NPT-500' }, { quantity: 9 }, { requiredDate: soon(2) }]) {
+    const { status, json } = await api(`/api/samples/${sample._id}`, { method: 'PATCH', token: meera, body });
+    assert.equal(status, 400, `${JSON.stringify(body)} went through after dispatch`);
+    assert.match(json.message, /specification is locked/);
+  }
+  const still = (await api(`/api/samples/${sample._id}`, { token: meera })).json.data;
+  assert.equal(still.colour, 'White');
+
+  const note = await api(`/api/samples/${sample._id}`, { method: 'PATCH', token: meera, body: { remarks: 'Buyer asked for a photo of the hook' } });
+  assert.equal(note.status, 200, note.json.message);
+  assert.equal(note.json.data.remarks, 'Buyer asked for a photo of the hook');
+
+  /* After the verdict too: the next attempt carries the change, the record of this one stands. */
+  await api(`/api/samples/${sample._id}/feedback`, { method: 'POST', token: nandhini, body: { outcome: 'modification_required', note: 'Wider' } });
+  const after = await api(`/api/samples/${sample._id}`, { method: 'PATCH', token: meera, body: { colour: 'Black' } });
+  assert.equal(after.status, 400);
+});
+
+test('a sample can only be handed to somebody who works samples', async () => {
+  const enquiry = await raiseEnquiry();
+  const sample = await requestSample(enquiry._id);
+  const nandhiniId = await tokenOwnerId(nandhini);
+  const meeraId = await tokenOwnerId(meera);
+
+  const toMarketing = await api(`/api/samples/${sample._id}/assign`, { method: 'POST', token: meera, body: { assignedTo: nandhiniId } });
+  assert.equal(toMarketing.status, 400, toMarketing.json.message);
+  assert.match(toMarketing.json.message, /does not work samples/);
+
+  const viaPatch = await api(`/api/samples/${sample._id}`, { method: 'PATCH', token: meera, body: { assignedTo: nandhiniId } });
+  assert.equal(viaPatch.status, 400, 'the edit door has the same rule');
+
+  const toBench = await api(`/api/samples/${sample._id}/assign`, { method: 'POST', token: meera, body: { assignedTo: meeraId } });
+  assert.equal(toBench.status, 200, toBench.json.message);
+  assert.equal(String(idOf(toBench.json.data.assignedTo)), String(meeraId));
+
+  /* Marketing cannot take one either: "mine" on a screen they never open. */
+  const taken = await api(`/api/samples/${sample._id}/assign`, { method: 'POST', token: nandhini, body: {} });
+  assert.equal(taken.status, 403);
+});
+
+test('a sample is not born late because the enquiry’s delivery date has passed', async () => {
+  const { defaultRequiredDate } = await import('../src/services/sampling.service.js');
+  const morning = new Date('2026-03-10T04:30:00.000Z'); // 10:00 IST
+  const passed = defaultRequiredDate({ requiredDeliveryDate: new Date('2026-03-01T00:00:00.000Z') }, morning);
+  assert.ok(passed > morning, `due ${passed.toISOString()} is already behind ${morning.toISOString()}`);
+  const ahead = defaultRequiredDate({ requiredDeliveryDate: new Date('2026-03-10T06:00:00.000Z') }, morning);
+  assert.equal(ahead.toISOString(), '2026-03-10T06:00:00.000Z', 'a delivery date still ahead caps the sample as before');
+});
+
 /* ------------------------------ Closing the enquiry ------------------------------ */
 
 test('Task Closed on the enquiry takes its unsent sample off the bench', async () => {

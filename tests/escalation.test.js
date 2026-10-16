@@ -147,22 +147,59 @@ test('nothing escalates before the required date', async () => {
 });
 
 test('crossing the required date reaches the bench and the person waiting', async () => {
-  const sample = await sampleDue(-0.5);
+  const sample = await sampleDue(-1);
 
   const raised = await runSamplingEscalations({ now: Date.now() });
   const entry = raised.find((row) => row.sample === sample.number);
   assert.ok(entry, 'it should have escalated');
   assert.equal(entry.level, 1);
 
-  // §25 tier one: sampling in-charge and marketing, which here is the bench and the asker.
-  const bench = await tasksFor(meera);
+  /*
+   * §25 tier one: sampling in-charge and marketing. A request nobody has picked up is one task
+   * on the bench's shared queue, not a copy for every bench member — six late samples and four
+   * people used to make thirty tasks a morning — and the asker hears.
+   */
+  const Todo = mongoose.model('Todo');
+  const shared = await Todo.find({ originKey: `sample:${sample._id}:escalation:1`, completed: false }).lean();
+  assert.equal(shared.filter((task) => !task.user).length, 1, 'one task on the sampling queue');
+  assert.equal(shared.find((task) => !task.user).department, 'sampling');
+  const bench = (await api('/api/workspace/todos?scope=department', { token: meera })).json.data;
+  assert.ok(bench.some((task) => task.title.includes(sample.number) && task.title.includes('overdue')), 'the bench sees it on its queue');
   const marketing = await tasksFor(nandhini);
-  assert.ok(bench.some((task) => task.title.includes(sample.number) && task.title.includes('overdue')));
   assert.ok(marketing.some((task) => task.title.includes(sample.number)));
+  assert.equal(shared.length, 2, 'the shared task and the asker’s, nothing else');
 
   // Management is not troubled at this tier.
   const management = await tasksFor(admin);
   assert.ok(!management.some((task) => task.title.includes(sample.number)));
+});
+
+test('a late sample somebody has picked up tasks that person, not the whole bench', async () => {
+  const sample = await sampleDue(-1);
+  const meeraId = (await api('/api/auth/me', { token: meera })).json.data.id;
+  await api(`/api/samples/${sample._id}/assign`, { method: 'POST', token: meera, body: { assignedTo: meeraId } });
+
+  await runSamplingEscalations({ now: Date.now() });
+
+  const Todo = mongoose.model('Todo');
+  const tasks = await Todo.find({ originKey: `sample:${sample._id}:escalation:1`, completed: false }).lean();
+  assert.ok(tasks.some((task) => String(task.user) === String(meeraId)), 'the assignee is tasked');
+  assert.ok(!tasks.some((task) => !task.user), 'and nothing lands on the shared queue');
+  assert.equal(tasks.length, 2, 'the assignee and the asker');
+});
+
+test('a sample is late from the morning after the day it was wanted, not the minute its time passes', async () => {
+  const { lateSince } = await import('../src/models/Sample.js');
+  const sample = await sampleDue(0);
+  const due = new Date((await Sample.findById(sample._id)).requiredDate);
+
+  /* The evening of the due day: the bench still has it. */
+  const evening = await runSamplingEscalations({ now: due.getTime() + 60 * 60 * 1000 });
+  assert.ok(!evening.some((row) => row.sample === sample.number), 'not late an hour after its time');
+
+  /* Breakfast the next day: late, on the same rule the queue and the day screen use. */
+  const morning = await runSamplingEscalations({ now: lateSince(due).getTime() + 60 * 1000 });
+  assert.equal(morning.find((row) => row.sample === sample.number)?.level, 1);
 });
 
 test('more than a day late reaches management', async () => {
@@ -180,10 +217,12 @@ test('more than a day late reaches management', async () => {
 });
 
 test('a sample climbs the tiers rather than skipping or repeating them', async () => {
+  const { lateSince } = await import('../src/models/Sample.js');
   const sample = await sampleDue(0);
-  const due = new Date((await Sample.findById(sample._id)).requiredDate).getTime();
+  /* "Crossed" is the morning after the day it was wanted [models/Sample.js `isLate`]. */
+  const due = lateSince((await Sample.findById(sample._id)).requiredDate).getTime();
 
-  // An hour past its date: tier one.
+  // An hour past: tier one.
   await runSamplingEscalations({ now: due + 60 * 60 * 1000 });
   assert.equal((await Sample.findById(sample._id)).escalationLevel, 1);
 
@@ -230,7 +269,7 @@ test('a closed sample stops escalating', async () => {
 });
 
 test('the escalation is not undone when the sample finally moves', async () => {
-  const sample = await sampleDue(-0.5);
+  const sample = await sampleDue(-1);
   await runSamplingEscalations({ now: Date.now() });
 
   await api(`/api/samples/${sample._id}/status`, {

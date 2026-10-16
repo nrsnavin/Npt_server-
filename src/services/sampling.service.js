@@ -68,8 +68,13 @@ export function defaultRequiredDate(enquiry, from = new Date()) {
   /* At exactly five, too: a sample due this instant is a sample that was never askable. */
   if (target <= from) target.setDate(target.getDate() + 1);
 
+  /*
+   * A delivery date already behind us caps nothing: it would hand out a due date in the past,
+   * and the request would be born late — red before anybody has seen it, escalated at the next
+   * sweep for a day nobody could have met. The enquiry's own date is the enquiry's problem.
+   */
   const delivery = enquiry?.requiredDeliveryDate ? new Date(enquiry.requiredDeliveryDate) : null;
-  return delivery && delivery < target ? delivery : target;
+  return delivery && delivery > from && delivery < target ? delivery : target;
 }
 
 /** An id, whether the field was populated or left as a reference. */
