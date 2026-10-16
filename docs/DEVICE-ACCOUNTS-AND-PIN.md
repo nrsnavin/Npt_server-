@@ -58,3 +58,28 @@ Web: `src/auth/accounts.js`, `src/auth/pinCrypto.js`, `src/auth/idle.js`, `src/c
 
 Tests: `web/tests/accounts.test.js`, `server/tests/security-policy.test.js`; the flow was driven
 in Chromium (add, switch, set PIN, lock, wrong and right PIN, idle lock, sign out).
+
+## Security review (October 2026)
+
+Fixed:
+
+- Wrong-PIN tries are counted on the account row in storage, so a reload does not hand out
+  fresh tries; five wrong still signs the account out of the device.
+- Keys pressed on the lock screen stay on it: a capture-phase guard stops every key from reaching
+  the page's own shortcuts underneath (list keys, notes, the palette).
+- PBKDF2 at 300 000 rounds; the copy nudges towards six digits. A short PIN remains guessable
+  offline by whoever has a copy of the browser's storage; the token behind it lapses in seven
+  days, and a stolen storage dump is the same threat as before the PIN existed.
+- A switch replaces the token held in memory for the lock, so the profile fetch after a switch
+  is the new person's.
+- Server: a server started with `NODE_ENV` unset is treated as production for the secret check
+  (it refuses the development JWT secret and short secrets), shows no stack traces, and warns
+  loudly at start-up. The root-mounted `/public` document routes carry the same rate limit as
+  `/api`.
+
+Known and accepted:
+
+- Tokens of accounts without a PIN sit in the browser's storage in the clear, as the single
+  token always did. A PIN for everyone (Admin's policy) removes that.
+- The lock screen's **Switch account** opens an account without a PIN with no PIN, by that
+  person's own choice.

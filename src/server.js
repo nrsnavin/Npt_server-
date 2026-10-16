@@ -2,7 +2,7 @@
 import './config/timezone.js';
 import app from './app.js';
 import { installProcessGuards } from './config/processGuards.js';
-import { corsProblem, env, isProduction, secretProblem } from './config/env.js';
+import { corsProblem, env, isProduction, nodeEnvSet, secretProblem } from './config/env.js';
 import { startBackground } from './background.js';
 import { connectCache, disconnectCache } from './services/cache.service.js';
 import { connectDatabase, disconnectDatabase } from './config/db.js';
@@ -55,6 +55,9 @@ function checkOtpDelivery() {
 async function start() {
   installProcessGuards();
   try {
+    if (!nodeEnvSet) {
+      console.warn('NODE_ENV is not set. Set NODE_ENV=production on a live server (pm2 ecosystem.config.cjs does). Secrets are checked as for production; stack traces and dev-only replies are off.');
+    }
     /* Before anything else: a production server on the development secret must not come up. */
     const secret = secretProblem();
     if (secret) throw new Error(secret);
