@@ -1,7 +1,7 @@
 import Customer from '../models/Customer.js';
 import { isManagement } from '../utils/departments.js';
 import Dispatch from '../models/Dispatch.js';
-import Enquiry from '../models/Enquiry.js';
+import Enquiry, { checkPending } from '../models/Enquiry.js';
 import { CLOSED_STAGE } from '../config/enquiryStages.js';
 import Quotation from '../models/Quotation.js';
 import Receivable from '../models/Receivable.js';
@@ -35,8 +35,15 @@ import { sendPush } from './push.service.js';
 const isAdmin = isManagement;
 const idOf = (value) => String(value?._id || value || '');
 
-/** Admin only: handing an enquiry to someone else is Admin's decision, not its owner's. */
-export const mayDelegate = (user) => isAdmin(user);
+/**
+ * Admin, always: handing a worked enquiry to someone else is Admin's decision, not its owner's.
+ * And the owner of a draft still being checked [`checkPending`]: an enquiry read off a photo
+ * lands on whoever captured it, and the person checking it says whose it really is — the
+ * buyer's marketing person, or a colleague — on the draft screen itself, before any department
+ * is asked for anything. Once checked, it is Admin's call again.
+ */
+export const mayDelegate = (user, enquiry) =>
+  isAdmin(user) || Boolean(enquiry && checkPending(enquiry) && idOf(enquiry.assignedTo) === idOf(user?._id));
 
 /**
  * Who an enquiry may go to: everyone on the marketing team, every Admin, and the person handing
@@ -90,7 +97,7 @@ export async function moveWorkWith({ enquiry, from, to }) {
 
 export async function delegateEnquiry({ enquiry, to, note, user }) {
   if (!mayDelegate(user, enquiry)) {
-    throw ApiError.forbidden('Only Admin can hand an enquiry to someone else');
+    throw ApiError.forbidden('Only Admin can hand an enquiry to someone else — or its owner, while the draft is still being checked');
   }
   const from = idOf(enquiry.assignedTo);
   if (idOf(to) === from) throw ApiError.badRequest('It is already theirs');

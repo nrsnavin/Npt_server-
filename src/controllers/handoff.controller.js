@@ -1,4 +1,5 @@
 import Enquiry, { checkPending } from '../models/Enquiry.js';
+import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
 import Todo from '../models/Todo.js';
 import Attachment from '../models/Attachment.js';
 import { bufferOf, put, remove, safeFilename } from '../services/storage.service.js';
@@ -74,10 +75,20 @@ export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) =>
     enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, brief: req.body.brief,
     priority: req.body.priority, requiredDate: req.body.requiredDate || undefined, addToOpen: req.body.addToOpen === true, order: req.body.order, user: req.user,
   });
+  /*
+   * Create Quotation raises the costing sheet on the enquiry [handoff `openWorkRecord`]. The
+   * reply names it, so somebody who costs quotations themselves can be taken straight to it.
+   */
+  const quotation = req.body.kind === 'create_quotation'
+    ? await Quotation.findOne({ enquiry: enquiry._id, status: { $nin: CLOSED_QUOTATION_STATUSES } }).select('_id number status').lean()
+    : null;
   res.status(201).json({
     success: true,
     /* `addedTo`: the department already had this task open, and the request went onto it. */
-    data: { task: await task.populate(TASK_POPULATE), stage: enquiry.stage, addedTo: Boolean(task.$locals?.addedTo) },
+    data: {
+      task: await task.populate(TASK_POPULATE), stage: enquiry.stage, addedTo: Boolean(task.$locals?.addedTo),
+      ...(quotation ? { quotation } : {}),
+    },
   });
 }));
 
