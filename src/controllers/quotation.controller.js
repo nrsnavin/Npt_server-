@@ -1,7 +1,10 @@
 import { isManagement } from '../utils/departments.js';
 import Quotation, {
-  CLOSED_QUOTATION_STATUSES, UNSENT_STATUSES, settleLine,
+  CLOSED_QUOTATION_STATUSES, UNSENT_STATUSES, settleLine, validityPassed,
 } from '../models/Quotation.js';
+import { startOfIndiaDay } from '../utils/indiaDay.js';
+import { withOperationLock } from '../services/operationLock.service.js';
+import { lastClosedQuotationFor } from '../services/costingRequest.service.js';
 import Enquiry from '../models/Enquiry.js';
 import Customer from '../models/Customer.js';
 import Mould, { MATERIALS, mouldWithPhoto } from '../models/Mould.js';
@@ -192,6 +195,37 @@ async function tradedItemFor(input, { mould, fallbackModel } = {}) {
 /** A model named only by its tool counts — "the 420, same as last time". */
 const describesItem = (row) => Boolean(row?.mould || hasRequirement(row));
 
+/** What a costing is made of, and travels from one quotation's line to the next one's. */
+const COSTING_FIELDS = [
+  'materialRef', 'hookRef', 'clipRef', 'printRef', 'material', 'category', 'packing', 'tradedItem',
+  'procurement', 'printing', 'markupPercent', 'minimumOverride',
+];
+
+/**
+ * Copies the costing of each model from a previous quotation onto the new lines that name the
+ * same model (by tool, else by model number), and says how many it reached. The offered price,
+ * the sign-off and the refusal stay behind: they belonged to the offer the buyer answered.
+ */
+function seedCosting(lines, previous) {
+  const key = (line) => String(line.mould?._id || line.mould || '') || `#${String(line.modelNumber || '').trim().toLowerCase()}`;
+  const costed = new Map();
+  for (const line of previous.lines || []) {
+    if (line.totalCost || line.cost?.gramWeight) costed.set(key(line), line);
+  }
+  let reached = 0;
+  for (const line of lines) {
+    const from = costed.get(key(line));
+    if (!from) continue;
+    for (const field of COSTING_FIELDS) {
+      const value = from[field]?._id ?? from[field];
+      if (value !== undefined && value !== null) line[field] = value;
+    }
+    line.cost = { ...(from.cost?.toObject?.() ?? from.cost ?? {}) };
+    reached += 1;
+  }
+  return reached;
+}
+
 /** The enquiry's models, one line each, with the registers its requirement names. */
 export function linesForEnquiry(enquiry) {
   const items = (enquiry.items || []).filter(describesItem);
@@ -227,9 +261,8 @@ function assertValidityAhead(value) {
   if (value === undefined || value === null || value === '') return;
   const until = new Date(value);
   if (Number.isNaN(until.getTime())) return;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  if (until < today) {
+  /* Today is India's today, whatever the server's clock is set to. */
+  if (until < startOfIndiaDay()) {
     throw ApiError.badRequest(
       'A quotation cannot be given a validity date that has already passed — it would be expired before it was sent.'
     );
@@ -252,7 +285,7 @@ async function assertQuotationLinks(user, { customerId, enquiryId, assignedTo, o
 }
 
 /** What the buyer reads on a line — change any of it after sending and it is a new offer. */
-const OFFER_FIELDS = ['modelNumber', 'quantity', 'moq', 'colour', 'unitPrice'];
+const OFFER_FIELDS = ['modelNumber', 'quantity', 'moq', 'colour', 'unitPrice', 'remarks'];
 const DOCUMENT_FIELDS = ['gstPercent', 'isExport', 'paymentTerms', 'deliveryTerms', 'freightTerms', 'packing', 'validUntil', 'remarks'];
 
 const offerOf = (lines = []) =>
@@ -524,18 +557,33 @@ export async function newQuotation(fields, user, { system = false } = {}) {
     await assertQuotationLinks(user, { customerId: customer._id, enquiryId: enquiry._id, assignedTo: fields.assignedTo, owner });
   }
 
-  /* Rows the request leaves blank take the enquiry's model and tool at the same position. */
+  /*
+   * Re-quoting after a refusal (or a withdrawal) does not start from nothing: the last closed
+   * quotation on the enquiry costed these models, and that costing — the resin, the parts, the
+   * build-up, the markup, the job's own floor — comes across by model. The offered price does
+   * not: the buyer said no to it, and the next price is the Quotation department's to decide
+   * with the refusal note beside the sheet. Where the enquiry itself names no model, the models
+   * the buyer was last quoted are the basis.
+   */
+  const previous = await lastClosedQuotationFor(enquiry._id);
   const fromEnquiry = linesForEnquiry(enquiry);
+  const described = enquiry.mould || hasRequirement(enquiry.requirement || {}) || (enquiry.items || []).some(describesItem);
+  const basis = !described && previous?.lines?.length
+    ? previous.lines.map((line) => ({ mould: line.mould?._id || line.mould, modelNumber: line.modelNumber }))
+    : fromEnquiry;
+
+  /* Rows the request leaves blank take the basis's model and tool at the same position. */
   const asked = fields.lines?.length
     ? fields.lines.map((row, index) => ({
       ...row,
-      mould: row.mould ?? (row.modelNumber ? undefined : fromEnquiry[index]?.mould),
-      modelNumber: row.modelNumber ?? (row.mould ? undefined : fromEnquiry[index]?.modelNumber),
+      mould: row.mould ?? (row.modelNumber ? undefined : basis[index]?.mould),
+      modelNumber: row.modelNumber ?? (row.mould ? undefined : basis[index]?.modelNumber),
     }))
-    : fromEnquiry;
+    : basis;
   if (asked.length > MAX_LINES) throw ApiError.badRequest(`A quotation holds ${MAX_LINES} models`);
   const mayCost = Boolean(user) && seesCosting(user);
   const lines = await Promise.all(asked.map((row) => lineFrom(row, { mayCost })));
+  const seeded = previous ? seedCosting(lines, previous) : 0;
 
   const { lines: _l, customer: _c, enquiry: _e, assignedTo: _a, ...terms } = fields;
   const quotation = new Quotation({
@@ -559,7 +607,10 @@ export async function newQuotation(fields, user, { system = false } = {}) {
   quotation.$locals.by = user?._id;
   quotation.revisions = [snapshotOf(quotation, 0, user || { _id: owner })];
   await quotation.validate();
-  quotation.statusHistory = [{ to: quotation.status, by: user?._id }];
+  quotation.statusHistory = [{
+    to: quotation.status, by: user?._id,
+    note: seeded ? `Costing carried from ${previous.number} (${seeded} model${seeded === 1 ? '' : 's'}); the price is new` : undefined,
+  }];
 
   await quotation.save();
   await publish(EVENTS.QUOTATION_CREATED, { quotation, by: user });
@@ -704,6 +755,9 @@ export const decideLine = asyncHandler(transactional(async (req, res) => {
 
   const quotation = await Quotation.findById(req.params.id);
   if (!quotation) throw ApiError.notFound('Quotation not found');
+  if (CLOSED_QUOTATION_STATUSES.includes(quotation.status)) {
+    throw ApiError.badRequest(`A ${quotation.status} quotation has nothing left to sign`);
+  }
   const line = lineOf(quotation, req);
   if (line.status !== 'approval_pending') {
     throw ApiError.badRequest(`${line.modelNumber || 'This line'} is not waiting on an approval`);
@@ -716,6 +770,8 @@ export const decideLine = asyncHandler(transactional(async (req, res) => {
   if (approve) {
     line.status = 'approved';
     line.approvedPrice = line.unitPrice;
+    /* The floor as Admin saw it: a cost that rises later is a new question [settleLine]. */
+    line.approvedFloor = line.minimumSellingPrice ?? undefined;
     line.approvedBy = req.user._id;
     line.approvedAt = new Date();
     line.rejectedPrice = undefined;
@@ -726,7 +782,12 @@ export const decideLine = asyncHandler(transactional(async (req, res) => {
     line.rejectionNote = note;
   }
   quotation.$locals.by = req.user._id;
-  quotation.$locals.note = `${approve ? 'Approved' : 'Refused'} ${line.modelNumber || 'a line'}${note ? ` — ${note}` : ''}`;
+  /*
+   * The reason stays on the line, for whoever may see costing [pricingVisibility]. The history
+   * line everyone reads says only what happened: an Admin's "cost is 7.20, cannot go under 7.90"
+   * is the cost base, and marketing reads the history.
+   */
+  quotation.$locals.note = `${approve ? 'Approved' : 'Refused'} ${line.modelNumber || 'a line'}`;
 
   const was = quotation.status;
   await quotation.save();
@@ -806,6 +867,10 @@ export const reviseQuotation = asyncHandler(transactional(async (req, res) => {
   if (CLOSED_QUOTATION_STATUSES.includes(quotation.status)) {
     throw ApiError.badRequest(`A ${quotation.status} quotation cannot be revised — raise a new one`);
   }
+  /* A revision is a new offer after one the buyer saw. Before that, the draft is simply edited. */
+  if (!quotation.sentAt) {
+    throw ApiError.badRequest(`${quotation.number} has not gone to the buyer yet — edit the draft instead of revising it`);
+  }
   const { lines, note, ...terms } = req.body;
   assertValidityAhead(terms.validUntil);
 
@@ -845,6 +910,16 @@ export const sendQuotation = asyncHandler(async (req, res) => {
   const invalid = sendProblem(channels);
   if (invalid) throw ApiError.badRequest(invalid);
 
+  /*
+   * One send at a time per quotation: two clicks, or two tabs, used to both pass the checks
+   * below and both email the buyer. The lock is held through the delivery, so the second
+   * waits and then finds the quotation already sent.
+   */
+  await withOperationLock(`quotation-send:${req.params.id}`, () => deliverAndMarkSent(req, res));
+});
+
+async function deliverAndMarkSent(req, res) {
+  const channels = { email: req.body?.email, whatsapp: req.body?.whatsapp };
   const quotation = await Quotation.findById(req.params.id);
   if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
   if (CLOSED_QUOTATION_STATUSES.includes(quotation.status)) {
@@ -858,6 +933,13 @@ export const sendQuotation = asyncHandler(async (req, res) => {
   }
   const why = whyNotSendable(quotation);
   if (why) throw ApiError.badRequest(why);
+  /* A document that is already expired on the day it goes out is not an offer. */
+  if (validityPassed(quotation)) {
+    throw ApiError.badRequest(
+      `The validity on ${quotation.number} passed on ${new Date(quotation.validUntil).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}. ` +
+        `Give it a new validity date${quotation.sentAt ? ' through a revision' : ''} before sending it.`
+    );
+  }
 
   /* Deliver first; mark it sent only if something went, or nobody asked for a channel (handed over). */
   let deliveries = [];
@@ -886,9 +968,16 @@ export const sendQuotation = asyncHandler(async (req, res) => {
   await quotation.save();
   await publish(EVENTS.QUOTATION_SENT, { quotation, by: req.user });
   res.json({ success: true, data: visibleTo(await loadDetail(quotation._id), req.user), deliveries });
-});
+}
 
-/** What the customer said. Accepting one is what moves the enquiry towards a PO. */
+/**
+ * What the customer said. Accepting one is what moves the enquiry towards a PO.
+ *
+ * The answer is to the offer the buyer holds. After *Revise* the lines on the record are a new
+ * offer that has not gone out, so an answer recorded then would be recorded — and the order
+ * priced — against figures the buyer never saw. The revision they saw is the one marked sent;
+ * it is recorded as the one accepted.
+ */
 export const respondToQuotation = asyncHandler(transactional(async (req, res) => {
   const quotation = await Quotation.findById(req.params.id);
   if (!quotation || !ownsRecord(req.user, quotation)) throw ApiError.notFound('Quotation not found');
@@ -896,15 +985,28 @@ export const respondToQuotation = asyncHandler(transactional(async (req, res) =>
     throw ApiError.badRequest(`This quotation is already ${quotation.status}`);
   }
   if (!quotation.sentAt) throw ApiError.badRequest('This quotation has not been sent, so there is nothing to answer');
+  const current = quotation.revisions.at(-1);
+  if (quotation.status === 'revised' || (current && !current.sentAt)) {
+    throw ApiError.badRequest(
+      `Rev ${quotation.revision} of ${quotation.number} has not gone to the buyer. Send it first, so the answer is to the offer they hold.`
+    );
+  }
 
   const { accepted, note } = req.body;
   if (!accepted && !note?.trim()) {
     throw ApiError.badRequest('Say why it was refused — it is what the next quote is priced against');
   }
   const to = accepted ? 'accepted' : 'rejected';
-  quotation.statusHistory.push({ from: quotation.status, to, by: req.user._id, note });
+  /* Allowed after the validity has passed, by the owner's choice — and said so on the record. */
+  const late = validityPassed(quotation);
+  quotation.statusHistory.push({
+    from: quotation.status, to, by: req.user._id,
+    note: [note, late ? `after the validity passed on ${new Date(quotation.validUntil).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}` : null].filter(Boolean).join(' — ') || undefined,
+  });
   quotation.status = to;
   quotation.respondedAt = new Date();
+  quotation.answeredAfterValidity = late;
+  if (accepted) quotation.acceptedRevision = quotation.revision;
   if (!accepted) quotation.rejectionNote = note;
 
   await quotation.save();

@@ -198,7 +198,7 @@ test('every money field on the quotation has been ruled on', async () => {
       .map(([name]) => name);
   /* Facts about what happens next, or about the document, rather than figures of cost. */
   const NOT_FIGURES = ['id', 'belowMinimum', 'needsApproval', 'linesAwaitingApproval', 'isExpired', 'soleLine',
-    'lineCount', 'revision', 'gstPercent', 'netValue', 'totalValue', 'lineValue'];
+    'lineCount', 'revision', 'acceptedRevision', 'gstPercent', 'netValue', 'totalValue', 'lineValue'];
   const virtualsOf = (schema) => Object.keys(schema.virtuals).filter((name) => !NOT_FIGURES.includes(name));
   const ruled = (name) => {
     const root = name.split('.')[0];

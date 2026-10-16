@@ -53,6 +53,22 @@ export function registerPricingSubscribers() {
     EVENTS.ENQUIRY_PRICING_REQUIRED,
     safely('costing request', async ({ enquiry }) => {
       /*
+       * A prospect has no customer record, and a quotation is the buyer's [enquiryLink]. Raising
+       * one here would throw, the outbox would retry it eight times and drop it, and nobody
+       * would hear. The status change stands; the owner is told what to do first.
+       */
+      if (!enquiry.customer) {
+        await raiseTask({
+          user: enquiry.assignedTo?._id || enquiry.assignedTo,
+          title: `Convert ${enquiry.prospect?.name || 'the prospect'} to a customer, then ask for the price`,
+          notes: `${enquiry.number} is a prospect's enquiry. A quotation can only be raised on a customer — convert them from the enquiry, and the costing is raised the moment you do.`,
+          priority: 'high',
+          link: `/enquiries/${enquiry._id}`,
+          originKey: key(enquiry._id, 'convert-first'),
+        });
+        return;
+      }
+      /*
        * The costing record. Who prices it is no longer a task per person: the enquiry itself
        * moves to Quotation and is that department's task [subscribers/handoff.subscriber.js].
        */

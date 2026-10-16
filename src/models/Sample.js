@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import belongsToEnquiry from './belongsToEnquiry.js';
 import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from './Mould.js';
 import { hasRequirement, requirementFields } from './requirement.schema.js';
+import { startOfIndiaDay, startOfNextIndiaDay } from '../utils/indiaDay.js';
 
 /**
  * The sample statuses [BLUEPRINT §4], in the order work moves through them.
@@ -49,15 +50,7 @@ export const WITH_CUSTOMER_STATUSES = ['dispatched', 'delivered', 'customer_feed
  */
 export const NOT_ESCALATED_STATUSES = [...CLOSED_SAMPLE_STATUSES, ...WITH_CUSTOMER_STATUSES, 'not_available'];
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-const IST_OFFSET_MS = 330 * 60 * 1000;
-
-/** The start of the day in India that `now` falls in, as an instant. */
-export function startOfIndiaDay(now = new Date()) {
-  const local = new Date(new Date(now).getTime() + IST_OFFSET_MS);
-  local.setUTCHours(0, 0, 0, 0);
-  return new Date(local.getTime() - IST_OFFSET_MS);
-}
+export { startOfIndiaDay };
 
 /**
  * One rule for "late", on every screen and in the sweep: a sample is late from the morning
@@ -71,7 +64,7 @@ export function startOfIndiaDay(now = new Date()) {
  * bench has said it cannot make, and a closed one are never late [`NOT_ESCALATED_STATUSES`].
  */
 export const lateBefore = (now = new Date()) => startOfIndiaDay(now);
-export const lateSince = (due) => new Date(startOfIndiaDay(due).getTime() + DAY_MS);
+export const lateSince = (due) => startOfNextIndiaDay(due);
 export function isLate(sample, now = new Date()) {
   if (!sample?.requiredDate || NOT_ESCALATED_STATUSES.includes(sample.status)) return false;
   return new Date(sample.requiredDate) < lateBefore(now);

@@ -1,7 +1,7 @@
 import Query, { roomFilter, seesEveryQuery } from '../models/Query.js';
 import { isManagement } from '../utils/departments.js';
 import QueryRead from '../models/QueryRead.js';
-import Quotation from '../models/Quotation.js';
+import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
 import Sample from '../models/Sample.js';
 import Todo from '../models/Todo.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -62,7 +62,7 @@ async function queryItems(user) {
 /* Prices under their minimum, waiting on Admin's signature [§9]. */
 async function approvalItems(user) {
   if (!isManagement(user)) return [];
-  const sheets = await Quotation.find({ 'lines.status': 'approval_pending' })
+  const sheets = await Quotation.find({ 'lines.status': 'approval_pending', status: { $nin: CLOSED_QUOTATION_STATUSES } })
     .select('number customer lines.status lines.modelNumber updatedAt')
     .populate('customer', 'name')
     .sort({ updatedAt: -1 })

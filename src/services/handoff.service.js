@@ -771,6 +771,9 @@ async function closeOpenTasks(enquiry, why, user, { except } = {}) {
   const enquiryId = enquiry._id;
   const { cancelOpenSamples } = await import('./sampling.service.js');
   await cancelOpenSamples(enquiry, { note: `${enquiry.number} closed: ${why}`, by: user });
+  /* And its quotation [costingRequest `withdrawQuotationsFor`]: Admin is not asked to sign a price on an enquiry that is over. */
+  const { withdrawQuotationsFor } = await import('./costingRequest.service.js');
+  await withdrawQuotationsFor(enquiry, { note: `${enquiry.number} closed: ${why}`, by: user });
   const open = await Todo.find({
     enquiry: enquiryId, kind: { $exists: true }, completed: false,
     $nor: [{ kind: 'lr_copy', resultFile: { $exists: true } }],
