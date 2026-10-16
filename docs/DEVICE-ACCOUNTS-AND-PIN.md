@@ -26,9 +26,12 @@ Web: `src/auth/accounts.js`, `src/auth/pinCrypto.js`, `src/auth/idle.js`, `src/c
 
 ## The PIN
 
-- The PIN seals the account's token: a key derived from the PIN (PBKDF2, 150 000 rounds, a salt
-  per seal) encrypts it (AES-GCM, a nonce per seal). The PIN never leaves the browser and is
-  never sent to the server.
+- Every token in storage is wrapped with a device key (`src/auth/deviceKey.js`): an AES-GCM
+  CryptoKey the browser made and keeps non-extractable in IndexedDB, so a copy of localStorage
+  alone holds nothing that signs in. The API client holds the plain token in memory only.
+- The PIN seals the token a second time: a key derived from the PIN (PBKDF2, 300 000 rounds, a
+  salt per seal) encrypts it (AES-GCM, a nonce per seal). Six to eight digits. The PIN never
+  leaves the browser and is never sent to the server.
 - Locking drops the plain token from storage and keeps the seal: while locked, the browser holds
   nothing at rest a request could use. The tab itself keeps the token in memory, so the page
   stays mounted (inert and unseen) under the lock screen: a half-filled form is still there after
@@ -77,9 +80,12 @@ Fixed:
   loudly at start-up. The root-mounted `/public` document routes carry the same rate limit as
   `/api`.
 
-Known and accepted:
+Closed since:
 
-- Tokens of accounts without a PIN sit in the browser's storage in the clear, as the single
-  token always did. A PIN for everyone (Admin's policy) removes that.
+- Tokens of accounts without a PIN no longer sit in storage in the clear: every stored token is
+  wrapped with the device key. The minimum PIN is six digits.
+
+By policy:
+
 - The lock screen's **Switch account** opens an account without a PIN with no PIN, by that
-  person's own choice.
+  person's own choice. "Everyone must set a device PIN" (Admin, Profile) makes every switch ask.
