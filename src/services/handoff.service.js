@@ -762,8 +762,15 @@ async function returnToMarketing({ enquiry, note, fields, user, system }) {
  * except an LR task whose copy is in: Reception still says In Transit and Delivered on it, and
  * except a collection or PRT case while money is still owed: the enquiry's work is over, the
  * chase is not, and it closes on its own when the money comes [collections `settleCollectionTasks`].
+ *
+ * The enquiry's samples still on the bench go the same way [sampling `cancelOpenSamples`]: a
+ * sample nobody will collect must not stay on the queue and escalate at five. One the buyer
+ * already holds is left alone — its verdict is still worth recording.
  */
-async function closeOpenTasks(enquiryId, why, user, { except } = {}) {
+async function closeOpenTasks(enquiry, why, user, { except } = {}) {
+  const enquiryId = enquiry._id;
+  const { cancelOpenSamples } = await import('./sampling.service.js');
+  await cancelOpenSamples(enquiry, { note: `${enquiry.number} closed: ${why}`, by: user });
   const open = await Todo.find({
     enquiry: enquiryId, kind: { $exists: true }, completed: false,
     $nor: [{ kind: 'lr_copy', resultFile: { $exists: true } }],
@@ -815,7 +822,7 @@ export async function closeEnquiryAutomatically({ enquiry, note, marketing, exce
     outcome: { result: 'done', note, at: new Date() },
     link: `/enquiries/${enquiry._id}`,
   });
-  await closeOpenTasks(enquiry._id, note, undefined, { except });
+  await closeOpenTasks(enquiry, note, undefined, { except });
   await moveStage(enquiry, CLOSED_STAGE, { task: record, note, heldBy: null, marketing });
   return record;
 }
@@ -893,7 +900,7 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
     outcome: { result: 'done', note: text || undefined, by: user._id, at: new Date() },
   });
 
-  if (kind === 'task_closed') await closeOpenTasks(enquiry._id, text, user);
+  if (kind === 'task_closed') await closeOpenTasks(enquiry, text, user);
   await moveStage(enquiry, handoff.stage, {
     user, task: record, note: text || handoff.label, heldBy: kind === 'task_closed' ? null : undefined,
   });

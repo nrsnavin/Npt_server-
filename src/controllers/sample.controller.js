@@ -22,6 +22,7 @@ import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { raiseTask } from '../services/task.service.js';
 import { requireEnquiry } from '../services/enquiryLink.service.js';
+import { CLOSED_STAGE } from '../config/enquiryStages.js';
 import { transactional } from '../utils/transaction.js';
 
 /**
@@ -878,10 +879,21 @@ export const resample = asyncHandler(transactional(async (req, res) => {
   }
   if (previous.supersededBy) throw ApiError.conflict('A follow-up sample already exists');
 
-  // A standalone request re-samples too: there is simply no enquiry to inherit from.
-  const enquiry = previous.enquiry ? await Enquiry.findById(previous.enquiry) : null;
-  if (previous.enquiry && !enquiry) {
-    throw ApiError.badRequest('The enquiry behind this sample no longer exists');
+  /*
+   * Every sample belongs to an enquiry [services/enquiryLink.service.js], and the next attempt
+   * is no exception. A request raised before that rule, with no enquiry behind it, cannot be
+   * re-sampled as it stands: the model refuses the new record, and the conflict sentence below
+   * would read the number of an enquiry that does not exist. Say what to do instead.
+   */
+  if (!previous.enquiry) {
+    throw ApiError.badRequest(
+      `${previous.number} has no enquiry behind it. Link it to its enquiry first, then raise the next attempt.`
+    );
+  }
+  const enquiry = await Enquiry.findById(previous.enquiry);
+  if (!enquiry) throw ApiError.badRequest('The enquiry behind this sample no longer exists');
+  if (enquiry.stage === CLOSED_STAGE) {
+    throw ApiError.badRequest(`${enquiry.number} is closed. Raise a new enquiry for new work.`);
   }
 
   const carried = {
@@ -925,7 +937,11 @@ export const resample = asyncHandler(transactional(async (req, res) => {
   };
 
   const { sample, created } = await createSampleRequest({ enquiry, ...carried }, req.user);
-  if (!created) throw ApiError.conflict(`${sample.number} is already open against ${enquiry.number}`);
+  if (!created) {
+    throw ApiError.conflict(
+      `${sample.number} is already open against ${enquiry.number}. Work that one, or record its outcome first.`
+    );
+  }
 
   previous.supersededBy = sample._id;
   await previous.save();

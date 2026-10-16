@@ -625,6 +625,114 @@ test('only a modification can be re-sampled', async () => {
   assert.equal(status, 400);
 });
 
+test('a request with no enquiry behind it is told to link one before re-sampling, not a 500', async () => {
+  /*
+   * Every sample belongs to an enquiry now, but a request raised before that rule may still
+   * have none. Re-sampling it used to reach the conflict sentence with `enquiry` null and crash
+   * on `.number`; the model would have refused the new record anyway. It is a refusal that says
+   * what to do.
+   */
+  const Sample = (await import('../src/models/Sample.js')).default;
+  const enquiry = await raiseEnquiry();
+  const first = await requestSample(enquiry._id);
+  await dispatchSample(first._id);
+  await api(`/api/samples/${first._id}/feedback`, {
+    method: 'POST', token: nandhini, body: { outcome: 'modification_required', note: 'Hook a size up' },
+  });
+  /* Straight to the collection: the plugin only guards new records, so an old one can be bare. */
+  await Sample.updateOne({ _id: first._id }, { $unset: { enquiry: 1 } });
+
+  const { status, json } = await api(`/api/samples/${first._id}/resample`, { method: 'POST', token: meera, body: {} });
+  assert.equal(status, 400, json.message);
+  assert.match(json.message, /Link it to its enquiry first/);
+  assert.equal((await Sample.findById(first._id)).supersededBy, undefined, 'nothing was raised');
+});
+
+test('a modification on a closed enquiry cannot be re-sampled', async () => {
+  const enquiry = await raiseEnquiry();
+  const first = await requestSample(enquiry._id);
+  await dispatchSample(first._id);
+  await api(`/api/samples/${first._id}/feedback`, {
+    method: 'POST', token: nandhini, body: { outcome: 'modification_required', note: 'Shoulder wider' },
+  });
+  const closed = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', token: admin, body: { kind: 'task_closed', note: 'Buyer went quiet — closing' },
+  });
+  assert.ok(closed.status < 300, closed.json.message);
+
+  const { status, json } = await api(`/api/samples/${first._id}/resample`, { method: 'POST', token: meera, body: {} });
+  assert.equal(status, 400, json.message);
+  assert.match(json.message, /is closed/);
+});
+
+/* ------------------------------ Closing the enquiry ------------------------------ */
+
+test('Task Closed on the enquiry takes its unsent sample off the bench', async () => {
+  /*
+   * Only a lost enquiry used to cancel its samples. Task Closed left the request open: on the
+   * queue, late at five, escalated to the manager as work nobody wanted.
+   */
+  const Todo = (await import('../src/models/Todo.js')).default;
+  const enquiry = await raiseEnquiry();
+  const sample = await requestSample(enquiry._id);
+  await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status: 'checking_stock' } });
+  await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status: 'sample_available' } });
+  await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status: 'sample_ready' } });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.ok(await Todo.findOne({ originKey: `sample:${sample._id}:ready`, completed: false }), 'the ready notice was raised');
+
+  const closed = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', token: admin, body: { kind: 'task_closed', note: 'Buyer bought elsewhere' },
+  });
+  assert.ok(closed.status < 300, closed.json.message);
+
+  const after = (await api(`/api/samples/${sample._id}`, { token: meera })).json.data;
+  assert.equal(after.status, 'cancelled');
+  const last = after.statusHistory.at(-1);
+  assert.equal(last.from, 'sample_ready');
+  assert.match(last.note, /closed: Buyer bought elsewhere/);
+  assert.equal(await Todo.countDocuments({ originKey: `sample:${sample._id}:ready`, completed: false }), 0, 'and its notice is cleared');
+
+  const queue = await api('/api/samples?status=sample_ready', { token: meera });
+  assert.ok(!queue.json.data.some((row) => row._id === sample._id), 'off the bench');
+});
+
+test('closing the enquiry leaves a sample the buyer already holds as it is', async () => {
+  const enquiry = await raiseEnquiry();
+  const sample = await requestSample(enquiry._id);
+  await dispatchSample(sample._id);
+
+  const closed = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', token: admin, body: { kind: 'task_closed', note: 'Order placed outside the system' },
+  });
+  assert.ok(closed.status < 300, closed.json.message);
+
+  const after = (await api(`/api/samples/${sample._id}`, { token: meera })).json.data;
+  assert.equal(after.status, 'dispatched', 'what went out stays on the record');
+});
+
+test('the automatic close cancels a not-available request too, and says why', async () => {
+  const { closeEnquiryAutomatically } = await import('../src/services/handoff.service.js');
+  const Enquiry = (await import('../src/models/Enquiry.js')).default;
+  const Todo = (await import('../src/models/Todo.js')).default;
+  const enquiry = await raiseEnquiry();
+  const sample = await requestSample(enquiry._id);
+  await api(`/api/samples/${sample._id}/status`, {
+    method: 'POST', token: meera, body: { status: 'not_available', note: 'Mould is out for repair until December' },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  assert.ok(await Todo.findOne({ originKey: `sample:${sample._id}:not-available`, completed: false }), 'marketing was told');
+
+  await closeEnquiryAutomatically({ enquiry: await Enquiry.findById(enquiry._id), note: 'Paid in full — nothing left to send' });
+
+  const after = (await api(`/api/samples/${sample._id}`, { token: meera })).json.data;
+  assert.equal(after.status, 'cancelled');
+  assert.equal(after.statusHistory.at(-1).from, 'not_available');
+  assert.match(after.statusHistory.at(-1).note, /closed: Paid in full/);
+  assert.equal(await Todo.countDocuments({ originKey: `sample:${sample._id}:not-available`, completed: false }), 0);
+  assert.equal((await Enquiry.findById(enquiry._id)).stage, 'closed');
+});
+
 /* --------------------------- Requests with no enquiry --------------------------- */
 
 test('a sample is raised on an enquiry, never on its own', async () => {

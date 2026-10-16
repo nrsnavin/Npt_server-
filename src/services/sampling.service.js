@@ -1,8 +1,41 @@
-import Sample, { ANSWERED_SAMPLE_STATUSES } from '../models/Sample.js';
+import Sample, { ANSWERED_SAMPLE_STATUSES, CLOSED_SAMPLE_STATUSES, ON_THE_BENCH_STATUSES } from '../models/Sample.js';
 import Mould from '../models/Mould.js';
 import { copyRequirement } from '../models/requirement.schema.js';
 import { nextNumber } from './numbering.service.js';
 import { EVENTS, publish } from './events.service.js';
+import { resolveTasks } from './task.service.js';
+
+/** The statuses where the plant still has the piece, or has said it cannot make it. */
+export const UNSENT_SAMPLE_STATUSES = [...ON_THE_BENCH_STATUSES, 'not_available'];
+
+/** Every handover a sample can have queued [subscribers/sampling.subscriber.js `key`]. */
+const SAMPLE_TASK_KINDS = ['prepare', 'acknowledged', 'ready', 'feedback', 'not-available', 'rejected', 'modification'];
+
+/**
+ * Takes the enquiry's samples off the bench, with why, and clears the tasks they queued.
+ *
+ * Two callers, two scopes. A lost enquiry cancels everything still open on it, the bag with
+ * the buyer included: nobody will buy it. A closed enquiry (Task Closed, or the automatic close
+ * when the order is paid and sent) cancels only what has not gone out — `UNSENT_SAMPLE_STATUSES`
+ * — and leaves a sample the buyer holds as it is, because its verdict is still a fact worth
+ * recording and the bench has nothing left to do on it. Left open, an unsent sample stays on
+ * the queue, escalates at five, and tells the manager about work nobody wants.
+ */
+export async function cancelOpenSamples(enquiry, { note, statuses = UNSENT_SAMPLE_STATUSES, by } = {}) {
+  const open = await Sample.find({
+    enquiry: enquiry._id,
+    status: { $in: statuses.filter((status) => !CLOSED_SAMPLE_STATUSES.includes(status)) },
+  });
+  for (const sample of open) {
+    const from = sample.status;
+    sample.status = 'cancelled';
+    sample.statusHistory.push({ from, to: 'cancelled', by: by?._id, note });
+    await sample.save();
+    for (const kind of SAMPLE_TASK_KINDS) await resolveTasks(`sample:${sample._id}:${kind}`);
+    await publish(EVENTS.SAMPLE_STATUS_CHANGED, { sample, from, to: 'cancelled', by });
+  }
+  return open;
+}
 
 /**
  * When a sample is due by default [§6].
