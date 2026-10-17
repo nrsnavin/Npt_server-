@@ -48,6 +48,9 @@ const latestOf = (task) => {
   const last = (task.updates || []).at(-1);
   return last ? { note: last.note || last.text || null, at: last.at, by: person(last.by) } : null;
 };
+/** The last few, newest first, for the row opened on the board. */
+const recentOf = (task) => (task.updates || []).slice(-4).reverse()
+  .map((entry) => ({ note: entry.note || entry.text || null, statusLabel: entry.statusLabel || null, at: entry.at, by: person(entry.by) }));
 
 export const listProductionQueue = asyncHandler(async (req, res) => {
   if (!READERS.some((moduleKey) => canRead(req.user, moduleKey))) {
@@ -102,7 +105,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
       task: {
         _id: task._id, status: task.status, statusLabel: statusLabelOf(task), issue: issueOf(task), with: person(task.user),
         dueDate: task.dueDate || null, late: Boolean(task.dueDate && task.dueDate < now), priority: task.priority || 'normal',
-        brief: task.brief || {}, createdAt: task.createdAt, raisedBy: person(task.createdBy), latest: latestOf(task),
+        brief: task.brief || {}, createdAt: task.createdAt, raisedBy: person(task.createdBy), latest: latestOf(task), recent: recentOf(task),
         attention: task.attention ? { note: task.attention.note, at: task.attention.at } : null,
       },
       enquiry: {

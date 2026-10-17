@@ -100,6 +100,24 @@ async function todoScopeFilter(req) {
   return { $or: [{ user: req.user._id }, { 'escalation.by': req.user._id }] };
 }
 
+/**
+ * Tasks raised for my departments since a moment — what the app polls between pushes, so a new
+ * task shows as a toast within seconds even on a device that never allowed notifications
+ * [web: components/LiveAlerts.jsx]. Not the ones I raised myself; five at most, newest last.
+ */
+export const freshTodos = asyncHandler(async (req, res) => {
+  const since = new Date(req.query.since || 0);
+  const from = Number.isNaN(since.getTime()) ? new Date(0) : since;
+  const departments = departmentsOf(req.user);
+  const rows = departments.length
+    ? await Todo.find({
+      department: { $in: departments }, completed: false, createdAt: { $gt: from }, kind: { $exists: true },
+      $or: [{ createdBy: { $ne: req.user._id } }, { createdBy: { $exists: false } }],
+    }).select('title department kind link priority createdAt createdBy').populate('createdBy', 'name').sort({ createdAt: 1 }).limit(5).lean()
+    : [];
+  res.json({ success: true, data: rows, meta: { asOf: new Date() } });
+});
+
 export const listTodos = asyncHandler(async (req, res) => {
   const filter = await todoScopeFilter(req);
   if (req.query.status === 'open') filter.completed = false;

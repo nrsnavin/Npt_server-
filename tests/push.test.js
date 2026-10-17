@@ -122,3 +122,60 @@ test('a tag pushes to the tagged person’s devices, and to nobody else’s', as
   assert.match(out, /Nandhini S tagged you in QRY-/);
   assert.doesNotMatch(out, new RegExp(`\\[push\\] to user ${ids.kiran}`), 'somebody not tagged was pushed');
 });
+
+test('a task raised for a department pushes to every member’s devices, and the urgent flag rings the thread', async () => {
+  /* Kavitha (despatch) has device 3 from above; Kiran (accounts) device 4. */
+  const enquiry = (await api('/api/enquiries', {
+    method: 'POST', token: nandhini,
+    body: { customer: customerId, requirement: { modelNumber: 'PUSH-1' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const out = await printed(async () => {
+    const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+      method: 'POST', token: nandhini, body: { kind: 'invoice_dispatch', note: 'Send 200 cartons', brief: { schedule: 'Today Dispatch' } },
+    });
+    assert.equal(sent.status, 201, sent.json.message);
+    /* Sent after the commit, off the request: give it a tick. */
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+  assert.match(out, new RegExp(`\\[push\\] to user ${ids.kavitha}`), 'Dispatch was not pushed');
+  assert.match(out, /New task for Dispatch: /);
+  assert.match(out, /raised by Nandhini S/);
+  assert.doesNotMatch(out, new RegExp(`\\[push\\] to user ${ids.kiran}`), 'Accounts was pushed about Dispatch’s task');
+  assert.match(out, /\[task-alert\].*would email Kavitha D/, 'the email, said once without SMTP');
+
+  const { recentAlerts } = await import('../src/services/taskAlert.service.js');
+  const alert = recentAlerts.at(-1);
+  assert.equal(alert.department, 'despatch');
+  assert.deepEqual(alert.to, [ids.kavitha], 'the raiser is not told');
+
+  /* The poll the app runs between pushes: Kavitha sees the task, Kiran does not, Nandhini (who raised it) does not. */
+  const since = new Date(Date.now() - 60000).toISOString();
+  const fresh = (await api(`/api/workspace/todos/fresh?since=${encodeURIComponent(since)}`, { token: kavitha })).json;
+  assert.ok(fresh.data.some((row) => row.department === 'despatch' && row.createdBy?.name === 'Nandhini S'), 'on Kavitha’s poll');
+  assert.ok(fresh.meta.asOf);
+  assert.equal((await api(`/api/workspace/todos/fresh?since=${encodeURIComponent(since)}`, { token: kiran })).json.data.length, 0);
+  assert.equal((await api(`/api/workspace/todos/fresh?since=${encodeURIComponent(fresh.meta.asOf)}`, { token: kavitha })).json.data.length, 0, 'nothing newer than the last poll');
+
+  /* Urgent: everyone in the thread is pushed, not the administrator flagging it. */
+  const query = (await api('/api/queries', {
+    method: 'POST', token: nandhini,
+    body: { customer: customerId, subject: 'Lorry waiting', question: 'Where are the cartons?', participants: [{ department: 'despatch' }] },
+  })).json.data;
+  const flagged = await printed(async () => {
+    const reply = await api(`/api/queries/${query._id}/urgent`, { method: 'POST', token: admin, body: { urgent: true, reason: 'Buyer on the phone' } });
+    assert.equal(reply.status, 200, reply.json.message);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+  assert.match(flagged, new RegExp(`\\[push\\] to user ${ids.kavitha}`), 'the department asked was not pushed');
+  assert.match(flagged, /URGENT: QRY-.*Lorry waiting/);
+  assert.match(flagged, /Navin R flagged it urgent — Buyer on the phone/);
+  assert.doesNotMatch(flagged, new RegExp(`\\[push\\] to user ${ids.kiran}`));
+
+  /* A tag rings on WhatsApp too, urgent or not, when the person has a phone. */
+  await api(`/api/users/${ids.kiran}`, { method: 'PATCH', token: admin, body: { phone: '+919876500099' } });
+  const tagged = await printed(async () => {
+    await api(`/api/queries/${query._id}/messages`, { method: 'POST', token: nandhini, body: { kind: 'note', body: '@Kiran A the invoice?', mentions: [ids.kiran] } });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+  assert.match(tagged, /\[whatsapp\] to \+919876500099/, 'the tag did not ring on WhatsApp');
+});

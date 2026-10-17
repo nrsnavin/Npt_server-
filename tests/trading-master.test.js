@@ -327,6 +327,25 @@ test('the build-up rides the upload, and an update row needs no price; marketing
   assert.equal(edited.json.data.buildUp.clipsCost, 1.2);
 });
 
+test('the build-up names the resin it is costed in, and the item carries that resin’s rate back', async () => {
+  const item = (await api('/api/traded-items?search=PH-17', { token: quoter })).json.data[0];
+  const resin = (await api('/api/materials', { method: 'POST', token: admin, body: { name: 'HIPS for PH-17', type: 'hips', ratePerKg: 104, grammageFactorPercent: 18.8 } })).json.data;
+  const edited = await api(`/api/traded-items/${item._id}`, { method: 'PATCH', token: quoter, body: { buildUp: { ...item.buildUp, material: resin._id, ratePerKg: 100 } } });
+  assert.equal(edited.status, 200, edited.json.message);
+  const seen = (await api(`/api/traded-items/${item._id}`, { token: quoter })).json.data;
+  assert.equal(seen.buildUp.material.name, 'HIPS for PH-17', 'the resin rides with the item');
+  assert.equal(seen.buildUp.material.ratePerKg, 104);
+  assert.equal(seen.buildUp.material.grammageFactorPercent, 18.8);
+  assert.equal(seen.buildUp.ratePerKg, 100, 'and the rate typed over it');
+  const listed = (await api('/api/traded-items?search=PH-17', { token: quoter })).json.data[0];
+  assert.equal(listed.buildUp.material.name, 'HIPS for PH-17', 'on the list too, for the costing sheet');
+  assert.equal((await api(`/api/traded-items/${item._id}`, { token: nandhini })).json.data.buildUp, undefined, 'cost stays hidden');
+  assert.equal((await api(`/api/traded-items/${item._id}`, { method: 'PATCH', token: quoter, body: { buildUp: { material: 'not-an-id' } } })).status, 400);
+  const cleared = await api(`/api/traded-items/${item._id}`, { method: 'PATCH', token: quoter, body: { buildUp: { ...item.buildUp, material: null } } });
+  assert.equal(cleared.status, 200, cleared.json.message);
+  assert.ok(!(await api(`/api/traded-items/${item._id}`, { token: quoter })).json.data.buildUp.material, 'the resin can be taken off');
+});
+
 test('a bought-in piece takes a photo, served to whoever reads the master', async () => {
   const item = (await api('/api/traded-items?search=PH-17', { token: quoter })).json.data[0];
   const jpeg = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(300, 9)]);

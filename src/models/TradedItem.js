@@ -73,10 +73,19 @@ const tradedItemSchema = new mongoose.Schema(
      * and job work, hook, clips and packing per piece. Kept beside the inward price, which the
      * import estimates from it until the supplier's own price replaces it. Cost — hidden with
      * the price [services/pricingVisibility.js `TRADED_CONFIDENTIAL`].
+     *
+     * With a resin named (or a rate typed), the build-up is what the piece would cost the plant
+     * to make — the "making cost" the costing sheet sets beside the supplier's inward price, so
+     * the gap is the supplier's margin and the negotiation starts from a number
+     * [web: utils/quoteBuilder.js `supplierCheck`].
      */
     buildUp: {
       type: new mongoose.Schema(
         {
+          /** The resin the grams are costed in: its rate, and its grammage over PP. */
+          material: { type: mongoose.Schema.Types.ObjectId, ref: 'Material' },
+          /** ₹ per kg typed for this item, winning over the resin's register rate. */
+          ratePerKg: { type: Number, min: 0 },
           partWeightGrams: { type: Number, min: 0 },
           runnerWeightGrams: { type: Number, min: 0 },
           jobWorkCost: { type: Number, min: 0 },
