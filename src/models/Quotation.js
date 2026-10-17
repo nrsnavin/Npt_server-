@@ -1,7 +1,6 @@
 import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
-import belongsToEnquiry from './belongsToEnquiry.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
 import { MINIMUM_TIER, minimumFor, tiersFor } from '../services/pricing.service.js';
 import { startOfIndiaDay } from '../utils/indiaDay.js';
@@ -181,12 +180,13 @@ const lineSchema = new mongoose.Schema(
 );
 
 /**
- * Grams × ₹/kg ÷ 1000 — for a piece made here. A bought-in (trade) hanger is costed at what the
- * supplier is paid; the resin is in that price already, so none is added on top of it.
+ * Grams × ₹/kg ÷ 1000 — for a piece made here. A bought-in (trade) hanger with a supplier's
+ * price is costed at that price; the resin is in it already, so none is added on top. One the
+ * supplier has not priced is costed from the plant's own build-up, as a made piece is.
  */
 lineSchema.virtual('materialCost').get(function materialCost() {
-  if (this.procurement === 'trade') return 0;
-  const { gramWeight, rawMaterialRate } = this.cost || {};
+  const { gramWeight, rawMaterialRate, inwardPrice } = this.cost || {};
+  if (this.procurement === 'trade' && inwardPrice > 0) return 0;
   if (!gramWeight || !rawMaterialRate) return 0;
   return (gramWeight * rawMaterialRate) / 1000;
 });
@@ -461,6 +461,10 @@ quotationSchema.set('toObject', { virtuals: true });
 
 protectWrites(quotationSchema);
 protectOwnership(quotationSchema);
-quotationSchema.plugin(belongsToEnquiry, { what: 'quotation' });
+/*
+ * Not `belongsToEnquiry`: a quotation may be raised on the buyer alone — a price asked for over
+ * the phone, a rate card — with the models named on it [quotation.controller `newQuotation`].
+ * A sample and a sales order still belong to an enquiry.
+ */
 
 export default mongoose.model('Quotation', quotationSchema);

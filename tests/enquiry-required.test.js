@@ -64,14 +64,24 @@ test.after(async () => {
 
 const LINE = { modelNumber: 'NH-400', unitPrice: 7.5, moq: 5000 };
 
-test('a quotation is refused without an enquiry, and says where to raise it', async () => {
-  const alone = await api('/api/quotations', { method: 'POST', body: { customer: customerId, lines: [LINE] } });
-  assert.equal(alone.status, 400);
-  assert.match(alone.json.message, /open the enquiry and raise the quotation from there/i);
-
+test('a quotation is raised on an enquiry, or on a customer alone with the models named', async () => {
   const made = await api('/api/quotations', { method: 'POST', body: { enquiry: enquiryId, lines: [LINE] } });
   assert.equal(made.status, 201, made.json.message);
   assert.equal(String(made.json.data.customer?._id || made.json.data.customer), customerId, 'the enquiry\'s buyer');
+
+  /* No enquiry: the buyer is picked and the models are named — there is nothing to take them from. */
+  const alone = await api('/api/quotations', { method: 'POST', body: { customer: customerId, lines: [LINE] } });
+  assert.equal(alone.status, 201, alone.json.message);
+  assert.equal(alone.json.data.enquiry ?? null, null);
+  assert.equal(String(alone.json.data.customer?._id || alone.json.data.customer), customerId);
+
+  const nobody = await api('/api/quotations', { method: 'POST', body: { lines: [LINE] } });
+  assert.equal(nobody.status, 400);
+  assert.match(nobody.json.message, /Pick the customer/);
+
+  const nothing = await api('/api/quotations', { method: 'POST', body: { customer: customerId } });
+  assert.equal(nothing.status, 400);
+  assert.match(nothing.json.message, /Name at least one model/);
 });
 
 test('a sales order is refused without an enquiry, and for another buyer than the enquiry\'s', async () => {
@@ -98,14 +108,28 @@ test('nothing new is raised on a closed enquiry', async () => {
   assert.match(refused.json.message, /closed/);
 });
 
-test('the models refuse a new record without an enquiry, whoever creates it; old ones still save', async () => {
+test('a quotation raised on the buyer alone with a blank rate asks the Quotation department to cost it', async () => {
+  const { default: Todo } = await import('../src/models/Todo.js');
+  const made = await api('/api/quotations', { method: 'POST', body: { customer: customerId, lines: [{ modelNumber: 'NH-400', moq: 5000 }] } });
+  assert.equal(made.status, 201, made.json.message);
+  assert.equal(made.json.data.status, 'costing');
+  let task = null;
+  for (let i = 0; i < 100 && !task; i += 1) {
+    task = await Todo.findOne({ originKey: `pricing:${made.json.data._id}:cost`, completed: false });
+    if (!task) await new Promise((resolve) => setTimeout(resolve, 60));
+  }
+  assert.ok(task, 'the costing is asked for on the Quotation queue — there is no enquiry to take over');
+  assert.equal(task.department, 'quotation');
+  assert.match(task.title, /^Cost /);
+  assert.equal(task.link, `/quotations/${made.json.data._id}`);
+});
+
+test('the models refuse a new sample or order without an enquiry, whoever creates it; old ones still save', async () => {
   const { default: Sample } = await import('../src/models/Sample.js');
   const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
-  const { default: Quotation } = await import('../src/models/Quotation.js');
 
   for (const [Model, fields] of [
     [Sample, { number: 'SMP-X', modelNumber: 'NH-400', quantity: 3 }],
-    [Quotation, { number: 'Q-X', customer: customerId, lines: [LINE] }],
     [SalesOrder, { number: 'SO-X', customer: customerId, lines: [{ modelNumber: 'NH-400', quantity: 10, unitPrice: 1 }] }],
   ]) {
     await assert.rejects(Model.create(fields), /belongs to an enquiry/, `${Model.modelName} without an enquiry was saved`);

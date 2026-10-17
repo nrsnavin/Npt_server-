@@ -7,6 +7,7 @@ import { EVENTS, subscribe as busSubscribe, unsubscribe } from '../services/even
 import { describeHandoff, finishQuotationTasks, finishSampleTasks, holderOf, markEnquiry, moveEnquiry } from '../services/handoff.service.js';
 import { CLOSED_STAGE, STAGE_KEYS } from '../config/enquiryStages.js';
 import { sendPush } from '../services/push.service.js';
+import { raiseDepartmentTask, resolveTasks } from '../services/task.service.js';
 import { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } from '../providers/whatsapp.js';
 
 /**
@@ -274,11 +275,12 @@ export function registerHandoffSubscribers() {
     })
   );
 
-  /* The quotation has gone to the buyer: the pricing tasks on the enquiry are done. */
+  /* The quotation has gone to the buyer: the pricing tasks on the enquiry are done, and the costing ask without one. */
   subscribe(
     EVENTS.QUOTATION_SENT,
     safely('close the pricing tasks', async ({ quotation, by }) => {
       await finishQuotationTasks(quotation, by);
+      if (quotation?._id) await resolveTasks(`pricing:${quotation._id}:cost`);
     })
   );
 
@@ -319,7 +321,22 @@ export function registerHandoffSubscribers() {
   subscribe(
     EVENTS.PRICING_REQUESTED,
     safely('quotation has the enquiry', async ({ quotation, by }) => {
-      if (quotation?.enquiry) await moveOnBehalf(quotation.enquiry, 'create_quotation', { by });
+      if (!quotation) return;
+      if (quotation.enquiry) {
+        await moveOnBehalf(quotation.enquiry, 'create_quotation', { by });
+        return;
+      }
+      /* No enquiry to take over: the costing is asked for on the Quotation department's queue, as a task of its own. */
+      await raiseDepartmentTask({
+        department: 'quotation',
+        title: `Cost ${quotation.number}`,
+        notes: 'Raised without an enquiry — price the models on it so the quotation can go out.',
+        dueDate: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        priority: 'high',
+        link: `/quotations/${quotation._id}`,
+        originKey: `pricing:${quotation._id}:cost`,
+        customer: quotation.customer?._id || quotation.customer,
+      });
     })
   );
 }

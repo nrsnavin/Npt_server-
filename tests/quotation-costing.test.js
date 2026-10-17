@@ -312,10 +312,11 @@ test('an enquiry reaching pricing raises its quotation, a line per model, waitin
   assert.ok(quotation.lines[0].cost.gramWeight > 0, 'and the grams off the tool, ready to cost');
 });
 
-test('a quotation is raised on an enquiry, for that enquiry’s buyer', async () => {
+test('a quotation is raised on an enquiry, for that enquiry’s buyer — or on the buyer alone', async () => {
   const alone = await rawApi('/api/quotations', { method: 'POST', token: admin, body: { customer, lines: [{ modelNumber: 'NH-400' }] } });
-  assert.equal(alone.status, 400);
-  assert.match(alone.json.message, /raise the quotation from there/i);
+  assert.equal(alone.status, 201, alone.json.message);
+  assert.equal(alone.json.data.enquiry ?? null, null, 'no enquiry behind it');
+  assert.equal(String(alone.json.data.customer?._id || alone.json.data.customer), String(customer));
 
   const enquiry = await raiseEnquiryFor({ customer });
   const made = await rawApi('/api/quotations', {

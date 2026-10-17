@@ -115,6 +115,8 @@ export function registerPricingSubscribers() {
     safely('tell marketing they may send', async ({ quotation }) => {
       if (!quotation) return;
       await resolveTasks(key(quotation._id, 'approval'));
+      /* Priced: the costing ask on a quotation raised without an enquiry is answered. */
+      await resolveTasks(key(quotation._id, 'cost'));
       if (quotation.enquiry) await resolveTasks(`enquiry:${quotation.enquiry}:pricing`);
       const to = quotation.assignedTo || quotation.requestedBy;
       if (!to) return;

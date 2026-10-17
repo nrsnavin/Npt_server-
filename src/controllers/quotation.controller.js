@@ -192,8 +192,8 @@ async function lineFrom(input = {}, { fallbackModel, mayCost = false } = {}) {
     printing: input.printing,
     markupPercent: input.markupPercent,
     cost: {
+      ...(traded ? buildUpFrom(traded) : {}),
       ...costingFrom(mould, material, parts),
-      ...(traded ? { inwardPrice: traded.inwardPrice } : {}),
       /* What the costing person decided over the registers — a piece sold with no hook costs none. */
       ...(mayCost && input.cost ? input.cost : {}),
     },
@@ -208,6 +208,26 @@ async function lineFrom(input = {}, { fallbackModel, mayCost = false } = {}) {
     throw ApiError.badRequest('Name the model on every line — a mould or a model number');
   }
   return line;
+}
+
+/**
+ * A bought-in piece's cost lines. With a supplier's price, that price is the cost and the resin,
+ * job work and parts are in it. Without one, the plant's own build-up on the trading master —
+ * grams, job work, hook, clips, packing — stands in, so the piece is costed as a made one is
+ * [models/Quotation.js `materialCost`]. A part named on the line still wins [`costingFrom`].
+ */
+function buildUpFrom(traded) {
+  if (traded.inwardPrice > 0) return { inwardPrice: traded.inwardPrice };
+  const up = traded.buildUp || {};
+  const grams = (Number(up.partWeightGrams) || 0) + (Number(up.runnerWeightGrams) || 0);
+  return {
+    inwardPrice: traded.inwardPrice || 0,
+    ...(grams ? { gramWeight: grams } : {}),
+    ...(up.jobWorkCost != null ? { jobWorkCost: up.jobWorkCost } : {}),
+    ...(up.hookCost != null ? { hookCost: up.hookCost } : {}),
+    ...(up.clipsCost != null ? { metalClipsCost: up.clipsCost } : {}),
+    ...(up.packingCost != null ? { packingCost: up.packingCost } : {}),
+  };
 }
 
 /**
@@ -580,16 +600,25 @@ export async function newQuotation(fields, user, { system = false } = {}) {
   assertValidityAhead(fields.validUntil);
 
   /*
-   * Whoever may work the enquiry may quote on it. Decided by the enquiry rather than the buyer:
-   * an enquiry handed to a colleague [services/delegation.service.js] stays on a buyer its first
-   * owner still holds, and the colleague is the one who has to send the price.
+   * On an enquiry, whoever may work the enquiry may quote on it. Decided by the enquiry rather
+   * than the buyer: an enquiry handed to a colleague [services/delegation.service.js] stays on a
+   * buyer its first owner still holds, and the colleague is the one who has to send the price.
+   *
+   * Without one — a price asked for over the phone, a rate card for a buyer on the register —
+   * the quotation is the buyer's: whoever holds the customer may raise it, and the models are
+   * named on it, since there is no enquiry to take them from.
    */
-  const enquiry = await requireEnquiry(fields.enquiry, system ? null : user, { what: 'quotation', customer: fields.customer });
-  const customer = await Customer.findById(enquiry.customer);
+  const enquiry = fields.enquiry
+    ? await requireEnquiry(fields.enquiry, system ? null : user, { what: 'quotation', customer: fields.customer })
+    : null;
+  if (!enquiry && !fields.customer) throw ApiError.badRequest('Pick the customer the quotation is for, or the enquiry');
+  const customer = await Customer.findById(enquiry ? enquiry.customer : fields.customer);
   if (!customer) throw ApiError.badRequest('That customer does not exist');
-  const owner = enquiry.assignedTo || customer.assignedTo || user?._id;
+  if (!enquiry && user && !ownsRecord(user, customer)) throw ApiError.notFound('Customer not found');
+  if (!enquiry && !fields.lines?.length) throw ApiError.badRequest('Name at least one model — without an enquiry there is nothing to take them from');
+  const owner = enquiry?.assignedTo || customer.assignedTo || user?._id;
   if (!system) {
-    await assertQuotationLinks(user, { customerId: customer._id, enquiryId: enquiry._id, assignedTo: fields.assignedTo, owner });
+    await assertQuotationLinks(user, { customerId: customer._id, enquiryId: enquiry?._id, assignedTo: fields.assignedTo, owner });
   }
 
   /*
@@ -600,9 +629,9 @@ export async function newQuotation(fields, user, { system = false } = {}) {
    * with the refusal note beside the sheet. Where the enquiry itself names no model, the models
    * the buyer was last quoted are the basis.
    */
-  const previous = await lastClosedQuotationFor(enquiry._id);
-  const fromEnquiry = linesForEnquiry(enquiry);
-  const described = enquiry.mould || hasRequirement(enquiry.requirement || {}) || (enquiry.items || []).some(describesItem);
+  const previous = await lastClosedQuotationFor(enquiry?._id);
+  const fromEnquiry = enquiry ? linesForEnquiry(enquiry) : [];
+  const described = Boolean(enquiry && (enquiry.mould || hasRequirement(enquiry.requirement || {}) || (enquiry.items || []).some(describesItem)));
   const basis = !described && previous?.lines?.length
     ? previous.lines.map((line) => ({ mould: line.mould?._id || line.mould, modelNumber: line.modelNumber }))
     : fromEnquiry;
@@ -627,9 +656,9 @@ export async function newQuotation(fields, user, { system = false } = {}) {
     ...terms,
     lines,
     customer: customer._id,
-    enquiry: enquiry._id,
+    enquiry: enquiry?._id,
     assignedTo: fields.assignedTo || owner,
-    targetPrice: fields.targetPrice ?? enquiry.targetPrice,
+    targetPrice: fields.targetPrice ?? enquiry?.targetPrice,
     requestedBy: user?._id || owner,
     number: await nextQuoteNumber(),
   });
@@ -733,7 +762,8 @@ export const costLine = asyncHandler(transactional(async (req, res) => {
     if (!item) throw ApiError.badRequest('That item is not on the trading master');
     line.tradedItem = item._id;
     line.procurement = 'trade';
-    line.cost = { ...line.cost?.toObject?.(), inwardPrice: item.inwardPrice };
+    /* Its inward price — or, where the supplier has not given one, the plant's own build-up for it. */
+    line.cost = { ...line.cost?.toObject?.(), ...buildUpFrom(item) };
     if (!line.modelNumber) line.modelNumber = item.modelNumber;
   }
 
