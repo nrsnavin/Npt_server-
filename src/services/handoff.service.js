@@ -1006,7 +1006,8 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
  * closed; then it moves on from here.
  */
 async function assertNotWaiting(task) {
-  const actions = findHandoff(task.kind)?.form?.actions || [];
+  /* Only an ask the task waits on (Dispatch's readiness asks) holds its status; Production's asks do not. */
+  const actions = (findHandoff(task.kind)?.form?.actions || []).filter((action) => action.waits);
   if (!actions.length) return;
   const waiting = await Todo.findOne({ askedFrom: task._id, completed: false, kind: { $in: actions.map((action) => action.kind) } }).select('kind department');
   if (!waiting) return;

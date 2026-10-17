@@ -870,3 +870,38 @@ test('a team task form only fills in customers its raiser may see, and only Admi
   assert.equal(named.status, 400);
   assert.match(named.json.message, /not on the register/);
 });
+
+test('Production hands on from its own task — Assembly, Printing, Quality, Dispatch — and its status is not held by them', async () => {
+  const fresh = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: enquiry.customer?._id || enquiry.customer, requirement: { modelNumber: 'UTJRSH-9' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const raised = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Run it', brief: { model: 'UTJRSH-9', quantity: '5000' } } });
+  assert.equal(raised.status, 201, raised.json.message);
+  const production = raised.json.data.task;
+
+  const { buttons } = (await api('/api/handoffs', { as: 'siva' })).json.data;
+  const actions = buttons.find((button) => button.key === 'ask_edd').form.actions;
+  assert.deepEqual(actions.map((action) => [action.kind, action.label]), [
+    ['ask_assembling_edd', 'Ask Assembly'], ['ask_printing', 'Ask Printing'], ['quality_check', 'Ask Quality'], ['invoice_dispatch', 'Send to Dispatch'],
+  ]);
+  assert.ok(actions.every((action) => !action.waits), 'none holds Production’s own status');
+  const dispatchActions = buttons.find((button) => button.key === 'invoice_dispatch').form.actions;
+  assert.ok(dispatchActions.every((action) => action.waits), 'Dispatch’s readiness asks do');
+
+  for (const [kind, department] of [['ask_assembling_edd', 'assembling'], ['quality_check', 'quality']]) {
+    const asked = await api(`/api/workspace/todos/${production._id}/ask`, { method: 'POST', as: 'siva', body: { kind, note: `Needed by the EDD — ${kind}` } });
+    assert.equal(asked.status, 200, asked.json.message);
+    const task = await Todo.findOne({ enquiry: fresh._id, kind, completed: false });
+    assert.ok(task, `${kind} raised on the enquiry`);
+    assert.equal(task.department, department);
+    assert.ok(task.askedFrom.some((id) => String(id) === String(production._id)), 'told back to Production');
+  }
+  /* The asks are open, and Production still moves. */
+  const moved = await api(`/api/workspace/todos/${production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'started', note: 'On machine 2' } });
+  assert.equal(moved.status, 200, moved.json.message);
+  assert.equal(moved.json.data.status, 'started');
+  /* Quality is not asked by somebody outside the task's department. */
+  const refused = await api(`/api/workspace/todos/${production._id}/ask`, { method: 'POST', as: 'kavi', body: { kind: 'quality_check', note: 'Check it' } });
+  assert.equal(refused.status, 403);
+});
