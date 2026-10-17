@@ -361,3 +361,38 @@ test('Admin deletes a bought-in item no quotation is costed on; one costed on is
   assert.equal(refused.status, 409);
   assert.match(refused.json.message, /used on \d+ quotations? — mark it no longer bought instead/);
 });
+
+test('a bought-in piece the supplier has not priced is costed from its build-up, as a made piece is', async () => {
+  const made = await api('/api/traded-items', {
+    method: 'POST', token: quoter,
+    body: { modelNumber: 'BU-9', inwardPrice: 0, buildUp: { partWeightGrams: 18, runnerWeightGrams: 2, jobWorkCost: 0.4, hookCost: 0.3, clipsCost: 0.9, packingCost: 0.2 } },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  const material = (await api('/api/materials', { method: 'POST', token: admin, body: { name: 'PP for BU', type: 'pp', ratePerKg: 100 } })).json.data;
+  const enquiry = (await api('/api/enquiries', {
+    method: 'POST', token: nandhini,
+    body: { customer: customerId, requirement: { modelNumber: 'BU-9' }, nextAction: 'Send the price', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const raised = await api('/api/quotations', { method: 'POST', token: nandhini, body: { enquiry: enquiry._id, lines: [{ modelNumber: 'BU-9', materialRef: material._id }] } });
+  assert.equal(raised.status, 201, JSON.stringify(raised.json));
+  const [line] = (await api(`/api/quotations/${raised.json.data._id}`, { token: quoter })).json.data.lines;
+  assert.equal(line.procurement, 'trade');
+  assert.equal(line.cost.inwardPrice, 0, 'no supplier price yet');
+  assert.equal(line.cost.gramWeight, 20, 'part and runner from the master');
+  assert.equal(line.cost.rawMaterialRate, 100);
+  assert.equal(line.cost.jobWorkCost, 0.4);
+  assert.equal(line.cost.hookCost, 0.3);
+  assert.equal(line.cost.metalClipsCost, 0.9);
+  assert.equal(line.cost.packingCost, 0.2);
+  assert.equal(line.materialCost, 2, 'the resin counts while there is no inward price');
+  assert.ok(Math.abs(line.totalCost - 3.8) < 1e-9, `costed from the build-up, got ${line.totalCost}`);
+
+  /* The supplier prices it: the inward price takes over and the resin is in it. */
+  const priced = await api(`/api/quotations/${raised.json.data._id}/lines/${line._id}/cost`, {
+    method: 'PATCH', token: quoter, body: { cost: { inwardPrice: 5, gramWeight: 20, rawMaterialRate: 100, jobWorkCost: 0, hookCost: 0, metalClipsCost: 0, packingCost: 0.2 }, markupPercent: 10 },
+  });
+  assert.equal(priced.status, 200, JSON.stringify(priced.json));
+  const after = priced.json.data.lines[0];
+  assert.equal(after.materialCost, 0, 'in the inward price');
+  assert.ok(Math.abs(after.totalCost - 5.2) < 1e-9, `inward price plus packing, got ${after.totalCost}`);
+});

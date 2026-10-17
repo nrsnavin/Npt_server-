@@ -192,8 +192,8 @@ async function lineFrom(input = {}, { fallbackModel, mayCost = false } = {}) {
     printing: input.printing,
     markupPercent: input.markupPercent,
     cost: {
+      ...(traded ? buildUpFrom(traded) : {}),
       ...costingFrom(mould, material, parts),
-      ...(traded ? { inwardPrice: traded.inwardPrice } : {}),
       /* What the costing person decided over the registers — a piece sold with no hook costs none. */
       ...(mayCost && input.cost ? input.cost : {}),
     },
@@ -208,6 +208,26 @@ async function lineFrom(input = {}, { fallbackModel, mayCost = false } = {}) {
     throw ApiError.badRequest('Name the model on every line — a mould or a model number');
   }
   return line;
+}
+
+/**
+ * A bought-in piece's cost lines. With a supplier's price, that price is the cost and the resin,
+ * job work and parts are in it. Without one, the plant's own build-up on the trading master —
+ * grams, job work, hook, clips, packing — stands in, so the piece is costed as a made one is
+ * [models/Quotation.js `materialCost`]. A part named on the line still wins [`costingFrom`].
+ */
+function buildUpFrom(traded) {
+  if (traded.inwardPrice > 0) return { inwardPrice: traded.inwardPrice };
+  const up = traded.buildUp || {};
+  const grams = (Number(up.partWeightGrams) || 0) + (Number(up.runnerWeightGrams) || 0);
+  return {
+    inwardPrice: traded.inwardPrice || 0,
+    ...(grams ? { gramWeight: grams } : {}),
+    ...(up.jobWorkCost != null ? { jobWorkCost: up.jobWorkCost } : {}),
+    ...(up.hookCost != null ? { hookCost: up.hookCost } : {}),
+    ...(up.clipsCost != null ? { metalClipsCost: up.clipsCost } : {}),
+    ...(up.packingCost != null ? { packingCost: up.packingCost } : {}),
+  };
 }
 
 /**
@@ -742,7 +762,8 @@ export const costLine = asyncHandler(transactional(async (req, res) => {
     if (!item) throw ApiError.badRequest('That item is not on the trading master');
     line.tradedItem = item._id;
     line.procurement = 'trade';
-    line.cost = { ...line.cost?.toObject?.(), inwardPrice: item.inwardPrice };
+    /* Its inward price — or, where the supplier has not given one, the plant's own build-up for it. */
+    line.cost = { ...line.cost?.toObject?.(), ...buildUpFrom(item) };
     if (!line.modelNumber) line.modelNumber = item.modelNumber;
   }
 
