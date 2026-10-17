@@ -15,7 +15,7 @@ import { HANDOFFS, TILE_KIND, findHandoff } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskStatus, taskPrefill,
+  WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
   updateHandoff, mayWorkOnHandoff,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
@@ -39,6 +39,8 @@ const TASK_POPULATE = [
   { path: 'updates.by', select: 'name' },
   { path: 'reschedules.by', select: 'name' },
   { path: 'escalation.by', select: 'name department' },
+  /* The enquiry's EDD travels with its tasks, so a card can show it or ask for it [web: components/TaskEdd.jsx]. */
+  { path: 'enquiry', select: 'number edd' },
 ];
 
 /** The buttons, the twelve stages and the departments, so the screen draws what the server knows. */
@@ -203,6 +205,12 @@ export const handoffUpdate = asyncHandler(againOnConflict(transactional(async (r
 
 export const handoffSendBack = asyncHandler(transactional(async (req, res) => {
   const task = await returnHandoff(await taskFor(req), req.user, req.body);
+  await answer(res, task);
+}));
+
+/** The expected delivery date, given from the Production / Assembly / Printing task without a status move. */
+export const handoffEdd = asyncHandler(transactional(async (req, res) => {
+  const task = await setTaskEdd(await taskFor(req), req.user, req.body);
   await answer(res, task);
 }));
 

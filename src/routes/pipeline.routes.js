@@ -14,7 +14,7 @@ import {
   customerOwners,
   listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, applyEnquiryAction, listEnquiryActions,
-  logEnquiryActivity, setEnquiryMarketingStatus, checkEnquiry, listEnquiryActivities, enquiryActivityTypes, delegateEnquiryTo, listDelegationTargets, promoteToMould, enquiryPipeline,
+  logEnquiryActivity, setEnquiryMarketingStatus, checkEnquiry, setEnquiryEdd, listEnquiryActivities, enquiryActivityTypes, delegateEnquiryTo, listDelegationTargets, promoteToMould, enquiryPipeline,
   enquiryBoard,
   exportCustomers,
   exportEnquiries,
@@ -40,7 +40,7 @@ import { validate } from '../middleware/validate.js';
 import {
   customerSchema, customerUpdateSchema,
   buyerCardConfirmSchema,
-  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema, enquiryActivitySchema, enquiryDelegateSchema, enquiryMessageSchema, enquiryMarketingStatusSchema, enquiryCheckSchema,
+  enquirySchema, enquiryUpdateSchema, enquiryGroupSchema, enquiryStatusSchema, enquiryActionSchema, enquiryActivitySchema, enquiryDelegateSchema, enquiryMessageSchema, enquiryMarketingStatusSchema, enquiryCheckSchema, enquiryEddSchema,
   bulkReassignSchema,
   enquiryConvertSchema,
   customerFollowUpSchema,
@@ -268,6 +268,8 @@ router.post('/enquiries/:id/messages', requireModule('enquiries', 'write'), vali
 router.post('/enquiries/:id/marketing-status', requireModule('enquiries', 'write'), validate(enquiryMarketingStatusSchema), setEnquiryMarketingStatus);
 /* "Save & Mark as Checked", and the picture it was read from [the dashboard's enquiry panel]. */
 router.post('/enquiries/:id/check', requireModule('enquiries', 'write'), validate(enquiryCheckSchema), checkEnquiry);
+/* The expected delivery date, set by the enquiry's marketing person or an Admin; the departments working to it hear it. */
+router.post('/enquiries/:id/edd', requireModule('enquiries', 'write'), validate(enquiryEddSchema), setEnquiryEdd);
 router.get('/enquiries/:id/source', requireModule('enquiries'), enquirySource);
 router.get('/enquiries/:id/source/image', requireModule('enquiries'), enquirySourceImage);
 /* Everything that happened on the enquiry, for whoever may open it. */

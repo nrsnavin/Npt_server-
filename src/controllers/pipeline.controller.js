@@ -39,7 +39,7 @@ import { hasRequirement } from '../models/requirement.schema.js';
 import { transactional } from '../utils/transaction.js';
 import { CLOSED_STAGE, SIDE_STAGES, STAGE_KEYS } from '../config/enquiryStages.js';
 import { HANDOFFS } from '../config/handoffs.js';
-import { enquiryProgress, ensureHolder, mayHandOff } from '../services/handoff.service.js';
+import { eddDay, enquiryProgress, ensureHolder, mayHandOff, tellEddSet, writeEnquiryEdd } from '../services/handoff.service.js';
 import { delegateEnquiry, delegationTargets, mayDelegate, moveWorkWith } from '../services/delegation.service.js';
 import { canRead } from '../services/access.service.js';
 import { ENQUIRY_ACTIVITY_KEYS, ENQUIRY_ACTIVITY_TYPES } from '../config/enquiryActivities.js';
@@ -1771,6 +1771,22 @@ export const delegateEnquiryTo = asyncHandler(transactional(async (req, res) => 
   if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
   const result = await delegateEnquiry({ enquiry, to: req.body.to, note: req.body.note, user: req.user });
   res.json({ success: true, data: result });
+}));
+
+/**
+ * Marketing sets the expected delivery date on the enquiry — the date the buyer is working to,
+ * before or instead of waiting for Production to give one. Production, Assembly, Printing and
+ * Dispatch see it on their open tasks [handoff.service `tellEddSet`], and the list shows it.
+ */
+export const setEnquiryEdd = asyncHandler(transactional(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id);
+  if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+  if (enquiry.stage === CLOSED_STAGE) throw ApiError.badRequest('The enquiry is closed');
+  const day = eddDay(req.body.date);
+  await writeEnquiryEdd(enquiry._id, { day, user: req.user, department: 'marketing', note: req.body.note });
+  const told = await tellEddSet(enquiry, req.user, { day, note: req.body.note });
+  const saved = await Enquiry.findById(enquiry._id).select('edd').populate('edd.by', 'name');
+  res.json({ success: true, data: saved.edd, meta: { told } });
 }));
 
 /** Who this enquiry may be handed to — empty when the reader may not hand it on. */

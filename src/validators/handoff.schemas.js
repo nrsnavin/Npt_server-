@@ -51,6 +51,12 @@ export const taskStatusSchema = z.object({
   date: z.string().trim().max(10).optional(),
 });
 
+/** The expected delivery date, given from the Production / Assembly / Printing task [handoff.service `setTaskEdd`]. */
+export const taskEddSchema = z.object({
+  date: z.string().trim().min(10, 'Give the EDD as a calendar date').max(10),
+  note: z.string().trim().max(2000).optional(),
+});
+
 /** Another department asked from this task — Dispatch's "Ask Production"; checked by the service. */
 export const taskAskSchema = z.object({
   kind: z.string().trim().min(1).max(40),
