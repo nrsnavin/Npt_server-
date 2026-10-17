@@ -42,7 +42,16 @@ const POPULATE = [
    * person, and they are who has to be told when a sample slips and who the buyer will ring.
    * Nested populate rather than a second query — it is one field on a record already loaded.
    */
-  { path: 'customer', select: 'code name assignedTo', populate: { path: 'assignedTo', select: 'name' } },
+  /*
+   * With the ways to reach them [web: components/BuyerContactCard.jsx]: the bench rings the
+   * order contact about a shade, and dispatch hands the bag to whoever receives goods, so the
+   * sample page carries the same contact card the enquiry does.
+   */
+  {
+    path: 'customer',
+    select: 'code name mobile whatsapp email assignedTo contacts deliveryContact accountsContact',
+    populate: { path: 'assignedTo', select: 'name' },
+  },
   { path: 'enquiry', select: 'number status requirement.modelNumber requirement.colour' },
   { path: 'requestedBy', select: 'name' },
   { path: 'assignedTo', select: 'name' },
