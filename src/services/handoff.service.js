@@ -1139,6 +1139,8 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   }];
   if (!task.user) task.user = user._id;
   await task.save();
+  /* The ready date Production (or Assembly, Printing) gave is the enquiry's EDD from here on. */
+  if (readyDate && dateField === 'edd' && task.enquiry) await writeEnquiryEdd(task.enquiry, { day: readyDate, user, department: task.department, note: text });
   if (form.notifyStatus) await noticeStatus(task, user, { step, note: text, date: readyDate });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
@@ -1840,6 +1842,78 @@ export async function taskPrefill(enquiryId) {
 /* ------------------------------ Production's dates ------------------------------ */
 
 const EDD_KINDS = ['ask_edd', 'ask_assembling_edd'];
+/** The tasks that give the enquiry its EDD from the shop floor: the ones whose ready date is it. */
+export const EDD_TASK_KINDS = [...EDD_KINDS, 'ask_printing'];
+/** The tasks that work to the EDD and show it: those, and the dispatch request. */
+export const SHOWS_EDD_KINDS = [...EDD_TASK_KINDS, 'invoice_dispatch'];
+
+/** "23 Oct 2026" — a calendar day as people read it, for a line on the task. */
+const prettyDay = (day) => new Intl.DateTimeFormat('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(`${day}T00:00:00.000+05:30`));
+
+/** A date given as a calendar day, checked: today or later. */
+export function eddDay(date) {
+  const given = String(date || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(given) || Number.isNaN(Date.parse(given))) fail('Give the EDD as a calendar date');
+  if (given < indiaDay(new Date())) fail('The EDD cannot be in the past');
+  return given;
+}
+
+/**
+ * The enquiry's EDD written: the day, whose word it is and when [models/Enquiry.js `edd`]. One
+ * place, so marketing's date and Production's go through the same door.
+ */
+export async function writeEnquiryEdd(enquiryId, { day, user, department, note }) {
+  const text = String(note || '').trim();
+  await Enquiry.updateOne({ _id: enquiryId?._id || enquiryId }, {
+    $set: { edd: { date: day, by: user._id, at: new Date(), department, note: text || undefined } },
+  });
+}
+
+/**
+ * Production (or Assembly, Printing) gives the expected delivery date from its task, without
+ * moving the status — the thing its task was raised for, asked for at the top of the task until
+ * it is given [web: components/TaskEdd.jsx]. Written on the task, where its history is, and on
+ * the enquiry, where every other screen reads it; marketing and Admin hear it as they hear a move.
+ */
+export async function setTaskEdd(task, user, { date, note }) {
+  openHandoff(task, user);
+  if (!task.enquiry) fail('A team task has no enquiry to carry an EDD');
+  if (!EDD_TASK_KINDS.includes(task.kind)) fail('The EDD is given from the Production, Assembly or Printing task');
+  const day = eddDay(date);
+  const text = String(note || '').trim();
+  const said = `EDD ${prettyDay(day)}`;
+  task.updates = [...(task.updates || []), {
+    kind: 'note', text: text || said, note: text ? `${said}: ${text}` : said,
+    date: day, dateLabel: 'EDD', fields: { edd: day }, by: user._id, at: new Date(),
+  }];
+  task.attention = undefined;
+  if (!task.user) task.user = user._id;
+  await task.save();
+  await writeEnquiryEdd(task.enquiry, { day, user, department: task.department, note: text });
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  if (findHandoff(task.kind)?.form?.notifyStatus) {
+    await noticeStatus(task, user, { step: { key: task.status || 'edd', label: 'EDD given' }, note: text, date: day });
+  }
+  return task;
+}
+
+/**
+ * Marketing set the EDD on the enquiry: the departments working to it hear it on their open
+ * tasks — Production's, Assembly's, Printing's and the dispatch request — as a line on each.
+ */
+export async function tellEddSet(enquiry, user, { day, note }) {
+  const tasks = await Todo.find({ enquiry: enquiry._id, kind: { $in: SHOWS_EDD_KINDS }, completed: false });
+  const text = String(note || '').trim();
+  for (const task of tasks) {
+    task.updates = [...(task.updates || []), {
+      kind: 'note', text: `EDD ${prettyDay(day)} set by ${user.name} (marketing)${text ? `: ${text}` : ''}`,
+      note: `EDD ${prettyDay(day)} set by marketing${text ? `: ${text}` : ''}`, date: day, dateLabel: 'EDD', by: user._id, at: new Date(),
+    }];
+    await task.save();
+    await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  }
+  return tasks.length;
+}
 
 /** Kinds whose tasks are a problem in themselves — a complaint — until their workflow says otherwise. */
 const ISSUE_KINDS = ['quality_issue'];
@@ -1858,9 +1932,12 @@ export async function enquiryProgress(enquiryIds) {
   /* Every kind that gives a date, or has a status that is an issue (Dispatch's Goods Not Yet Ready, Accounts' Hold …). */
   const withIssues = HANDOFFS.filter((handoff) => (handoff.form?.statuses || []).some((entry) => entry.issue)).map((handoff) => handoff.key);
   const kinds = [...new Set([...EDD_KINDS, ...MOULD_KINDS, ...ISSUE_KINDS, ...withIssues])];
-  const tasks = await Todo.find({ enquiry: { $in: ids }, kind: { $in: kinds } })
-    .select('enquiry kind department status completed updates.fields updates.at outcome.fields outcome.at')
-    .lean();
+  const [tasks, enquiries] = await Promise.all([
+    Todo.find({ enquiry: { $in: ids }, kind: { $in: kinds } })
+      .select('enquiry kind department status completed updates.fields updates.at outcome.fields outcome.at')
+      .lean(),
+    Enquiry.find({ _id: { $in: ids }, 'edd.date': { $ne: null } }).select('edd').lean(),
+  ]);
   const latest = (row, field, date, at, department) => {
     if (!date || (row[field] && new Date(row[field].at || 0) >= new Date(at || 0))) return;
     row[field] = { date, at, department };
@@ -1883,6 +1960,11 @@ export async function enquiryProgress(enquiryIds) {
       /* One raised before Quality had its workflow: an issue until it is closed. */
       row.issues.push({ department: task.department, label: kindLabel });
     }
+  }
+  /* The enquiry's own EDD is the latest word, whoever gave it — marketing's or the shop floor's. */
+  for (const enquiry of enquiries) {
+    const row = progress.get(String(enquiry._id));
+    if (row) row.edd = { date: enquiry.edd.date, at: enquiry.edd.at, department: enquiry.edd.department };
   }
   return progress;
 }
@@ -1965,7 +2047,7 @@ export async function dispatchBaskets() {
  */
 export async function productionDates(enquiryId) {
   const { default: SalesOrder } = await import('../models/SalesOrder.js');
-  const [tasks, orders] = await Promise.all([
+  const [tasks, orders, enquiry] = await Promise.all([
     Todo.find({ enquiry: enquiryId, kind: { $in: EDD_KINDS } })
       .sort({ createdAt: -1 })
       .populate([{ path: 'updates.by', select: 'name' }, { path: 'outcome.by', select: 'name' }])
@@ -1974,8 +2056,13 @@ export async function productionDates(enquiryId) {
       .select('number lines.modelNumber lines.quantity lines.deliveryDate lines.revisedDeliveryDate lines.production')
       .sort({ createdAt: -1 })
       .lean(),
+    Enquiry.findById(enquiryId).select('edd').populate('edd.by', 'name').lean(),
   ]);
   const said = [];
+  /* The enquiry's own EDD first: the latest word, marketing's or the shop floor's. */
+  if (enquiry?.edd?.date) {
+    said.push({ edd: enquiry.edd.date, by: enquiry.edd.by?.name, at: enquiry.edd.at, department: enquiry.edd.department, note: enquiry.edd.note });
+  }
   for (const task of tasks) {
     const department = task.department;
     for (const update of task.updates || []) {
@@ -2109,7 +2196,7 @@ const LIST_POPULATE = [
   { path: 'outcome.by', select: 'name' },
   { path: 'updates.by', select: 'name' },
   { path: 'customer', select: 'code name' },
-  { path: 'enquiry', select: 'number stage requirement.modelNumber requirement.colour' },
+  { path: 'enquiry', select: 'number stage edd requirement.modelNumber requirement.colour' },
 ];
 
 /*
@@ -2173,7 +2260,7 @@ export async function enquiriesHeldBy(department, user, { now = new Date(), limi
       ...LIST_POPULATE.filter((entry) => entry.path !== 'enquiry'),
       {
         path: 'enquiry',
-        select: 'number stage status customer assignedTo requirement.modelNumber requirement.colour items.modelNumber nextFollowUpDate nextAction targetPrice',
+        select: 'number stage status customer assignedTo edd requirement.modelNumber requirement.colour items.modelNumber nextFollowUpDate nextAction targetPrice',
         populate: [{ path: 'customer', select: 'code name' }, { path: 'assignedTo', select: 'name' }],
       },
     ])

@@ -36,10 +36,10 @@ import {
 import { pushKey, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, attachTeamTaskPdf, handoffDocument, handoffDocuments,
+  handoffBrief, handoffDone, handoffEdd, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, attachTeamTaskPdf, handoffDocument, handoffDocuments,
 } from '../controllers/handoff.controller.js';
 import {
-  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskStatusSchema,
+  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, taskStatusSchema,
 } from '../validators/handoff.schemas.js';
 import { singlePdf, singleTaskResult } from '../middleware/upload.js';
 
@@ -78,6 +78,8 @@ router.post('/todos/:id/update', validate(handoffUpdateSchema), handoffUpdate);
 router.post('/todos/:id/send-back', validate(handoffReturnSchema), handoffSendBack);
 router.post('/todos/:id/reschedule', validate(handoffRescheduleSchema), handoffReschedule);
 router.post('/todos/:id/status', validate(taskStatusSchema), handoffStatus);
+/* The EDD from the Production / Assembly / Printing task, without a status move. */
+router.post('/todos/:id/edd', validate(taskEddSchema), handoffEdd);
 router.post('/todos/:id/brief', validate(taskBriefSchema), handoffBrief);
 router.post('/todos/:id/seen', handoffSeen);
 router.post('/todos/:id/ask', validate(taskAskSchema), handoffAsk);

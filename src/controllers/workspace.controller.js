@@ -34,7 +34,7 @@ const TODO_POPULATE = [
      card can say it without the enquiry module [config/handoffs.js]. */
   {
     path: 'enquiry',
-    select: 'number stage status remarks requirement.modelNumber requirement.colour requirement.printing items.modelNumber items.colour',
+    select: 'number stage status remarks edd requirement.modelNumber requirement.colour requirement.printing items.modelNumber items.colour',
   },
   { path: 'outcome.by', select: 'name' },
   { path: 'updates.by', select: 'name' },

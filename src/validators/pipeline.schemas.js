@@ -379,6 +379,12 @@ export const enquiryMessageSchema = z
     path: ['subject'],
   });
 
+/** The expected delivery date, set by marketing on the enquiry [pipeline.controller `setEnquiryEdd`]. */
+export const enquiryEddSchema = z.object({
+  date: z.string().trim().min(10, 'Give the EDD as a calendar date').max(10),
+  note: z.string().trim().max(500).optional(),
+});
+
 /** "Save & Mark as Checked" — the captured details as corrected [pipeline.controller `checkEnquiry`]. */
 export const enquiryCheckSchema = z.object({
   company: z.string().trim().min(1, 'Name the company').max(160).optional(),

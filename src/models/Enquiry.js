@@ -445,6 +445,23 @@ const enquirySchema = new mongoose.Schema(
     /* The same, for the quotation the automation raises [costingRequest.service `ensureCostingFor`]. */
     quotationAskedAt: { type: Date },
 
+    /**
+     * The expected delivery date — the one date the plant works to on this enquiry, shown on the
+     * Production and Dispatch tasks and on marketing's list. Marketing sets it on the enquiry;
+     * Production (or Assembly, Printing) gives or changes it from its task, and a ready date given
+     * with a status move writes it too [handoff.service `setTaskStatus`, `setTaskEdd`]. The latest
+     * word wins, whoever's it is; `department` says whose. The date is a calendar day, YYYY-MM-DD,
+     * as every ready date on the tasks is: a day in India, not an instant that reads as the day
+     * before on a clock set elsewhere.
+     */
+    edd: {
+      date: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      department: String,
+      note: String,
+    },
+
     estimatedValue: { type: Number, min: 0 },
     probability: { type: Number, min: 0, max: 100 },
 
