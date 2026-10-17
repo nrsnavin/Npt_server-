@@ -1562,3 +1562,14 @@ test('a cancelled request does not block the next one for the same enquiry', asy
   assert.equal(third.status, 409, 'two live requests were raised for one enquiry');
   assert.match(third.json.message, /already open/);
 });
+
+test('the sample carries the buyer’s contacts, so the sample page can show the contact card', async () => {
+  const enquiry = await raiseEnquiry();
+  const sample = await requestSample(enquiry._id);
+  const { json } = await api(`/api/samples/${sample._id}`, { token: meera });
+  const buyer = json.data.customer;
+  assert.ok(buyer.name, 'the buyer is named');
+  assert.ok(buyer.mobile || buyer.whatsapp, 'and reachable');
+  assert.ok('contacts' in buyer, 'with the people on the account');
+  assert.ok(buyer.assignedTo?.name, 'and whose buyer it is');
+});
