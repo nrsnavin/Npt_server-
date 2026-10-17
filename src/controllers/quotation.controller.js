@@ -580,16 +580,25 @@ export async function newQuotation(fields, user, { system = false } = {}) {
   assertValidityAhead(fields.validUntil);
 
   /*
-   * Whoever may work the enquiry may quote on it. Decided by the enquiry rather than the buyer:
-   * an enquiry handed to a colleague [services/delegation.service.js] stays on a buyer its first
-   * owner still holds, and the colleague is the one who has to send the price.
+   * On an enquiry, whoever may work the enquiry may quote on it. Decided by the enquiry rather
+   * than the buyer: an enquiry handed to a colleague [services/delegation.service.js] stays on a
+   * buyer its first owner still holds, and the colleague is the one who has to send the price.
+   *
+   * Without one — a price asked for over the phone, a rate card for a buyer on the register —
+   * the quotation is the buyer's: whoever holds the customer may raise it, and the models are
+   * named on it, since there is no enquiry to take them from.
    */
-  const enquiry = await requireEnquiry(fields.enquiry, system ? null : user, { what: 'quotation', customer: fields.customer });
-  const customer = await Customer.findById(enquiry.customer);
+  const enquiry = fields.enquiry
+    ? await requireEnquiry(fields.enquiry, system ? null : user, { what: 'quotation', customer: fields.customer })
+    : null;
+  if (!enquiry && !fields.customer) throw ApiError.badRequest('Pick the customer the quotation is for, or the enquiry');
+  const customer = await Customer.findById(enquiry ? enquiry.customer : fields.customer);
   if (!customer) throw ApiError.badRequest('That customer does not exist');
-  const owner = enquiry.assignedTo || customer.assignedTo || user?._id;
+  if (!enquiry && user && !ownsRecord(user, customer)) throw ApiError.notFound('Customer not found');
+  if (!enquiry && !fields.lines?.length) throw ApiError.badRequest('Name at least one model — without an enquiry there is nothing to take them from');
+  const owner = enquiry?.assignedTo || customer.assignedTo || user?._id;
   if (!system) {
-    await assertQuotationLinks(user, { customerId: customer._id, enquiryId: enquiry._id, assignedTo: fields.assignedTo, owner });
+    await assertQuotationLinks(user, { customerId: customer._id, enquiryId: enquiry?._id, assignedTo: fields.assignedTo, owner });
   }
 
   /*
@@ -600,9 +609,9 @@ export async function newQuotation(fields, user, { system = false } = {}) {
    * with the refusal note beside the sheet. Where the enquiry itself names no model, the models
    * the buyer was last quoted are the basis.
    */
-  const previous = await lastClosedQuotationFor(enquiry._id);
-  const fromEnquiry = linesForEnquiry(enquiry);
-  const described = enquiry.mould || hasRequirement(enquiry.requirement || {}) || (enquiry.items || []).some(describesItem);
+  const previous = await lastClosedQuotationFor(enquiry?._id);
+  const fromEnquiry = enquiry ? linesForEnquiry(enquiry) : [];
+  const described = Boolean(enquiry && (enquiry.mould || hasRequirement(enquiry.requirement || {}) || (enquiry.items || []).some(describesItem)));
   const basis = !described && previous?.lines?.length
     ? previous.lines.map((line) => ({ mould: line.mould?._id || line.mould, modelNumber: line.modelNumber }))
     : fromEnquiry;
@@ -627,9 +636,9 @@ export async function newQuotation(fields, user, { system = false } = {}) {
     ...terms,
     lines,
     customer: customer._id,
-    enquiry: enquiry._id,
+    enquiry: enquiry?._id,
     assignedTo: fields.assignedTo || owner,
-    targetPrice: fields.targetPrice ?? enquiry.targetPrice,
+    targetPrice: fields.targetPrice ?? enquiry?.targetPrice,
     requestedBy: user?._id || owner,
     number: await nextQuoteNumber(),
   });

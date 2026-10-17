@@ -35,6 +35,7 @@ export async function lastClosedQuotationFor(enquiryId) {
 /** Every handover a quotation can have queued [subscribers/pricing, subscribers/quotation]. */
 const QUOTATION_TASK_KINDS = (quotation) => [
   `pricing:${quotation._id}:approval`,
+  `pricing:${quotation._id}:cost`,
   `pricing:${quotation._id}:ready`,
   `quotation:${quotation._id}:follow-up`,
   `quotation:${quotation._id}:refused`,

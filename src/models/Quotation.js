@@ -1,7 +1,6 @@
 import { protectOwnership } from '../utils/ownershipWrites.js';
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
-import belongsToEnquiry from './belongsToEnquiry.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
 import { MINIMUM_TIER, minimumFor, tiersFor } from '../services/pricing.service.js';
 import { startOfIndiaDay } from '../utils/indiaDay.js';
@@ -461,6 +460,10 @@ quotationSchema.set('toObject', { virtuals: true });
 
 protectWrites(quotationSchema);
 protectOwnership(quotationSchema);
-quotationSchema.plugin(belongsToEnquiry, { what: 'quotation' });
+/*
+ * Not `belongsToEnquiry`: a quotation may be raised on the buyer alone — a price asked for over
+ * the phone, a rate card — with the models named on it [quotation.controller `newQuotation`].
+ * A sample and a sales order still belong to an enquiry.
+ */
 
 export default mongoose.model('Quotation', quotationSchema);
