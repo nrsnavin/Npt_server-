@@ -920,7 +920,8 @@ async function notifyTagged(query, people, tagger, said) {
       link: `/queries/${query._id}`,
     }).catch((error) => console.error(`[query-tag] push to ${person.name} not sent: ${error.message}`));
 
-    if (query.isUrgent && person.phone) {
+    /* And WhatsApp, as an urgent thread always did: a tag is a person singled out, and rings like one. */
+    if (person.phone) {
       if (!isWhatsAppConfigured()) {
         console.log(`\n[whatsapp] to ${person.phone}\n${urgent}${tagger.name} tagged you in ${query.number}: ${link}\n`);
         continue;
@@ -959,8 +960,34 @@ export const setUrgent = asyncHandler(async (req, res) => {
   await recordChange({
     model: 'Query', doc: query, before, by: req.user, note: query.isUrgent ? 'Flagged urgent' : 'Urgent flag removed',
   });
+  /* Flagged urgent, the thread rings everyone in it — push and email — the way a tag does. */
+  if (query.isUrgent) setImmediate(() => notifyUrgent(query, req.user).catch((error) => console.error(`[query-urgent] not sent: ${error.message}`)));
   res.json({ success: true, data: await withRefs(query) });
 });
+
+/** Everyone the thread is asked of, and whoever raised it — except the administrator flagging it. */
+async function notifyUrgent(query, admin) {
+  const behind = (await Promise.all(query.participants.map(peopleBehind))).flat();
+  const ids = [...new Set([...behind, query.raisedBy].filter(Boolean).map(idOf))].filter((id) => id !== String(admin._id));
+  if (!ids.length) return;
+  const people = await User.find({ _id: { $in: ids }, isActive: { $ne: false } }).select('name email');
+  const link = `${env.appUrl}/queries/${query._id}`;
+  const reason = query.urgent?.reason ? ` — ${query.urgent.reason}` : '';
+  await sendPush(people.map((person) => person._id), {
+    title: `URGENT: ${query.number} — ${query.subject}`,
+    body: `${admin.name} flagged it urgent${reason}`.slice(0, 140),
+    link: `/queries/${query._id}`,
+  });
+  for (const person of people) {
+    if (!person.email) continue;
+    await sendEmail({
+      to: person.email,
+      subject: `URGENT: ${query.number} — ${query.subject}`,
+      text: `${admin.name} flagged ${query.number} urgent${reason}.\n\nOpen the thread: ${link}`,
+      html: `<p><strong>${escapeHtml(admin.name)}</strong> flagged <strong>${escapeHtml(query.number)}</strong> urgent${escapeHtml(reason)}.</p><p><a href="${escapeHtml(link)}">Open the thread</a></p>`,
+    }).catch((error) => console.error(`[query-urgent] email to ${person.email} not sent: ${error.message}`));
+  }
+}
 
 /**
  * The people a message may tag: real, active, not the speaker, and able to open queries at all.

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   listTodos,
+  freshTodos,
   createTodo,
   updateTodo,
   deleteTodo,
@@ -70,6 +71,7 @@ router.patch('/todos/:id', validate(todoUpdateSchema), updateTodo);
  * its own press. Behind the same door as the task itself, so a suggestion cannot be used to
  * learn about a task the asker may not see.
  */
+router.get('/todos/fresh', freshTodos);
 router.get('/todos/:id/suggest', suggestRoutingFor);
 router.post('/todos/:id/escalate', validate(todoEscalateSchema), escalateTodo);
 /* A department task about an enquiry: done, sent back to whoever asked, or re-dated. */

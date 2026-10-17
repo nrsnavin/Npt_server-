@@ -45,17 +45,20 @@ function tradedQuery(query, user) {
   return params;
 }
 
+/** The resin the build-up is costed in — its rate and grammage factor ride with the item. */
+const RESIN = { path: 'buildUp.material', select: 'name code colour type ratePerKg grammageFactorPercent' };
+
 export const listTradedItems = asyncHandler(async (req, res) => {
   const { page, limit, sort, filter } = tradedQuery(req.query, req.user);
   const [rows, total] = await Promise.all([
-    TradedItem.find(filter).select('-priceHistory').populate('photo', 'key').sort(sort).skip((page - 1) * limit).limit(limit),
+    TradedItem.find(filter).select('-priceHistory').populate('photo', 'key').populate(RESIN).sort(sort).skip((page - 1) * limit).limit(limit),
     TradedItem.countDocuments(filter),
   ]);
   paginated(res, allTradedItemsVisibleTo(rows, req.user), { page, limit, total });
 });
 
 export const getTradedItem = asyncHandler(async (req, res) => {
-  const item = await TradedItem.findById(req.params.id).populate('priceHistory.by', 'name').populate('photo', 'key');
+  const item = await TradedItem.findById(req.params.id).populate('priceHistory.by', 'name').populate('photo', 'key').populate(RESIN);
   if (!item) throw ApiError.notFound('Item not found');
   res.json({ success: true, data: tradedItemVisibleTo(item, req.user) });
 });

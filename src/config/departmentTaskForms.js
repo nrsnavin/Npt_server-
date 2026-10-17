@@ -255,13 +255,29 @@ export const TASK_FORMS = {
   },
   ask_edd: {
     team: 'Production Team',
-    asks: modelAndQuantity,
+    /* "Needs assembly" raises Assembly's task beside Production's, on the same enquiry, as the
+       hanger is sent to the press [handoff.service `raiseAssemblyWith`]. */
+    asks: [
+      ...modelAndQuantity,
+      { key: 'assembly', label: 'Needs assembly — clips, hooks or printing fitted after moulding (Assembly is tasked with Production)', type: 'check' },
+    ],
     /* Every move says why, and the enquiry's marketing person and Admin are told of it. */
     remarkRequired: true,
     notifyStatus: true,
     /* Production's ready date — the enquiry's EDD [handoff.service `productionDates`]. */
     statusDate: { label: 'ERD / Ready date', field: 'edd' },
     remark: { label: 'Remarks', placeholder: 'Add production / assembling remark' },
+    /*
+     * Handed on from the Production desk: each raises that team's task on the enquiry, told back
+     * here as it moves [handoff.service `askFromTask`]. None holds Production's own status —
+     * the press keeps running while Assembly or Quality has its share.
+     */
+    actions: [
+      { kind: 'ask_assembling_edd', label: 'Ask Assembly' },
+      { kind: 'ask_printing', label: 'Ask Printing' },
+      { kind: 'quality_check', label: 'Ask Quality' },
+      { kind: 'invoice_dispatch', label: 'Send to Dispatch' },
+    ],
     statuses: [
       { key: 'received', label: 'EDD Request Received' },
       { key: 'accepted', label: 'EDD Accepted' },
@@ -370,10 +386,11 @@ export const TASK_FORMS = {
       { key: 'dispatched', label: 'Dispatched', next: 'lr_copy' },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
-    /* Asked from the dispatch task itself: each raises that department's task on the enquiry. */
+    /* Asked from the dispatch task itself: each raises that department's task on the enquiry, and
+       the request waits on it — nothing goes until the goods are ready [handoff.service `assertNotWaiting`]. */
     actions: [
-      { kind: 'ask_edd', label: 'Ask Production', status: 'asked_production' },
-      { kind: 'ask_assembling_edd', label: 'Ask Assembling Readiness', status: 'asked_assembling' },
+      { kind: 'ask_edd', label: 'Ask Production', status: 'asked_production', waits: true },
+      { kind: 'ask_assembling_edd', label: 'Ask Assembling Readiness', status: 'asked_assembling', waits: true },
     ],
     asks: [
       ...modelAndQuantity,

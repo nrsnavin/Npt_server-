@@ -1,4 +1,5 @@
 import { protectWrites } from '../utils/concurrency.js';
+import { afterCommit } from '../utils/transaction.js';
 import mongoose from 'mongoose';
 import { DEPARTMENT_KEYS } from '../config/modules.js';
 import { HANDOFF_KEYS } from '../config/handoffs.js';
@@ -290,12 +291,23 @@ export const openKeyFor = ({ user, department, originKey }) =>
   originKey ? (user ? `u:${user._id || user}:${originKey}` : `d:${department}:${originKey}`) : undefined;
 
 todoSchema.pre('save', function keepOpenKey() {
+  this.$locals.fresh = this.isNew;
   if (this.isNew) {
     if (this.originKey && !this.completed) this.openKey = openKeyFor(this);
   } else if (this.isModified('completed')) {
     /* Re-opening does not take the key back: another copy may have been raised meanwhile. */
     if (this.completed) this.openKey = undefined;
   }
+});
+
+/*
+ * A task just raised for a department rings its team — push and email, once the transaction that
+ * raised it has committed [services/taskAlert.service.js]. Loaded on the first task rather than
+ * with the model, so the model owes the alert service nothing at start-up.
+ */
+todoSchema.post('save', function tellTheTeam(doc) {
+  if (!this.$locals.fresh) return;
+  afterCommit(() => import('../services/taskAlert.service.js').then(({ alertNewTask }) => alertNewTask(doc)));
 });
 
 protectWrites(todoSchema);

@@ -1006,7 +1006,8 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
  * closed; then it moves on from here.
  */
 async function assertNotWaiting(task) {
-  const actions = findHandoff(task.kind)?.form?.actions || [];
+  /* Only an ask the task waits on (Dispatch's readiness asks) holds its status; Production's asks do not. */
+  const actions = (findHandoff(task.kind)?.form?.actions || []).filter((action) => action.waits);
   if (!actions.length) return;
   const waiting = await Todo.findOne({ askedFrom: task._id, completed: false, kind: { $in: actions.map((action) => action.kind) } }).select('kind department');
   if (!waiting) return;
@@ -1265,6 +1266,27 @@ export async function askFromTask(task, user, { kind, note, brief, priority, req
   if (step && form.notifyStatus) await noticeStatus(task, user, { step, note: said });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   return { task, raised, addedTo: Boolean(raised.$locals?.addedTo) };
+}
+
+/**
+ * A hanger that needs assembly is tasked to Assembly as it goes to the press: the Production task
+ * raised with "Needs assembly" ticked raises Assembly's on the same enquiry, with the same model,
+ * material and quantity, told back to Production as it moves [config/departmentTaskForms.js
+ * ask_edd `asks`]. Once: an Assembly task already open on the enquiry is added to, not doubled.
+ */
+export async function raiseAssemblyWith(task, user) {
+  if (task.kind !== 'ask_edd' || !task.enquiry) return null;
+  const asked = task.brief?.assembly;
+  if (!(asked === true || asked === 'true' || asked === 'Yes')) return null;
+  const enquiry = await enquiryOfTask(task);
+  const { assembly: _a, ...brief } = task.brief?.toObject?.() ?? { ...(task.brief || {}) };
+  const raised = await moveEnquiry({
+    enquiry, kind: 'ask_assembling_edd', user, system: true, openRecords: false, addToOpen: true, keepStage: true, order: task.order,
+    note: `Needs assembly — tasked with Production by ${user.name}${task.notes ? `: ${task.notes}` : ''}`,
+    brief, priority: task.priority,
+  });
+  if (raised?._id) await Todo.updateOne({ _id: raised._id }, { $addToSet: { askedFrom: task._id } }, { keepVersion: true });
+  return raised;
 }
 
 /**

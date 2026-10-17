@@ -26,6 +26,8 @@ export const tradedItemSchema = z.object({
   /* The plant's cost build-up for the piece [TradedItem `buildUp`]; every figure optional. */
   buildUp: z
     .object({
+      material: z.string().regex(/^[a-f\d]{24}$/i, 'Pick a material from the register').nullable().optional(),
+      ratePerKg: z.number().nonnegative().optional(),
       partWeightGrams: z.number().nonnegative().optional(),
       runnerWeightGrams: z.number().nonnegative().optional(),
       jobWorkCost: z.number().nonnegative().optional(),

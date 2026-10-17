@@ -575,7 +575,7 @@ test('only an administrator can flag a query urgent, and urgent ones come first 
   assert.notEqual(json.data[0]._id, older._id, 'and drops back once the flag is off');
 });
 
-test('a tagged person is emailed, and sent WhatsApp as well when the thread is urgent', async () => {
+test('a tagged person is emailed and sent WhatsApp — a tag rings like an urgent thread; urgent says so on both', async () => {
   const made = await api('/api/users', {
     method: 'POST',
     token: admin,
@@ -587,7 +587,7 @@ test('a tagged person is emailed, and sent WhatsApp as well when the thread is u
   const calm = await raise();
   const { lines: quiet } = await printed(() => tag(calm._id, '@Priya Accounts the invoice', [priya]));
   assert.ok(quiet.some((line) => line.includes('[email] to priya.acc@np.com') && line.includes(`tagged you in ${calm.number}`)));
-  assert.ok(!quiet.some((line) => line.includes('[whatsapp] to')), 'no WhatsApp on an ordinary thread');
+  assert.ok(quiet.some((line) => line.includes('[whatsapp] to +919876500077') && !line.includes('URGENT')), 'WhatsApp on an ordinary thread too, not marked urgent');
 
   const hot = await raise();
   await api(`/api/queries/${hot._id}/urgent`, { method: 'POST', token: admin, body: { urgent: true } });
