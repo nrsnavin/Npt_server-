@@ -16,7 +16,7 @@ import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
-  updateHandoff, mayWorkOnHandoff,
+  updateHandoff, mayWorkOnHandoff, raiseAssemblyWith,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -77,6 +77,8 @@ export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) =>
     enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, brief: req.body.brief,
     priority: req.body.priority, requiredDate: req.body.requiredDate || undefined, addToOpen: req.body.addToOpen === true, order: req.body.order, user: req.user,
   });
+  /* A hanger that needs assembly: Assembly is tasked beside Production, on the same enquiry. */
+  const assembly = req.body.kind === 'ask_edd' ? await raiseAssemblyWith(task, req.user) : null;
   /*
    * Create Quotation raises the costing sheet on the enquiry [handoff `openWorkRecord`]. The
    * reply names it, so somebody who costs quotations themselves can be taken straight to it.
@@ -90,6 +92,7 @@ export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) =>
     data: {
       task: await task.populate(TASK_POPULATE), stage: enquiry.stage, addedTo: Boolean(task.$locals?.addedTo),
       ...(quotation ? { quotation } : {}),
+      ...(assembly ? { assembly: { _id: assembly._id, department: assembly.department, addedTo: Boolean(assembly.$locals?.addedTo) } } : {}),
     },
   });
 }));

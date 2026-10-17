@@ -905,3 +905,140 @@ test('Production hands on from its own task — Assembly, Printing, Quality, Dis
   const refused = await api(`/api/workspace/todos/${production._id}/ask`, { method: 'POST', as: 'kavi', body: { kind: 'quality_check', note: 'Check it' } });
   assert.equal(refused.status, 403);
 });
+
+/* ------------------------------ The production queue ------------------------------ */
+
+test('"Needs assembly" on the Production task raises Assembly’s beside it, on the same enquiry, told back to Production', async () => {
+  const fresh = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: enquiry.customer?._id || enquiry.customer, requirement: { modelNumber: 'UTJRSH-12', colour: 'Black' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const raised = await api(`/api/enquiries/${fresh._id}/handoffs`, {
+    method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Clips to be fitted', brief: { model: 'UTJRSH-12', quantity: '8000', assembly: true } },
+  });
+  assert.equal(raised.status, 201, raised.json.message);
+  assert.equal(raised.json.data.assembly?.department, 'assembling', 'the reply says Assembly was tasked');
+  const production = await Todo.findById(raised.json.data.task._id);
+  const assembly = await Todo.findOne({ enquiry: fresh._id, kind: 'ask_assembling_edd', completed: false });
+  assert.ok(assembly, 'Assembly’s task is on the enquiry');
+  assert.equal(assembly.department, 'assembling');
+  assert.equal(assembly.brief.model, 'UTJRSH-12', 'the same model');
+  assert.equal(assembly.brief.quantity, '8000', 'and quantity');
+  assert.equal(assembly.brief.assembly, undefined, 'the tick itself is not carried over');
+  assert.ok(assembly.askedFrom.some((id) => String(id) === String(production._id)), 'told back to Production');
+  assert.match(assembly.notes || '', /Needs assembly — tasked with Production by Nandhini S/);
+
+  /* Unticked, nothing is raised. */
+  const plain = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: enquiry.customer?._id || enquiry.customer, requirement: { modelNumber: 'UTJRSH-13' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const plainRaised = await api(`/api/enquiries/${plain._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'No fittings', brief: { model: 'UTJRSH-13', quantity: '100', assembly: false } } });
+  assert.equal(plainRaised.status, 201, plainRaised.json.message);
+  assert.ok(!plainRaised.json.data.assembly, 'nothing tasked to Assembly');
+  assert.equal(await Todo.countDocuments({ enquiry: plain._id, kind: 'ask_assembling_edd' }), 0);
+
+  /* The ask_edd form carries the tick. */
+  const { buttons } = (await api('/api/handoffs', { as: 'nandhini' })).json.data;
+  const tick = buttons.find((button) => button.key === 'ask_edd').form.asks.find((ask) => ask.key === 'assembly');
+  assert.equal(tick?.type, 'check');
+  assert.match(tick.label, /^Needs assembly/);
+});
+
+test('the production queue lists every open Production task in EDD order, with the other teams beside each', async () => {
+  const twelve = await Todo.findOne({ kind: 'ask_edd', completed: false, 'brief.model': 'UTJRSH-12' }).populate('enquiry', 'number');
+  const thirteen = await Todo.findOne({ kind: 'ask_edd', completed: false, 'brief.model': 'UTJRSH-13' }).populate('enquiry', 'number');
+  const nine = await Todo.findOne({ kind: 'ask_edd', completed: false, 'brief.model': 'UTJRSH-9' }).populate('enquiry', 'number');
+  assert.ok(twelve && thirteen && nine);
+  /* UTJRSH-13 is due today, UTJRSH-12 is late; UTJRSH-9 has no EDD. */
+  assert.equal((await api(`/api/enquiries/${thirteen.enquiry._id}/edd`, { method: 'POST', as: 'nandhini', body: { date: indiaDay(0), note: 'Buyer collects today' } })).status, 200);
+  /* A past EDD is never set by hand (the endpoint refuses it); it is one that was promised and has gone by. */
+  await mongoose.model('Enquiry').updateOne({ _id: twelve.enquiry._id }, { $set: { edd: { date: indiaDay(-2), department: 'production', at: new Date(Date.now() - 5 * 86400000) } } });
+  /* Siva picks up UTJRSH-13 by moving it; the rest sit unclaimed. */
+  assert.equal((await api(`/api/workspace/todos/${thirteen._id}/status`, { method: 'POST', as: 'siva', body: { status: 'accepted', note: 'On it' } })).status, 200);
+
+  const queue = await api('/api/production/queue', { as: 'siva' });
+  assert.equal(queue.status, 200, queue.json.message);
+  const rows = queue.json.data;
+  const at = (model) => rows.findIndex((row) => row.enquiry.model === model);
+  assert.ok(at('UTJRSH-12') < at('UTJRSH-13'), 'late before due today');
+  assert.ok(at('UTJRSH-13') < at('UTJRSH-9'), 'dated before undated');
+  assert.ok(rows.every((row, index) => index === 0 || ['late', 'today', 'week', 'later', 'none'].indexOf(rows[index - 1].band) <= ['late', 'today', 'week', 'later', 'none'].indexOf(row.band)), 'bands in order');
+
+  const late = rows[at('UTJRSH-12')];
+  assert.equal(late.band, 'late');
+  assert.equal(late.edd.date, indiaDay(-2));
+  assert.equal(late.edd.department, 'production');
+  assert.equal(late.needsAssembly, true);
+  assert.equal(late.teams.assembling?.completed, false, 'Assembly’s open task beside it');
+  assert.equal(late.teams.assembling.label, 'Asked Assembling Readiness');
+  assert.equal(late.teams.printing, null);
+  assert.equal(late.enquiry.customer.name, 'RR Jain Utjrsh');
+  assert.equal(late.enquiry.owner.name, 'Nandhini S');
+  assert.equal(late.enquiry.colour, 'Black');
+  assert.equal(late.enquiry.quantity, '8000');
+  assert.equal(late.task.statusLabel, 'EDD Request Received');
+  assert.equal(late.task.with, null, 'not picked up');
+  assert.equal(late.task.raisedBy.name, 'Nandhini S');
+
+  const today = rows[at('UTJRSH-13')];
+  assert.equal(today.band, 'today');
+  assert.equal(today.needsAssembly, false);
+  assert.equal(today.task.with.name, 'Sivakumar');
+  assert.equal(today.task.statusLabel, 'EDD Accepted');
+  assert.equal(today.task.latest.by.name, 'Sivakumar', 'the last thing written on it');
+
+  const nineRow = rows[at('UTJRSH-9')];
+  assert.equal(nineRow.band, 'none');
+  assert.equal(nineRow.edd, null);
+  assert.equal(nineRow.needsAssembly, true, 'Assembly was asked from the task, so it needs assembly');
+  assert.equal(nineRow.teams.quality?.completed, false, 'Quality’s open task beside it');
+  assert.equal(nineRow.task.statusLabel, 'Production Started', 'Production’s own status');
+
+  const { meta } = queue.json;
+  assert.equal(meta.day, indiaDay(0));
+  assert.equal(meta.bands.late + meta.bands.today + meta.bands.week + meta.bands.later + meta.bands.none, rows.length);
+  assert.ok(meta.bands.late >= 1 && meta.bands.today >= 1 && meta.bands.none >= 1);
+  assert.ok(meta.teams.assemblyOpen >= 1);
+  assert.ok(meta.teams.qualityOpen >= 1);
+  assert.ok(meta.teams.unclaimed >= 1);
+  assert.equal(typeof meta.teams.needsAssembly, 'number');
+  assert.equal(typeof meta.teams.dueTomorrow, 'number');
+});
+
+test('the queue is read by every department that reads enquiries, by marketing for its own buyers only, and never without a session', async () => {
+  const siva = (await api('/api/production/queue', { as: 'siva' })).json.data;
+  for (const who of ['ravi', 'kavi', 'anand', 'meera', 'rekha', 'raja', 'admin']) {
+    const seen = await api('/api/production/queue', { as: who });
+    assert.equal(seen.status, 200, `${who}: ${seen.json.message}`);
+    assert.equal(seen.json.data.length, siva.length, `${who} reads the whole queue`);
+  }
+  const own = await api('/api/production/queue', { as: 'nandhini' });
+  assert.equal(own.status, 200);
+  assert.ok(own.json.data.length >= 3, 'Nandhini’s own buyers');
+  assert.ok(own.json.data.every((row) => row.enquiry.owner?.name === 'Nandhini S'));
+  const other = await api('/api/production/queue', { as: 'arun' });
+  assert.equal(other.status, 200);
+  assert.ok(!other.json.data.some((row) => row.enquiry.owner?.name === 'Nandhini S'), 'not another marketing person’s');
+  assert.equal((await api('/api/production/queue')).status, 401);
+});
+
+test('Production tasks Assembly from the queue row, and a finished Assembly task still shows beside the row for a week', async () => {
+  const thirteen = await Todo.findOne({ kind: 'ask_edd', completed: false, 'brief.model': 'UTJRSH-13' });
+  const asked = await api(`/api/workspace/todos/${thirteen._id}/ask`, { method: 'POST', as: 'siva', body: { kind: 'ask_assembling_edd', note: 'Hooks after all' } });
+  assert.equal(asked.status, 200, asked.json.message);
+  const assembly = await Todo.findOne({ enquiry: thirteen.enquiry, kind: 'ask_assembling_edd', completed: false });
+  assert.ok(assembly);
+  let row = (await api('/api/production/queue', { as: 'ravi' })).json.data.find((entry) => entry.enquiry.model === 'UTJRSH-13');
+  assert.equal(row.needsAssembly, true);
+  assert.equal(row.teams.assembling.completed, false);
+
+  for (const status of ['started', 'spares_ready', 'full_ready', 'ready_dispatch', 'closed']) {
+    const moved = await api(`/api/workspace/todos/${assembly._id}/status`, { method: 'POST', as: 'anand', body: { status, note: `Now ${status}` } });
+    assert.equal(moved.status, 200, `${status}: ${moved.json.message}`);
+  }
+  row = (await api('/api/production/queue', { as: 'ravi' })).json.data.find((entry) => entry.enquiry.model === 'UTJRSH-13');
+  assert.equal(row.teams.assembling.completed, true, 'Dispatch sees Assembly finished');
+  assert.equal(row.teams.assembling.label, 'Task Closed');
+  assert.equal(row.needsAssembly, true);
+});

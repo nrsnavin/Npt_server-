@@ -255,7 +255,12 @@ export const TASK_FORMS = {
   },
   ask_edd: {
     team: 'Production Team',
-    asks: modelAndQuantity,
+    /* "Needs assembly" raises Assembly's task beside Production's, on the same enquiry, as the
+       hanger is sent to the press [handoff.service `raiseAssemblyWith`]. */
+    asks: [
+      ...modelAndQuantity,
+      { key: 'assembly', label: 'Needs assembly — clips, hooks or printing fitted after moulding (Assembly is tasked with Production)', type: 'check' },
+    ],
     /* Every move says why, and the enquiry's marketing person and Admin are told of it. */
     remarkRequired: true,
     notifyStatus: true,

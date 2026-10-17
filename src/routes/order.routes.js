@@ -16,6 +16,7 @@ import {
   listProductionLines, exportProductionLines, updateProductionLine, listProductionStatuses,
   productionDay,
 } from '../controllers/production.controller.js';
+import { listProductionQueue } from '../controllers/productionQueue.controller.js';
 import {
   listDispatches, dispatchBoard, exportDispatches, getDispatch, listReadyStock,
   listOrderDispatches, createDispatch, updateDispatch,
@@ -202,6 +203,8 @@ router.post('/orders/:id/escalations', requireModule('orders'), validate(orderEs
  * Above `/production` so the literal path is matched before anything that could shadow it, the
  * same ordering the statuses and the export already rely on.
  */
+/* The production queue in EDD order, read by every department that works to it — access checked inside. */
+router.get('/production/queue', listProductionQueue);
 router.get('/production/day', requireModule('production'), productionDay);
 router.get('/production/statuses', requireModule('production'), listProductionStatuses);
 router.get('/production/export', requireModule('production'), exportProductionLines);

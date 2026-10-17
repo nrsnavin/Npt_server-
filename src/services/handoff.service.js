@@ -1269,6 +1269,27 @@ export async function askFromTask(task, user, { kind, note, brief, priority, req
 }
 
 /**
+ * A hanger that needs assembly is tasked to Assembly as it goes to the press: the Production task
+ * raised with "Needs assembly" ticked raises Assembly's on the same enquiry, with the same model,
+ * material and quantity, told back to Production as it moves [config/departmentTaskForms.js
+ * ask_edd `asks`]. Once: an Assembly task already open on the enquiry is added to, not doubled.
+ */
+export async function raiseAssemblyWith(task, user) {
+  if (task.kind !== 'ask_edd' || !task.enquiry) return null;
+  const asked = task.brief?.assembly;
+  if (!(asked === true || asked === 'true' || asked === 'Yes')) return null;
+  const enquiry = await enquiryOfTask(task);
+  const { assembly: _a, ...brief } = task.brief?.toObject?.() ?? { ...(task.brief || {}) };
+  const raised = await moveEnquiry({
+    enquiry, kind: 'ask_assembling_edd', user, system: true, openRecords: false, addToOpen: true, keepStage: true, order: task.order,
+    note: `Needs assembly — tasked with Production by ${user.name}${task.notes ? `: ${task.notes}` : ''}`,
+    brief, priority: task.priority,
+  });
+  if (raised?._id) await Todo.updateOne({ _id: raised._id }, { $addToSet: { askedFrom: task._id } }, { keepVersion: true });
+  return raised;
+}
+
+/**
  * The next department's task, raised from a status (Dispatch marking it Dispatched gives
  * Reception the LR copy) — filled from the enquiry the way the form is, with what this task
  * knows on top: the quantity sent, and today as the dispatch date. Once only: a second
