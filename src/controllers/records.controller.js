@@ -1,3 +1,4 @@
+import { DOWNTIME_REASONS, REJECT_REASONS } from '../config/productionReasons.js';
 import mongoose from 'mongoose';
 import QcRecord from '../models/QcRecord.js';
 import SalesOrder from '../models/SalesOrder.js';
@@ -21,7 +22,7 @@ import { accessLevel } from '../services/access.service.js';
 import { levelSatisfies } from '../config/modules.js';
 import {
   REGISTER_COLUMNS, qcReport, moveStock, setupChecklist, stockBook, approveQcRecord, createQcRecord, dispatchDetailsForOrder, dispatchRegister, enquiryRecords, finishRun, qcForOrder, qcPrefill, listQcRecords, listRuns, maintenanceHistory,
-  mouldHistory, populateQc, populateRun, recordMaintenance, renderQcCertificate, startRun,
+  mouldHistory, populateQc, populateRun, recordMaintenance, renderQcCertificate, startRun, logRun,
 } from '../services/records.service.js';
 
 /** QC records, machines and their maintenance, mould runs, and the dispatch register [services/records.service.js]. */
@@ -99,6 +100,15 @@ export const finishRunHandler = asyncHandler(withOrderLock(runOrder, transaction
   const run = await finishRun(await byId(MouldRun, req.params.id, 'Run'), req.body, req.user);
   res.json({ success: true, data: await populateRun(MouldRun.findById(run._id)) });
 })));
+/** A line on a running job: counter read, a coded stop, or rejects by defect. */
+export const logRunHandler = asyncHandler(transactional(async (req, res) => {
+  const run = await logRun(await byId(MouldRun, req.params.id, 'Run'), req.body, req.user);
+  res.json({ success: true, data: await populateRun(MouldRun.findById(run._id)) });
+}));
+
+/** The fixed lists a stop and a reject are coded from [config/productionReasons.js]. */
+export const runReasonsHandler = (_req, res) => res.json({ success: true, data: { downtime: DOWNTIME_REASONS, rejects: REJECT_REASONS } });
+
 export const mouldHistoryHandler = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) throw ApiError.notFound('Mould not found');
   const history = await mouldHistory(req.params.id);

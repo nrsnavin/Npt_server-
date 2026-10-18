@@ -779,3 +779,41 @@ test('one form for Quality: a QC sheet on an SO line writes the line’s inspect
   assert.ok(machines.json.data.groups.some((group) => group.key === 'machines' && group.results.length > 0));
   assert.ok(!(await api(`/api/search?q=${made.json.data.number}`, { as: 'arun' })).json.data.groups.some((group) => group.key === 'machines'), 'marketing has no production grant');
 });
+
+test('the floor codes stops and rejects on a running job; OEE and the losses read them back', async () => {
+  const reasons = await api('/api/mould-runs/reasons', { as: 'siva' });
+  assert.ok(reasons.json.data.downtime.some((reason) => reason.key === 'mould_change' && reason.planned));
+  assert.ok(reasons.json.data.rejects.some((reason) => reason.key === 'flash'));
+  const mould = await addMould({ cycleTimeSeconds: 12, cavities: 4 });
+  const machine = await addMachine();
+  const run = (await api('/api/mould-runs', { method: 'POST', as: 'siva', body: { mould: mould._id, machine: machine._id, counterStart: 0, shift: 'B', startedAt: new Date(Date.now() - 10 * 3600000).toISOString() } })).json.data;
+  assert.equal((await api(`/api/mould-runs/${run._id}/log`, { method: 'POST', as: 'siva', body: { counter: 1000 } })).status, 200);
+  assert.equal((await api(`/api/mould-runs/${run._id}/log`, { method: 'POST', as: 'siva', body: { counter: 900 } })).status, 400, 'the counter does not go back');
+  assert.equal((await api(`/api/mould-runs/${run._id}/log`, { method: 'POST', as: 'siva', body: { downtime: { reason: 'machine_breakdown', minutes: 60, note: 'Hydraulic leak' } } })).status, 200);
+  const logged = await api(`/api/mould-runs/${run._id}/log`, { method: 'POST', as: 'siva', body: { rejects: { reason: 'flash', pieces: 400 } } });
+  assert.equal(logged.json.data.rejectedPieces, 400);
+  assert.equal(logged.json.data.downtimeMinutes, 60);
+  assert.equal((await api(`/api/mould-runs/${run._id}/log`, { method: 'POST', as: 'siva', body: { downtime: { reason: 'tea_break', minutes: 5 } } })).status, 400, 'only listed reasons');
+
+  const tooFew = await api(`/api/mould-runs/${run._id}/finish`, { method: 'POST', as: 'siva', body: { counterEnd: 2400, goodPieces: 9000, rejectedPieces: 300 } });
+  assert.equal(tooFew.status, 400, 'coded rejects cannot exceed the total');
+  const finished = await api(`/api/mould-runs/${run._id}/finish`, {
+    method: 'POST', as: 'siva',
+    body: { counterEnd: 2400, goodPieces: 9000, rejectedPieces: 600, downtime: [{ reason: 'mould_change', minutes: 60 }], rejects: [{ reason: 'short_shot', pieces: 100 }] },
+  });
+  assert.equal(finished.status, 200, finished.json.message);
+  assert.equal(finished.json.data.downtimeMinutes, 120);
+
+  const oee = await api(`/api/production/oee?machine=${machine._id}`, { as: 'siva' });
+  assert.equal(oee.status, 200, oee.json.message);
+  const { total, downtimeByReason, rejectsByReason, byShift } = oee.json.data;
+  assert.equal(total.runs, 1);
+  assert.equal(total.availability, 88.9);
+  assert.equal(total.quality, 93.8);
+  assert.ok(total.oee > 80 && total.oee < 90);
+  assert.ok(downtimeByReason.some((row) => row.reason === 'machine_breakdown' && row.minutes === 60 && !row.planned));
+  assert.deepEqual(rejectsByReason[0], { reason: 'flash', label: 'Flash', pieces: 400 }, 'the biggest loss first');
+  assert.deepEqual(rejectsByReason.map((row) => `${row.label}:${row.pieces}`).sort(), ['Flash:400', 'Not coded:100', 'Short shot:100']);
+  assert.equal(byShift[0].label, 'Shift B');
+  assert.equal((await api('/api/production/oee')).status, 401, 'never without a session');
+});

@@ -1,5 +1,6 @@
 import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
+import { DOWNTIME_KEYS, REJECT_KEYS } from '../config/productionReasons.js';
 
 /**
  * A mould run: one mould on one machine for one order (or enquiry), from start to finish — the
@@ -45,6 +46,36 @@ const mouldRunSchema = new mongoose.Schema(
     },
     regrindKg: { type: Number, min: 0 },
     downtimeMinutes: { type: Number, min: 0 },
+    /* Each stop with its coded reason [config/productionReasons.js]; the total above is their sum when there are any. */
+    downtime: {
+      type: [new mongoose.Schema({
+        reason: { type: String, enum: DOWNTIME_KEYS, required: true },
+        minutes: { type: Number, min: 0, max: 100000, required: true },
+        note: { type: String, trim: true, maxlength: 300 },
+        at: { type: Date, default: Date.now },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      }, { _id: false })],
+      default: undefined,
+    },
+    /* Rejected pieces by coded defect; any rejects beyond these are counted as not coded. */
+    rejects: {
+      type: [new mongoose.Schema({
+        reason: { type: String, enum: REJECT_KEYS, required: true },
+        pieces: { type: Number, min: 0, max: 1e9, required: true },
+        at: { type: Date, default: Date.now },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      }, { _id: false })],
+      default: undefined,
+    },
+    /* The shot counter read during the run — the hourly log on the floor. */
+    counterLog: {
+      type: [new mongoose.Schema({
+        counter: { type: Number, min: 0, required: true },
+        at: { type: Date, default: Date.now },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      }, { _id: false })],
+      default: undefined,
+    },
     downtimeReason: { type: String, trim: true, maxlength: 300 },
     issues: { type: String, trim: true, maxlength: 2000 },
 

@@ -6,10 +6,10 @@ import { accessLevel } from '../services/access.service.js';
 import { levelSatisfies } from '../config/modules.js';
 import {
   approveQc, askLocationHandler, setupChecklistHandler, enquiryRecordsHandler, qcPrefillHandler, qcReportHandler, moveStockHandler, stockBookHandler, createMachine, createMaintenance, createQc, dispatchRegisterHandler, finishRunHandler, getQc, listMachines,
-  listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine,
+  listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine, logRunHandler, runReasonsHandler,
 } from '../controllers/records.controller.js';
 import {
-  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runStartSchema, stockMovementSchema,
+  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema,
 } from '../validators/records.schemas.js';
 
 /**
@@ -42,7 +42,9 @@ router.post('/maintenance', anyModule([['production', 'write'], ['moulds', 'writ
 
 router.get('/mould-runs', anyModule([['production', 'read'], ['moulds', 'read']]), listRunsHandler);
 router.post('/mould-runs', requireModule('production', 'write'), validate(runStartSchema), startRunHandler);
+router.get('/mould-runs/reasons', runReasonsHandler);
 router.post('/mould-runs/:id/finish', requireModule('production', 'write'), validate(runFinishSchema), finishRunHandler);
+router.post('/mould-runs/:id/log', requireModule('production', 'write'), validate(runLogSchema), logRunHandler);
 router.get('/moulds/:id/history', requireModule('moulds'), mouldHistoryHandler);
 
 router.get('/dispatch-register', requireModule('dispatch'), dispatchRegisterHandler);
