@@ -183,6 +183,19 @@ export async function planningBoard({ days = 14 } = {}) {
   /* What each job will run short of, in plan order [bom.service]. */
   const { shortages } = await import('./bom.service.js');
   const { byWorkOrder } = await shortages();
+  /* How much longer than standard each mould and press really runs — the predicted end [productionInsights]. */
+  const { factorFor, slipFactors } = await import('./productionInsights.service.js');
+  const factors = await slipFactors();
+  /* The end the plant's own history predicts: the press days scaled by the slip, from the planned start. */
+  const predicted = (job, perDay, toMake, machine) => {
+    if (!perDay || !toMake || !job.plannedStart) return { slip: null, predictedEnd: null, predictedLate: false };
+    const slip = factorFor(factors, { mould: job.mould?._id, machine: machine?._id || job.machine });
+    const days = Math.ceil((toMake / perDay) * slip);
+    let end = firstWorkingDay(indiaDay(job.plannedStart), plant.weeklyOff);
+    for (let day = 1; day < days; day += 1) end = nextWorkingDay(end, plant.weeklyOff);
+    const due = job.dueDate ? indiaDay(job.dueDate) : null;
+    return { slip: Math.round(slip * 100) / 100, predictedEnd: dayToDate(end), predictedLate: Boolean(due && end > due) };
+  };
   const describe = (job, machine) => {
     const toMake = Math.max(0, (job.quantity || 0) - (job.goodQty || 0));
     const perDay = piecesPerDay(job.mould, plant);
@@ -196,6 +209,7 @@ export async function planningBoard({ days = 14 } = {}) {
       customer: job.customer?.name || null, order: job.order?.number || null, priority: job.order?.priority || job.priority || 'normal',
       dueDate: job.dueDate || null, plannedStart: job.plannedStart || null, plannedEnd: job.plannedEnd || null,
       perDay: perDay || null, pressDays: perDay ? Math.ceil(toMake / perDay) : null,
+      ...predicted(job, perDay, toMake, machine),
       late: Boolean(due && ((job.plannedEnd && indiaDay(job.plannedEnd) > due) || due < today)),
       fit: { blocks: fit.blocks, warnings: fit.warnings },
       short: byWorkOrder[String(job._id)]?.short || [],

@@ -28,6 +28,7 @@ import { withEnquiries } from './support/onEnquiry.js';
    correctly refuses. The limiter stays mounted; only the number moves. */
 process.env.RATE_LIMIT_MAX = '100000';
 process.env.JWT_SECRET = 'work-order-test-secret-value';
+process.env.WHATSAPP_WEBHOOK_TOKEN = 'work-order-webhook';
 
 const DAY = 24 * 60 * 60 * 1000;
 const inDays = (days) => new Date(Date.now() + days * DAY).toISOString().slice(0, 10);
@@ -385,4 +386,95 @@ test('the floor: a job card with a QR code, the andon call and the shift handove
   assert.ok(row.downtime.some((entry) => entry.reason === 'heater_band'));
   assert.equal(row.runs[0].workOrder.left, 2500, 'what the job still has to make');
   assert.ok(summary.json.data.rejects.some((entry) => entry.label === 'Flash'));
+});
+
+test('looking ahead: unusual runs alert, a suggested schedule applies, risk, forecast and the question box', async () => {
+  const press = await machineOf('IM-AHEAD');
+  const { default: MouldRun } = await import('../src/models/MouldRun.js');
+  const { default: Todo } = await import('../src/models/Todo.js');
+  /* Six ordinary runs make the mould's history; the seventh rejects ten times as much. */
+  for (let index = 0; index < 6; index += 1) {
+    const run = (await api('/api/mould-runs', { method: 'POST', token: ramesh, body: { mould, machine: press._id, counterStart: 0 } })).json.data;
+    const done = await api(`/api/mould-runs/${run._id}/finish`, { method: 'POST', token: ramesh, body: { counterEnd: 1000, goodPieces: 3960, rejectedPieces: 40 + index } });
+    assert.equal(done.status, 200, done.json.message);
+  }
+  const odd = (await api('/api/mould-runs', { method: 'POST', token: ramesh, body: { mould, machine: press._id, counterStart: 0 } })).json.data;
+  await api(`/api/mould-runs/${odd._id}/finish`, { method: 'POST', token: ramesh, body: { counterEnd: 1000, goodPieces: 3500, rejectedPieces: 500, rejects: [{ reason: 'flash', pieces: 500 }] } });
+  const flagged = await MouldRun.findById(odd._id).lean();
+  assert.equal(flagged.anomalies[0].kind, 'rejects');
+  assert.match(flagged.anomalies[0].text, /12\.5%/);
+  assert.ok(await Todo.exists({ originKey: `run-anomaly:${odd._id}` }), 'Production gets a task about it');
+
+  /* Two jobs on one press, the second late behind the first; a free press beside it. */
+  const free = await machineOf('IM-FREE');
+  const order = await released([
+    { mould, modelNumber: 'NH-400', colour: 'Black', quantity: 90000, unitPrice: 7.5, deliveryDate: inDays(30) },
+    { mould, modelNumber: 'NH-400', colour: 'White', quantity: 90000, unitPrice: 7.5, deliveryDate: inDays(4) },
+  ]);
+  const jobs = (await api(`/api/work-orders?order=${order._id}`, { token: ramesh })).json.data;
+  for (const wo of [...jobs].sort((a) => (a.colour === 'Black' ? -1 : 1))) {
+    assert.equal((await api(`/api/work-orders/${wo._id}`, { method: 'PATCH', token: ramesh, body: { machine: press._id } })).status, 200);
+  }
+  const suggested = await api('/api/production/plan/suggest', { method: 'POST', token: ramesh, body: {} });
+  assert.equal(suggested.status, 200, suggested.json.message);
+  const white = jobs.find((wo) => wo.colour === 'White');
+  const move = suggested.json.data.moves.find((entry) => String(entry.workOrder) === String(white._id));
+  assert.ok(move, 'the late white job is moved');
+  assert.equal(suggested.json.data.narrative, null, 'no model configured, no narrative — the reasons stand alone');
+  assert.equal((await api('/api/production/plan/apply', { method: 'POST', token: nandhini, body: { moves: [move] } })).status, 403, 'marketing reads the plan, does not apply it');
+  const applied = await api('/api/production/plan/apply', { method: 'POST', token: ramesh, body: { moves: suggested.json.data.moves } });
+  assert.equal(applied.status, 200, applied.json.message);
+  const now = (await api(`/api/work-orders/${white._id}`, { token: ramesh })).json.data;
+  assert.equal(String(now.machine._id || now.machine), String(move.machine));
+  const stale = await api('/api/production/plan/apply', { method: 'POST', token: ramesh, body: { moves: [move] } });
+  assert.equal(stale.status, 409, 'a work order changed since the suggestion is left alone');
+
+  const board = (await api('/api/production/plan', { token: ramesh })).json.data;
+  const job = board.presses.flatMap((row) => row.queue).find((entry) => String(entry._id) === String(white._id));
+  assert.ok(job.predictedEnd, 'the board predicts an end from the history');
+  assert.ok(job.slip >= 1);
+
+  const risk = await api('/api/production/maintenance-risk', { token: ramesh });
+  assert.equal(risk.status, 200, risk.json.message);
+  assert.ok(risk.json.data.machines.some((row) => row.code === 'IM-AHEAD'));
+  const forecast = await api('/api/production/purchase-forecast', { token: ramesh });
+  assert.equal(forecast.status, 200, forecast.json.message);
+  assert.ok(Array.isArray(forecast.json.data.items));
+  const asked = await api('/api/production/ask', { method: 'POST', token: ramesh, body: { question: 'Which orders will be late?' } });
+  assert.equal(asked.status, 200, asked.json.message);
+  assert.equal(asked.json.data.from, 'rules');
+  assert.ok(asked.json.data.points.length >= 1);
+  assert.equal((await api('/api/production/ask', { method: 'POST', token: ramesh, body: { question: '' } })).status, 400);
+});
+
+test('a press reading over WhatsApp becomes a run log only after YES', async () => {
+  const { default: User } = await import('../src/models/User.js');
+  await User.updateOne({ email: 'ramesh@np.com' }, { $set: { phone: '+919811100022' } });
+  const press = await machineOf('IM-WA7');
+  const run = (await api('/api/mould-runs', { method: 'POST', token: ramesh, body: { mould, machine: press._id, counterStart: 1000 } })).json.data;
+  let sid = 0;
+  const text = (body, from = '+919811100022') => api('/api/whatsapp/inbound?token=work-order-webhook', { method: 'POST', body: { From: `whatsapp:${from}`, Body: body, MessageSid: `SMWO${++sid}` } });
+
+  const read = await text('im-wa7 2400 rej 30 flash');
+  assert.equal(read.json.outcome, 'floor_pending', JSON.stringify(read.json));
+  const { default: MouldRun } = await import('../src/models/MouldRun.js');
+  assert.equal((await MouldRun.findById(run._id).lean()).counterLog, undefined, 'nothing on the run before YES');
+  const yes = await text('YES');
+  assert.equal(yes.json.outcome, 'floor_applied', JSON.stringify(yes.json));
+  const logged = await MouldRun.findById(run._id).lean();
+  assert.equal(logged.counterLog[0].counter, 2400);
+  assert.deepEqual([logged.rejects[0].reason, logged.rejects[0].pieces], ['flash', 30]);
+
+  await text('IM-WA7 down 20 power');
+  assert.equal((await text('no')).json.outcome, 'floor_cancelled');
+  assert.equal((await MouldRun.findById(run._id).lean()).downtime, undefined, 'dropped, not logged');
+  assert.equal((await text('IM-WA7 2000')).json.outcome, 'floor_pending');
+  assert.equal((await text('yes')).json.outcome, 'floor_failed', 'the counter cannot go back');
+  const chat = await text('hello, any update on my order?');
+  assert.notEqual(chat.json.outcome?.startsWith?.('floor'), true, 'a message naming no press goes to the inbox');
+  const stranger = await text('IM-WA7 9999', '+919899999999');
+  assert.ok(!String(stranger.json.outcome).startsWith('floor'), 'only Production’s phones log readings');
+  const list = await api('/api/production/floor-messages', { token: ramesh });
+  assert.equal(list.status, 200);
+  assert.ok(list.json.data.some((entry) => entry.status === 'applied'));
 });

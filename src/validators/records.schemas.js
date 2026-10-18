@@ -119,3 +119,16 @@ export const workOrderPlanSchema = z.object({
 /** The floor calls a breakdown on a press, and later marks it running again. */
 export const andonSchema = z.object({ reason: z.enum(DOWNTIME_KEYS).optional(), note: text(500) });
 export const andonClearSchema = z.object({ workDone: text(2000), note: text(500) });
+
+/** The moves of a suggested schedule, as the suggestion gave them [scheduleSuggest.service]. */
+export const planApplySchema = z.object({
+  moves: z.array(z.object({
+    workOrder: z.string().regex(/^[a-f\d]{24}$/i, 'Not a work order'),
+    machine: z.string().regex(/^[a-f\d]{24}$/i, 'Not a machine'),
+    sequence: z.number().int().min(1).max(10000),
+    updatedAt: z.union([z.string(), z.null()]).optional(),
+  }).passthrough()).min(1, 'Nothing to apply').max(500),
+});
+
+/** A question for the production copilot. */
+export const productionAskSchema = z.object({ question: z.string().trim().min(3, 'Ask a question').max(500) });

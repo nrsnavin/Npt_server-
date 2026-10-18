@@ -70,6 +70,15 @@ const mouldRunSchema = new mongoose.Schema(
       }, { _id: false })],
       default: undefined,
     },
+    /* What the run did that its mould does not usually do — a reject rate or a speed far outside its own history [productionInsights.service]. */
+    anomalies: {
+      type: [new mongoose.Schema({
+        kind: { type: String, enum: ['rejects', 'rejects_running', 'slow'], required: true },
+        text: { type: String, trim: true, maxlength: 300 },
+        at: { type: Date, default: Date.now },
+      }, { _id: false })],
+      default: undefined,
+    },
     /* The shot counter read during the run — the hourly log on the floor. */
     counterLog: {
       type: [new mongoose.Schema({

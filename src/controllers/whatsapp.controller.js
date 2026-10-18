@@ -2,6 +2,7 @@ import WhatsappThread, { CLOSED_THREAD_STATUSES, THREAD_STATUSES } from '../mode
 import Customer from '../models/Customer.js';
 import { receiveMessage } from '../services/whatsapp.inbox.js';
 import { handleStaffMessage, staffForNumber } from '../services/buyerCard.service.js';
+import { handleFloorMessage } from '../services/floorMessage.service.js';
 import { createEnquiryRecord } from './pipeline.controller.js';
 import { assertAssignable, assertCanOwnBuyer, marketingTeam } from '../services/assignment.service.js';
 import {
@@ -41,13 +42,17 @@ const POPULATE = [
 /**
  * One message arriving at the plant's number, from whichever provider: a staff member's photo
  * becomes a buyer card to confirm (buyerCard.service), and everything else — every message from
- * anybody else — goes to the inbox.
+ * anybody else — goes to the inbox. A production colleague's press reading becomes a run log once
+ * they answer YES (floorMessage.service).
  */
 async function takeMessage({ from, body, media, providerId, profileName, receivedAt, location }) {
   const staff = await staffForNumber(from);
   if (staff) {
     const handled = await handleStaffMessage({ staff, from, body, media, providerId });
     if (handled) return { outcome: handled.outcome, ...(handled.why ? { why: handled.why } : {}) };
+    /* A press reading from Production — "IM-2 23400 rej 40 flash" — or the YES that confirms one. */
+    const floor = await handleFloorMessage({ staff, from, body, providerId });
+    if (floor) return { outcome: floor.outcome, ...(floor.why ? { why: floor.why } : {}) };
   }
 
   const result = await receiveMessage({ from, body, media, providerId, profileName, receivedAt, location });

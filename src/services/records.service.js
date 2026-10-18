@@ -15,6 +15,7 @@ import { warnDispatchOfQc } from './handoff.service.js';
 import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
 import { finishedOn, startedOn, workOrderForRun } from './workOrder.service.js';
+import { alertUnusual, mouldHistory as runHistoryOf, unusual, unusualSoFar } from './productionInsights.service.js';
 import { withCreateLocks } from './operationLock.service.js';
 import { render, letterhead, facts, footer } from './recordPdf.js';
 import Inspection, { DEFECT_TYPES } from '../models/Inspection.js';
@@ -505,7 +506,11 @@ export async function finishRun(run, body, user) {
   if (run.order && run.orderLine && run.goodPieces > 0 && run.producedAdded == null) await addToProduction(run, user);
   if (run.resin?.material && run.resin?.usedKg > 0 && run.resinIssued == null) await issueResin(run, user);
   await finishedOn(run, user);
+  /* Far outside what this mould usually does: flagged on the run, and Production told [productionInsights]. */
+  const unusualNow = run.status === 'completed' ? unusual(run, await runHistoryOf(run.mould, { exclude: run._id })) : [];
+  if (unusualNow.length) run.anomalies = [...(run.anomalies || []), ...unusualNow.map((entry) => ({ ...entry, at: new Date() }))];
   await run.save();
+  if (unusualNow.length) await alertUnusual(run, unusualNow, user);
   if (shots) {
     const mould = await Mould.findById(run.mould).select('mouldCode totalShots maintenanceEveryShots lastMaintenanceShots').lean();
     if (mould) await remindMould(mould);
@@ -547,7 +552,11 @@ export async function logRun(run, body, user) {
   /* While running, the rejected total is simply what has been coded so far. */
   if ((run.rejects || []).length) run.rejectedPieces = run.rejects.reduce((sum, entry) => sum + (entry.pieces || 0), 0);
   if ((run.downtime || []).length) run.downtimeMinutes = run.downtime.reduce((sum, entry) => sum + (entry.minutes || 0), 0);
+  /* Rejects running far above this mould's usual, once enough pieces are counted to judge. */
+  const soFar = body.counter != null || body.rejects ? unusualSoFar(run, await runHistoryOf(run.mould, { exclude: run._id })) : [];
+  if (soFar.length) run.anomalies = [...(run.anomalies || []), ...soFar.map((entry) => ({ ...entry, at: new Date() }))];
   await run.save();
+  if (soFar.length) await alertUnusual(run, soFar, user);
   return run;
 }
 

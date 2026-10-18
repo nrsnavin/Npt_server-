@@ -1,5 +1,6 @@
 import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, sequenceByColourHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
 import { componentStockSchema } from '../validators/component.schemas.js';
+import { applyPlanHandler, askProductionHandler, floorMessagesHandler, maintenanceRiskHandler, purchaseForecastHandler, suggestPlanHandler } from '../controllers/productionInsights.controller.js';
 import { Router } from 'express';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -11,7 +12,7 @@ import {
   listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine, logRunHandler, runReasonsHandler,
 } from '../controllers/records.controller.js';
 import {
-  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema, andonSchema, andonClearSchema,
+  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema, andonSchema, andonClearSchema, planApplySchema, productionAskSchema,
 } from '../validators/records.schemas.js';
 
 /**
@@ -62,6 +63,13 @@ router.get('/production/shortages', anyModule([['production', 'read'], ['materia
 router.get('/components/:id/stock', requireModule('materials'), componentBookHandler);
 router.post('/components/:id/stock', anyModule([['materials', 'write'], ['production', 'write']]), validate(componentStockSchema), componentStockHandler);
 router.post('/production/plan/:machineId/sequence-by-colour', requireModule('production', 'write'), sequenceByColourHandler);
+/* Looking ahead: a suggested schedule, maintenance risk, when to buy, the floor's WhatsApp readings, and questions. */
+router.post('/production/plan/suggest', requireModule('production'), suggestPlanHandler);
+router.post('/production/plan/apply', requireModule('production', 'write'), validate(planApplySchema), applyPlanHandler);
+router.get('/production/maintenance-risk', anyModule([['production', 'read'], ['moulds', 'read']]), maintenanceRiskHandler);
+router.get('/production/purchase-forecast', anyModule([['production', 'read'], ['materials', 'read']]), purchaseForecastHandler);
+router.get('/production/floor-messages', requireModule('production'), floorMessagesHandler);
+router.post('/production/ask', requireModule('production'), validate(productionAskSchema), askProductionHandler);
 router.get('/mould-runs/reasons', runReasonsHandler);
 router.post('/mould-runs/:id/finish', requireModule('production', 'write'), validate(runFinishSchema), finishRunHandler);
 router.post('/mould-runs/:id/log', requireModule('production', 'write'), validate(runLogSchema), logRunHandler);
