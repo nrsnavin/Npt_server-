@@ -35,6 +35,9 @@ import { levelSatisfies } from '../config/modules.js';
 export const CONFIDENTIAL = [
   'cost',
   'materialCost',
+  /* The making cost beside a supplier's price is the plant's own cost base, and so is "supplied". */
+  'makingCost',
+  'supplied',
   'totalCost',
   'grossMarginPercent',
   'effectiveMarkupPercent',

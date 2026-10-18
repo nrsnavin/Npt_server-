@@ -179,31 +179,42 @@ const lineSchema = new mongoose.Schema(
   { _id: true }
 );
 
-/**
- * Grams × ₹/kg ÷ 1000 — for a piece made here. A bought-in (trade) hanger with a supplier's
- * price is costed at that price; the resin is in it already, so none is added on top. One the
- * supplier has not priced is costed from the plant's own build-up, as a made piece is.
- */
+/** Grams × ₹/kg ÷ 1000 — what the resin in one piece costs, made here or bought in. */
 lineSchema.virtual('materialCost').get(function materialCost() {
-  const { gramWeight, rawMaterialRate, inwardPrice } = this.cost || {};
-  if (this.procurement === 'trade' && inwardPrice > 0) return 0;
+  const { gramWeight, rawMaterialRate } = this.cost || {};
   if (!gramWeight || !rawMaterialRate) return 0;
   return (gramWeight * rawMaterialRate) / 1000;
 });
 
-/** Everything it costs to put one piece in a carton — the sheet's Net Total. */
+/**
+ * What the piece costs to make, with no margin: the resin, job work, hook, clips and packing.
+ * For a piece made here that is the cost. For a bought-in piece it is the plant's own build-up
+ * from the trading master, kept beside the supplier's price so the gap — the supplier's
+ * margin — is on the sheet to negotiate from [web: utils/quoteBuilder.js `costOf`].
+ */
+lineSchema.virtual('makingCost').get(function makingCost() {
+  const cost = this.cost || {};
+  return this.materialCost + (cost.jobWorkCost || 0) + (cost.hookCost || 0) + (cost.metalClipsCost || 0) + (cost.packingCost || 0);
+});
+
+/** True for a bought-in piece the supplier has priced: the inward price is its cost. */
+lineSchema.virtual('supplied').get(function supplied() {
+  return this.procurement === 'trade' && (this.cost?.inwardPrice || 0) > 0;
+});
+
+/**
+ * Everything it costs to put one piece in a carton — the sheet's Net Total.
+ *
+ * Made here: the making cost, plus printing and anything else. Bought in with a supplier's
+ * price: that price — the resin, job work, hook, clips and packing are in what the supplier
+ * charges — plus the printing and anything else the plant puts on itself. Bought in with no
+ * price yet: the build-up stands in, as for a made piece.
+ */
 lineSchema.virtual('totalCost').get(function totalCost() {
   const cost = this.cost || {};
-  return (
-    this.materialCost +
-    (cost.jobWorkCost || 0) +
-    (cost.hookCost || 0) +
-    (cost.metalClipsCost || 0) +
-    (cost.printingCost || 0) +
-    (cost.packingCost || 0) +
-    (cost.otherCost || 0) +
-    (cost.inwardPrice || 0)
-  );
+  const own = (cost.printingCost || 0) + (cost.otherCost || 0);
+  if (this.supplied) return (cost.inwardPrice || 0) + own;
+  return this.makingCost + own;
 });
 
 /** The three standing prices, as the sheet shows them. */
