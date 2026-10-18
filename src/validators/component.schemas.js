@@ -18,21 +18,9 @@ export const componentSchema = z.object({
   colour: z.string().max(40).optional(),
   ratePerPiece: z.number().nonnegative('A part has a rate per piece'),
   supplier: z.string().max(120).optional(),
-  /* The store: buy below this many; pieces on one hanger. The count itself moves by stock entries. */
-  reorderQty: z.number().nonnegative().optional(),
-  perHanger: z.number().nonnegative().max(20).optional(),
   isActive: z.boolean().optional(),
   notes: z.string().optional(),
 });
-
-/** A receipt, an issue to the floor, or a count corrected — in pieces. */
-export const componentStockSchema = z.object({
-  kind: z.enum(['receipt', 'issue', 'adjust']),
-  pieces: z.number().int().min(-1e8).max(1e8).refine((value) => value !== 0, 'Say how many pieces'),
-  reference: z.string().max(120).optional(),
-  note: z.string().max(500).optional(),
-  workOrder: z.string().regex(/^[a-f\d]{24}$/i).optional(),
-}).refine((body) => body.kind === 'adjust' || body.pieces > 0, { message: 'A receipt or an issue is a number of pieces', path: ['pieces'] });
 
 /**
  * `kind` and `code` are both left out.

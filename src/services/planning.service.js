@@ -180,9 +180,6 @@ export async function planningBoard({ days = 14 } = {}) {
       ])
       .lean({ virtuals: true }),
   ]);
-  /* What each job will run short of, in plan order [bom.service]. */
-  const { shortages } = await import('./bom.service.js');
-  const { byWorkOrder } = await shortages();
   /* How much longer than standard each mould and press really runs — the predicted end [productionInsights]. */
   const { factorFor, slipFactors } = await import('./productionInsights.service.js');
   const factors = await slipFactors();
@@ -212,7 +209,6 @@ export async function planningBoard({ days = 14 } = {}) {
       ...predicted(job, perDay, toMake, machine),
       late: Boolean(due && ((job.plannedEnd && indiaDay(job.plannedEnd) > due) || due < today)),
       fit: { blocks: fit.blocks, warnings: fit.warnings },
-      short: byWorkOrder[String(job._id)]?.short || [],
       updatedAt: job.updatedAt,
     };
   };

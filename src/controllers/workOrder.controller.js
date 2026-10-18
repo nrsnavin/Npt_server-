@@ -7,8 +7,7 @@ import { transactional } from '../utils/transaction.js';
 import { expectVersion } from '../utils/concurrency.js';
 import { WORK_ORDER_MOVES, WORK_ORDER_POPULATE, ensureWorkOrders, listWorkOrders, planWorkOrder } from '../services/workOrder.service.js';
 import { fitOf, planningBoard, sequenceByColour } from '../services/planning.service.js';
-import { componentBook, moveComponentStock, shortages } from '../services/bom.service.js';
-import { clearAndon, floorView, raiseAndon, renderJobCard, shiftSummary } from '../services/floor.service.js';
+import { clearAndon, floorView, raiseAndon, shiftSummary } from '../services/floor.service.js';
 
 const byId = async (id) => {
   if (!mongoose.isValidObjectId(id)) throw ApiError.notFound('Work order not found');
@@ -66,31 +65,6 @@ export const fitHandler = asyncHandler(async (req, res) => {
   ]);
   if (!machine) throw ApiError.badRequest('Name the machine');
   res.json({ success: true, data: fitOf(mould, machine, { on: req.query.on }) });
-});
-
-/** What the open work orders need from the stores, what is short, and what to buy [bom.service]. */
-export const shortagesHandler = asyncHandler(async (req, res) => {
-  await ensureWorkOrders({ user: req.user });
-  res.json({ success: true, data: await shortages() });
-});
-
-/** The hook and clip store: a receipt, an issue to the floor, or a count corrected. */
-export const componentStockHandler = asyncHandler(transactional(async (req, res) => {
-  if (!mongoose.isValidObjectId(req.params.id)) throw ApiError.notFound('Not on the register');
-  res.status(201).json({ success: true, data: await moveComponentStock(req.params.id, req.body, req.user) });
-}));
-
-export const componentBookHandler = asyncHandler(async (req, res) => {
-  if (!mongoose.isValidObjectId(req.params.id)) throw ApiError.notFound('Not on the register');
-  res.json({ success: true, data: await componentBook(req.params.id, req.query) });
-});
-
-/** The job card for the press: a PDF with the job's details, a QR code to the floor tablet, and an hourly log. */
-export const jobCardHandler = asyncHandler(async (req, res) => {
-  const wo = await byId(req.params.id);
-  const pdf = await renderJobCard(wo);
-  res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${wo.number}-job-card.pdf"` });
-  res.send(pdf);
 });
 
 /** The floor tablet's view: each press, its running job, its next work orders, any open call. */

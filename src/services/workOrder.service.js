@@ -224,12 +224,6 @@ export async function planWorkOrder(wo, user, { machine, plannedStart, sequence,
     const fresh = await WorkOrder.findById(wo._id).select('sequence plannedStart plannedEnd updatedAt').lean();
     if (fresh) Object.assign(wo, { sequence: fresh.sequence, plannedStart: fresh.plannedStart, plannedEnd: fresh.plannedEnd });
   }
-  /* Released to the floor short of resin, hooks or clips: said, not refused — buying may catch up. */
-  if (move === 'release') {
-    const { shortagesFor } = await import('./bom.service.js');
-    const short = await shortagesFor(wo._id);
-    for (const item of short) warnings.push(`Short of ${item.name}: ${item.short.toLocaleString('en-IN')} ${item.unit} more needed`);
-  }
   wo.$locals.warnings = warnings;
   return wo;
 }

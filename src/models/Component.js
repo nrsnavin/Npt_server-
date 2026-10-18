@@ -65,11 +65,6 @@ const componentSchema = new mongoose.Schema(
     /** When the rate above was last confirmed, so a stale one can be spotted. */
     rateUpdatedAt: Date,
 
-    /* The store: pieces on hand, the level below which to buy, and how many go on one hanger. */
-    stockQty: { type: Number, default: 0 },
-    reorderQty: { type: Number, min: 0 },
-    perHanger: { type: Number, min: 0, default: 1 },
-
     isActive: { type: Boolean, default: true },
     notes: String,
   },
