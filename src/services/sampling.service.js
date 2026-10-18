@@ -272,6 +272,12 @@ export async function createSampleRequest(
     input.purpose || (enquiry?.isNewDevelopment ? 'new_development' : 'existing_model');
 
   const said = stated(input);
+  /*
+   * A piece the marketing person takes from the sample rack themselves [HANDOVER_MODES
+   * `in_person`] never reaches the bench: it is ready the moment it is raised, the bench's task
+   * is closed before it opens, and what is left is the hand-over on the visit [recordHandover].
+   */
+  const fromRack = said.handover === 'in_person';
   const sample = await Sample.create({
     ...statedOnTheFirstRow({ ...inherited, ...said }, said),
     purpose,
@@ -280,12 +286,14 @@ export async function createSampleRequest(
     // Whoever asked for it. From the enquiry when there is one, otherwise whoever is asking.
     requestedBy: input.requestedBy || inherited.requestedBy || user._id,
     autoCreated,
+    ...(fromRack ? { status: 'sample_ready', benchClosedAt: new Date(), benchClosedBy: user._id } : {}),
     statusHistory: [
       {
         to: 'request_received',
         by: autoCreated ? undefined : user._id,
         note: autoCreated ? 'Raised by the enquiry moving to sample required' : undefined,
       },
+      ...(fromRack ? [{ from: 'request_received', to: 'sample_ready', by: user._id, note: `Taken from the sample rack by ${user.name || 'the marketing person'} to hand over on a visit` }] : []),
     ],
   });
 
@@ -300,3 +308,56 @@ export const createSampleForEnquiry = (enquiry, overrides = {}, options = {}) =>
     { _id: enquiry.assignedTo?._id || enquiry.assignedTo },
     options
   );
+
+/**
+ * The piece put in the buyer's hands without a courier: collected at the front desk, or handed
+ * over by the marketing person on a visit [models/Sample.js `handover`, `collection`].
+ *
+ * The sample goes straight to `delivered` — the buyer has it — with the same despatch fields
+ * a direct hand-over at the gate fills (who took it, how many, when), so everything that reads
+ * them (the enquiry moving to feedback, the bench's task closing, the customer's own message)
+ * works unchanged. The feedback that follows is marketing's, as ever [recordFeedback].
+ */
+export async function recordHandover(sample, user, { receivedBy, phone, pieces, handedAt, note, photo, via } = {}) {
+  if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) throw new Error(`${sample.number} is ${sample.status}`);
+  const who = String(receivedBy || '').trim();
+  const call = String(phone || '').trim();
+  if (!who && !call) throw new Error('Say who received the sample — a name or a phone number');
+  const count = Number(pieces) || sample.dispatchedQuantity || sample.quantity || 1;
+  const when = handedAt ? new Date(handedAt) : new Date();
+  const from = sample.status;
+  sample.set({
+    deliveryMethod: 'direct',
+    courier: undefined,
+    awbNumber: undefined,
+    handedTo: who || undefined,
+    recipientPhone: call || undefined,
+    dispatchedQuantity: count,
+    dispatchedColour: sample.dispatchedColour || sample.colour,
+    dispatchedAt: sample.dispatchedAt || when,
+    deliveredAt: when,
+    status: 'delivered',
+    benchClosedAt: sample.benchClosedAt || when,
+    benchClosedBy: sample.benchClosedBy || user._id,
+    collection: {
+      ...(sample.collection?.toObject?.() || sample.collection || {}),
+      collectedAt: when,
+      collectedBy: user._id,
+      collectorName: who || undefined,
+      collectorPhone: call || undefined,
+      pieces: count,
+      note: note || undefined,
+      ...(photo ? { photo } : {}),
+    },
+  });
+  const where = via === 'desk' ? 'collected at reception' : 'handed over in person';
+  sample.statusHistory.push({
+    from, to: 'delivered', by: user._id,
+    note: `${sample.number} ${where} by ${who || call}${count ? ` · ${count} pcs` : ''}${note ? ` — ${note}` : ''}`,
+  });
+  await sample.save();
+  await publish(EVENTS.SAMPLE_STATUS_CHANGED, { sample, from, to: 'delivered', by: user });
+  /* It has left the building, which is what everything downstream listens for [sampling.subscriber, handoff.subscriber]. */
+  await publish(EVENTS.SAMPLE_DISPATCHED, { sample, from, by: user });
+  return sample;
+}

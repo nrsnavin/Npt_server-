@@ -15,6 +15,7 @@ import * as paymentPresets from './paymentGates.service.js';
 import { assertEnquiryPaidFor } from './paymentGates.service.js';
 import { COLLECTION_KINDS, receivablesOf } from './collections.service.js';
 import { MATERIALS } from '../models/Mould.js';
+import { HANDOVER_CHOICES } from '../config/departmentTaskForms.js';
 import { askToRecordReceipt, endOfIndiaDay, logCollectionCall } from './collections.service.js';
 
 /**
@@ -283,8 +284,11 @@ async function openHolder({ enquiry, kind, note, user, title, from }) {
  */
 function sampleFromBrief(brief = {}) {
   const row = brief.items?.[0];
-  if (!row) return {};
   const said = {};
+  /* How it reaches the buyer, as the form's words [HANDOVER_CHOICES] — the sample's own mode. */
+  const handover = HANDOVER_CHOICES.find((choice) => choice.label === brief.handover)?.key;
+  if (handover) said.handover = handover;
+  if (!row) return said;
   const material = row.material && row.material.toLowerCase().replace(/\s+/g, '_');
   if (material && MATERIALS.includes(material)) said.material = material;
   if (row.colour) said.colour = row.colour;
@@ -981,6 +985,9 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
   };
   await task.save();
 
+  /* The sample collected at the desk is with the buyer now; the record says who took it. */
+  if (task.kind === 'sample_collect') await collectedAtDesk(task, user, kept);
+
   /* The enquiry moves where this task's finishing says it does — before anybody is told. */
   await reachEnquiry(task, user, handoff?.whenDone, text);
   if (closesNow && handoff?.form?.notifyStatus) await noticeStatus(task, user, { step: closing, note: text });
@@ -1107,13 +1114,15 @@ async function answerParent(clarification, user, text) {
  * enquiry's marketing person, due today, with the comment. The status reached by uploading the
  * work (SO Prepared) is not chosen here — see `finishWithResult`.
  */
-export async function setTaskStatus(task, user, { status, note, date }) {
+export async function setTaskStatus(task, user, { status, note, date, fields }) {
   openHandoff(task, user);
   const form = findHandoff(task.kind)?.form || {};
   const step = statusesOf(task).find((entry) => entry.key === status);
   if (!step) fail('That is not one of this task’s statuses');
   if (step.pdf) fail(`Upload the PDF to mark it ${step.label}`);
   const text = String(note || '').trim();
+  /* What the status asks for beside the remark — who collected the sample, how many pieces. */
+  const asked = stepFields(step, fields);
   if (step.comment && text.length < 3) fail(`Say what is needed — ${step.label} asks for a comment`);
   if (form.remarkRequired && text.length < 3) fail(`Add a remark to move it to ${step.label}`);
   const readyDate = statusDate(form, step, date);
@@ -1158,9 +1167,109 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   if (step.followUp || step.promise) await logCollectionCall(task, user, step, text, readyDate);
   /* Money taken: whoever took it records the receipt in Payments; Accounts confirms it there. */
   if (step.recordsReceipt) await askToRecordReceipt(task, user, step);
+  /* A status that tells the buyer something — "your sample is ready to collect" — sends it from here. */
+  if (step.tellBuyer) await tellBuyerFromTask(task, user, step);
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
-  if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { [dateField]: readyDate } : {} });
+  if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: { ...asked, ...(readyDate ? { [dateField]: readyDate } : {}) } });
   return task;
+}
+
+/** The answers a status asks for [departmentTaskForms `statuses[].fields`], required ones refused when blank. */
+function stepFields(step, fields = {}) {
+  const kept = {};
+  for (const field of step.fields || []) {
+    const raw = fields?.[field.key];
+    const text = raw == null ? '' : String(raw).trim().slice(0, 200);
+    if (!text) {
+      if (field.required) fail(`${field.label} is needed to mark it ${step.label}`);
+      continue;
+    }
+    if (field.type === 'number' && !(Number(text) >= 0)) fail(`${field.label} must be a number`);
+    kept[field.key] = text;
+  }
+  return kept;
+}
+
+/** The sample a desk task is about: on its brief, by id. */
+async function sampleOfTask(task) {
+  const id = task.brief?.sample;
+  if (!id) return null;
+  const { default: Sample } = await import('../models/Sample.js');
+  return Sample.findById(id);
+}
+
+/**
+ * Reception telling the buyer the sample is waiting at the desk [departmentTaskForms
+ * `sample_collect` → `informed`]: the customer message goes on every channel the buyer accepts,
+ * from the company number, and the moment is kept on the sample. Never fails the move.
+ */
+async function tellBuyerFromTask(task, user, step) {
+  const sample = await sampleOfTask(task);
+  if (!sample) return;
+  try {
+    const { notifyCustomer } = await import('./customerMessage.service.js');
+    await notifyCustomer({ sample, event: step.tellBuyer, user });
+    sample.collection = { ...(sample.collection?.toObject?.() || sample.collection || {}), informedAt: new Date() };
+    await sample.save();
+  } catch (error) {
+    console.error(`[sample-collect] buyer notice for ${sample.number} not sent: ${error.message}`);
+  }
+}
+
+/**
+ * The bench marked a sample the buyer collects as ready [sample.controller `setSampleStatus`]:
+ * Reception gets the task on the enquiry — the bag, the pieces, the buyer to call — the bench's
+ * own task closes (its work is done), and the sample notes when it reached the desk.
+ */
+export async function raiseCollection(sample, user) {
+  if (sample.handover !== 'collect') return null;
+  const enquiryId = sample.enquiry?._id || sample.enquiry;
+  if (!enquiryId) return null;
+  const enquiry = await Enquiry.findById(enquiryId).populate('customer', 'name mobile whatsapp email contacts');
+  if (!enquiry) return null;
+  const open = await Todo.findOne({ enquiry: enquiry._id, kind: 'sample_collect', completed: false, 'brief.sample': String(sample._id) });
+  if (open) return open;
+  const buyer = enquiry.customer;
+  const primary = buyer?.contacts?.find((contact) => contact.isPrimary) || buyer?.contacts?.[0];
+  const models = (sample.items?.length ? sample.items : [sample]).map((row) => [row.modelNumber, row.colour, row.quantity ? `${row.quantity} pcs` : null].filter(Boolean).join(' · ')).filter(Boolean).join('; ');
+  const task = await moveEnquiry({
+    enquiry, kind: 'sample_collect', user, system: true, openRecords: false, addToOpen: true, keepStage: true,
+    note: `Sample ${sample.number} is ready — the buyer collects it at reception. Tell them, hand it over, and record who took it.`,
+    brief: {
+      sample: String(sample._id), sampleNumber: sample.number, models: models || sample.modelNumber || '—',
+      pieces: String(sample.quantity || sample.items?.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0) || 1),
+      buyerContact: [buyer?.name, primary?.name, primary?.phone || buyer?.whatsapp || buyer?.mobile].filter(Boolean).join(' · ') || '—',
+    },
+    priority: 'normal',
+  });
+  if (task?._id) await Todo.updateOne({ _id: task._id }, { $set: { link: `/samples/${sample._id}` } }, { keepVersion: true });
+  /* The bench is done with it: its task closes with where the piece went, and the row leaves its queue. */
+  const benchTasks = await Todo.find({ enquiry: enquiry._id, kind: 'sample_request', completed: false, holds: { $ne: true } });
+  if (benchTasks.length) await finishAll(benchTasks, user, { note: `Sample ${sample.number} ready — handed to reception for the buyer to collect`, fields: { courier: 'Collected at reception', pieces: String(sample.quantity || '') } });
+  sample.collection = { ...(sample.collection?.toObject?.() || sample.collection || {}), readyAt: new Date() };
+  if (!sample.benchClosedAt) {
+    sample.benchClosedAt = new Date();
+    sample.benchClosedBy = user?._id;
+  }
+  await sample.save();
+  return task;
+}
+
+/**
+ * Reception finished its collection task [`sample_collect` → Buyer collected]: the hand-over goes
+ * onto the sample — who took it, how many, the photo of the slip where one was uploaded — and the
+ * sample is with the buyer from here [sampling.service `recordHandover`].
+ */
+async function collectedAtDesk(task, user, kept = {}) {
+  const sample = await sampleOfTask(task);
+  if (!sample) return;
+  const { recordHandover } = await import('./sampling.service.js');
+  const { default: Attachment } = await import('../models/Attachment.js');
+  const photo = await Attachment.findOne({ task: task._id, docType: 'handover_photo' }).sort({ createdAt: -1 }).select('_id');
+  await recordHandover(sample, user, {
+    receivedBy: kept.collectorName, phone: kept.collectorPhone, pieces: kept.pieces,
+    note: task.outcome?.note, photo: photo?._id, via: 'desk',
+  });
 }
 
 /**

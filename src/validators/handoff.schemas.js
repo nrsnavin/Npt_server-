@@ -49,6 +49,8 @@ export const taskStatusSchema = z.object({
   status: z.string().trim().min(1).max(40),
   note: z.string().trim().max(2000).optional(),
   date: z.string().trim().max(10).optional(),
+  /* What a status asks for beside the remark [departmentTaskForms `statuses[].fields`] — who collected a sample, how many pieces. */
+  fields: z.record(z.string().max(40), z.union([z.string().max(500), z.number(), z.boolean()])).optional(),
 });
 
 /** The expected delivery date, given from the Production / Assembly / Printing task [handoff.service `setTaskEdd`]. */

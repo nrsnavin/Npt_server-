@@ -164,6 +164,19 @@ export const SAMPLE_PURPOSES = [
  */
 export const DELIVERY_METHODS = ['courier', 'direct'];
 
+/**
+ * How the piece reaches the buyer — decided when the request is raised [§6 and the two desk
+ * flows beside it]:
+ *
+ *   dispatch   the bench makes it and sends it, by courier or handed over at the gate (the
+ *              regular way);
+ *   collect    the bench makes it, Reception keeps it at the front desk, tells the buyer it is
+ *              ready and records who walked in and collected it [handoff `sample_collect`];
+ *   in_person  the marketing person takes a piece from the sample rack themselves and hands it
+ *              to the buyer on a visit — no bench, no desk; they record who received it.
+ */
+export const HANDOVER_MODES = ['dispatch', 'collect', 'in_person'];
+
 /** The couriers the plant uses, offered as a list. "Other" lets the bench type one. */
 export const SAMPLE_COURIERS = [
   'DTDC', 'Professional Couriers', 'ST Courier', 'Blue Dart', 'Delhivery', 'India Post',
@@ -407,6 +420,30 @@ const sampleSchema = new mongoose.Schema(
     dispatchedColour: { type: String, trim: true },
     deliveredAt: Date,
 
+    handover: { type: String, enum: HANDOVER_MODES, default: 'dispatch', index: true },
+    /**
+     * The hand-over at the desk or on the visit: who received it, when, what was given, and the
+     * photo of the signed slip or the moment itself. `readyAt` is when the piece reached the
+     * desk, `informedAt` when the buyer was told it was waiting.
+     */
+    collection: {
+      type: new mongoose.Schema(
+        {
+          readyAt: Date,
+          informedAt: Date,
+          collectedAt: Date,
+          collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          collectorName: { type: String, trim: true },
+          collectorPhone: { type: String, trim: true },
+          pieces: { type: Number, min: 0 },
+          note: { type: String, trim: true },
+          photo: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+
     /**
      * When the sample team closed its task on this request.
      *
@@ -484,6 +521,9 @@ sampleSchema.virtual('isOverdue').get(function isOverdue() {
  * next move is theirs and inventing an instruction for the bench would be inventing work.
  */
 sampleSchema.virtual('nextStep').get(function nextStep() {
+  /* A ready sample that is not couriered is somebody else's to put in the buyer's hands. */
+  if (this.status === 'sample_ready' && this.handover === 'collect') return 'At reception — waiting for the buyer to collect';
+  if (this.status === 'sample_ready' && this.handover === 'in_person') return 'Hand it over on the visit, then record who took it';
   return SAMPLE_NEXT_STEP[this.status] || null;
 });
 
