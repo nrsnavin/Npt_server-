@@ -1,9 +1,12 @@
+import QRCode from 'qrcode';
 import Machine from '../models/Machine.js';
 import MouldRun from '../models/MouldRun.js';
 import WorkOrder from '../models/WorkOrder.js';
 import MaintenanceRecord from '../models/MaintenanceRecord.js';
 import ApiError from '../utils/ApiError.js';
+import { env } from '../config/env.js';
 import { nextNumber } from './numbering.service.js';
+import { render, letterhead, facts } from './recordPdf.js';
 import { membersOf } from './taskAlert.service.js';
 import { sendPush } from './push.service.js';
 import { raiseTask, resolveTasks } from './task.service.js';
@@ -11,8 +14,73 @@ import { indiaDay } from '../utils/indiaDays.js';
 import { DOWNTIME_REASONS, REJECT_REASONS, reasonLabel } from '../config/productionReasons.js';
 
 /**
- * The shop floor: the andon call when a press stops, and the summary one shift hands to the next.
+ * The shop floor: the job card that goes to the press, the andon call when a press stops, and
+ * the summary one shift hands to the next.
  */
+
+/* ---------------------------------------------------------------- job card --- */
+
+/** Where a scan of the job card's code opens: the job on the floor tablet. */
+export const floorLink = (wo) => `${env.appUrl.replace(/\/$/, '')}/floor?wo=${wo._id}`;
+
+/**
+ * The job card, as a PDF for the press: what to make, on which mould and press, the material,
+ * hooks and clips, how many and by when — a QR code that opens the job on the floor tablet, and
+ * a table to write the hourly counter on when the tablet is not to hand.
+ */
+export async function renderJobCard(wo) {
+  await wo.populate([
+    { path: 'order', select: 'number customerPo' }, { path: 'customer', select: 'name' },
+    { path: 'mould', select: 'mouldCode name cavities activeCavities cycleTimeSeconds partWeightGrams packingQty' },
+    { path: 'machine', select: 'code name tonnage' }, { path: 'materialRef', select: 'name grade colour' },
+    { path: 'hookRef', select: 'name code' }, { path: 'clipRef', select: 'name code' },
+  ]);
+  const qr = await QRCode.toBuffer(floorLink(wo), { margin: 1, width: 220, errorCorrectionLevel: 'M' });
+  const day = (value) => (value ? new Date(value).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : null);
+  const left = Math.max(0, (wo.quantity || 0) - (wo.goodQty || 0));
+  return render((doc) => {
+    letterhead(doc, 'Job card', wo.number);
+    const top = doc.y;
+    doc.image(qr, 595.28 - 42 - 110, top, { width: 110 });
+    doc.font('Helvetica').fontSize(7.5).fillColor('#555555').text('Scan to open this job on the floor tablet', 595.28 - 42 - 120, top + 112, { width: 130, align: 'center' });
+    doc.y = top;
+    facts(doc, [
+      ['Buyer', wo.customer?.name],
+      ['Sales order', [wo.order?.number, wo.order?.customerPo?.number && `PO ${wo.order.customerPo.number}`].filter(Boolean).join(' · ')],
+      ['Make', [wo.mould?.mouldCode || wo.modelNumber, wo.mould?.name].filter(Boolean).join(' — ')],
+      ['Colour', wo.colour],
+      ['Press', wo.machine && [wo.machine.code, wo.machine.name, wo.machine.tonnage && `${wo.machine.tonnage} T`].filter(Boolean).join(' · ')],
+      ['Cavities / cycle', wo.mould && [wo.mould.activeCavities ?? wo.mould.cavities, wo.mould.cycleTimeSeconds && `${wo.mould.cycleTimeSeconds} s cycle`].filter(Boolean).join(' cavities · ')],
+      ['Resin', wo.materialRef && [wo.materialRef.name, wo.materialRef.grade, wo.materialRef.colour].filter(Boolean).join(' ')],
+      ['Hook', wo.hookRef && [wo.hookRef.name, wo.hookRef.code].filter(Boolean).join(' · ')],
+      ['Clip', wo.clipRef && [wo.clipRef.name, wo.clipRef.code].filter(Boolean).join(' · ')],
+      ['Quantity', `${(wo.quantity || 0).toLocaleString('en-IN')} pcs${wo.goodQty ? ` · ${left.toLocaleString('en-IN')} still to make` : ''}`],
+      ['Packing', wo.mould?.packingQty ? `${wo.mould.packingQty.toLocaleString('en-IN')} a carton` : null],
+      ['Planned', wo.plannedStart && `${day(wo.plannedStart)} to ${day(wo.plannedEnd)}`],
+      ['Due', day(wo.dueDate)],
+    ]);
+    doc.y = Math.max(doc.y, top + 130);
+    doc.moveDown(0.8);
+    doc.font('Helvetica-Bold').fontSize(10.5).fillColor('#111111').text('Hourly log', 42, doc.y);
+    doc.moveDown(0.4);
+    const columns = [['Time', 60], ['Counter', 80], ['Good', 70], ['Rejects', 70], ['Stop (min / why)', 120], ['Initials', 111]];
+    let x = 42;
+    const y0 = doc.y;
+    doc.font('Helvetica-Bold').fontSize(8.5).fillColor('#555555');
+    for (const [label, width] of columns) { doc.text(label, x + 3, y0 + 4, { width: width - 6 }); x += width; }
+    const rowHeight = 22;
+    for (let row = 0; row <= 12; row += 1) {
+      doc.moveTo(42, y0 + row * rowHeight).lineTo(42 + 511, y0 + row * rowHeight).strokeColor('#BBBBBB').lineWidth(0.5).stroke();
+    }
+    x = 42;
+    for (const [, width] of columns) { doc.moveTo(x, y0).lineTo(x, y0 + 12 * rowHeight).stroke(); x += width; }
+    doc.moveTo(553, y0).lineTo(553, y0 + 12 * rowHeight).stroke();
+    doc.y = y0 + 12 * rowHeight + 10;
+    doc.font('Helvetica').fontSize(8).fillColor('#555555').text(`Stops: ${DOWNTIME_REASONS.map((reason) => reason.label).join(' · ')}`, 42, doc.y, { width: 511 });
+    doc.moveDown(0.3);
+    doc.text(`Rejects: ${REJECT_REASONS.map((reason) => reason.label).join(' · ')}`, { width: 511 });
+  });
+}
 
 /* ------------------------------------------------------------------- andon --- */
 

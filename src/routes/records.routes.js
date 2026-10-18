@@ -1,5 +1,6 @@
-import { clearAndonHandler, fitHandler, floorHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, sequenceByColourHandler } from '../controllers/workOrder.controller.js';
-import { applyPlanHandler, askProductionHandler, floorMessagesHandler, maintenanceRiskHandler, suggestPlanHandler } from '../controllers/productionInsights.controller.js';
+import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, sequenceByColourHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
+import { componentStockSchema } from '../validators/component.schemas.js';
+import { applyPlanHandler, askProductionHandler, floorMessagesHandler, maintenanceRiskHandler, purchaseForecastHandler, suggestPlanHandler } from '../controllers/productionInsights.controller.js';
 import { Router } from 'express';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -51,16 +52,22 @@ router.patch('/work-orders/:id', requireModule('production', 'write'), validate(
 /* The planning board: presses by day, the fit of a mould on a press, and a press's queue light to dark. */
 router.get('/production/plan', anyModule([['production', 'read'], ['orders', 'read']]), planningBoardHandler);
 router.get('/production/fit', requireModule('production'), fitHandler);
-/* The shop floor: the tablet's view, the andon call, the shift handover. */
+/* The shop floor: the job card with its QR code, the tablet's view, the andon call, the shift handover. */
+router.get('/work-orders/:id/job-card', anyModule([['production', 'read'], ['orders', 'read']]), jobCardHandler);
 router.get('/production/floor', requireModule('production'), floorHandler);
 router.get('/production/shift-summary', requireModule('production'), shiftSummaryHandler);
 router.post('/machines/:machineId/andon', requireModule('production', 'write'), validate(andonSchema), raiseAndonHandler);
 router.post('/machines/:machineId/andon/clear', requireModule('production', 'write'), validate(andonClearSchema), clearAndonHandler);
+/* The bill of materials: what the plan needs from the stores and what is short; the hook and clip store's book. */
+router.get('/production/shortages', anyModule([['production', 'read'], ['materials', 'read']]), shortagesHandler);
+router.get('/components/:id/stock', requireModule('materials'), componentBookHandler);
+router.post('/components/:id/stock', anyModule([['materials', 'write'], ['production', 'write']]), validate(componentStockSchema), componentStockHandler);
 router.post('/production/plan/:machineId/sequence-by-colour', requireModule('production', 'write'), sequenceByColourHandler);
-/* Looking ahead: a suggested schedule, maintenance risk, the floor's WhatsApp readings, and questions. */
+/* Looking ahead: a suggested schedule, maintenance risk, when to buy, the floor's WhatsApp readings, and questions. */
 router.post('/production/plan/suggest', requireModule('production'), suggestPlanHandler);
 router.post('/production/plan/apply', requireModule('production', 'write'), validate(planApplySchema), applyPlanHandler);
 router.get('/production/maintenance-risk', anyModule([['production', 'read'], ['moulds', 'read']]), maintenanceRiskHandler);
+router.get('/production/purchase-forecast', anyModule([['production', 'read'], ['materials', 'read']]), purchaseForecastHandler);
 router.get('/production/floor-messages', requireModule('production'), floorMessagesHandler);
 router.post('/production/ask', requireModule('production'), validate(productionAskSchema), askProductionHandler);
 router.get('/mould-runs/reasons', runReasonsHandler);
