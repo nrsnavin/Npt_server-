@@ -2,13 +2,19 @@ import Machine from '../models/Machine.js';
 import Mould from '../models/Mould.js';
 import MouldRun from '../models/MouldRun.js';
 import MaintenanceRecord from '../models/MaintenanceRecord.js';
+import StockMovement from '../models/StockMovement.js';
+import ComponentMovement from '../models/ComponentMovement.js';
 import { indiaDay, addDays } from '../utils/indiaDays.js';
 
 /**
- * Maintenance risk from the plant's own records, explained line by line: how likely a press or
- * a mould is to stop soon — recent breakdowns, stop minutes rising, a service overdue, a mould
- * past its shot count, rejects creeping up. 0 is nothing to see; 60 and over is worth a look
- * this week.
+ * Looking ahead from the plant's own records — scores and rates, explained line by line.
+ *
+ *   Maintenance risk   how likely a press or a mould is to stop soon: recent breakdowns, stop
+ *                      minutes rising, a service overdue, a mould past its shot count, rejects
+ *                      creeping up. 0 is nothing to see; 60 and over is worth a look this week.
+ *   Purchase forecast  how fast the floor really draws each resin and part, how many weeks the
+ *                      store covers at that rate (or at the plan's need, if that is sooner), and
+ *                      the day to order by so it arrives before it runs out.
  */
 
 const DAY = 86400000;
@@ -117,4 +123,70 @@ export async function maintenanceRisk() {
   });
   const byScore = (a, b) => b.score - a.score || a.code.localeCompare(b.code);
   return { machines: presses.sort(byScore), moulds: tools.sort(byScore) };
+}
+
+/* -------------------------------------------------------------- purchasing --- */
+
+/**
+ * One item's forecast: `weeklyUse` from the store's issues, `onHand`, the plan's `required`,
+ * `leadDays` to arrive. Cover is the sooner of the history rate and the plan's draw.
+ */
+export function forecastItem({ onHand, weeklyUse, required = 0, reorder = 0, leadDays = 14 }, { today = indiaDay() } = {}) {
+  const weeksCover = weeklyUse > 0 ? onHand / weeklyUse : null;
+  const runOutDays = weeksCover == null ? (required > onHand ? 0 : null) : Math.max(0, Math.floor(weeksCover * 7));
+  const runOutOn = runOutDays == null ? null : addDays(today, runOutDays);
+  const orderBy = runOutDays == null ? null : addDays(today, Math.max(0, runOutDays - leadDays));
+  /* Enough for the plan, the lead time at the usual rate, and the reorder level kept. */
+  const want = Math.max(required, 0) + (weeklyUse || 0) * (leadDays / 7) + (reorder || 0);
+  const buy = Math.max(0, Math.ceil(want - onHand));
+  return {
+    weeklyUse: weeklyUse ? Math.round(weeklyUse * 10) / 10 : 0,
+    weeksCover: weeksCover == null ? null : Math.round(weeksCover * 10) / 10,
+    runOutOn, orderBy, buy, orderNow: Boolean(orderBy && orderBy <= today),
+  };
+}
+
+/** Every resin and part the floor draws or the plan needs: use, cover, run-out and order-by days. */
+export async function purchaseForecast({ weeks = 8, leadDays = 14 } = {}) {
+  const since = new Date(Date.now() - weeks * 7 * DAY);
+  const [{ shortages }, resin, parts] = await Promise.all([
+    import('./bom.service.js'),
+    StockMovement.aggregate([{ $match: { kind: 'issue', at: { $gte: since } } }, { $group: { _id: '$material', drawn: { $sum: '$kg' } } }]),
+    ComponentMovement.aggregate([{ $match: { kind: 'issue', at: { $gte: since } } }, { $group: { _id: '$component', drawn: { $sum: '$pieces' } } }]),
+  ]);
+  const { items } = await shortages();
+  const use = new Map([
+    ...resin.map((row) => [`material:${row._id}`, Math.abs(row.drawn) / weeks]),
+    ...parts.map((row) => [`part:${row._id}`, Math.abs(row.drawn) / weeks]),
+  ]);
+  const listed = new Set();
+  const rows = items.map((item) => {
+    const key = item.kind === 'material' ? `material:${item.ref}` : `part:${item.ref}`;
+    listed.add(key);
+    return { ...item, ...forecastItem({ onHand: item.onHand, weeklyUse: use.get(key) || 0, required: item.required, reorder: item.reorder || 0, leadDays }) };
+  });
+  /* Drawn from the store lately, though no open job needs it now. */
+  const unlistedResin = resin.filter((row) => !listed.has(`material:${row._id}`)).map((row) => row._id);
+  const unlistedParts = parts.filter((row) => !listed.has(`part:${row._id}`)).map((row) => row._id);
+  const [Material, Component] = await Promise.all([import('../models/Material.js'), import('../models/Component.js')]);
+  const [materials, components] = await Promise.all([
+    unlistedResin.length ? Material.default.find({ _id: { $in: unlistedResin } }).select('name grade colour stockKg reorderKg').lean() : [],
+    unlistedParts.length ? Component.default.find({ _id: { $in: unlistedParts } }).select('kind name code stockQty reorderQty supplier').lean() : [],
+  ]);
+  for (const material of materials) {
+    rows.push({
+      kind: 'material', ref: String(material._id), name: [material.name, material.grade, material.colour].filter(Boolean).join(' '), unit: 'kg',
+      onHand: material.stockKg || 0, reorder: material.reorderKg ?? null, required: 0, short: 0,
+      ...forecastItem({ onHand: material.stockKg || 0, weeklyUse: use.get(`material:${material._id}`) || 0, reorder: material.reorderKg || 0, leadDays }),
+    });
+  }
+  for (const part of components) {
+    rows.push({
+      kind: part.kind, ref: String(part._id), name: [part.name, part.code].filter(Boolean).join(' · '), unit: 'pcs', supplier: part.supplier || null,
+      onHand: part.stockQty || 0, reorder: part.reorderQty ?? null, required: 0, short: 0,
+      ...forecastItem({ onHand: part.stockQty || 0, weeklyUse: use.get(`part:${part._id}`) || 0, reorder: part.reorderQty || 0, leadDays }),
+    });
+  }
+  rows.sort((a, b) => Number(b.orderNow) - Number(a.orderNow) || String(a.orderBy || '9').localeCompare(String(b.orderBy || '9')) || a.name.localeCompare(b.name));
+  return { weeks, leadDays, items: rows };
 }

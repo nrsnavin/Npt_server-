@@ -1,6 +1,6 @@
 /**
  * The look-ahead rules, without a database: unusual runs, slip, the suggested schedule,
- * maintenance risk, floor readings over WhatsApp and the copilot's
+ * maintenance risk, the purchase forecast, floor readings over WhatsApp and the copilot's
  * answer by topic [services/productionInsights, scheduleSuggest, productionRisk,
  * floorMessage, productionCopilot].
  *
@@ -10,7 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { factorFor, unusual, unusualSoFar } from '../src/services/productionInsights.service.js';
 import { chainQueue, suggestSchedule } from '../src/services/scheduleSuggest.service.js';
-import { scoreMachine, scoreMould } from '../src/services/productionRisk.service.js';
+import { forecastItem, scoreMachine, scoreMould } from '../src/services/productionRisk.service.js';
 import { describeLog, parseFloorMessage } from '../src/services/floorMessage.service.js';
 import { answerByRules } from '../src/services/productionCopilot.service.js';
 
@@ -104,6 +104,19 @@ test('a press’s risk climbs with breakdowns, rising stops and an overdue servi
   assert.equal(scoreMould({ shotsSince: 50000, everyShots: 100000 }).level, 'ok');
 });
 
+test('the forecast says weeks of cover, the run-out day and the day to order by', () => {
+  const item = forecastItem({ onHand: 400, weeklyUse: 100, required: 0, reorder: 100, leadDays: 14 }, { today });
+  assert.equal(item.weeksCover, 4);
+  assert.equal(item.runOutOn, '2026-11-16');
+  assert.equal(item.orderBy, '2026-11-02');
+  assert.equal(item.orderNow, false);
+  assert.equal(item.buy, 0, 'covers the lead time and the reorder level');
+  const thin = forecastItem({ onHand: 50, weeklyUse: 100, required: 300, reorder: 100, leadDays: 14 }, { today });
+  assert.equal(thin.orderNow, true);
+  assert.equal(thin.buy, 550, 'the plan, two weeks’ use and the reorder level, less what is held');
+  assert.equal(forecastItem({ onHand: 10, weeklyUse: 0 }, { today }).runOutOn, null, 'nothing drawn, nothing to forecast');
+});
+
 test('a floor text reads into a run log; anything that names no press is left alone', () => {
   const codes = ['IM-1', 'IM-2', 'M4'];
   assert.deepEqual(parseFloorMessage('IM-2 23400 rej 40 flash', codes), { code: 'IM-2', log: { counter: 23400, rejects: { pieces: 40, reason: 'flash' } } });
@@ -121,13 +134,13 @@ test('a floor text reads into a run log; anything that names no press is left al
 test('without a model, the copilot answers from the brief by topic', () => {
   const brief = {
     late: [{ workOrder: 'WO-9', press: 'IM-1', customer: 'SKK', due: '22 Oct', plannedEnd: '24 Oct', predictedEnd: '25 Oct', slip: 1.2, why: 'planned end after due' }],
-    unplanned: [], andons: [], risk: [{ asset: 'IM-2', kind: 'machine', score: 65, reasons: ['Service overdue since 2026-10-10'] }],
+    unplanned: [], andons: [], risk: [], shortages: [{ item: 'PP Black', unit: 'kg', short: 120, buy: 220 }],
     oeeWeek: { total: { oee: '61%', availability: '80%', performance: '85%', quality: '90%', runs: 12 }, worstPresses: [], topStops: [{ reason: 'Power cut', minutes: 240 }], topRejects: [] },
   };
   const late = answerByRules('Which orders will be late?', brief);
   assert.equal(late.from, 'rules');
   assert.match(late.points[0], /WO-9 on IM-1/);
-  assert.match(answerByRules('which press may break down', brief).points[0], /IM-2 \(machine\) risk 65: Service overdue/);
+  assert.match(answerByRules('what should we buy', brief).points[0], /PP Black: short 120 kg, buy 220 kg/);
   assert.match(answerByRules('why is OEE low', brief).points.join(' '), /Power cut, 240 min/);
   assert.ok(answerByRules('hello', brief).points.length >= 1, 'an open question gets what stands out');
 });
