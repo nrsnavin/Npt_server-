@@ -289,6 +289,12 @@ test('the board chains a press back to back, refuses a mould the press cannot ho
   assert.deepEqual(after.queue.map((job) => job.colour), ['White', 'Black'], 'light before dark');
   assert.equal(after.queue[0].sequence, 1);
 
+  const later = await api(`/api/work-orders/${after.queue[0]._id}`, { method: 'PATCH', token: ramesh, body: { step: 1 } });
+  assert.equal(later.status, 200, later.json.message);
+  const swapped = (await api('/api/production/plan', { token: ramesh })).json.data.presses.find((entry) => entry.machine.code === 'IM-BIG');
+  assert.deepEqual(swapped.queue.map((job) => job.colour), ['Black', 'White'], 'one place later swaps with the next job');
+  assert.equal((await api(`/api/work-orders/${swapped.queue[1]._id}`, { method: 'PATCH', token: ramesh, body: { step: 1 } })).status, 400, 'the last job cannot go later');
+
   const fit = await api(`/api/production/fit?mould=${mould}&machine=${small._id}`, { token: ramesh });
   assert.equal(fit.json.data.ok, false);
 });

@@ -160,7 +160,7 @@ export const WORK_ORDER_MOVES = {
  * Plans a work order: the press, the start, its place in the press's queue — the end worked out
  * from the mould's capacity for what is left to make [capacity.service] — and any move.
  */
-export async function planWorkOrder(wo, user, { machine, plannedStart, sequence, move, note }) {
+export async function planWorkOrder(wo, user, { machine, plannedStart, sequence, move, note, step }) {
   const text = String(note || '').trim();
   const pressBefore = wo.machine ? String(wo.machine) : null;
   let warnings = [];
@@ -190,6 +190,20 @@ export async function planWorkOrder(wo, user, { machine, plannedStart, sequence,
   }
   if (plannedStart !== undefined) wo.plannedStart = plannedStart ? new Date(plannedStart) : undefined;
   if (sequence !== undefined) wo.sequence = sequence ?? undefined;
+  /* One place earlier or later in its press's queue: it swaps with the job beside it. */
+  let swapped = false;
+  if (step && wo.machine) {
+    const neighbour = await WorkOrder.findOne({
+      machine: wo.machine, status: { $in: OPEN_WORK_ORDER_STATUSES }, _id: { $ne: wo._id },
+      sequence: step < 0 ? { $lt: wo.sequence ?? 1e9 } : { $gt: wo.sequence ?? 0 },
+    }).sort({ sequence: step < 0 ? -1 : 1 });
+    if (!neighbour) throw ApiError.badRequest(step < 0 ? 'It already runs first on this press' : 'It already runs last on this press');
+    if (neighbour.status === 'running') throw ApiError.badRequest('The job running now stays first');
+    const mine = wo.sequence;
+    wo.sequence = neighbour.sequence;
+    await WorkOrder.updateOne({ _id: neighbour._id }, { $set: { sequence: mine } }, { keepVersion: true });
+    swapped = true;
+  }
   /* The end follows from the start and the press days what is left needs on this mould. */
   if (wo.plannedStart) {
     const mould = wo.mould ? await Mould.findById(wo.mould).select(CAPACITY_FIELDS).lean() : null;
@@ -203,7 +217,7 @@ export async function planWorkOrder(wo, user, { machine, plannedStart, sequence,
    * presses it touched — unless a start day was typed, which is the planner overriding the chain.
    */
   const pressNow = wo.machine ? String(wo.machine) : null;
-  const touched = machine !== undefined || sequence !== undefined || Boolean(move);
+  const touched = machine !== undefined || sequence !== undefined || Boolean(move) || swapped;
   if (touched && plannedStart === undefined) {
     if (pressNow) await rechain(pressNow);
     if (pressBefore && pressBefore !== pressNow) await rechain(pressBefore);

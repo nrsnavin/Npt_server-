@@ -1,4 +1,5 @@
 import { PIECES_PER_DAY } from './productionUrgency.service.js';
+import { dayToDate, firstWorkingDay, indiaDay, nextWorkingDay } from '../utils/indiaDays.js';
 
 /**
  * How long the plant takes to make something, from the mould register rather than a guess.
@@ -35,21 +36,12 @@ export function piecesPerDay(mould, plant) {
   return Math.round(perHour * (Number(plant?.hoursPerDay) || 22));
 }
 
-/** The day after `from`, skipping the weekly off — whole calendar days in India time. */
-function nextWorkingDay(date, weeklyOff) {
-  const next = new Date(date.getTime() + 24 * 60 * 60 * 1000);
-  if (weeklyOff != null && next.getDay() === weeklyOff) return nextWorkingDay(next, weeklyOff);
-  return next;
-}
-
-/** Working days from today until `due` (negative once it has passed), not counting the day off. */
+/** Working days from today until `due` (negative once it has passed), not counting the day off — in India time. */
 export function workingDaysUntil(due, plant, now = new Date()) {
   if (!due) return null;
-  const start = new Date(now);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(due);
-  end.setHours(0, 0, 0, 0);
-  if (end < start) return -Math.round((start - end) / 86400000);
+  const start = indiaDay(now);
+  const end = indiaDay(due);
+  if (end < start) return -Math.round((dayToDate(start) - dayToDate(end)) / 86400000);
   let days = 0;
   let cursor = start;
   while (cursor < end) {
@@ -61,21 +53,20 @@ export function workingDaysUntil(due, plant, now = new Date()) {
 
 /**
  * What a quantity needs on one press: pieces a day, working days, and the day it would finish
- * if started today. `basis` says whether the rate came from the mould or the plant assumption.
+ * if started on `from` (today by default). `basis` says whether the rate came from the mould or
+ * the plant assumption. The finish is midnight, India time, of the last press day.
  */
-export function estimate(quantity, mould, plant, now = new Date()) {
+export function estimate(quantity, mould, plant, from = new Date()) {
   const left = Math.max(0, Number(quantity) || 0);
   const fromMould = piecesPerDay(mould, plant);
   const perDay = fromMould || PIECES_PER_DAY;
   const days = left ? Math.ceil(left / perDay) : 0;
-  let finish = new Date(now);
-  finish.setHours(0, 0, 0, 0);
-  if (plant?.weeklyOff != null && finish.getDay() === plant.weeklyOff) finish = nextWorkingDay(finish, plant.weeklyOff);
+  let finish = firstWorkingDay(indiaDay(from), plant?.weeklyOff);
   for (let day = 1; day < days; day += 1) finish = nextWorkingDay(finish, plant?.weeklyOff);
   return {
     perDay, days, basis: fromMould ? 'mould' : 'assumed',
     perHour: fromMould ? Math.round(piecesPerHour(mould)) : null,
-    finish: days ? finish : null,
+    finish: days ? dayToDate(finish) : null,
   };
 }
 

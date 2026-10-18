@@ -111,6 +111,7 @@ export const workOrderPlanSchema = z.object({
   plannedStart: z.coerce.date().nullable().optional(),
   sequence: z.number().int().min(0).max(100000).nullable().optional(),
   move: z.enum(['release', 'pause', 'resume', 'complete', 'cancel', 'replan']).optional(),
+  step: z.union([z.literal(-1), z.literal(1)]).optional(),
   note: text(500),
   updatedAt: z.string().optional(),
 });

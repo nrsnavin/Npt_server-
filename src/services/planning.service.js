@@ -4,6 +4,7 @@ import Mould from '../models/Mould.js';
 import ApiError from '../utils/ApiError.js';
 import { CAPACITY_FIELDS, estimate, piecesPerDay } from './capacity.service.js';
 import { plantCalendar } from './settings.service.js';
+import { addDays, dayToDate, firstWorkingDay, indiaDay, nextWorkingDay, weekdayOf } from '../utils/indiaDays.js';
 
 /**
  * The planning board: which press makes which work order, when, and in what order.
@@ -21,19 +22,6 @@ import { plantCalendar } from './settings.service.js';
  *   Colour    a press runs light colours before dark ones, so a change needs a short purge
  *             rather than a long one; the board can put a press's queue in that order.
  */
-
-const DAY = 24 * 60 * 60 * 1000;
-const startOfDay = (date) => { const day = new Date(date); day.setHours(0, 0, 0, 0); return day; };
-const nextWorking = (date, weeklyOff) => {
-  let next = new Date(startOfDay(date).getTime() + DAY);
-  while (weeklyOff != null && next.getDay() === weeklyOff) next = new Date(next.getTime() + DAY);
-  return next;
-};
-const firstWorking = (date, weeklyOff) => {
-  let day = startOfDay(date);
-  while (weeklyOff != null && day.getDay() === weeklyOff) day = new Date(day.getTime() + DAY);
-  return day;
-};
 
 /** Grams one shot puts into the tool: every running cavity plus the runner. */
 export function shotGrams(mould) {
@@ -63,7 +51,7 @@ export function fitOf(mould, machine, { on } = {}) {
   }
   if (machine.status === 'breakdown') warnings.push(`${machine.code} is broken down now`);
   if (machine.status === 'maintenance') warnings.push(`${machine.code} is in maintenance now`);
-  if (machine.nextServiceDue && (!on || new Date(machine.nextServiceDue) <= new Date(on))) {
+  if (machine.nextServiceDue && (!on || indiaDay(machine.nextServiceDue) <= indiaDay(on))) {
     warnings.push(`${machine.code} is due for service${machine.nextServiceDue ? ` on ${new Date(machine.nextServiceDue).toLocaleDateString('en-IN')}` : ''}`);
   }
   if (mould?.maintenanceEveryShots && (mould.totalShots || 0) - (mould.lastMaintenanceShots || 0) >= mould.maintenanceEveryShots) {
@@ -139,17 +127,17 @@ export async function rechain(machineId, { from = new Date() } = {}) {
   jobs.sort((a, b) => (a.status === 'running' ? -1 : b.status === 'running' ? 1 : 0)
     || (a.sequence ?? 1e9) - (b.sequence ?? 1e9)
     || String(a.dueDate || '9').localeCompare(String(b.dueDate || '9')));
-  let cursor = firstWorking(from, plant.weeklyOff);
+  let cursor = firstWorkingDay(indiaDay(from), plant.weeklyOff);
   let position = 1;
   for (const job of jobs) {
-    const plan = estimate(job.toMakeQty, job.mould, plant, cursor);
-    const start = job.status === 'running' && job.firstRunAt ? startOfDay(job.firstRunAt) : cursor;
-    const end = plan.finish || cursor;
+    const plan = estimate(job.toMakeQty, job.mould, plant, dayToDate(cursor));
+    const start = job.status === 'running' && job.firstRunAt ? dayToDate(indiaDay(job.firstRunAt)) : dayToDate(cursor);
+    const end = plan.finish || dayToDate(cursor);
     job.sequence = position;
     job.plannedStart = start;
     job.plannedEnd = end;
     position += 1;
-    cursor = nextWorking(end, plant.weeklyOff);
+    cursor = nextWorkingDay(indiaDay(end), plant.weeklyOff);
     await WorkOrder.updateOne({ _id: job._id }, { $set: { sequence: job.sequence, plannedStart: start, plannedEnd: end } }, { keepVersion: true });
   }
   return jobs;
@@ -177,10 +165,10 @@ export async function sequenceByColour(machineId) {
 export async function planningBoard({ days = 14 } = {}) {
   const plant = await plantCalendar();
   const span = Math.min(Math.max(Number(days) || 14, 7), 42);
-  const today = firstWorking(new Date(), plant.weeklyOff);
+  const today = indiaDay();
   const dayKeys = [];
-  for (let at = 0, cursor = startOfDay(new Date()); at < span; at += 1, cursor = new Date(cursor.getTime() + DAY)) {
-    dayKeys.push({ day: cursor.toISOString(), off: plant.weeklyOff != null && cursor.getDay() === plant.weeklyOff });
+  for (let at = 0, cursor = today; at < span; at += 1, cursor = addDays(cursor, 1)) {
+    dayKeys.push({ day: cursor, off: plant.weeklyOff != null && weekdayOf(cursor) === plant.weeklyOff });
   }
   const [machines, jobs] = await Promise.all([
     Machine.find({ active: { $ne: false }, status: { $ne: 'retired' } }).select(MACHINE_FIT_FIELDS).sort({ code: 1 }).lean(),
@@ -196,7 +184,7 @@ export async function planningBoard({ days = 14 } = {}) {
     const toMake = Math.max(0, (job.quantity || 0) - (job.goodQty || 0));
     const perDay = piecesPerDay(job.mould, plant);
     const fit = fitOf(job.mould, machine, { on: job.plannedStart });
-    const due = job.dueDate ? startOfDay(job.dueDate) : null;
+    const due = job.dueDate ? indiaDay(job.dueDate) : null;
     return {
       _id: job._id, number: job.number, status: job.status, sequence: job.sequence ?? null,
       mould: job.mould ? { _id: job.mould._id, mouldCode: job.mould.mouldCode } : null,
@@ -205,7 +193,7 @@ export async function planningBoard({ days = 14 } = {}) {
       customer: job.customer?.name || null, order: job.order?.number || null, priority: job.order?.priority || job.priority || 'normal',
       dueDate: job.dueDate || null, plannedStart: job.plannedStart || null, plannedEnd: job.plannedEnd || null,
       perDay: perDay || null, pressDays: perDay ? Math.ceil(toMake / perDay) : null,
-      late: Boolean(due && ((job.plannedEnd && startOfDay(job.plannedEnd) > due) || due < today)),
+      late: Boolean(due && ((job.plannedEnd && indiaDay(job.plannedEnd) > due) || due < today)),
       fit: { blocks: fit.blocks, warnings: fit.warnings },
       updatedAt: job.updatedAt,
     };
@@ -217,8 +205,7 @@ export async function planningBoard({ days = 14 } = {}) {
     /* Press hours each day carries: a job fills its planned days at the plant's hours. */
     const load = dayKeys.map(({ day, off }) => {
       if (off) return 0;
-      const date = new Date(day);
-      return queue.filter((job) => job.plannedStart && job.plannedEnd && startOfDay(job.plannedStart) <= date && startOfDay(job.plannedEnd) >= date).length * plant.hoursPerDay;
+      return queue.filter((job) => job.plannedStart && job.plannedEnd && indiaDay(job.plannedStart) <= day && indiaDay(job.plannedEnd) >= day).length * plant.hoursPerDay;
     });
     return {
       machine: { _id: machine._id, code: machine.code, name: machine.name, tonnage: machine.tonnage, shotCapacityGrams: machine.shotCapacityGrams, status: machine.status, nextServiceDue: machine.nextServiceDue },

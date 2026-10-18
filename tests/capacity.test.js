@@ -33,7 +33,7 @@ test('the finish date skips the weekly day off', () => {
   const saturday = new Date('2026-10-17T10:00:00+05:30');
   const { finish, days } = estimate(30000, mould, plant, saturday);
   assert.equal(days, 3);
-  assert.equal(finish.getDay(), 2, 'finishes on the Tuesday');
+  assert.equal(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(finish), '2026-10-20', 'finishes on the Tuesday, India time');
   assert.equal(workingDaysUntil(new Date('2026-10-20T10:00:00+05:30'), plant, saturday), 2, 'Sunday is not counted');
 });
 
