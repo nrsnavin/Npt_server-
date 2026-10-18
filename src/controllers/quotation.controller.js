@@ -211,24 +211,30 @@ async function lineFrom(input = {}, { fallbackModel, mayCost = false } = {}) {
 }
 
 /**
- * A bought-in piece's cost lines. With a supplier's price, that price is the cost and the resin,
- * job work and parts are in it. Without one, the plant's own build-up on the trading master —
- * grams, job work, hook, clips, packing — stands in, so the piece is costed as a made one is
- * [models/Quotation.js `materialCost`]. A part named on the line still wins [`costingFrom`].
+ * A bought-in piece's cost lines: the supplier's inward price, and the plant's own build-up from
+ * the trading master — grams in the named resin at its rate, job work, hook, clips, packing —
+ * written beside it. With a supplier's price the build-up is the making cost the sheet shows
+ * against it; without one it stands in as the cost, as for a made piece
+ * [models/Quotation.js `totalCost`]. A part named on the line still wins [`costingFrom`].
  */
 function buildUpFrom(traded) {
-  if (traded.inwardPrice > 0) return { inwardPrice: traded.inwardPrice };
   const up = traded.buildUp || {};
-  const grams = (Number(up.partWeightGrams) || 0) + (Number(up.runnerWeightGrams) || 0);
+  const resin = up.material && typeof up.material === 'object' ? up.material : null;
+  const grams = grammageFrom((Number(up.partWeightGrams) || 0) + (Number(up.runnerWeightGrams) || 0), resin?.grammageFactorPercent);
+  const rate = Number(up.ratePerKg) || Number(resin?.ratePerKg) || 0;
   return {
     inwardPrice: traded.inwardPrice || 0,
     ...(grams ? { gramWeight: grams } : {}),
+    ...(rate ? { rawMaterialRate: rate } : {}),
     ...(up.jobWorkCost != null ? { jobWorkCost: up.jobWorkCost } : {}),
     ...(up.hookCost != null ? { hookCost: up.hookCost } : {}),
     ...(up.clipsCost != null ? { metalClipsCost: up.clipsCost } : {}),
     ...(up.packingCost != null ? { packingCost: up.packingCost } : {}),
   };
 }
+
+/** The item with the resin its build-up is costed in. */
+const withResin = (query) => query.populate('buildUp.material', 'name ratePerKg grammageFactorPercent');
 
 /**
  * The trading-master row a line is for: the one it names, or — for a line with no tool — the
@@ -237,14 +243,14 @@ function buildUpFrom(traded) {
  */
 async function tradedItemFor(input, { mould, fallbackModel } = {}) {
   if (input.tradedItem) {
-    const item = await TradedItem.findById(input.tradedItem);
+    const item = await withResin(TradedItem.findById(input.tradedItem));
     if (!item) throw ApiError.badRequest('That item is not on the trading master');
     return item;
   }
   if (mould || input.procurement === 'manufacture') return null;
   const model = input.modelNumber || fallbackModel;
   if (!model) return null;
-  return TradedItem.findOne({ modelKey: modelKeyOf(model), isActive: { $ne: false } });
+  return withResin(TradedItem.findOne({ modelKey: modelKeyOf(model), isActive: { $ne: false } }));
 }
 
 /** A model named only by its tool counts — "the 420, same as last time". */
@@ -758,11 +764,11 @@ export const costLine = asyncHandler(transactional(async (req, res) => {
     line.tradedItem = undefined;
     line.cost = { ...line.cost?.toObject?.(), inwardPrice: undefined };
   } else if (tradedItem) {
-    const item = await TradedItem.findById(tradedItem);
+    const item = await withResin(TradedItem.findById(tradedItem));
     if (!item) throw ApiError.badRequest('That item is not on the trading master');
     line.tradedItem = item._id;
     line.procurement = 'trade';
-    /* Its inward price — or, where the supplier has not given one, the plant's own build-up for it. */
+    /* Its inward price, and the plant's own build-up for it beside it — the cost where the supplier has not priced it. */
     line.cost = { ...line.cost?.toObject?.(), ...buildUpFrom(item) };
     if (!line.modelNumber) line.modelNumber = item.modelNumber;
   }

@@ -76,7 +76,9 @@ export const draftModels = asyncHandler(async (req, res) => {
     const likely = shortlist(search, rows, { limit: PAGE }).map((entry) => entry.row);
     found = [...new Map([...plain, ...likely].map((row) => [row.ref, row])).values()];
   }
-  res.json({ success: true, data: found.slice(0, PAGE).map(shown), pagination: { total: found.length, limit: PAGE } });
+  /* Nothing typed: the whole master, so the dropdown opens on every model. Typed: the best twenty. */
+  const limit = search ? PAGE : Math.max(PAGE, found.length);
+  res.json({ success: true, data: found.slice(0, limit).map(shown), pagination: { total: found.length, limit } });
 });
 
 /**

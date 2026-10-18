@@ -284,7 +284,8 @@ test('picking an item while costing takes its price; a later move does not reach
   const line = costed.json.data.lines[0];
   assert.equal(line.cost.inwardPrice, 3.8);
   assert.equal(line.procurement, 'trade');
-  assert.ok(Math.abs(line.totalCost - 4.0) < 1e-9, `cost is inward price plus packing, got ${line.totalCost}`);
+  assert.ok(Math.abs(line.totalCost - 3.8) < 1e-9, `cost is the inward price — the packing is in what the supplier charges, got ${line.totalCost}`);
+  assert.equal(line.cost.packingCost, 0.2, 'kept on the line, as the making cost');
 
   const bumped = await api(`/api/traded-items/${ph17._id}`, { method: 'PATCH', token: quoter, body: { inwardPrice: 4.1 } });
   assert.equal(bumped.status, 200, JSON.stringify(bumped.json));
@@ -412,6 +413,35 @@ test('a bought-in piece the supplier has not priced is costed from its build-up,
   });
   assert.equal(priced.status, 200, JSON.stringify(priced.json));
   const after = priced.json.data.lines[0];
-  assert.equal(after.materialCost, 0, 'in the inward price');
-  assert.ok(Math.abs(after.totalCost - 5.2) < 1e-9, `inward price plus packing, got ${after.totalCost}`);
+  assert.equal(after.supplied, true);
+  assert.equal(after.materialCost, 2, 'still worked, as the making cost beside the supplier’s price');
+  assert.ok(Math.abs(after.makingCost - 2.2) < 1e-9, `resin and packing, got ${after.makingCost}`);
+  assert.ok(Math.abs(after.totalCost - 5) < 1e-9, `the inward price alone — the packing is in it, got ${after.totalCost}`);
+});
+
+test('a bought-in piece with a price carries its build-up on the line too — grams in its resin at its rate — so the sheet can show the making cost', async () => {
+  const resin = (await api('/api/materials', { method: 'POST', token: admin, body: { name: 'HIPS for BU-10', type: 'hips', ratePerKg: 100, grammageFactorPercent: 18 } })).json.data;
+  const made = await api('/api/traded-items', {
+    method: 'POST', token: quoter,
+    body: { modelNumber: 'BU-10', inwardPrice: 6, buildUp: { material: resin._id, partWeightGrams: 20, runnerWeightGrams: 5, jobWorkCost: 0.5, hookCost: 0.6, clipsCost: 0, packingCost: 0.2 } },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  const enquiry = (await api('/api/enquiries', {
+    method: 'POST', token: nandhini,
+    body: { customer: customerId, requirement: { modelNumber: 'BU-10' }, nextAction: 'Send the price', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const raised = await api('/api/quotations', { method: 'POST', token: nandhini, body: { enquiry: enquiry._id } });
+  assert.equal(raised.status, 201, JSON.stringify(raised.json));
+  const [line] = (await api(`/api/quotations/${raised.json.data._id}`, { token: quoter })).json.data.lines;
+  assert.equal(line.procurement, 'trade');
+  assert.equal(line.cost.inwardPrice, 6);
+  assert.equal(line.cost.gramWeight, 29.5, '25 g as PP, 18% heavier in HIPS');
+  assert.equal(line.cost.rawMaterialRate, 100, 'the resin’s rate');
+  assert.equal(line.cost.hookCost, 0.6);
+  assert.ok(Math.abs(line.makingCost - 4.25) < 1e-9, `making cost ₹2.95 resin + 0.5 + 0.6 + 0.2, got ${line.makingCost}`);
+  assert.equal(line.totalCost, 6, 'priced on the inward price');
+  /* The whole master on the model list when nothing is typed. */
+  const all = (await api('/api/buyer-cards/models', { token: quoter })).json;
+  assert.equal(all.data.length, all.pagination.total, 'every model, not the first twenty');
+  assert.ok(all.data.some((row) => row.code === 'BU-10' && row.kind === 'traded'));
 });
