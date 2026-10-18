@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   listSamples, listStalledSamples, getSample, createSample, updateSample, assignSample,
-  setSampleStatus, closeSampleTask, setDispatchDetails, recordFeedback, resample, samplePipeline, sampleBoard,
+  setSampleStatus, closeSampleTask, setDispatchDetails, recordFeedback, resample, samplePipeline, sampleBoard, handOverSample,
   linkEnquiry, linkCustomer,
   previewCustomerMessage, sendCustomerMessage, listCustomerMessages,
 } from '../controllers/sample.controller.js';
@@ -18,7 +18,7 @@ import { validate } from '../middleware/validate.js';
 import {
   sampleSchema, sampleUpdateSchema, sampleAssignSchema,
   sampleStatusSchema, sampleFeedbackSchema, resampleSchema, customerMessageSchema,
-  dispatchDetailsSchema, sampleCloseTaskSchema, sampleLogSchema, logCommentSchema, linkEnquirySchema, linkCustomerSchema,
+  dispatchDetailsSchema, sampleCloseTaskSchema, sampleLogSchema, logCommentSchema, linkEnquirySchema, linkCustomerSchema, handOverSchema,
 } from '../validators/sample.schemas.js';
 
 const router = Router();
@@ -80,6 +80,14 @@ router.post(
   recordFeedback
 );
 router.post('/:id/resample', requireModule('samples', 'write'), validate(resampleSchema), resample);
+/* The marketing person handing the piece over themselves, on a visit — a photo may ride with it. */
+router.post(
+  '/:id/hand-over',
+  requireAnyModule(['enquiries', 'write'], ['samples', 'write']),
+  singleImage('photo'),
+  validate(handOverSchema),
+  handOverSample
+);
 /*
  * A request raised before its enquiry or its buyer existed joins them when they turn up.
  *

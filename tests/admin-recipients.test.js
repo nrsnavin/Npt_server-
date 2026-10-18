@@ -66,6 +66,8 @@ test('a production move is told to everyone who is Admin — the role, and Manag
     body: { customer: customer._id, requirement: { modelNumber: 'NPT-400S' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
   })).json.data;
   const task = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'When?' } })).json.data.task;
+  /* Production says what follows moulding before it gives a date. */
+  assert.equal((await api(`/api/workspace/todos/${task._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'NPT-400S' }] } })).status, 200);
   const moved = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'planning', note: 'Planned for next week', date: inDays(5) } });
   assert.equal(moved.status, 200, moved.json.message);
 

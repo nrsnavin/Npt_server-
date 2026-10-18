@@ -1,4 +1,5 @@
 import { whatsappTemplate } from '../providers/whatsapp.js';
+import { company } from '../config/company.js';
 
 /**
  * What a customer may be told, and in what words.
@@ -57,6 +58,9 @@ export function contextFor({ sample, enquiry, customer }) {
     dispatchedQuantity: sample.dispatchedQuantity,
     courierLine: courierLine(sample),
     company: 'Navin Plastic Tech',
+    /* Where to collect it, for a sample kept at the front desk. */
+    address: company.addressLines.join(', '),
+    phone: company.phone,
   };
 }
 
@@ -69,6 +73,20 @@ export function contextFor({ sample, enquiry, customer }) {
  * Builder. It is documented alongside the SIDs in .env.example.
  */
 export const TEMPLATES = {
+  /* A sample kept at reception for the buyer to collect [Sample `handover: 'collect'`]. */
+  sample_ready_collect: {
+    label: 'Sample ready to collect',
+    subject: (ctx) => `Your sample ${ctx.sampleNumber} is ready to collect — ${ctx.company}`,
+    body: (ctx) =>
+      `Hello ${ctx.customerName},\n\n` +
+      `Your sample ${ctx.sampleNumber} — ${ctx.description}, ${formatNumber.format(ctx.quantity)} pc — ` +
+      `is ready and waiting for you at our reception.\n\n` +
+      `Collect it from ${ctx.company}, ${ctx.address}. Call ${ctx.phone} before you come, and ` +
+      `please quote ${ctx.sampleNumber} at the desk.\n\n` +
+      `${ctx.company}`,
+    contentSid: () => whatsappTemplate('sample_ready_collect'),
+    variables: (ctx) => ({ 1: ctx.customerName, 2: ctx.sampleNumber, 3: ctx.description, 4: ctx.address, 5: ctx.phone }),
+  },
   sample_ready: {
     label: 'Sample ready',
     subject: (ctx) => `Your sample ${ctx.sampleNumber} is ready — ${ctx.company}`,

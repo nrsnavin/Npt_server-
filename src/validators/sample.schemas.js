@@ -1,7 +1,7 @@
 import { versioned } from './pipeline.schemas.js';
 import { z } from 'zod';
 import { HANGER_CATEGORIES, MATERIALS, HOOK_TYPES } from '../models/Mould.js';
-import { DELIVERY_METHODS, SAMPLE_PURPOSES, SAMPLE_STATUSES, FEEDBACK_STATUSES } from '../models/Sample.js';
+import { DELIVERY_METHODS, HANDOVER_MODES, SAMPLE_PURPOSES, SAMPLE_STATUSES, FEEDBACK_STATUSES } from '../models/Sample.js';
 import { MESSAGE_CHANNELS } from '../models/CustomerMessage.js';
 import { EVENT_KEYS } from '../services/customerMessage.templates.js';
 
@@ -62,6 +62,8 @@ const sampleCore = {
     .max(12)
     .optional(),
   purpose: z.enum(SAMPLE_PURPOSES).optional(),
+  /* How it reaches the buyer: sent by the bench, collected at reception, or handed over on a visit. */
+  handover: z.enum(HANDOVER_MODES).optional(),
   requiredDate: z.coerce.date().optional(),
   referenceImageUrl: z.string().optional(),
   remarks: z.string().optional(),
@@ -168,4 +170,17 @@ export const sampleLogSchema = z.object({
 
 export const logCommentSchema = z.object({
   body: z.string().min(1, 'Write something first').max(2000),
+});
+
+/**
+ * The hand-over itself, recorded by whoever put the piece in the buyer's hands: the marketing
+ * person on a visit, or Reception at the desk through its task. A multipart form (the photo
+ * rides with it), so the numbers arrive as text.
+ */
+export const handOverSchema = z.object({
+  receivedBy: z.string().trim().max(120).optional(),
+  phone: z.string().trim().max(30).optional(),
+  pieces: z.coerce.number().int().positive().optional(),
+  handedAt: z.coerce.date().optional(),
+  note: z.string().trim().max(1000).optional(),
 });

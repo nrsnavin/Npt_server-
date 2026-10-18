@@ -2,6 +2,7 @@ import Enquiry, { checkPending } from '../models/Enquiry.js';
 import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
 import Todo from '../models/Todo.js';
 import Attachment from '../models/Attachment.js';
+import Sample from '../models/Sample.js';
 import { bufferOf, put, remove, safeFilename } from '../services/storage.service.js';
 import { sendResultToCustomer } from '../services/taskResultMessage.service.js';
 import { publicApiBase, signatureValid } from '../utils/signedLink.js';
@@ -16,7 +17,7 @@ import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
-  updateHandoff, mayWorkOnHandoff, raiseAssemblyWith,
+  updateHandoff, mayWorkOnHandoff, raiseAssemblyWith, routingFor, decideRouting,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -217,6 +218,22 @@ export const handoffEdd = asyncHandler(transactional(async (req, res) => {
   await answer(res, task);
 }));
 
+/** The models on a Production task, with what Production decided about printing and assembly. */
+export const handoffRouting = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await routingFor(await taskFor(req), req.user) });
+});
+
+/** Production's call, model by model: Printing's and Assembly's tasks are raised from it. */
+export const handoffRoute = asyncHandler(transactional(async (req, res) => {
+  const { task, raised } = await decideRouting(await taskFor(req), req.user, req.body);
+  const populated = await task.populate(TASK_POPULATE);
+  res.json({
+    success: true,
+    data: populated,
+    raised: Object.fromEntries(Object.entries(raised).map(([team, entry]) => [team, { _id: entry._id, department: entry.department }])),
+  });
+}));
+
 /** The department's own status on its task — SO Waiting, Preparing, Needs Clarification. */
 export const handoffStatus = asyncHandler(transactional(async (req, res) => {
   const task = await setTaskStatus(await taskFor(req), req.user, req.body);
@@ -266,6 +283,10 @@ export const handoffDocument = asyncHandler(async (req, res) => {
       }]);
       fresh.updates = [...(fresh.updates || []), { kind: 'uploaded', statusLabel: `${kind.label} uploaded`, text: req.file.originalname, note: `${kind.label} uploaded: ${req.file.originalname}`, by: req.user._id, at: new Date() }];
       await fresh.save();
+      /* Reception's hand-over photo is the sample's too, whenever it is uploaded — before or after "Buyer collected". */
+      if (fresh.kind === 'sample_collect' && kind.type === 'handover_photo' && fresh.brief?.sample) {
+        await Sample.updateOne({ _id: fresh.brief.sample }, { $set: { 'collection.photo': made._id } }, { keepVersion: true });
+      }
       return made;
     }, { label: 'task document' }));
     res.status(201).json({ success: true, data: attachment });

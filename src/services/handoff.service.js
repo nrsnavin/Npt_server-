@@ -15,6 +15,7 @@ import * as paymentPresets from './paymentGates.service.js';
 import { assertEnquiryPaidFor } from './paymentGates.service.js';
 import { COLLECTION_KINDS, receivablesOf } from './collections.service.js';
 import { MATERIALS } from '../models/Mould.js';
+import { HANDOVER_CHOICES } from '../config/departmentTaskForms.js';
 import { askToRecordReceipt, endOfIndiaDay, logCollectionCall } from './collections.service.js';
 
 /**
@@ -283,8 +284,11 @@ async function openHolder({ enquiry, kind, note, user, title, from }) {
  */
 function sampleFromBrief(brief = {}) {
   const row = brief.items?.[0];
-  if (!row) return {};
   const said = {};
+  /* How it reaches the buyer, as the form's words [HANDOVER_CHOICES] — the sample's own mode. */
+  const handover = HANDOVER_CHOICES.find((choice) => choice.label === brief.handover)?.key;
+  if (handover) said.handover = handover;
+  if (!row) return said;
   const material = row.material && row.material.toLowerCase().replace(/\s+/g, '_');
   if (material && MATERIALS.includes(material)) said.material = material;
   if (row.colour) said.colour = row.colour;
@@ -961,6 +965,10 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
 
   const handoff = findHandoff(task.kind);
   const kept = keptFields(task.kind, fields);
+  /* A collection finished from Done rather than "Buyer collected" still says who took the sample — before anything is saved. */
+  if (task.kind === 'sample_collect' && task.brief?.sample && !String(kept.collectorName || '').trim() && !String(kept.collectorPhone || '').trim()) {
+    fail('Say who collected the sample — their name or phone');
+  }
   /*
    * Done on a task with its own workflow is that workflow's last status (Task Closed): the card
    * shows it, and the enquiry's marketing person and Admin are told, as when it is chosen from
@@ -980,6 +988,9 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
     result: 'done', note: text, fields: Object.keys(kept).length ? kept : undefined, by: user._id, at: new Date(),
   };
   await task.save();
+
+  /* The sample collected at the desk is with the buyer now; the record says who took it. */
+  if (task.kind === 'sample_collect') await collectedAtDesk(task, user, kept);
 
   /* The enquiry moves where this task's finishing says it does — before anybody is told. */
   await reachEnquiry(task, user, handoff?.whenDone, text);
@@ -1107,16 +1118,20 @@ async function answerParent(clarification, user, text) {
  * enquiry's marketing person, due today, with the comment. The status reached by uploading the
  * work (SO Prepared) is not chosen here — see `finishWithResult`.
  */
-export async function setTaskStatus(task, user, { status, note, date }) {
+export async function setTaskStatus(task, user, { status, note, date, fields }) {
   openHandoff(task, user);
   const form = findHandoff(task.kind)?.form || {};
   const step = statusesOf(task).find((entry) => entry.key === status);
   if (!step) fail('That is not one of this task’s statuses');
   if (step.pdf) fail(`Upload the PDF to mark it ${step.label}`);
   const text = String(note || '').trim();
+  /* What the status asks for beside the remark — who collected the sample, how many pieces. */
+  const asked = stepFields(step, fields);
   if (step.comment && text.length < 3) fail(`Say what is needed — ${step.label} asks for a comment`);
   if (form.remarkRequired && text.length < 3) fail(`Add a remark to move it to ${step.label}`);
   const readyDate = statusDate(form, step, date);
+  /* Production says what follows it before it gives any date [decideRouting]. */
+  if (readyDate) assertRouted(task);
   if (task.status === status && !readyDate) return task;
   await assertNotWaiting(task);
   /* Refused before the status moves, so a refusal leaves the task where it was. */
@@ -1130,18 +1145,22 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   task.statusHistory = [...(task.statusHistory || []), { status, note: text || undefined, date: readyDate || undefined, by: user._id, at: new Date() }];
   /* A promise is when the money is due next, a visit is when PRT goes: the task falls due that day [collections.service]. */
   if ((step.promise || step.visit) && readyDate) task.dueDate = endOfIndiaDay(readyDate);
-  const said = [step.label, readyDate && `${form.statusDate?.label || 'Ready date'} ${readyDate}`].filter(Boolean).join(' · ');
+  /* A team that hands on gives a hand-over date, not the EDD [decideRouting]. */
+  const handsOn = handsOnOf(task);
+  const dateText = handsOn.length ? dateLabelOf(task) : form.statusDate?.label || 'Ready date';
+  const said = [step.label, readyDate && `${dateText} ${readyDate}`].filter(Boolean).join(' · ');
   /* A ready date is the enquiry's EDD (Production) or ERD (the mould) from here on [enquiryProgress]. */
-  const dateField = form.statusDate?.field || 'edd';
+  const dateField = handsOn.length ? 'handover' : form.statusDate?.field || 'edd';
   task.updates = [...(task.updates || []), {
     kind: 'status', status: step.key, statusLabel: step.label, text: text || undefined,
-    ...(readyDate ? { date: readyDate, dateLabel: form.statusDate?.label || 'Ready date' } : {}),
+    ...(readyDate ? { date: readyDate, dateLabel: handsOn.length ? 'Hand-over' : form.statusDate?.label || 'Ready date' } : {}),
     note: text ? `${said}: ${text}` : said, ...(readyDate ? { fields: { [dateField]: readyDate } } : {}), by: user._id, at: new Date(),
   }];
   if (!task.user) task.user = user._id;
   await task.save();
   /* The ready date Production (or Assembly, Printing) gave is the enquiry's EDD from here on. */
   if (readyDate && dateField === 'edd' && task.enquiry) await writeEnquiryEdd(task.enquiry, { day: readyDate, user, department: task.department, note: text });
+  if (readyDate && dateField === 'handover' && task.enquiry) await passHandover(task, user, readyDate, text);
   if (form.notifyStatus) await noticeStatus(task, user, { step, note: text, date: readyDate });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
@@ -1158,9 +1177,109 @@ export async function setTaskStatus(task, user, { status, note, date }) {
   if (step.followUp || step.promise) await logCollectionCall(task, user, step, text, readyDate);
   /* Money taken: whoever took it records the receipt in Payments; Accounts confirms it there. */
   if (step.recordsReceipt) await askToRecordReceipt(task, user, step);
+  /* A status that tells the buyer something — "your sample is ready to collect" — sends it from here. */
+  if (step.tellBuyer) await tellBuyerFromTask(task, user, step);
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
-  if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: readyDate ? { [dateField]: readyDate } : {} });
+  if (step.done) return completeHandoff(task, user, { note: text || step.label, fields: { ...asked, ...(readyDate ? { [dateField]: readyDate } : {}) } });
   return task;
+}
+
+/** The answers a status asks for [departmentTaskForms `statuses[].fields`], required ones refused when blank. */
+function stepFields(step, fields = {}) {
+  const kept = {};
+  for (const field of step.fields || []) {
+    const raw = fields?.[field.key];
+    const text = raw == null ? '' : String(raw).trim().slice(0, 200);
+    if (!text) {
+      if (field.required) fail(`${field.label} is needed to mark it ${step.label}`);
+      continue;
+    }
+    if (field.type === 'number' && !(Number(text) >= 0)) fail(`${field.label} must be a number`);
+    kept[field.key] = text;
+  }
+  return kept;
+}
+
+/** The sample a desk task is about: on its brief, by id. */
+async function sampleOfTask(task) {
+  const id = task.brief?.sample;
+  if (!id) return null;
+  const { default: Sample } = await import('../models/Sample.js');
+  return Sample.findById(id);
+}
+
+/**
+ * Reception telling the buyer the sample is waiting at the desk [departmentTaskForms
+ * `sample_collect` → `informed`]: the customer message goes on every channel the buyer accepts,
+ * from the company number, and the moment is kept on the sample. Never fails the move.
+ */
+async function tellBuyerFromTask(task, user, step) {
+  const sample = await sampleOfTask(task);
+  if (!sample) return;
+  try {
+    const { notifyCustomer } = await import('./customerMessage.service.js');
+    await notifyCustomer({ sample, event: step.tellBuyer, user });
+    sample.collection = { ...(sample.collection?.toObject?.() || sample.collection || {}), informedAt: new Date() };
+    await sample.save();
+  } catch (error) {
+    console.error(`[sample-collect] buyer notice for ${sample.number} not sent: ${error.message}`);
+  }
+}
+
+/**
+ * The bench marked a sample the buyer collects as ready [sample.controller `setSampleStatus`]:
+ * Reception gets the task on the enquiry — the bag, the pieces, the buyer to call — the bench's
+ * own task closes (its work is done), and the sample notes when it reached the desk.
+ */
+export async function raiseCollection(sample, user) {
+  if (sample.handover !== 'collect') return null;
+  const enquiryId = sample.enquiry?._id || sample.enquiry;
+  if (!enquiryId) return null;
+  const enquiry = await Enquiry.findById(enquiryId).populate('customer', 'name mobile whatsapp email contacts');
+  if (!enquiry) return null;
+  const open = await Todo.findOne({ enquiry: enquiry._id, kind: 'sample_collect', completed: false, 'brief.sample': String(sample._id) });
+  if (open) return open;
+  const buyer = enquiry.customer;
+  const primary = buyer?.contacts?.find((contact) => contact.isPrimary) || buyer?.contacts?.[0];
+  const models = (sample.items?.length ? sample.items : [sample]).map((row) => [row.modelNumber, row.colour, row.quantity ? `${row.quantity} pcs` : null].filter(Boolean).join(' · ')).filter(Boolean).join('; ');
+  const task = await moveEnquiry({
+    enquiry, kind: 'sample_collect', user, system: true, openRecords: false, addToOpen: true, keepStage: true,
+    note: `Sample ${sample.number} is ready — the buyer collects it at reception. Tell them, hand it over, and record who took it.`,
+    brief: {
+      sample: String(sample._id), sampleNumber: sample.number, models: models || sample.modelNumber || '—',
+      pieces: String(sample.quantity || sample.items?.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0) || 1),
+      buyerContact: [buyer?.name, primary?.name, primary?.phone || buyer?.whatsapp || buyer?.mobile].filter(Boolean).join(' · ') || '—',
+    },
+    priority: 'normal',
+  });
+  if (task?._id) await Todo.updateOne({ _id: task._id }, { $set: { link: `/samples/${sample._id}` } }, { keepVersion: true });
+  /* The bench is done with it: its task closes with where the piece went, and the row leaves its queue. */
+  const benchTasks = await Todo.find({ enquiry: enquiry._id, kind: 'sample_request', completed: false, holds: { $ne: true } });
+  if (benchTasks.length) await finishAll(benchTasks, user, { note: `Sample ${sample.number} ready — handed to reception for the buyer to collect`, fields: { courier: 'Collected at reception', pieces: String(sample.quantity || '') } });
+  sample.collection = { ...(sample.collection?.toObject?.() || sample.collection || {}), readyAt: new Date() };
+  if (!sample.benchClosedAt) {
+    sample.benchClosedAt = new Date();
+    sample.benchClosedBy = user?._id;
+  }
+  await sample.save();
+  return task;
+}
+
+/**
+ * Reception finished its collection task [`sample_collect` → Buyer collected]: the hand-over goes
+ * onto the sample — who took it, how many, the photo of the slip where one was uploaded — and the
+ * sample is with the buyer from here [sampling.service `recordHandover`].
+ */
+async function collectedAtDesk(task, user, kept = {}) {
+  const sample = await sampleOfTask(task);
+  if (!sample) return;
+  const { recordHandover } = await import('./sampling.service.js');
+  const { default: Attachment } = await import('../models/Attachment.js');
+  const photo = await Attachment.findOne({ task: task._id, docType: 'handover_photo' }).sort({ createdAt: -1 }).select('_id');
+  await recordHandover(sample, user, {
+    receivedBy: kept.collectorName, phone: kept.collectorPhone, pieces: kept.pieces,
+    note: task.outcome?.note, photo: photo?._id, via: 'desk',
+  });
 }
 
 /**
@@ -1901,8 +2020,27 @@ export async function setTaskEdd(task, user, { date, note }) {
   openHandoff(task, user);
   if (!task.enquiry) fail('A team task has no enquiry to carry an EDD');
   if (!EDD_TASK_KINDS.includes(task.kind)) fail('The EDD is given from the Production, Assembly or Printing task');
+  assertRouted(task);
   const day = eddDay(date);
   const text = String(note || '').trim();
+  /* A team that hands on gives the next team its hand-over date; the last team gives the EDD. */
+  const handsOn = handsOnOf(task);
+  if (handsOn.length) {
+    const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(day)}`;
+    task.updates = [...(task.updates || []), {
+      kind: 'note', text: text ? `${said}: ${text}` : said, note: text ? `${said}: ${text}` : said,
+      date: day, dateLabel: 'Hand-over', fields: { handover: day }, by: user._id, at: new Date(),
+    }];
+    task.attention = undefined;
+    if (!task.user) task.user = user._id;
+    await task.save();
+    await passHandover(task, user, day, text);
+    await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+    if (findHandoff(task.kind)?.form?.notifyStatus) {
+      await noticeStatus(task, user, { step: { key: task.status || 'handover', label: `Hand-over date to ${teamWords(handsOn)}` }, note: text, date: day });
+    }
+    return task;
+  }
   const said = `EDD ${prettyDay(day)}`;
   task.updates = [...(task.updates || []), {
     kind: 'note', text: text || said, note: text ? `${said}: ${text}` : said,
@@ -1917,6 +2055,194 @@ export async function setTaskEdd(task, user, { date, note }) {
     await noticeStatus(task, user, { step: { key: task.status || 'edd', label: 'EDD given' }, note: text, date: day });
   }
   return task;
+}
+
+/* ------------------------------ Production's routing ------------------------------ */
+
+/*
+ * After moulding a hanger may be printed, assembled (clips, hooks fitted), both — printing first —
+ * or neither. Production decides, model by model, on its task before it gives any date. Each team
+ * then gives a date: one that hands on gives the hand-over date to the next team, and the last
+ * team in the chain gives the enquiry's EDD.
+ *
+ *   Production ──▶ Printing ──▶ Assembly      a model that is printed and assembled
+ *   Production ──▶ Assembly                   assembled only
+ *   Production ──▶ Printing                   printed only — Printing gives the EDD
+ *   Production                                neither — Production gives the EDD, as before
+ */
+
+/** The task kind of each team that can follow Production. */
+export const ROUTE_KINDS = { printing: 'ask_printing', assembling: 'ask_assembling_edd' };
+const ROUTE_LABEL = { production: 'Production', printing: 'Printing', assembling: 'Assembly' };
+
+/** The teams a task hands its goods to — empty for the last team, whose date is the EDD. */
+export const handsOnOf = (task) => (Array.isArray(task?.routing?.handsTo) ? task.routing.handsTo : []);
+
+/** "Printing and Assembly" — the teams a hand-over date goes to, as a person says them. */
+const teamWords = (teams) => teams.map((team) => ROUTE_LABEL[team] || departmentName(team)).join(' and ');
+
+/** The label of the date a task gives: a hand-over date while it hands on, the EDD otherwise. */
+export const dateLabelOf = (task, fallback = 'Ready date') => {
+  const teams = handsOnOf(task);
+  return teams.length ? `Hand-over date to ${teamWords(teams)}` : fallback;
+};
+
+/** Production has to say what follows it before it gives any date. */
+export function assertRouted(task) {
+  if (task.kind !== 'ask_edd' || !task.enquiry) return;
+  if (!task.routing?.decidedAt) fail('Decide first which models need printing or assembly — then give the date');
+}
+
+/** The models on the enquiry, for Production's choice: the order's lines, or the enquiry's items. */
+export async function routingFor(task, user) {
+  if (task.kind !== 'ask_edd') fail('Only Production decides printing and assembly');
+  if (!mayWorkOnHandoff(user, task)) throw ApiError.forbidden(`This task is on the ${departmentName(task.department)} queue`);
+  const enquiryId = task.enquiry?._id || task.enquiry;
+  if (!enquiryId) fail('A team task has no enquiry to route');
+  const prefill = await taskPrefill(enquiryId);
+  const { default: SalesOrder } = await import('../models/SalesOrder.js');
+  const order = task.order ? await SalesOrder.findById(task.order?._id || task.order).select('lines.modelNumber').lean() : null;
+  const fromOrder = (order?.lines || []).map((line) => line.modelNumber).filter(Boolean);
+  const said = (task.routing?.models || []).map((row) => row.model);
+  const models = [...new Set([...fromOrder, ...(prefill.modelList || []), ...said, task.brief?.model].filter(Boolean).map((model) => String(model).trim()))];
+  /* The print and the clip the enquiry carries, as a hint beside each model. */
+  const hints = Object.fromEntries((prefill.items || []).map((row) => [row.model, {
+    print: row.print || '', hook: row.hook || '', clip: row.clip || '',
+  }]));
+  return { models: models.map((model) => ({ model, ...(hints[model] || {}) })), routing: task.routing || null };
+}
+
+/**
+ * Production's answer, model by model: which need printing, which need assembly. The teams that
+ * follow get their tasks at once, with only the models they have and the hand-over date if one
+ * was given; a team no longer needed has its untouched task closed, or is told. May be changed
+ * while the task is open.
+ */
+export async function decideRouting(task, user, { models }) {
+  openHandoff(task, user);
+  if (task.kind !== 'ask_edd') fail('Only Production decides printing and assembly');
+  if (!task.enquiry) fail('A team task has no enquiry to route');
+  const rows = [];
+  for (const row of models || []) {
+    const model = String(row?.model || '').trim();
+    if (!model || rows.some((entry) => entry.model === model)) continue;
+    rows.push({ model, printing: row.printing === true, assembly: row.assembly === true });
+  }
+  if (!rows.length) fail('Name at least one model');
+
+  const printed = rows.filter((row) => row.printing);
+  const assembled = rows.filter((row) => row.assembly);
+  /* Production hands each model to the first team after it. */
+  const handsTo = [
+    ...(printed.length ? ['printing'] : []),
+    ...(assembled.some((row) => !row.printing) ? ['assembling'] : []),
+  ];
+  const before = handsOnOf(task);
+  const wasDecided = Boolean(task.routing?.decidedAt);
+  const handOverDate = task.routing?.handOverDate;
+  task.routing = { ...(task.routing || {}), models: rows, handsTo, decidedAt: new Date(), decidedBy: user._id };
+  task.markModified('routing');
+  const plan = rows.map((row) => `${row.model}: ${[row.printing && 'printing', row.assembly && 'assembly'].filter(Boolean).join(' then ') || 'no printing or assembly'}`).join(' · ');
+  task.updates = [...(task.updates || []), {
+    kind: 'note', text: `${wasDecided ? 'Changed' : 'Decided'} — ${plan}`, note: `${wasDecided ? 'Routing changed' : 'Routing'}: ${plan}`, by: user._id, at: new Date(),
+  }];
+  if (!task.user) task.user = user._id;
+  await task.save();
+
+  const enquiry = await enquiryOfTask(task);
+  const teams = {
+    printing: printed.length ? {
+      models: printed.map((row) => row.model),
+      from: ['production'],
+      handsTo: printed.some((row) => row.assembly) ? ['assembling'] : [],
+    } : null,
+    assembling: assembled.length ? {
+      models: assembled.map((row) => row.model),
+      from: [...(assembled.some((row) => !row.printing) ? ['production'] : []), ...(assembled.some((row) => row.printing) ? ['printing'] : [])],
+      handsTo: [],
+    } : null,
+  };
+  const raised = {};
+  for (const [team, plan] of Object.entries(teams)) {
+    const kind = ROUTE_KINDS[team];
+    const open = await Todo.findOne({ enquiry: enquiry._id, kind, completed: false });
+    if (!plan) {
+      if (open?.routing?.byProduction) await dropRoute(open, user, team);
+      continue;
+    }
+    const words = team === 'printing' ? 'Print' : 'Assemble';
+    const task2 = open || await moveEnquiry({
+      enquiry, kind, user, system: true, openRecords: false, addToOpen: true, keepStage: true, order: task.order,
+      note: `${words} ${plan.models.join(', ')} — routed by Production (${user.name}). ${plan.handsTo.length ? 'Give Assembly your hand-over date.' : 'Give the EDD once you know when it will be ready.'}`,
+      brief: {
+        model: plan.models[0], models: plan.models.join(', '),
+        ...(task.brief?.material ? { material: task.brief.material } : {}),
+        ...(task.brief?.quantity ? { quantity: task.brief.quantity } : {}),
+      },
+      priority: task.priority,
+    });
+    const incoming = { ...(task2.routing?.incoming || {}) };
+    if (plan.from.includes('production') && handOverDate) incoming.production = handOverDate;
+    task2.routing = { ...(task2.routing || {}), ...plan, incoming, byProduction: true };
+    task2.markModified('routing');
+    task2.brief = { ...(task2.brief?.toObject?.() ?? task2.brief ?? {}), model: plan.models[0], models: plan.models.join(', ') };
+    task2.markModified('brief');
+    if (open) {
+      task2.updates = [...(task2.updates || []), {
+        kind: 'note', text: `Production (${user.name}): ${words.toLowerCase()} ${plan.models.join(', ')}`, note: `Routed by Production: ${plan.models.join(', ')}`, by: user._id, at: new Date(),
+      }];
+    }
+    task2.askedFrom = [...new Set([...(task2.askedFrom || []).map(String), String(task._id)])];
+    await task2.save();
+    await publish(EVENTS.HANDOFF_UPDATED, { task: task2, by: user });
+    raised[team] = task2;
+  }
+  /* A team added since Production gave its date hears it too. */
+  if (handOverDate && handsTo.some((team) => !before.includes(team))) await passHandover(task, user, handOverDate, '');
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  if (findHandoff(task.kind)?.form?.notifyStatus) {
+    await noticeStatus(task, user, { step: { key: task.status || 'routing', label: wasDecided ? 'Routing changed' : 'Printing / assembly decided' }, note: plan });
+  }
+  return { task, raised };
+}
+
+/** A team Production no longer sends goods to: closed if nobody has started, told otherwise. */
+async function dropRoute(open, user, team) {
+  const first = statusesOf(open)[0]?.key;
+  const note = `Production (${user.name}) says no ${team === 'printing' ? 'printing' : 'assembly'} is needed on this order`;
+  if (!open.status || open.status === first) {
+    await finishAll([open], user, { note });
+    return;
+  }
+  open.updates = [...(open.updates || []), { kind: 'note', text: `${note} — check with Production before going on`, note, by: user._id, at: new Date() }];
+  open.routing = { ...(open.routing || {}), byProduction: false };
+  open.markModified('routing');
+  await open.save();
+  await publish(EVENTS.HANDOFF_UPDATED, { task: open, by: user });
+}
+
+/**
+ * A team gave its hand-over date: written on its own routing and on each next team's task — a
+ * line there, and the date it can expect the goods from this team.
+ */
+export async function passHandover(task, user, day, text) {
+  const from = task.kind === 'ask_edd' ? 'production' : task.kind === 'ask_printing' ? 'printing' : 'assembling';
+  task.routing = { ...(task.routing || {}), handOverDate: day, handOverAt: new Date(), handOverBy: user._id };
+  task.markModified('routing');
+  await task.save();
+  const enquiryId = task.enquiry?._id || task.enquiry;
+  for (const team of handsOnOf(task)) {
+    const next = await Todo.findOne({ enquiry: enquiryId, kind: ROUTE_KINDS[team], completed: false });
+    if (!next) continue;
+    next.routing = { ...(next.routing || {}), incoming: { ...(next.routing?.incoming || {}), [from]: day } };
+    next.markModified('routing');
+    next.updates = [...(next.updates || []), {
+      kind: 'note', text: `${ROUTE_LABEL[from]} hands over on ${prettyDay(day)}${text ? ` — ${text}` : ''}`,
+      note: `${ROUTE_LABEL[from]} hands over on ${prettyDay(day)}`, date: day, dateLabel: `From ${ROUTE_LABEL[from]}`, by: user._id, at: new Date(),
+    }];
+    await next.save();
+    await publish(EVENTS.HANDOFF_UPDATED, { task: next, by: user });
+  }
 }
 
 /**

@@ -195,6 +195,13 @@ const paymentFollowUp = {
   ],
 };
 
+/** How a sample reaches the buyer, as the request form asks it [models/Sample.js HANDOVER_MODES]. */
+export const HANDOVER_CHOICES = [
+  { key: 'dispatch', label: 'Sent by the bench (courier or at the gate)' },
+  { key: 'collect', label: 'Buyer collects at reception' },
+  { key: 'in_person', label: 'I will hand it over on my visit (from the sample rack)' },
+];
+
 export const TASK_FORMS = {
   sample_request: {
     team: 'Sampling Team',
@@ -206,7 +213,42 @@ export const TASK_FORMS = {
         key: 'items', label: 'Sample models & colour instruction', type: 'items', required: true,
         from: 'items', add: '+ Add Model', columns: SAMPLE_COLUMNS,
       },
+      /* Sent by the bench, kept at reception for the buyer to collect, or carried by the marketing person [models/Sample.js HANDOVER_MODES]. */
+      { key: 'handover', label: 'How it reaches the buyer', type: 'choice', options: HANDOVER_CHOICES.map((entry) => entry.label) },
     ],
+  },
+  /*
+   * Reception's desk flow for a sample the buyer collects. The piece arrives from the bench;
+   * Reception tells the buyer it is waiting, hands it over when they walk in, and records who
+   * took it — name, phone, pieces — with a photo of the signed slip or the hand-over beside it.
+   * "Buyer collected" finishes the task and writes the hand-over onto the sample itself.
+   */
+  sample_collect: {
+    team: 'Reception — Sample collection',
+    /* Filled by the app from the sample, never typed: the record's id stays off the card. */
+    asks: [
+      { key: 'sample', label: 'Sample record', hidden: true },
+      { key: 'sampleNumber', label: 'Sample' },
+      { key: 'models', label: 'Models in the bag' },
+      { key: 'pieces', label: 'Pieces' },
+      { key: 'buyerContact', label: 'Buyer to call' },
+    ],
+    notifyStatus: true,
+    remark: { label: 'Remarks', placeholder: 'Who you spoke to, when they said they would come' },
+    statuses: [
+      { key: 'waiting', label: 'At reception — waiting for the buyer' },
+      /* Moving here sends "ready to collect" to the buyer on WhatsApp and email, from the company number. */
+      { key: 'informed', label: 'Buyer told it is ready', tellBuyer: 'sample_ready_collect' },
+      {
+        key: 'collected', label: 'Buyer collected', done: true,
+        fields: [
+          { key: 'collectorName', label: 'Collected by (name)', required: true },
+          { key: 'collectorPhone', label: 'Their phone' },
+          { key: 'pieces', label: 'Pieces handed over', type: 'number' },
+        ],
+      },
+    ],
+    documents: [{ type: 'handover_photo', label: 'Hand-over photo / signed slip' }],
   },
   create_quotation: {
     team: 'Quotation Team',
@@ -255,12 +297,13 @@ export const TASK_FORMS = {
   },
   ask_edd: {
     team: 'Production Team',
-    /* "Needs assembly" raises Assembly's task beside Production's, on the same enquiry, as the
-       hanger is sent to the press [handoff.service `raiseAssemblyWith`]. */
-    asks: [
-      ...modelAndQuantity,
-      { key: 'assembly', label: 'Needs assembly — clips, hooks or printing fitted after moulding (Assembly is tasked with Production)', type: 'check' },
-    ],
+    /*
+     * Whether a model is printed or assembled after moulding is Production's call, made model by
+     * model on the task before it gives any date [handoff.service `decideRouting`]: Printing's and
+     * Assembly's tasks are raised from that, and the last team in the chain gives the EDD.
+     */
+    asks: modelAndQuantity,
+    routes: true,
     /* Every move says why, and the enquiry's marketing person and Admin are told of it. */
     remarkRequired: true,
     notifyStatus: true,
@@ -299,7 +342,7 @@ export const TASK_FORMS = {
   },
   ask_assembling_edd: {
     team: 'Assembly Team',
-    asks: modelAndQuantity,
+    asks: [...modelAndQuantity, { key: 'models', label: 'Models to assemble' }],
     remarkRequired: true,
     notifyStatus: true,
     /* Assembly's ready date is the enquiry's EDD, as Production's is. */
@@ -319,7 +362,7 @@ export const TASK_FORMS = {
      the same way as Assembly's, with its own header on that desk. */
   ask_printing: {
     team: 'Printing Team',
-    asks: modelAndQuantity,
+    asks: [...modelAndQuantity, { key: 'models', label: 'Models to print' }],
     remarkRequired: true,
     notifyStatus: true,
     statusDate: { label: 'Ready date', field: 'edd' },

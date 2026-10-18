@@ -127,6 +127,11 @@ test('the list and the enquiry page read the enquiry’s EDD, whoever gave it', 
 
 test('Production gives the EDD from its task, without a status move; it becomes the enquiry’s', async () => {
   const day = indiaDay(7);
+  /* Nothing follows moulding on this order, so Production's date is the EDD. */
+  const early = await api(`/api/workspace/todos/${production._id}/edd`, { method: 'POST', as: 'siva', body: { date: day } });
+  assert.equal(early.status, 400);
+  assert.match(early.json.message, /Decide first which models need printing or assembly/);
+  assert.equal((await api(`/api/workspace/todos/${production._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'UTJRSH-0' }] } })).status, 200);
   const refused = await api(`/api/workspace/todos/${production._id}/edd`, { method: 'POST', as: 'siva', body: { date: indiaDay(-1) } });
   assert.equal(refused.status, 400);
   assert.match(refused.json.message, /cannot be in the past/);

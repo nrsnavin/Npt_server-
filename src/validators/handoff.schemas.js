@@ -49,12 +49,23 @@ export const taskStatusSchema = z.object({
   status: z.string().trim().min(1).max(40),
   note: z.string().trim().max(2000).optional(),
   date: z.string().trim().max(10).optional(),
+  /* What a status asks for beside the remark [departmentTaskForms `statuses[].fields`] — who collected a sample, how many pieces. */
+  fields: z.record(z.string().max(40), z.union([z.string().max(500), z.number(), z.boolean()])).optional(),
 });
 
 /** The expected delivery date, given from the Production / Assembly / Printing task [handoff.service `setTaskEdd`]. */
 export const taskEddSchema = z.object({
   date: z.string().trim().min(10, 'Give the EDD as a calendar date').max(10),
   note: z.string().trim().max(2000).optional(),
+});
+
+/** Production's call, model by model: printed, assembled, both or neither [handoff.service `decideRouting`]. */
+export const taskRoutingSchema = z.object({
+  models: z.array(z.object({
+    model: z.string().trim().min(1).max(120),
+    printing: z.boolean().optional(),
+    assembly: z.boolean().optional(),
+  })).min(1, 'Name at least one model').max(60),
 });
 
 /** Another department asked from this task — Dispatch's "Ask Production"; checked by the service. */

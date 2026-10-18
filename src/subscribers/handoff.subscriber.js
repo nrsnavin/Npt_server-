@@ -315,7 +315,8 @@ export function registerHandoffSubscribers() {
   subscribe(
     EVENTS.SAMPLE_CREATED,
     safely('sampling has the enquiry', async ({ sample }) => {
-      if (sample?.enquiry) await moveOnBehalf(sample.enquiry, 'sample_request', { by: sample.requestedBy ? { _id: sample.requestedBy } : undefined });
+      /* A piece the marketing person takes from the rack themselves never reaches the bench. */
+      if (sample?.enquiry && sample.handover !== 'in_person') await moveOnBehalf(sample.enquiry, 'sample_request', { by: sample.requestedBy ? { _id: sample.requestedBy } : undefined });
     })
   );
   subscribe(

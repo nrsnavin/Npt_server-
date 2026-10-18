@@ -10,7 +10,10 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter, ownsRecord } from '../services/ownership.service.js';
 import { canWrite } from '../services/access.service.js';
 import { EVENTS, publish, sampleStatusEvent } from '../services/events.service.js';
-import { createSampleRequest, defaultRequiredDate, UNSENT_SAMPLE_STATUSES } from '../services/sampling.service.js';
+import { createSampleRequest, defaultRequiredDate, recordHandover, UNSENT_SAMPLE_STATUSES } from '../services/sampling.service.js';
+import { raiseCollection } from '../services/handoff.service.js';
+import Attachment from '../models/Attachment.js';
+import { put, remove } from '../services/storage.service.js';
 import { assertAssignable } from '../services/assignment.service.js';
 import { applySpec, buildSpec } from '../services/registers.service.js';
 import { stalledSamples, stallAfterDays } from '../services/anomaly.service.js';
@@ -82,6 +85,9 @@ const LINKED = [
   /* Who made each move — a step back carries a reason, and a reason with no name on it is
      half an answer. Here rather than in POPULATE so the list does not carry every history. */
   { path: 'statusHistory.by', select: 'name' },
+  /* Who put it in the buyer's hands, and the photo of it [Sample `collection`]. */
+  { path: 'collection.collectedBy', select: 'name' },
+  { path: 'collection.photo', select: 'key filename mimeType' },
 ];
 
 /**
@@ -113,6 +119,8 @@ function sampleFilters(req, { withStatus = true } = {}) {
   if (withStatus && req.query.status) filter.status = { $in: String(req.query.status).split(',') };
   if (withStatus && req.query.open === 'true') filter.status = { $nin: CLOSED_SAMPLE_STATUSES };
   if (req.query.purpose) filter.purpose = req.query.purpose;
+  /* The desk's and the visit's: samples the buyer collects, or the marketing person carries. */
+  if (req.query.handover) filter.handover = { $in: String(req.query.handover).split(',') };
   if (req.query.customer) filter.customer = req.query.customer;
   if (req.query.enquiry) filter.enquiry = req.query.enquiry;
   // Matches a field that was never set and one that was cleared, which are the same thing
@@ -805,9 +813,50 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
   await publish(EVENTS.SAMPLE_STATUS_CHANGED, { sample, from, to: status, by: req.user });
   const specific = sampleStatusEvent(status);
   if (specific) await publish(specific, { sample, from, by: req.user });
+  /* Ready, and the buyer collects it: Reception gets the task, the bench's closes. */
+  if (status === 'sample_ready' && sample.handover === 'collect') await raiseCollection(sample, req.user);
 
   res.json({ success: true, data: await withRefs(sample) });
 }));
+
+/**
+ * The marketing person handing the sample to the buyer themselves — on a visit, from the sample
+ * rack [`handover: 'in_person'`], or a piece the bench made that they carried rather than
+ * couriered. Who received it (a name or a phone), how many pieces, when, a note, and a photo of
+ * the moment or the signed slip. The sample is with the buyer from here; feedback follows.
+ */
+export const handOverSample = asyncHandler(async (req, res) => {
+  const sample = await Sample.findById(req.params.id);
+  if (!sample) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
+  if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) throw ApiError.badRequest(`A ${sample.status} sample cannot be handed over`);
+  if (WITH_CUSTOMER_STATUSES.includes(sample.status)) throw ApiError.badRequest(`${sample.number} is already with the buyer`);
+  if (sample.handover !== 'in_person' && sample.status !== 'sample_ready') {
+    throw ApiError.badRequest(`${sample.number} is still on the bench (${sample.status.replace(/_/g, ' ')}) — it can be handed over once it is ready`);
+  }
+  const { receivedBy, phone, pieces, handedAt, note } = req.body;
+  if (!String(receivedBy || '').trim() && !String(phone || '').trim()) {
+    throw ApiError.badRequest('Say who received the sample — a name or a phone number');
+  }
+  let key = null;
+  let photo = null;
+  if (req.file) {
+    if (!['image/jpeg', 'image/png', 'application/pdf'].includes(req.file.mimetype)) throw ApiError.badRequest('Attach a JPEG / PNG photo or a PDF');
+    key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+    photo = await Attachment.create({
+      key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size, uploadedBy: req.user._id,
+      sample: sample._id, docType: 'handover_photo', title: 'Hand-over photo',
+    });
+  }
+  try {
+    await recordHandover(sample, req.user, { receivedBy, phone, pieces, handedAt, note, photo: photo?._id, via: 'visit' });
+  } catch (error) {
+    if (key) await remove(key).catch(() => null);
+    if (photo) await Attachment.deleteOne({ _id: photo._id }).catch(() => null);
+    throw ApiError.badRequest(error.message);
+  }
+  res.json({ success: true, data: await withRefs(sample) });
+});
 
 /**
  * The sample team closing its task on a request [the sampling work queue].

@@ -122,7 +122,8 @@ export function registerSamplingSubscribers() {
   subscribe(
     EVENTS.SAMPLE_READY,
     safely('customer notice', async ({ sample }) => {
-      if (AUTOMATIC.has('sample_ready')) {
+      /* A sample the buyer collects is announced by Reception, from its own task, once it is at the desk. */
+      if (AUTOMATIC.has('sample_ready') && sample.handover !== 'collect') {
         await notifyCustomer({ sample, event: 'sample_ready' });
       }
     })

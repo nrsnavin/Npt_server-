@@ -509,6 +509,8 @@ const DEPARTMENT_LIST = [
     defaultAccess: {
       queries: 'write',
       tasks: 'write',
+      /* The samples the buyer collects at the desk: read, to see the bag; the hand-over is recorded through the task. */
+      samples: 'read',
       dispatch: 'read',
       orders: 'read',
       customers: 'read',

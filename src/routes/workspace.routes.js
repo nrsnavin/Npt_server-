@@ -37,10 +37,10 @@ import {
 import { pushKey, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffEdd, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, attachTeamTaskPdf, handoffDocument, handoffDocuments,
+  handoffBrief, handoffDone, handoffEdd, handoffRouting, handoffRoute, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, attachTeamTaskPdf, handoffDocument, handoffDocuments,
 } from '../controllers/handoff.controller.js';
 import {
-  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, taskStatusSchema,
+  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, taskRoutingSchema, taskStatusSchema,
 } from '../validators/handoff.schemas.js';
 import { singlePdf, singleTaskResult } from '../middleware/upload.js';
 
@@ -82,6 +82,9 @@ router.post('/todos/:id/reschedule', validate(handoffRescheduleSchema), handoffR
 router.post('/todos/:id/status', validate(taskStatusSchema), handoffStatus);
 /* The EDD from the Production / Assembly / Printing task, without a status move. */
 router.post('/todos/:id/edd', validate(taskEddSchema), handoffEdd);
+/* Production decides, model by model, what follows moulding: printing, assembly, both or neither. */
+router.get('/todos/:id/routing', handoffRouting);
+router.post('/todos/:id/routing', validate(taskRoutingSchema), handoffRoute);
 router.post('/todos/:id/brief', validate(taskBriefSchema), handoffBrief);
 router.post('/todos/:id/seen', handoffSeen);
 router.post('/todos/:id/ask', validate(taskAskSchema), handoffAsk);
