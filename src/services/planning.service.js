@@ -180,6 +180,9 @@ export async function planningBoard({ days = 14 } = {}) {
       ])
       .lean({ virtuals: true }),
   ]);
+  /* What each job will run short of, in plan order [bom.service]. */
+  const { shortages } = await import('./bom.service.js');
+  const { byWorkOrder } = await shortages();
   const describe = (job, machine) => {
     const toMake = Math.max(0, (job.quantity || 0) - (job.goodQty || 0));
     const perDay = piecesPerDay(job.mould, plant);
@@ -195,6 +198,7 @@ export async function planningBoard({ days = 14 } = {}) {
       perDay: perDay || null, pressDays: perDay ? Math.ceil(toMake / perDay) : null,
       late: Boolean(due && ((job.plannedEnd && indiaDay(job.plannedEnd) > due) || due < today)),
       fit: { blocks: fit.blocks, warnings: fit.warnings },
+      short: byWorkOrder[String(job._id)]?.short || [],
       updatedAt: job.updatedAt,
     };
   };

@@ -1,4 +1,5 @@
-import { fitHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, sequenceByColourHandler } from '../controllers/workOrder.controller.js';
+import { componentBookHandler, componentStockHandler, fitHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, sequenceByColourHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
+import { componentStockSchema } from '../validators/component.schemas.js';
 import { Router } from 'express';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -50,6 +51,10 @@ router.patch('/work-orders/:id', requireModule('production', 'write'), validate(
 /* The planning board: presses by day, the fit of a mould on a press, and a press's queue light to dark. */
 router.get('/production/plan', anyModule([['production', 'read'], ['orders', 'read']]), planningBoardHandler);
 router.get('/production/fit', requireModule('production'), fitHandler);
+/* The bill of materials: what the plan needs from the stores and what is short; the hook and clip store's book. */
+router.get('/production/shortages', anyModule([['production', 'read'], ['materials', 'read']]), shortagesHandler);
+router.get('/components/:id/stock', requireModule('materials'), componentBookHandler);
+router.post('/components/:id/stock', anyModule([['materials', 'write'], ['production', 'write']]), validate(componentStockSchema), componentStockHandler);
 router.post('/production/plan/:machineId/sequence-by-colour', requireModule('production', 'write'), sequenceByColourHandler);
 router.get('/mould-runs/reasons', runReasonsHandler);
 router.post('/mould-runs/:id/finish', requireModule('production', 'write'), validate(runFinishSchema), finishRunHandler);

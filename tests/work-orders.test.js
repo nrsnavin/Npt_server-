@@ -298,3 +298,41 @@ test('the board chains a press back to back, refuses a mould the press cannot ho
   const fit = await api(`/api/production/fit?mould=${mould}&machine=${small._id}`, { token: ramesh });
   assert.equal(fit.json.data.ok, false);
 });
+
+test('the bill of materials gives the stores out in plan order and says what to buy', async () => {
+  const { default: Material } = await import('../src/models/Material.js');
+  const { default: Component } = await import('../src/models/Component.js');
+  const resin = await Material.create({ name: 'PP H110', type: 'pp', ratePerKg: 110, stockKg: 100, reorderKg: 50 }).catch(async () => Material.create({ name: 'PP H110', ratePerKg: 110, stockKg: 100, reorderKg: 50 }));
+  const hook = await Component.create({ kind: 'hook', name: 'Swivel chrome hook', code: 'SW-01', ratePerPiece: 0.6, stockQty: 3000, perHanger: 1 });
+  /* M-NH-400: 26 g a piece, no runner — 5,000 pieces is 130 kg; 3,000 more is 78 kg. */
+  const order = await released([
+    { mould, modelNumber: 'NH-400', colour: 'Black', quantity: 5000, unitPrice: 7.5, deliveryDate: inDays(10), materialRef: String(resin._id), hookRef: String(hook._id) },
+    { mould, modelNumber: 'NH-400', colour: 'Blue', quantity: 3000, unitPrice: 7.5, deliveryDate: inDays(20), materialRef: String(resin._id), hookRef: String(hook._id) },
+  ]);
+  const list = (await api(`/api/work-orders?order=${order._id}`, { token: ramesh })).json.data;
+  const first = list.find((wo) => wo.colour === 'Black');
+  const press = await machineOf('IM-BOM');
+  await api(`/api/work-orders/${first._id}`, { method: 'PATCH', token: ramesh, body: { machine: press._id } });
+
+  const answer = await api('/api/production/shortages', { token: ramesh });
+  assert.equal(answer.status, 200, answer.json.message);
+  const pp = answer.json.data.items.find((item) => item.ref === String(resin._id));
+  assert.ok(pp.required >= 208, `the plan needs at least 208 kg of this resin (${pp.required})`);
+  assert.equal(pp.onHand, 100);
+  assert.ok(pp.short >= 108);
+  assert.ok(pp.buy >= pp.short + 50, 'buy what is short and stand back at the reorder level');
+  const hooks = answer.json.data.items.find((item) => item.ref === String(hook._id));
+  assert.equal(hooks.short >= 5000, true, 'every job on this hook draws on 3,000 pieces');
+  assert.ok(answer.json.data.byWorkOrder[first._id], 'the planned job is flagged short');
+
+  const released2 = await api(`/api/work-orders/${first._id}`, { method: 'PATCH', token: ramesh, body: { move: 'release' } });
+  assert.equal(released2.status, 200, 'a shortage is said, not refused');
+  assert.ok(released2.json.warnings.some((line) => /Short of PP H110/.test(line)));
+
+  const received = await api(`/api/components/${hook._id}/stock`, { method: 'POST', token: ramesh, body: { kind: 'receipt', pieces: 20000, reference: 'Bill 4411' } });
+  assert.equal(received.status, 201, received.json.message);
+  assert.equal(received.json.data.component.stockQty, 23000);
+  assert.equal((await api(`/api/components/${hook._id}/stock`, { method: 'POST', token: ramesh, body: { kind: 'issue', pieces: 99999 } })).status, 400, 'the store cannot go below zero');
+  const book = await api(`/api/components/${hook._id}/stock`, { token: ramesh });
+  assert.equal(book.json.data.movements[0].reference, 'Bill 4411');
+});
