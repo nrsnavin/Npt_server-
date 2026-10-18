@@ -15,6 +15,7 @@ import {
 import {
   listProductionLines, exportProductionLines, updateProductionLine, listProductionStatuses,
   productionDay,
+  productionOee,
 } from '../controllers/production.controller.js';
 import { listProductionQueue } from '../controllers/productionQueue.controller.js';
 import {
@@ -206,6 +207,7 @@ router.post('/orders/:id/escalations', requireModule('orders'), validate(orderEs
 /* The production queue in EDD order, read by every department that works to it — access checked inside. */
 router.get('/production/queue', listProductionQueue);
 router.get('/production/day', requireModule('production'), productionDay);
+router.get('/production/oee', requireModule('production'), productionOee);
 router.get('/production/statuses', requireModule('production'), listProductionStatuses);
 router.get('/production/export', requireModule('production'), exportProductionLines);
 router.get('/production', requireModule('production'), listProductionLines);

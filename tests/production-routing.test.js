@@ -187,3 +187,23 @@ test('with nothing after moulding, Production’s date is the EDD, as before', a
   assert.equal((await eddOf()).date, indiaDay(6));
   assert.equal((await eddOf()).department, 'production');
 });
+
+test('the plant calendar is Production’s to set, and the queue estimates press days from the mould', async () => {
+  const read = await api('/api/settings/plant', { as: 'nandhini' });
+  assert.equal(read.status, 200);
+  assert.equal(read.json.data.hoursPerDay, 22, 'two shifts less changeovers by default');
+  assert.equal((await api('/api/settings/plant', { method: 'PUT', as: 'nandhini', body: { hoursPerDay: 20 } })).status, 403, 'marketing does not set plant hours');
+  const set = await api('/api/settings/plant', { method: 'PUT', as: 'siva', body: { hoursPerDay: 20, weeklyOff: 0 } });
+  assert.equal(set.status, 200, set.json.message);
+  assert.equal(set.json.data.hoursPerDay, 20);
+
+  const { default: Mould } = await import('../src/models/Mould.js');
+  await Mould.create({ mouldCode: 'NPT-410V', name: 'Velvet 410', cavities: 4, activeCavities: 4, partWeightGrams: 20, cycleTimeSeconds: 20, efficiencyPercent: 90 });
+  const queue = await api('/api/production/queue', { as: 'siva' });
+  assert.equal(queue.status, 200, queue.json.message);
+  const row = queue.json.data.find((entry) => entry.enquiry.number === enquiry.number);
+  assert.equal(row.capacity.basis, 'mould');
+  assert.equal(row.capacity.mould, 'NPT-410V');
+  assert.equal(row.capacity.perDay, 12960, '648 an hour × 20 press hours');
+  assert.equal(row.capacity.days, 1, '10,000 pieces in one press day');
+});

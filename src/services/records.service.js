@@ -14,6 +14,8 @@ import { findHandoff } from '../config/handoffs.js';
 import { warnDispatchOfQc } from './handoff.service.js';
 import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
+import { finishedOn, startedOn, workOrderForRun } from './workOrder.service.js';
+import { alertUnusual, mouldHistory as runHistoryOf, unusual, unusualSoFar } from './productionInsights.service.js';
 import { withCreateLocks } from './operationLock.service.js';
 import { render, letterhead, facts, footer } from './recordPdf.js';
 import Inspection, { DEFECT_TYPES } from '../models/Inspection.js';
@@ -407,7 +409,17 @@ export const MAINTENANCE_LABELS = Object.fromEntries(MAINTENANCE_TYPES.map((type
  * second is refused with the run already going, under a lock so two people starting at once
  * cannot both succeed. The machine shows Running.
  */
-export async function startRun(body, user) {
+export async function startRun(input, user) {
+  /* Started from a work order: the mould, the order and the line come from it [workOrder.service]. */
+  const named = input.workOrder ? await workOrderForRun({ workOrder: input.workOrder }) : null;
+  const body = {
+    ...input,
+    mould: input.mould || named?.mould,
+    order: input.order || named?.order,
+    orderLine: input.orderLine || named?.orderLine,
+    plannedQuantity: input.plannedQuantity ?? (named ? named.toMakeQty : undefined),
+  };
+  if (!body.mould) throw ApiError.badRequest('Pick the mould');
   return withCreateLocks([`run-machine:${body.machine || 'none'}`, `run-mould:${body.mould}`], async () => {
     const mould = await Mould.findById(body.mould);
     if (!mould) throw ApiError.badRequest('That mould is not on the register');
@@ -457,6 +469,13 @@ export async function startRun(body, user) {
       startedBy: user._id,
     }]);
     if (machine) { machine.status = 'running'; await machine.save(); }
+    /* The work order it is made against — named, or the one for its order line. */
+    const wo = named || (order && line ? await workOrderForRun({ order: order._id, orderLine: line._id }) : null);
+    if (wo) {
+      run.workOrder = wo._id;
+      await run.save();
+      await startedOn(wo, run, user);
+    }
     return run;
   });
 }
@@ -466,6 +485,11 @@ export async function finishRun(run, body, user) {
   if (run.status !== 'running') throw ApiError.conflict(`${run.number} is already ${run.status}`);
   const fields = ['counterEnd', 'goodPieces', 'rejectedPieces', 'regrindKg', 'downtimeMinutes', 'downtimeReason', 'issues', 'cycleTimeSeconds', 'cavitiesRunning', 'operator', 'shift'];
   for (const key of fields) if (body[key] !== undefined) run[key] = body[key];
+  /* Coded stops and rejects from the finish form join any logged during the run [logRun]. */
+  const now = new Date();
+  if (body.downtime?.length) run.downtime = [...(run.downtime || []), ...body.downtime.map((entry) => ({ ...entry, at: now, by: user._id }))];
+  if (body.rejects?.length) run.rejects = [...(run.rejects || []), ...body.rejects.map((entry) => ({ ...entry, at: now, by: user._id }))];
+  settleCodedTotals(run);
   if (body.resin) run.resin = { ...(run.resin?.toObject?.() || run.resin || {}), ...body.resin };
   if (run.counterEnd != null && run.counterStart != null && run.counterEnd < run.counterStart) {
     throw ApiError.badRequest(`The counter cannot end (${run.counterEnd}) below where it started (${run.counterStart})`);
@@ -481,12 +505,58 @@ export async function finishRun(run, body, user) {
   }
   if (run.order && run.orderLine && run.goodPieces > 0 && run.producedAdded == null) await addToProduction(run, user);
   if (run.resin?.material && run.resin?.usedKg > 0 && run.resinIssued == null) await issueResin(run, user);
+  await finishedOn(run, user);
+  /* Far outside what this mould usually does: flagged on the run, and Production told [productionInsights]. */
+  const unusualNow = run.status === 'completed' ? unusual(run, await runHistoryOf(run.mould, { exclude: run._id })) : [];
+  if (unusualNow.length) run.anomalies = [...(run.anomalies || []), ...unusualNow.map((entry) => ({ ...entry, at: new Date() }))];
   await run.save();
+  if (unusualNow.length) await alertUnusual(run, unusualNow, user);
   if (shots) {
     const mould = await Mould.findById(run.mould).select('mouldCode totalShots maintenanceEveryShots lastMaintenanceShots').lean();
     if (mould) await remindMould(mould);
   }
   if (run.machine) await Machine.updateOne({ _id: run.machine, status: 'running' }, { $set: { status: 'idle' } }, { keepVersion: true });
+  return run;
+}
+
+/**
+ * The run's totals from its coded entries: minutes stopped is the sum of the stops; rejected
+ * pieces is the figure typed, or the coded sum when none was — and coded rejects cannot exceed
+ * the total, because then the total is wrong.
+ */
+function settleCodedTotals(run) {
+  const stops = run.downtime || [];
+  if (stops.length) run.downtimeMinutes = stops.reduce((sum, entry) => sum + (entry.minutes || 0), 0);
+  const coded = (run.rejects || []).reduce((sum, entry) => sum + (entry.pieces || 0), 0);
+  if (!(run.rejects || []).length) return;
+  if (run.rejectedPieces == null) run.rejectedPieces = coded;
+  else if (coded > run.rejectedPieces) {
+    throw ApiError.badRequest(`The rejects by defect add up to ${coded.toLocaleString('en-IN')}, more than the ${run.rejectedPieces.toLocaleString('en-IN')} rejected`);
+  }
+}
+
+/**
+ * A line on a running job, from the floor: the shot counter read, a stop with its reason and
+ * minutes, or rejects by defect. Kept on the run; the totals follow [settleCodedTotals].
+ */
+export async function logRun(run, body, user) {
+  if (run.status !== 'running') throw ApiError.conflict(`${run.number} is ${run.status} — only a running job takes a log`);
+  const at = new Date();
+  if (body.counter != null) {
+    const last = (run.counterLog || []).at(-1)?.counter ?? run.counterStart ?? 0;
+    if (body.counter < last) throw ApiError.badRequest(`The counter cannot go back — last read ${last.toLocaleString('en-IN')}`);
+    run.counterLog = [...(run.counterLog || []), { counter: body.counter, at, by: user._id }];
+  }
+  if (body.downtime) run.downtime = [...(run.downtime || []), { ...body.downtime, at, by: user._id }];
+  if (body.rejects) run.rejects = [...(run.rejects || []), { ...body.rejects, at, by: user._id }];
+  /* While running, the rejected total is simply what has been coded so far. */
+  if ((run.rejects || []).length) run.rejectedPieces = run.rejects.reduce((sum, entry) => sum + (entry.pieces || 0), 0);
+  if ((run.downtime || []).length) run.downtimeMinutes = run.downtime.reduce((sum, entry) => sum + (entry.minutes || 0), 0);
+  /* Rejects running far above this mould's usual, once enough pieces are counted to judge. */
+  const soFar = body.counter != null || body.rejects ? unusualSoFar(run, await runHistoryOf(run.mould, { exclude: run._id })) : [];
+  if (soFar.length) run.anomalies = [...(run.anomalies || []), ...soFar.map((entry) => ({ ...entry, at: new Date() }))];
+  await run.save();
+  if (soFar.length) await alertUnusual(run, soFar, user);
   return run;
 }
 

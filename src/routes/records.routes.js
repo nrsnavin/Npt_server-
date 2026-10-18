@@ -1,3 +1,5 @@
+import { clearAndonHandler, fitHandler, floorHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, sequenceByColourHandler } from '../controllers/workOrder.controller.js';
+import { applyPlanHandler, askProductionHandler, floorMessagesHandler, maintenanceRiskHandler, suggestPlanHandler } from '../controllers/productionInsights.controller.js';
 import { Router } from 'express';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -6,10 +8,10 @@ import { accessLevel } from '../services/access.service.js';
 import { levelSatisfies } from '../config/modules.js';
 import {
   approveQc, askLocationHandler, setupChecklistHandler, enquiryRecordsHandler, qcPrefillHandler, qcReportHandler, moveStockHandler, stockBookHandler, createMachine, createMaintenance, createQc, dispatchRegisterHandler, finishRunHandler, getQc, listMachines,
-  listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine,
+  listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine, logRunHandler, runReasonsHandler,
 } from '../controllers/records.controller.js';
 import {
-  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runStartSchema, stockMovementSchema,
+  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema, andonSchema, andonClearSchema, planApplySchema, productionAskSchema,
 } from '../validators/records.schemas.js';
 
 /**
@@ -42,7 +44,28 @@ router.post('/maintenance', anyModule([['production', 'write'], ['moulds', 'writ
 
 router.get('/mould-runs', anyModule([['production', 'read'], ['moulds', 'read']]), listRunsHandler);
 router.post('/mould-runs', requireModule('production', 'write'), validate(runStartSchema), startRunHandler);
+/* Work orders: one per released order line, planned onto a press and fed by the runs. */
+router.get('/work-orders', anyModule([['production', 'read'], ['orders', 'read']]), listWorkOrdersHandler);
+router.get('/work-orders/:id', anyModule([['production', 'read'], ['orders', 'read']]), getWorkOrderHandler);
+router.patch('/work-orders/:id', requireModule('production', 'write'), validate(workOrderPlanSchema), planWorkOrderHandler);
+/* The planning board: presses by day, the fit of a mould on a press, and a press's queue light to dark. */
+router.get('/production/plan', anyModule([['production', 'read'], ['orders', 'read']]), planningBoardHandler);
+router.get('/production/fit', requireModule('production'), fitHandler);
+/* The shop floor: the tablet's view, the andon call, the shift handover. */
+router.get('/production/floor', requireModule('production'), floorHandler);
+router.get('/production/shift-summary', requireModule('production'), shiftSummaryHandler);
+router.post('/machines/:machineId/andon', requireModule('production', 'write'), validate(andonSchema), raiseAndonHandler);
+router.post('/machines/:machineId/andon/clear', requireModule('production', 'write'), validate(andonClearSchema), clearAndonHandler);
+router.post('/production/plan/:machineId/sequence-by-colour', requireModule('production', 'write'), sequenceByColourHandler);
+/* Looking ahead: a suggested schedule, maintenance risk, the floor's WhatsApp readings, and questions. */
+router.post('/production/plan/suggest', requireModule('production'), suggestPlanHandler);
+router.post('/production/plan/apply', requireModule('production', 'write'), validate(planApplySchema), applyPlanHandler);
+router.get('/production/maintenance-risk', anyModule([['production', 'read'], ['moulds', 'read']]), maintenanceRiskHandler);
+router.get('/production/floor-messages', requireModule('production'), floorMessagesHandler);
+router.post('/production/ask', requireModule('production'), validate(productionAskSchema), askProductionHandler);
+router.get('/mould-runs/reasons', runReasonsHandler);
 router.post('/mould-runs/:id/finish', requireModule('production', 'write'), validate(runFinishSchema), finishRunHandler);
+router.post('/mould-runs/:id/log', requireModule('production', 'write'), validate(runLogSchema), logRunHandler);
 router.get('/moulds/:id/history', requireModule('moulds'), mouldHistoryHandler);
 
 router.get('/dispatch-register', requireModule('dispatch'), dispatchRegisterHandler);

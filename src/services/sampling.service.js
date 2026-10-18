@@ -278,6 +278,12 @@ export async function createSampleRequest(
    * is closed before it opens, and what is left is the hand-over on the visit [recordHandover].
    */
   const fromRack = said.handover === 'in_person';
+  /*
+   * A piece the buyer collects at reception [HANDOVER_MODES `collect`] is an internal sample: it
+   * never reaches the bench either. Reception gets it ready, hands it over and records who took
+   * it [handoff.service `raiseCollection`]; the sampling queue never sees it.
+   */
+  const atDesk = said.handover === 'collect';
   const sample = await Sample.create({
     ...statedOnTheFirstRow({ ...inherited, ...said }, said),
     purpose,
@@ -287,11 +293,13 @@ export async function createSampleRequest(
     requestedBy: input.requestedBy || inherited.requestedBy || user._id,
     autoCreated,
     ...(fromRack ? { status: 'sample_ready', benchClosedAt: new Date(), benchClosedBy: user._id } : {}),
+    ...(atDesk ? { benchClosedAt: new Date(), benchClosedBy: user._id } : {}),
     statusHistory: [
       {
         to: 'request_received',
         by: autoCreated ? undefined : user._id,
-        note: autoCreated ? 'Raised by the enquiry moving to sample required' : undefined,
+        note: atDesk ? 'Internal sample — the buyer collects it at reception; Reception gets it ready and hands it over'
+          : autoCreated ? 'Raised by the enquiry moving to sample required' : undefined,
       },
       ...(fromRack ? [{ from: 'request_received', to: 'sample_ready', by: user._id, note: `Taken from the sample rack by ${user.name || 'the marketing person'} to hand over on a visit` }] : []),
     ],

@@ -247,6 +247,15 @@ export function registerHandoffSubscribers() {
     })
   );
 
+  /* Released to the plant: one work order per line, ready to plan onto a press [workOrder.service]. */
+  subscribe(
+    EVENTS.ORDER_RELEASED,
+    safely('work orders for the released order', async ({ orderId, by }) => {
+      const { ensureWorkOrders } = await import('../services/workOrder.service.js');
+      await ensureWorkOrders({ orderIds: [orderId], user: by });
+    })
+  );
+
   /* The goods have left the plant: Invoice & Dispatch is done, the LR copy is next. */
   subscribe(
     EVENTS.DISPATCH_LEFT,
@@ -316,7 +325,19 @@ export function registerHandoffSubscribers() {
     EVENTS.SAMPLE_CREATED,
     safely('sampling has the enquiry', async ({ sample }) => {
       /* A piece the marketing person takes from the rack themselves never reaches the bench. */
-      if (sample?.enquiry && sample.handover !== 'in_person') await moveOnBehalf(sample.enquiry, 'sample_request', { by: sample.requestedBy ? { _id: sample.requestedBy } : undefined });
+      if (!sample?.enquiry || sample.handover === 'in_person') return;
+      /*
+       * Nor does an internal sample the buyer collects: it goes straight to Reception's desk. One
+       * raised by the Sample Request tile has its desk task raised there, with the request's note
+       * [handoff.service `raiseInternalSample`]; one raised on the Samples page gets it here.
+       */
+      if (sample.handover === 'collect') {
+        if (sample.autoCreated) return;
+        const { raiseCollection } = await import('../services/handoff.service.js');
+        await raiseCollection(sample, sample.requestedBy ? { _id: sample.requestedBy } : undefined);
+        return;
+      }
+      await moveOnBehalf(sample.enquiry, 'sample_request', { by: sample.requestedBy ? { _id: sample.requestedBy } : undefined });
     })
   );
   subscribe(

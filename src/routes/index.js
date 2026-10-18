@@ -11,8 +11,8 @@ import whatsappRoutes from './whatsapp.routes.js';
 import queryRoutes from './query.routes.js';
 import dispatchPlanningRoutes from './dispatchPlanning.routes.js';
 import recordsRoutes from './records.routes.js';
-import { getSecurity, putSecurity } from '../controllers/settings.controller.js';
-import { securityPolicySchema } from '../validators/schemas.js';
+import { getPlant, getSecurity, putPlant, putSecurity } from '../controllers/settings.controller.js';
+import { plantCalendarSchema, securityPolicySchema } from '../validators/schemas.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
 import { globalSearch } from '../controllers/search.controller.js';
 import { inbox } from '../controllers/inbox.controller.js';
@@ -22,7 +22,7 @@ import { listStates, listCities } from '../controllers/place.controller.js';
 import { indiamartStatus, runIndiamartSync } from '../controllers/indiamart.controller.js';
 import { inboundWebhook, verifyWebhook } from '../controllers/whatsapp.controller.js';
 import publicRoutes from './public.routes.js';
-import { adminOnly, authenticate, authorize } from '../middleware/auth.js';
+import { adminOnly, authenticate, authorize, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 
 const router = Router();
@@ -52,6 +52,9 @@ router.get('/search', authenticate, globalSearch);
 /* The plant's security policy: read by every app, set by Admin [services/settings.service.js]. */
 router.get('/settings/security', authenticate, getSecurity);
 router.put('/settings/security', authenticate, adminOnly, validate(securityPolicySchema), putSecurity);
+/* The plant calendar capacity is worked out from: read by everyone signed in, set by Production or Admin. */
+router.get('/settings/plant', authenticate, getPlant);
+router.put('/settings/plant', authenticate, requireModule('production', 'write'), validate(plantCalendarSchema), putPlant);
 /* Everything waiting on me — the bell in the header. */
 router.get('/inbox', authenticate, inbox);
 /*

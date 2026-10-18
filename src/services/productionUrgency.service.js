@@ -65,7 +65,7 @@ const plural = (count, one, many) => `${count.toLocaleString('en-IN')} ${count =
  * cannot disagree about what a line is. Returns the band, its rank for sorting, and `why` — the
  * sentences the screen prints, in the order they matter.
  */
-export function urgencyOf(row, { now = new Date(), priority = 'normal' } = {}) {
+export function urgencyOf(row, { now = new Date(), priority = 'normal', perDay } = {}) {
   const why = [];
 
   /*
@@ -105,7 +105,9 @@ export function urgencyOf(row, { now = new Date(), priority = 'normal' } = {}) {
      * A day of grace on either side is not modelled — the estimate is too coarse to earn it,
      * and a line that is borderline is one somebody should look at anyway.
      */
-    const daysNeeded = Math.ceil(left / PIECES_PER_DAY);
+    /* The line's own mould rate where it is known [capacity.service], the plant assumption otherwise. */
+    const rate = perDay || PIECES_PER_DAY;
+    const daysNeeded = Math.ceil(left / rate);
     if (daysNeeded > days) {
       band = 'at_risk';
       why.push(
@@ -113,6 +115,7 @@ export function urgencyOf(row, { now = new Date(), priority = 'normal' } = {}) {
           ? `Due today with ${plural(left, 'piece', 'pieces')} still to make`
           : `${plural(left, 'piece', 'pieces')} still to make, and ${plural(days, 'day', 'days')} to do it`
       );
+      if (perDay) why.push(`About ${plural(daysNeeded, 'press day', 'press days')} at ${perDay.toLocaleString('en-IN')} a day on this mould`);
     } else if (days <= SOON_DAYS) {
       band = 'soon';
       why.push(days === 0 ? 'Due today' : `Due in ${plural(days, 'day', 'days')}`);

@@ -14,6 +14,9 @@ import {
 import { notifyMaterialReady } from '../services/dispatchEscalation.service.js';
 import { warnPromiseWillSlip } from '../services/productionEscalation.service.js';
 import { PRESSING_BANDS, byUrgency, urgencyOf } from '../services/productionUrgency.service.js';
+import { estimate } from '../services/capacity.service.js';
+import { oeeReport } from '../services/oee.service.js';
+import { plantCalendar } from '../services/settings.service.js';
 import { urgentOrdersFor } from '../services/urgentOrders.service.js';
 import OrderQuery from '../models/OrderQuery.js';
 import { collect, sendCsv } from '../utils/csv.js';
@@ -39,7 +42,7 @@ import { transactional } from '../utils/transaction.js';
 /** What a plant screen needs to recognise a line, and nothing about money. */
 const LINE_POPULATE = [
   { path: 'customer', select: 'code name' },
-  { path: 'lines.mould', select: 'mouldCode name category sizeMm cavities activeCavities partWeightGrams cycleTimeSeconds' },
+  { path: 'lines.mould', select: 'mouldCode name category sizeMm cavities activeCavities partWeightGrams cycleTimeSeconds efficiencyPercent' },
 ];
 
 const EXPORT_LIMIT = 5000;
@@ -451,6 +454,7 @@ export const updateProductionLine = asyncHandler(withOrderLock(req => req.params
  */
 export const productionDay = asyncHandler(async (req, res) => {
   const now = new Date();
+  const plant = await plantCalendar();
 
   /*
    * Orders still being worked — released and not yet closed. `RELEASED` alone admits closed
@@ -495,10 +499,15 @@ export const productionDay = asyncHandler(async (req, res) => {
         isOverdue: line.isOverdue,
         link: `/orders/${order._id}`,
       }))
-      .map((row) => ({
-        ...row,
-        urgency: urgencyOf(row, { now, priority: order.priority }),
-      }))
+      .map((row) => {
+        /* Pieces a day on this line's own mould, and the press days what is left needs [capacity.service]. */
+        const capacity = estimate(row.toMakeQty, row.mould, plant, now);
+        return {
+          ...row,
+          capacity,
+          urgency: urgencyOf(row, { now, priority: order.priority, perDay: capacity.basis === 'mould' ? capacity.perDay : undefined }),
+        };
+      })
   );
 
   const running = rows.filter((row) => row.production?.status !== 'completed');
@@ -588,4 +597,19 @@ export const listProductionStatuses = asyncHandler(async (req, res) => {
       held: HELD_PRODUCTION_STATUSES.includes(status),
     })),
   });
+});
+
+/**
+ * OEE for a span of days, by press, mould, shift and day, with the losses behind it [oee.service].
+ * Defaults to the last 30 days in India time; at most a year at a time.
+ */
+export const productionOee = asyncHandler(async (req, res) => {
+  const day = (offset = 0) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(Date.now() + offset * 86400000));
+  const valid = (value) => /^\d{4}-\d{2}-\d{2}$/.test(value || '');
+  const from = valid(req.query.from) ? req.query.from : day(-29);
+  const to = valid(req.query.to) ? req.query.to : day();
+  if (from > to) throw ApiError.badRequest('The start day is after the end day');
+  if ((new Date(to) - new Date(from)) / 86400000 > 366) throw ApiError.badRequest('Pick at most a year at a time');
+  const id = (value) => (/^[a-f\d]{24}$/i.test(value || '') ? value : undefined);
+  res.json({ success: true, data: await oeeReport({ from, to, machine: id(req.query.machine), mould: id(req.query.mould) }) });
 });

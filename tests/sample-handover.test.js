@@ -1,8 +1,9 @@
 /**
  * The two hand-over flows beside the regular courier one [models/Sample.js HANDOVER_MODES]:
  *
- *   collect    the bench makes it; Reception keeps it at the desk, tells the buyer, hands it over
- *              and records who took it [config/departmentTaskForms.js `sample_collect`];
+ *   collect    an internal sample: never on the sampling queue — Reception notes it, gets it
+ *              ready (the buyer is told), hands it over with who received it, and closes the
+ *              task [config/departmentTaskForms.js `sample_collect`];
  *   in_person  the marketing person takes a piece from the sample rack and hands it to the buyer
  *              on a visit — no bench, no desk [sample.controller `handOverSample`].
  *
@@ -73,61 +74,65 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-test('a sample the buyer collects: the bench makes it, Reception gets the task when it is ready, tells the buyer, hands it over and records who took it', async () => {
+test('a sample the buyer collects is internal: no sampling queue — Reception notes it, gets it ready, hands it over with who received it, and closes the task', async () => {
   const enquiry = await raiseEnquiry();
   const raised = await api('/api/samples', { method: 'POST', as: 'nandhini', body: { enquiry: enquiry._id, quantity: 3, handover: 'collect' } });
   assert.equal(raised.status, 201, raised.json.message);
   const sample = raised.json.data;
   assert.equal(sample.handover, 'collect');
-  assert.equal(sample.status, 'request_received', 'the bench makes it, as ever');
+  assert.ok(sample.benchClosedAt, 'never on the bench');
   await settle();
-  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'sample_request', completed: false }), 1, 'the bench has its task');
-
-  for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
-    const moved = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status } });
-    assert.equal(moved.status, 200, `${status}: ${moved.json.message}`);
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'sample_request' }), 0, 'the sampling team gets no task');
+  for (const screen of ['queue', 'day', 'dashboard']) {
+    const read = await api(`/api/samples/${screen}`, { as: 'meera' });
+    assert.equal(read.status, 200, `${screen}: ${read.json.message}`);
+    assert.ok(!JSON.stringify(read.json).includes(sample.number), `not on the sampling ${screen}`);
   }
-  await settle();
-  const ready = (await api(`/api/samples/${sample._id}`, { as: 'meera' })).json.data;
-  assert.ok(ready.collection?.readyAt, 'the sample notes when it reached the desk');
-  assert.ok(ready.benchClosedAt, 'the bench is done with it');
-  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'sample_request', completed: false }), 0, 'the bench’s task closed');
   const desk = await Todo.findOne({ enquiry: enquiry._id, kind: 'sample_collect', completed: false });
-  assert.ok(desk, 'Reception has its task');
+  assert.ok(desk, 'Reception has its task straight away');
   assert.equal(desk.department, 'reception');
-  assert.equal(desk.status, 'waiting');
+  assert.equal(desk.status, 'noted');
   assert.equal(desk.brief.sample, String(sample._id));
   assert.equal(desk.brief.sampleNumber, sample.number);
   assert.match(desk.brief.buyerContact, /SCM Garments/);
+  assert.match(desk.notes, /Internal sample/);
   assert.equal(desk.link, `/samples/${sample._id}`);
   const mine = (await api('/api/workspace/todos?scope=department&status=open', { as: 'rekha' })).json.data;
   assert.ok(mine.some((row) => row._id === String(desk._id)), 'on the Reception queue');
   assert.equal((await api(`/api/samples/${sample._id}`, { as: 'rekha' })).status, 200, 'Reception can open the sample');
+  const { statuses } = (await api('/api/handoffs', { as: 'rekha' })).json.data.buttons.find((button) => button.key === 'sample_collect').form;
+  assert.deepEqual(statuses.map((step) => step.label), ['Noted', 'Sample ready', 'Sample handed', 'Task closed']);
 
-  /* Telling the buyer: the customer message goes, and the sample says when. */
-  const told = await api(`/api/workspace/todos/${desk._id}/status`, { method: 'POST', as: 'rekha', body: { status: 'informed', note: 'Called Bhuvana, coming tomorrow' } });
-  assert.equal(told.status, 200, told.json.message);
+  /* Closing before it is handed: refused. */
+  const early = await api(`/api/workspace/todos/${desk._id}/status`, { method: 'POST', as: 'rekha', body: { status: 'closed', note: 'Done' } });
+  assert.equal(early.status, 400, early.json.message);
+
+  /* Sample ready: the sample reads ready, and the buyer is told it is waiting. */
+  const ready = await api(`/api/workspace/todos/${desk._id}/status`, { method: 'POST', as: 'rekha', body: { status: 'ready', note: 'Bag at the desk, called Bhuvana' } });
+  assert.equal(ready.status, 200, ready.json.message);
   await settle();
+  const atDesk = (await api(`/api/samples/${sample._id}`, { as: 'meera' })).json.data;
+  assert.equal(atDesk.status, 'sample_ready');
+  assert.ok(atDesk.collection?.readyAt, 'the sample notes when it reached the desk');
   const messages = (await api(`/api/samples/${sample._id}/customer-messages`, { as: 'nandhini' })).json.data;
   assert.ok(messages.some((row) => row.event === 'sample_ready_collect'), `the ready-to-collect notice went: ${JSON.stringify(messages.map((row) => row.event))}`);
-  assert.ok((await api(`/api/samples/${sample._id}`, { as: 'meera' })).json.data.collection.informedAt);
+  assert.ok(atDesk.collection.informedAt);
 
   /* Finished from Done with nobody named: refused, and the task stays open. */
   const blind = await api(`/api/workspace/todos/${desk._id}/done`, { method: 'POST', as: 'rekha', body: { note: 'Gone' } });
   assert.equal(blind.status, 400, blind.json.message);
-  assert.match(blind.json.message, /who collected/);
+  assert.match(blind.json.message, /who received/);
   assert.equal((await Todo.findById(desk._id)).completed, false);
 
-  /* Collected: who, phone, pieces — the name is not optional. */
-  const nameless = await api(`/api/workspace/todos/${desk._id}/status`, { method: 'POST', as: 'rekha', body: { status: 'collected', note: 'Taken' } });
+  /* Sample handed: who, phone, pieces — the name is not optional. */
+  const nameless = await api(`/api/workspace/todos/${desk._id}/status`, { method: 'POST', as: 'rekha', body: { status: 'handed', note: 'Taken' } });
   assert.equal(nameless.status, 400);
-  assert.match(nameless.json.message, /Collected by/);
-  const collected = await api(`/api/workspace/todos/${desk._id}/status`, {
-    method: 'POST', as: 'rekha', body: { status: 'collected', note: 'Signed the slip', fields: { collectorName: 'Bhuvana S', collectorPhone: '9843022331', pieces: 3 } },
+  assert.match(nameless.json.message, /Received by/);
+  const handed = await api(`/api/workspace/todos/${desk._id}/status`, {
+    method: 'POST', as: 'rekha', body: { status: 'handed', note: 'Signed the slip', fields: { collectorName: 'Bhuvana S', collectorPhone: '9843022331', pieces: 3 } },
   });
-  assert.equal(collected.status, 200, collected.json.message);
-  await settle();
-  assert.equal((await Todo.findById(desk._id)).completed, true);
+  assert.equal(handed.status, 200, handed.json.message);
+  assert.equal((await Todo.findById(desk._id)).completed, false, 'handed is not closed yet');
   const done = (await api(`/api/samples/${sample._id}`, { as: 'nandhini' })).json.data;
   assert.equal(done.status, 'delivered', 'with the buyer');
   assert.equal(done.deliveryMethod, 'direct');
@@ -138,6 +143,12 @@ test('a sample the buyer collects: the bench makes it, Reception gets the task w
   assert.ok(done.collection.collectedAt);
   assert.equal(done.statusHistory.at(-1).to, 'delivered');
   assert.match(done.statusHistory.at(-1).note, /collected at reception by Bhuvana S/);
+
+  /* Task closed. */
+  const closed = await api(`/api/workspace/todos/${desk._id}/status`, { method: 'POST', as: 'rekha', body: { status: 'closed', note: 'All done' } });
+  assert.equal(closed.status, 200, closed.json.message);
+  await settle();
+  assert.equal((await Todo.findById(desk._id)).completed, true);
   /* The slip photographed after the fact still reaches the sample. */
   assert.equal(done.collection.photo, undefined);
   const slip = new FormData();
@@ -217,9 +228,15 @@ test('the Sample Request tile asks how it reaches the buyer, and the sample take
   });
   assert.equal(sent.status, 201, sent.json.message);
   await settle();
+  assert.equal(sent.json.data.task.kind, 'sample_collect', 'the request goes to Reception, not the sampling queue');
+  assert.equal(sent.json.data.task.department, 'reception');
   const [sample] = (await api(`/api/samples?enquiry=${enquiry._id}`, { as: 'meera' })).json.data;
   assert.ok(sample, 'the request raised the sample');
   assert.equal(sample.handover, 'collect');
+  assert.ok(sample.benchClosedAt, 'an internal sample — off the bench from the start');
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'sample_request' }), 0, 'no sampling task');
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'sample_collect' }), 1, 'one Reception task, not two');
+  assert.match((await Todo.findOne({ enquiry: enquiry._id, kind: 'sample_collect' })).notes, /Buyer will pick it up/);
   const { buttons } = (await api('/api/handoffs', { as: 'nandhini' })).json.data;
   const ask = buttons.find((button) => button.key === 'sample_request').form.asks.find((entry) => entry.key === 'handover');
   assert.deepEqual(ask.options, ['Sent by the bench (courier or at the gate)', 'Buyer collects at reception', 'I will hand it over on my visit (from the sample rack)']);

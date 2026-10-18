@@ -45,14 +45,15 @@ const BUTTONS = [
     opens: 'samples',
   },
   /*
-   * Reception's half of a sample the buyer collects: raised by the app when the bench marks such a
-   * sample ready [sample.controller `setSampleStatus`]; never a tile of its own.
+   * A sample the buyer collects at reception: an internal sample, raised straight to Reception
+   * when it is asked for [handoff.service `raiseCollection`] — it never goes to the sampling queue.
+   * Never a tile of its own.
    */
   {
     key: 'sample_collect', label: 'Sample Collection', department: 'reception', stage: 'sample', hidden: true,
-    hint: 'The sample is at the front desk — tell the buyer, hand it over, record who took it',
+    hint: 'An internal sample the buyer collects — note it, get it ready, hand it over, record who took it',
     records: [
-      { key: 'collectorName', label: 'Collected by' },
+      { key: 'collectorName', label: 'Received by' },
       { key: 'collectorPhone', label: 'Phone' },
       { key: 'pieces', label: 'Pieces handed over' },
     ],

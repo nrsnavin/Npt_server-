@@ -241,6 +241,13 @@ export const pushUnsubscribeSchema = z.object({ endpoint: z.string().url().max(1
 /* ----------------------------- Settings ----------------------------- */
 
 /** Admin's security policy: a device PIN for everyone, and the idle minutes before the lock. */
+/** The plant's working calendar [settings.service `plantCalendar`]. */
+export const plantCalendarSchema = z.object({
+  hoursPerDay: z.number().min(1).max(24).optional(),
+  shifts: z.array(z.enum(['A', 'B', 'C', 'General'])).min(1).max(4).optional(),
+  weeklyOff: z.number().int().min(0).max(6).nullable().optional(),
+});
+
 export const securityPolicySchema = z.object({
   pinRequired: z.boolean().optional(),
   lockAfterMinutes: z.number().int().min(1).max(240).optional(),

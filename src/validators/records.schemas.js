@@ -1,3 +1,4 @@
+import { DOWNTIME_KEYS, REJECT_KEYS } from '../config/productionReasons.js';
 import { z } from 'zod';
 import { DEFECT_KEYS } from '../models/Inspection.js';
 import { MOULDING_TYPE_KEYS, PRINT_TYPE_KEYS, QC_STAGE_KEYS, QC_VERDICTS, SHIFTS } from '../models/QcRecord.js';
@@ -69,14 +70,26 @@ export const maintenanceSchema = z.object({
 });
 
 export const runStartSchema = z.object({
-  mould: objectId, machine: optionalId, enquiry: optionalId, order: optionalId, orderLine: optionalId,
+  mould: optionalId, workOrder: optionalId, machine: optionalId, enquiry: optionalId, order: optionalId, orderLine: optionalId,
   modelNumber: text(80), colour: text(60), plannedQuantity: num(1e9),
   startedAt: date, shift: z.enum(SHIFTS).optional(), operator: text(80),
   counterStart: num(1e10), cavitiesRunning: num(1000), cycleTimeSeconds: num(10000),
   resin: z.object({ material: optionalId, name: text(80), batch: text(60), usedKg: num(1e7) }).optional(),
-});
+}).refine((body) => body.mould || body.workOrder, { message: 'Pick the mould, or start it from a work order', path: ['mould'] });
+
+const downtimeEntry = z.object({ reason: z.enum(DOWNTIME_KEYS), minutes: z.number().min(0).max(100000), note: text(300) });
+const rejectEntry = z.object({ reason: z.enum(REJECT_KEYS), pieces: z.number().int().min(0).max(1e9) });
+
+/** A line on a running job: the counter read, a stop with its reason, or rejects by defect. */
+export const runLogSchema = z.object({
+  counter: num(1e10),
+  downtime: downtimeEntry.optional(),
+  rejects: rejectEntry.optional(),
+}).refine((body) => body.counter != null || body.downtime || body.rejects, { message: 'Log a counter reading, a stop or rejects' });
 
 export const runFinishSchema = z.object({
+  downtime: z.array(downtimeEntry).max(50).optional(),
+  rejects: z.array(rejectEntry).max(50).optional(),
   counterEnd: num(1e10), goodPieces: num(1e9), rejectedPieces: num(1e9), regrindKg: num(1e7),
   downtimeMinutes: num(1e6), downtimeReason: text(300), issues: text(2000),
   cycleTimeSeconds: num(10000), cavitiesRunning: num(1000), operator: text(80), shift: z.enum(SHIFTS).optional(),
@@ -91,3 +104,31 @@ export const stockMovementSchema = z.object({
   note: text(500),
 }).refine((body) => body.kind !== 'receipt' || body.kg > 0, { message: 'A receipt adds stock — the kilograms received', path: ['kg'] });
 
+
+/** A work order planned or moved [workOrder.service `planWorkOrder`]. */
+export const workOrderPlanSchema = z.object({
+  machine: objectId.nullable().optional(),
+  plannedStart: z.coerce.date().nullable().optional(),
+  sequence: z.number().int().min(0).max(100000).nullable().optional(),
+  move: z.enum(['release', 'pause', 'resume', 'complete', 'cancel', 'replan']).optional(),
+  step: z.union([z.literal(-1), z.literal(1)]).optional(),
+  note: text(500),
+  updatedAt: z.string().optional(),
+});
+
+/** The floor calls a breakdown on a press, and later marks it running again. */
+export const andonSchema = z.object({ reason: z.enum(DOWNTIME_KEYS).optional(), note: text(500) });
+export const andonClearSchema = z.object({ workDone: text(2000), note: text(500) });
+
+/** The moves of a suggested schedule, as the suggestion gave them [scheduleSuggest.service]. */
+export const planApplySchema = z.object({
+  moves: z.array(z.object({
+    workOrder: z.string().regex(/^[a-f\d]{24}$/i, 'Not a work order'),
+    machine: z.string().regex(/^[a-f\d]{24}$/i, 'Not a machine'),
+    sequence: z.number().int().min(1).max(10000),
+    updatedAt: z.union([z.string(), z.null()]).optional(),
+  }).passthrough()).min(1, 'Nothing to apply').max(500),
+});
+
+/** A question for the production copilot. */
+export const productionAskSchema = z.object({ question: z.string().trim().min(3, 'Ask a question').max(500) });
