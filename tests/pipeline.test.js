@@ -493,6 +493,30 @@ test('the customer timeline shows that customer’s enquiries', async () => {
   assert.ok(json.data.timeline.enquiries[0].number.startsWith('ENQ-'));
 });
 
+test('the customer timeline shows the buyer’s quotations — rates only — to whoever may read quotations; every one to Admin', async () => {
+  const customer = await ownedCustomer();
+  const enquiry = (await api(`/api/customers/${customer}`, { token: nandhini })).json.data.timeline.enquiries[0];
+  const raised = await api('/api/quotations', { method: 'POST', token: nandhini, body: { enquiry: enquiry._id, lines: [{ modelNumber: 'TL-1', quantity: 500, unitPrice: 7.5 }] } });
+  assert.equal(raised.status, 201, JSON.stringify(raised.json));
+
+  const mine = (await api(`/api/customers/${customer}`, { token: nandhini })).json.data.timeline;
+  assert.ok(mine.quotationTotal >= 1);
+  assert.equal(mine.quotationTotal, mine.quotations.length);
+  const row = mine.quotations.find((entry) => entry.number === raised.json.data.number);
+  assert.ok(row, 'the new quotation is on the buyer’s page, newest first');
+  assert.equal(mine.quotations[0].number, raised.json.data.number);
+  assert.equal(row.enquiry.number, enquiry.number);
+  assert.deepEqual(row.lines, [{ modelNumber: 'TL-1', unitPrice: 7.5, quantity: 500 }]);
+  assert.equal(row.cost, undefined, 'nothing of the cost');
+  assert.equal(row.totalCost, undefined);
+
+  const theirs = (await api(`/api/customers/${customer}`, { token: admin })).json.data.timeline;
+  assert.equal(theirs.quotationTotal, mine.quotationTotal, 'Admin sees every quotation on the buyer');
+  assert.ok(theirs.quotations.some((entry) => entry.number === raised.json.data.number));
+  const bench = (await api(`/api/customers/${customer}`, { token: meera })).json.data.timeline;
+  assert.equal(bench.quotations, undefined, 'no quotation read, no strand');
+});
+
 test('sampling can read enquiries but not change them', async () => {
   const list = await api('/api/enquiries', { token: meera });
   assert.equal(list.status, 200, 'sampling holds read on enquiries');
