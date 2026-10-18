@@ -1,4 +1,3 @@
-import QRCode from 'qrcode';
 import Machine from '../models/Machine.js';
 import MouldRun from '../models/MouldRun.js';
 import WorkOrder from '../models/WorkOrder.js';
@@ -35,6 +34,14 @@ export async function renderJobCard(wo) {
     { path: 'machine', select: 'code name tonnage' }, { path: 'materialRef', select: 'name grade colour' },
     { path: 'hookRef', select: 'name code' }, { path: 'clipRef', select: 'name code' },
   ]);
+  /*
+   * Loaded here, not at the top of the file: this module is imported when the API starts, and a
+   * deploy that pulled without `npm install` would otherwise fail to start at all — every screen
+   * down for want of a package only the job card uses. Now only the job card says so.
+   */
+  const QRCode = await import('qrcode').then((module) => module.default).catch(() => {
+    throw new ApiError(503, 'The job card needs the qrcode package — run npm install on the server and restart it');
+  });
   const qr = await QRCode.toBuffer(floorLink(wo), { margin: 1, width: 220, errorCorrectionLevel: 'M' });
   const day = (value) => (value ? new Date(value).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'Asia/Kolkata' }) : null);
   const left = Math.max(0, (wo.quantity || 0) - (wo.goodQty || 0));
