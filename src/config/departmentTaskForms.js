@@ -218,10 +218,10 @@ export const TASK_FORMS = {
     ],
   },
   /*
-   * Reception's desk flow for a sample the buyer collects. The piece arrives from the bench;
-   * Reception tells the buyer it is waiting, hands it over when they walk in, and records who
-   * took it — name, phone, pieces — with a photo of the signed slip or the hand-over beside it.
-   * "Buyer collected" finishes the task and writes the hand-over onto the sample itself.
+   * Reception's desk flow for a sample the buyer collects at reception. Such a sample is an
+   * internal one — it never goes to the sampling queue: Reception notes the request, gets the
+   * piece ready (and the buyer is told it is waiting), hands it over and records who took it —
+   * name, phone, pieces — with a photo of the signed slip beside it, then closes the task.
    */
   sample_collect: {
     team: 'Reception — Sample collection',
@@ -236,17 +236,18 @@ export const TASK_FORMS = {
     notifyStatus: true,
     remark: { label: 'Remarks', placeholder: 'Who you spoke to, when they said they would come' },
     statuses: [
-      { key: 'waiting', label: 'At reception — waiting for the buyer' },
-      /* Moving here sends "ready to collect" to the buyer on WhatsApp and email, from the company number. */
-      { key: 'informed', label: 'Buyer told it is ready', tellBuyer: 'sample_ready_collect' },
+      { key: 'noted', label: 'Noted' },
+      /* The piece is at the desk: the sample reads ready, and the buyer hears it on WhatsApp and email, from the company number. */
+      { key: 'ready', label: 'Sample ready', sampleReady: true, tellBuyer: 'sample_ready_collect' },
       {
-        key: 'collected', label: 'Buyer collected', done: true,
+        key: 'handed', label: 'Sample handed', handsOver: true,
         fields: [
-          { key: 'collectorName', label: 'Collected by (name)', required: true },
+          { key: 'collectorName', label: 'Received by (name)', required: true },
           { key: 'collectorPhone', label: 'Their phone' },
           { key: 'pieces', label: 'Pieces handed over', type: 'number' },
         ],
       },
+      { key: 'closed', label: 'Task closed', done: true },
     ],
     documents: [{ type: 'handover_photo', label: 'Hand-over photo / signed slip' }],
   },

@@ -297,6 +297,29 @@ function sampleFromBrief(brief = {}) {
   return said;
 }
 
+const COLLECT_LABEL = HANDOVER_CHOICES.find((choice) => choice.key === 'collect')?.label;
+
+/**
+ * A Sample Request the buyer collects at reception [HANDOVER_CHOICES `collect`]: the sample is
+ * raised as an internal one (closed to the bench from the start) and Reception gets the task —
+ * Noted → Sample ready → Sample handed → Task closed. A sample already open on the enquiry for the
+ * bench is taken off the bench and moved to the desk instead of raising a second one.
+ */
+async function raiseInternalSample({ enquiry, asked, note, priority, requiredDate, user }) {
+  const { createSampleForEnquiry } = await import('./sampling.service.js');
+  const { sample, created } = await createSampleForEnquiry(enquiry, sampleFromBrief(asked), { autoCreated: true });
+  if (!created && sample.handover !== 'collect') {
+    sample.handover = 'collect';
+    if (!sample.benchClosedAt) {
+      sample.benchClosedAt = new Date();
+      sample.benchClosedBy = user?._id;
+    }
+    sample.statusHistory.push({ from: sample.status, to: sample.status, by: user?._id, note: 'Changed to an internal sample the buyer collects at reception' });
+    await sample.save();
+  }
+  return raiseCollection(sample, user, { note, priority, requiredDate });
+}
+
 /** "ENQ-2026-0012 · SCM Garments", reading the buyer's name when only its id is in hand. */
 async function aboutWithName(enquiry) {
   if (enquiry.customer && !enquiry.customer.name) {
@@ -515,6 +538,10 @@ async function moveEnquiryChecked({
   const asked = keptBrief(kind, picked.brief, { strict: !system });
   if (!system) assertNote(kind, asked, note);
   if (already) return addToOpenTask(already, { handoff, note, asked, priority, requiredDate, user });
+  /* The buyer collects it at reception: an internal sample — Reception's task, never the sampling queue. */
+  if (kind === 'sample_request' && asked.handover === COLLECT_LABEL) {
+    return raiseInternalSample({ enquiry, asked, note, priority, requiredDate, user });
+  }
   const form = handoff.form || {};
   const due = requiredDue(requiredDate) || (form.dueFrom && requiredDue(asked[form.dueFrom], 'That date'));
 
@@ -966,8 +993,9 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
   const handoff = findHandoff(task.kind);
   const kept = keptFields(task.kind, fields);
   /* A collection finished from Done rather than "Buyer collected" still says who took the sample — before anything is saved. */
-  if (task.kind === 'sample_collect' && task.brief?.sample && !String(kept.collectorName || '').trim() && !String(kept.collectorPhone || '').trim()) {
-    fail('Say who collected the sample — their name or phone');
+  if (task.kind === 'sample_collect' && task.brief?.sample && !String(kept.collectorName || '').trim() && !String(kept.collectorPhone || '').trim()
+    && (await sampleOfTask(task))?.status !== 'delivered') {
+    fail('Mark it Sample handed first — say who received the sample, their name or phone');
   }
   /*
    * Done on a task with its own workflow is that workflow's last status (Task Closed): the card
@@ -1138,6 +1166,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields }) 
   if (step.done) await assertMayFinish(task);
 
   if (step.raises) await raiseFromStatus(task, user, step, text);
+  /* The sample handed at the desk: written onto the sample first, so a refusal leaves the task where it was. */
+  if (step.handsOver) await handedAtDesk(task, user, asked);
   task.status = status;
   task.attention = undefined;
   /* The suggestion was about what to do next; a move is somebody doing it. */
@@ -1177,6 +1207,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields }) 
   if (step.followUp || step.promise) await logCollectionCall(task, user, step, text, readyDate);
   /* Money taken: whoever took it records the receipt in Payments; Accounts confirms it there. */
   if (step.recordsReceipt) await askToRecordReceipt(task, user, step);
+  /* The sample is at the desk: it reads ready before the buyer is told so. */
+  if (step.sampleReady) await readyAtDesk(task, user);
   /* A status that tells the buyer something — "your sample is ready to collect" — sends it from here. */
   if (step.tellBuyer) await tellBuyerFromTask(task, user, step);
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
@@ -1227,11 +1259,13 @@ async function tellBuyerFromTask(task, user, step) {
 }
 
 /**
- * The bench marked a sample the buyer collects as ready [sample.controller `setSampleStatus`]:
- * Reception gets the task on the enquiry — the bag, the pieces, the buyer to call — the bench's
- * own task closes (its work is done), and the sample notes when it reached the desk.
+ * A sample the buyer collects at reception: Reception gets the task on the enquiry — the bag, the
+ * pieces, the buyer to call. Raised when such a sample is asked for (an internal sample, which
+ * the bench never sees), or when the bench marks an older one ready [sample.controller
+ * `setSampleStatus`]. Any bench task on it closes — the desk has it now. Idempotent: the open
+ * desk task is returned rather than a second raised.
  */
-export async function raiseCollection(sample, user) {
+export async function raiseCollection(sample, user, { note, priority, requiredDate } = {}) {
   if (sample.handover !== 'collect') return null;
   const enquiryId = sample.enquiry?._id || sample.enquiry;
   if (!enquiryId) return null;
@@ -1242,27 +1276,65 @@ export async function raiseCollection(sample, user) {
   const buyer = enquiry.customer;
   const primary = buyer?.contacts?.find((contact) => contact.isPrimary) || buyer?.contacts?.[0];
   const models = (sample.items?.length ? sample.items : [sample]).map((row) => [row.modelNumber, row.colour, row.quantity ? `${row.quantity} pcs` : null].filter(Boolean).join(' · ')).filter(Boolean).join('; ');
+  const ready = sample.status === 'sample_ready';
+  const said = String(note || '').trim();
   const task = await moveEnquiry({
-    enquiry, kind: 'sample_collect', user, system: true, openRecords: false, addToOpen: true, keepStage: true,
-    note: `Sample ${sample.number} is ready — the buyer collects it at reception. Tell them, hand it over, and record who took it.`,
+    enquiry, kind: 'sample_collect', user, system: true, openRecords: false, addToOpen: true,
+    /* Asked for at the desk, the enquiry is at the sample stage now; a bench sample reaching the desk keeps it where it is. */
+    keepStage: ready,
+    note: [
+      ready
+        ? `Sample ${sample.number} is ready — the buyer collects it at reception. Tell them, hand it over, and record who took it.`
+        : `Internal sample ${sample.number} — the buyer collects it at reception. Note it, get it ready, hand it over, and record who took it.`,
+      said,
+    ].filter(Boolean).join(' — '),
     brief: {
       sample: String(sample._id), sampleNumber: sample.number, models: models || sample.modelNumber || '—',
       pieces: String(sample.quantity || sample.items?.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0) || 1),
       buyerContact: [buyer?.name, primary?.name, primary?.phone || buyer?.whatsapp || buyer?.mobile].filter(Boolean).join(' · ') || '—',
     },
-    priority: 'normal',
+    priority: PRIORITIES.includes(priority) ? priority : 'normal',
+    requiredDate,
   });
   if (task?._id) await Todo.updateOne({ _id: task._id }, { $set: { link: `/samples/${sample._id}` } }, { keepVersion: true });
   /* The bench is done with it: its task closes with where the piece went, and the row leaves its queue. */
   const benchTasks = await Todo.find({ enquiry: enquiry._id, kind: 'sample_request', completed: false, holds: { $ne: true } });
-  if (benchTasks.length) await finishAll(benchTasks, user, { note: `Sample ${sample.number} ready — handed to reception for the buyer to collect`, fields: { courier: 'Collected at reception', pieces: String(sample.quantity || '') } });
-  sample.collection = { ...(sample.collection?.toObject?.() || sample.collection || {}), readyAt: new Date() };
+  if (benchTasks.length) await finishAll(benchTasks, user, { note: `Sample ${sample.number} — with reception for the buyer to collect`, fields: { courier: 'Collected at reception', pieces: String(sample.quantity || '') } });
+  if (ready) sample.collection = { ...(sample.collection?.toObject?.() || sample.collection || {}), readyAt: new Date() };
   if (!sample.benchClosedAt) {
     sample.benchClosedAt = new Date();
     sample.benchClosedBy = user?._id;
   }
   await sample.save();
   return task;
+}
+
+/** Reception has the piece at the desk [`sample_collect` → Sample ready]: the sample reads ready. */
+async function readyAtDesk(task, user) {
+  const sample = await sampleOfTask(task);
+  if (!sample || CLOSED_DESK_STATUSES.includes(sample.status)) return;
+  const from = sample.status;
+  if (from !== 'sample_ready') {
+    sample.status = 'sample_ready';
+    sample.statusHistory.push({ from, to: 'sample_ready', by: user._id, note: `Ready at reception for the buyer to collect (${task.number || 'desk task'})` });
+  }
+  sample.collection = { ...(sample.collection?.toObject?.() || sample.collection || {}), readyAt: sample.collection?.readyAt || new Date() };
+  await sample.save();
+}
+const CLOSED_DESK_STATUSES = ['delivered', 'dispatched', 'feedback_received', 'approved', 'rejected', 'closed', 'cancelled'];
+
+/**
+ * Reception handed it over [`sample_collect` → Sample handed]: who received it, how many, the
+ * slip photo where one was uploaded — onto the sample, which is with the buyer from here.
+ */
+async function handedAtDesk(task, user, asked = {}) {
+  const sample = await sampleOfTask(task);
+  if (!sample || sample.status === 'delivered') return;
+  try {
+    await collectedAtDesk(task, user, asked);
+  } catch (error) {
+    fail(error.message);
+  }
 }
 
 /**
@@ -1272,7 +1344,7 @@ export async function raiseCollection(sample, user) {
  */
 async function collectedAtDesk(task, user, kept = {}) {
   const sample = await sampleOfTask(task);
-  if (!sample) return;
+  if (!sample || sample.status === 'delivered') return;
   const { recordHandover } = await import('./sampling.service.js');
   const { default: Attachment } = await import('../models/Attachment.js');
   const photo = await Attachment.findOne({ task: task._id, docType: 'handover_photo' }).sort({ createdAt: -1 }).select('_id');

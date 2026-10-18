@@ -28,6 +28,12 @@ const ageInDays = (from, now) => Math.max(0, Math.floor((now - new Date(from).ge
 const averageDays = (spans) =>
   spans.length ? Math.round((spans.reduce((sum, span) => sum + span, 0) / spans.length / DAY) * 10) / 10 : null;
 
+/*
+ * A sample the buyer collects at reception is an internal one — Reception's task, never the
+ * bench's [handoff.service `raiseCollection`] — so the sampling team's screens leave it out.
+ */
+const NOT_INTERNAL = { $nor: [{ handover: 'collect', benchClosedAt: { $ne: null } }] };
+
 /** When a sample first reached a status, from its own history. */
 const reached = (sample, status) =>
   sample.statusHistory?.find((entry) => entry.to === status)?.at || null;
@@ -39,7 +45,7 @@ export const sampleDashboard = asyncHandler(async (req, res) => {
   const startOfToday = startOfIndiaDay(now);
   const endOfToday = new Date(startOfToday.getTime() + DAY);
 
-  const samples = await Sample.find(scope)
+  const samples = await Sample.find({ ...scope, ...NOT_INTERNAL })
     .select(
       'number modelNumber colour status purpose requiredDate requestedAt createdAt ' +
         'statusHistory requestedBy assignedTo customer escalationLevel dispatchedAt'
@@ -246,6 +252,7 @@ export const sampleDay = asyncHandler(async (req, res) => {
 
   const samples = await Sample.find({
     ...scope,
+    ...NOT_INTERNAL,
     status: { $nin: CLOSED_SAMPLE_STATUSES },
   })
     .select(
@@ -396,6 +403,7 @@ export const sampleQueue = asyncHandler(async (req, res) => {
 
   const samples = await Sample.find({
     ...scope,
+    ...NOT_INTERNAL,
     $or: [
       { benchClosedAt: null, status: { $nin: CLOSED_SAMPLE_STATUSES } },
       { updatedAt: { $gte: closedSince } },
