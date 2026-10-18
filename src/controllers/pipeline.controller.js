@@ -10,6 +10,7 @@ import Enquiry, {
   CLOSED_STATUSES, ENQUIRY_STAGE_ORDER, ENQUIRY_STATUSES, fallsBack, furthestStage, stageLabel,
 } from '../models/Enquiry.js';
 import Sample from '../models/Sample.js';
+import Quotation from '../models/Quotation.js';
 import Todo from '../models/Todo.js';
 import CustomerMessage from '../models/CustomerMessage.js';
 import User from '../models/User.js';
@@ -337,12 +338,23 @@ export const getCustomer = asyncHandler(async (req, res) => {
    */
   const filter = { customer: customer._id, ...ownershipFilter(req.user) };
   const sampleFilter = { customer: customer._id, ...ownershipFilter(req.user, 'requestedBy') };
-  const [enquiries, total, samples, sampleTotal] = await Promise.all([
+  /* The quotations, for whoever may read them at all — the same rows `/quotations?customer=` lists, prices only. */
+  const quotes = canRead(req.user, 'pricing');
+  const [enquiries, total, quotations, quotationTotal, samples, sampleTotal] = await Promise.all([
     Enquiry.find(filter)
       .select('number enquiryDate status requirement.modelNumber estimatedValue')
       .sort('-enquiryDate')
       .limit(TIMELINE_PAGE),
     Enquiry.countDocuments(filter),
+    quotes
+      ? Quotation.find(filter)
+        .select('number status createdAt sentAt validUntil revision enquiry lines.modelNumber lines.unitPrice lines.quantity')
+        .populate('enquiry', 'number')
+        .sort('-createdAt')
+        .limit(TIMELINE_PAGE)
+        .lean()
+      : [],
+    quotes ? Quotation.countDocuments(filter) : 0,
     /*
      * §2 asks for the whole story on one screen — enquiries, then samples, then quotations,
      * orders, dispatch and payments as those modules land. Each strand joins as it is built;
@@ -360,7 +372,19 @@ export const getCustomer = asyncHandler(async (req, res) => {
     success: true,
     data: {
       customer: (await customerSummaries([customer]))[0],
-      timeline: { enquiries, total, samples, sampleTotal },
+      timeline: {
+        enquiries, total, samples, sampleTotal,
+        /* Each quotation as a line: its models and the rate on each, never the cost [§8]. Left out
+           altogether for a reader without the quotation grant, so the page shows no strand. */
+        ...(quotes ? {
+          quotations: quotations.map((row) => ({
+            _id: row._id, number: row.number, status: row.status, revision: row.revision, createdAt: row.createdAt, sentAt: row.sentAt, validUntil: row.validUntil,
+            enquiry: row.enquiry ? { _id: row.enquiry._id, number: row.enquiry.number } : null,
+            lines: (row.lines || []).map((line) => ({ modelNumber: line.modelNumber, unitPrice: line.unitPrice, quantity: line.quantity })),
+          })),
+          quotationTotal,
+        } : {}),
+      },
     },
   });
 });
