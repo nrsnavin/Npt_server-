@@ -14,6 +14,8 @@ import {
 import { notifyMaterialReady } from '../services/dispatchEscalation.service.js';
 import { warnPromiseWillSlip } from '../services/productionEscalation.service.js';
 import { PRESSING_BANDS, byUrgency, urgencyOf } from '../services/productionUrgency.service.js';
+import { estimate } from '../services/capacity.service.js';
+import { plantCalendar } from '../services/settings.service.js';
 import { urgentOrdersFor } from '../services/urgentOrders.service.js';
 import OrderQuery from '../models/OrderQuery.js';
 import { collect, sendCsv } from '../utils/csv.js';
@@ -39,7 +41,7 @@ import { transactional } from '../utils/transaction.js';
 /** What a plant screen needs to recognise a line, and nothing about money. */
 const LINE_POPULATE = [
   { path: 'customer', select: 'code name' },
-  { path: 'lines.mould', select: 'mouldCode name category sizeMm cavities activeCavities partWeightGrams cycleTimeSeconds' },
+  { path: 'lines.mould', select: 'mouldCode name category sizeMm cavities activeCavities partWeightGrams cycleTimeSeconds efficiencyPercent' },
 ];
 
 const EXPORT_LIMIT = 5000;
@@ -451,6 +453,7 @@ export const updateProductionLine = asyncHandler(withOrderLock(req => req.params
  */
 export const productionDay = asyncHandler(async (req, res) => {
   const now = new Date();
+  const plant = await plantCalendar();
 
   /*
    * Orders still being worked — released and not yet closed. `RELEASED` alone admits closed
@@ -495,10 +498,15 @@ export const productionDay = asyncHandler(async (req, res) => {
         isOverdue: line.isOverdue,
         link: `/orders/${order._id}`,
       }))
-      .map((row) => ({
-        ...row,
-        urgency: urgencyOf(row, { now, priority: order.priority }),
-      }))
+      .map((row) => {
+        /* Pieces a day on this line's own mould, and the press days what is left needs [capacity.service]. */
+        const capacity = estimate(row.toMakeQty, row.mould, plant, now);
+        return {
+          ...row,
+          capacity,
+          urgency: urgencyOf(row, { now, priority: order.priority, perDay: capacity.basis === 'mould' ? capacity.perDay : undefined }),
+        };
+      })
   );
 
   const running = rows.filter((row) => row.production?.status !== 'completed');

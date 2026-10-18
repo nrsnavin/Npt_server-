@@ -1,4 +1,7 @@
 import Todo from '../models/Todo.js';
+import Mould from '../models/Mould.js';
+import { CAPACITY_FIELDS, estimate } from '../services/capacity.service.js';
+import { plantCalendar } from '../services/settings.service.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { findHandoff } from '../config/handoffs.js';
@@ -61,7 +64,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
     .populate([
       {
         path: 'enquiry',
-        select: 'number stage status customer assignedTo edd requirement.modelNumber requirement.colour requirement.quantity items.modelNumber',
+        select: 'number stage status customer assignedTo edd requirement.modelNumber requirement.colour requirement.quantity requirement.mould items.modelNumber items.mould',
         populate: [{ path: 'customer', select: 'code name assignedTo' }, { path: 'assignedTo', select: 'name' }],
       },
       { path: 'user', select: 'name' },
@@ -96,6 +99,22 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
     completed: Boolean(task.completed), issue: !task.completed && issueOf(task), with: person(task.user), dueDate: task.dueDate || null,
   } : null);
 
+  /* The mould behind each row — the enquiry's own pick, or the register entry its model names — for the capacity estimate. */
+  const plant = await plantCalendar();
+  const mouldIds = mine.flatMap((task) => [task.enquiry.requirement?.mould, ...(task.enquiry.items || []).map((item) => item.mould)]).filter(Boolean);
+  const codes = mine.map((task) => String(task.enquiry.requirement?.modelNumber || (task.enquiry.items || []).find((item) => item.modelNumber)?.modelNumber || task.brief?.model || '').trim().toUpperCase()).filter(Boolean);
+  const moulds = (mouldIds.length || codes.length)
+    ? await Mould.find({ $or: [{ _id: { $in: mouldIds } }, { mouldCode: { $in: codes } }] }).select(`mouldCode ${CAPACITY_FIELDS}`).lean()
+    : [];
+  const mouldOf = (task) => {
+    const id = task.enquiry.requirement?.mould || (task.enquiry.items || []).find((item) => item.mould)?.mould;
+    const byId = id && moulds.find((mould) => String(mould._id) === String(id));
+    if (byId) return byId;
+    const code = String(task.enquiry.requirement?.modelNumber || (task.enquiry.items || []).find((item) => item.modelNumber)?.modelNumber || task.brief?.model || '').trim().toUpperCase();
+    return moulds.find((mould) => mould.mouldCode === code) || null;
+  };
+  const qtyOf = (value) => Number(String(value ?? '').replace(/[^\d.]/g, '')) || 0;
+
   const rows = mine.map((task) => {
     const enquiry = task.enquiry;
     const edd = enquiry.edd?.date || null;
@@ -116,6 +135,13 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
         owner: person(enquiry.assignedTo),
       },
       edd: edd ? { date: edd, department: enquiry.edd.department || null, at: enquiry.edd.at || null } : null,
+      /* Press days the quantity needs on its mould, and the day it would finish if started today [capacity.service]. */
+      capacity: (() => {
+        const mould = mouldOf(task);
+        const quantity = qtyOf(task.brief?.quantity || enquiry.requirement?.quantity);
+        if (!quantity) return null;
+        return { ...estimate(quantity, mould, plant, now), mould: mould?.mouldCode || null, quantity };
+      })(),
       band: bandOf(edd, now),
       /* Needs assembly: Production routed a model to it, ticked on an older task, or Assembly already has its task. */
       needsAssembly: (task.routing?.models || []).some((row) => row.assembly) || ticked(task.brief?.assembly) || Boolean(slot.assembling),

@@ -24,3 +24,28 @@ export async function setSecurityPolicy(changes, by) {
   await Setting.updateOne({ key: 'security' }, { $set: { value: next, updatedBy: by?._id } }, { upsert: true });
   return next;
 }
+
+/**
+ * The plant's working calendar — what turns a mould's pieces an hour into a delivery date
+ * [services/capacity.service.js]. Hours a press actually runs in a day (two twelve-hour shifts,
+ * less changeovers and breaks), the shifts worked, and the weekly day off.
+ */
+export const PLANT_DEFAULTS = Object.freeze({ hoursPerDay: 22, shifts: ['A', 'B'], weeklyOff: 0 });
+export const PLANT_SHIFTS = ['A', 'B', 'C', 'General'];
+
+export async function plantCalendar() {
+  const row = await Setting.findOne({ key: 'plant' }).lean();
+  return { ...PLANT_DEFAULTS, ...(row?.value || {}) };
+}
+
+export async function setPlantCalendar(changes, by) {
+  const current = await plantCalendar();
+  const next = {
+    hoursPerDay: changes.hoursPerDay === undefined ? current.hoursPerDay : Math.min(24, Math.max(1, Number(changes.hoursPerDay))),
+    shifts: changes.shifts === undefined ? current.shifts : [...new Set(changes.shifts.filter((shift) => PLANT_SHIFTS.includes(shift)))],
+    weeklyOff: changes.weeklyOff === undefined ? current.weeklyOff : (changes.weeklyOff === null ? null : Number(changes.weeklyOff)),
+  };
+  if (!next.shifts.length) next.shifts = [...PLANT_DEFAULTS.shifts];
+  await Setting.updateOne({ key: 'plant' }, { $set: { value: next, updatedBy: by?._id } }, { upsert: true });
+  return next;
+}
