@@ -21,6 +21,9 @@ const mouldRunSchema = new mongoose.Schema(
     order: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder', index: true },
     /* The SO line the run makes — its good pieces are added to that line's produced count when it ends. */
     orderLine: { type: mongoose.Schema.Types.ObjectId },
+    /* The work order the run is made against [models/WorkOrder.js]; its pieces reach the order line through it. */
+    workOrder: { type: mongoose.Schema.Types.ObjectId, ref: 'WorkOrder', index: true },
+    workOrderCounted: { type: Boolean },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', index: true },
     modelNumber: { type: String, trim: true, maxlength: 80 },
     colour: { type: String, trim: true, maxlength: 60 },

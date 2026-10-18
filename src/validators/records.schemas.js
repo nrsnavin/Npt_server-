@@ -70,12 +70,12 @@ export const maintenanceSchema = z.object({
 });
 
 export const runStartSchema = z.object({
-  mould: objectId, machine: optionalId, enquiry: optionalId, order: optionalId, orderLine: optionalId,
+  mould: optionalId, workOrder: optionalId, machine: optionalId, enquiry: optionalId, order: optionalId, orderLine: optionalId,
   modelNumber: text(80), colour: text(60), plannedQuantity: num(1e9),
   startedAt: date, shift: z.enum(SHIFTS).optional(), operator: text(80),
   counterStart: num(1e10), cavitiesRunning: num(1000), cycleTimeSeconds: num(10000),
   resin: z.object({ material: optionalId, name: text(80), batch: text(60), usedKg: num(1e7) }).optional(),
-});
+}).refine((body) => body.mould || body.workOrder, { message: 'Pick the mould, or start it from a work order', path: ['mould'] });
 
 const downtimeEntry = z.object({ reason: z.enum(DOWNTIME_KEYS), minutes: z.number().min(0).max(100000), note: text(300) });
 const rejectEntry = z.object({ reason: z.enum(REJECT_KEYS), pieces: z.number().int().min(0).max(1e9) });
@@ -104,3 +104,13 @@ export const stockMovementSchema = z.object({
   note: text(500),
 }).refine((body) => body.kind !== 'receipt' || body.kg > 0, { message: 'A receipt adds stock — the kilograms received', path: ['kg'] });
 
+
+/** A work order planned or moved [workOrder.service `planWorkOrder`]. */
+export const workOrderPlanSchema = z.object({
+  machine: objectId.nullable().optional(),
+  plannedStart: z.coerce.date().nullable().optional(),
+  sequence: z.number().int().min(0).max(100000).nullable().optional(),
+  move: z.enum(['release', 'pause', 'resume', 'complete', 'cancel', 'replan']).optional(),
+  note: text(500),
+  updatedAt: z.string().optional(),
+});

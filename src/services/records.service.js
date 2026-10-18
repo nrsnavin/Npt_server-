@@ -14,6 +14,7 @@ import { findHandoff } from '../config/handoffs.js';
 import { warnDispatchOfQc } from './handoff.service.js';
 import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
+import { finishedOn, startedOn, workOrderForRun } from './workOrder.service.js';
 import { withCreateLocks } from './operationLock.service.js';
 import { render, letterhead, facts, footer } from './recordPdf.js';
 import Inspection, { DEFECT_TYPES } from '../models/Inspection.js';
@@ -407,7 +408,17 @@ export const MAINTENANCE_LABELS = Object.fromEntries(MAINTENANCE_TYPES.map((type
  * second is refused with the run already going, under a lock so two people starting at once
  * cannot both succeed. The machine shows Running.
  */
-export async function startRun(body, user) {
+export async function startRun(input, user) {
+  /* Started from a work order: the mould, the order and the line come from it [workOrder.service]. */
+  const named = input.workOrder ? await workOrderForRun({ workOrder: input.workOrder }) : null;
+  const body = {
+    ...input,
+    mould: input.mould || named?.mould,
+    order: input.order || named?.order,
+    orderLine: input.orderLine || named?.orderLine,
+    plannedQuantity: input.plannedQuantity ?? (named ? named.toMakeQty : undefined),
+  };
+  if (!body.mould) throw ApiError.badRequest('Pick the mould');
   return withCreateLocks([`run-machine:${body.machine || 'none'}`, `run-mould:${body.mould}`], async () => {
     const mould = await Mould.findById(body.mould);
     if (!mould) throw ApiError.badRequest('That mould is not on the register');
@@ -457,6 +468,13 @@ export async function startRun(body, user) {
       startedBy: user._id,
     }]);
     if (machine) { machine.status = 'running'; await machine.save(); }
+    /* The work order it is made against — named, or the one for its order line. */
+    const wo = named || (order && line ? await workOrderForRun({ order: order._id, orderLine: line._id }) : null);
+    if (wo) {
+      run.workOrder = wo._id;
+      await run.save();
+      await startedOn(wo, run, user);
+    }
     return run;
   });
 }
@@ -486,6 +504,7 @@ export async function finishRun(run, body, user) {
   }
   if (run.order && run.orderLine && run.goodPieces > 0 && run.producedAdded == null) await addToProduction(run, user);
   if (run.resin?.material && run.resin?.usedKg > 0 && run.resinIssued == null) await issueResin(run, user);
+  await finishedOn(run, user);
   await run.save();
   if (shots) {
     const mould = await Mould.findById(run.mould).select('mouldCode totalShots maintenanceEveryShots lastMaintenanceShots').lean();

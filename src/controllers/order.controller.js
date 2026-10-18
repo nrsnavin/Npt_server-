@@ -763,6 +763,11 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
   await recordChange({ model: 'SalesOrder', doc: order, before, by: req.user, note: recipe.label });
   /* Released to the plant: the enquiry moves from Sales / SO to Production [handoff.subscriber]. */
   if (action === 'release') await publish(EVENTS.ORDER_RELEASED, { orderId: order._id, by: req.user });
+  /* Cancelled or closed: its open work orders are cancelled with it. */
+  if (['cancel', 'close'].includes(action)) {
+    const { ensureWorkOrders } = await import('../services/workOrder.service.js');
+    await ensureWorkOrders({ orderIds: [order._id], user: req.user });
+  }
 
   await order.populate(POPULATE);
   res.json({

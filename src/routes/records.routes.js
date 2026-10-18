@@ -1,3 +1,4 @@
+import { getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler } from '../controllers/workOrder.controller.js';
 import { Router } from 'express';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -9,7 +10,7 @@ import {
   listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine, logRunHandler, runReasonsHandler,
 } from '../controllers/records.controller.js';
 import {
-  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema,
+  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema,
 } from '../validators/records.schemas.js';
 
 /**
@@ -42,6 +43,10 @@ router.post('/maintenance', anyModule([['production', 'write'], ['moulds', 'writ
 
 router.get('/mould-runs', anyModule([['production', 'read'], ['moulds', 'read']]), listRunsHandler);
 router.post('/mould-runs', requireModule('production', 'write'), validate(runStartSchema), startRunHandler);
+/* Work orders: one per released order line, planned onto a press and fed by the runs. */
+router.get('/work-orders', anyModule([['production', 'read'], ['orders', 'read']]), listWorkOrdersHandler);
+router.get('/work-orders/:id', anyModule([['production', 'read'], ['orders', 'read']]), getWorkOrderHandler);
+router.patch('/work-orders/:id', requireModule('production', 'write'), validate(workOrderPlanSchema), planWorkOrderHandler);
 router.get('/mould-runs/reasons', runReasonsHandler);
 router.post('/mould-runs/:id/finish', requireModule('production', 'write'), validate(runFinishSchema), finishRunHandler);
 router.post('/mould-runs/:id/log', requireModule('production', 'write'), validate(runLogSchema), logRunHandler);

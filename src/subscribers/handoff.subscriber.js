@@ -247,6 +247,15 @@ export function registerHandoffSubscribers() {
     })
   );
 
+  /* Released to the plant: one work order per line, ready to plan onto a press [workOrder.service]. */
+  subscribe(
+    EVENTS.ORDER_RELEASED,
+    safely('work orders for the released order', async ({ orderId, by }) => {
+      const { ensureWorkOrders } = await import('../services/workOrder.service.js');
+      await ensureWorkOrders({ orderIds: [orderId], user: by });
+    })
+  );
+
   /* The goods have left the plant: Invoice & Dispatch is done, the LR copy is next. */
   subscribe(
     EVENTS.DISPATCH_LEFT,
