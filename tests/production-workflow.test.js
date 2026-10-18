@@ -116,6 +116,8 @@ test('a move is shown to the enquiry’s marketing person and Admin — not to w
 
 test('a ready date becomes the enquiry’s EDD; Ready Tomorrow is tomorrow unless another is given', async () => {
   const day = indiaDay(5);
+  /* Production decides first that nothing follows moulding; its date is then the EDD. */
+  assert.equal((await api(`/api/workspace/todos/${task._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'UTJRSH-0' }] } })).status, 200);
   assert.equal((await move('siva', 'ready_on_date', { note: 'Machine 4 free by then', date: day })).status, 200);
   let { production } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
   assert.equal(production.edd.edd, day);
@@ -908,41 +910,38 @@ test('Production hands on from its own task — Assembly, Printing, Quality, Dis
 
 /* ------------------------------ The production queue ------------------------------ */
 
-test('"Needs assembly" on the Production task raises Assembly’s beside it, on the same enquiry, told back to Production', async () => {
+test('Production, not the sender, decides assembly: the tick is gone and Production routes UTJRSH-12 to Assembly', async () => {
   const fresh = (await api('/api/enquiries', {
     method: 'POST', as: 'nandhini',
     body: { customer: enquiry.customer?._id || enquiry.customer, requirement: { modelNumber: 'UTJRSH-12', colour: 'Black' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
   })).json.data;
   const raised = await api(`/api/enquiries/${fresh._id}/handoffs`, {
-    method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Clips to be fitted', brief: { model: 'UTJRSH-12', quantity: '8000', assembly: true } },
+    method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Clips to be fitted', brief: { model: 'UTJRSH-12', quantity: '8000' } },
   });
   assert.equal(raised.status, 201, raised.json.message);
-  assert.equal(raised.json.data.assembly?.department, 'assembling', 'the reply says Assembly was tasked');
+  assert.equal(await Todo.countDocuments({ enquiry: fresh._id, kind: 'ask_assembling_edd' }), 0, 'nothing for Assembly until Production says');
   const production = await Todo.findById(raised.json.data.task._id);
+  const routed = await api(`/api/workspace/todos/${production._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'UTJRSH-12', assembly: true }] } });
+  assert.equal(routed.status, 200, routed.json.message);
   const assembly = await Todo.findOne({ enquiry: fresh._id, kind: 'ask_assembling_edd', completed: false });
   assert.ok(assembly, 'Assembly’s task is on the enquiry');
-  assert.equal(assembly.department, 'assembling');
   assert.equal(assembly.brief.model, 'UTJRSH-12', 'the same model');
   assert.equal(assembly.brief.quantity, '8000', 'and quantity');
-  assert.equal(assembly.brief.assembly, undefined, 'the tick itself is not carried over');
   assert.ok(assembly.askedFrom.some((id) => String(id) === String(production._id)), 'told back to Production');
-  assert.match(assembly.notes || '', /Needs assembly — tasked with Production by Nandhini S/);
 
-  /* Unticked, nothing is raised. */
   const plain = (await api('/api/enquiries', {
     method: 'POST', as: 'nandhini',
     body: { customer: enquiry.customer?._id || enquiry.customer, requirement: { modelNumber: 'UTJRSH-13' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
   })).json.data;
-  const plainRaised = await api(`/api/enquiries/${plain._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'No fittings', brief: { model: 'UTJRSH-13', quantity: '100', assembly: false } } });
+  const plainRaised = await api(`/api/enquiries/${plain._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'No fittings', brief: { model: 'UTJRSH-13', quantity: '100' } } });
   assert.equal(plainRaised.status, 201, plainRaised.json.message);
-  assert.ok(!plainRaised.json.data.assembly, 'nothing tasked to Assembly');
   assert.equal(await Todo.countDocuments({ enquiry: plain._id, kind: 'ask_assembling_edd' }), 0);
 
-  /* The ask_edd form carries the tick. */
+  /* The ask_edd form no longer carries the tick; Production routes from its task. */
   const { buttons } = (await api('/api/handoffs', { as: 'nandhini' })).json.data;
-  const tick = buttons.find((button) => button.key === 'ask_edd').form.asks.find((ask) => ask.key === 'assembly');
-  assert.equal(tick?.type, 'check');
-  assert.match(tick.label, /^Needs assembly/);
+  const form = buttons.find((button) => button.key === 'ask_edd').form;
+  assert.equal(form.asks.find((ask) => ask.key === 'assembly'), undefined);
+  assert.equal(form.routes, true);
 });
 
 test('the production queue lists every open Production task in EDD order, with the other teams beside each', async () => {
@@ -978,7 +977,7 @@ test('the production queue lists every open Production task in EDD order, with t
   assert.equal(late.enquiry.colour, 'Black');
   assert.equal(late.enquiry.quantity, '8000');
   assert.equal(late.task.statusLabel, 'EDD Request Received');
-  assert.equal(late.task.with, null, 'not picked up');
+  assert.equal(late.task.with?.name, 'Sivakumar', 'deciding the routing picked it up');
   assert.equal(late.task.raisedBy.name, 'Nandhini S');
 
   const today = rows[at('UTJRSH-13')];
@@ -1001,7 +1000,11 @@ test('the production queue lists every open Production task in EDD order, with t
   assert.ok(meta.bands.late >= 1 && meta.bands.today >= 1 && meta.bands.none >= 1);
   assert.ok(meta.teams.assemblyOpen >= 1);
   assert.ok(meta.teams.qualityOpen >= 1);
-  assert.ok(meta.teams.unclaimed >= 1);
+  /* Every row here has been worked — deciding the routing picks a task up — so none is unclaimed. */
+  assert.equal(typeof meta.teams.unclaimed, 'number');
+  assert.ok(meta.teams.toRoute >= 1, 'UTJRSH-13 and UTJRSH-9 still wait for Production to decide printing / assembly');
+  assert.equal(late.routing.models[0].assembly, true);
+  assert.equal(today.routing, null);
   assert.equal(typeof meta.teams.needsAssembly, 'number');
   assert.equal(typeof meta.teams.dueTomorrow, 'number');
 });

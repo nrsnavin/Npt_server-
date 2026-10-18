@@ -297,12 +297,13 @@ export const TASK_FORMS = {
   },
   ask_edd: {
     team: 'Production Team',
-    /* "Needs assembly" raises Assembly's task beside Production's, on the same enquiry, as the
-       hanger is sent to the press [handoff.service `raiseAssemblyWith`]. */
-    asks: [
-      ...modelAndQuantity,
-      { key: 'assembly', label: 'Needs assembly — clips, hooks or printing fitted after moulding (Assembly is tasked with Production)', type: 'check' },
-    ],
+    /*
+     * Whether a model is printed or assembled after moulding is Production's call, made model by
+     * model on the task before it gives any date [handoff.service `decideRouting`]: Printing's and
+     * Assembly's tasks are raised from that, and the last team in the chain gives the EDD.
+     */
+    asks: modelAndQuantity,
+    routes: true,
     /* Every move says why, and the enquiry's marketing person and Admin are told of it. */
     remarkRequired: true,
     notifyStatus: true,
@@ -341,7 +342,7 @@ export const TASK_FORMS = {
   },
   ask_assembling_edd: {
     team: 'Assembly Team',
-    asks: modelAndQuantity,
+    asks: [...modelAndQuantity, { key: 'models', label: 'Models to assemble' }],
     remarkRequired: true,
     notifyStatus: true,
     /* Assembly's ready date is the enquiry's EDD, as Production's is. */
@@ -361,7 +362,7 @@ export const TASK_FORMS = {
      the same way as Assembly's, with its own header on that desk. */
   ask_printing: {
     team: 'Printing Team',
-    asks: modelAndQuantity,
+    asks: [...modelAndQuantity, { key: 'models', label: 'Models to print' }],
     remarkRequired: true,
     notifyStatus: true,
     statusDate: { label: 'Ready date', field: 'edd' },

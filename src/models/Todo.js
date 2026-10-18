@@ -86,6 +86,14 @@ const todoSchema = new mongoose.Schema(
      * plain answers by question, and a table (a sample's model rows) as a list of rows.
      */
     brief: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    /**
+     * Where the goods go after this team [handoff.service `decideRouting`]. On Production's task:
+     * which models need printing or assembly (`models`), the teams it hands to (`handsTo`), when it
+     * was decided and the hand-over date it gave. On Printing's and Assembly's: the models they
+     * have, who hands to them (`from`) with the date each gave (`incoming`), and whom they hand on
+     * to. A team that hands on gives a hand-over date; the last team gives the EDD.
+     */
+    routing: { type: mongoose.Schema.Types.Mixed, default: undefined },
     /** The PDF sent with the task, if one was [routes: POST /enquiries/:id/handoffs/:taskId/attachment]. */
     attachment: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
     /** The PDF of the work itself — the sales order — uploaded by the department to finish the task. */

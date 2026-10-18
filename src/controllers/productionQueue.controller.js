@@ -117,8 +117,13 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
       },
       edd: edd ? { date: edd, department: enquiry.edd.department || null, at: enquiry.edd.at || null } : null,
       band: bandOf(edd, now),
-      /* Needs assembly: ticked when Production was tasked, or Assembly already has its task. */
-      needsAssembly: ticked(task.brief?.assembly) || Boolean(slot.assembling),
+      /* Needs assembly: Production routed a model to it, ticked on an older task, or Assembly already has its task. */
+      needsAssembly: (task.routing?.models || []).some((row) => row.assembly) || ticked(task.brief?.assembly) || Boolean(slot.assembling),
+      needsPrinting: (task.routing?.models || []).some((row) => row.printing) || Boolean(slot.printing),
+      /* What Production decided about printing and assembly, model by model — null until it has [handoff.service `decideRouting`]. */
+      routing: task.routing?.decidedAt ? {
+        models: task.routing.models || [], handsTo: task.routing.handsTo || [], handOverDate: task.routing.handOverDate || null,
+      } : null,
       order: task.order ? { _id: task.order._id, number: task.order.number, status: task.order.status } : null,
       teams: {
         assembling: teamRow(slot.assembling), printing: teamRow(slot.printing),
@@ -139,6 +144,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
       bands: Object.fromEntries(Object.keys(BAND_RANK).map((band) => [band, count((row) => row.band === band)])),
       teams: {
         needsAssembly: count((row) => row.needsAssembly && !row.teams.assembling),
+        toRoute: count((row) => !row.routing),
         assemblyOpen: count((row) => row.teams.assembling && !row.teams.assembling.completed),
         qualityOpen: count((row) => row.teams.quality && !row.teams.quality.completed),
         dispatchWaiting: count((row) => row.teams.despatch && !row.teams.despatch.completed),

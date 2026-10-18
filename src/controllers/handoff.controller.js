@@ -16,7 +16,7 @@ import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
-  updateHandoff, mayWorkOnHandoff, raiseAssemblyWith,
+  updateHandoff, mayWorkOnHandoff, raiseAssemblyWith, routingFor, decideRouting,
 } from '../services/handoff.service.js';
 import { canRead } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -215,6 +215,22 @@ export const handoffSendBack = asyncHandler(transactional(async (req, res) => {
 export const handoffEdd = asyncHandler(transactional(async (req, res) => {
   const task = await setTaskEdd(await taskFor(req), req.user, req.body);
   await answer(res, task);
+}));
+
+/** The models on a Production task, with what Production decided about printing and assembly. */
+export const handoffRouting = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await routingFor(await taskFor(req), req.user) });
+});
+
+/** Production's call, model by model: Printing's and Assembly's tasks are raised from it. */
+export const handoffRoute = asyncHandler(transactional(async (req, res) => {
+  const { task, raised } = await decideRouting(await taskFor(req), req.user, req.body);
+  const populated = await task.populate(TASK_POPULATE);
+  res.json({
+    success: true,
+    data: populated,
+    raised: Object.fromEntries(Object.entries(raised).map(([team, entry]) => [team, { _id: entry._id, department: entry.department }])),
+  });
 }));
 
 /** The department's own status on its task — SO Waiting, Preparing, Needs Clarification. */

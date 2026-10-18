@@ -59,6 +59,15 @@ export const taskEddSchema = z.object({
   note: z.string().trim().max(2000).optional(),
 });
 
+/** Production's call, model by model: printed, assembled, both or neither [handoff.service `decideRouting`]. */
+export const taskRoutingSchema = z.object({
+  models: z.array(z.object({
+    model: z.string().trim().min(1).max(120),
+    printing: z.boolean().optional(),
+    assembly: z.boolean().optional(),
+  })).min(1, 'Name at least one model').max(60),
+});
+
 /** Another department asked from this task — Dispatch's "Ask Production"; checked by the service. */
 export const taskAskSchema = z.object({
   kind: z.string().trim().min(1).max(40),
