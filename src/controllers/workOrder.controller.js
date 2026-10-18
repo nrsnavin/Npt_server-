@@ -8,6 +8,7 @@ import { expectVersion } from '../utils/concurrency.js';
 import { WORK_ORDER_MOVES, WORK_ORDER_POPULATE, ensureWorkOrders, listWorkOrders, planWorkOrder } from '../services/workOrder.service.js';
 import { fitOf, planningBoard, sequenceByColour } from '../services/planning.service.js';
 import { componentBook, moveComponentStock, shortages } from '../services/bom.service.js';
+import { clearAndon, floorView, raiseAndon, renderJobCard, shiftSummary } from '../services/floor.service.js';
 
 const byId = async (id) => {
   if (!mongoose.isValidObjectId(id)) throw ApiError.notFound('Work order not found');
@@ -82,4 +83,36 @@ export const componentStockHandler = asyncHandler(transactional(async (req, res)
 export const componentBookHandler = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.id)) throw ApiError.notFound('Not on the register');
   res.json({ success: true, data: await componentBook(req.params.id, req.query) });
+});
+
+/** The job card for the press: a PDF with the job's details, a QR code to the floor tablet, and an hourly log. */
+export const jobCardHandler = asyncHandler(async (req, res) => {
+  const wo = await byId(req.params.id);
+  const pdf = await renderJobCard(wo);
+  res.set({ 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${wo.number}-job-card.pdf"` });
+  res.send(pdf);
+});
+
+/** The floor tablet's view: each press, its running job, its next work orders, any open call. */
+export const floorHandler = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await floorView() });
+});
+
+/** Breakdown called on a press: the team is told at once. */
+export const raiseAndonHandler = asyncHandler(transactional(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.machineId)) throw ApiError.notFound('Machine not found');
+  res.json({ success: true, data: await raiseAndon(req.params.machineId, req.user, req.body) });
+}));
+
+/** The press is running again: the stop goes on the job and a breakdown record is written. */
+export const clearAndonHandler = asyncHandler(transactional(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.machineId)) throw ApiError.notFound('Machine not found');
+  res.json({ success: true, data: await clearAndon(req.params.machineId, req.user, req.body) });
+}));
+
+/** What one shift hands the next. */
+export const shiftSummaryHandler = asyncHandler(async (req, res) => {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(req.query.day || '') ? req.query.day : undefined;
+  const shift = ['A', 'B', 'C', 'General'].includes(req.query.shift) ? req.query.shift : undefined;
+  res.json({ success: true, data: await shiftSummary({ day, shift }) });
 });

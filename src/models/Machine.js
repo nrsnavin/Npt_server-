@@ -23,6 +23,19 @@ const machineSchema = new mongoose.Schema(
     lastServiceAt: Date,
     nextServiceDue: Date,
     notes: { type: String, trim: true, maxlength: 1000 },
+    /*
+     * The andon call: the floor pressed "breakdown" on the press. Open until somebody marks it
+     * running again; the minutes between go on the running job as a breakdown stop, and a
+     * maintenance record is written [services/floor.service.js].
+     */
+    andon: {
+      open: { type: Boolean, default: false },
+      reason: { type: String, trim: true, maxlength: 60 },
+      note: { type: String, trim: true, maxlength: 500 },
+      at: Date,
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      _id: false,
+    },
     active: { type: Boolean, default: true, index: true },
   },
   { timestamps: true }

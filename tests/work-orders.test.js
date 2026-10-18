@@ -336,3 +336,53 @@ test('the bill of materials gives the stores out in plan order and says what to 
   const book = await api(`/api/components/${hook._id}/stock`, { token: ramesh });
   assert.equal(book.json.data.movements[0].reference, 'Bill 4411');
 });
+
+test('the floor: a job card with a QR code, the andon call and the shift handover', async () => {
+  const order = await released([{ mould, modelNumber: 'NH-400', colour: 'Black', quantity: 6000, unitPrice: 7.5, deliveryDate: inDays(15) }]);
+  const [wo] = (await api(`/api/work-orders?order=${order._id}`, { token: ramesh })).json.data;
+  const press = await machineOf('IM-FLOOR');
+  await api(`/api/work-orders/${wo._id}`, { method: 'PATCH', token: ramesh, body: { machine: press._id, move: 'release' } });
+
+  const card = await fetch(`${baseUrl}/api/work-orders/${wo._id}/job-card`, { headers: { Authorization: `Bearer ${ramesh}` } });
+  assert.equal(card.status, 200);
+  assert.equal(card.headers.get('content-type'), 'application/pdf');
+  const bytes = Buffer.from(await card.arrayBuffer());
+  assert.equal(bytes.subarray(0, 4).toString(), '%PDF');
+  assert.ok(bytes.length > 3000, 'with the QR image in it');
+
+  const floor = await api('/api/production/floor', { token: ramesh });
+  assert.equal(floor.status, 200, floor.json.message);
+  const tile = floor.json.data.find((row) => row.machine.code === 'IM-FLOOR');
+  assert.equal(tile.next[0].number, wo.number, 'the next job on the press');
+
+  const run = (await api('/api/mould-runs', { method: 'POST', token: ramesh, body: { workOrder: wo._id, machine: press._id, counterStart: 0, shift: 'A' } })).json.data;
+  const called = await api(`/api/machines/${press._id}/andon`, { method: 'POST', token: ramesh, body: { reason: 'heater_band', note: 'Zone 3 not heating' } });
+  assert.equal(called.status, 200, called.json.message);
+  assert.equal(called.json.data.status, 'breakdown');
+  assert.equal((await api(`/api/machines/${press._id}/andon`, { method: 'POST', token: ramesh, body: { reason: 'heater_band' } })).status, 409, 'called once');
+  const { default: Todo } = await import('../src/models/Todo.js');
+  assert.ok(await Todo.exists({ originKey: `andon:${press._id}`, completed: false }), 'a high-priority task on Production’s queue');
+
+  const cleared = await api(`/api/machines/${press._id}/andon/clear`, { method: 'POST', token: ramesh, body: { workDone: 'Heater band replaced' } });
+  assert.equal(cleared.status, 200, cleared.json.message);
+  assert.equal(cleared.json.data.machine.status, 'running');
+  assert.equal(cleared.json.data.run, run.number);
+  const { default: MouldRun } = await import('../src/models/MouldRun.js');
+  const after = await MouldRun.findById(run._id).lean();
+  assert.equal(after.downtime[0].reason, 'heater_band', 'the stop is on the running job');
+  const { default: MaintenanceRecord } = await import('../src/models/MaintenanceRecord.js');
+  const record = await MaintenanceRecord.findOne({ machine: press._id }).lean();
+  assert.equal(record.type, 'breakdown');
+  assert.equal(record.workDone, 'Heater band replaced');
+  assert.ok(!(await Todo.exists({ originKey: `andon:${press._id}`, completed: false })), 'the task is closed');
+
+  await api(`/api/mould-runs/${run._id}/finish`, { method: 'POST', token: ramesh, body: { counterEnd: 900, goodPieces: 3500, rejectedPieces: 100, rejects: [{ reason: 'flash', pieces: 100 }] } });
+  const summary = await api('/api/production/shift-summary?shift=A', { token: ramesh });
+  assert.equal(summary.status, 200, summary.json.message);
+  const row = summary.json.data.presses.find((entry) => entry.press === 'IM-FLOOR');
+  assert.equal(row.good, 3500);
+  assert.equal(row.rejected, 100);
+  assert.ok(row.downtime.some((entry) => entry.reason === 'heater_band'));
+  assert.equal(row.runs[0].workOrder.left, 2500, 'what the job still has to make');
+  assert.ok(summary.json.data.rejects.some((entry) => entry.label === 'Flash'));
+});

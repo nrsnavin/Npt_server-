@@ -1,4 +1,4 @@
-import { componentBookHandler, componentStockHandler, fitHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, sequenceByColourHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
+import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, sequenceByColourHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
 import { componentStockSchema } from '../validators/component.schemas.js';
 import { Router } from 'express';
 import { authenticate, requireModule } from '../middleware/auth.js';
@@ -11,7 +11,7 @@ import {
   listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine, logRunHandler, runReasonsHandler,
 } from '../controllers/records.controller.js';
 import {
-  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema,
+  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema, andonSchema, andonClearSchema,
 } from '../validators/records.schemas.js';
 
 /**
@@ -51,6 +51,12 @@ router.patch('/work-orders/:id', requireModule('production', 'write'), validate(
 /* The planning board: presses by day, the fit of a mould on a press, and a press's queue light to dark. */
 router.get('/production/plan', anyModule([['production', 'read'], ['orders', 'read']]), planningBoardHandler);
 router.get('/production/fit', requireModule('production'), fitHandler);
+/* The shop floor: the job card with its QR code, the tablet's view, the andon call, the shift handover. */
+router.get('/work-orders/:id/job-card', anyModule([['production', 'read'], ['orders', 'read']]), jobCardHandler);
+router.get('/production/floor', requireModule('production'), floorHandler);
+router.get('/production/shift-summary', requireModule('production'), shiftSummaryHandler);
+router.post('/machines/:machineId/andon', requireModule('production', 'write'), validate(andonSchema), raiseAndonHandler);
+router.post('/machines/:machineId/andon/clear', requireModule('production', 'write'), validate(andonClearSchema), clearAndonHandler);
 /* The bill of materials: what the plan needs from the stores and what is short; the hook and clip store's book. */
 router.get('/production/shortages', anyModule([['production', 'read'], ['materials', 'read']]), shortagesHandler);
 router.get('/components/:id/stock', requireModule('materials'), componentBookHandler);

@@ -115,3 +115,7 @@ export const workOrderPlanSchema = z.object({
   note: text(500),
   updatedAt: z.string().optional(),
 });
+
+/** The floor calls a breakdown on a press, and later marks it running again. */
+export const andonSchema = z.object({ reason: z.enum(DOWNTIME_KEYS).optional(), note: text(500) });
+export const andonClearSchema = z.object({ workDone: text(2000), note: text(500) });
