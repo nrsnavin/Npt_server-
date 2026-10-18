@@ -112,6 +112,12 @@ test('a sample the buyer collects: the bench makes it, Reception gets the task w
   assert.ok(messages.some((row) => row.event === 'sample_ready_collect'), `the ready-to-collect notice went: ${JSON.stringify(messages.map((row) => row.event))}`);
   assert.ok((await api(`/api/samples/${sample._id}`, { as: 'meera' })).json.data.collection.informedAt);
 
+  /* Finished from Done with nobody named: refused, and the task stays open. */
+  const blind = await api(`/api/workspace/todos/${desk._id}/done`, { method: 'POST', as: 'rekha', body: { note: 'Gone' } });
+  assert.equal(blind.status, 400, blind.json.message);
+  assert.match(blind.json.message, /who collected/);
+  assert.equal((await Todo.findById(desk._id)).completed, false);
+
   /* Collected: who, phone, pieces — the name is not optional. */
   const nameless = await api(`/api/workspace/todos/${desk._id}/status`, { method: 'POST', as: 'rekha', body: { status: 'collected', note: 'Taken' } });
   assert.equal(nameless.status, 400);
@@ -132,6 +138,14 @@ test('a sample the buyer collects: the bench makes it, Reception gets the task w
   assert.ok(done.collection.collectedAt);
   assert.equal(done.statusHistory.at(-1).to, 'delivered');
   assert.match(done.statusHistory.at(-1).note, /collected at reception by Bhuvana S/);
+  /* The slip photographed after the fact still reaches the sample. */
+  assert.equal(done.collection.photo, undefined);
+  const slip = new FormData();
+  slip.append('docType', 'handover_photo');
+  slip.append('file', new Blob([Buffer.from('89504e470d0a1a0a', 'hex')], { type: 'image/png' }), 'slip.png');
+  const uploaded = await api(`/api/workspace/todos/${desk._id}/documents`, { method: 'POST', as: 'rekha', form: slip });
+  assert.equal(uploaded.status, 201, uploaded.json.message);
+  assert.equal((await api(`/api/samples/${sample._id}`, { as: 'nandhini' })).json.data.collection.photo?._id, uploaded.json.data._id);
   const after = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data;
   assert.equal(after.status, 'sample_feedback_pending', 'the enquiry waits on what the buyer says, as after a courier');
   const feedback = await api(`/api/samples/${sample._id}/feedback`, { method: 'POST', as: 'nandhini', body: { outcome: 'approved', note: 'Liked it' } });

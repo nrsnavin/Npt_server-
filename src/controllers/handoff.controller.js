@@ -2,6 +2,7 @@ import Enquiry, { checkPending } from '../models/Enquiry.js';
 import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
 import Todo from '../models/Todo.js';
 import Attachment from '../models/Attachment.js';
+import Sample from '../models/Sample.js';
 import { bufferOf, put, remove, safeFilename } from '../services/storage.service.js';
 import { sendResultToCustomer } from '../services/taskResultMessage.service.js';
 import { publicApiBase, signatureValid } from '../utils/signedLink.js';
@@ -282,6 +283,10 @@ export const handoffDocument = asyncHandler(async (req, res) => {
       }]);
       fresh.updates = [...(fresh.updates || []), { kind: 'uploaded', statusLabel: `${kind.label} uploaded`, text: req.file.originalname, note: `${kind.label} uploaded: ${req.file.originalname}`, by: req.user._id, at: new Date() }];
       await fresh.save();
+      /* Reception's hand-over photo is the sample's too, whenever it is uploaded — before or after "Buyer collected". */
+      if (fresh.kind === 'sample_collect' && kind.type === 'handover_photo' && fresh.brief?.sample) {
+        await Sample.updateOne({ _id: fresh.brief.sample }, { $set: { 'collection.photo': made._id } }, { keepVersion: true });
+      }
       return made;
     }, { label: 'task document' }));
     res.status(201).json({ success: true, data: attachment });

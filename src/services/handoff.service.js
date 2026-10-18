@@ -965,6 +965,10 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
 
   const handoff = findHandoff(task.kind);
   const kept = keptFields(task.kind, fields);
+  /* A collection finished from Done rather than "Buyer collected" still says who took the sample — before anything is saved. */
+  if (task.kind === 'sample_collect' && task.brief?.sample && !String(kept.collectorName || '').trim() && !String(kept.collectorPhone || '').trim()) {
+    fail('Say who collected the sample — their name or phone');
+  }
   /*
    * Done on a task with its own workflow is that workflow's last status (Task Closed): the card
    * shows it, and the enquiry's marketing person and Admin are told, as when it is chosen from
