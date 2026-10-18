@@ -249,3 +249,46 @@ test('a cancelled order cancels its open work orders; a changed line is followed
   [wo] = (await api(`/api/work-orders?order=${order._id}`, { token: ramesh })).json.data;
   assert.equal(wo.status, 'cancelled');
 });
+
+test('the board chains a press back to back, refuses a mould the press cannot hold, and sequences by colour', async () => {
+  const small = await machineOf('IM-SMALL');
+  const { default: Machine } = await import('../src/models/Machine.js');
+  await Machine.updateOne({ _id: small._id }, { $set: { shotCapacityGrams: 50 } });
+  const big = await machineOf('IM-BIG');
+  const order = await released([
+    { mould, modelNumber: 'NH-400', colour: 'Black', quantity: 30000, unitPrice: 7.5, deliveryDate: inDays(20) },
+    { mould, modelNumber: 'NH-400', colour: 'White', quantity: 30000, unitPrice: 7.5, deliveryDate: inDays(21) },
+  ]);
+  const list = (await api(`/api/work-orders?order=${order._id}`, { token: ramesh })).json.data;
+  const blackWo = list.find((wo) => wo.colour === 'Black');
+  const whiteWo = list.find((wo) => wo.colour === 'White');
+
+  const refused = await api(`/api/work-orders/${blackWo._id}`, { method: 'PATCH', token: ramesh, body: { machine: small._id } });
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.message, /more than IM-SMALL can inject/);
+
+  assert.equal((await api(`/api/work-orders/${blackWo._id}`, { method: 'PATCH', token: ramesh, body: { machine: big._id } })).status, 200);
+  const second = await api(`/api/work-orders/${whiteWo._id}`, { method: 'PATCH', token: ramesh, body: { machine: big._id } });
+  assert.equal(second.status, 200, second.json.message);
+  assert.equal(second.json.data.sequence, 2, 'added to the end of the press’s queue');
+  const first = (await api(`/api/work-orders/${blackWo._id}`, { token: ramesh })).json.data;
+  assert.equal(first.sequence, 1);
+  assert.ok(new Date(second.json.data.plannedStart) > new Date(first.plannedEnd), 'the second starts after the first ends');
+
+  const board = await api('/api/production/plan', { token: ramesh });
+  assert.equal(board.status, 200, board.json.message);
+  const row = board.json.data.presses.find((entry) => entry.machine.code === 'IM-BIG');
+  assert.deepEqual(row.queue.map((job) => job.colour), ['Black', 'White']);
+  assert.equal(row.changeovers, 1);
+  assert.ok(board.json.data.days.length >= 14);
+  assert.ok(Array.isArray(board.json.data.unplanned));
+
+  const sorted = await api(`/api/production/plan/${big._id}/sequence-by-colour`, { method: 'POST', token: ramesh });
+  assert.equal(sorted.status, 200, sorted.json.message);
+  const after = (await api('/api/production/plan', { token: ramesh })).json.data.presses.find((entry) => entry.machine.code === 'IM-BIG');
+  assert.deepEqual(after.queue.map((job) => job.colour), ['White', 'Black'], 'light before dark');
+  assert.equal(after.queue[0].sequence, 1);
+
+  const fit = await api(`/api/production/fit?mould=${mould}&machine=${small._id}`, { token: ramesh });
+  assert.equal(fit.json.data.ok, false);
+});

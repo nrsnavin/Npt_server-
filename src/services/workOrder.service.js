@@ -8,6 +8,7 @@ import { nextNumber } from './numbering.service.js';
 import { withCreateLocks } from './operationLock.service.js';
 import { CAPACITY_FIELDS, estimate } from './capacity.service.js';
 import { plantCalendar } from './settings.service.js';
+import { assertFits, rechain } from './planning.service.js';
 
 /**
  * Work orders: one per released order line, kept in step with the line, fed by the runs
@@ -161,6 +162,8 @@ export const WORK_ORDER_MOVES = {
  */
 export async function planWorkOrder(wo, user, { machine, plannedStart, sequence, move, note }) {
   const text = String(note || '').trim();
+  const pressBefore = wo.machine ? String(wo.machine) : null;
+  let warnings = [];
   if (move) {
     const recipe = WORK_ORDER_MOVES[move];
     if (!recipe) throw ApiError.badRequest('That is not a move a work order takes');
@@ -176,6 +179,12 @@ export async function planWorkOrder(wo, user, { machine, plannedStart, sequence,
     else {
       const press = await Machine.findById(machine).select('code active status');
       if (!press || press.active === false) throw ApiError.badRequest('That machine is not on the list');
+      /* A mould only goes on a press that can hold it [planning.service `fitOf`]. */
+      warnings = await assertFits(wo.mould, press._id, plannedStart || wo.plannedStart);
+      if (String(press._id) !== pressBefore && sequence === undefined) {
+        const last = await WorkOrder.findOne({ machine: press._id, status: { $in: OPEN_WORK_ORDER_STATUSES }, _id: { $ne: wo._id } }).sort({ sequence: -1 }).select('sequence').lean();
+        wo.sequence = (last?.sequence || 0) + 1;
+      }
       wo.machine = press._id;
     }
   }
@@ -189,6 +198,19 @@ export async function planWorkOrder(wo, user, { machine, plannedStart, sequence,
   } else wo.plannedEnd = undefined;
   if (!move && text) wo.history = [...(wo.history || []), { status: wo.status, note: text, by: user._id, at: new Date() }];
   await wo.save();
+  /*
+   * A press's jobs run back to back: moving a job, reordering it or closing it re-chains the
+   * presses it touched — unless a start day was typed, which is the planner overriding the chain.
+   */
+  const pressNow = wo.machine ? String(wo.machine) : null;
+  const touched = machine !== undefined || sequence !== undefined || Boolean(move);
+  if (touched && plannedStart === undefined) {
+    if (pressNow) await rechain(pressNow);
+    if (pressBefore && pressBefore !== pressNow) await rechain(pressBefore);
+    const fresh = await WorkOrder.findById(wo._id).select('sequence plannedStart plannedEnd updatedAt').lean();
+    if (fresh) Object.assign(wo, { sequence: fresh.sequence, plannedStart: fresh.plannedStart, plannedEnd: fresh.plannedEnd });
+  }
+  wo.$locals.warnings = warnings;
   return wo;
 }
 

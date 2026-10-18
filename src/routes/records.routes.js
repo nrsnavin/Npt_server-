@@ -1,4 +1,4 @@
-import { getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler } from '../controllers/workOrder.controller.js';
+import { fitHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, sequenceByColourHandler } from '../controllers/workOrder.controller.js';
 import { Router } from 'express';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -47,6 +47,10 @@ router.post('/mould-runs', requireModule('production', 'write'), validate(runSta
 router.get('/work-orders', anyModule([['production', 'read'], ['orders', 'read']]), listWorkOrdersHandler);
 router.get('/work-orders/:id', anyModule([['production', 'read'], ['orders', 'read']]), getWorkOrderHandler);
 router.patch('/work-orders/:id', requireModule('production', 'write'), validate(workOrderPlanSchema), planWorkOrderHandler);
+/* The planning board: presses by day, the fit of a mould on a press, and a press's queue light to dark. */
+router.get('/production/plan', anyModule([['production', 'read'], ['orders', 'read']]), planningBoardHandler);
+router.get('/production/fit', requireModule('production'), fitHandler);
+router.post('/production/plan/:machineId/sequence-by-colour', requireModule('production', 'write'), sequenceByColourHandler);
 router.get('/mould-runs/reasons', runReasonsHandler);
 router.post('/mould-runs/:id/finish', requireModule('production', 'write'), validate(runFinishSchema), finishRunHandler);
 router.post('/mould-runs/:id/log', requireModule('production', 'write'), validate(runLogSchema), logRunHandler);
