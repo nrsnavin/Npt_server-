@@ -5,6 +5,7 @@ import Attachment from '../models/Attachment.js';
 import Sample from '../models/Sample.js';
 import MouldRun from '../models/MouldRun.js';
 import Receivable from '../models/Receivable.js';
+import { FINISHING_DEPARTMENTS, withDeskSummaries } from '../services/deskSummary.service.js';
 import WorkOrder from '../models/WorkOrder.js';
 import mongoose from 'mongoose';
 import { journeyOf } from '../services/journey.service.js';
@@ -572,7 +573,9 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
   const dashboard = mergeDashboards(perDepartment.map((row) => row.dashboard), { key, label: desk?.label });
   const atStages = perDepartment.flatMap((row) => row.atStages);
   /* A person's own payment follow-up is on every member's desk list — once on the merged desk. */
-  const held = uniqueTasks(perDepartment.flatMap((row) => row.held), (row) => row.task._id);
+  const merged = uniqueTasks(perDepartment.flatMap((row) => row.held), (row) => row.task._id);
+  /* Printing, Assembly and Quality read their desk as lines: enquiry, buyer, EDD, the state in 20–30 words, the workflow page. */
+  const held = members.every((member) => FINISHING_DEPARTMENTS.includes(member)) ? await withDeskSummaries(merged) : merged;
   /* The queue less the enquiries themselves: side requests, like a PRT visit or photos sent. */
   const heldIds = new Set(held.map((row) => String(row.task._id)));
   const requests = dashboard.queue.filter((task) => !heldIds.has(String(task._id)));

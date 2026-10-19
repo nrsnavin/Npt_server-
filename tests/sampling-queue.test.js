@@ -161,6 +161,24 @@ test('not available needs a reason, and goes back to marketing as an urgent task
   const task = await Todo.findOne({ title: `Sample ${sample.number} is not available` }).lean();
   assert.ok(task, 'marketing was told');
   assert.match(task.notes, /No natural PP/);
+
+  /* Admin and the buyer's marketer hear the move under Needs your action, with the reason. */
+  for (const token of [admin, nandhini]) {
+    const notices = (await api('/api/workspace/notices', { token })).json.data || [];
+    const notice = notices.find((entry) => entry.statusLabel === `Sample ${sample.number} — Not available`);
+    assert.ok(notice, 'told under Needs your action');
+    assert.match(notice.note, /No natural PP/);
+  }
+});
+
+test('every move on the bench reaches Admin and the buyer’s marketer', async () => {
+  const { sample } = await requestSample();
+  assert.equal((await move(sample._id, { status: 'checking_stock' })).status, 200);
+  await settle();
+  const notices = (await api('/api/workspace/notices', { token: admin })).json.data || [];
+  assert.ok(notices.some((entry) => entry.statusLabel === `Sample ${sample.number} — Checking stock`), 'Admin told');
+  const theirs = (await api('/api/workspace/notices', { token: nandhini })).json.data || [];
+  assert.ok(theirs.some((entry) => entry.statusLabel === `Sample ${sample.number} — Checking stock`), 'the marketer told');
 });
 
 test('handed over in person: no courier or AWB, but a contact or a phone', async () => {

@@ -183,14 +183,32 @@ export function registerSamplingSubscribers() {
     EVENTS.SAMPLE_NOT_AVAILABLE,
     safely('not available notice', async ({ sample }) => {
       const reason = [...(sample.statusHistory || [])].reverse().find((entry) => entry.to === 'not_available')?.note;
-      await raiseTask({
-        user: sample.requestedBy,
-        title: `Sample ${sample.number} is not available`,
-        notes: [reason, 'Tell the buyer and decide: another model, wait for a run, or cancel.'].filter(Boolean).join(' — '),
-        priority: 'high',
-        link: `/samples/${sample._id}`,
-        originKey: key(sample, 'not-available'),
-      });
+      /* Whoever asked, and the marketer who owns the buyer — each has to tell the buyer and decide. */
+      const { default: Customer } = await import('../models/Customer.js');
+      const owner = sample.customer ? (await Customer.findById(sample.customer?._id || sample.customer).select('assignedTo').lean())?.assignedTo : null;
+      for (const person of [...new Set([sample.requestedBy, owner].filter(Boolean).map((who) => String(who?._id || who)))]) {
+        await raiseTask({
+          user: person,
+          title: `Sample ${sample.number} is not available`,
+          notes: [reason, 'Tell the buyer and decide: another model, wait for a run, or cancel.'].filter(Boolean).join(' — '),
+          priority: 'high',
+          link: `/samples/${sample._id}`,
+          originKey: key(sample, 'not-available'),
+        });
+      }
+    })
+  );
+
+  /*
+   * Every move on the bench reaches Admin and the buyer's marketer — under "Needs your action"
+   * and on their phones — with the reason given [handoff.service `noticeSampleMove`].
+   */
+  subscribe(
+    EVENTS.SAMPLE_STATUS_CHANGED,
+    safely('sample status notice', async ({ sample, to, by }) => {
+      const { noticeSampleMove } = await import('../services/handoff.service.js');
+      const note = [...(sample.statusHistory || [])].reverse().find((entry) => entry.to === to)?.note;
+      await noticeSampleMove(sample, by, { to, note });
     })
   );
 

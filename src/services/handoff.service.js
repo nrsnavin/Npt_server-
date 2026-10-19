@@ -1837,6 +1837,32 @@ export async function noticeStatus(task, user, { step, note, date, also = [], on
     .catch((error) => console.error(`[handoff] status push not sent: ${error.message}`)));
 }
 
+const sampleWords = (status) => {
+  const text = String(status || '').replace(/_/g, ' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+};
+
+/**
+ * A sample's status moved on the bench: Admin, the enquiry's marketing person and the marketer
+ * who owns the buyer hear it under "Needs your action" and on their phones [noticeStatus] —
+ * "Sampling: Sample S-0042 — Not available", with the reason. Hung on the enquiry's Sampling
+ * task, as every department move is. Never fails the move that called it.
+ */
+export async function noticeSampleMove(sample, user, { to, note } = {}) {
+  const enquiryId = sample.enquiry?._id || sample.enquiry;
+  if (!enquiryId) return null;
+  /* The Sampling task, else the desk's, else whatever task holds the enquiry — a sample raised by the automation has no Sampling task. */
+  const task = await Todo.findOne({ enquiry: enquiryId, kind: 'sample_request' }).sort({ completed: 1, createdAt: -1 })
+    || await Todo.findOne({ enquiry: enquiryId, kind: 'sample_collect' }).sort({ completed: 1, createdAt: -1 })
+    || await Todo.findOne({ enquiry: enquiryId }).sort({ completed: 1, holds: -1, createdAt: -1 });
+  if (!task) return null;
+  const { default: Customer } = await import('../models/Customer.js');
+  const buyer = sample.customer ? await Customer.findById(sample.customer?._id || sample.customer).select('assignedTo').lean() : null;
+  const label = `Sample ${sample.number} — ${sampleWords(to)}`;
+  await noticeStatus(task, user, { step: { key: to, label }, note: String(note || '').trim() || undefined, also: [buyer?.assignedTo, sample.requestedBy].filter(Boolean).map(idOf) });
+  return task;
+}
+
 /* Unread, or read within the last day — a notice clears itself a day after it is read. */
 const liveNotices = (user) => ({
   recipient: user._id,

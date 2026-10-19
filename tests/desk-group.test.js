@@ -169,3 +169,31 @@ test('My Payment Follow-up lands on the login that raises it, each person their 
   assert.equal(noted.status, 200, noted.json.message);
   assert.ok((await noticesFor('admin')).some((notice) => notice.note === 'Accounts promised Friday'));
 });
+
+test('the Quality · Printing · Assembly desk reads as lines: enquiry, buyer, EDD, a 20–30 word state, the Production workflow page', async () => {
+  const enquiry = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: ids.customer, requirement: { modelNumber: 'NPT-410V' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data._id;
+  const send = async (kind) => {
+    const sent = await api(`/api/enquiries/${enquiry}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind, note: `Please do: ${kind}` } });
+    assert.equal(sent.status, 201, `${kind}: ${sent.json.message}`);
+    return sent.json.data.task;
+  };
+  const production = await send('ask_edd');
+  await send('quality_check');
+  await send('ask_printing');
+  const desk = (await api('/api/departments/quality/dashboard', { as: 'suresh' })).json.data;
+  const rows = desk.enquiries.filter((row) => String(row.enquiry?._id) === String(enquiry));
+  assert.equal(rows.length, 2, 'Quality’s and Printing’s tasks on the desk');
+  for (const row of rows) {
+    assert.ok(row.summary && row.summary.split(/\s+/).length <= 30, row.summary);
+    assert.equal(row.summaryBy, 'rules', 'no model set up in the tests: the rules write the line');
+    assert.equal(row.workflow, `/production/workflow/${production._id}`);
+    assert.match(row.summary, /Production: /);
+    assert.match(row.summary, /No EDD yet/);
+  }
+  /* A desk outside the three keeps its rows as they were. */
+  const productionDesk = (await api('/api/departments/production/dashboard', { as: 'siva' })).json.data;
+  assert.equal(productionDesk.enquiries[0]?.summary, undefined);
+});
