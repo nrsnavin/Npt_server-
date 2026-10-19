@@ -60,16 +60,34 @@ export function modelsOf(task, enquiry = {}) {
   return one ? [String(one).trim()] : [];
 }
 
-/** A team task's status for one model: its own, where models move apart, else the task's. */
-function statusFor(task, model) {
+/**
+ * The date a team gave for one model [Todo `modelDates`], else the task's hand-over date: a
+ * hand-over date where the model goes on to another team, its EDD where this team is the last.
+ */
+function dateFor(task, model, handsOn) {
+  if (!task) return null;
+  const rows = task.modelDates || [];
+  const date = (rows.find((row) => row.model === model) || rows.find((row) => row.model === 'All models'))?.date
+    || (handsOn ? task.routing?.handOverDate : null) || null;
+  return date ? { date, label: handsOn ? 'Hand-over' : 'EDD' } : null;
+}
+
+/**
+ * A team task's status for one model: its own, where models move apart, else the task's —
+ * with the hand-over date or EDD it gave. A task closed at a hand-over (Handed to Printing)
+ * says so; one closed at Task Closed reads Done.
+ */
+function statusFor(task, model, handsOn = false) {
   if (!task) return null;
   const own = (task.modelStatuses || []).find((row) => row.model === model)?.status;
   const key = own || task.status;
+  const step = statusesOf(task.kind).find((entry) => entry.key === key);
   return {
     key: key || null,
-    label: task.completed ? 'Done' : labelOf(task.kind, key) || 'Asked',
+    label: task.completed ? (step && !step.done ? step.label : 'Done') : step?.label || 'Asked',
     issue: !task.completed && isIssue(task.kind, key),
     done: Boolean(task.completed),
+    given: dateFor(task, model, handsOn),
   };
 }
 
@@ -89,12 +107,14 @@ export function modelRows({ task, enquiry = {}, teams = {}, workOrders = [] }) {
       decided: Boolean(route),
       printing: Boolean(route?.printing),
       assembly: Boolean(route?.assembly),
-      production: statusFor(task, model),
-      printingStatus: route?.printing ? statusFor(teams.printing, model) : null,
+      production: statusFor(task, model, Boolean(route?.printing || route?.assembly)),
+      printingStatus: route?.printing ? statusFor(teams.printing, model, Boolean(route.assembly)) : null,
       printingReceived: route?.printing ? teams.printing?.routing?.receivedModels?.[model] || null : null,
       assemblyStatus: route?.assembly ? statusFor(teams.assembling, model) : null,
       assemblyReceived: route?.assembly ? teams.assembling?.routing?.receivedModels?.[model] || null : null,
-      edd: edd ? edd.final?.date || edd.date || null : null,
+      /* The enquiry's EDD for the model; on a team task (no enquiry), the date its last team gave. */
+      edd: edd ? edd.final?.date || edd.date || null
+        : dateFor(route?.assembly ? teams.assembling : route?.printing ? teams.printing : task, model, false)?.date || null,
       workOrders: workOrders.filter((wo) => codeKey(wo.modelNumber) === codeKey(model)).map((wo) => wo.number),
     };
   });
@@ -136,7 +156,8 @@ export function summarise({ task, enquiry = {}, teams = {}, floor = {}, workOrde
   if (task?.kind === 'ask_edd' && task.enquiry && !task.routing?.decidedAt) parts.push('Printing/assembly not decided');
   for (const team of ['printing', 'assembling', 'quality', 'despatch']) {
     const other = teams[team];
-    if (other) parts.push(`${TEAM_WORDS[team]} ${other.completed ? 'done' : labelOf(other.kind, other.status) || 'asked'}`);
+    /* A team closed at its hand-over says so (Printing Handed to Assembly); one closed outright, done. */
+    if (other) parts.push(`${TEAM_WORDS[team]} ${statusFor(other, null).label.replace(/^Done$/, 'done').replace(/^Asked$/, 'asked')}`);
   }
   if (!edd) parts.push('No EDD yet');
   return capWords(parts.join('. '));
