@@ -54,7 +54,7 @@ export const sendTestNotification = asyncHandler(async (req, res) => {
   const [{ sendPush }, { sendEmail }] = await Promise.all([import('../services/push.service.js'), import('../services/notification.service.js')]);
   const devices = await PushSubscription.countDocuments({ user: req.user._id });
   const when = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-  await sendPush([req.user._id], { title: 'Test notification', body: `Notifications work on this device — ${when}`, link: '/profile', kind: 'test' });
+  const delivered = await sendPush([req.user._id], { title: 'Test notification', body: `Notifications work on this device — ${when}`, link: '/profile', kind: 'test' });
   let email = { sent: false, why: 'No email address on your profile' };
   if (req.user.email) {
     try {
@@ -64,5 +64,7 @@ export const sendTestNotification = asyncHandler(async (req, res) => {
       email = { sent: false, why: error.message };
     }
   }
-  res.json({ success: true, data: { push: { pushConfigured: pushConfigured(), devices }, email } });
+  /* WhatsApp: only said, not sent — a test message to yourself needs an approved template outside the 24-hour window. */
+  const { isWhatsAppConfigured } = await import('../providers/whatsapp.js');
+  res.json({ success: true, data: { push: { pushConfigured: pushConfigured(), devices, delivered }, email, whatsapp: { configured: isWhatsAppConfigured() } } });
 });

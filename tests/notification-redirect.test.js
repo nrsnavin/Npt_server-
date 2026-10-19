@@ -125,7 +125,19 @@ test('the profile check says what is set up, and a test reaches me', async () =>
   const sent = await api('/api/workspace/notifications/test', { method: 'POST', token: ramesh });
   assert.equal(sent.status, 200, sent.json.message);
   assert.equal(sent.json.data.push.devices, 1);
+  assert.equal(sent.json.data.push.delivered[0].ok, false);
+  assert.match(sent.json.data.push.delivered[0].why, /not set up on the server/);
   assert.equal(sent.json.data.email.sent, false);
   assert.match(sent.json.data.email.why, /mail server is not set/);
   assert.equal((await api('/api/workspace/notifications/status')).status, 401);
+});
+
+test('a push service refusal is said in words, with what to do', async () => {
+  const { serviceOf, whyRefused } = await import('../src/services/push.service.js');
+  assert.equal(serviceOf('https://web.push.apple.com/abc'), 'Apple');
+  assert.equal(serviceOf('https://fcm.googleapis.com/fcm/send/abc'), 'Google');
+  assert.match(whyRefused(403, 'BadJwtToken'), /Turn off, then Turn on/);
+  assert.match(whyRefused(410), /no longer subscribed/);
+  assert.match(whyRefused(400, 'BadWebPushTopic'), /WEB_PUSH_SUBJECT/);
+  assert.match(whyRefused(500, 'oops'), /answered 500: oops/);
 });
