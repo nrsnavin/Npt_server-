@@ -90,6 +90,13 @@ test('the SO task starts at SO Waiting; the statuses come from the server', asyn
   assert.equal(soTask.status, 'waiting');
   assert.deepEqual(soTask.brief.items, [{ model: 'UTJRSH-0', material: 'PP Black', quantity: '5000', price: '2.4', edd: '2026-11-10' }]);
   assert.equal(soTask.brief.productionConfirmed, undefined);
+
+  /* The form picks from the registers, and each line carries its parts. */
+  const prefill = (await api(`/api/enquiries/${enquiry._id}/handoffs/prefill`, { as: 'nandhini' })).json.data;
+  assert.deepEqual(Object.keys(prefill.registers).sort(), ['clips', 'hooks', 'materials', 'moulds', 'prints']);
+  assert.deepEqual(Object.keys(prefill.orderItems[0]).sort(), ['clip', 'edd', 'hook', 'material', 'model', 'price', 'print', 'quantity']);
+  assert.deepEqual(buttons.find((button) => button.key === 'po_so').asks.find((field) => field.key === 'items').columns.map((column) => column.label),
+    ['Model', 'Material & colour', 'Hook', 'Clip', 'Print', 'Qty (pcs)', 'Price (₹ / pc)', 'EDD']);
 });
 
 test('Preparing; Prepared only by uploading the PDF; another department cannot move it', async () => {
