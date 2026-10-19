@@ -1,4 +1,5 @@
 import { withCreateLocks } from './operationLock.service.js';
+import { afterCommit } from '../utils/transaction.js';
 import Todo, { PRIORITIES } from '../models/Todo.js';
 import Enquiry from '../models/Enquiry.js';
 import { CLOSED_STAGE, SALES_STAGE_KEYS, SIDE_STAGES, STAGES, stageLabel } from '../config/enquiryStages.js';
@@ -520,6 +521,10 @@ async function moveEnquiryChecked({
   if (enquiry.stage === CLOSED_STAGE) fail('This enquiry is closed. Nothing more can be sent on it.');
   if (kind === 'back_to_marketing') return returnToMarketing({ enquiry, note, fields, user, system });
   if (!system && !(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
+  /* A Production Holded Order goes on to Production only by Admin or its marketing person. */
+  if (!system && enquiry.stage === 'production_hold' && kind === 'ask_edd' && !mayReleaseHeld(user, enquiry)) {
+    throw ApiError.forbidden('Only Admin or this enquiry’s marketing person can move a Production Holded Order to Production');
+  }
 
   /* One open request per enquiry and kind — except a "My" task, which is each person's own: a
      second person's payment follow-up on the same buyer is theirs, not an add-on to a colleague's. */
@@ -693,7 +698,7 @@ export async function teamTaskPrefill(customerId, user) {
     }
   }
   return {
-    customer, items: [], modelList: [], models: '', materials: '', quantity: '', targetPrice: '', order: { paymentTerms: '', invoiceNumber: '' }, members,
+    customer, items: [], orderItems: [], modelList: [], models: '', materials: '', quantity: '', targetPrice: '', order: { paymentTerms: '', invoiceNumber: '' }, members,
     /* No enquiry to fill the models and parts from: the registers, as dropdowns. */
     registers: await registerLists(),
   };
@@ -951,6 +956,21 @@ function openHandoff(task, user) {
   }
 }
 
+/**
+ * Whether this task's order waits with marketing instead of going on to Production: the SO
+ * request was sent without Production confirmed ticked [config/handoffs.js po_so `holdUnless`].
+ */
+export const heldBack = (task) => {
+  const flag = findHandoff(task?.kind)?.holdUnless;
+  return Boolean(flag && task.brief?.[flag] !== 'Yes');
+};
+
+/**
+ * Who may send a Production Holded Order on to Production: Admin, or the enquiry's marketing
+ * person — whoever it is with now, so a delegated enquiry is its new owner's to move.
+ */
+export const mayReleaseHeld = (user, enquiry) => isAdmin(user) || idOf(enquiry.assignedTo) === idOf(user?._id);
+
 const enquiryOfTask = async (task) => {
   const enquiry = await Enquiry.findById(task.enquiry?._id || task.enquiry).populate('customer', 'code name');
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
@@ -1021,7 +1041,7 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
   if (task.kind === 'sample_collect') await collectedAtDesk(task, user, kept);
 
   /* The enquiry moves where this task's finishing says it does — before anybody is told. */
-  await reachEnquiry(task, user, handoff?.whenDone, text);
+  await reachEnquiry(task, user, heldBack(task) ? handoff.whenHeld : handoff?.whenDone, text);
   if (closesNow && handoff?.form?.notifyStatus) await noticeStatus(task, user, { step: closing, note: text });
   const details = (handoff?.records || []).filter((field) => kept[field.key]).map((field) => `${field.label}: ${kept[field.key]}`);
   /* A clarification's answer goes back onto the task that asked; anything else, to its sender. */
@@ -1486,6 +1506,24 @@ export async function raiseAssemblyWith(task, user) {
  * knows on top: the quantity sent, and today as the dispatch date. Once only: a second
  * Dispatched does not raise a second LR task. A refusal (a payment gate) is left as a note.
  */
+/** The pieces a request asks for: its quantity, or the sum of its rows (the SO request's lines). */
+function briefQuantity(brief) {
+  if (brief?.quantity) return brief.quantity;
+  const total = (Array.isArray(brief?.items) ? brief.items : []).reduce((sum, row) => sum + (Number(row.quantity) || 0), 0);
+  return total ? String(total) : '';
+}
+
+/** What the SO request said, for Production's task: the first model, its material, and all the pieces. */
+function carriedBrief(task) {
+  const [first] = Array.isArray(task.brief?.items) ? task.brief.items : [];
+  const quantity = briefQuantity(task.brief);
+  return {
+    ...(first?.model ? { model: first.model } : {}),
+    ...(first?.material ? { material: first.material } : {}),
+    ...(quantity ? { quantity } : {}),
+  };
+}
+
 async function raiseNextFrom(task, user, step, text) {
   const enquiryId = task.enquiry?._id || task.enquiry;
   const open = await Todo.findOne({ enquiry: enquiryId, kind: step.next, completed: false }).select('_id');
@@ -1493,7 +1531,7 @@ async function raiseNextFrom(task, user, step, text) {
     /* Already raised — a second part load, or the last of them: the open task is told, not doubled. */
     await Todo.updateOne(
       { _id: open._id },
-      { $push: { updates: { note: `${step.label} by ${user.name}${task.brief?.quantity ? ` · ${task.brief.quantity} pcs on the request` : ''}${text ? ` — ${text}` : ''}`, by: user._id, at: new Date() } } },
+      { $push: { updates: { note: `${step.label} by ${user.name}${briefQuantity(task.brief) ? ` · ${briefQuantity(task.brief)} pcs on the request` : ''}${text ? ` — ${text}` : ''}`, by: user._id, at: new Date() } } },
       { keepVersion: true }
     );
     return null;
@@ -1507,7 +1545,8 @@ async function raiseNextFrom(task, user, step, text) {
     const value = read(field.from);
     if (value != null && value !== '') brief[field.key] = value;
   }
-  if (task.brief?.quantity) brief.quantity = task.brief.quantity;
+  const asked = briefQuantity(task.brief);
+  if (asked) brief.quantity = asked;
   if (findHandoff(step.next)?.asks?.some((field) => field.key === 'dispatchedOn')) brief.dispatchedOn = indiaDay(new Date());
   try {
     return await moveEnquiry({
@@ -1642,6 +1681,16 @@ export async function noticeStatus(task, user, { step, note, date, also = [], on
     department: task.department, kind: task.kind, status: step.key, statusLabel: step.label,
     note: note || undefined, date: date || undefined, by: user?._id || undefined, at: new Date(),
   })));
+  /*
+   * And on their phones: the notice alone was only seen with the app open. Sent once the move
+   * is committed, so a move rolled back rings nobody; never holds up the move.
+   */
+  const title = `${departmentName(task.department)}: ${step.label}`;
+  const body = [task.title, note, user?.name && `by ${user.name}`].filter(Boolean).join(' — ').slice(0, 200);
+  const link = enquiry ? `/enquiries/${enquiry._id}` : task.link || '/departments/mine';
+  afterCommit(() => import('./push.service.js')
+    .then(({ sendPush }) => sendPush([...recipients], { title, body, link, kind: 'task-status', taskId: String(task._id) }))
+    .catch((error) => console.error(`[handoff] status push not sent: ${error.message}`)));
 }
 
 /* Unread, or read within the last day — a notice clears itself a day after it is read. */
@@ -1718,12 +1767,16 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
     : task;
   let next = null;
   let nextProblem = null;
-  if (step.next && !task.enquiry) {
+  /* Production not confirmed on the request: the order waits with marketing, nothing is raised. */
+  const held = Boolean(step.next && task.enquiry && heldBack(task));
+  if (held) {
+    nextProblem = 'Production was not confirmed on the request — the order is with marketing under Production Holded Orders until Admin or its marketing person moves it to Production.';
+  } else if (step.next && !task.enquiry) {
     nextProblem = `No enquiry on this task, so ${findHandoff(step.next)?.label || 'the next step'} was not raised.`;
   } else if (step.next) {
     const enquiry = await enquiryOfTask(task);
     try {
-      next = await moveEnquiry({ enquiry, kind: step.next, note: `${step.label} by ${user.name}`, user, system: true, order: task.order });
+      next = await moveEnquiry({ enquiry, kind: step.next, note: `${step.label} by ${user.name}`, user, system: true, order: task.order, brief: carriedBrief(task) });
     } catch (error) {
       if (error?.statusCode !== 400 && error?.statusCode !== 409) throw error;
       nextProblem = error.message;
@@ -1731,7 +1784,7 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
   }
   /* The work uploaded is itself a move for the enquiry — the LR reads LR Sent and closes it. */
   await reachEnquiry(task, user, findHandoff(task.kind)?.whenResult, String(note || '').trim() || `${step.label} — uploaded`);
-  return { task: done, next, nextProblem };
+  return { task: done, next, nextProblem, held };
 }
 
 /**
@@ -2018,6 +2071,35 @@ export async function taskPrefill(enquiryId) {
       quantity: '3',
     };
   });
+  /* "PP Black" — but "HIPS White", not "HIPS White White", when the resin's name already says it. */
+  const materialAndColour = (row) => (row.colour && !String(row.material || '').toLowerCase().includes(row.colour.toLowerCase())
+    ? [row.material, row.colour].filter(Boolean).join(' ')
+    : row.material || row.colour || '');
+  const day = (value) => (value ? new Date(value).toISOString().slice(0, 10) : '');
+  /*
+   * The SO request's lines: the order's own lines when there is one; else each model with the
+   * enquiry's quantity and the quotation's price for it (the buyer's target price failing that).
+   */
+  const quotedFor = (row) => (quotation?.lines || []).find((line) => sameModel(described(line), row) && line.unitPrice != null)?.unitPrice;
+  const orderItems = order?.lines?.length
+    ? order.lines.map((line) => ({
+      model: described(line).model,
+      material: materialAndColour(described(line)),
+      quantity: line.quantity ? String(line.quantity) : '',
+      price: line.unitPrice != null ? String(line.unitPrice) : '',
+      edd: day(line.promisedDate || line.deliveryDate),
+    }))
+    : items.map((row) => {
+      const asked = source.find((entry) => sameModel(described(entry), row));
+      const price = quotedFor(row) ?? enquiry.targetPrice;
+      return {
+        model: row.model,
+        material: materialAndColour(row),
+        quantity: asked?.quantity ? String(asked.quantity) : '',
+        price: price != null ? String(price) : '',
+        edd: '',
+      };
+    });
   const modelList = [...new Set(items.map((row) => row.model).filter(Boolean))];
   const enquiryQuantity = source.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0);
   const orderQuantity = (order?.lines || []).reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
@@ -2035,12 +2117,10 @@ export async function taskPrefill(enquiryId) {
       delivery: `${primary?.name || 'Not added'} · ${phone || 'No number'} · ${place || 'Road not selected'}`,
     },
     items,
+    orderItems,
     modelList,
     models: modelList.join(', '),
-    /* "PP Black" — but "HIPS White", not "HIPS White White", when the resin's name already says it. */
-    materials: items.map((row) => (row.colour && !row.material.toLowerCase().includes(row.colour.toLowerCase())
-      ? [row.material, row.colour].filter(Boolean).join(' ')
-      : row.material || row.colour)).filter(Boolean).join(', '),
+    materials: items.map(materialAndColour).filter(Boolean).join(', '),
     /* Enquiries carry no quantity; the order on it does. */
     quantity: String(orderQuantity || enquiryQuantity || ''),
     targetPrice: enquiry.targetPrice != null ? String(enquiry.targetPrice) : '',

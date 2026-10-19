@@ -29,6 +29,8 @@ export const MARKETING_STATUSES = [
   { key: 'po_awaiting', label: 'PO awaiting' },
   { key: 'po_received', label: 'PO received' },
   { key: 'sales_order_sent', label: 'Sales order sent' },
+  /* The SO prepared, Production not confirmed yet — waiting on marketing or Admin to move it on. */
+  { key: 'production_hold', label: 'Production Holded Orders' },
   /* With the plant — followed from the department asked (`FROM_STAGE`), or chosen by hand. */
   { key: 'production', label: 'Production' },
   { key: 'mould', label: 'Mould' },
@@ -92,6 +94,7 @@ export const PLANT_STATUSES = ['production', 'mould', 'assembling', 'qc', 'dispa
 export const STAGE_FOR_MARKETING = {
   po_received: 'po_so',
   sales_order_sent: 'po_so',
+  production_hold: 'production_hold',
   production: 'production_edd',
   mould: 'mould',
   assembling: 'assembling',

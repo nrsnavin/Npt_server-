@@ -2,7 +2,8 @@
  * The SO team's own workflow on its task [config/departmentTaskForms.js po_so `statuses`]:
  * SO Waiting → SO Preparing → Needs Clarification (a comment, and a task for the enquiry's
  * marketing person whose answer comes back) → SO Prepared, reached by uploading the sales order
- * as a PDF — which finishes the task and moves the enquiry on to Production.
+ * as a PDF — which finishes the task and moves the enquiry on to Production when the request said
+ * Production confirmed, and otherwise leaves it with marketing as a Production Holded Order.
  *
  *   node --test tests/so-workflow.test.js
  */
@@ -78,11 +79,17 @@ test('the SO task starts at SO Waiting; the statuses come from the server', asyn
   const form = buttons.find((button) => button.key === 'po_so').form;
   assert.deepEqual(form.statuses.map((entry) => entry.label), ['SO Waiting', 'SO Preparing', 'Needs Clarification', 'SO Prepared']);
   const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
-    method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'Prepare and send SO', brief: { contactPerson: 'sas', mobile: '917087520007', models: 'UTJRSH-0' } },
+    method: 'POST', as: 'nandhini', body: {
+      kind: 'po_so', note: 'Prepare and send SO',
+      /* Production not confirmed: the SO prepared waits with marketing [handoffs po_so `holdUnless`]. */
+      brief: { contactPerson: 'sas', mobile: '917087520007', items: [{ model: 'UTJRSH-0', material: 'PP Black', quantity: '5,000', price: '2.40', edd: '2026-11-10' }] },
+    },
   });
   assert.equal(sent.status, 201, sent.json.message);
   soTask = sent.json.data.task;
   assert.equal(soTask.status, 'waiting');
+  assert.deepEqual(soTask.brief.items, [{ model: 'UTJRSH-0', material: 'PP Black', quantity: '5000', price: '2.4', edd: '2026-11-10' }]);
+  assert.equal(soTask.brief.productionConfirmed, undefined);
 });
 
 test('Preparing; Prepared only by uploading the PDF; another department cannot move it', async () => {
@@ -147,15 +154,15 @@ test('Needs Clarification asks for a comment and gives the marketing person a ta
 
 test('the SO team corrects the contact details, and only those', async () => {
   const edited = await api(`/api/workspace/todos/${soTask._id}/brief`, {
-    method: 'POST', as: 'priya', body: { brief: { contactPerson: 'Sasikumar (accounts)', models: 'something else' } },
+    method: 'POST', as: 'priya', body: { brief: { contactPerson: 'Sasikumar (accounts)', productionConfirmed: true } },
   });
   assert.equal(edited.status, 200, edited.json.message);
   assert.equal(edited.json.data.brief.contactPerson, 'Sasikumar (accounts)');
-  assert.equal(edited.json.data.brief.models, 'UTJRSH-0', 'not a question the SO team may change');
+  assert.equal(edited.json.data.brief.productionConfirmed, undefined, 'not a question the SO team may change');
   assert.match(edited.json.data.updates.at(-1).note, /Corrected: Contact person/);
 });
 
-test('uploading the sales order PDF finishes the task and moves the enquiry to Production', async () => {
+test('uploading the sales order PDF without Production confirmed: Won, held with marketing, nothing raised', async () => {
   const ticked = await api(`/api/workspace/todos/${soTask._id}/done`, { method: 'POST', as: 'priya', body: { note: 'Sent the SO' } });
   assert.equal(ticked.status, 400, 'not ticked off without the sales order');
   assert.match(ticked.json.message, /Upload the PDF to finish this task/);
@@ -167,9 +174,57 @@ test('uploading the sales order PDF finishes the task and moves the enquiry to P
   assert.equal(done.json.data.status, 'prepared');
   assert.equal(done.json.data.completed, true);
   assert.equal(done.json.data.resultFile.filename, 'SO-2026-0042.pdf');
-  assert.equal(done.json.next?.department, 'production', 'Production has its task');
-  assert.equal((await Enquiry.findById(enquiry._id)).stage, 'production_edd');
+  assert.equal(done.json.next, null, 'Production is not asked');
+  assert.equal(done.json.held, true);
+  assert.match(done.json.nextProblem, /Production Holded Orders/);
+  const held = await Enquiry.findById(enquiry._id);
+  assert.deepEqual([held.stage, held.marketingStatus, held.status], ['production_hold', 'production_hold', 'won']);
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'ask_edd' }), 0);
   assert.equal((await upload('priya')).status, 409, 'a finished task takes no second PDF');
+
+  /* The marketing desk counts it under its own stage. */
+  const desk = (await api('/api/departments/mine/dashboard', { as: 'nandhini' })).json.data;
+  assert.equal(desk.atStages.find((stage) => stage.key === 'production_hold')?.count, 1);
+});
+
+test('a held order goes to Production only by Admin or its marketing person', async () => {
+  const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name: 'Kavi M', email: 'kavi@np.com', password: 'Pass@123456', department: 'marketing' } });
+  assert.equal(made.status, 201, made.json.message);
+  token.kavi = (await api('/api/auth/login', { method: 'POST', body: { email: 'kavi@np.com', password: 'Pass@123456' } })).json.data.token;
+  const move = (as) => api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as, body: { kind: 'ask_edd', note: 'Buyer confirmed — go ahead', brief: { model: 'UTJRSH-0', quantity: '5000' } } });
+  assert.ok([403, 404].includes((await move('kavi')).status), 'another marketing person cannot');
+  assert.ok([403, 404].includes((await move('priya')).status), 'nor the SO team');
+  const moved = await move('nandhini');
+  assert.equal(moved.status, 201, moved.json.message);
+  assert.equal(moved.json.data.task.department, 'production');
+  assert.equal((await Enquiry.findById(enquiry._id)).stage, 'production_edd');
+});
+
+test('ticked Production confirmed, the SO prepared goes straight to Production', async () => {
+  const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
+  const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'Confirmed Buyer', mobile: '9170875211', assignedTo: me } })).json.data;
+  const second = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customer._id, requirement: { modelNumber: 'UTJRSH-0' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const sent = await api(`/api/enquiries/${second._id}/handoffs`, {
+    method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'Prepare SO', brief: { items: [{ model: 'UTJRSH-0', quantity: '2000' }], productionConfirmed: true } },
+  });
+  assert.equal(sent.status, 201, sent.json.message);
+  assert.equal(sent.json.data.task.brief.productionConfirmed, 'Yes');
+  const first = soTask;
+  soTask = sent.json.data.task;
+  try {
+    const done = await upload('priya');
+    assert.equal(done.status, 200, done.json.message);
+    assert.equal(done.json.held, false);
+    assert.equal(done.json.next?.department, 'production', 'Production has its task');
+    assert.equal((await Enquiry.findById(second._id)).stage, 'production_edd');
+    const asked = await Todo.findOne({ enquiry: second._id, kind: 'ask_edd' });
+    assert.equal(asked.brief.quantity, '2000', 'the rows’ pieces reach Production');
+  } finally {
+    soTask = first;
+  }
 });
 
 test('asking Production again adds to its open task instead of refusing', async () => {
