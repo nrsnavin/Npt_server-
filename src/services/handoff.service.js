@@ -412,8 +412,28 @@ function keptAnswer(field, value) {
  * unless the system raises it (a status change), when there is nobody to ask and the department
  * reads the enquiry instead.
  */
+/**
+ * A quotation request in the shape it had before it took a row per model — "NH-400, NH-420",
+ * one material, a quantity and a target price — as rows: one per model named, the material and
+ * target price on each, the quantity where only one model shares it. Callers still sending it
+ * (a card confirmed from an older screen) are understood, not refused.
+ */
+function rowsFromFlat(field, brief = {}) {
+  if (Array.isArray(brief?.[field.key]) || !field.columns.some((column) => column.key === 'targetPrice')) return brief;
+  const models = String(brief.models || brief.model || '').split(',').map((model) => model.trim()).filter(Boolean);
+  if (!models.length) return brief;
+  const rows = models.map((model) => ({
+    model,
+    ...(brief.material ? { material: brief.material } : {}),
+    ...(brief.targetPrice ? { targetPrice: brief.targetPrice } : {}),
+    ...(models.length === 1 && brief.quantity ? { quantity: brief.quantity } : {}),
+  }));
+  return { ...brief, [field.key]: rows };
+}
+
 function keptBrief(kind, brief = {}, { strict = true } = {}) {
   const asks = findHandoff(kind)?.asks || [];
+  for (const field of asks.filter((entry) => entry.type === 'items')) brief = rowsFromFlat(field, brief);
   const kept = {};
   for (const field of asks) {
     if (field.type === 'info' || field.type === 'kind') continue;
@@ -697,7 +717,7 @@ export async function teamTaskPrefill(customerId, user) {
     }
   }
   return {
-    customer, items: [], orderItems: [], modelList: [], models: '', materials: '', quantity: '', targetPrice: '', order: { paymentTerms: '', invoiceNumber: '' }, members,
+    customer, items: [], orderItems: [], quoteItems: [], modelList: [], models: '', materials: '', quantity: '', targetPrice: '', order: { paymentTerms: '', invoiceNumber: '' }, members,
     /* No enquiry to fill the models and parts from: the registers, as dropdowns. */
     registers: await registerLists(),
   };
@@ -2290,6 +2310,7 @@ export async function taskPrefill(enquiryId) {
     hook: row.hookRef?.name || '',
     clip: row.clipRef?.name || '',
     print: row.printRef?.name || row.printing || '',
+    packing: row.packing || '',
     mandatory: row.colourMandatory,
     family: materialWord(row.mould?.material),
   });
@@ -2305,10 +2326,10 @@ export async function taskPrefill(enquiryId) {
   const source = enquiry.items?.length ? enquiry.items : [enquiry.requirement || {}];
   let rows = source.map(described).filter((row) => row.model || row.material || row.colour);
   if (!rows.length) rows = others.filter((row, at) => row.model && others.findIndex((entry) => sameModel(entry, row)) === at);
-  const items = rows.map((row) => {
+  const filledRows = rows.map((row) => {
     const filled = { ...row };
     for (const other of others.filter((entry) => sameModel(entry, row))) {
-      for (const key of ['material', 'colour', 'hook', 'clip', 'print']) {
+      for (const key of ['material', 'colour', 'hook', 'clip', 'print', 'packing']) {
         if (!filled[key] && other[key]) filled[key] = other[key];
       }
       if (filled.mandatory == null && other.mandatory != null) filled.mandatory = other.mandatory;
@@ -2321,11 +2342,14 @@ export async function taskPrefill(enquiryId) {
       hook: filled.hook,
       clip: filled.clip,
       print: filled.print,
+      packing: filled.packing,
       colourType: filled.colour ? (filled.mandatory ? 'Compulsory colour' : 'Preferred colour') : '',
       /* A sample is three pieces unless somebody says why it is more. */
       quantity: '3',
     };
   });
+  /* The sample's rows; packing is the quotation's question, not the sample's. */
+  const items = filledRows.map(({ packing, ...row }) => row);
   /* "PP Black" — but "HIPS White", not "HIPS White White", when the resin's name already says it. */
   const materialAndColour = (row) => (row.colour && !String(row.material || '').toLowerCase().includes(row.colour.toLowerCase())
     ? [row.material, row.colour].filter(Boolean).join(' ')
@@ -2362,6 +2386,24 @@ export async function taskPrefill(enquiryId) {
         edd: '',
       };
     });
+  /*
+   * The quotation request's lines: each model with its material and colour, parts and packing,
+   * the pieces asked for on the enquiry, and the buyer's target price — the quotation's own price
+   * for a price negotiation is on the quotation, not asked again.
+   */
+  const quoteItems = filledRows.map((row) => {
+    const asked = source.find((entry) => sameModel(described(entry), row));
+    return {
+      model: row.model,
+      material: materialAndColour(row),
+      hook: row.hook,
+      clip: row.clip,
+      print: row.print,
+      packing: row.packing,
+      quantity: asked?.quantity ? String(asked.quantity) : '',
+      targetPrice: enquiry.targetPrice != null ? String(enquiry.targetPrice) : '',
+    };
+  });
   const modelList = [...new Set(items.map((row) => row.model).filter(Boolean))];
   const enquiryQuantity = source.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0);
   const orderQuantity = (order?.lines || []).reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
@@ -2380,6 +2422,7 @@ export async function taskPrefill(enquiryId) {
     },
     items,
     orderItems,
+    quoteItems,
     modelList,
     models: modelList.join(', '),
     materials: items.map(materialAndColour).filter(Boolean).join(', '),

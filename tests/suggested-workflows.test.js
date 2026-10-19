@@ -110,6 +110,6 @@ test('a team task needs no instruction, and takes a model or material the regist
   assert.equal(sent.status, 201, sent.json.message);
   const task = sent.json.data.task;
   assert.equal(task.notes, undefined, 'nothing forced into the instruction box');
-  assert.equal(task.brief.models, 'NEW-STYLE 440 slim (not on register yet)', 'the words typed are kept as typed');
+  assert.equal(task.brief.items[0].model, 'NEW-STYLE 440 slim (not on register yet)', 'the words typed are kept as typed');
   assert.match(task.title, /Create Quotation — team task/);
 });

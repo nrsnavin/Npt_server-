@@ -271,7 +271,7 @@ test('a quotation as the next step raises the Quotation task; photos only set th
   assert.equal(quoted.status, 200, quoted.json.message);
   const Todo = mongoose.model('Todo');
   const quoteTask = await Todo.findOne({ enquiry: quoted.json.data.enquiry._id, kind: 'create_quotation' });
-  assert.equal(quoteTask?.brief?.quantity, '5000');
+  assert.deepEqual(quoteTask?.brief?.items, [{ model: 'NH-420', quantity: '5000', targetPrice: '4.5' }], 'the older one-line shape becomes the model’s row');
 
   cardReply = card({ company: 'Photo Step Fabrics', mobile: '9840077103' });
   await whatsapp(NANDHINI_PHONE, { photo: true });

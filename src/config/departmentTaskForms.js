@@ -95,6 +95,18 @@ const SO_COLUMNS = [
   { key: 'edd', label: 'EDD', type: 'date' },
 ];
 
+/** The rows of a quotation request: each model as the buyer wants it — material and colour, its parts, how many, and the price they hope for. */
+const QUOTE_COLUMNS = [
+  { key: 'model', label: 'Model', required: true, register: 'moulds' },
+  { key: 'material', label: 'Material & colour', register: 'materials' },
+  { key: 'hook', label: 'Hook', register: 'hooks' },
+  { key: 'clip', label: 'Clip', register: 'clips' },
+  { key: 'print', label: 'Print', register: 'prints' },
+  { key: 'packing', label: 'Packing' },
+  { key: 'quantity', label: 'Qty (pcs)', type: 'number' },
+  { key: 'targetPrice', label: 'Target price (₹ / pc)', type: 'number' },
+];
+
 const PAYMENT_TERMS = [
   'Credit — nothing before dispatch', '100% advance', '50% advance, 50% against delivery',
   '50% advance, 50% before dispatch', '30% advance, 70% before dispatch', '100% against dispatch',
@@ -281,11 +293,12 @@ export const TASK_FORMS = {
     team: 'Quotation Team',
     ...quotationWorkflow,
     note: { label: 'Additional instruction / Question', placeholder: 'Target price, packing or anything the costing should know' },
+    /* One row per model, so a quote for several is costed line by line, each with its own parts. */
     asks: [
-      { key: 'models', label: 'Hanger model(s)', from: 'models', register: 'moulds' },
-      { key: 'material', label: 'Material / colour / quality', from: 'materials', register: 'materials' },
-      { key: 'quantity', label: 'Quantity', type: 'number', from: 'quantity' },
-      { key: 'targetPrice', label: 'Buyer’s target price (₹ per piece)', type: 'number', from: 'targetPrice' },
+      {
+        key: 'items', label: 'Models to quote', type: 'items',
+        from: 'quoteItems', add: '+ Add Model', columns: QUOTE_COLUMNS,
+      },
     ],
   },
   price_negotiation: {
@@ -293,8 +306,10 @@ export const TASK_FORMS = {
     ...quotationWorkflow,
     note: { label: 'Additional instruction / Question', placeholder: 'What the buyer said about the price' },
     asks: [
-      { key: 'models', label: 'Hanger model(s)', from: 'models', register: 'moulds' },
-      { key: 'targetPrice', label: 'Buyer’s target price (₹ per piece)', type: 'number', from: 'targetPrice' },
+      {
+        key: 'items', label: 'Models in the negotiation', type: 'items',
+        from: 'quoteItems', add: '+ Add Model', columns: QUOTE_COLUMNS,
+      },
     ],
   },
   po_so: {

@@ -142,6 +142,11 @@ test('the form is filled from the enquiry: models with their parts, the buyer, t
   assert.equal(prefill.quantity, '10000', 'from the order on it');
   assert.equal(prefill.order.paymentTerms, '50% advance, 50% against delivery');
   assert.equal(prefill.targetPrice, '1.8');
+  /* A quotation for two models asks line by line: each with its material, parts and the buyer's target. */
+  assert.deepEqual(prefill.quoteItems, [
+    { model: 'UTJRSH-0', material: 'PP Black', hook: 'Chrome hook 3 mm', clip: '', print: 'Logo, 1 colour', packing: '', quantity: '', targetPrice: '1.8' },
+    { model: 'OF-8', material: 'HIPS White', hook: '', clip: '', print: '', packing: '', quantity: '', targetPrice: '1.8' },
+  ]);
   assert.equal(prefill.customer.contactPerson, 'Ramesh Jain');
   assert.match(prefill.customer.mobile, /9170875207/);
   assert.match(prefill.customer.delivery, /Ramesh Jain · .*9170875207.* · Tiruppur/);
@@ -256,4 +261,32 @@ test('payment follow-up: due on the day the buyer asked to be called; a choice i
   assert.equal(sent.json.data.task.dueDate.slice(0, 10), inDays(2));
   assert.equal(sent.json.data.task.brief.vigorous, 'Yes');
   assert.equal(sent.json.data.task.brief.owner, undefined, 'the owner switch is not an answer');
+});
+
+test('a quotation request takes a row per model, each with its own parts and target price', async () => {
+  const { buttons } = (await api('/api/handoffs', { token: nandhini })).json.data;
+  const quote = buttons.find((button) => button.key === 'create_quotation');
+  assert.deepEqual(quote.asks.map((field) => field.key), ['items']);
+  assert.deepEqual(quote.asks[0].columns.map((column) => column.key), ['model', 'material', 'hook', 'clip', 'print', 'packing', 'quantity', 'targetPrice']);
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', token: nandhini,
+    body: {
+      kind: 'create_quotation',
+      brief: {
+        items: [
+          { model: 'UTJRSH-0', material: 'PP Black', hook: 'Chrome hook 3 mm', print: 'Logo, 1 colour', quantity: '6000', targetPrice: '1.8', stray: 'x' },
+          { model: 'OF-8', material: 'HIPS White', clip: 'Pinch clip', quantity: '4000', targetPrice: '2.1' },
+        ],
+      },
+    },
+  });
+  assert.equal(sent.status, 201, sent.json.message);
+  const rows = (await Todo.findById(sent.json.data.task._id).lean()).brief.items;
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[0], { model: 'UTJRSH-0', material: 'PP Black', hook: 'Chrome hook 3 mm', print: 'Logo, 1 colour', quantity: '6000', targetPrice: '1.8' });
+  assert.equal(rows[1].clip, 'Pinch clip');
+  const bad = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', token: nandhini, body: { kind: 'price_negotiation', brief: { items: [{ material: 'PP' }] } },
+  });
+  assert.equal(bad.status, 400, 'a row without its model is refused');
 });
