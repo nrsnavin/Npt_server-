@@ -151,6 +151,9 @@ test('a push service refusal is said in words, with what to do', async () => {
   assert.match(whyRefused(410), /no longer subscribed/);
   assert.match(whyRefused(400, 'BadWebPushTopic'), /WEB_PUSH_SUBJECT/);
   assert.match(whyRefused(500, 'oops'), /answered 500: oops/);
+  assert.match(whyRefused(undefined, '', 'getaddrinfo ENOTFOUND web.push.apple.com'), /could not reach the push service/);
+  assert.match(whyRefused(undefined, '', "To send a message with a payload, the subscription must have 'auth' and 'p256dh' keys."), /Turn off, then Turn on/);
+  assert.match(whyRefused(undefined, '', 'something odd'), /before the push service answered: something odd/);
 });
 
 test('push keys pasted with quotes, spaces or a bare subject are tidied; a wrong key says why, not "package missing"', async () => {
