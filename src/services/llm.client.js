@@ -39,6 +39,8 @@ export const BUDGETS = {
   interactive: { timeout: 8000, maxRetries: 1 },
   /** A judgement worth a moment, off the critical path — a dashboard card, a coach's reading. */
   considered: { timeout: 25000, maxRetries: 1 },
+  /* A whole document read while somebody waits on an upload — an SO of several pages. */
+  document: { timeout: 60000, maxRetries: 1 },
 };
 
 export const llmConfigured = () => Boolean(process.env.ANTHROPIC_API_KEY);

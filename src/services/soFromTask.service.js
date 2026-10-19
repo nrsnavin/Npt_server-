@@ -102,12 +102,52 @@ export async function orderLinesFromBrief(brief = {}) {
   return { lines };
 }
 
+const keyOf = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const money = (value) => `₹${Number(value)}`;
+
+/**
+ * The order's lines drafted from the SO PDF's reading [soRead.llm.js], with what the PDF leaves
+ * blank filled from the request's line for the same model — and every difference between the two
+ * said in words: a model on one and not the other, other pieces, another rate.
+ */
+export function draftFromReading(reading, requestRows = []) {
+  const rows = [];
+  const differences = [];
+  const used = new Set();
+  for (const read of reading?.lines || []) {
+    const at = requestRows.findIndex((row, index) => !used.has(index) && keyOf(row.model).length && (keyOf(row.model) === keyOf(read.model) || keyOf(String(row.model).split(' · ')[0]) === keyOf(read.model)));
+    const asked = at >= 0 ? requestRows[at] : null;
+    if (at >= 0) used.add(at);
+    else differences.push(`${read.model} is on the SO but not on the request`);
+    if (asked) {
+      if (read.quantity && Number(asked.quantity) && Number(asked.quantity) !== read.quantity) differences.push(`${read.model}: ${read.quantity.toLocaleString('en-IN')} pcs on the SO, ${Number(asked.quantity).toLocaleString('en-IN')} on the request`);
+      if (read.price != null && asked.price !== undefined && asked.price !== '' && Number(asked.price) !== read.price) differences.push(`${read.model}: ${money(read.price)} on the SO, ${money(asked.price)} on the request`);
+    }
+    rows.push({
+      model: read.model,
+      material: read.material || asked?.material,
+      hook: read.hook || asked?.hook,
+      clip: read.clip || asked?.clip,
+      print: read.print || asked?.print,
+      quantity: read.quantity || asked?.quantity,
+      price: read.price ?? asked?.price,
+      edd: read.edd || asked?.edd,
+    });
+  }
+  requestRows.forEach((row, index) => { if (!used.has(index) && row.model) differences.push(`${row.model} is on the request but not on the SO`); });
+  return { rows, differences };
+}
+
 /**
  * Books (or finds) the enquiry's order for an SO task whose PDF was just uploaded. Returns the
  * order and what was said about it, or why none was booked. Never throws over the request's
  * contents: the SO is prepared either way.
+ *
+ * With a reading of the PDF [soRead.llm.js] the order is drafted from the SO itself — the document
+ * sent to the buyer — and the request fills its gaps; without one (not set up, unreadable), from
+ * the request. Either way it is a draft the SO team checks on the Sales orders screen.
  */
-export async function bookOrderFromTask(task, user) {
+export async function bookOrderFromTask(task, user, { reading = null, readProblem = null } = {}) {
   const enquiryId = task.enquiry?._id || task.enquiry;
   if (!enquiryId) return { order: null };
   const enquiry = await Enquiry.findById(enquiryId).select('customer assignedTo number').lean();
@@ -117,18 +157,35 @@ export async function bookOrderFromTask(task, user) {
   const open = await SalesOrder.findOne({ enquiry: enquiryId, status: { $nin: ['cancelled', 'closed'] } }).sort({ createdAt: -1 });
   if (open) return { order: open, linked: true };
 
-  const { lines, problem } = await orderLinesFromBrief(task.brief);
+  const requestRows = Array.isArray(task.brief?.items) ? task.brief.items : [];
+  let drafted = { from: 'request', readProblem: readProblem || undefined };
+  let built = null;
+  if (reading?.lines?.length) {
+    const { rows, differences } = draftFromReading(reading, requestRows);
+    const fromPdf = await orderLinesFromBrief({ items: rows });
+    if (fromPdf.lines) {
+      built = fromPdf;
+      drafted = { from: 'so_pdf', soNumber: reading.soNumber, soDate: reading.soDate, differences };
+    } else {
+      /* The SO's own lines are short of a figure: the request's are used, and the SO team told why. */
+      drafted = { from: 'request', readProblem: `the SO was read, but ${fromPdf.problem}` };
+    }
+  }
+  const { lines, problem } = built || await orderLinesFromBrief(task.brief);
   if (problem) return { order: null, problem };
 
-  const terms = PAYMENT_PRESETS.find((preset) => preset.label === task.brief?.paymentTerms);
-  const poNumber = String(task.brief?.poNumber || '').trim();
+  const presetNamed = (words) => PAYMENT_PRESETS.find((preset) => lower(preset.label) === lower(words));
+  const terms = presetNamed(task.brief?.paymentTerms) || presetNamed(reading?.paymentTerms);
+  const poNumber = String(task.brief?.poNumber || reading?.poNumber || '').trim();
   const [order] = await SalesOrder.create([{
     number: await nextNumber('SO'),
     customer: enquiry.customer,
     enquiry: enquiryId,
     assignedTo: enquiry.assignedTo || user._id,
     sourceTask: task._id,
-    ...(poNumber ? { customerPo: { number: poNumber } } : {}),
+    ...(poNumber ? { customerPo: { number: poNumber, ...(reading?.poDate ? { date: new Date(reading.poDate) } : {}) } } : {}),
+    drafted: { ...drafted, at: new Date() },
+    ...(reading?.paymentTerms && !terms ? { remarks: `Payment terms on the SO: ${reading.paymentTerms}` } : {}),
     ...(terms ? { paymentTerms: terms.label, paymentPlan: { advancePercent: terms.advancePercent, beforeDispatchPercent: terms.beforeDispatchPercent } } : {}),
     soDocument: task.resultFile || undefined,
     lines,
@@ -136,7 +193,7 @@ export async function bookOrderFromTask(task, user) {
   }]);
   /* The terms say what is collected before production and dispatch: raise it and ask for it. */
   await planCollection(order, { by: user });
-  return { order, booked: true };
+  return { order, booked: true, drafted };
 }
 
 /**

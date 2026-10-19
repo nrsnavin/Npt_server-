@@ -7,6 +7,7 @@ import MouldRun from '../models/MouldRun.js';
 import WorkOrder from '../models/WorkOrder.js';
 import mongoose from 'mongoose';
 import { journeyOf } from '../services/journey.service.js';
+import { readSalesOrder } from '../services/soRead.llm.js';
 import SalesOrder, { PRE_RELEASE_STATUSES, VERIFICATION_CHECKS } from '../models/SalesOrder.js';
 import { bufferOf, put, remove, safeFilename } from '../services/storage.service.js';
 import { sendResultToCustomer } from '../services/taskResultMessage.service.js';
@@ -430,6 +431,13 @@ export const handoffResult = asyncHandler(async (req, res) => {
   if (!(form.resultTypes || ['application/pdf']).includes(req.file.mimetype)) {
     throw ApiError.badRequest(form.resultTypes ? 'Attach a PDF, or a JPEG / PNG photo' : 'Attach a PDF');
   }
+  /*
+   * The SO read before anything is written — the sales order is drafted from the document itself
+   * [services/soRead.llm.js], outside the transaction so no lock waits on the model.
+   */
+  const read = findHandoff(task.kind)?.booksOrder && task.enquiry
+    ? await readSalesOrder({ buffer: req.file.buffer, mimeType: req.file.mimetype })
+    : { reading: null, problem: null };
   const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
   let attachment;
   try {
@@ -440,7 +448,7 @@ export const handoffResult = asyncHandler(async (req, res) => {
       [attachment] = await Attachment.create([{
         key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size, uploadedBy: req.user._id, task: fresh._id,
       }]);
-      return finishWithResult(fresh, req.user, { attachmentId: attachment._id, note: req.body?.note });
+      return finishWithResult(fresh, req.user, { attachmentId: attachment._id, note: req.body?.note, reading: read.reading, readProblem: read.problem });
     }, { label: 'task result' });
     /* The LR copy goes on to the buyer, by email and WhatsApp, and the task says it went. */
     let sent = null;

@@ -1770,7 +1770,7 @@ export function resultStepFor(task, user) {
  * next one is refused (the advance not in yet), the task is still done and the reason returned;
  * Payment Collection has been asked for the money.
  */
-export async function finishWithResult(task, user, { attachmentId, note }) {
+export async function finishWithResult(task, user, { attachmentId, note, reading = null, readProblem = null }) {
   const step = resultStepFor(task, user);
   task.resultFile = attachmentId;
   task.attention = undefined;
@@ -1793,7 +1793,7 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
   /* Production not confirmed on the request: the order waits with marketing, nothing is raised. */
   const held = Boolean(step.next && task.enquiry && heldBack(task));
   /* The SO prepared books the sales order from the request's lines, released when Production is confirmed. */
-  const order = await bookOrderFor(task, user, { held });
+  const order = await bookOrderFor(task, user, { held, reading, readProblem });
   if (held) {
     nextProblem = 'Production was not confirmed on the request — the order is with marketing under Production Holded Orders until Admin or its marketing person moves it to Production.';
   } else if (step.next && !task.enquiry) {
@@ -1823,10 +1823,10 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
  * lines (or the enquiry's open order linked), released at once when Production was confirmed, and
  * said on the task either way. Returns what the screen shows about it.
  */
-async function bookOrderFor(task, user, { held }) {
+async function bookOrderFor(task, user, { held, reading, readProblem }) {
   if (!findHandoff(task.kind)?.booksOrder || !task.enquiry) return null;
   const { bookOrderFromTask, releaseFromTask, noteOrderOnTask } = await import('./soFromTask.service.js');
-  const booked = await bookOrderFromTask(task, user);
+  const booked = await bookOrderFromTask(task, user, { reading, readProblem });
   if (!booked.order) {
     if (booked.problem) await noteOrderOnTask(task, user, `not booked — ${booked.problem}. Book it on the Sales orders screen.`);
     return booked.problem ? { problem: booked.problem } : null;
@@ -1835,21 +1835,29 @@ async function bookOrderFor(task, user, { held }) {
   task.order = order._id;
   await Todo.updateOne({ _id: task._id }, { $set: { order: order._id } }, { keepVersion: true });
   const pieces = (order.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0);
+  const drafted = booked.drafted || {};
+  const differences = drafted.differences || [];
+  const source = drafted.from === 'so_pdf' ? `read from the SO PDF${drafted.soNumber ? ` (${drafted.soNumber})` : ''}` : 'drafted from the request';
   let said = booked.linked
     ? `linked to ${order.number}, already on the Sales orders screen`
-    : `${order.number} booked from the request — ${order.lines.length} line${order.lines.length === 1 ? '' : 's'}, ${pieces.toLocaleString('en-IN')} pcs`;
+    : `${order.number} ${source} — ${order.lines.length} line${order.lines.length === 1 ? '' : 's'}, ${pieces.toLocaleString('en-IN')} pcs`;
+  if (!booked.linked && drafted.readProblem) said += ` (SO PDF not used: ${drafted.readProblem})`;
+  if (differences.length) said += `. The SO differs from the request: ${differences.join('; ')}`;
   let released = false;
   if (booked.linked) {
     said += held ? '' : ' — release it there once its checks are done';
   } else if (held) {
     said += ' — waits for Move to Production';
+  } else if (differences.length) {
+    /* The SO and the request disagree: a person settles which is right before the plant starts on it. */
+    said += ` — not released: check ${order.number} on Sales orders and release it`;
   } else {
     const result = await releaseFromTask(order, user, `Released from the SO request — Production confirmed (${user.name})`);
     released = result.released;
     said += released ? ' and released to production' : result.problem ? ` — not released yet: ${result.problem}` : '';
   }
   await noteOrderOnTask(task, user, said);
-  return { _id: order._id, number: order.number, booked: Boolean(booked.booked), linked: Boolean(booked.linked), released, said };
+  return { _id: order._id, number: order.number, booked: Boolean(booked.booked), linked: Boolean(booked.linked), released, said, from: drafted.from || null, differences };
 }
 
 /**
