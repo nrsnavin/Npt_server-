@@ -1,5 +1,5 @@
 import SalesOrder, { PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
-import Receivable from '../models/Receivable.js';
+import Receivable, { paymentLogEntry } from '../models/Receivable.js';
 import Todo from '../models/Todo.js';
 import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
@@ -146,6 +146,8 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
     recordedBy: user._id,
     confirmed: { by: user._id, at },
   });
+  /* Logged on the receivable beside the calls: who took it, how much, how, the UTR. */
+  receivable.followUps.push(paymentLogEntry(user, { amount: value, mode, reference: ref, note }, { partial: value + 0.5 < owed }));
   await receivable.save();
   return { order, receivable, again: false };
 }

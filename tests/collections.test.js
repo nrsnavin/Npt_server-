@@ -287,10 +287,9 @@ test('PRT works the case in the field; what it collects waits for Accounts befor
   assert.equal(standing.dispatch.met, false);
   assert.equal(standing.received, 0);
 
-  /* PRT cannot confirm its own receipt; Accounts can, once. */
+  /* PRT cannot confirm its own receipt; Accounts (or Payment Collection, who confirm money in) can, once. */
   const receiptId = recorded.json.data.receipts[0]._id;
   assert.equal((await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'senthil' })).status, 403);
-  assert.equal((await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'vijay' })).status, 403);
   const confirmed = await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'kiran' });
   assert.equal(confirmed.status, 200, confirmed.json.message);
   assert.equal(confirmed.json.data.receipts[0].confirmed.by.name, 'Kiran Accounts');

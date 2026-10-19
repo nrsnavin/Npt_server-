@@ -4,6 +4,7 @@ import Todo from '../models/Todo.js';
 import Attachment from '../models/Attachment.js';
 import Sample from '../models/Sample.js';
 import MouldRun from '../models/MouldRun.js';
+import Receivable from '../models/Receivable.js';
 import WorkOrder from '../models/WorkOrder.js';
 import mongoose from 'mongoose';
 import { journeyOf } from '../services/journey.service.js';
@@ -198,8 +199,43 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     /* How a several-model order goes out, and which models are ready [handoff.service `modelReadiness`]. */
     dispatchPlan: enquiry.dispatchPlan?.mode ? enquiry.dispatchPlan : null,
     readiness: await modelReadiness(enquiry._id),
+    /* The money on it: each RCV — the advance, each invoice — with what came in and who logged it. */
+    payments: await paymentsOnEnquiry(enquiry._id),
   });
 });
+
+/**
+ * The enquiry's receivables [models/Receivable.js `enquiry`] — an RCV raised before the link
+ * existed is found through its order — with each payment logged on it: how much, how, the UTR,
+ * who logged it and whether it is confirmed.
+ */
+export async function paymentsOnEnquiry(enquiryId) {
+  const orderIds = await SalesOrder.find({ enquiry: enquiryId }).distinct('_id');
+  const rows = await Receivable.find({ $or: [{ enquiry: enquiryId }, { order: { $in: orderIds } }] })
+    .populate('order', 'number')
+    .populate('receipts.recordedBy', 'name')
+    .sort({ createdAt: 1 })
+    .limit(50);
+  return rows.map((row) => ({
+    _id: row._id,
+    number: row.number,
+    kind: row.kind,
+    order: row.order ? { _id: row.order._id, number: row.order.number } : null,
+    invoiceNumber: row.invoice?.number || null,
+    value: row.invoice?.value || 0,
+    received: row.received,
+    confirmed: row.confirmedReceived,
+    balance: row.balance,
+    receipts: (row.receipts || []).map((receipt) => ({
+      amount: receipt.amount,
+      mode: receipt.mode,
+      reference: receipt.reference || null,
+      at: receipt.receivedAt,
+      by: receipt.recordedBy?.name || null,
+      confirmed: Boolean(receipt.confirmed?.at),
+    })),
+  }));
+}
 
 /**
  * The floor's work for an enquiry: the moulds running for it now (press, mould, since when, pieces

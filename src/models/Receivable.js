@@ -138,6 +138,8 @@ const receivableSchema = new mongoose.Schema(
 
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true, index: true },
     order: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder', required: true, index: true },
+    /** The enquiry the order came from — so the money shows on the enquiry beside the order [pre-validate below]. */
+    enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
     /** The consignment this invoice went out on. Absent on an advance — there is no lorry yet. */
     dispatch: { type: mongoose.Schema.Types.ObjectId, ref: 'Dispatch', index: true },
 
@@ -238,6 +240,27 @@ receivableSchema.index(
     name: 'one_advance_per_order',
   }
 );
+
+/**
+ * A payment taken, as a line on the receivable's log beside the calls [`followUps`] — who logged
+ * it, how much, how it came, the UTR — so the chase screen reads the money as well as the talk.
+ */
+export function paymentLogEntry(user, { amount, mode, reference, note }, { partial = false } = {}) {
+  const said = [`Payment logged: ₹${Math.round(Number(amount)).toLocaleString('en-IN')}`, mode && String(mode).toUpperCase(), reference && `ref ${reference}`]
+    .filter(Boolean).join(' · ');
+  return {
+    by: user._id, at: new Date(),
+    note: [said, note].filter(Boolean).join(' — ').slice(0, 1000),
+    ...(partial ? { status: 'part_paid' } : {}),
+  };
+}
+
+/* Every receivable carries its order's enquiry, however it was raised — an advance, a consignment's invoice, a seed. */
+receivableSchema.pre('validate', async function linkEnquiry() {
+  if (this.enquiry || !this.order) return;
+  const order = await mongoose.model('SalesOrder').findById(this.order).select('enquiry').lean();
+  if (order?.enquiry) this.enquiry = order.enquiry;
+});
 
 receivableSchema.virtual('received').get(function received() {
   return Math.round((this.receipts || []).reduce((sum, row) => sum + (row.amount || 0), 0) * 100) / 100;

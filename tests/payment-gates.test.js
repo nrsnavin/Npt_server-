@@ -184,13 +184,19 @@ test('production waits for the advance; when Payment Collection records it, the 
   assert.equal((await collectionTasks(order)).filter((task) => !task.completed).length, 1, 'asked once, not twice');
 
   const advance = await Receivable.findOne({ order: order._id, kind: 'advance' });
-  const paid = await api(`/api/payments/${advance._id}/receipts`, { method: 'POST', as: 'vijay', body: { amount: 3750, reference: 'UTR123' } });
+  assert.equal(String(advance.enquiry), enquiry, 'the RCV is linked to the enquiry');
+  /* Payment Collection logs the payment: it counts at the gate as written, and is logged on the RCV beside the calls. */
+  const paid = await api(`/api/payments/${advance._id}/receipts`, { method: 'POST', as: 'vijay', body: { amount: 3750, mode: 'neft', reference: 'UTR123' } });
   assert.equal(paid.status, 201, paid.json.message);
-  /* Payment Collection's receipt stops the chase ringing, but the gate waits for Accounts to see it in the bank. */
-  assert.equal(paid.json.data.awaitingConfirmation, 3750);
-  assert.equal((await send(enquiry, 'ask_edd')).status, 400, 'not yet confirmed');
-  const confirmed = await api(`/api/payments/${advance._id}/receipts/${paid.json.data.receipts[0]._id}/confirm`, { method: 'POST', as: 'kiran' });
-  assert.equal(confirmed.status, 200, confirmed.json.message);
+  assert.equal(paid.json.data.awaitingConfirmation, 0, 'confirmed by Payment Collection');
+  assert.equal(paid.json.data.enquiry.number, (await Enquiry.findById(enquiry)).number);
+  assert.match(paid.json.data.followUps.at(-1).note, /^Payment logged: ₹3,750 · NEFT · ref UTR123/);
+  assert.equal(paid.json.data.followUps.at(-1).by.name, 'Vijay Collections');
+  /* The enquiry shows its RCV and the payment, who logged it, confirmed. */
+  const { payments } = (await api(`/api/enquiries/${enquiry}/handoffs`, { as: 'nandhini' })).json;
+  const rcv = payments.find((row) => row.number === advance.number);
+  assert.deepEqual([rcv.kind, rcv.value, rcv.received, rcv.confirmed, rcv.balance], ['advance', 3750, 3750, 3750, 0]);
+  assert.deepEqual(rcv.receipts.map((row) => [row.amount, row.mode, row.reference, row.by, row.confirmed]), [[3750, 'neft', 'UTR123', 'Vijay Collections', true]]);
   assert.ok(await until(async () => (await collectionTasks(order)).every((task) => task.completed)), 'the chase closes');
   assert.ok(await until(async () => Todo.exists({ user: id.admin, title: new RegExp(`Advance received on ${order.number}`) })),
     'the order’s marketing person is told');
@@ -296,6 +302,7 @@ test('release refused for the advance: Payment Collection confirms the payment i
   assert.equal(rest.status, 200, rest.json.message);
   const advance = await Receivable.findOne({ order: order._id, kind: 'advance' }).lean();
   assert.deepEqual(advance.receipts.map((row) => [row.amount, row.mode, Boolean(row.confirmed?.at)]), [[1000, 'upi', true], [2750, 'neft', true]]);
+  assert.deepEqual(advance.followUps.slice(-2).map((row) => [row.note.split(' — ')[0], row.status]), [['Payment logged: ₹1,000 · UPI · ref UPI-77', 'part_paid'], ['Payment logged: ₹2,750 · NEFT · ref UTR-991', undefined]]);
   assert.equal((await Todo.findById(task._id)).completed, true, 'the chase closes');
   assert.ok(await Todo.exists({ user: id.admin, title: new RegExp(`Advance received on ${order.number} — release it to production`), link: `/orders/${order._id}` }));
 

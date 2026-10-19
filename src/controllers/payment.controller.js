@@ -1,6 +1,6 @@
 import { MAYBE_OWING, applyPaymentPositions } from '../services/paymentPosition.service.js';
 import { withOrderLock } from '../services/operationLock.service.js';
-import Receivable, { JUDGED_STATUSES } from '../models/Receivable.js';
+import Receivable, { JUDGED_STATUSES, paymentLogEntry } from '../models/Receivable.js';
 import SalesOrder from '../models/SalesOrder.js';
 import Customer from '../models/Customer.js';
 import ApiError from '../utils/ApiError.js';
@@ -37,6 +37,7 @@ import { findHandoff } from '../config/handoffs.js';
 const POPULATE = [
   { path: 'customer', select: 'code name city mobile creditTermsDays paymentTerms credit' },
   { path: 'order', select: 'number customerPo' },
+  { path: 'enquiry', select: 'number' },
   { path: 'dispatch', select: 'number lrNumber dispatchDate' },
   { path: 'assignedTo', select: 'name' },
   { path: 'followUps.by', select: 'name' },
@@ -44,8 +45,13 @@ const POPULATE = [
   { path: 'receipts.confirmed.by', select: 'name' },
 ];
 
-/** Accounts, or Admin: the people who can see the bank, and so the only ones whose receipt counts at the gate. */
-const seesTheBank = (user) => isManagement(user) || inDepartment(user, 'accounts');
+/*
+ * Accounts, Admin and Payment Collection: the people who confirm money in, and so the ones whose
+ * receipt counts at the gate as it is written. Payment Collection logs the payment inward — it is
+ * their job to see it in [paymentGates `confirmInwardFromTask`]. PRT's cash from the field still
+ * waits for one of them.
+ */
+const seesTheBank = (user) => isManagement(user) || inDepartment(user, 'accounts') || inDepartment(user, 'payment_collection');
 
 /** Refuses a receivable the caller may not see, in the shape reading it would take. */
 async function readable(id, user) {
@@ -572,6 +578,8 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
   });
 
   await applyPaymentPositions([receivable]);
+  /* Logged on the receivable's own log too, beside the calls, with who took it. */
+  receivable.followUps.push(paymentLogEntry(req.user, req.body, { partial: receivable.balance > 0 }));
 
   /* Settled: the ladder stops, and a re-opened balance starts it again from wherever it stands
      rather than from where it left off. */
@@ -617,7 +625,7 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
  * Only then does it count at the payment gate, which is why the gate is re-checked after it.
  */
 export const confirmReceipt = asyncHandler(withOrderLock(async req => (await Receivable.findById(req.params.id).select('order'))?.order || req.params.id, transactional(async (req, res) => {
-  if (!seesTheBank(req.user)) throw ApiError.forbidden('Only Accounts or Admin confirm a receipt — they are the ones who can see the bank.');
+  if (!seesTheBank(req.user)) throw ApiError.forbidden('Only Accounts, Payment Collection or Admin confirm a receipt — they are the ones who see the money in.');
   const receivable = await readable(req.params.id, req.user);
   const receipt = receivable.receipts.id(req.params.receiptId);
   if (!receipt) throw ApiError.notFound('No such receipt on this one');
