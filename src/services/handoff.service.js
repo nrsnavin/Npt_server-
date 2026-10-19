@@ -1329,7 +1329,9 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   } else if (readyDate && dateField === 'edd' && task.enquiry) {
     await writeEnquiryEdd(task.enquiry, { day: readyDate, user, department: task.department, note: text });
   }
-  if (form.notifyStatus) await noticeStatus(task, user, { step: partial ? { ...step, label } : step, note: text, date: readyDate });
+  /* A ready date that is the EDD is the answer to "Ask EDD" — said even where the status itself is not [noticeStatus]. */
+  const eddSaid = Boolean(readyDate && dateField === 'edd');
+  if (form.notifyStatus) await noticeStatus(task, user, { step: { ...step, ...(partial ? { label } : {}), ...(eddSaid ? { edd: true } : {}) }, note: text, date: readyDate });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
   if (step.next && !step.pdf) {
@@ -1913,6 +1915,13 @@ function statusDate(form, step, date) {
  * under "Needs your action" until they read and dismiss it [models/TaskNotice.js].
  */
 export async function noticeStatus(task, user, { step, note, date, also = [], onlyAlso = false }) {
+  /*
+   * Production's moves reach marketing's and Admin's "Needs your action" only when there is
+   * something to act on: the goods Ready for Dispatch, an issue (Mould Issue, machine, raw
+   * material), or the EDD asked for. Every other Production status stays on its task and the
+   * workflow page — a department that asked Production (Dispatch's readiness ask) still hears each.
+   */
+  const routine = task.kind === 'ask_edd' && !onlyAlso && !step?.readyForDispatch && !step?.issue && !step?.edd;
   const [{ default: TaskNotice }, { default: User }] = await Promise.all([
     import('../models/TaskNotice.js'), import('../models/User.js'),
   ]);
@@ -1925,7 +1934,8 @@ export async function noticeStatus(task, user, { step, note, date, also = [], on
   if (task.askedFrom?.length) {
     for (const asking of await Todo.find({ _id: { $in: task.askedFrom }, completed: false }).select('user department').lean()) askers.push(...(await peopleOn(asking)));
   }
-  const recipients = new Set((onlyAlso ? also : [asker, ...admins.map((person) => person._id), ...also, ...askers]).filter(Boolean).map(String));
+  const told = onlyAlso ? also : routine ? askers : [asker, ...admins.map((person) => person._id), ...also, ...askers];
+  const recipients = new Set(told.filter(Boolean).map(String));
   if (user?._id) recipients.delete(String(user._id));
   if (!recipients.size) return;
   await TaskNotice.insertMany([...recipients].map((recipient) => ({
@@ -2607,7 +2617,7 @@ export async function setTaskEdd(task, user, { date, note, models }) {
   if (task.enquiry) await refreshModelEdds(task.enquiry, user, text);
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   if (findHandoff(task.kind)?.form?.notifyStatus) {
-    await noticeStatus(task, user, { step: { key: task.status || 'edd', label: 'EDD given' }, note: text, date: day });
+    await noticeStatus(task, user, { step: { key: task.status || 'edd', label: 'EDD given', edd: true }, note: text, date: day });
   }
   return task;
 }
