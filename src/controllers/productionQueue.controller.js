@@ -49,6 +49,26 @@ const issueOf = (task) => Boolean((findHandoff(task.kind)?.form?.statuses || [])
 const person = (user) => (user && typeof user === 'object' ? { _id: user._id, name: user.name } : null);
 const ticked = (value) => value === true || value === 'true' || value === 'Yes';
 
+/*
+ * A Production task raised from the customer with no enquiry [handoff.service `raiseTeamTask`]
+ * stands in the queue as its own job: the buyer, who asked, the model it names, and the EDD its
+ * teams gave — the latest date on any task of its chain [Todo `chain`, `modelDates`].
+ */
+const chainKey = (task) => `chain:${String(task.chain || task._id)}`;
+const jobKey = (task) => (task.enquiry?._team ? chainKey(task) : String(task.enquiry?._id || ''));
+function teamJob(task, chainTasks = []) {
+  const dates = [task, ...chainTasks].flatMap((entry) => (entry.modelDates || []).map((row) => row.date)).filter(Boolean).sort();
+  const latest = dates.at(-1) || null;
+  return {
+    _id: null, _team: true, number: null, stage: null,
+    customer: task.customer && typeof task.customer === 'object' ? task.customer : null,
+    assignedTo: task.createdBy && typeof task.createdBy === 'object' ? task.createdBy : null,
+    edd: latest ? { date: latest, department: null, at: null } : null,
+    eddByModel: [], items: [],
+    requirement: { modelNumber: task.brief?.model || null, quantity: task.brief?.quantity || null, colour: task.brief?.material || null },
+  };
+}
+
 /** The last thing written on a task, for the row. */
 const latestOf = (task) => {
   const last = (task.updates || []).at(-1);
@@ -72,14 +92,29 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
       },
       { path: 'user', select: 'name' },
       { path: 'createdBy', select: 'name department' },
+      { path: 'customer', select: 'code name assignedTo' },
       { path: 'order', select: 'number status' },
       { path: 'updates.by', select: 'name' },
     ])
     .lean();
 
-  /* Marketing reads its own buyers' rows; the plant's departments read the whole queue. */
-  const mine = tasks.filter((task) => task.enquiry && (!isOwnershipScoped(req.user) || ownsRecord(req.user, task.enquiry)));
-  const ids = mine.map((task) => task.enquiry._id);
+  /* The Production tasks raised from a customer with no enquiry, each with the rest of its chain. */
+  const teamTasks = tasks.filter((task) => !task.enquiry);
+  const chainIds = teamTasks.map((task) => task.chain || task._id);
+  const chainTasks = chainIds.length
+    ? await Todo.find({ chain: { $in: chainIds }, kind: { $in: [...SIBLING_KINDS, 'ask_edd'] } })
+      .select('chain kind status completed completedAt user dueDate updatedAt createdAt modelStatuses modelDates routing').populate('user', 'name').lean()
+    : [];
+  for (const task of teamTasks) {
+    task.enquiry = teamJob(task, chainTasks.filter((entry) => String(entry.chain) === String(task.chain || task._id)));
+  }
+  /* Marketing reads its own buyers' rows (and the team tasks it raised); the plant's departments read the whole queue. */
+  const mayRead = (task) => !isOwnershipScoped(req.user)
+    || (task.enquiry._team
+      ? String(task.createdBy?._id || task.createdBy) === String(req.user._id) || (task.customer && ownsRecord(req.user, task.customer))
+      : ownsRecord(req.user, task.enquiry));
+  const mine = tasks.filter((task) => task.enquiry && mayRead(task));
+  const ids = mine.filter((task) => !task.enquiry._team).map((task) => task.enquiry._id);
   const siblings = ids.length
     ? await Todo.find({
       enquiry: { $in: ids }, kind: { $in: SIBLING_KINDS },
@@ -88,8 +123,9 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
     : [];
   /* Per enquiry and team: the open task, or the one finished most lately. */
   const teams = new Map();
-  for (const task of siblings) {
-    const key = String(task.enquiry);
+  const chained = chainTasks.filter((task) => SIBLING_KINDS.includes(task.kind) && (!task.completed || new Date(task.completedAt || 0) >= new Date(now.getTime() - WEEK_MS)));
+  for (const task of [...siblings, ...chained]) {
+    const key = task.chain && !task.enquiry ? `chain:${String(task.chain)}` : String(task.enquiry);
     const team = TEAM_OF[task.kind];
     const slot = teams.get(key) || {};
     const held = slot[team];
@@ -146,7 +182,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
   const rows = mine.map((task) => {
     const enquiry = task.enquiry;
     const edd = enquiry.edd?.date || null;
-    const slot = teams.get(String(enquiry._id)) || {};
+    const slot = teams.get(jobKey(task)) || {};
     const model = enquiry.requirement?.modelNumber || (enquiry.items || []).find((item) => item.modelNumber)?.modelNumber || task.brief?.model || null;
     const floor = floorOf(enquiry._id);
     const workOrders = workOrdersOf(enquiry._id);
@@ -165,7 +201,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
         attention: task.attention ? { note: task.attention.note, at: task.attention.at } : null,
       },
       enquiry: {
-        _id: enquiry._id, number: enquiry.number, stage: enquiry.stage, model,
+        _id: enquiry._id, number: enquiry.number, stage: enquiry.stage, model, team: Boolean(enquiry._team),
         colour: enquiry.requirement?.colour || task.brief?.material || null,
         quantity: task.brief?.quantity || enquiry.requirement?.quantity || null,
         customer: enquiry.customer ? { _id: enquiry.customer._id, name: enquiry.customer.name, code: enquiry.customer.code } : null,
@@ -238,24 +274,37 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
   if (!/^[0-9a-f]{24}$/i.test(String(req.params.taskId))) throw ApiError.notFound('No Production task by that reference');
   const { TASK_POPULATE, floorOf: floorOfEnquiry } = await import('./handoff.controller.js');
   const task = await Todo.findOne({ _id: req.params.taskId, kind: 'ask_edd' }).populate(TASK_POPULATE);
-  if (!task || !task.enquiry) throw ApiError.notFound('No Production task by that reference');
+  if (!task) throw ApiError.notFound('No Production task by that reference');
   const { default: Enquiry } = await import('../models/Enquiry.js');
-  const enquiry = await Enquiry.findById(task.enquiry._id || task.enquiry)
-    .select('number stage customer assignedTo edd eddByModel dispatchPlan requirement items.modelNumber items.quantity items.colour')
-    .populate([{ path: 'customer', select: 'code name assignedTo' }, { path: 'assignedTo', select: 'name' }])
-    .lean();
+  /* Raised from the customer with no enquiry: the job is the task's chain [Todo `chain`]. */
+  const team = !task.enquiry;
+  if (team) await task.populate([{ path: 'customer', select: 'code name assignedTo' }]);
+  const chainTasks = team
+    ? await Todo.find({ chain: task.chain || task._id, kind: { $in: SIBLING_KINDS } }).populate(TASK_POPULATE).sort({ createdAt: -1 })
+    : [];
+  const enquiry = team
+    ? teamJob(task.toObject(), chainTasks.map((entry) => entry.toObject()))
+    : await Enquiry.findById(task.enquiry._id || task.enquiry)
+      .select('number stage customer assignedTo edd eddByModel dispatchPlan requirement items.modelNumber items.quantity items.colour')
+      .populate([{ path: 'customer', select: 'code name assignedTo' }, { path: 'assignedTo', select: 'name' }])
+      .lean();
   if (!enquiry) throw ApiError.notFound('No Production task by that reference');
-  if (isOwnershipScoped(req.user) && !ownsRecord(req.user, enquiry)) throw ApiError.notFound('No Production task by that reference');
+  const mayRead = !isOwnershipScoped(req.user) || (team
+    ? String(task.createdBy?._id || task.createdBy) === String(req.user._id) || (task.customer && ownsRecord(req.user, task.customer))
+    : ownsRecord(req.user, enquiry));
+  if (!mayRead) throw ApiError.notFound('No Production task by that reference');
 
-  /* The teams after Production on this run of the enquiry: each kind's open task, else its latest. */
-  const others = await Todo.find({ enquiry: enquiry._id, kind: { $in: SIBLING_KINDS }, createdAt: { $gte: task.createdAt } })
-    .populate(TASK_POPULATE).sort({ createdAt: -1 });
+  /* The teams after Production on this run of the enquiry (or on the chain): each kind's open task, else its latest. */
+  const others = team
+    ? chainTasks
+    : await Todo.find({ enquiry: enquiry._id, kind: { $in: SIBLING_KINDS }, createdAt: { $gte: task.createdAt } })
+      .populate(TASK_POPULATE).sort({ createdAt: -1 });
   const teams = {};
   for (const other of others) {
     const team = TEAM_OF[other.kind];
     if (!teams[team] || (teams[team].completed && !other.completed)) teams[team] = other;
   }
-  const floor = await floorOfEnquiry(enquiry._id);
+  const floor = team ? { running: [], made: { good: 0, rejected: 0, runs: 0 }, workOrders: [] } : await floorOfEnquiry(enquiry._id);
   const workOrders = (floor.workOrders || []).map((wo) => ({
     _id: wo._id, number: wo.number, status: wo.status, modelNumber: wo.modelNumber || null,
     quantity: wo.quantity || 0, goodQty: wo.goodQty || 0, machine: wo.machine?.code || null,
@@ -264,13 +313,13 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
   const edd = enquiry.edd?.date || null;
   /* What each model is made with, from its sales order: hook, clip, print and the print reference. */
   const { orderSpecsForEnquiry } = await import('../services/orderParts.service.js');
-  const specs = await orderSpecsForEnquiry(enquiry._id);
+  const specs = team ? [] : await orderSpecsForEnquiry(enquiry._id);
   res.json({
     success: true,
     data: {
       task,
       enquiry: {
-        _id: enquiry._id, number: enquiry.number, stage: enquiry.stage,
+        _id: enquiry._id, number: enquiry.number, stage: enquiry.stage, team,
         customer: enquiry.customer ? { _id: enquiry.customer._id, name: enquiry.customer.name, code: enquiry.customer.code } : null,
         owner: person(enquiry.assignedTo), edd: enquiry.edd || null, dispatchPlan: enquiry.dispatchPlan?.mode || null,
       },

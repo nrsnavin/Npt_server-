@@ -157,6 +157,82 @@ test('a team task with no enquiry follows the same chain for the same buyer', as
   assert.ok(quality, 'Quality has the next team task');
   assert.equal(quality.brief.quantity, '2000');
   assert.equal(String(quality.customer), customerId);
+  assert.ok(await Todo.findOne({ previousTask: team.json.data.task._id, kind: 'invoice_dispatch' }), 'Dispatch is asked beside it — Quality never holds the goods');
   assert.equal((await move(quality._id, 'kavitha', 'closed', 'Passed')).status, 200);
-  assert.ok(await Todo.findOne({ previousTask: quality._id, kind: 'invoice_dispatch' }), 'then Dispatch');
+  assert.equal(await Todo.countDocuments({ chain: team.json.data.task._id, kind: 'invoice_dispatch' }), 1, 'Quality closing does not ask Dispatch twice');
+});
+
+test('a Production task raised from the customer, with no enquiry, runs Printing → Assembly → Dispatch → LR copy', async () => {
+  const raised = await api('/api/workspace/team-tasks', { method: 'POST', body: { kind: 'ask_edd', note: 'Status of the 5,000 NH-410 for Sunrise', customer: customerId, brief: { model: 'NH-410', quantity: '5000' } } });
+  assert.equal(raised.status, 201, raised.json.message);
+  const production = raised.json.data.task._id;
+  const chainOf = async (kind) => Todo.findOne({ chain: production, kind });
+
+  /* Production plans it: printed, then assembled. Giving a date before deciding is refused, as on an enquiry. */
+  const early = await api(`/api/workspace/todos/${production}/edd`, { method: 'POST', as: 'siva', body: { date: new Date(Date.now() + 4 * 86400000).toISOString().slice(0, 10) } });
+  assert.equal(early.status, 400);
+  assert.match(early.json.message, /Decide first/);
+  const models = (await api(`/api/workspace/todos/${production}/routing`, { as: 'siva' })).json.data.models;
+  assert.deepEqual(models.map((row) => row.model), ['NH-410'], 'the model the task names');
+  const added = await api(`/api/workspace/todos/${production}/production-queue`, {
+    method: 'POST', as: 'siva', body: { models: [{ model: 'NH-410', printing: true, assembly: true }], date: new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10), note: 'Press 2 tomorrow' },
+  });
+  assert.equal(added.status, 200, added.json.message);
+  const printing = await chainOf('ask_printing');
+  const assembly = await chainOf('ask_assembling_edd');
+  assert.ok(printing && assembly, 'Printing and Assembly are tasked on the same job');
+  assert.equal(String(printing.customer), customerId);
+  assert.equal(printing.enquiry, undefined);
+  assert.ok(printing.routing.incoming.production, 'Printing knows when Production hands over');
+  assert.deepEqual(printing.routing.handsTo, ['assembling']);
+
+  /* The goods move team to team; nothing goes to Dispatch until the last team is ready. */
+  assert.equal((await move(production, 'siva', 'started', 'On press 2')).status, 200);
+  assert.equal((await move(production, 'siva', 'handed_printing', 'Moulded — to the print line')).status, 200);
+  assert.ok((await Todo.findById(printing._id)).routing.received.production, 'Printing hears the goods came');
+  assert.equal(await chainOf('invoice_dispatch'), null, 'not yet: Printing and Assembly are still at it');
+  assert.equal((await move(printing._id, 'pandi', 'started', 'Printing')).status, 200);
+  assert.equal((await move(printing._id, 'pandi', 'handed_assembly', 'Printed — to assembly')).status, 200);
+  assert.ok((await Todo.findById(assembly._id)).routing.received.printing, 'Assembly hears the goods came from Printing');
+  assert.equal(await chainOf('invoice_dispatch'), null);
+  assert.equal((await move(assembly._id, 'admin', 'ready_dispatch', 'Assembled and packed')).status, 200);
+
+  const dispatch = await chainOf('invoice_dispatch');
+  assert.ok(dispatch, 'the last team ready: Dispatch is asked');
+  assert.ok(await chainOf('quality_check'), 'and Quality checks beside it');
+  assert.equal(String(dispatch.customer), customerId);
+  assert.equal(dispatch.brief.quantity, '5000');
+  assert.equal((await move(dispatch._id, 'anita', 'dispatched', 'Left on TN 39 AB 4471')).status, 200);
+  const lr = await chainOf('lr_copy');
+  assert.ok(lr, 'Dispatched gives Reception the LR copy');
+  assert.equal(lr.brief.quantity, '5000');
+
+  /* It stands in the production queue as its own job, and its workflow page shows the chain's teams. */
+  const queue = (await api('/api/production/queue', { as: 'siva' })).json;
+  const row = queue.data.find((entry) => String(entry.task._id) === String(production));
+  assert.ok(row, 'the team task is on the production queue');
+  assert.equal(row.enquiry.team, true);
+  assert.equal(row.enquiry.customer._id, customerId);
+  assert.equal(row.production.taken, true, 'added to the queue');
+  assert.equal(row.teams.printing.label, 'Handed to Assembly');
+  assert.equal(row.teams.assembling.label, 'Ready for Dispatch');
+  const flow = await api(`/api/production/workflow/${production}`, { as: 'siva' });
+  assert.equal(flow.status, 200, flow.json.message);
+  assert.equal(flow.json.data.enquiry.team, true);
+  assert.deepEqual(Object.keys(flow.json.data.teams).sort(), ['assembling', 'despatch', 'printing', 'quality']);
+  assert.deepEqual(flow.json.data.specs, []);
+});
+
+test('Assembly asked alone goes Assembly → Dispatch; Printing asked alone goes Printing → Dispatch', async () => {
+  for (const [kind, who] of [['ask_assembling_edd', 'admin'], ['ask_printing', 'pandi']]) {
+    const raised = await api('/api/workspace/team-tasks', { method: 'POST', body: { kind, note: 'Buyer sent their own hangers', customer: customerId, brief: { model: 'NH-400', quantity: '1200' } } });
+    assert.equal(raised.status, 201, raised.json.message);
+    const task = raised.json.data.task._id;
+    assert.equal((await move(task, who, 'started', 'On it')).status, 200);
+    assert.equal(await Todo.findOne({ chain: task, kind: 'invoice_dispatch' }), null);
+    assert.equal((await move(task, who, 'ready_dispatch', 'Packed and ready')).status, 200);
+    const dispatch = await Todo.findOne({ chain: task, kind: 'invoice_dispatch' });
+    assert.ok(dispatch, `${kind}: Dispatch is asked once it is ready`);
+    assert.equal(dispatch.brief.model, 'NH-400');
+  }
 });

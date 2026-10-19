@@ -151,6 +151,12 @@ const todoSchema = new mongoose.Schema(
     parentTask: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
     /* The team task this one follows on its journey — SO → Production → QC → Dispatch [services/journey.service.js]. */
     previousTask: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo', index: true },
+    /*
+     * One job raised from a customer without an enquiry: every team task it goes through —
+     * Production, Printing, Assembly, Quality, Dispatch, the LR copy — carries the first task's id
+     * here, as an enquiry's tasks carry the enquiry [journey.service `jobFilter`].
+     */
+    chain: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo', index: true, sparse: true },
     /**
      * The other departments' tasks that asked for this one (Dispatch's "Ask Production") — their
      * people hear each move on it, as the enquiry's marketing person and Admin do [handoff.service

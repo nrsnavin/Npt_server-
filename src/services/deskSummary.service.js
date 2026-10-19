@@ -79,8 +79,19 @@ export async function withDeskSummaries(rows = []) {
     const kept = productionOf.get(key);
     if (!kept || (kept.completed && !task.completed)) productionOf.set(key, task);
   }
+  /* A team task raised from the customer: its chain's Production task, where it has one [Todo `chain`]. */
+  const chainIds = [...new Set(rows.filter((row) => !row.enquiry?._id && row.task.chain).map((row) => String(row.task.chain)))];
+  const chained = chainIds.length
+    ? await Todo.find({ $or: [{ _id: { $in: chainIds } }, { chain: { $in: chainIds } }], kind: 'ask_edd' })
+      .select('chain kind status completed modelStatuses updatedAt createdAt').sort({ createdAt: -1 }).lean()
+    : [];
+  const productionOfRow = (row) => {
+    if (row.enquiry?._id) return productionOf.get(String(row.enquiry._id)) || null;
+    const chain = row.task.chain && String(row.task.chain);
+    return chain ? chained.find((task) => String(task._id) === chain || String(task.chain) === chain) || null : null;
+  };
   const items = rows.map((row) => {
-    const production = row.enquiry?._id ? productionOf.get(String(row.enquiry._id)) : null;
+    const production = productionOfRow(row);
     return {
       row,
       production,
@@ -95,7 +106,7 @@ export async function withDeskSummaries(rows = []) {
     ...row,
     summary: lines.get(id)?.summary || '',
     summaryBy: lines.get(id)?.writtenBy || 'rules',
-    edd: row.enquiry?.edd?.date || null,
+    edd: row.enquiry?.edd?.date || (row.task.modelDates || []).map((entry) => entry.date).filter(Boolean).sort().at(-1) || null,
     workflow: production ? `/production/workflow/${production._id}` : null,
   }));
 }
