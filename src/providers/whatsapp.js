@@ -59,7 +59,20 @@ export function whatsappTemplate(key) {
  * `variables` is `{ 1: …, 2: … }`, the template's placeholders in order.
  * Returns `{ delivered, channel, id, sid, status }`.
  */
-export async function sendWhatsApp({ to, body, template, variables, document }) {
+export async function sendWhatsApp({ to, body, template, variables, document, direct = false }) {
+  /* Development: to the one person trying the app, saying who it was for [devRedirect.service]. */
+  if (!direct) {
+    const { redirecting, redirectPhone } = await import('../services/devRedirect.service.js');
+    if (redirecting()) {
+      const phone = await redirectPhone();
+      if (!phone) {
+        console.log(`\n[whatsapp] development redirect: no phone for DEV_NOTIFY_EMAIL (set DEV_NOTIFY_PHONE) — not sent to ${to}\n${body || template || ''}\n`);
+        return { delivered: false, channel: 'whatsapp', redirected: true };
+      }
+      if (body) body = `[DEV — meant for ${to}]\n${body}`;
+      to = phone;
+    }
+  }
   const provider = whatsappProvider();
   if (provider === 'meta') return sendMetaWhatsApp({ to, body, template, variables, document });
   if (provider === 'twilio') {
@@ -82,7 +95,7 @@ export async function sendWhatsAppCode({ to, code }) {
   const template = whatsappTemplate('otp');
   if (!template || !isWhatsAppConfigured()) return null;
   if (whatsappProvider() === 'meta') return sendMetaWhatsApp({ to, template, code });
-  return sendWhatsApp({ to, template, variables: { 1: code } });
+  return sendWhatsApp({ to, template, variables: { 1: code }, direct: true });
 }
 
 /**

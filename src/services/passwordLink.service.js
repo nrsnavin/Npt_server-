@@ -181,7 +181,7 @@ export async function sendReset(user) {
 
 async function deliver(user, subject, content, link) {
   try {
-    const sent = await sendEmail({ to: user.email, subject, text: textOf(content), html: layout(content) });
+    const sent = await sendEmail({ direct: true, to: user.email, subject, text: textOf(content), html: layout(content) });
     return sent.delivered
       ? { delivered: true, expiresAt: link.expiresAt }
       : { delivered: false, expiresAt: link.expiresAt, link: link.url };

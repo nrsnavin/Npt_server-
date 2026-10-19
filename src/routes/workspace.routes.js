@@ -34,7 +34,7 @@ import {
   pushSubscribeSchema,
   pushUnsubscribeSchema,
 } from '../validators/schemas.js';
-import { pushKey, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
+import { notificationStatus, pushKey, sendTestNotification, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
   handoffBrief, handoffDone, handoffEdd, handoffRouting, handoffRoute, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, attachTeamTaskPdf, handoffDocument, handoffDocuments,
@@ -120,6 +120,9 @@ router.post('/review/raise', validate(raiseFindingSchema), raiseFinding);
 router.get('/push/key', pushKey);
 router.post('/push/subscribe', validate(pushSubscribeSchema), subscribePush);
 router.post('/push/unsubscribe', validate(pushUnsubscribeSchema), unsubscribePush);
+/* Whether notifications are set up, and a test sent to myself. */
+router.get('/notifications/status', notificationStatus);
+router.post('/notifications/test', sendTestNotification);
 
 /* Saved views — somebody's named filter sets, pinned in their sidebar. */
 router.get('/views', listViews);
