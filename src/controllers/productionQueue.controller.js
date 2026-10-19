@@ -155,7 +155,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
       summary: summarise({ task, enquiry, teams: slot, floor, workOrders, edd }),
       models: modelRows({ task, enquiry, teams: slot, workOrders }),
       workOrders,
-      /* Taken for production yet — a work order, a run, or Production Started — and what says so. */
+      /* In the production queue yet — added by Production, a press on it, or Production Started — and what says so. */
       production: productionTaken({ task, floor }),
       link: `/production/workflow/${task._id}`,
       task: {
