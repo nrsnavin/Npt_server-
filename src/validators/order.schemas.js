@@ -185,6 +185,8 @@ export const orderActionSchema = z.object({
   ...versioned,
   action: z.enum(ORDER_ACTION_KEYS),
   note: z.string().optional(),
+  /* Release in one click: the checks still open are ticked by whoever releases it [applyOrderAction]. */
+  confirmAll: z.boolean().optional(),
   clarificationNote: z.string().optional(),
   cancellationReason: z.string().optional(),
 });
