@@ -95,7 +95,7 @@ test('refuses a past date, an empty log, and somebody else\'s customer', async (
   assert.equal(history.status, 404);
 });
 
-test('Today\'s actions: customer follow-ups and enquiries due by tonight, soonest first, each person their own', async () => {
+test('Today\'s actions: customer follow-ups and enquiries due by tonight, soonest first, only the signed-in person\'s customers — Admin too', async () => {
   const inAnHour = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   await followUp('nandhini', ids.opera, { action: 'set', due: inAnHour, note: 'Quotation required' });
   await followUp('nandhini', ids.galaxy, { action: 'set', due: new Date(Date.now() + 5 * DAY).toISOString(), note: 'Season visit' });
@@ -121,6 +121,10 @@ test('Today\'s actions: customer follow-ups and enquiries due by tonight, soones
   const parties = await api('/api/dashboard/parties?filter=due_today', { as: 'nandhini' });
   assert.ok(parties.json.data.rows.some((row) => row.name === 'Opera Clothing' && row.customerFollowUp?.note === 'Quotation required'), 'counted as due on the list');
 
-  const everything = await api('/api/dashboard/follow-ups', { as: 'admin' });
-  assert.ok(everything.json.data.items.some((item) => item.title === 'Sample approval follow-up'), 'Admin sees everybody\'s');
+  /* Only one's own customers' — Admin too: the card is what I have to chase today. */
+  const admins = await api('/api/dashboard/follow-ups', { as: 'admin' });
+  assert.ok(!admins.json.data.items.some((item) => item.title === 'Sample approval follow-up'), 'not Arun\'s customer');
+  assert.ok(!admins.json.data.items.some((item) => item.title === 'Quotation required'), 'not Nandhini\'s either');
+  const aruns = await api('/api/dashboard/follow-ups', { as: 'arun' });
+  assert.deepEqual(aruns.json.data.items.map((item) => item.title), ['Sample approval follow-up'], 'Arun sees his own only');
 });

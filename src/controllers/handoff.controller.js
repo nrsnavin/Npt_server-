@@ -23,7 +23,7 @@ import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
-  updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, raiseAssemblyWith, routingFor, decideRouting,
+  updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, registerLists, raiseAssemblyWith, routingFor, decideRouting,
 } from '../services/handoff.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -131,6 +131,11 @@ export const createTeamTask = asyncHandler(transactional(async (req, res) => {
 /** The team task form's answers without an enquiry: members to pick, the named customer's contact. */
 export const teamTaskFormPrefill = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await teamTaskPrefill(req.query.customer, req.user) });
+});
+
+/** The registers a task's hanger details are picked from — moulds, materials, hooks, clips, prints — for anyone working tasks. */
+export const taskRegisters = asyncHandler(async (req, res) => {
+  res.json({ success: true, data: await registerLists() });
 });
 
 async function storeTaskPdf(req, res, task) {

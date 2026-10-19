@@ -37,7 +37,7 @@ import {
 import { notificationStatus, pushKey, sendTestNotification, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffEdd, handoffRouting, handoffRoute, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, attachTeamTaskPdf, handoffDocument, handoffDocuments,
+  handoffBrief, handoffDone, handoffEdd, handoffRouting, handoffRoute, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments,
 } from '../controllers/handoff.controller.js';
 import {
   handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, taskRoutingSchema, taskStatusSchema,
@@ -90,6 +90,7 @@ router.post('/todos/:id/seen', handoffSeen);
 router.post('/todos/:id/ask', validate(taskAskSchema), handoffAsk);
 /* A department task for a team, with no enquiry behind it — Admin and marketing. */
 router.get('/team-tasks/prefill', teamTaskFormPrefill);
+router.get('/registers', taskRegisters);
 router.post('/team-tasks', validate(teamTaskSchema), createTeamTask);
 router.post('/team-tasks/:id/attachment', singlePdf('file'), attachTeamTaskPdf);
 /* What departments did on my enquiries — read, then dismissed (or cleared a day after reading). */

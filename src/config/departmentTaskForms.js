@@ -614,3 +614,23 @@ export const TASK_FORMS = {
 
 /** A button's form, with the common fields' defaults. */
 export const formFor = (key) => ({ ...PRIORITY_DEFAULTS, ...(TASK_FORMS[key] || {}) });
+
+/**
+ * The hanger's own details, which a task raised without them can be filled in with afterwards —
+ * by the department working it, by whoever raised it, the enquiry's marketing person or Admin
+ * [handoff.service `editTaskBrief`]. Picked from the registers like the forms' own questions.
+ */
+export const HANGER_DETAILS = [
+  { key: 'model', label: 'Model', register: 'moulds' },
+  { key: 'material', label: 'Material & colour', register: 'materials' },
+  { key: 'hook', label: 'Hook', register: 'hooks' },
+  { key: 'clip', label: 'Clip', register: 'clips' },
+  { key: 'print', label: 'Print', register: 'prints' },
+  { key: 'quantity', label: 'Quantity (pcs)', type: 'number' },
+];
+
+/** The tasks about making or moving hangers, which carry those details. */
+export const HANGER_DETAIL_KINDS = [
+  'ask_edd', 'ask_printing', 'ask_assembling_edd', 'mould_issue', 'quality_check', 'quality_issue',
+  'invoice_dispatch', 'create_quotation', 'price_negotiation',
+];

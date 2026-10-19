@@ -1937,26 +1937,61 @@ export async function attentionFor(user, department) {
 
 /** The department corrects what it was told — the questions marked `editable` (contact details). */
 export async function editTaskBrief(task, user, { brief = {} }) {
-  openHandoff(task, user);
-  const editable = (findHandoff(task.kind)?.asks || []).filter((field) => field.editable);
-  if (!editable.length) fail('Nothing on this task can be corrected here');
-  const current = { ...(task.brief || {}) };
+  const handoff = findHandoff(task.kind);
+  const details = handoff?.details || [];
+  /*
+   * The department working the task corrects what its form marks editable and fills the hanger's
+   * details; whoever raised it, the enquiry's marketing person and Admin may fill those details too
+   * — a task sent without the model or material is completed where it stands.
+   */
+  let works = true;
+  try {
+    openHandoff(task, user);
+  } catch (error) {
+    if (!details.length || task.completed || !(await mayFillDetails(task, user))) throw error;
+    works = false;
+  }
+  const editable = works ? (handoff?.asks || []).filter((field) => field.editable) : [];
+  const fields = [...editable, ...details.filter((field) => !editable.some((entry) => entry.key === field.key))];
+  if (!fields.length) fail('Nothing on this task can be corrected here');
+  const current = { ...(task.brief?.toObject?.() ?? task.brief ?? {}) };
+  const filled = [];
   const changed = [];
-  for (const field of editable) {
+  for (const field of fields) {
     if (!(field.key in brief)) continue;
     const value = keptAnswer(field, brief[field.key]);
-    if ((current[field.key] || '') === value) continue;
+    const before = current[field.key] == null ? '' : String(current[field.key]);
+    if (before === value) continue;
     if (value) current[field.key] = value;
     else delete current[field.key];
-    changed.push(field.label);
+    (before ? changed : filled).push(field.label);
   }
-  if (!changed.length) return task;
+  if (!filled.length && !changed.length) return task;
   task.brief = current;
   task.attention = undefined;
   task.markModified('brief');
-  task.updates = [...(task.updates || []), { kind: 'corrected', statusLabel: 'Corrected', text: changed.join(', '), note: `Corrected: ${changed.join(', ')}`, by: user._id, at: new Date() }];
+  const said = [filled.length && `Filled: ${filled.join(', ')}`, changed.length && `Corrected: ${changed.join(', ')}`].filter(Boolean).join(' · ');
+  task.updates = [...(task.updates || []), { kind: 'corrected', statusLabel: filled.length && !changed.length ? 'Details filled' : 'Corrected', text: [...filled, ...changed].join(', '), note: said, by: user._id, at: new Date() }];
   await task.save();
+  /* The other side hears it: the department when marketing filled it, marketing and Admin when the department did. */
+  if (handoff?.form?.notifyStatus || !works) {
+    await noticeStatus(task, user, {
+      step: { key: task.status || 'details', label: 'Hanger details filled' },
+      note: `${said}${current.model ? ` — ${current.model}` : ''}${current.material ? `, ${current.material}` : ''}`,
+      ...(works ? {} : { also: await peopleOn(task) }),
+    });
+  }
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   return task;
+}
+
+/** Whoever raised the task, the enquiry's marketing person (or its delegate) and Admin may fill its hanger details. */
+async function mayFillDetails(task, user) {
+  if (isAdmin(user)) return true;
+  if (idOf(task.createdBy) === idOf(user._id)) return true;
+  if (!task.enquiry) return false;
+  const enquiry = await Enquiry.findById(task.enquiry?._id || task.enquiry).select('assignedTo').lean();
+  return idOf(enquiry?.assignedTo) === idOf(user._id);
 }
 
 /**

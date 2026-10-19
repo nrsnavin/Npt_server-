@@ -1,4 +1,4 @@
-import { TASK_FORMS, formFor } from './departmentTaskForms.js';
+import { HANGER_DETAILS, HANGER_DETAIL_KINDS, TASK_FORMS, formFor } from './departmentTaskForms.js';
 
 /**
  * The buttons on an enquiry that send work to a department — the plant's own list, in the
@@ -226,7 +226,11 @@ const BUTTONS = [
 
 /* Each button that names a department carries its task form [config/departmentTaskForms.js]. */
 export const HANDOFFS = BUTTONS.map((button) => (button.department
-  ? { ...button, form: formFor(button.key), asks: TASK_FORMS[button.key]?.asks || [] }
+  ? {
+    ...button, form: formFor(button.key), asks: TASK_FORMS[button.key]?.asks || [],
+    /* The hanger details a task can be filled in with when it was raised without them. */
+    ...(HANGER_DETAIL_KINDS.includes(button.key) ? { details: HANGER_DETAILS } : {}),
+  }
   : button));
 
 export const HANDOFF_KEYS = HANDOFFS.map((handoff) => handoff.key);
