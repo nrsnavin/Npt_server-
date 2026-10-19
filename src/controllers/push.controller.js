@@ -1,4 +1,5 @@
 import PushSubscription from '../models/PushSubscription.js';
+import Setting from '../models/Setting.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { pushConfigured, pushPublicKey } from '../services/push.service.js';
 
@@ -34,6 +35,7 @@ export const notificationStatus = asyncHandler(async (req, res) => {
     import('../config/env.js'), import('../providers/whatsapp.js'), import('../services/devRedirect.service.js'),
   ]);
   const myDevices = await PushSubscription.countDocuments({ user: req.user._id });
+  const lastTest = (await Setting.findOne({ key: waTestKey(req.user._id) }).lean())?.value || null;
   res.json({
     success: true,
     data: {
@@ -41,7 +43,7 @@ export const notificationStatus = asyncHandler(async (req, res) => {
       redirect: redirect.redirecting() ? { email: redirect.redirectEmail(), phone: await redirect.redirectPhone() } : null,
       push: { configured: pushConfigured(), myDevices },
       email: { configured: Boolean(env.smtp.host), host: env.smtp.host || null, from: env.smtp.from || null },
-      whatsapp: { configured: isWhatsAppConfigured(), provider: whatsappProvider() || null },
+      whatsapp: { configured: isWhatsAppConfigured(), provider: whatsappProvider() || null, lastTest },
     },
   });
 });
@@ -64,7 +66,55 @@ export const sendTestNotification = asyncHandler(async (req, res) => {
       email = { sent: false, why: error.message };
     }
   }
-  /* WhatsApp: only said, not sent — a test message to yourself needs an approved template outside the 24-hour window. */
-  const { isWhatsAppConfigured } = await import('../providers/whatsapp.js');
-  res.json({ success: true, data: { push: { pushConfigured: pushConfigured(), devices, delivered }, email, whatsapp: { configured: isWhatsAppConfigured() } } });
+  const whatsapp = await testWhatsApp(req.user, when);
+  const { redirecting, redirectEmail } = await import('../services/devRedirect.service.js');
+  res.json({
+    success: true,
+    data: {
+      redirect: redirecting() ? redirectEmail() : null,
+      push: { pushConfigured: pushConfigured(), devices, delivered },
+      email,
+      whatsapp,
+    },
+  });
 });
+
+const waTestKey = (userId) => `wa-test:${userId}`;
+
+/**
+ * A WhatsApp test to my phone (on a development server, to the redirect phone). Meta only says
+ * "accepted" here; whether it was delivered — or refused, say for the 24-hour rule — arrives on
+ * the webhook a moment later and is kept, so the status check can show it [noteWhatsAppTest].
+ */
+async function testWhatsApp(user, when) {
+  const { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } = await import('../providers/whatsapp.js');
+  if (!isWhatsAppConfigured()) return { configured: false, sent: false, why: 'WhatsApp is not set up on the server' };
+  const { redirecting } = await import('../services/devRedirect.service.js');
+  if (!user.phone && !redirecting()) return { configured: true, sent: false, why: 'No phone number on your profile — add it, then test again' };
+  const template = whatsappTemplate('task');
+  try {
+    const sent = await sendWhatsApp({
+      to: user.phone || user.email,
+      body: `Test message from NPT Hangers — WhatsApp from the app works. ${when}`,
+      ...(template ? { template, variables: { 1: 'Test notification', 2: `WhatsApp from the app works — ${when}`, 3: 'Profile' } } : {}),
+    });
+    if (!sent?.delivered && sent?.redirected) return { configured: true, sent: false, why: 'Development server: no phone to redirect to — set DEV_NOTIFY_PHONE' };
+    await Setting.findOneAndUpdate(
+      { key: waTestKey(user._id) },
+      { $set: { value: { id: sent?.id || null, status: sent?.status || 'accepted', at: new Date(), template: Boolean(template) }, updatedBy: user._id } },
+      { upsert: true }
+    );
+    return { configured: true, sent: true, status: sent?.status || 'accepted', template: Boolean(template) };
+  } catch (error) {
+    return { configured: true, sent: false, why: error.message };
+  }
+}
+
+/** Meta's word on a test message — sent, delivered, read, or failed and why — kept for the check. */
+export async function noteWhatsAppTest({ id, status, error }) {
+  if (!id) return;
+  await Setting.updateOne(
+    { key: /^wa-test:/, 'value.id': id },
+    { $set: { 'value.status': status, 'value.statusAt': new Date(), ...(error ? { 'value.error': String(error).slice(0, 300) } : {}) } }
+  );
+}

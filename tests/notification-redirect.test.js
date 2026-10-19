@@ -129,6 +129,17 @@ test('the profile check says what is set up, and a test reaches me', async () =>
   assert.match(sent.json.data.push.delivered[0].why, /not set up on the server/);
   assert.equal(sent.json.data.email.sent, false);
   assert.match(sent.json.data.email.why, /mail server is not set/);
+  assert.deepEqual([sent.json.data.whatsapp.configured, sent.json.data.whatsapp.sent], [false, false]);
+  assert.equal(sent.json.data.redirect, null);
+
+  /* Meta's later word on a test message is kept and shown by the status check. */
+  const { default: Setting } = await import('../src/models/Setting.js');
+  await Setting.create({ key: `wa-test:${rameshId}`, value: { id: 'wamid.T1', status: 'accepted', at: new Date() } });
+  const { noteWhatsAppTest } = await import('../src/controllers/push.controller.js');
+  await noteWhatsAppTest({ id: 'wamid.T1', status: 'failed', error: 'Outside the 24-hour window' });
+  const after = await api('/api/workspace/notifications/status', { token: ramesh });
+  assert.equal(after.json.data.whatsapp.lastTest.status, 'failed');
+  assert.match(after.json.data.whatsapp.lastTest.error, /24-hour/);
   assert.equal((await api('/api/workspace/notifications/status')).status, 401);
 });
 

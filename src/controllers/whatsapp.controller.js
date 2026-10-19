@@ -15,6 +15,7 @@ import ApiError from '../utils/ApiError.js';
 import CustomerMessage from '../models/CustomerMessage.js';
 import { isMetaWebhook, metaConfig, parseMetaWebhook, verifyMetaSignature } from '../providers/meta.js';
 import { notePingStatus } from '../services/whatsappPing.service.js';
+import { noteWhatsAppTest } from './push.controller.js';
 import { transactional } from '../utils/transaction.js';
 
 /**
@@ -117,6 +118,7 @@ async function metaWebhook(req, res) {
   for (const update of statuses) {
     if (!update.id) continue;
     notePingStatus(update);
+    await noteWhatsAppTest(update).catch(() => null);
     const change = { providerStatus: update.status };
     if (update.status === 'failed') Object.assign(change, { status: 'failed', error: update.error || 'WhatsApp could not deliver it.' });
     await CustomerMessage.updateMany({ channel: 'whatsapp', providerId: update.id }, { $set: change });

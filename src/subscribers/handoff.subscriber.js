@@ -39,15 +39,18 @@ async function tell(people, { headline, details, link }) {
     .catch((error) => console.error(`[handoff] push not sent: ${error.message}`));
 
   const template = whatsappTemplate('task');
+  /* Development: everything goes to one phone, so a colleague without a number still sends [devRedirect]. */
+  const { redirecting } = await import('../services/devRedirect.service.js');
+  const toOne = redirecting();
   for (const person of people) {
-    if (!person.phone) continue;
+    if (!person.phone && !toOne) continue;
     const body = `${headline}\n${details}\n${url}`;
     if (!isWhatsAppConfigured()) {
       console.log(`\n[whatsapp] to ${person.phone}\n${body}\n`);
       continue;
     }
     await sendWhatsApp({
-      to: person.phone,
+      to: person.phone || `${person.name || 'a colleague'} (no phone on the register)`,
       body,
       ...(template ? { template, variables: { 1: headline, 2: details, 3: url } } : {}),
     }).catch((error) => console.error(`[handoff] WhatsApp to ${person.phone} not sent: ${error.message}`));

@@ -21,14 +21,15 @@ export const pushConfigured = () =>
  */
 let client;
 async function webPush() {
-  if (client !== undefined) return client;
+  if (client) return client;
+  /* Not remembered when it fails: once `npm install` has put the package back, the next push finds it. */
   try {
     const { default: webpush } = await import('web-push');
     webpush.setVapidDetails(process.env.WEB_PUSH_SUBJECT, process.env.WEB_PUSH_PUBLIC_KEY, process.env.WEB_PUSH_PRIVATE_KEY);
     client = webpush;
   } catch (error) {
-    console.error(`[push] web-push is not installed — run \`npm ci\` on the server. Nothing is sent. (${error.message})`);
-    client = null;
+    console.error(`[push] web-push could not be loaded — run \`npm install\` in the server folder and restart. Nothing is sent. (${error.message})`);
+    return null;
   }
   return client;
 }
@@ -92,7 +93,7 @@ export async function deliverPush(devices, message) {
   }
 
   const webpush = await webPush();
-  if (!webpush) return devices.map((device) => ({ service: serviceOf(device.endpoint), ok: false, why: 'web-push is not installed on the server — run npm install' }));
+  if (!webpush) return devices.map((device) => ({ service: serviceOf(device.endpoint), ok: false, why: 'the web-push package is missing on the server — in the server folder run npm install, then restart the API' }));
   const payload = JSON.stringify(message);
   return Promise.all(
     devices.map((device) =>
