@@ -359,7 +359,7 @@ export const handoffResult = asyncHandler(async (req, res) => {
   try {
     /* The file's row, the task's finish and the next department's task commit together, or none
        of them do; the messages to the buyer go only once that has landed. */
-    let { task: done, next, nextProblem } = await inTransaction(async () => {
+    let { task: done, next, nextProblem, held } = await inTransaction(async () => {
       const fresh = await taskFor(req);
       [attachment] = await Attachment.create([{
         key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size, uploadedBy: req.user._id, task: fresh._id,
@@ -378,6 +378,8 @@ export const handoffResult = asyncHandler(async (req, res) => {
       data: await done.populate(TASK_POPULATE),
       next: next ? { _id: next._id, title: next.title, department: next.department } : null,
       nextProblem,
+      /* The SO is prepared but the order waits with marketing — Production was not confirmed. */
+      held: Boolean(held),
       ...(sent ? { sent: sent.map((entry) => ({ channel: entry.channel, status: entry.status, recipient: entry.recipient, reason: entry.skipReason || entry.error })) } : {}),
     });
   } catch (error) {

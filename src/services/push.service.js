@@ -99,8 +99,17 @@ export function serviceOf(endpoint) {
 }
 
 /** A push service's refusal in words, with what to do. */
-export function whyRefused(statusCode, body = '') {
+export function whyRefused(statusCode, body = '', message = '') {
   const text = String(body || '');
+  /* No answer from a push service at all: the request never got there, or web-push refused it first. */
+  if (!statusCode) {
+    const said = String(message || 'no reason given');
+    if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ECONNRESET|socket hang up|network/i.test(said)) {
+      return `the server could not reach the push service (${said}) — check the server's outbound internet / firewall allows HTTPS to web.push.apple.com and fcm.googleapis.com`;
+    }
+    if (/p256dh|auth|subscription/i.test(said)) return `this device's subscription is incomplete (${said}) — on that device press Turn off, then Turn on`;
+    return `sending failed before the push service answered: ${said}`;
+  }
   if (statusCode === 404 || statusCode === 410) return 'this device is no longer subscribed — it was removed; turn notifications on again on that device';
   if (statusCode === 403 || /VAPID|BadJwtToken|credentials/i.test(text)) {
     return 'the push keys on the server do not match the ones this device subscribed with (the keys were changed or set after it was turned on) — on that device press Turn off, then Turn on';
@@ -132,7 +141,7 @@ export async function deliverPush(devices, message) {
         .sendNotification({ endpoint: device.endpoint, keys: device.keys }, payload, { TTL: 60 * 60 * 24, urgency: 'high' })
         .then(() => ({ service: serviceOf(device.endpoint), ok: true }))
         .catch(async (error) => {
-          const why = whyRefused(error.statusCode, error.body);
+          const why = whyRefused(error.statusCode, error.body, error.message);
           if (error.statusCode === 404 || error.statusCode === 410) await device.deleteOne();
           else console.error(`[push] to user ${device.user} not sent (${serviceOf(device.endpoint)} ${error.statusCode || ''}): ${error.body || error.message}`);
           return { service: serviceOf(device.endpoint), ok: false, why };

@@ -80,7 +80,16 @@ const SAMPLE_COLUMNS = [
   { key: 'clip', label: 'Clip', register: 'clips' },
   { key: 'print', label: 'Print', register: 'prints' },
   { key: 'colourType', label: 'Colour is', type: 'choice', options: ['Preferred colour', 'Compulsory colour'] },
-  { key: 'quantity', label: 'Pcs', type: 'number' },
+  { key: 'quantity', label: 'Pcs', type: 'number', blank: '3' },
+];
+
+/** The rows of a sales order request: each model with its material and colour, how many, the price and the date it is due. */
+const SO_COLUMNS = [
+  { key: 'model', label: 'Model', required: true, register: 'moulds' },
+  { key: 'material', label: 'Material & colour', register: 'materials' },
+  { key: 'quantity', label: 'Qty (pcs)', type: 'number' },
+  { key: 'price', label: 'Price (₹ / pc)', type: 'number' },
+  { key: 'edd', label: 'EDD', type: 'date' },
 ];
 
 const PAYMENT_TERMS = [
@@ -290,10 +299,17 @@ export const TASK_FORMS = {
     asks: [
       { key: 'contactPerson', label: 'Contact person', section: 'Company & contact details', from: 'customer.contactPerson', placeholder: 'Name of person to call for SO / GST', editable: true },
       { key: 'mobile', label: 'Mobile number', from: 'customer.mobile', editable: true },
-      { key: 'models', label: 'Hanger model(s)', section: 'Sales order details', from: 'models', register: 'moulds' },
-      { key: 'material', label: 'Material / colour / quality', from: 'materials', register: 'materials', placeholder: 'Material from enquiry; editable' },
-      { key: 'quantity', label: 'Order quantity', type: 'number', from: 'quantity', placeholder: 'Quantity from enquiry; editable' },
+      {
+        key: 'items', label: 'Sales order details', section: 'Sales order details', type: 'items',
+        from: 'orderItems', add: '+ Add Model', columns: SO_COLUMNS,
+      },
       { key: 'paymentTerms', label: 'Payment terms', type: 'choice', options: PAYMENT_TERMS, from: 'order.paymentTerms', placeholder: 'Select payment terms' },
+      /*
+       * Ticked: the SO prepared sends the order straight to Production. Left blank: it comes back
+       * to marketing as a Production Holded Order, and Admin or the enquiry's marketing person
+       * (or whoever it was delegated to) moves it to Production [config/handoffs.js po_so `holdUnless`].
+       */
+      { key: 'productionConfirmed', label: 'Production confirmed — send to Production once the SO is prepared', type: 'check' },
     ],
   },
   ask_edd: {

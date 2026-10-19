@@ -72,6 +72,13 @@ const BUTTONS = [
      * not Production's task could be raised yet. The only automatic move that marks it Won.
      */
     whenDone: { stage: 'production_edd', marketing: 'production', won: true },
+    /*
+     * Unless marketing ticked Production confirmed on the request, the SO prepared does not go
+     * to Production: the order is still Won, but it waits with marketing as a Production Holded
+     * Order until Admin or its marketing person moves it on [handoff.service `heldBack`].
+     */
+    holdUnless: 'productionConfirmed',
+    whenHeld: { stage: 'production_hold', marketing: 'production_hold', won: true },
     hint: 'The buyer’s PO is in — raise and send the sales order',
     records: [{ key: 'poNumber', label: 'Customer PO number' }, { key: 'soNumber', label: 'Sales order number' }],
     opens: 'orders',

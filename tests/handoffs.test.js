@@ -122,8 +122,9 @@ test('the departments, in the plant\'s order', async () => {
 test('the buttons and the stages come from the server', async () => {
   const { status, json } = await api('/api/handoffs', { token: arun });
   assert.equal(status, 200);
-  /* The plant's twelve, plus Assembly's own (5A) and Audit's (11A). */
-  assert.equal(json.data.stages.filter((stage) => stage.number).length, 14);
+  /* The plant's twelve, plus Production Holded Orders (4A), Assembly's own (5A) and Audit's (11A). */
+  assert.equal(json.data.stages.filter((stage) => stage.number).length, 15);
+  assert.equal(json.data.stages.find((stage) => stage.key === 'production_hold').department, 'marketing');
   assert.equal(json.data.stages.find((stage) => stage.key === 'assembling').number, '5A');
   assert.equal(json.data.stages.find((stage) => stage.key === 'audit').department, 'audit');
   assert.deepEqual(json.data.stages.slice(0, 4).map((stage) => stage.label), ['Enquiry', 'Sample', 'Pricing / Quote', 'PO & SO']);
@@ -536,7 +537,7 @@ test('a department sees the enquiries at its own stages; the enquiry list filter
 
   /* Marketing counts its own enquiries only — Priya's is not Nandhini's to see. */
   const marketing = await api('/api/departments/mine/dashboard', { token: nandhini });
-  assert.deepEqual(marketing.json.data.atStages.map((stage) => stage.key), ['enquiry', 'my_payment_followup']);
+  assert.deepEqual(marketing.json.data.atStages.map((stage) => stage.key), ['enquiry', 'production_hold', 'my_payment_followup']);
   const nandhiniId = await me(nandhini);
   assert.equal(
     marketing.json.data.atStages[0].count,

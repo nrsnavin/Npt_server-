@@ -105,7 +105,7 @@ test('each department has its own form; the follow-up owner picks My or Team', a
   const form = (key) => buttons.find((button) => button.key === key).form;
   assert.equal(form('sample_request').team, 'Sampling Team');
   assert.deepEqual(buttons.find((button) => button.key === 'po_so').asks.map((field) => field.label), [
-    'Contact person', 'Mobile number', 'Hanger model(s)', 'Material / colour / quality', 'Order quantity', 'Payment terms',
+    'Contact person', 'Mobile number', 'Sales order details', 'Payment terms', 'Production confirmed — send to Production once the SO is prepared',
   ]);
   assert.equal(form('invoice_dispatch').title, 'Send Dispatch Request');
   assert.equal(form('invoice_dispatch').priority, false);
