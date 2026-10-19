@@ -2680,6 +2680,48 @@ export const dateLabelOf = (task, fallback = 'Ready date') => {
 };
 
 /** Production has to say what follows it before it gives any date. */
+/*
+ * The statuses at which a Production task's goods are already moulded — nothing left to queue.
+ * Up to Part 1 / Part 2 Ready (some made, more to come) it may still be added.
+ */
+const MOULDED = ['completed', 'handed_printing', 'handed_assembly', 'assembling', 'ready_dispatch', 'closed'];
+/* Where a task added to the queue starts its cycle, when it has not been planned yet. */
+const UNPLANNED = ['received', 'accepted'];
+
+/**
+ * Production adds its task to the production queue [web: Production desk "Add to production
+ * queue"; components/ProductionQueueList.jsx]. One step for what planning a job means here:
+ *   - printing and assembly decided for each model — Printing's and Assembly's tasks raised, so the
+ *     job runs Production → Printing → Assembly → Dispatch [decideRouting] (kept as it is when it
+ *     was decided before and none is given);
+ *   - a task not yet planned (EDD Request Received, EDD Accepted) moves to Planning, with the EDD
+ *     if one is given; a task already planning or ready on a date takes the EDD as its date;
+ *   - stamped as queued, and said on the task.
+ * Refused for a task whose goods are already moulded, and for one already in the queue.
+ */
+export async function addToProductionQueue(task, user, { models, date, note } = {}) {
+  openHandoff(task, user);
+  if (task.kind !== 'ask_edd') fail('Only a Production task goes on the production queue');
+  if (!task.enquiry) fail('A team task has no enquiry to plan');
+  if (task.queuedAt) throw ApiError.conflict('This task is already in the production queue');
+  if (MOULDED.includes(task.status)) fail('The goods are already moulded — there is nothing to queue');
+  if (models?.length) task = (await decideRouting(task, user, { models })).task;
+  assertRouted(task);
+  const text = String(note || '').trim() || 'Added to the production queue';
+  const day = String(date || '').trim();
+  if (UNPLANNED.includes(task.status)) {
+    task = await setTaskStatus(task, user, { status: 'planning', note: text, ...(day ? { date: day } : {}) });
+  } else if (day) {
+    task = await setTaskEdd(task, user, { date: day, note: text });
+  }
+  task.queuedAt = new Date();
+  task.queuedBy = user._id;
+  task.updates = [...(task.updates || []), { kind: 'note', text: 'Added to the production queue', note: `Added to the production queue: ${text}`, by: user._id, at: new Date() }];
+  if (!task.user) task.user = user._id;
+  await task.save();
+  return task;
+}
+
 export function assertRouted(task) {
   if (task.kind !== 'ask_edd' || !task.enquiry) return;
   if (!task.routing?.decidedAt) fail('Decide first which models need printing or assembly — then give the date');

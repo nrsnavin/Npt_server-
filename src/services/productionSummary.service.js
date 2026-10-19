@@ -18,8 +18,10 @@ const pieces = (value) => Number(value || 0).toLocaleString('en-IN');
 
 /** Text cut to `limit` words, with an ellipsis when cut. */
 /*
- * Whether an enquiry has been taken for production, and what says so — the Production desk's
- * "In production" / "Not taken yet" filter [web: components/ProductionQueueList.jsx]: a work order
+ * Whether an enquiry is in the production queue, and what says so — the Production desk's
+ * "In the production queue" / "Not in the production queue" filter [web:
+ * components/ProductionQueueList.jsx]: Production added it [handoff.service
+ * `addToProductionQueue`]; or, for work begun before that step existed, a work order
  * for its released lines, moulding on a press or pieces made, or Production's status at Production
  * Started or past it (on the task or on any of its models). Until then it is waiting to be taken.
  */
@@ -29,6 +31,7 @@ const startedKeys = (kind) => {
   return new Set(from < 0 ? [] : statuses.slice(from).filter((entry) => !entry.issue && !entry.done).map((entry) => entry.key));
 };
 export function productionTaken({ task, workOrders = [], floor = {} }) {
+  if (task?.queuedAt) return { taken: true, why: 'Added to the production queue', at: task.queuedAt };
   if (workOrders.length) return { taken: true, why: `Work order ${workOrders.map((wo) => wo.number).join(', ')}` };
   const running = floor.running || [];
   if (running.length) return { taken: true, why: `Moulding on ${running.map((run) => run.machine || 'a press').join(', ')}` };

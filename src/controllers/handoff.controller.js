@@ -25,7 +25,7 @@ import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
-  updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, registerLists, raiseAssemblyWith, routingFor, decideRouting,
+  updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, registerLists, raiseAssemblyWith, routingFor, decideRouting, addToProductionQueue,
 } from '../services/handoff.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -358,6 +358,12 @@ export const handoffRoute = asyncHandler(transactional(async (req, res) => {
     data: populated,
     raised: Object.fromEntries(Object.entries(raised).map(([team, entry]) => [team, { _id: entry._id, department: entry.department }])),
   });
+}));
+
+/** Production adds its task to the production queue — routed, planned, dated [handoff.service `addToProductionQueue`]. */
+export const handoffQueue = asyncHandler(transactional(async (req, res) => {
+  const task = await addToProductionQueue(await taskFor(req), req.user, req.body);
+  await answer(res, task);
 }));
 
 /** The department's own status on its task — SO Waiting, Preparing, Needs Clarification. */

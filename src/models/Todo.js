@@ -95,6 +95,13 @@ const todoSchema = new mongoose.Schema(
      */
     routing: { type: mongoose.Schema.Types.Mixed, default: undefined },
     /*
+     * When Production added this task to its production queue, and who [handoff.service
+     * `addToProductionQueue`] — planned for the press, printing and assembly decided. A task not
+     * added sits under "Not in the production queue" on the desk until it is.
+     */
+    queuedAt: Date,
+    queuedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    /*
      * The date this team gives for each model it has — Production, Printing or Assembly
      * [handoff.service `setTaskEdd`]. A model's EDD is the latest any of its teams gives.
      */

@@ -76,6 +76,13 @@ export const taskRoutingSchema = z.object({
   })).min(1, 'Name at least one model').max(60),
 });
 
+/** Production adds its task to the production queue: printing and assembly per model (unless decided), an EDD, a remark. */
+export const productionQueueAddSchema = z.object({
+  models: taskRoutingSchema.shape.models.optional(),
+  date: z.string().trim().max(10).optional().or(z.literal('')),
+  note: z.string().trim().max(2000).optional(),
+});
+
 /** Another department asked from this task — Dispatch's "Ask Production"; checked by the service. */
 export const taskAskSchema = z.object({
   kind: z.string().trim().min(1).max(40),
