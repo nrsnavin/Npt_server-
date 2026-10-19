@@ -8,15 +8,54 @@ export const pushKey = asyncHandler(async (req, res) => {
   res.json({ success: true, data: { publicKey: pushPublicKey(), configured: pushConfigured() } });
 });
 
-/** This device, for me. The same device signed in as somebody else moves to them. */
+/**
+ * This device, for me — and for every other account signed in on it: a phone shared by two
+ * people, or Admin switching between accounts, rings for each of them [account switcher]. The
+ * keys travel with the endpoint, so a re-subscribed device updates every account's row.
+ */
 export const subscribePush = asyncHandler(async (req, res) => {
   const { endpoint, keys } = req.body;
-  await PushSubscription.findOneAndUpdate(
-    { endpoint },
-    { user: req.user._id, endpoint, keys, userAgent: String(req.get('user-agent') || '').slice(0, 300) },
+  const userAgent = String(req.get('user-agent') || '').slice(0, 300);
+  const save = () => PushSubscription.findOneAndUpdate(
+    { endpoint, user: req.user._id },
+    { user: req.user._id, endpoint, keys, userAgent },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
+  try {
+    await save();
+  } catch (error) {
+    if (!(await dropLegacyEndpointIndex(error))) throw error;
+    await save();
+  }
+  await PushSubscription.updateMany({ endpoint }, { $set: { keys } });
   res.status(201).json({ success: true, data: { subscribed: true } });
+});
+
+/**
+ * A database from before devices were shared still holds one row per endpoint, unique — and
+ * refuses a second account's. That index goes the first time it gets in the way; nothing else
+ * has to be run on the server for this.
+ */
+async function dropLegacyEndpointIndex(error) {
+  const pattern = error?.keyPattern || {};
+  if (error?.code !== 11000 || Object.keys(pattern).join() !== 'endpoint') return false;
+  const legacy = (await PushSubscription.collection.indexes()).find((index) => index.unique && Object.keys(index.key).join() === 'endpoint');
+  if (!legacy) return false;
+  await PushSubscription.collection.dropIndex(legacy.name);
+  console.log(`[push] dropped the old one-account-per-device index ${legacy.name}`);
+  return true;
+}
+
+/**
+ * The browser replaced this device's subscription [web: public/sw.js `pushsubscriptionchange`]:
+ * every account's row on the old endpoint moves to the new one. No sign-in — the service worker
+ * has none — and none needed: only whoever holds the old endpoint, a secret URL, can name it,
+ * and all it can do is point that device's own rows at another address.
+ */
+export const renewPush = asyncHandler(async (req, res) => {
+  const { oldEndpoint, endpoint, keys } = req.body;
+  const { modifiedCount } = await PushSubscription.updateMany({ endpoint: oldEndpoint }, { $set: { endpoint, keys } });
+  res.json({ success: true, data: { renewed: modifiedCount } });
 });
 
 /** Stop notifying this device. Only my own — anybody else's endpoint is simply not found. */
