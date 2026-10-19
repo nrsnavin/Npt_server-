@@ -107,6 +107,20 @@ const todoSchema = new mongoose.Schema(
       }, { _id: false })],
       default: undefined,
     },
+    /*
+     * Where each model has got to, on a Production, Printing or Assembly task with several models
+     * [handoff.service `setTaskStatus` with `models`]. The task's own status is its slowest model's.
+     */
+    modelStatuses: {
+      type: [new mongoose.Schema({
+        model: { type: String, trim: true, required: true },
+        status: { type: String, trim: true, required: true },
+        note: { type: String, trim: true, maxlength: 2000 },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        at: { type: Date, default: Date.now },
+      }, { _id: false })],
+      default: undefined,
+    },
     /** The PDF sent with the task, if one was [routes: POST /enquiries/:id/handoffs/:taskId/attachment]. */
     attachment: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
     /** The PDF of the work itself — the sales order — uploaded by the department to finish the task. */
@@ -119,6 +133,8 @@ const todoSchema = new mongoose.Schema(
         note: { type: String, trim: true, maxlength: 2000 },
         /* The ready date given with the move (YYYY-MM-DD), where the workflow takes one. */
         date: String,
+        /* The models moved, when only some of the task's were [`modelStatuses`]. */
+        models: { type: [String], default: undefined },
         by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         at: { type: Date, default: Date.now },
       }, { _id: false })],

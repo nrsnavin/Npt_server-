@@ -191,16 +191,29 @@ export async function raiseNextTeamTask(task, kind, user, why) {
  * moved to `to` only when that is further along its workflow than where it is (never back, and
  * never over an issue somebody flagged). Its marketing person and Admin are told, as for any move.
  */
-export async function tellProductionTask(enquiryId, { note, to, user }) {
+export async function tellProductionTask(enquiryId, { note, to, user, model }) {
   if (!enquiryId) return null;
   const task = await Todo.findOne({ enquiry: idOf(enquiryId), kind: 'ask_edd', completed: false }).sort({ createdAt: -1 });
   if (!task) return null;
   const statuses = findHandoff('ask_edd')?.form?.statuses || [];
   const at = (key) => statuses.findIndex((entry) => entry.key === key);
-  const current = statuses.find((entry) => entry.key === task.status);
-  const step = to && at(to) > at(task.status) && !current?.issue ? statuses[at(to)] : null;
+  const behind = (key) => at(to) > at(key) && !statuses.find((entry) => entry.key === key)?.issue;
   const now = new Date();
-  if (step) {
+  let step = null;
+  if (to && task.modelStatuses?.length) {
+    /* Models moving on their own [Todo `modelStatuses`]: the run's model moves (every model when it names none of them). */
+    const { modelStatusesOf, slowestStatus } = await import('./handoff.service.js');
+    const rows = modelStatusesOf(task);
+    const mine = rows.some((row) => row.model === model) ? [model] : rows.map((row) => row.model);
+    const moved = rows.filter((row) => mine.includes(row.model) && behind(row.status));
+    if (moved.length) {
+      step = statuses[at(to)];
+      task.modelStatuses = rows.map((row) => (moved.includes(row) ? { model: row.model, status: to, note, by: user?._id, at: now } : row));
+      task.status = slowestStatus(task, task.modelStatuses);
+      task.statusHistory = [...(task.statusHistory || []), { status: step.key, note, ...(moved.length < rows.length ? { models: moved.map((row) => row.model) } : {}), by: user?._id, at: now }];
+    }
+  } else if (to && behind(task.status)) {
+    step = statuses[at(to)];
     task.status = step.key;
     task.statusHistory = [...(task.statusHistory || []), { status: step.key, note, by: user?._id, at: now }];
   }

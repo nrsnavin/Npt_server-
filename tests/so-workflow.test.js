@@ -363,3 +363,26 @@ test('an SO PDF that differs from the request is booked from the PDF but not rel
   const order = await SalesOrder.findById(result.order._id).lean();
   assert.deepEqual([order.status, order.lines[0].quantity, order.customerPo.number, order.drafted.from, order.drafted.soNumber], ['po_received', 2500, 'PO-PDF-9', 'so_pdf', 'SO/118']);
 });
+
+test('a task raised without the hanger details: the department fills them, the raiser may too, others may not', async () => {
+  const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
+  const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'No Details Knits', mobile: '9170875333', assignedTo: me } })).json.data;
+  const fresh = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customer._id, requirement: { modelNumber: 'UTJRSH-0' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const asked = (await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Date please' } })).json.data.task;
+  const { buttons } = (await api('/api/handoffs', { as: 'siva' })).json.data;
+  assert.deepEqual(buttons.find((button) => button.key === 'ask_edd').details.map((field) => field.key), ['model', 'material', 'hook', 'clip', 'print', 'quantity']);
+  assert.equal(buttons.find((button) => button.key === 'po_so').details, undefined, 'the SO request has its own lines');
+
+  const filled = await api(`/api/workspace/todos/${asked._id}/brief`, { method: 'POST', as: 'siva', body: { brief: { model: 'CRF25', material: 'PP Black', quantity: '10,000' } } });
+  assert.equal(filled.status, 200, filled.json.message);
+  assert.deepEqual([filled.json.data.brief.model, filled.json.data.brief.material, filled.json.data.brief.quantity], ['CRF25', 'PP Black', '10000']);
+  assert.match(filled.json.data.updates.at(-1).note, /Filled: Model, Material & colour, Quantity \(pcs\)/);
+
+  const byRaiser = await api(`/api/workspace/todos/${asked._id}/brief`, { method: 'POST', as: 'nandhini', body: { brief: { hook: 'Chrome swivel', quantity: '12000' } } });
+  assert.equal(byRaiser.status, 200, byRaiser.json.message);
+  assert.match(byRaiser.json.data.updates.at(-1).note, /Filled: Hook · Corrected: Quantity \(pcs\)/);
+  assert.equal((await api(`/api/workspace/todos/${asked._id}/brief`, { method: 'POST', as: 'priya', body: { brief: { model: 'X' } } })).status, 403, 'another department may not');
+});

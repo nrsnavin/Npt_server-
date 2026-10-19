@@ -236,21 +236,28 @@ export async function partiesFor(user, { filter = 'all', page = 1, limit = 50, s
 const ACTION_TYPE_LABELS = { call: 'Call', whatsapp: 'WhatsApp', email: 'Email', meeting: 'Meeting', visit: 'Visit', send_quote: 'Pricing', send_sample: 'Sample' };
 
 /**
- * The card beside the customer list: what this person has to chase — every open customer
- * follow-up (set from the list, worked from the card), and the enquiries whose next action is
- * due by tonight. Soonest first; "pending" is what is due by tonight, overdue included.
+ * The card beside the customer list: what this person has to chase — every open follow-up on
+ * a customer assigned to them (set from the list, worked from the card), and the enquiries on
+ * their customers (or handed to them) whose next action is due by tonight. Soonest first;
+ * "pending" is what is due by tonight, overdue included.
  */
 export async function followUpsFor(user, { limit = 60 } = {}) {
   const now = new Date();
   const tonight = endOfDayIST(now);
   const today = startOfDayIST(now);
+  /*
+   * Only this person's own: the customers assigned to them, and the enquiries on those customers
+   * or handed to them (a delegated enquiry, a prospect). Admin too — the card is "what I have to
+   * chase today", not a view of everybody's; the overview and the lists show the rest.
+   */
+  const mine = await Customer.distinct('_id', { assignedTo: user._id });
   const [customers, enquiries] = await Promise.all([
-    Customer.find({ ...customerScope(user), 'followUp.due': { $exists: true } })
+    Customer.find({ ...customerScope(user), assignedTo: user._id, 'followUp.due': { $exists: true } })
       .select('name code followUp')
       .sort({ 'followUp.due': 1 })
       .limit(200)
       .lean(),
-    Enquiry.find({ ...openForMarketing(user), nextFollowUpDate: { $lte: tonight } })
+    Enquiry.find({ $and: [openForMarketing(user), { nextFollowUpDate: { $lte: tonight } }, { $or: [{ assignedTo: user._id }, { customer: { $in: mine } }] }] })
       .select('number customer prospect nextAction nextActionType nextFollowUpDate requirement.modelNumber items.modelNumber')
       .populate('customer', 'name')
       .sort({ nextFollowUpDate: 1 })
