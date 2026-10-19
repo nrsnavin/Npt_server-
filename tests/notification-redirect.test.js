@@ -152,3 +152,26 @@ test('a push service refusal is said in words, with what to do', async () => {
   assert.match(whyRefused(400, 'BadWebPushTopic'), /WEB_PUSH_SUBJECT/);
   assert.match(whyRefused(500, 'oops'), /answered 500: oops/);
 });
+
+test('push keys pasted with quotes, spaces or a bare subject are tidied; a wrong key says why, not "package missing"', async () => {
+  const { vapidSettings, deliverPush } = await import('../src/services/push.service.js');
+  const pub = 'BOB9JX3eoO8xIFgIXcrDcFNP5zHZmd1yi7weV8GQPC8q870esog4NtSVR1x0mZvUaNeHoQ8wDo5wrYGSTmSefyg';
+  const priv = 'UCax9I1wuzWgmZKuF3lrsdk2Fxwcy5wLjAr11HpB0Vo';
+  assert.deepEqual(
+    vapidSettings({ WEB_PUSH_PUBLIC_KEY: ` "${pub}" `, WEB_PUSH_PRIVATE_KEY: `'${priv}'`, WEB_PUSH_SUBJECT: 'admin@npthangers.com   # change me' }),
+    { publicKey: pub, privateKey: priv, subject: 'mailto:admin@npthangers.com' },
+  );
+  /* Swapped keys: web-push refuses them, and the device result says the keys, not the package. */
+  Object.assign(process.env, { WEB_PUSH_PUBLIC_KEY: priv, WEB_PUSH_PRIVATE_KEY: pub, WEB_PUSH_SUBJECT: 'mailto:a@b.com' });
+  try {
+    const [result] = await deliverPush([{ endpoint: 'https://web.push.apple.com/x', keys: {}, user: 'u' }], { title: 't' });
+    assert.equal(result.ok, false);
+    assert.match(result.why, /push keys in the server's \.env are not accepted/);
+    assert.doesNotMatch(result.why, /package is missing/);
+    assert.doesNotMatch(result.why, new RegExp(pub), 'never the key itself');
+  } finally {
+    delete process.env.WEB_PUSH_PUBLIC_KEY;
+    delete process.env.WEB_PUSH_PRIVATE_KEY;
+    delete process.env.WEB_PUSH_SUBJECT;
+  }
+});
