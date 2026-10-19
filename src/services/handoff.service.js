@@ -1055,7 +1055,15 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
     });
   }
   await publish(EVENTS.HANDOFF_DONE, { task, by: user });
+  /* The journey goes on: the last finishing team done → Quality; Quality done → Dispatch [journey.service]. */
+  await nextOnJourney(task, user, text);
   return task;
+}
+
+/** The next step of the order's journey, once a finishing team or Quality is through [journey.service]. */
+async function nextOnJourney(task, user, why) {
+  const { advanceJourney } = await import('./journey.service.js');
+  return advanceJourney(task, user, why);
 }
 
 /** What has to be true before a task is finished — checked before anything about it changes. */
@@ -1219,6 +1227,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields }) 
   if (step.next === 'lr_copy' && task.order) await remindConsignment(task, user, step);
   /* Production or Assembly saying the goods are ready reaches the Dispatch request waiting on them. */
   if (step.readyForDispatch && task.enquiry) await tellDispatchReady(task, user, step, text);
+  /* Goods ready from the last finishing team: Quality, then Dispatch, are asked [journey.service]. */
+  if (step.readyForDispatch && !step.done) await nextOnJourney(task, user, `${step.label}${text ? ` — ${text}` : ''}`);
   /* The Mould team saying the tool is ready reaches Production. */
   if (step.tells && task.enquiry) await tellOpenTasks(task, user, step, text, step.tells);
   /* Accounts confirming a payment the order is still held for: somebody has to record it. */
@@ -1772,7 +1782,13 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
   if (held) {
     nextProblem = 'Production was not confirmed on the request — the order is with marketing under Production Holded Orders until Admin or its marketing person moves it to Production.';
   } else if (step.next && !task.enquiry) {
-    nextProblem = `No enquiry on this task, so ${findHandoff(step.next)?.label || 'the next step'} was not raised.`;
+    /* A team task: the next team's task for the same buyer, on the same journey [journey.service]. */
+    if (heldBack(task)) {
+      nextProblem = `Production was not confirmed on the request, so ${findHandoff(step.next)?.label || 'the next step'} was not raised.`;
+    } else {
+      const { raiseNextTeamTask } = await import('./journey.service.js');
+      next = await raiseNextTeamTask(task, step.next, user, `${step.label} by ${user.name}`);
+    }
   } else if (step.next) {
     const enquiry = await enquiryOfTask(task);
     try {

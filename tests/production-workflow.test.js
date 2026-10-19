@@ -237,17 +237,21 @@ test('the dispatch request offers the plant’s schedules and bookings; the task
   ]);
   assert.deepEqual(form.actions.map((action) => action.label), ['Ask Production', 'Ask Assembling Readiness']);
 
-  const check = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'quality_check', note: 'Check before dispatch' } });
-  assert.equal(check.status, 201, check.json.message);
-  const passed = await api(`/api/workspace/todos/${check.json.data.task._id}/done`, { method: 'POST', as: 'kavi', body: { note: 'All good', fields: { result: 'Passed' } } });
+  /* Production closed its task above, so Quality was asked on its own [journey.service]; Quality done asks Dispatch. */
+  const check = await Todo.findOne({ enquiry: enquiry._id, kind: 'quality_check', completed: false });
+  assert.ok(check, 'Quality was asked when Production finished');
+  const passed = await api(`/api/workspace/todos/${check._id}/done`, { method: 'POST', as: 'kavi', body: { note: 'All good', fields: { result: 'Passed' } } });
   assert.equal(passed.status, 200, passed.json.message);
+  const auto = await Todo.findOne({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false });
+  assert.ok(auto, 'Dispatch was asked when Quality finished');
+  /* Marketing adds the schedule and booking onto that request. */
   const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
-    method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Send the lot', brief: { schedule: 'Today Evening Dispatch', booking: 'Book Before 4 PM' } },
+    method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Send the lot', brief: { schedule: 'Today Evening Dispatch', booking: 'Book Before 4 PM' }, addToOpen: true },
   });
   assert.equal(sent.status, 201, sent.json.message);
+  assert.equal(sent.json.data.task._id, String(auto._id), 'onto the open request, not a second one');
   dispatchTask = await Todo.findById(sent.json.data.task._id);
   assert.equal(dispatchTask.status, 'received');
-  assert.equal(dispatchTask.brief.schedule, 'Today Evening Dispatch');
 });
 
 test('a Dispatch move needs a remark, and marketing and Admin are told', async () => {

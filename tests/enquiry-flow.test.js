@@ -97,14 +97,15 @@ test('a payment follow-up raised during production does not take over the stage'
   assert.equal((await state()).stage, 'production_edd', 'still at Production');
 });
 
-test('Production finished with it: the enquiry reads Dispatch', async () => {
+test('Production finished with it: Quality is asked to check the goods before Dispatch [journey.service]', async () => {
   const production = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_edd', completed: false });
   const moved = await api(`/api/workspace/todos/${production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'closed', note: 'All 10,000 packed and handed to dispatch' } });
   assert.equal(moved.status, 200, moved.json.message);
   assert.equal((await Todo.findById(production._id)).completed, true);
+  assert.ok(await Todo.findOne({ enquiry: enquiry._id, kind: 'quality_check', completed: false }), 'Quality has its task');
   const after = await state();
-  assert.equal(after.stage, 'invoice_dispatch');
-  assert.equal(after.marketingStatus, 'dispatch');
+  assert.equal(after.stage, 'quality');
+  assert.equal(after.marketingStatus, 'qc');
   assert.ok(await inOpenList(), 'a won order in the plant is still on the Open list');
 });
 

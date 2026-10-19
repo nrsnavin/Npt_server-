@@ -59,7 +59,25 @@ export const qcCertificate = asyncHandler(async (req, res) => {
 
 export const listMachines = asyncHandler(async (req, res) => {
   const filter = req.query.active === 'true' ? { active: { $ne: false } } : {};
-  res.json({ success: true, data: await Machine.find(filter).sort({ active: -1, code: 1 }).collation({ locale: 'en', numericOrdering: true }) });
+  const machines = await Machine.find(filter).sort({ active: -1, code: 1 }).collation({ locale: 'en', numericOrdering: true });
+  /* What each press is running now, and for which enquiry and buyer — the same run the enquiry and the production queue show. */
+  const running = await MouldRun.find({ status: 'running', machine: { $in: machines.map((machine) => machine._id) } })
+    .select('number machine mould modelNumber startedAt plannedQuantity enquiry customer')
+    .populate([{ path: 'mould', select: 'mouldCode' }, { path: 'enquiry', select: 'number' }, { path: 'customer', select: 'name' }])
+    .lean();
+  res.json({
+    success: true,
+    data: machines.map((machine) => {
+      const run = running.find((entry) => String(entry.machine) === String(machine._id));
+      return {
+        ...machine.toJSON(),
+        running: run ? {
+          _id: run._id, number: run.number, mould: run.mould?.mouldCode || run.modelNumber || null, startedAt: run.startedAt, plannedQuantity: run.plannedQuantity || null,
+          enquiry: run.enquiry ? { _id: run.enquiry._id, number: run.enquiry.number } : null, customer: run.customer?.name || null,
+        } : null,
+      };
+    }),
+  });
 });
 export const createMachine = asyncHandler(transactional(async (req, res) => {
   const [made] = await Machine.create([withoutVersion(req.body)]);

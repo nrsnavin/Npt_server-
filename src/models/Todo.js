@@ -113,6 +113,8 @@ const todoSchema = new mongoose.Schema(
     },
     /** The task this one was raised from — a clarification asked by the SO team. */
     parentTask: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
+    /* The team task this one follows on its journey — SO → Production → QC → Dispatch [services/journey.service.js]. */
+    previousTask: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo', index: true },
     /**
      * The other departments' tasks that asked for this one (Dispatch's "Ask Production") — their
      * people hear each move on it, as the enquiry's marketing person and Admin do [handoff.service

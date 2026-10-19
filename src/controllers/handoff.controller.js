@@ -3,6 +3,10 @@ import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
 import Todo from '../models/Todo.js';
 import Attachment from '../models/Attachment.js';
 import Sample from '../models/Sample.js';
+import MouldRun from '../models/MouldRun.js';
+import WorkOrder from '../models/WorkOrder.js';
+import mongoose from 'mongoose';
+import { journeyOf } from '../services/journey.service.js';
 import SalesOrder, { PRE_RELEASE_STATUSES, VERIFICATION_CHECKS } from '../models/SalesOrder.js';
 import { bufferOf, put, remove, safeFilename } from '../services/storage.service.js';
 import { sendResultToCustomer } from '../services/taskResultMessage.service.js';
@@ -168,6 +172,7 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     .limit(200);
   /* Who has it now, and whether this person may move it on — the screen offers the buttons only then. */
   const holder = tasks.find((task) => task.holds && !task.completed) || null;
+  const floor = await floorOf(enquiry._id);
   res.json({
     success: true,
     data: tasks,
@@ -181,8 +186,45 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     production: await productionDates(enquiry._id),
     /* Its sales orders and whether each has gone to the plant — released here or on the Sales orders screen. */
     orders: await ordersOnEnquiry(enquiry, req.user),
+    /* What the floor is doing for it now, and the journey from SO to LR as steps [journey.service]. */
+    floor,
+    journey: journeyOf(tasks, { running: floor.running }),
   });
 });
+
+/**
+ * The floor's work for an enquiry: the moulds running for it now (press, mould, since when, pieces
+ * so far by the counter), what its runs have made, and its work orders' progress.
+ */
+export async function floorOf(enquiryId) {
+  const [running, totals, workOrders] = await Promise.all([
+    MouldRun.find({ enquiry: enquiryId, status: 'running' })
+      .select('number machine mould modelNumber colour startedAt plannedQuantity counterStart counterLog cavitiesRunning')
+      .populate([{ path: 'machine', select: 'code name' }, { path: 'mould', select: 'mouldCode name' }])
+      .lean(),
+    MouldRun.aggregate([
+      { $match: { enquiry: new mongoose.Types.ObjectId(String(enquiryId)), status: { $in: ['completed', 'aborted'] } } },
+      { $group: { _id: null, good: { $sum: { $ifNull: ['$goodPieces', 0] } }, rejected: { $sum: { $ifNull: ['$rejectedPieces', 0] } }, runs: { $sum: 1 } } },
+    ]),
+    WorkOrder.find({ enquiry: enquiryId, status: { $ne: 'cancelled' } })
+      .select('number status modelNumber quantity goodQty machine plannedStart plannedEnd')
+      .populate('machine', 'code')
+      .sort({ createdAt: 1 })
+      .lean(),
+  ]);
+  return {
+    running: running.map((run) => {
+      const counter = (run.counterLog || []).at(-1)?.counter;
+      const soFar = counter != null && run.counterStart != null ? Math.max(0, counter - run.counterStart) * (run.cavitiesRunning || 1) : null;
+      return {
+        _id: run._id, number: run.number, machine: run.machine, mould: run.mould, modelNumber: run.modelNumber, colour: run.colour,
+        startedAt: run.startedAt, plannedQuantity: run.plannedQuantity || null, piecesSoFar: soFar,
+      };
+    }),
+    made: totals[0] ? { good: totals[0].good, rejected: totals[0].rejected, runs: totals[0].runs } : { good: 0, rejected: 0, runs: 0 },
+    workOrders,
+  };
+}
 
 /**
  * The enquiry's sales orders as the enquiry screen shows them: released (when, by whom), or
