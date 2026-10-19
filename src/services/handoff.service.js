@@ -908,7 +908,20 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
   }
 
   /* Every button that names a department raises that department's task. */
-  if (handoff.department) return moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, order, user });
+  if (handoff.department) {
+    const wasHeld = enquiry.stage === 'production_hold';
+    const raised = await moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, order, user });
+    /* A Production Holded Order moved to Production: the order booked from its SO request goes to the plant too. */
+    if (wasHeld && kind === 'ask_edd') {
+      const { releaseHeldOrders } = await import('./soFromTask.service.js');
+      for (const result of await releaseHeldOrders(enquiry._id, user)) {
+        const said = result.released ? `${result.order.number} released to production` : `${result.order.number} not released yet: ${result.problem || 'not ready'}`;
+        await Todo.updateOne({ _id: raised._id }, { $push: { updates: { kind: 'notice', statusLabel: 'Sales order', text: said, note: said, by: user._id, at: new Date() } } }, { keepVersion: true });
+        if (result.released && !raised.order) await Todo.updateOne({ _id: raised._id }, { $set: { order: result.order._id } }, { keepVersion: true });
+      }
+    }
+    return raised;
+  }
 
   if (!(await mayHandOff(user, enquiry))) throw ApiError.notFound('Enquiry not found');
 
@@ -1779,6 +1792,8 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
   let nextProblem = null;
   /* Production not confirmed on the request: the order waits with marketing, nothing is raised. */
   const held = Boolean(step.next && task.enquiry && heldBack(task));
+  /* The SO prepared books the sales order from the request's lines, released when Production is confirmed. */
+  const order = await bookOrderFor(task, user, { held });
   if (held) {
     nextProblem = 'Production was not confirmed on the request — the order is with marketing under Production Holded Orders until Admin or its marketing person moves it to Production.';
   } else if (step.next && !task.enquiry) {
@@ -1800,7 +1815,41 @@ export async function finishWithResult(task, user, { attachmentId, note }) {
   }
   /* The work uploaded is itself a move for the enquiry — the LR reads LR Sent and closes it. */
   await reachEnquiry(task, user, findHandoff(task.kind)?.whenResult, String(note || '').trim() || `${step.label} — uploaded`);
-  return { task: done, next, nextProblem, held };
+  return { task: done, next, nextProblem, held, order };
+}
+
+/**
+ * The sales order behind an SO task [services/soFromTask.service.js]: booked from the request's
+ * lines (or the enquiry's open order linked), released at once when Production was confirmed, and
+ * said on the task either way. Returns what the screen shows about it.
+ */
+async function bookOrderFor(task, user, { held }) {
+  if (!findHandoff(task.kind)?.booksOrder || !task.enquiry) return null;
+  const { bookOrderFromTask, releaseFromTask, noteOrderOnTask } = await import('./soFromTask.service.js');
+  const booked = await bookOrderFromTask(task, user);
+  if (!booked.order) {
+    if (booked.problem) await noteOrderOnTask(task, user, `not booked — ${booked.problem}. Book it on the Sales orders screen.`);
+    return booked.problem ? { problem: booked.problem } : null;
+  }
+  const order = booked.order;
+  task.order = order._id;
+  await Todo.updateOne({ _id: task._id }, { $set: { order: order._id } }, { keepVersion: true });
+  const pieces = (order.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0);
+  let said = booked.linked
+    ? `linked to ${order.number}, already on the Sales orders screen`
+    : `${order.number} booked from the request — ${order.lines.length} line${order.lines.length === 1 ? '' : 's'}, ${pieces.toLocaleString('en-IN')} pcs`;
+  let released = false;
+  if (booked.linked) {
+    said += held ? '' : ' — release it there once its checks are done';
+  } else if (held) {
+    said += ' — waits for Move to Production';
+  } else {
+    const result = await releaseFromTask(order, user, `Released from the SO request — Production confirmed (${user.name})`);
+    released = result.released;
+    said += released ? ' and released to production' : result.problem ? ` — not released yet: ${result.problem}` : '';
+  }
+  await noteOrderOnTask(task, user, said);
+  return { _id: order._id, number: order.number, booked: Boolean(booked.booked), linked: Boolean(booked.linked), released, said };
 }
 
 /**
@@ -2033,7 +2082,7 @@ export async function taskPrefill(enquiryId) {
   const newest = (Model, select, populate) => Model.findOne({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select(select).populate(populate).lean();
   const [customer, order, quotation, sample] = await Promise.all([
     enquiry.customer ? Customer.findById(enquiry.customer).select('name mobile whatsapp contacts address city state pincode').lean() : null,
-    newest(SalesOrder, 'number lines paymentTerms paymentPlan', parts('lines').filter((entry) => !/hookRef|clipRef|printRef/.test(entry.path))),
+    newest(SalesOrder, 'number lines paymentTerms paymentPlan customerPo', parts('lines').filter((entry) => !/hookRef|clipRef|printRef/.test(entry.path))),
     newest(Quotation, 'lines', parts('lines')),
     newest(Sample, 'items', parts('items')),
   ]);
@@ -2148,7 +2197,7 @@ export async function taskPrefill(enquiryId) {
     quantity: String(orderQuantity || enquiryQuantity || ''),
     targetPrice: enquiry.targetPrice != null ? String(enquiry.targetPrice) : '',
     order: order
-      ? { number: order.number, paymentTerms: termsWords(order), invoiceNumber: consignment?.invoice?.number || '' }
+      ? { number: order.number, paymentTerms: termsWords(order), invoiceNumber: consignment?.invoice?.number || '', poNumber: order.customerPo?.number || '' }
       : { paymentTerms: '', invoiceNumber: '' },
     /* The people each `member` question may pick — the PRT members for a visit. */
     members: await membersFor(HANDOFFS.flatMap((handoff) => (handoff.asks || []).filter((field) => field.type === 'member').map((field) => field.department))),

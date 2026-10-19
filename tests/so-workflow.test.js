@@ -184,6 +184,17 @@ test('uploading the sales order PDF without Production confirmed: Won, held with
   assert.equal(done.json.next, null, 'Production is not asked');
   assert.equal(done.json.held, true);
   assert.match(done.json.nextProblem, /Production Holded Orders/);
+  /* The request's lines are the sales order now — booked, not released while held. */
+  assert.equal(done.json.order.booked, true);
+  assert.equal(done.json.order.released, false);
+  const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
+  const booked = await SalesOrder.findById(done.json.order._id).lean();
+  assert.equal(booked.status, 'po_received');
+  assert.equal(String(booked.sourceTask), soTask._id);
+  assert.deepEqual(booked.lines.map((line) => [line.modelNumber, line.quantity, line.unitPrice, line.colour]), [['UTJRSH-0', 5000, 2.4, 'PP Black']]);
+  assert.equal(booked.lines[0].deliveryDate.toISOString().slice(0, 10), '2026-11-10');
+  assert.equal(String((await Todo.findById(soTask._id)).order), String(booked._id), 'the task is linked to its order');
+  assert.match((await Todo.findById(soTask._id)).updates.at(-1).note, /booked from the request — 1 line, 5,000 pcs — waits for Move to Production/);
   const held = await Enquiry.findById(enquiry._id);
   assert.deepEqual([held.stage, held.marketingStatus, held.status], ['production_hold', 'production_hold', 'won']);
   assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'ask_edd' }), 0);
@@ -205,6 +216,14 @@ test('a held order goes to Production only by Admin or its marketing person', as
   assert.equal(moved.status, 201, moved.json.message);
   assert.equal(moved.json.data.task.department, 'production');
   assert.equal((await Enquiry.findById(enquiry._id)).stage, 'production_edd');
+  /* Its order goes to the plant with it: released, and its work order raised for the planning board. */
+  const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
+  const order = await SalesOrder.findOne({ enquiry: enquiry._id }).lean();
+  assert.equal(order.status, 'approved_for_production');
+  assert.match(order.statusHistory.at(-1).note, /Released with Move to Production/);
+  const { default: WorkOrder } = await import('../src/models/WorkOrder.js');
+  for (let i = 0; i < 40 && !(await WorkOrder.exists({ order: order._id })); i += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(await WorkOrder.exists({ order: order._id }), 'a work order for the line');
 });
 
 test('ticked Production confirmed, the SO prepared goes straight to Production', async () => {
@@ -215,7 +234,7 @@ test('ticked Production confirmed, the SO prepared goes straight to Production',
     body: { customer: customer._id, requirement: { modelNumber: 'UTJRSH-0' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
   })).json.data;
   const sent = await api(`/api/enquiries/${second._id}/handoffs`, {
-    method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'Prepare SO', brief: { items: [{ model: 'UTJRSH-0', quantity: '2000' }], productionConfirmed: true } },
+    method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'Prepare SO', brief: { items: [{ model: 'UTJRSH-0', quantity: '2000', price: '3' }], productionConfirmed: true } },
   });
   assert.equal(sent.status, 201, sent.json.message);
   assert.equal(sent.json.data.task.brief.productionConfirmed, 'Yes');
@@ -226,6 +245,9 @@ test('ticked Production confirmed, the SO prepared goes straight to Production',
     assert.equal(done.status, 200, done.json.message);
     assert.equal(done.json.held, false);
     assert.equal(done.json.next?.department, 'production', 'Production has its task');
+    assert.deepEqual([done.json.order.booked, done.json.order.released], [true, true], 'booked and released at once');
+    const asked2 = await Todo.findOne({ enquiry: second._id, kind: 'ask_edd' });
+    assert.equal(String(asked2.order), done.json.order._id, 'Production’s task carries the order');
     assert.equal((await Enquiry.findById(second._id)).stage, 'production_edd');
     const asked = await Todo.findOne({ enquiry: second._id, kind: 'ask_edd' });
     assert.equal(asked.brief.quantity, '2000', 'the rows’ pieces reach Production');
@@ -268,4 +290,13 @@ test('the EDD Production gives shows with the enquiry', async () => {
   assert.equal(production.edd.pending, '4000');
   assert.equal(production.edd.by, 'Sivakumar');
   assert.equal(production.edd.department, 'production');
+});
+
+test('a request line without its pieces or price books no order, and the task says what is missing', async () => {
+  const { orderLinesFromBrief } = await import('../src/services/soFromTask.service.js');
+  assert.match((await orderLinesFromBrief({ items: [{ model: 'NH-1', quantity: '100' }] })).problem, /line 1 \(NH-1\) has no price/);
+  assert.match((await orderLinesFromBrief({ items: [] })).problem, /no order lines/);
+  const { lines } = await orderLinesFromBrief({ items: [{ model: 'NH-1', quantity: '100', price: '2', hook: 'Unknown hook' }] });
+  assert.equal(lines[0].quantity, 100);
+  assert.match(lines[0].remarks, /Model not on the mould register · Hook: Unknown hook/);
 });

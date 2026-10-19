@@ -78,6 +78,8 @@ const BUTTONS = [
      * Order until Admin or its marketing person moves it on [handoff.service `heldBack`].
      */
     holdUnless: 'productionConfirmed',
+    /* The SO prepared books the sales order from the request's lines [services/soFromTask.service.js]. */
+    booksOrder: true,
     whenHeld: { stage: 'production_hold', marketing: 'production_hold', won: true },
     hint: 'The buyer’s PO is in — raise and send the sales order',
     records: [{ key: 'poNumber', label: 'Customer PO number' }, { key: 'soNumber', label: 'Sales order number' }],

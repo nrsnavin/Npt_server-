@@ -307,6 +307,7 @@ export const TASK_FORMS = {
         from: 'orderItems', add: '+ Add Model', columns: SO_COLUMNS,
       },
       { key: 'paymentTerms', label: 'Payment terms', type: 'choice', options: PAYMENT_TERMS, from: 'order.paymentTerms', placeholder: 'Select payment terms' },
+      { key: 'poNumber', label: 'Customer PO number', from: 'order.poNumber', placeholder: 'The buyer’s PO number, if there is one' },
       /*
        * Ticked: the SO prepared sends the order straight to Production. Left blank: it comes back
        * to marketing as a Production Holded Order, and Admin or the enquiry's marketing person
