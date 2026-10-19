@@ -482,7 +482,7 @@ export async function startRun(input, user) {
       const planned = run.plannedQuantity ? ` · ${Number(run.plannedQuantity).toLocaleString('en-IN')} pcs to make` : '';
       await tellProductionTask(enquiryId, {
         note: `${run.number} moulding on ${machine?.code || 'a press'} — mould ${mould.mouldCode}${run.colour ? `, ${run.colour}` : ''}${planned}`,
-        to: 'started', user,
+        to: 'started', user, model: run.modelNumber,
       });
     }
     return run;
