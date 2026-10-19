@@ -42,7 +42,21 @@ export const ENDS_AT_ITSELF = ['sample_request', 'sample_collect', 'create_quota
 const PAST_QUALITY = ['lr_copy', 'closed', 'my_payment_followup'];
 
 const idOf = (value) => String(value?._id || value || '');
-const isReady = (task) => task.completed || (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status)?.readyForDispatch;
+/* A finishing team is through when it says Ready for Dispatch, has handed the goods on, or has finished. */
+const isReady = (task) => {
+  if (task.completed) return true;
+  const step = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status);
+  return Boolean(step?.readyForDispatch || step?.handsTo);
+};
+
+/** The enquiry's dispatch plan [Enquiry `dispatchPlan`], and which models are ready. */
+async function planOf(enquiryId) {
+  const enquiry = await Enquiry.findById(enquiryId).select('dispatchPlan').lean();
+  if (enquiry?.dispatchPlan?.mode !== 'by_model') return { byModel: false };
+  const { modelReadiness } = await import('./handoff.service.js');
+  return { byModel: true, ...(await modelReadiness(enquiryId)) };
+}
+const readyWords = ({ ready = [], waiting = [] }) => `Ready: ${ready.join(', ') || 'none'}${waiting.length ? ` · still to come: ${waiting.map((row) => row.model).join(', ')}` : ''}`;
 
 /**
  * A finishing team said the goods are ready, or finished; or Quality finished. Raises what comes
@@ -80,16 +94,25 @@ async function advanceOnEnquiry(task, user, why) {
     const here = await Enquiry.findById(enquiryId).select('stage').lean();
     if (!here || PAST_QUALITY.includes(here.stage)) return null;
     const finishing = await Todo.find({ ...since, kind: { $in: FINISHING_KINDS } }).select('kind status completed').lean();
-    /* Printing or Assembly still making its share: Quality waits for the last of them. */
-    if (finishing.some((entry) => !isReady(entry))) return null;
-    if (!(await raisedSince('quality_check'))) return raiseOnEnquiry(enquiryId, 'quality_check', user, why || 'Goods ready — check them before dispatch');
+    /*
+     * Printing or Assembly still making its share: Quality waits for the last of them — unless the
+     * order goes out model by model, when a model ready is enough [Enquiry `dispatchPlan`].
+     */
+    const plan = await planOf(enquiryId);
+    if (plan.byModel ? !plan.ready.length : finishing.some((entry) => !isReady(entry))) return null;
+    if (!(await raisedSince('quality_check'))) {
+      const said = plan.byModel ? `${readyWords(plan)} — dispatch plan: each model as it is ready` : why || 'Goods ready — check them before dispatch';
+      return raiseOnEnquiry(enquiryId, 'quality_check', user, said);
+    }
     return null;
   }
   /* Quality done on an order on its way: Dispatch has it next, unless already asked. */
   if (task.kind === 'quality_check' && task.completed && !(await raisedSince('invoice_dispatch'))) {
-    /* An in-process check while the goods are still being made does not send them to Dispatch. */
+    /* An in-process check while the goods are still being made does not send them to Dispatch — model by model, one ready model is enough. */
     const finishing = await Todo.find({ ...since, kind: { $in: FINISHING_KINDS } }).select('kind status completed').lean();
-    if (finishing.some((entry) => !isReady(entry))) return null;
+    const plan = await planOf(enquiryId);
+    if (plan.byModel ? !plan.ready.length : finishing.some((entry) => !isReady(entry))) return null;
+    if (plan.byModel) return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, `Quality checked — ${readyWords(plan)}. Dispatch plan: each model as it is ready`);
     const result = task.outcome?.fields?.result || task.statusHistory?.at(-1)?.note || '';
     return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, `Quality ${/fail/i.test(result) ? 'reported a problem — see the QC task' : 'checked'}${why ? ` — ${why}` : ''}`);
   }

@@ -355,6 +355,13 @@ export const TASK_FORMS = {
       { key: 'machine_not_allotted', label: 'Machine Not Allotted / Alternate Required', issue: true },
       { key: 'raw_material', label: 'Raw Material Not Available', issue: true },
       { key: 'completed', label: 'Production Completed' },
+      /*
+       * Moulding done for a model that goes on to Printing or Assembly: the goods are handed to that
+       * team, whose task hears it [handoff.service `handOn`]. Offered only where Production routed
+       * a model there.
+       */
+      { key: 'handed_printing', label: 'Handed to Printing', handsTo: 'printing' },
+      { key: 'handed_assembly', label: 'Handed to Assembly', handsTo: 'assembling' },
       { key: 'assembling', label: 'Assembling' },
       /* Tells the enquiry's open Dispatch request, which moves to Goods Ready [handoff.service `tellDispatchReady`]. */
       { key: 'ready_dispatch', label: 'Ready for Dispatch', readyForDispatch: true },
@@ -393,6 +400,8 @@ export const TASK_FORMS = {
       { key: 'started', label: 'Started' },
       { key: 'part_ready', label: 'Part Quantity Ready' },
       { key: 'full_ready', label: 'Full Quantity Ready' },
+      /* Printed, for a model that is assembled after: handed to Assembly, whose task hears it. */
+      { key: 'handed_assembly', label: 'Handed to Assembly', handsTo: 'assembling' },
       { key: 'ready_dispatch', label: 'Ready for Dispatch', readyForDispatch: true },
       { key: 'closed', label: 'Task Closed', done: true },
     ],

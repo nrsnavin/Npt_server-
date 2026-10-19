@@ -385,6 +385,21 @@ export const enquiryEddSchema = z.object({
   note: z.string().trim().max(500).optional(),
 });
 
+/** Marketing's final EDD, model by model [handoff.service `setModelEdds`]. */
+export const enquiryModelEddSchema = z.object({
+  models: z.array(z.object({
+    model: z.string().trim().min(1).max(120),
+    date: z.string().trim().min(10, 'Give each model’s EDD as a calendar date').max(10),
+  })).min(1, 'Give a final EDD for at least one model').max(60),
+  note: z.string().trim().max(500).optional(),
+});
+
+/** Each model as it is ready, or all together [handoff.service `setDispatchPlan`]. */
+export const enquiryDispatchPlanSchema = z.object({
+  mode: z.enum(['together', 'by_model']),
+  note: z.string().trim().max(500).optional(),
+});
+
 /** "Save & Mark as Checked" — the captured details as corrected [pipeline.controller `checkEnquiry`]. */
 export const enquiryCheckSchema = z.object({
   company: z.string().trim().min(1, 'Name the company').max(160).optional(),

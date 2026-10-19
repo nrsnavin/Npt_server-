@@ -461,6 +461,39 @@ const enquirySchema = new mongoose.Schema(
       department: String,
       note: String,
     },
+    /*
+     * Each model's EDD: the latest date any team that makes or finishes it gave — Production,
+     * Printing, Assembly [handoff.service `refreshModelEdds`]. The enquiry's EDD is the latest of these.
+     */
+    eddByModel: {
+      type: [new mongoose.Schema({
+        model: { type: String, trim: true },
+        date: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
+        department: String,
+        teams: { type: [new mongoose.Schema({ department: String, date: String }, { _id: false })], default: undefined },
+        /* The latest of the teams' dates — what the EDD would be without marketing's word. */
+        suggested: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
+        /* Marketing's final EDD for the model, which stands over the teams' dates until changed. */
+        final: {
+          date: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
+          by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          at: Date,
+          note: String,
+        },
+      }, { _id: false })],
+      default: undefined,
+    },
+    /*
+     * How an order of several models goes out [handoff.service `setDispatchPlan`]: each model as it
+     * is ready (`by_model`), or everything together once the last is (`together`, the default).
+     * Marketing's or Admin's call.
+     */
+    dispatchPlan: {
+      mode: { type: String, enum: ['together', 'by_model'] },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      note: String,
+    },
 
     estimatedValue: { type: Number, min: 0 },
     probability: { type: Number, min: 0, max: 100 },

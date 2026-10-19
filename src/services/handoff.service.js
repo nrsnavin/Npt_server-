@@ -1205,6 +1205,10 @@ export async function setTaskStatus(task, user, { status, note, date, fields }) 
   await assertNotWaiting(task);
   /* Refused before the status moves, so a refusal leaves the task where it was. */
   if (step.done) await assertMayFinish(task);
+  /* Handed to Printing / Assembly only where a model was routed there [decideRouting]. */
+  if (step.handsTo && !handsOnOf(task).includes(step.handsTo)) {
+    fail(`Nothing on this order goes to ${ROUTE_LABEL[step.handsTo] || step.handsTo} — ${task.kind === 'ask_edd' ? 'change the printing / assembly decision first' : 'Production did not route it there'}`);
+  }
 
   if (step.raises) await raiseFromStatus(task, user, step, text);
   /* The sample handed at the desk: written onto the sample first, so a refusal leaves the task where it was. */
@@ -1229,9 +1233,15 @@ export async function setTaskStatus(task, user, { status, note, date, fields }) 
   }];
   if (!task.user) task.user = user._id;
   await task.save();
-  /* The ready date Production (or Assembly, Printing) gave is the enquiry's EDD from here on. */
-  if (readyDate && dateField === 'edd' && task.enquiry) await writeEnquiryEdd(task.enquiry, { day: readyDate, user, department: task.department, note: text });
-  if (readyDate && dateField === 'handover' && task.enquiry) await passHandover(task, user, readyDate, text);
+  /* A ready date with a status counts for every model on the task; each model's EDD is its teams' latest. */
+  if (readyDate && (dateField === 'edd' || dateField === 'handover') && task.enquiry && EDD_TASK_KINDS.includes(task.kind)) {
+    recordModelDates(task, user, (modelsOfTask(task).length ? modelsOfTask(task) : ['All models']).map((model) => ({ model, date: readyDate })));
+    await task.save();
+    if (dateField === 'handover') await passHandover(task, user, readyDate, text);
+    await refreshModelEdds(task.enquiry, user, text);
+  } else if (readyDate && dateField === 'edd' && task.enquiry) {
+    await writeEnquiryEdd(task.enquiry, { day: readyDate, user, department: task.department, note: text });
+  }
   if (form.notifyStatus) await noticeStatus(task, user, { step, note: text, date: readyDate });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
@@ -1240,6 +1250,11 @@ export async function setTaskStatus(task, user, { status, note, date, fields }) 
   if (step.next === 'lr_copy' && task.order) await remindConsignment(task, user, step);
   /* Production or Assembly saying the goods are ready reaches the Dispatch request waiting on them. */
   if (step.readyForDispatch && task.enquiry) await tellDispatchReady(task, user, step, text);
+  /* The goods handed to the next team: its task hears it, with the day they came [handOn]. */
+  if (step.handsTo && task.enquiry) {
+    await handOn(task, user, step, text);
+    await nextOnJourney(task, user, `${step.label}${text ? ` — ${text}` : ''}`);
+  }
   /* Goods ready from the last finishing team: Quality, then Dispatch, are asked [journey.service]. */
   if (step.readyForDispatch && !step.done) await nextOnJourney(task, user, `${step.label}${text ? ` — ${text}` : ''}`);
   /* The Mould team saying the tool is ready reaches Production. */
@@ -2250,17 +2265,23 @@ export async function writeEnquiryEdd(enquiryId, { day, user, department, note }
  * it is given [web: components/TaskEdd.jsx]. Written on the task, where its history is, and on
  * the enquiry, where every other screen reads it; marketing and Admin hear it as they hear a move.
  */
-export async function setTaskEdd(task, user, { date, note }) {
+export async function setTaskEdd(task, user, { date, note, models }) {
   openHandoff(task, user);
   if (!task.enquiry) fail('A team task has no enquiry to carry an EDD');
   if (!EDD_TASK_KINDS.includes(task.kind)) fail('The EDD is given from the Production, Assembly or Printing task');
   assertRouted(task);
-  const day = eddDay(date);
+  /* A date for each model, or one date for all of them [Todo `modelDates`]. */
+  const entries = datesForModels(task, { date, models });
+  const day = entries.reduce((latest, entry) => (entry.date > latest ? entry.date : latest), '');
+  const perModel = entries.length > 1 && new Set(entries.map((entry) => entry.date)).size > 1
+    ? ` (${entries.map((entry) => `${entry.model} ${prettyDay(entry.date)}`).join(' · ')})`
+    : '';
+  recordModelDates(task, user, entries);
   const text = String(note || '').trim();
   /* A team that hands on gives the next team its hand-over date; the last team gives the EDD. */
   const handsOn = handsOnOf(task);
   if (handsOn.length) {
-    const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(day)}`;
+    const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(day)}${perModel}`;
     task.updates = [...(task.updates || []), {
       kind: 'note', text: text ? `${said}: ${text}` : said, note: text ? `${said}: ${text}` : said,
       date: day, dateLabel: 'Hand-over', fields: { handover: day }, by: user._id, at: new Date(),
@@ -2269,13 +2290,15 @@ export async function setTaskEdd(task, user, { date, note }) {
     if (!task.user) task.user = user._id;
     await task.save();
     await passHandover(task, user, day, text);
+    /* Its date counts towards each model's EDD — the latest of its teams' dates. */
+    await refreshModelEdds(task.enquiry, user, text);
     await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
     if (findHandoff(task.kind)?.form?.notifyStatus) {
       await noticeStatus(task, user, { step: { key: task.status || 'handover', label: `Hand-over date to ${teamWords(handsOn)}` }, note: text, date: day });
     }
     return task;
   }
-  const said = `EDD ${prettyDay(day)}`;
+  const said = `EDD ${prettyDay(day)}${perModel}`;
   task.updates = [...(task.updates || []), {
     kind: 'note', text: text || said, note: text ? `${said}: ${text}` : said,
     date: day, dateLabel: 'EDD', fields: { edd: day }, by: user._id, at: new Date(),
@@ -2283,12 +2306,137 @@ export async function setTaskEdd(task, user, { date, note }) {
   task.attention = undefined;
   if (!task.user) task.user = user._id;
   await task.save();
-  await writeEnquiryEdd(task.enquiry, { day, user, department: task.department, note: text });
+  /* Each model's EDD is the latest its teams give; the enquiry's, the latest model's [refreshModelEdds]. */
+  await refreshModelEdds(task.enquiry, user, text);
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   if (findHandoff(task.kind)?.form?.notifyStatus) {
     await noticeStatus(task, user, { step: { key: task.status || 'edd', label: 'EDD given' }, note: text, date: day });
   }
   return task;
+}
+
+/** The models a Production, Printing or Assembly task gives dates for: its routed models, else its brief's. */
+export function modelsOfTask(task) {
+  const routed = (task?.routing?.models || []).map((row) => (typeof row === 'string' ? row : row?.model)).filter(Boolean);
+  if (routed.length) return [...new Set(routed.map((model) => String(model).trim()))];
+  const listed = String(task?.brief?.models || '').split(',').map((model) => model.trim()).filter(Boolean);
+  if (listed.length) return [...new Set(listed)];
+  return task?.brief?.model ? [String(task.brief.model).trim()] : [];
+}
+
+/**
+ * The dates a team gives, model by model: each model named with its own date, or one date for
+ * every model the task has. A model the task does not have is refused.
+ */
+function datesForModels(task, { date, models }) {
+  const own = modelsOfTask(task);
+  if (Array.isArray(models) && models.length) {
+    const seen = new Set();
+    const entries = [];
+    for (const row of models) {
+      const model = String(row?.model || '').trim();
+      if (!model || seen.has(model)) continue;
+      if (own.length && !own.includes(model)) fail(`${model} is not one of this task’s models (${own.join(', ')})`);
+      seen.add(model);
+      entries.push({ model, date: eddDay(row.date) });
+    }
+    if (!entries.length) fail('Give a date for at least one model');
+    return entries;
+  }
+  const day = eddDay(date);
+  return (own.length ? own : ['All models']).map((model) => ({ model, date: day }));
+}
+
+/** Writes the team's date for each model onto its task, replacing any it gave before for that model. */
+function recordModelDates(task, user, entries) {
+  const kept = (task.modelDates || []).filter((row) => !entries.some((entry) => entry.model === row.model));
+  task.modelDates = [...kept, ...entries.map((entry) => ({ ...entry, by: user._id, at: new Date() }))];
+}
+
+/**
+ * Each model's EDD is the latest date its teams gave — moulded by 1 Oct, printed by 3 Oct,
+ * assembled by 5 Oct reads 5 Oct — counted once the last team on the model's route (Assembly,
+ * else Printing, else Production, as Production routed it) has given its date: before that a
+ * hand-over date is not when the goods are ready. The enquiry's EDD is the latest of its models',
+ * since the order goes when its last model is ready, and is written once every model has one.
+ * Each model's EDD is also written on the open order's line as the plant's expected completion.
+ * Only this run of the journey counts — dates given since the newest Production request — and
+ * only the teams still on a model's route.
+ */
+export async function refreshModelEdds(enquiryId, user, note) {
+  const id = enquiryId?._id || enquiryId;
+  const start = await Todo.findOne({ enquiry: id, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt routing').lean();
+  const tasks = await Todo.find({ enquiry: id, kind: { $in: EDD_TASK_KINDS }, ...(start ? { createdAt: { $gte: start.createdAt } } : {}) })
+    .select('kind department modelDates').lean();
+  const TEAM_OF_KIND = { ask_edd: 'production', ask_printing: 'printing', ask_assembling_edd: 'assembling' };
+  /* Each model's route, as Production decided it; a model Production never routed is moulded only. */
+  const routes = new Map((start?.routing?.models || []).map((row) => [row.model, ['production', ...(row.printing ? ['printing'] : []), ...(row.assembly ? ['assembling'] : [])]]));
+  const given = new Map();
+  for (const task of tasks) {
+    const team = TEAM_OF_KIND[task.kind];
+    for (const row of task.modelDates || []) {
+      const list = given.get(row.model) || [];
+      list.push({ team, department: task.department, date: row.date });
+      given.set(row.model, list);
+    }
+  }
+  /* "All models" — a date given before the task knew its models — stands for each of them. */
+  const every = given.get('All models') || [];
+  const names = [...new Set([...routes.keys(), ...[...given.keys()].filter((model) => model !== 'All models')])];
+  if (!names.length && !every.length) return null;
+  const listed = (names.length ? names : ['All models']).map((model) => {
+    const route = routes.get(model) || null;
+    const dates = [...(given.get(model) || []), ...(model === 'All models' ? [] : every)]
+      .filter((entry) => !route || route.includes(entry.team));
+    /* One date per team: the one it gave for this model by name wins over its all-models date. */
+    const perTeam = new Map();
+    for (const entry of dates) if (!perTeam.has(entry.team)) perTeam.set(entry.team, entry);
+    const teams = [...perTeam.values()];
+    const latest = teams.reduce((best, entry) => (!best || entry.date > best.date ? entry : best), null);
+    const lastTeam = route ? route[route.length - 1] : null;
+    const complete = Boolean(latest) && (!lastTeam || perTeam.has(lastTeam));
+    return {
+      model, date: complete ? latest.date : undefined, department: complete ? latest.department : undefined,
+      teams: teams.map(({ department, date }) => ({ department, date })),
+      ...(complete || !lastTeam ? {} : { waitingOn: lastTeam }),
+    };
+  });
+  /*
+   * Marketing's final EDD for a model stands over the teams' dates [setModelEdds]; the teams'
+   * latest is kept beside it as the suggestion, so a team moving its date is seen, not lost.
+   */
+  const before = await Enquiry.findById(id).select('eddByModel').lean();
+  for (const entry of listed) {
+    entry.suggested = entry.date;
+    const final = (before?.eddByModel || []).find((row) => row.model === entry.model)?.final;
+    if (final?.date) Object.assign(entry, { final, date: final.date, department: 'marketing' });
+  }
+  await Enquiry.updateOne({ _id: id }, { $set: { eddByModel: listed.map(({ waitingOn, ...row }) => row) } });
+  const dated = listed.filter((entry) => entry.date);
+  if (dated.length && dated.length === listed.length) {
+    const last = dated.reduce((best, entry) => (entry.date > best.date ? entry : best), dated[0]);
+    const words = dated.length > 1 ? `latest of ${dated.length} models (${last.model})` : '';
+    await writeEnquiryEdd(id, { day: last.date, user, department: last.department, note: [words, String(note || '').trim()].filter(Boolean).join(' — ') });
+  }
+  const named = dated.filter((entry) => entry.model !== 'All models');
+  const everyDated = dated.find((entry) => entry.model === 'All models');
+
+  /* The open order's lines: each model's EDD as the plant's expected completion for it. */
+  const { default: SalesOrder } = await import('../models/SalesOrder.js');
+  const keyOf = (value) => String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const orders = await SalesOrder.find({ enquiry: id, status: { $nin: ['cancelled', 'closed'] } });
+  for (const order of orders) {
+    let changed = false;
+    for (const line of order.lines) {
+      const match = named.find((entry) => keyOf(entry.model) === keyOf(line.modelNumber) || keyOf(String(entry.model).split(' · ')[0]) === keyOf(line.modelNumber)) || everyDated;
+      if (!match?.date) continue;
+      if (!line.production) line.production = {};
+      line.production.expectedCompletion = new Date(`${match.date}T00:00:00.000+05:30`);
+      changed = true;
+    }
+    if (changed) await order.save();
+  }
+  return listed;
 }
 
 /* ------------------------------ Production's routing ------------------------------ */
@@ -2480,6 +2628,117 @@ export async function passHandover(task, user, day, text) {
 }
 
 /**
+ * Marketing's final EDD for each model — by default the latest its teams gave, changed here when
+ * marketing (the enquiry's marketing person or Admin) commits the buyer to another day. The
+ * enquiry's EDD follows (the latest model's), the open order's lines get it, and every task
+ * working to it — Production, Printing, Assembly, the dispatch request — is told, its people
+ * under "Needs your action" and on their phones.
+ */
+export async function setModelEdds(enquiry, user, { models, note }) {
+  if (enquiry.stage === CLOSED_STAGE) fail('The enquiry is closed');
+  const known = (enquiry.eddByModel || []).map((row) => row.model);
+  const rows = [];
+  for (const row of models || []) {
+    const model = String(row?.model || '').trim();
+    if (!model || rows.some((entry) => entry.model === model)) continue;
+    if (known.length && !known.includes(model)) fail(`${model} is not one of this enquiry’s models (${known.join(', ')})`);
+    rows.push({ model, date: eddDay(row.date) });
+  }
+  if (!rows.length) fail('Give a final EDD for at least one model');
+  const text = String(note || '').trim();
+  const table = [...(enquiry.eddByModel || []).map((row) => (row.toObject ? row.toObject() : { ...row }))];
+  for (const row of rows) {
+    const entry = table.find((item) => item.model === row.model) || (table.push({ model: row.model }), table.at(-1));
+    entry.final = { date: row.date, by: user._id, at: new Date(), note: text || undefined };
+    entry.date = row.date;
+    entry.department = 'marketing';
+  }
+  await Enquiry.updateOne({ _id: enquiry._id }, { $set: { eddByModel: table } });
+  await refreshModelEdds(enquiry._id, user, text ? `final EDD by marketing — ${text}` : 'final EDD by marketing');
+  const said = `Final EDD set by ${user.name}: ${rows.map((row) => `${row.model} ${prettyDay(row.date)}`).join(' · ')}${text ? ` — ${text}` : ''}`;
+  const tasks = await Todo.find({ enquiry: enquiry._id, kind: { $in: SHOWS_EDD_KINDS }, completed: false });
+  for (const task of tasks) {
+    task.updates = [...(task.updates || []), { kind: 'note', text: said, note: said, by: user._id, at: new Date() }];
+    await task.save();
+    await noticeStatus(task, user, { step: { key: task.status || 'edd', label: 'Final EDD set by marketing' }, note: said, also: await peopleOn(task), onlyAlso: true });
+    await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  }
+  return { models: (await Enquiry.findById(enquiry._id).select('eddByModel edd').lean()), told: tasks.length };
+}
+
+/**
+ * Which of the enquiry's models are ready to go: a model is ready once the last team on its route
+ * (Assembly, else Printing, else Production) says Ready for Dispatch or has finished. The rest are
+ * waiting on that team.
+ */
+export async function modelReadiness(enquiryId) {
+  const id = enquiryId?._id || enquiryId;
+  const start = await Todo.findOne({ enquiry: id, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt routing brief').lean();
+  if (!start) return { ready: [], waiting: [] };
+  const tasks = await Todo.find({ enquiry: id, kind: { $in: EDD_TASK_KINDS }, createdAt: { $gte: start.createdAt } }).select('kind status completed').lean();
+  const KIND_OF_TEAM = { production: 'ask_edd', printing: 'ask_printing', assembling: 'ask_assembling_edd' };
+  const isDone = (task) => task && (task.completed || statusesOf(task).find((entry) => entry.key === task.status)?.readyForDispatch);
+  const routes = (start.routing?.models || []).length
+    ? start.routing.models.map((row) => ({ model: row.model, last: row.assembly ? 'assembling' : row.printing ? 'printing' : 'production' }))
+    : modelsOfTask(start).map((model) => ({ model, last: 'production' }));
+  const ready = [];
+  const waiting = [];
+  for (const { model, last } of routes) {
+    const task = tasks.find((entry) => entry.kind === KIND_OF_TEAM[last]);
+    if (isDone(task)) ready.push(model);
+    else waiting.push({ model, team: last });
+  }
+  return { ready, waiting };
+}
+
+/**
+ * How an order of several models goes out — each model as it is ready, or all together — set by
+ * the enquiry's marketing person or Admin. The dispatch request and the teams making the goods
+ * hear it; with `by_model`, Quality and Dispatch are asked as soon as a model is ready.
+ */
+export async function setDispatchPlan(enquiry, user, { mode, note }) {
+  if (!['together', 'by_model'].includes(mode)) fail('Say how it goes: each model as it is ready, or all together');
+  const text = String(note || '').trim();
+  await Enquiry.updateOne({ _id: enquiry._id }, { $set: { dispatchPlan: { mode, by: user._id, at: new Date(), note: text || undefined } } });
+  const said = `Dispatch plan set by ${user.name}: ${mode === 'by_model' ? 'each model as it is ready' : 'all models together'}${text ? ` — ${text}` : ''}`;
+  const tasks = await Todo.find({ enquiry: enquiry._id, kind: { $in: SHOWS_EDD_KINDS }, completed: false });
+  for (const task of tasks) {
+    task.updates = [...(task.updates || []), { kind: 'note', text: said, note: said, by: user._id, at: new Date() }];
+    await task.save();
+    await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  }
+  /* By model: a model already ready need not wait for the rest. */
+  if (mode === 'by_model') {
+    const ready = await Todo.findOne({ enquiry: enquiry._id, kind: { $in: EDD_TASK_KINDS } }).sort({ updatedAt: -1 });
+    if (ready) {
+      const { advanceJourney } = await import('./journey.service.js');
+      await advanceJourney(ready, user, 'Dispatch plan: each model as it is ready');
+    }
+  }
+  return { mode, told: tasks.length };
+}
+
+/**
+ * A team hands its goods to the next — Production to Printing or Assembly, Printing to Assembly:
+ * the next team's task hears it, and knows the day the goods came.
+ */
+async function handOn(task, user, step, text) {
+  const from = task.kind === 'ask_edd' ? 'production' : task.kind === 'ask_printing' ? 'printing' : 'assembling';
+  const next = await Todo.findOne({ enquiry: task.enquiry?._id || task.enquiry, kind: ROUTE_KINDS[step.handsTo], completed: false });
+  if (!next) return null;
+  const day = indiaDay(new Date());
+  const models = (next.routing?.models || []).join(', ');
+  const said = `${ROUTE_LABEL[from]} handed the goods over${models ? ` (${models})` : ''} — ${user.name}${text ? `: ${text}` : ''}`;
+  next.routing = { ...(next.routing || {}), received: { ...(next.routing?.received || {}), [from]: day } };
+  next.markModified('routing');
+  next.updates = [...(next.updates || []), { kind: 'note', text: said, note: said, date: day, dateLabel: `From ${ROUTE_LABEL[from]}`, by: user._id, at: new Date() }];
+  await next.save();
+  await noticeStatus(next, user, { step: { key: next.status || 'received', label: `Goods from ${ROUTE_LABEL[from]}` }, note: said, also: await peopleOn(next), onlyAlso: true });
+  await publish(EVENTS.HANDOFF_UPDATED, { task: next, by: user });
+  return next;
+}
+
+/**
  * Marketing set the EDD on the enquiry: the departments working to it hear it on their open
  * tasks — Production's, Assembly's, Printing's and the dispatch request — as a line on each.
  */
@@ -2638,7 +2897,7 @@ export async function productionDates(enquiryId) {
       .select('number lines.modelNumber lines.quantity lines.deliveryDate lines.revisedDeliveryDate lines.production')
       .sort({ createdAt: -1 })
       .lean(),
-    Enquiry.findById(enquiryId).select('edd').populate('edd.by', 'name').lean(),
+    Enquiry.findById(enquiryId).select('edd eddByModel').populate('edd.by', 'name').lean(),
   ]);
   const said = [];
   /* The enquiry's own EDD first: the latest word, marketing's or the shop floor's. */
@@ -2673,6 +2932,8 @@ export async function productionDates(enquiryId) {
       status: (findHandoff(open.kind)?.form?.statuses || []).find((entry) => entry.key === open.status)?.label || null,
     } : null,
     lines,
+    /* Each model's EDD — the latest its teams gave — and each team's own date [refreshModelEdds]. */
+    byModel: enquiry?.eddByModel || [],
   };
 }
 
