@@ -179,3 +179,37 @@ test('a task raised for a department pushes to every member’s devices, and the
   });
   assert.match(tagged, /\[whatsapp\] to \+919876500099/, 'the tag did not ring on WhatsApp');
 });
+
+test('one device rings for every account signed in on it, once per push, and renews for all of them', async () => {
+  const { default: PushSubscription } = await import('../src/models/PushSubscription.js');
+  const shared = device(5);
+  assert.equal((await api('/api/workspace/push/subscribe', { method: 'POST', token: kavitha, body: shared })).status, 201);
+  assert.equal((await api('/api/workspace/push/subscribe', { method: 'POST', token: kiran, body: shared })).status, 201);
+  assert.equal(await PushSubscription.countDocuments({ endpoint: shared.endpoint }), 2, 'the second account took the device from the first');
+
+  const { sendPush } = await import('../src/services/push.service.js');
+  const out = await printed(() => sendPush([ids.kavitha, ids.kiran], { title: 'Both of you' }));
+  const toShared = (await PushSubscription.find({ user: { $in: [ids.kavitha, ids.kiran] } })).length;
+  assert.equal(out.match(/\[push\] to user/g).length, toShared - 1, 'the shared device was pushed twice');
+
+  const renewed = { ...device(6), oldEndpoint: shared.endpoint };
+  const renew = await api('/api/workspace/push/renew', { method: 'POST', body: renewed });
+  assert.equal(renew.status, 200, renew.json.message);
+  assert.equal(renew.json.data.renewed, 2);
+  assert.equal(await PushSubscription.countDocuments({ endpoint: shared.endpoint }), 0);
+  assert.equal(await PushSubscription.countDocuments({ endpoint: device(6).endpoint }), 2);
+  assert.equal((await api('/api/workspace/push/renew', { method: 'POST', body: { ...device(7), oldEndpoint: 'not a url' } })).status, 400);
+});
+
+test('a database with the old one-account-per-device index heals on the first second account', async () => {
+  const { default: PushSubscription } = await import('../src/models/PushSubscription.js');
+  await PushSubscription.deleteMany({});
+  await PushSubscription.collection.dropIndexes();
+  await PushSubscription.collection.createIndex({ endpoint: 1 }, { unique: true });
+  const old = device(8);
+  assert.equal((await api('/api/workspace/push/subscribe', { method: 'POST', token: kavitha, body: old })).status, 201);
+  const second = await api('/api/workspace/push/subscribe', { method: 'POST', token: kiran, body: old });
+  assert.equal(second.status, 201, second.json.message);
+  assert.equal(await PushSubscription.countDocuments({ endpoint: old.endpoint }), 2);
+  await PushSubscription.syncIndexes();
+});

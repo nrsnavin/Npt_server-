@@ -238,6 +238,9 @@ export const pushSubscribeSchema = z.object({
 
 export const pushUnsubscribeSchema = z.object({ endpoint: z.string().url().max(1000) });
 
+/** The browser's new subscription for a device, named by its old endpoint [push.controller `renewPush`]. */
+export const pushRenewSchema = pushSubscribeSchema.extend({ oldEndpoint: z.string().url().max(1000) });
+
 /* ----------------------------- Settings ----------------------------- */
 
 /** Admin's security policy: a device PIN for everyone, and the idle minutes before the lock. */

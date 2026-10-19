@@ -4,6 +4,8 @@ import Todo from '../models/Todo.js';
 import Attachment from '../models/Attachment.js';
 import Sample from '../models/Sample.js';
 import MouldRun from '../models/MouldRun.js';
+import Receivable from '../models/Receivable.js';
+import { FINISHING_DEPARTMENTS, withDeskSummaries } from '../services/deskSummary.service.js';
 import WorkOrder from '../models/WorkOrder.js';
 import mongoose from 'mongoose';
 import { journeyOf } from '../services/journey.service.js';
@@ -35,7 +37,7 @@ import { ownershipFilter } from '../services/ownership.service.js';
  * the ordinary task actions (`PATCH /workspace/todos/:id`, `POST …/escalate`).
  */
 
-const TASK_POPULATE = [
+export const TASK_POPULATE = [
   WAITING_ON_POPULATE,
   { path: 'attachment', select: 'key filename size' },
   { path: 'resultFile', select: 'key filename size' },
@@ -198,8 +200,43 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     /* How a several-model order goes out, and which models are ready [handoff.service `modelReadiness`]. */
     dispatchPlan: enquiry.dispatchPlan?.mode ? enquiry.dispatchPlan : null,
     readiness: await modelReadiness(enquiry._id),
+    /* The money on it: each RCV — the advance, each invoice — with what came in and who logged it. */
+    payments: await paymentsOnEnquiry(enquiry._id),
   });
 });
+
+/**
+ * The enquiry's receivables [models/Receivable.js `enquiry`] — an RCV raised before the link
+ * existed is found through its order — with each payment logged on it: how much, how, the UTR,
+ * who logged it and whether it is confirmed.
+ */
+export async function paymentsOnEnquiry(enquiryId) {
+  const orderIds = await SalesOrder.find({ enquiry: enquiryId }).distinct('_id');
+  const rows = await Receivable.find({ $or: [{ enquiry: enquiryId }, { order: { $in: orderIds } }] })
+    .populate('order', 'number')
+    .populate('receipts.recordedBy', 'name')
+    .sort({ createdAt: 1 })
+    .limit(50);
+  return rows.map((row) => ({
+    _id: row._id,
+    number: row.number,
+    kind: row.kind,
+    order: row.order ? { _id: row.order._id, number: row.order.number } : null,
+    invoiceNumber: row.invoice?.number || null,
+    value: row.invoice?.value || 0,
+    received: row.received,
+    confirmed: row.confirmedReceived,
+    balance: row.balance,
+    receipts: (row.receipts || []).map((receipt) => ({
+      amount: receipt.amount,
+      mode: receipt.mode,
+      reference: receipt.reference || null,
+      at: receipt.receivedAt,
+      by: receipt.recordedBy?.name || null,
+      confirmed: Boolean(receipt.confirmed?.at),
+    })),
+  }));
+}
 
 /**
  * The floor's work for an enquiry: the moulds running for it now (press, mould, since when, pieces
@@ -242,15 +279,18 @@ export async function floorOf(enquiryId) {
  */
 async function ordersOnEnquiry(enquiry, user) {
   const orders = await SalesOrder.find({ enquiry: enquiry._id, status: { $ne: 'cancelled' } })
-    .select('number status customerPo releasedAt releasedBy verification updatedAt lines.quantity')
     .populate('releasedBy', 'name')
     .sort({ createdAt: -1 })
     .limit(20);
   const mayWriteOrders = canWrite(user, 'orders');
   const heldOk = enquiry.stage !== 'production_hold' || mayReleaseHeld(user, enquiry);
-  return orders.map((order) => {
+  const { paymentStanding } = await import('../services/paymentGates.service.js');
+  return Promise.all(orders.map(async (order) => {
     const short = VERIFICATION_CHECKS.filter((check) => !order.verification?.[check.key]?.by).map((check) => check.label);
     const waiting = PRE_RELEASE_STATUSES.includes(order.status);
+    /* The advance its terms ask for before production: released only once Accounts has confirmed it (or Admin waived it). */
+    const advance = waiting ? (await paymentStanding(order)).production : null;
+    const advanceShort = advance && !advance.met && !advance.waived ? advance.short : 0;
     return {
       _id: order._id,
       number: order.number,
@@ -260,10 +300,11 @@ async function ordersOnEnquiry(enquiry, user) {
       released: order.releasedAt ? { at: order.releasedAt, by: order.releasedBy?.name || null } : null,
       waiting,
       checksShort: waiting ? short : [],
-      mayRelease: waiting && !short.length && mayWriteOrders && heldOk,
+      advanceShort,
+      mayRelease: waiting && !short.length && !advanceShort && mayWriteOrders && heldOk,
       updatedAt: order.updatedAt,
     };
-  });
+  }));
 }
 
 async function taskFor(req) {
@@ -532,7 +573,9 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
   const dashboard = mergeDashboards(perDepartment.map((row) => row.dashboard), { key, label: desk?.label });
   const atStages = perDepartment.flatMap((row) => row.atStages);
   /* A person's own payment follow-up is on every member's desk list — once on the merged desk. */
-  const held = uniqueTasks(perDepartment.flatMap((row) => row.held), (row) => row.task._id);
+  const merged = uniqueTasks(perDepartment.flatMap((row) => row.held), (row) => row.task._id);
+  /* Printing, Assembly and Quality read their desk as lines: enquiry, buyer, EDD, the state in 20–30 words, the workflow page. */
+  const held = members.every((member) => FINISHING_DEPARTMENTS.includes(member)) ? await withDeskSummaries(merged) : merged;
   /* The queue less the enquiries themselves: side requests, like a PRT visit or photos sent. */
   const heldIds = new Set(held.map((row) => String(row.task._id)));
   const requests = dashboard.queue.filter((task) => !heldIds.has(String(task._id)));

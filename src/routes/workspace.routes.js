@@ -31,10 +31,11 @@ import {
   announcementSchema,
   savedViewSchema,
   savedViewUpdateSchema,
+  pushRenewSchema,
   pushSubscribeSchema,
   pushUnsubscribeSchema,
 } from '../validators/schemas.js';
-import { notificationStatus, pushKey, sendTestNotification, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
+import { notificationStatus, pushKey, renewPush, sendTestNotification, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
   handoffBrief, handoffDone, handoffEdd, handoffRouting, handoffRoute, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments,
@@ -45,6 +46,9 @@ import {
 import { singlePdf, singleTaskResult } from '../middleware/upload.js';
 
 const router = Router();
+
+/* The service worker re-registering a device the browser gave a new subscription — it has no sign-in. */
+router.post('/push/renew', validate(pushRenewSchema), renewPush);
 
 router.use(authenticate);
 

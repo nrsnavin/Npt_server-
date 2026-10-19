@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { customerSummaries } from '../services/customerSummary.service.js';
 import { customerMap } from '../services/customerMap.service.js';
 import Mould, { MATERIALS, mouldWithPhoto } from '../models/Mould.js';
+import { catalogue, codeKey } from '../services/modelCatalogue.service.js';
 import Customer from '../models/Customer.js';
 import {
   MARKETING_STATUSES, MARKETING_STATUS_KEYS, STAGE_FOR_MARKETING, marketingStatusLabel, marketingStatusOf, salesStatusesFor,
@@ -1034,12 +1035,44 @@ export const enquiryBoard = asyncHandler(async (req, res) => {
   res.json({ success: true, data: { columns }, meta: { sort } });
 });
 
+/* What the enquiry screen shows of a model's tool: its photo and what the part is — never a rate. */
+const MOULD_FACTS = 'mouldCode name category sizeMm material hookType cavities partWeightGrams packingQty moq status';
+
+/**
+ * Models typed by number but never linked to the register ("CRF-25" for the CRF25 mould): the
+ * mould whose code is the same, ignoring dashes and spaces, so the screen shows its photo and
+ * details too. Said as found by its code; nothing is written to the enquiry.
+ */
+async function mouldsByCode(items = []) {
+  const unlinked = items.filter((item) => !item.mould?.mouldCode && item.modelNumber);
+  if (!unlinked.length) return;
+  const rows = (await catalogue()).filter((row) => row.kind === 'mould');
+  const idFor = (model) => {
+    const hits = rows.filter((row) => codeKey(row.code) === codeKey(model));
+    return hits.length === 1 ? hits[0].id : null;
+  };
+  const ids = [...new Set(unlinked.map((item) => idFor(item.modelNumber)).filter(Boolean))];
+  if (!ids.length) return;
+  const moulds = await Mould.find({ _id: { $in: ids } }).select(MOULD_FACTS).populate({ path: 'photo', select: 'key' }).lean();
+  const byId = new Map(moulds.map((mould) => [String(mould._id), mould]));
+  for (const item of unlinked) {
+    const mould = byId.get(String(idFor(item.modelNumber)));
+    if (mould) Object.assign(item, { mould, mouldByCode: true });
+  }
+}
+
 export const getEnquiry = asyncHandler(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id)
     /* The buyer's own marketing person by name: the draft screen offers them as the owner. */
     .populate({ path: 'customer', select: 'code name mobile whatsapp email assignedTo contacts deliveryContact accountsContact', populate: { path: 'assignedTo', select: 'name' } })
     .populate('assignedTo', 'name email')
-    .populate(mouldWithPhoto('mould', 'mouldCode name category sizeMm material hookType'))
+    .populate(mouldWithPhoto('mould', MOULD_FACTS))
+    /* Every model's tool with its photo, and the parts it names — each item a card of its own [web: ItemList]. */
+    .populate(mouldWithPhoto('items.mould', MOULD_FACTS))
+    .populate('items.materialRef', 'name code type colour')
+    .populate('items.hookRef', 'name code colour kind')
+    .populate('items.clipRef', 'name code colour kind')
+    .populate('items.printRef', 'name code kind')
     /* The registers the requirement names [§28], so a screen can say what was asked for
        without four more requests. Name and code only — a rate is not an enquiry's business. */
     .populate('requirement.materialRef', 'name code type colour')
@@ -1058,7 +1091,15 @@ export const getEnquiry = asyncHandler(async (req, res) => {
   const mayRead = (canRead(req.user, 'enquiries') && ownsRecord(req.user, enquiry))
     || await mayHandOff(req.user, enquiry);
   if (!mayRead) throw ApiError.notFound('Enquiry not found');
-  res.json({ success: true, data: enquiry });
+  const data = enquiry.toJSON();
+  await mouldsByCode(data.items);
+  /* One model asked the old way: the requirement found by its code the same. */
+  if (!data.items?.length && !data.mould?.mouldCode && data.requirement?.modelNumber) {
+    const first = { modelNumber: data.requirement.modelNumber };
+    await mouldsByCode([first]);
+    if (first.mould) Object.assign(data, { mould: first.mould, mouldByCode: true });
+  }
+  res.json({ success: true, data });
 });
 
 /**

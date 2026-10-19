@@ -32,6 +32,7 @@ export const STEPS = [
   ['migrate-enquiry-holders.js', 'every open enquiry held by its marketing person; departments keep their tasks'],
   ['migrate-lr-to-reception.js', 'open LR Copy tasks handed from Dispatch to Reception'],
   ['migrate-confirm-receipts.js', 'receipts from before Accounts confirmed them, confirmed as of when recorded'],
+  ['backfill-receivable-enquiries.js', 'every RCV linked to its order’s enquiry'],
 ];
 
 function run() {

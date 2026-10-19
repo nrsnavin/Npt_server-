@@ -2,12 +2,13 @@ import mongoose from 'mongoose';
 
 /**
  * A device somebody allowed to be notified — a phone, a browser. One person, many devices; one
- * device, one person (signing in as somebody else on it moves the subscription to them).
+ * device, every account signed in on it [push.controller `subscribePush`].
  */
 const pushSubscriptionSchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    endpoint: { type: String, required: true, unique: true, maxlength: 1000 },
+    /* The same endpoint once per account on the device; looked up by the index below, endpoint first. */
+    endpoint: { type: String, required: true, maxlength: 1000 },
     keys: {
       p256dh: { type: String, required: true, maxlength: 200 },
       auth: { type: String, required: true, maxlength: 100 },
@@ -16,5 +17,7 @@ const pushSubscriptionSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+pushSubscriptionSchema.index({ endpoint: 1, user: 1 }, { unique: true });
 
 export default mongoose.model('PushSubscription', pushSubscriptionSchema);

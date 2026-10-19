@@ -121,8 +121,8 @@ test('Payment Recovery is a department of its own, with the PRT Recovery task; t
   assert.ok(!prt.hidden);
   assert.ok(buttons.find((button) => button.key === 'request_prt_visit').hidden, 'replaced, kept readable');
   const labels = (key) => buttons.find((button) => button.key === key).form.statuses.map((entry) => entry.label);
-  assert.deepEqual(labels('team_payment_followup'), ['Assigned', 'Contacted', 'Promised', 'Part Paid', 'Promise Broken', 'Not Reachable', 'Disputed', 'Escalated to PRT', 'Paid']);
-  assert.deepEqual(labels('my_payment_followup'), labels('team_payment_followup'), 'the same tracker on the raiser’s own list');
+  assert.deepEqual(labels('team_payment_followup'), ['Assigned', 'Contacted', 'Promised', 'Part Paid', 'Promise Broken', 'Not Reachable', 'Disputed', 'Escalated to PRT', 'Paid', 'Payment Logged — Accounts to Confirm']);
+  assert.deepEqual(labels('my_payment_followup'), labels('team_payment_followup').slice(0, -1), 'the same tracker on the raiser’s own list — money in is logged by Payment Collection');
   assert.deepEqual(labels('prt_recovery'), ['Assigned', 'Visit Planned', 'Visited', 'Collected', 'Part Collected', 'Promised', 'Promise Broken', 'Cannot Recover', 'Task Closed']);
   assert.equal(prt.asks.find((field) => field.type === 'member').department, 'payment_recovery');
   assert.ok(!prt.asks.find((field) => field.type === 'member').required, 'the automation raises it with nobody named');

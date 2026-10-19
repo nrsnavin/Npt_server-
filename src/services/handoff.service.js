@@ -13,7 +13,7 @@ import { EVENTS, publish } from './events.service.js';
 import ApiError from '../utils/ApiError.js';
 import { dispatchBalance } from './enquiryGates.service.js';
 import * as paymentPresets from './paymentGates.service.js';
-import { assertEnquiryPaidFor } from './paymentGates.service.js';
+import { afterPayment, assertEnquiryPaidFor, confirmInwardFromTask } from './paymentGates.service.js';
 import { COLLECTION_KINDS, receivablesOf } from './collections.service.js';
 import { MATERIALS } from '../models/Mould.js';
 import { HANDOVER_CHOICES } from '../config/departmentTaskForms.js';
@@ -1222,7 +1222,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   /* A task of several models moves model by model: the ones named, or every one [Todo `modelStatuses`]. */
   const { byModel, moving, partial, after, overall, finishes } = modelMove(task, step, models);
   const unchanged = byModel ? task.status === overall && after.every((row, at) => row.status === modelStatusesOf(task)[at].status) : task.status === status;
-  if (unchanged && !readyDate) return task;
+  /* The same status again says nothing new — except money confirmed in, which is more money each time. */
+  if (unchanged && !readyDate && !step.confirmsInward) return task;
   await assertNotWaiting(task);
   /* Refused before the status moves, so a refusal leaves the task where it was. */
   if (finishes) await assertMayFinish(task);
@@ -1241,6 +1242,9 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   if (step.raises) await raiseFromStatus(task, user, step, text);
   /* The sample handed at the desk: written onto the sample first, so a refusal leaves the task where it was. */
   if (step.handsOver) await handedAtDesk(task, user, asked);
+  /* Payment Collection confirms the money in: the receipt first, so a refusal (more than owed) leaves the task where it was. */
+  if (step.confirmsInward && task.kind !== 'team_payment_followup') fail('Payment Collection confirms the payment inward, on its own task');
+  const inward = step.confirmsInward ? await confirmInwardFromTask(task, user, { ...asked, note: text }) : null;
   task.status = overall;
   /* Each model's own status is kept once one has moved on its own; the task reads its slowest. */
   if (byModel && (partial || task.modelStatuses?.length)) {
@@ -1304,6 +1308,11 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   if (step.recordsReceipt) await askToRecordReceipt(task, user, step);
   /* The sample is at the desk: it reads ready before the buyer is told so. */
   if (step.sampleReady) await readyAtDesk(task, user);
+  /* Money confirmed in: a stage now covered closes this task and tells marketing to release the order [paymentGates `afterPayment`]. */
+  if (inward && !inward.again) {
+    await afterPayment(inward.order._id);
+    return (await Todo.findById(task._id)) || task;
+  }
   /* A status that tells the buyer something — "your sample is ready to collect" — sends it from here. */
   if (step.tellBuyer) await tellBuyerFromTask(task, user, step);
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
@@ -1379,6 +1388,7 @@ function stepFields(step, fields = {}) {
       continue;
     }
     if (field.type === 'number' && !(Number(text) >= 0)) fail(`${field.label} must be a number`);
+    if (field.options && !field.options.includes(text)) fail(`${field.label} is one of ${field.options.join(', ')}`);
     kept[field.key] = text;
   }
   return kept;
@@ -1825,6 +1835,32 @@ export async function noticeStatus(task, user, { step, note, date, also = [], on
   afterCommit(() => import('./push.service.js')
     .then(({ sendPush }) => sendPush([...recipients], { title, body, link, kind: 'task-status', taskId: String(task._id) }))
     .catch((error) => console.error(`[handoff] status push not sent: ${error.message}`)));
+}
+
+const sampleWords = (status) => {
+  const text = String(status || '').replace(/_/g, ' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+};
+
+/**
+ * A sample's status moved on the bench: Admin, the enquiry's marketing person and the marketer
+ * who owns the buyer hear it under "Needs your action" and on their phones [noticeStatus] —
+ * "Sampling: Sample S-0042 — Not available", with the reason. Hung on the enquiry's Sampling
+ * task, as every department move is. Never fails the move that called it.
+ */
+export async function noticeSampleMove(sample, user, { to, note } = {}) {
+  const enquiryId = sample.enquiry?._id || sample.enquiry;
+  if (!enquiryId) return null;
+  /* The Sampling task, else the desk's, else whatever task holds the enquiry — a sample raised by the automation has no Sampling task. */
+  const task = await Todo.findOne({ enquiry: enquiryId, kind: 'sample_request' }).sort({ completed: 1, createdAt: -1 })
+    || await Todo.findOne({ enquiry: enquiryId, kind: 'sample_collect' }).sort({ completed: 1, createdAt: -1 })
+    || await Todo.findOne({ enquiry: enquiryId }).sort({ completed: 1, holds: -1, createdAt: -1 });
+  if (!task) return null;
+  const { default: Customer } = await import('../models/Customer.js');
+  const buyer = sample.customer ? await Customer.findById(sample.customer?._id || sample.customer).select('assignedTo').lean() : null;
+  const label = `Sample ${sample.number} — ${sampleWords(to)}`;
+  await noticeStatus(task, user, { step: { key: to, label }, note: String(note || '').trim() || undefined, also: [buyer?.assignedTo, sample.requestedBy].filter(Boolean).map(idOf) });
+  return task;
 }
 
 /* Unread, or read within the last day — a notice clears itself a day after it is read. */

@@ -32,7 +32,7 @@ import { requireEnquiry } from '../services/enquiryLink.service.js';
 import { collect, sendCsv } from '../utils/csv.js';
 import { transactional } from '../utils/transaction.js';
 import {
-  PAYMENT_PRESETS, PAYMENT_STAGES, assertPaidFor, paymentStanding, planCollection,
+  PAYMENT_PRESETS, PAYMENT_STAGES, afterWaiver, assertPaidFor, paymentStanding, planCollection,
 } from '../services/paymentGates.service.js';
 
 /**
@@ -716,7 +716,7 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
 
   expectVersion(order, req.body);
 
-  const { action, note, ...rest } = req.body;
+  const { action, note, confirmAll, ...rest } = req.body;
   const recipe = ORDER_ACTIONS[action];
   if (!recipe) throw ApiError.badRequest('That is not something you can do to an order');
 
@@ -726,6 +726,20 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
         ? `This order is ${order.status} — nothing further can be done to it`
         : `“${recipe.label}” does not apply to an order at ${order.status.replace(/_/g, ' ')}`
     );
+  }
+
+  /*
+   * Release in one click: whoever releases it confirms every check still open, each ticked in
+   * their name now — the same record a tick by hand leaves, and said on the release. Saved
+   * only with the release: refused further down (the advance not in), nothing is ticked.
+   */
+  const confirmed = [];
+  if (action === 'release' && confirmAll) {
+    const at = new Date();
+    for (const key of order.outstandingChecks) {
+      order.verification[key] = { by: req.user._id, at, note: 'Confirmed with the release' };
+      confirmed.push(VERIFICATION_CHECKS.find((check) => check.key === key).label.toLowerCase());
+    }
   }
 
   /*
@@ -759,7 +773,8 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
   const before = snapshot(order);
 
   Object.assign(order, rest);
-  order.statusHistory.push({ from: order.status, to: recipe.to, by: req.user._id, note });
+  const said = [note, confirmed.length && `Confirmed with the release: ${confirmed.join(', ')}`].filter(Boolean).join(' — ') || undefined;
+  order.statusHistory.push({ from: order.status, to: recipe.to, by: req.user._id, note: said });
   order.status = recipe.to;
 
   if (action === 'release') {
@@ -777,7 +792,7 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
   }
 
   await order.save();
-  await recordChange({ model: 'SalesOrder', doc: order, before, by: req.user, note: recipe.label });
+  await recordChange({ model: 'SalesOrder', doc: order, before, by: req.user, note: confirmed.length ? `${recipe.label} — confirmed ${confirmed.join(', ')}` : recipe.label });
   /* Released to the plant: the enquiry moves from Sales / SO to Production [handoff.subscriber]. */
   if (action === 'release') await publish(EVENTS.ORDER_RELEASED, { orderId: order._id, by: req.user });
   /* Cancelled or closed: its open work orders are cancelled with it. */
@@ -794,6 +809,41 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
     did: recipe.label,
   });
 })));
+
+/**
+ * What stands between the order and the plant, in one place, so the screen can say it before
+ * anybody presses Release: the checks still open (one click confirms them), the advance its terms
+ * ask for — confirmed by Accounts, logged and waiting, or still to come — and whether it is a
+ * Production Holded Order this person may not release.
+ */
+export const orderReleaseCheck = asyncHandler(async (req, res) => {
+  const order = await SalesOrder.findById(req.params.id);
+  if (!order) throw ApiError.notFound('Order not found');
+  if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+  const standing = await paymentStanding(order);
+  const advance = standing.production;
+  const enquiry = order.enquiry ? await Enquiry.findById(order.enquiry).select('stage assignedTo').populate('assignedTo', 'name').lean() : null;
+  const held = enquiry?.stage === 'production_hold';
+  res.json({
+    success: true,
+    data: {
+      releasable: PRE_RELEASE_STATUSES.includes(order.status),
+      checksOpen: order.outstandingChecks.map((key) => VERIFICATION_CHECKS.find((check) => check.key === key).label),
+      advance: {
+        percent: advance.percent,
+        required: advance.required,
+        confirmed: advance.received,
+        awaiting: standing.awaiting,
+        short: advance.short,
+        met: advance.met,
+        waived: advance.waived,
+      },
+      held,
+      mayReleaseHeld: !held || mayReleaseHeld(req.user, enquiry),
+      heldBy: held ? enquiry?.assignedTo?.name || null : null,
+    },
+  });
+});
 
 /** The actions this order can take from where it is, so the screen need not guess. */
 export const listOrderActions = asyncHandler(async (req, res) => {
@@ -1064,5 +1114,7 @@ export const waiveOrderPayment = asyncHandler(withOrderLock(req => req.params.id
     model: 'SalesOrder', doc: order, before, by: req.user,
     note: `Allowed ${stage} without the payment: ${reason.trim()}`,
   });
+  /* Marketing and the SO team hear they may release it; Payment Collection keeps chasing the money. */
+  await afterWaiver(order, stage, req.user, reason.trim());
   res.json({ success: true, data: await paymentStanding(order) });
 })));

@@ -3,7 +3,7 @@ import {
   listOrders, orderBoard, getOrder, exportOrders,
   createOrder, orderFromQuotation, updateOrder,
   setOrderCheck, applyOrderAction, listOrderActions, setOrderPo, setOrderPriority,
-  setLinePromisedDate, orderPaymentStanding, waiveOrderPayment,
+  setLinePromisedDate, orderPaymentStanding, orderReleaseCheck, waiveOrderPayment,
 } from '../controllers/order.controller.js';
 import {
   listOrderQueries, listQueryQueue, raiseOrderQuery, answerOrderQuery, closeOrderQuery,
@@ -17,7 +17,7 @@ import {
   productionDay,
   productionOee,
 } from '../controllers/production.controller.js';
-import { listProductionQueue } from '../controllers/productionQueue.controller.js';
+import { listProductionQueue, productionWorkflow } from '../controllers/productionQueue.controller.js';
 import {
   listDispatches, dispatchBoard, exportDispatches, getDispatch, listReadyStock,
   listOrderDispatches, createDispatch, updateDispatch,
@@ -30,11 +30,11 @@ import {
 } from '../controllers/quality.controller.js';
 import {
   listReceivables, getReceivable, paymentDay,
-  raiseAdvance, logFollowUp, setPaymentContact, followUpOptions, recordReceipt, confirmReceipt, setJudgement,
+  raiseAdvance, logFollowUp, setPaymentContact, followUpOptions, recordReceipt, confirmReceipt, rejectReceipt, setJudgement,
 } from '../controllers/payment.controller.js';
 import { inspectionSchema } from '../validators/quality.schemas.js';
 import {
-  advanceSchema, followUpSchema, paymentContactSchema, receiptSchema, judgementSchema,
+  advanceSchema, followUpSchema, paymentContactSchema, receiptSchema, judgementSchema, rejectReceiptSchema,
 } from '../validators/payment.schemas.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -154,6 +154,8 @@ router.get('/orders/:id/actions', requireModule('orders'), listOrderActions);
 router.post('/orders/:id/actions', requireModule('orders', 'write'), validate(orderActionSchema), applyOrderAction);
 /* Money before work: where the order stands against its payment terms, and Admin's exception. */
 router.get('/orders/:id/payment', requireModule('orders'), orderPaymentStanding);
+/* What stands between the order and the plant: checks, the advance, a Production Holded Order. */
+router.get('/orders/:id/release-check', requireModule('orders'), orderReleaseCheck);
 router.post('/orders/:id/payment-waiver', requireModule('orders'), validate(orderPaymentWaiverSchema), waiveOrderPayment);
 
 /*
@@ -206,6 +208,8 @@ router.post('/orders/:id/escalations', requireModule('orders'), validate(orderEs
  */
 /* The production queue in EDD order, read by every department that works to it — access checked inside. */
 router.get('/production/queue', listProductionQueue);
+/* One Production task worked whole: models, hand-overs, EDD, work orders [web: pages/ProductionWorkflow.jsx]. */
+router.get('/production/workflow/:taskId', productionWorkflow);
 router.get('/production/day', requireModule('production'), productionDay);
 router.get('/production/oee', requireModule('production'), productionOee);
 router.get('/production/statuses', requireModule('production'), listProductionStatuses);
@@ -263,6 +267,7 @@ router.post('/payments/:id/follow-ups', requireModule('payments'), validate(foll
 router.post('/payments/:id/receipts', requireModule('payments', 'write'), validate(receiptSchema), recordReceipt);
 /* Accounts has seen a collector's receipt in the bank — only then does it count at the payment gate. */
 router.post('/payments/:id/receipts/:receiptId/confirm', requireModule('payments', 'write'), confirmReceipt);
+router.post('/payments/:id/receipts/:receiptId/reject', requireModule('payments', 'write'), validate(rejectReceiptSchema), rejectReceipt);
 router.post('/payments/:id/judgement', requireModule('payments', 'write'), validate(judgementSchema), setJudgement);
 
 /* The advance a buyer owes before anything is made — raised against the order it belongs to. */

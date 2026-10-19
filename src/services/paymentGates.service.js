@@ -1,9 +1,10 @@
-import SalesOrder from '../models/SalesOrder.js';
-import Receivable from '../models/Receivable.js';
+import mongoose from 'mongoose';
+import SalesOrder, { PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
+import Receivable, { paymentLogEntry } from '../models/Receivable.js';
 import Todo from '../models/Todo.js';
 import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
-import { raiseTask, resolveTasks } from './task.service.js';
+import { raiseDepartmentTask, raiseTask, resolveTasks } from './task.service.js';
 import { whenTransactionEnds } from '../utils/transaction.js';
 import { settleCollectionTasks } from './collections.service.js';
 
@@ -42,8 +43,16 @@ const round2 = (value) => Math.round(value * 100) / 100;
  * chase ringing, but does not open the gate [models/Receivable.js `confirmed`].
  */
 async function receivedOn(orderId) {
+  return (await moneyOn(orderId)).confirmed;
+}
+
+/** What is confirmed on the order, and what is logged but still waiting for Accounts. */
+async function moneyOn(orderId) {
   const rows = await Receivable.find({ order: orderId });
-  return round2(rows.reduce((sum, row) => sum + (row.confirmedReceived || 0), 0));
+  return {
+    confirmed: round2(rows.reduce((sum, row) => sum + (row.confirmedReceived || 0), 0)),
+    awaiting: round2(rows.reduce((sum, row) => sum + (row.awaitingConfirmation || 0), 0)),
+  };
 }
 
 /**
@@ -52,7 +61,7 @@ async function receivedOn(orderId) {
  */
 export async function paymentStanding(order) {
   const value = order.totalValue || 0;
-  const received = await receivedOn(order._id);
+  const { confirmed: received, awaiting } = await moneyOn(order._id);
   const plan = order.paymentPlan || {};
   const stage = (key, percent) => {
     const required = round2((value * (percent || 0)) / 100);
@@ -71,6 +80,8 @@ export async function paymentStanding(order) {
   return {
     value,
     received,
+    /* Logged by Payment Collection or PRT, not yet seen in the bank by Accounts — it does not open a gate. */
+    awaiting,
     production: stage('production', plan.advancePercent),
     dispatch: stage('dispatch', Math.max(plan.beforeDispatchPercent || 0, plan.advancePercent || 0)),
   };
@@ -95,7 +106,8 @@ export async function askPaymentCollection(order, stage, standing, { by } = {}) 
     enquiry: order.enquiry || undefined,
     customer: order.customer || undefined,
     order: order._id,
-    kind: order.enquiry ? 'team_payment_followup' : undefined,
+    /* Payment Collection's workflow, with an enquiry or without: it confirms the payment inward from here. */
+    kind: 'team_payment_followup',
     link: `/orders/${order._id}`,
     originKey,
     priority: 'high',
@@ -107,8 +119,81 @@ export async function askPaymentCollection(order, stage, standing, { by } = {}) 
 /** The refusal, in words: what is due, what is in, and that Payment Collection has it. */
 const refusal = (order, stage, needed) =>
   `${order.number} needs ${needed.percent}% (${rupees(needed.required)}) received ${STAGE_WORDS[stage]} — `
-  + `${rupees(needed.received)} is in, ${rupees(needed.short)} short. Payment Collection has been asked to collect it; `
-  + 'Admin can allow it without the payment, with a reason.';
+  + `${rupees(needed.received)} is in, ${rupees(needed.short)} short. Payment Collection has a task to collect it and confirm the payment inward; `
+  + `then marketing or Admin can release it. Admin can also allow it without the payment, with a reason.`;
+
+const MODE_KEYS = { NEFT: 'neft', RTGS: 'rtgs', UPI: 'upi', CHEQUE: 'cheque', CASH: 'cash' };
+
+/**
+ * Payment Collection logs the money in, from its task on the order [departmentTaskForms
+ * `payment_inward`]: written as a receipt on the order's advance, and Accounts gets a task to
+ * confirm it in the bank — the gate opens on what Accounts confirms. More than is owed is
+ * refused, and nothing moves; a second log with the same reference is the same money, not more.
+ */
+export async function confirmInwardFromTask(task, user, { amount, mode, reference, note }) {
+  const orderId = task.order?._id || task.order;
+  if (!orderId) throw ApiError.badRequest('This task is not about a sales order — record the receipt in Payments instead');
+  const order = await SalesOrder.findById(orderId);
+  if (!order) throw ApiError.badRequest('The sales order on this task no longer exists');
+  const value = round2(Number(amount));
+  if (!(value > 0)) throw ApiError.badRequest('Give the amount received');
+  let receivable = await Receivable.findOne({ order: order._id, kind: 'advance' });
+  if (!receivable) {
+    await planCollection(order, { by: user });
+    receivable = await Receivable.findOne({ order: order._id, kind: 'advance' });
+  }
+  if (!receivable) throw ApiError.badRequest(`${order.number} asks for no money before production or dispatch — nothing to confirm`);
+  const ref = String(reference || '').trim();
+  if (ref && receivable.receipts.some((row) => row.reference === ref && row.amount === value)) return { order, receivable, again: true };
+  const owed = round2(Math.max(0, (receivable.invoice?.value || 0) - (receivable.received || 0)));
+  if (value > owed + 0.5) throw ApiError.badRequest(`That is more than the ${rupees(owed)} still owed on ${order.number}'s advance`);
+  const at = new Date();
+  receivable.receipts.push({
+    amount: value,
+    receivedAt: at,
+    mode: MODE_KEYS[String(mode || '').toUpperCase()] || 'other',
+    reference: ref || undefined,
+    note: [`Logged by Payment Collection on the task`, note].filter(Boolean).join(' — ').slice(0, 500),
+    recordedBy: user._id,
+  });
+  /* Logged on the receivable beside the calls: who took it, how much, how, the UTR. */
+  receivable.followUps.push(paymentLogEntry(user, { amount: value, mode, reference: ref, note }, { partial: value + 0.5 < owed }));
+  await receivable.save();
+  await askAccountsToConfirm(receivable, receivable.receipts.at(-1), user, order);
+  return { order, receivable, again: false };
+}
+
+export const confirmTaskKey = (receivable) => `confirm-receipt:${receivable._id}`;
+
+/**
+ * A payment logged by Payment Collection or PRT: Accounts gets a task to see it in the bank and
+ * confirm it, on the RCV — one task per RCV, each further payment added to it. Confirming every
+ * payment on the RCV closes it [payment.controller `confirmReceipt`].
+ */
+export async function askAccountsToConfirm(receivable, receipt, by, order = null) {
+  const so = order || (receivable.order?.number ? receivable.order : await SalesOrder.findById(receivable.order?._id || receivable.order).select('number enquiry customer'));
+  const said = [`${rupees(receipt.amount)}`, receipt.mode && String(receipt.mode).toUpperCase(), receipt.reference && `ref ${receipt.reference}`, by?.name && `logged by ${by.name}`]
+    .filter(Boolean).join(' · ');
+  const originKey = confirmTaskKey(receivable);
+  const open = await Todo.findOne({ department: 'accounts', originKey, completed: false });
+  if (open) {
+    open.updates = [...(open.updates || []), { kind: 'note', text: `Also: ${said}`, note: `Payment logged: ${said}`, by: by?._id, at: new Date() }];
+    await open.save();
+    return open;
+  }
+  return raiseDepartmentTask({
+    department: 'accounts',
+    title: `Confirm the payment in the bank — ${receivable.number}${so?.number ? ` (${so.number})` : ''}`,
+    notes: `${said}. Check it in the bank and confirm it on ${receivable.number}${so?.number ? `; ${so.number} waits on confirmed money before production or dispatch` : ''}.`,
+    priority: 'high',
+    dueDate: new Date(),
+    link: `/payments/${receivable._id}`,
+    originKey,
+    customer: receivable.customer?._id || receivable.customer,
+    order: so?._id || receivable.order?._id || receivable.order,
+    enquiry: receivable.enquiry?._id || receivable.enquiry || so?.enquiry || undefined,
+  });
+}
 
 /** Refuses unless the order's money for this stage is in, or Admin waived it. */
 export async function assertPaidFor(order, stage, { by } = {}) {
@@ -171,26 +256,102 @@ async function askForNext(order, standing, { by } = {}) {
 }
 
 /**
- * After money comes in: a stage that is now paid closes its collection task and tells the
- * marketing person, who tells the plant the job can go on.
+ * Admin let the order into production without the advance [order.controller `waiveOrderPayment`]:
+ * marketing and the SO team are told they may release it (a held order: marketing, from the
+ * enquiry). The money is still owed — Payment Collection keeps the chase, told why the plant
+ * may start before it.
+ */
+export async function afterWaiver(order, stage, user, reason) {
+  const open = await Todo.findOne({ originKey: gateKey(order, stage), completed: false });
+  if (open) {
+    const note = `${user.name} (Admin) allowed ${stage} without the payment: ${reason}. The money is still owed — keep collecting it.`;
+    await Todo.updateOne({ _id: open._id }, { $push: { updates: { kind: 'note', text: note, note, by: user._id, at: new Date() } } }, { keepVersion: true });
+  }
+  if (stage !== 'production' || !PRE_RELEASE_STATUSES.includes(order.status)) return;
+  const held = order.enquiry ? (await mongoose.model('Enquiry').findById(order.enquiry).select('stage').lean())?.stage === 'production_hold' : false;
+  if (order.assignedTo) {
+    await raiseTask({
+      user: order.assignedTo,
+      title: held
+        ? `Admin allowed ${order.number} without the advance — a Production Holded Order: move it to Production on the enquiry`
+        : `Admin allowed ${order.number} without the advance — release it to production`,
+      link: held && order.enquiry ? `/enquiries/${order.enquiry}` : `/orders/${order._id}`,
+      originKey: `payment-met:${order._id}:production`,
+      priority: 'high',
+    }).catch(() => null);
+  }
+  if (!held) {
+    await raiseDepartmentTask({
+      department: 'order_confirmation',
+      title: `Admin allowed ${order.number} without the advance — release it to production`,
+      link: `/orders/${order._id}`,
+      originKey: `payment-met-so:${order._id}`,
+      priority: 'high',
+      customer: order.customer,
+      order: order._id,
+      enquiry: order.enquiry || undefined,
+    }).catch(() => null);
+  }
+}
+
+/** Payment Collection's open task for a stage, its title and note brought up to date with the money. */
+async function refreshGateTask(order, stage, standing) {
+  const open = await Todo.findOne({ originKey: gateKey(order, stage), completed: false });
+  if (!open) return;
+  const needed = standing[stage];
+  const title = `Collect ${rupees(needed.short)} ${STAGE_WORDS[stage]} — ${order.number}`;
+  const waiting = standing.awaiting > 0 ? ` ${rupees(standing.awaiting)} logged, waiting for Accounts to confirm.` : '';
+  const notes = `${needed.percent}% of ${rupees(standing.value)} is to be in ${STAGE_WORDS[stage]} `
+    + `(${order.paymentTerms || 'per the order terms'}). ${rupees(needed.received)} confirmed so far.${waiting}`;
+  if (open.title === title && open.notes === notes) return;
+  await Todo.updateOne({ _id: open._id }, { $set: { title, notes } }, { keepVersion: true });
+}
+
+/**
+ * After money comes in (or a logged payment is found not to be in the bank): a stage that is now
+ * paid closes its collection task and tells the marketing person and the SO team, who release the
+ * order; a stage still short keeps its task saying what is still to come.
  */
 export async function afterPayment(orderId) {
   const order = await SalesOrder.findById(orderId);
   if (!order) return null;
   const standing = await paymentStanding(order);
+  /* A Production Holded Order is released by Admin or its marketing person only — from the enquiry. */
+  const held = order.enquiry ? (await mongoose.model('Enquiry').findById(order.enquiry).select('stage').lean())?.stage === 'production_hold' : false;
   for (const stage of PAYMENT_STAGES) {
     const needed = standing[stage];
-    if (needed.required <= 0 || !needed.met) continue;
+    if (needed.required <= 0) continue;
+    if (!needed.met) {
+      /* Still short: Payment Collection's task says what is still to come, and what waits for Accounts. */
+      await refreshGateTask(order, stage, standing);
+      continue;
+    }
     const closed = await resolveTasks(gateKey(order, stage));
     if (closed && order.assignedTo) {
+      /* Still waiting at the gate: the marketing person releases it, from the order. */
+      const toRelease = stage === 'production' && PRE_RELEASE_STATUSES.includes(order.status);
       await raiseTask({
         user: order.assignedTo,
         title: stage === 'production'
-          ? `Advance received on ${order.number} — production can start`
+          ? held ? `Advance received on ${order.number} — a Production Holded Order: move it to Production on the enquiry`
+            : toRelease ? `Advance received on ${order.number} — release it to production` : `Advance received on ${order.number} — production can start`
           : `Payment received on ${order.number} — the goods can be dispatched`,
-        link: order.enquiry ? `/enquiries/${order.enquiry}` : `/orders/${order._id}`,
+        link: held && order.enquiry ? `/enquiries/${order.enquiry}` : toRelease || !order.enquiry ? `/orders/${order._id}` : `/enquiries/${order.enquiry}`,
         originKey: `payment-met:${order._id}:${stage}`,
         priority: 'high',
+      }).catch(() => null);
+    }
+    /* The SO team releases it too: their desk hears the advance is confirmed — not for a held order, which is not theirs to release. */
+    if (closed && !held && stage === 'production' && PRE_RELEASE_STATUSES.includes(order.status)) {
+      await raiseDepartmentTask({
+        department: 'order_confirmation',
+        title: `Advance confirmed on ${order.number} — release it to production`,
+        link: `/orders/${order._id}`,
+        originKey: `payment-met-so:${order._id}`,
+        priority: 'high',
+        customer: order.customer,
+        order: order._id,
+        enquiry: order.enquiry || undefined,
       }).catch(() => null);
     }
   }

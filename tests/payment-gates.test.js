@@ -184,13 +184,29 @@ test('production waits for the advance; when Payment Collection records it, the 
   assert.equal((await collectionTasks(order)).filter((task) => !task.completed).length, 1, 'asked once, not twice');
 
   const advance = await Receivable.findOne({ order: order._id, kind: 'advance' });
-  const paid = await api(`/api/payments/${advance._id}/receipts`, { method: 'POST', as: 'vijay', body: { amount: 3750, reference: 'UTR123' } });
+  assert.equal(String(advance.enquiry), enquiry, 'the RCV is linked to the enquiry');
+  /* Payment Collection logs the payment — on the RCV beside the calls — and Accounts gets a task to confirm it. */
+  const paid = await api(`/api/payments/${advance._id}/receipts`, { method: 'POST', as: 'vijay', body: { amount: 3750, mode: 'neft', reference: 'UTR123' } });
   assert.equal(paid.status, 201, paid.json.message);
-  /* Payment Collection's receipt stops the chase ringing, but the gate waits for Accounts to see it in the bank. */
-  assert.equal(paid.json.data.awaitingConfirmation, 3750);
+  assert.equal(paid.json.data.awaitingConfirmation, 3750, 'waits for Accounts');
+  assert.equal(paid.json.data.enquiry.number, (await Enquiry.findById(enquiry)).number);
+  assert.match(paid.json.data.followUps.at(-1).note, /^Payment logged: ₹3,750 · NEFT · ref UTR123/);
+  assert.equal(paid.json.data.followUps.at(-1).by.name, 'Vijay Collections');
+  const ask = await Todo.findOne({ department: 'accounts', originKey: `confirm-receipt:${advance._id}`, completed: false }).lean();
+  assert.ok(ask, 'Accounts has a task to confirm it');
+  assert.match(ask.notes, /₹3,750 · NEFT · ref UTR123 · logged by Vijay Collections/);
+  assert.equal(String(ask.enquiry), enquiry);
   assert.equal((await send(enquiry, 'ask_edd')).status, 400, 'not yet confirmed');
+  /* The enquiry shows its RCV and the payment, who logged it, awaiting confirmation. */
+  let rcv = (await api(`/api/enquiries/${enquiry}/handoffs`, { as: 'nandhini' })).json.payments.find((row) => row.number === advance.number);
+  assert.deepEqual([rcv.kind, rcv.value, rcv.received, rcv.confirmed], ['advance', 3750, 3750, 0]);
+  assert.deepEqual(rcv.receipts.map((row) => [row.amount, row.mode, row.reference, row.by, row.confirmed]), [[3750, 'neft', 'UTR123', 'Vijay Collections', false]]);
+  assert.equal((await api(`/api/payments/${advance._id}/receipts/${paid.json.data.receipts[0]._id}/confirm`, { method: 'POST', as: 'vijay' })).status, 403, 'Payment Collection logs; Accounts confirms');
   const confirmed = await api(`/api/payments/${advance._id}/receipts/${paid.json.data.receipts[0]._id}/confirm`, { method: 'POST', as: 'kiran' });
   assert.equal(confirmed.status, 200, confirmed.json.message);
+  assert.equal(await Todo.exists({ department: 'accounts', originKey: `confirm-receipt:${advance._id}`, completed: false }), null, 'Accounts’ task is done');
+  rcv = (await api(`/api/enquiries/${enquiry}/handoffs`, { as: 'nandhini' })).json.payments.find((row) => row.number === advance.number);
+  assert.equal(rcv.confirmed, 3750);
   assert.ok(await until(async () => (await collectionTasks(order)).every((task) => task.completed)), 'the chase closes');
   assert.ok(await until(async () => Todo.exists({ user: id.admin, title: new RegExp(`Advance received on ${order.number}`) })),
     'the order’s marketing person is told');
@@ -262,4 +278,121 @@ test('50% advance, 50% before dispatch: the balance is chased once the advance i
   assert.ok(await until(async () => (await collectionTasks(order)).some((task) => !task.completed && /before dispatch/.test(task.title))));
   const next = (await collectionTasks(order)).find((task) => !task.completed);
   assert.match(next.title, /Collect ₹3,750 before dispatch/, 'the balance, not the whole order');
+});
+
+test('release refused for the advance: Payment Collection logs the payment on its task, Accounts confirms it, then the SO team releases it', async () => {
+  const enquiry = await freshEnquiry();
+  const order = await book(enquiry, { advancePercent: 50, beforeDispatchPercent: 50 });
+  for (const check of ['poReceived', 'correctModel', 'correctColour', 'printingApproved', 'sampleApproved', 'priceApproved', 'deliveryDateConfirmed', 'packingConfirmed']) {
+    await api(`/api/orders/${order._id}/checks`, { method: 'POST', as: 'admin', body: { check } });
+  }
+  const refused = await api(`/api/orders/${order._id}/actions`, { method: 'POST', as: 'admin', body: { action: 'release' } });
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.message, /Payment Collection has a task to collect it and confirm the payment inward; then marketing or Admin can release it/);
+
+  const [task] = (await collectionTasks(order)).filter((entry) => !entry.completed);
+  assert.equal(task.kind, 'team_payment_followup');
+  const move = (as, body) => api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as, body: { status: 'payment_inward', note: 'NEFT in the bank this morning', ...body } });
+
+  /* Payment Collection's to confirm; more than is owed is refused and nothing moves. */
+  assert.equal((await move('siva', { fields: { amount: 3750, mode: 'NEFT' } })).status, 403);
+  const tooMuch = await move('vijay', { fields: { amount: 9000, mode: 'NEFT' } });
+  assert.equal(tooMuch.status, 400);
+  assert.match(tooMuch.json.message, /more than the ₹3,750 still owed/);
+  assert.equal((await Todo.findById(task._id)).status, task.status, 'nothing moved');
+
+  /* Logged in two parts: each waits for Accounts, on one Accounts task for the RCV. */
+  const part = await move('vijay', { fields: { amount: 1000, mode: 'UPI', reference: 'UPI-77' } });
+  assert.equal(part.status, 200, part.json.message);
+  const rest = await move('vijay', { fields: { amount: 2750, mode: 'NEFT', reference: 'UTR-991' } });
+  assert.equal(rest.status, 200, rest.json.message);
+  assert.equal((await Todo.findById(task._id)).completed, false, 'open until Accounts confirms');
+  assert.equal((await api(`/api/orders/${order._id}/actions`, { method: 'POST', as: 'priya', body: { action: 'release' } })).status, 400, 'logged is not confirmed');
+  let advance = await Receivable.findOne({ order: order._id, kind: 'advance' }).lean();
+  assert.deepEqual(advance.receipts.map((row) => [row.amount, row.mode, Boolean(row.confirmed?.at)]), [[1000, 'upi', false], [2750, 'neft', false]]);
+  const asks = await Todo.find({ department: 'accounts', originKey: `confirm-receipt:${advance._id}`, completed: false }).lean();
+  assert.equal(asks.length, 1, 'one Accounts task for the RCV');
+  assert.match(asks[0].updates.at(-1).note, /₹2,750 · NEFT · ref UTR-991/);
+
+  /* Accounts confirms both: the collection task closes; the SO team and marketing are told to release it. */
+  for (const receipt of advance.receipts) {
+    const confirmed = await api(`/api/payments/${advance._id}/receipts/${receipt._id}/confirm`, { method: 'POST', as: 'kiran' });
+    assert.equal(confirmed.status, 200, confirmed.json.message);
+  }
+  assert.equal(await Todo.exists({ department: 'accounts', originKey: `confirm-receipt:${advance._id}`, completed: false }), null);
+  advance = await Receivable.findOne({ order: order._id, kind: 'advance' }).lean();
+  assert.deepEqual(advance.followUps.slice(-2).map((row) => [row.note.split(' — ')[0], row.status]), [['Payment logged: ₹1,000 · UPI · ref UPI-77', 'part_paid'], ['Payment logged: ₹2,750 · NEFT · ref UTR-991', undefined]]);
+  assert.ok(await until(async () => (await Todo.findById(task._id)).completed), 'the chase closes');
+  assert.ok(await until(async () => Todo.exists({ user: id.admin, title: new RegExp(`Advance received on ${order.number} — release it to production`), link: `/orders/${order._id}` })));
+  assert.ok(await until(async () => Todo.exists({ department: 'order_confirmation', title: `Advance confirmed on ${order.number} — release it to production`, completed: false })), 'the SO team hears it');
+  const desk = (await api(`/api/enquiries/${enquiry}/handoffs`, { as: 'priya' })).json.orders.find((row) => row._id === String(order._id));
+  assert.equal(desk.mayRelease, true, 'the SO team may release it now');
+
+  const released = await api(`/api/orders/${order._id}/actions`, { method: 'POST', as: 'priya', body: { action: 'release' } });
+  assert.equal(released.status, 200, released.json.message);
+  assert.equal(released.json.data.status, 'approved_for_production');
+  /* Released: the "release it" tasks are done for the SO team and marketing. */
+  assert.ok(await until(async () => !(await Todo.exists({ originKey: { $in: [`payment-met-so:${order._id}`, `payment-met:${order._id}:production`] }, completed: false }))));
+});
+
+test('a marketing person’s own payment tracker cannot confirm money in', async () => {
+  const { TASK_FORMS } = await import('../src/config/departmentTaskForms.js');
+  assert.ok(TASK_FORMS.team_payment_followup.statuses.some((step) => step.key === 'payment_inward'));
+  assert.ok(!TASK_FORMS.my_payment_followup.statuses.some((step) => step.key === 'payment_inward'));
+});
+
+
+test('the order page knows what stands between it and the plant: checks, the advance (confirmed, waiting for Accounts, short), a held order', async () => {
+  const enquiry = await freshEnquiry();
+  const order = await book(enquiry, { advancePercent: 50, beforeDispatchPercent: 50 });
+  const check = async (as = 'priya') => (await api(`/api/orders/${order._id}/release-check`, { as })).json.data;
+  let state = await check();
+  assert.equal(state.releasable, true);
+  assert.equal(state.checksOpen.length, 8);
+  assert.deepEqual([state.advance.required, state.advance.confirmed, state.advance.awaiting, state.advance.short, state.advance.met], [3750, 0, 0, 3750, false]);
+
+  /* Payment Collection logs ₹2,000: waiting for Accounts; the collection task says so. */
+  const advance = await Receivable.findOne({ order: order._id, kind: 'advance' });
+  const logged = await api(`/api/payments/${advance._id}/receipts`, { method: 'POST', as: 'vijay', body: { amount: 2000, mode: 'neft', reference: 'UTR-NOPE' } });
+  assert.equal(logged.status, 201, logged.json.message);
+  state = await check();
+  assert.deepEqual([state.advance.confirmed, state.advance.awaiting, state.advance.short], [0, 2000, 3750]);
+  assert.ok(await until(async () => /₹2,000 logged, waiting for Accounts to confirm/.test((await collectionTasks(order)).find((task) => !task.completed)?.notes || '')));
+
+  /* Accounts does not find it in the bank: off the figures, kept apart with the reason; whoever logged it is told. */
+  const receiptId = logged.json.data.receipts[0]._id;
+  assert.equal((await api(`/api/payments/${advance._id}/receipts/${receiptId}/reject`, { method: 'POST', as: 'vijay', body: { reason: 'Not in the statement' } })).status, 403, 'Accounts’ call');
+  assert.equal((await api(`/api/payments/${advance._id}/receipts/${receiptId}/reject`, { method: 'POST', as: 'kiran', body: { reason: '' } })).status, 400, 'a reason is needed');
+  const rejected = await api(`/api/payments/${advance._id}/receipts/${receiptId}/reject`, { method: 'POST', as: 'kiran', body: { reason: 'No UTR-NOPE in the HDFC statement' } });
+  assert.equal(rejected.status, 200, rejected.json.message);
+  assert.equal(rejected.json.data.receipts.length, 0);
+  assert.equal(rejected.json.data.rejectedReceipts[0].rejected.reason, 'No UTR-NOPE in the HDFC statement');
+  assert.match(rejected.json.data.followUps.at(-1).note, /^Payment not found in the bank: ₹2,000 · NEFT · ref UTR-NOPE — No UTR-NOPE/);
+  assert.ok(await Todo.exists({ user: id.vijay, title: /^Payment not found in the bank — ₹2,000/ }), 'whoever logged it checks with the buyer');
+  assert.equal(await Todo.exists({ department: 'accounts', originKey: `confirm-receipt:${advance._id}`, completed: false }), null, 'nothing left for Accounts to check');
+  state = await check();
+  assert.deepEqual([state.advance.confirmed, state.advance.awaiting, state.advance.short], [0, 0, 3750]);
+
+  /* A held order: the SO team is not told to release what is not theirs to release. */
+  await Enquiry.updateOne({ _id: enquiry }, { $set: { stage: 'production_hold' } });
+  state = await check();
+  assert.deepEqual([state.held, state.mayReleaseHeld], [true, false]);
+  assert.equal((await check('admin')).mayReleaseHeld, true);
+  const paid = await api(`/api/payments/${advance._id}/receipts`, { method: 'POST', as: 'kiran', body: { amount: 3750, mode: 'neft', reference: 'UTR-REAL' } });
+  assert.equal(paid.status, 201, paid.json.message);
+  assert.ok(await until(async () => Todo.exists({ user: id.admin, title: new RegExp(`Advance received on ${order.number} — a Production Holded Order: move it to Production on the enquiry`) })));
+  assert.equal(await Todo.exists({ originKey: `payment-met-so:${order._id}` }), null, 'not on the SO team’s desk');
+});
+
+test('Admin allowing production without the advance tells marketing and the SO team; Payment Collection keeps chasing', async () => {
+  const enquiry = await freshEnquiry();
+  const order = await book(enquiry, { advancePercent: 50, beforeDispatchPercent: 50 });
+  const waived = await api(`/api/orders/${order._id}/payment-waiver`, { method: 'POST', as: 'admin', body: { stage: 'production', reason: 'Old buyer, pays on time' } });
+  assert.equal(waived.status, 200, waived.json.message);
+  assert.ok(await Todo.exists({ department: 'order_confirmation', originKey: `payment-met-so:${order._id}`, title: /without the advance — release it to production/, completed: false }));
+  assert.ok(await Todo.exists({ user: id.admin, originKey: `payment-met:${order._id}:production` }));
+  const chase = (await collectionTasks(order)).find((task) => !task.completed);
+  assert.ok(chase, 'still collecting');
+  assert.match(chase.updates.at(-1).note, /allowed production without the payment: Old buyer, pays on time\. The money is still owed/);
+  assert.equal((await api(`/api/orders/${order._id}/release-check`, { as: 'priya' })).json.data.advance.waived, true);
 });

@@ -1,6 +1,6 @@
 import { MAYBE_OWING, applyPaymentPositions } from '../services/paymentPosition.service.js';
 import { withOrderLock } from '../services/operationLock.service.js';
-import Receivable, { JUDGED_STATUSES } from '../models/Receivable.js';
+import Receivable, { JUDGED_STATUSES, paymentLogEntry } from '../models/Receivable.js';
 import SalesOrder from '../models/SalesOrder.js';
 import Customer from '../models/Customer.js';
 import ApiError from '../utils/ApiError.js';
@@ -10,10 +10,10 @@ import { nextNumber } from '../services/numbering.service.js';
 import { listParams, paginated } from '../utils/query.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { customerScope, isOwnershipScoped, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
-import { raiseTask } from '../services/task.service.js';
+import { raiseTask, resolveTasks } from '../services/task.service.js';
 import { dueDateFor, orderPosition } from '../services/receivable.service.js';
 import { afterCommit, transactional } from '../utils/transaction.js';
-import { afterPayment } from '../services/paymentGates.service.js';
+import { afterPayment, askAccountsToConfirm, confirmTaskKey } from '../services/paymentGates.service.js';
 import { FOLLOW_UP_MODES, FOLLOW_UP_STATUSES } from '../config/paymentFollowUp.js';
 import { endOfDayIST } from '../services/handoff.service.js';
 import Todo from '../models/Todo.js';
@@ -37,14 +37,20 @@ import { findHandoff } from '../config/handoffs.js';
 const POPULATE = [
   { path: 'customer', select: 'code name city mobile creditTermsDays paymentTerms credit' },
   { path: 'order', select: 'number customerPo' },
+  { path: 'enquiry', select: 'number' },
   { path: 'dispatch', select: 'number lrNumber dispatchDate' },
   { path: 'assignedTo', select: 'name' },
   { path: 'followUps.by', select: 'name' },
   { path: 'receipts.recordedBy', select: 'name' },
   { path: 'receipts.confirmed.by', select: 'name' },
+  { path: 'rejectedReceipts.recordedBy rejectedReceipts.rejected.by', select: 'name' },
 ];
 
-/** Accounts, or Admin: the people who can see the bank, and so the only ones whose receipt counts at the gate. */
+/*
+ * Accounts, or Admin: the people who can see the bank, and so the only ones whose receipt counts
+ * at the gate. Payment Collection and PRT log the payment; Accounts gets a task to confirm it
+ * [paymentGates `askAccountsToConfirm`].
+ */
 const seesTheBank = (user) => isManagement(user) || inDepartment(user, 'accounts');
 
 /** Refuses a receivable the caller may not see, in the shape reading it would take. */
@@ -572,6 +578,9 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
   });
 
   await applyPaymentPositions([receivable]);
+  /* Logged on the receivable's own log too, beside the calls, with who took it. */
+  receivable.followUps.push(paymentLogEntry(req.user, req.body, { partial: receivable.balance > 0 }));
+  const logged = receivable.receipts.at(-1);
 
   /* Settled: the ladder stops, and a re-opened balance starts it again from wherever it stands
      rather than from where it left off. */
@@ -605,6 +614,8 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
     }).catch(() => null);
   }
 
+  /* Logged, not seen in the bank: Accounts gets a task to confirm it. */
+  if (!logged.confirmed?.at) await askAccountsToConfirm(receivable, logged, req.user);
   /* Money in may open production or dispatch on the order's terms: close the chase, tell marketing. */
   if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order));
 
@@ -632,6 +643,54 @@ export const confirmReceipt = asyncHandler(withOrderLock(async req => (await Rec
     model: 'Receivable', doc: receivable, before,
     by: req.user, note: `Confirmed ₹${Math.round(receipt.amount).toLocaleString('en-IN')} received`,
   });
+  /* Every payment on it seen in the bank: Accounts' task to confirm them is done. */
+  if (receivable.receipts.every((row) => row.confirmed?.at)) await resolveTasks(confirmTaskKey(receivable));
+  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order));
+  await receivable.populate(POPULATE);
+  return res.json({ success: true, data: receivable });
+})));
+
+/**
+ * Accounts did not find a logged payment in the bank: it comes off the figures — kept apart, with
+ * the reason, as the record of what was claimed — and whoever logged it is told to check with the
+ * buyer. The order still waits for its money; Payment Collection's task says so. Only a payment
+ * not yet confirmed: a confirmed one is money in the bank.
+ */
+export const rejectReceipt = asyncHandler(withOrderLock(async req => (await Receivable.findById(req.params.id).select('order'))?.order || req.params.id, transactional(async (req, res) => {
+  if (!seesTheBank(req.user)) throw ApiError.forbidden('Only Accounts or Admin say a payment is not in the bank.');
+  const receivable = await readable(req.params.id, req.user);
+  const receipt = receivable.receipts.id(req.params.receiptId);
+  if (!receipt) throw ApiError.notFound('No such payment on this one — it may already have been marked not in the bank');
+  if (receipt.confirmed?.at) throw ApiError.conflict('This payment is already confirmed in the bank');
+  const before = snapshot(receivable);
+  const reason = req.body.reason.trim();
+  const amount = `₹${Math.round(receipt.amount).toLocaleString('en-IN')}`;
+  const said = [amount, receipt.mode && String(receipt.mode).toUpperCase(), receipt.reference && `ref ${receipt.reference}`].filter(Boolean).join(' · ');
+  receivable.rejectedReceipts = [...(receivable.rejectedReceipts || []), {
+    amount: receipt.amount, receivedAt: receipt.receivedAt, mode: receipt.mode, reference: receipt.reference, note: receipt.note,
+    recordedBy: receipt.recordedBy?._id || receipt.recordedBy,
+    rejected: { by: req.user._id, at: new Date(), reason },
+  }];
+  const logger = receipt.recordedBy?._id || receipt.recordedBy;
+  receipt.deleteOne();
+  receivable.followUps.push({ by: req.user._id, at: new Date(), note: `Payment not found in the bank: ${said} — ${reason}`.slice(0, 1000), status: 'other' });
+  await applyPaymentPositions([receivable]);
+  await receivable.save();
+  await recordChange({ model: 'Receivable', doc: receivable, before, by: req.user, note: `Not in the bank: ${said} — ${reason}` });
+  /* Whoever logged it checks with the buyer. */
+  if (logger) {
+    await raiseTask({
+      user: logger,
+      title: `Payment not found in the bank — ${said} on ${receivable.number}`,
+      notes: `${req.user.name} (Accounts): ${reason}. Check with ${receivable.customer?.name || 'the buyer'} and log it again once it is really in.`,
+      priority: 'high',
+      dueDate: new Date(),
+      link: `/payments/${receivable._id}`,
+      originKey: `receipt-rejected:${req.params.receiptId}`,
+    }).catch(() => null);
+  }
+  /* Nothing left for Accounts to check on this RCV: their task is done. */
+  if (receivable.receipts.every((row) => row.confirmed?.at)) await resolveTasks(confirmTaskKey(receivable));
   if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order));
   await receivable.populate(POPULATE);
   return res.json({ success: true, data: receivable });

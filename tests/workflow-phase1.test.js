@@ -247,6 +247,29 @@ test('releasing the sales order finishes Sales / SO’s task and gives Productio
   assert.ok(after.released?.at && after.released.by, 'released, when and by whom');
 });
 
+test('one click: Confirm all & release ticks the checks still open in the releaser’s name and releases the order', async () => {
+  const enquiry = await freshEnquiry();
+  const made = await api('/api/orders', {
+    method: 'POST', as: 'priya',
+    body: { enquiry, customerPo: { number: 'PO/ONE/1' }, lines: [{ modelNumber: 'NH-400', quantity: 1000, unitPrice: 7.5 }] },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  await api(`/api/orders/${made.json.data._id}/checks`, { method: 'POST', as: 'priya', body: { check: 'poReceived' } });
+  /* Without confirmAll the gate still names what is open. */
+  const refused = await api(`/api/orders/${made.json.data._id}/actions`, { method: 'POST', as: 'priya', body: { action: 'release' } });
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.message, /still needs correct model/);
+
+  const released = await api(`/api/orders/${made.json.data._id}/actions`, { method: 'POST', as: 'priya', body: { action: 'release', confirmAll: true } });
+  assert.equal(released.status, 200, released.json.message);
+  assert.equal(released.json.data.status, 'approved_for_production');
+  assert.ok(released.json.checks.every((check) => check.done), 'every check ticked');
+  const order = await SalesOrder.findById(made.json.data._id).lean();
+  assert.equal(order.verification.packingConfirmed.note, 'Confirmed with the release');
+  assert.match(order.statusHistory.at(-1).note, /Confirmed with the release: correct model, correct colour, .*packing confirmed/);
+  assert.equal(order.verification.poReceived.note, undefined, 'a check ticked by hand stays as it was');
+});
+
 test('a Production Holded Order is released only by Admin or its marketing person — then Production has it', async () => {
   const enquiry = await freshEnquiry();
   await Enquiry.updateOne({ _id: enquiry }, { $set: { stage: 'production_hold', marketingStatus: 'production_hold' } });

@@ -9,7 +9,7 @@ import PushSubscription from '../models/PushSubscription.js';
  * so development and the tests never reach a push service.
  *
  * A device that has gone — uninstalled, permission withdrawn — answers 404 or 410, and its
- * subscription is deleted rather than tried again forever.
+ * subscription is deleted, for every account on it, rather than tried again forever.
  */
 /*
  * The three settings as they are meant, whatever the .env did to them: spaces trimmed, quotes
@@ -83,7 +83,9 @@ export async function sendPush(userIds, message) {
       return [];
     }
   }
-  const devices = await PushSubscription.find({ user: { $in: ids } });
+  /* A device signed in to two of the people told rings once. */
+  const seen = new Set();
+  const devices = (await PushSubscription.find({ user: { $in: ids } })).filter((device) => !seen.has(device.endpoint) && seen.add(device.endpoint));
   if (!devices.length) return [];
   return deliverPush(devices, message);
 }
@@ -142,7 +144,7 @@ export async function deliverPush(devices, message) {
         .then(() => ({ service: serviceOf(device.endpoint), ok: true }))
         .catch(async (error) => {
           const why = whyRefused(error.statusCode, error.body, error.message);
-          if (error.statusCode === 404 || error.statusCode === 410) await device.deleteOne();
+          if (error.statusCode === 404 || error.statusCode === 410) await PushSubscription.deleteMany({ endpoint: device.endpoint });
           else console.error(`[push] to user ${device.user} not sent (${serviceOf(device.endpoint)} ${error.statusCode || ''}): ${error.body || error.message}`);
           return { service: serviceOf(device.endpoint), ok: false, why };
         })
