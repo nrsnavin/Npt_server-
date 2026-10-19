@@ -135,3 +135,59 @@ test('model by model: one model ready from its last team asks Quality; together,
   assert.ok(quality, 'CRF40 is ready: Quality is asked for it');
   assert.match(quality.notes || quality.updates?.[0]?.note || '', /Ready: CRF40/);
 });
+
+test('the queue says each enquiry in at most thirty words, with its models and work orders; the workflow page has the model table', async () => {
+  const { enquiry, production } = await routedOrder();
+  assert.equal((await move(production._id, 'siva', 'started')).status, 200);
+  assert.equal((await move(production._id, 'siva', 'handed_printing', ['CRF25'], 'First lot')).status, 200);
+  /* The order released: one work order per line, linked to the enquiry. */
+  const made = await api('/api/orders', {
+    method: 'POST', as: 'admin',
+    body: { enquiry: enquiry._id, customerPo: { number: 'PO/WF/1' }, lines: [{ modelNumber: 'CRF25', quantity: 10000, unitPrice: 2 }, { modelNumber: 'CRF30', quantity: 4000, unitPrice: 2 }] },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  const released = await api(`/api/orders/${made.json.data._id}/actions`, { method: 'POST', as: 'admin', body: { action: 'release', confirmAll: true } });
+  assert.equal(released.status, 200, released.json.message);
+  const { default: WorkOrder } = await import('../src/models/WorkOrder.js');
+  for (let tries = 0; tries < 50 && !(await WorkOrder.exists({ enquiry: enquiry._id })); tries += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const queue = (await api('/api/production/queue', { as: 'siva' })).json.data;
+  const row = queue.find((entry) => entry.enquiry._id === enquiry._id);
+  assert.ok(row.summary.split(/\s+/).length <= 30, row.summary);
+  assert.match(row.summary, /^CRF25 Handed to Printing; CRF30, CRF40 Production Started\. Work orders 0\/2 done\. Printing Asked Printing Readiness/);
+  assert.equal(row.link, `/production/workflow/${production._id}`);
+  assert.deepEqual(row.workOrders.map((wo) => wo.modelNumber).sort(), ['CRF25', 'CRF30']);
+  assert.deepEqual(row.models.map((entry) => [entry.model, entry.production.label, entry.printing]), [['CRF25', 'Handed to Printing', true], ['CRF30', 'Production Started', false], ['CRF40', 'Production Started', false]]);
+
+  const page = await api(`/api/production/workflow/${production._id}`, { as: 'siva' });
+  assert.equal(page.status, 200, page.json.message);
+  const { data } = page.json;
+  assert.equal(data.enquiry.number, enquiry.number);
+  assert.equal(data.task._id, String(production._id));
+  assert.ok(data.teams.printing, 'Printing’s task beside it');
+  const crf25 = data.models.find((entry) => entry.model === 'CRF25');
+  assert.equal(crf25.printingStatus.label, 'Asked Printing Readiness');
+  assert.ok(crf25.printingReceived, 'the day CRF25 reached Printing');
+  assert.equal(crf25.workOrders.length, 1);
+  assert.equal(data.workOrders.length, 2);
+  assert.equal(data.summary, row.summary);
+  assert.equal((await api('/api/production/workflow/0123456789abcdef01234567', { as: 'siva' })).status, 404);
+  assert.equal((await api('/api/production/workflow/not-an-id', { as: 'siva' })).status, 404);
+});
+
+test('the summary: a problem first, cut to thirty words', async () => {
+  const { summarise, capWords } = await import('../src/services/productionSummary.service.js');
+  assert.equal(capWords('one two three', 30), 'one two three');
+  const long = Array.from({ length: 40 }, (_, at) => `w${at}`).join(' ');
+  assert.equal(capWords(long).split(' ').length, 30);
+  assert.match(capWords(long), /…$/);
+  const said = summarise({
+    task: { kind: 'ask_edd', status: 'mould_issue', enquiry: 'x', routing: { decidedAt: new Date() }, updates: [{ text: 'Gate broken' }] },
+    floor: { running: [{ machine: 'IM-3', mould: 'M-101' }], made: { good: 3900 } },
+    workOrders: [{ status: 'completed' }, { status: 'running' }],
+    teams: { quality: { kind: 'quality_check', status: 'received', completed: false } },
+    edd: null,
+  });
+  assert.match(said, /^Problem: Mould Issue — Gate broken\. Moulding on IM-3 \(M-101\)\. 3,900 made\. Work orders 1\/2 done, 1 running\. Quality /);
+  assert.match(said, /No EDD yet$/);
+});

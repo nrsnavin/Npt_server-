@@ -1,6 +1,8 @@
 import Todo from '../models/Todo.js';
 import Mould from '../models/Mould.js';
 import MouldRun from '../models/MouldRun.js';
+import WorkOrder from '../models/WorkOrder.js';
+import { modelRows, summarise } from '../services/productionSummary.service.js';
 import { CAPACITY_FIELDS, estimate } from '../services/capacity.service.js';
 import { plantCalendar } from '../services/settings.service.js';
 import ApiError from '../utils/ApiError.js';
@@ -65,7 +67,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
     .populate([
       {
         path: 'enquiry',
-        select: 'number stage status customer assignedTo edd requirement.modelNumber requirement.colour requirement.quantity requirement.mould items.modelNumber items.mould',
+        select: 'number stage status customer assignedTo edd eddByModel requirement.modelNumber requirement.colour requirement.quantity requirement.mould items.modelNumber items.mould',
         populate: [{ path: 'customer', select: 'code name assignedTo' }, { path: 'assignedTo', select: 'name' }],
       },
       { path: 'user', select: 'name' },
@@ -82,7 +84,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
     ? await Todo.find({
       enquiry: { $in: ids }, kind: { $in: SIBLING_KINDS },
       $or: [{ completed: false }, { completedAt: { $gte: new Date(now.getTime() - WEEK_MS) } }],
-    }).select('enquiry kind status completed completedAt user dueDate updatedAt createdAt').populate('user', 'name').lean()
+    }).select('enquiry kind status completed completedAt user dueDate updatedAt createdAt modelStatuses routing').populate('user', 'name').lean()
     : [];
   /* Per enquiry and team: the open task, or the one finished most lately. */
   const teams = new Map();
@@ -125,6 +127,15 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
       { $group: { _id: '$enquiry', good: { $sum: { $ifNull: ['$goodPieces', 0] } }, rejected: { $sum: { $ifNull: ['$rejectedPieces', 0] } }, runs: { $sum: 1 } } },
     ]),
   ]) : [[], []];
+  /* The work orders for each enquiry's released lines — the production record the queue links to [models/WorkOrder.js]. */
+  const orders = ids.length
+    ? await WorkOrder.find({ enquiry: { $in: ids }, status: { $ne: 'cancelled' } })
+      .select('enquiry number status modelNumber quantity goodQty machine plannedStart').populate('machine', 'code').sort({ createdAt: 1 }).lean()
+    : [];
+  const workOrdersOf = (enquiryId) => orders.filter((wo) => String(wo.enquiry) === String(enquiryId)).map((wo) => ({
+    _id: wo._id, number: wo.number, status: wo.status, modelNumber: wo.modelNumber || null,
+    quantity: wo.quantity || 0, goodQty: wo.goodQty || 0, machine: wo.machine?.code || null, plannedStart: wo.plannedStart || null,
+  }));
   const floorOf = (enquiryId) => ({
     running: liveRuns.filter((run) => String(run.enquiry) === String(enquiryId)).map((run) => ({
       _id: run._id, number: run.number, machine: run.machine?.code || null, mould: run.mould?.mouldCode || run.modelNumber || null, startedAt: run.startedAt, plannedQuantity: run.plannedQuantity || null,
@@ -137,7 +148,14 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
     const edd = enquiry.edd?.date || null;
     const slot = teams.get(String(enquiry._id)) || {};
     const model = enquiry.requirement?.modelNumber || (enquiry.items || []).find((item) => item.modelNumber)?.modelNumber || task.brief?.model || null;
+    const floor = floorOf(enquiry._id);
+    const workOrders = workOrdersOf(enquiry._id);
     return {
+      /* The state in at most thirty words, and the page where it is worked [web: pages/ProductionWorkflow.jsx]. */
+      summary: summarise({ task, enquiry, teams: slot, floor, workOrders, edd }),
+      models: modelRows({ task, enquiry, teams: slot, workOrders }),
+      workOrders,
+      link: `/production/workflow/${task._id}`,
       task: {
         _id: task._id, status: task.status, statusLabel: statusLabelOf(task), issue: issueOf(task), with: person(task.user),
         dueDate: task.dueDate || null, late: Boolean(task.dueDate && task.dueDate < now), priority: task.priority || 'normal',
@@ -169,7 +187,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
       } : null,
       order: task.order ? { _id: task.order._id, number: task.order.number, status: task.order.status } : null,
       /* Moulding now on a press for this enquiry, and the pieces its runs have made. */
-      floor: floorOf(enquiry._id),
+      floor,
       teams: {
         assembling: teamRow(slot.assembling), printing: teamRow(slot.printing),
         quality: teamRow(slot.quality), despatch: teamRow(slot.despatch),
@@ -198,6 +216,63 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
         unclaimed: count((row) => !row.task.with),
         dueTomorrow: count((row) => row.edd?.date === indiaDay(new Date(now.getTime() + DAY_MS))),
       },
+    },
+  });
+});
+
+/**
+ * One Production task as the workflow page works it [web: pages/ProductionWorkflow.jsx]: the task
+ * whole (its per-model statuses, routing, EDD), the teams after it on the same enquiry — Printing,
+ * Assembly, Quality, Dispatch — the model-by-model table, the work orders and runs, and the
+ * thirty-word summary the queue shows. Read by whoever reads the queue; written through the
+ * task's own endpoints, by its department.
+ */
+export const productionWorkflow = asyncHandler(async (req, res) => {
+  if (!READERS.some((moduleKey) => canRead(req.user, moduleKey))) {
+    throw ApiError.forbidden('The production workflow is read by the plant’s departments and marketing');
+  }
+  if (!/^[0-9a-f]{24}$/i.test(String(req.params.taskId))) throw ApiError.notFound('No Production task by that reference');
+  const { TASK_POPULATE, floorOf: floorOfEnquiry } = await import('./handoff.controller.js');
+  const task = await Todo.findOne({ _id: req.params.taskId, kind: 'ask_edd' }).populate(TASK_POPULATE);
+  if (!task || !task.enquiry) throw ApiError.notFound('No Production task by that reference');
+  const { default: Enquiry } = await import('../models/Enquiry.js');
+  const enquiry = await Enquiry.findById(task.enquiry._id || task.enquiry)
+    .select('number stage customer assignedTo edd eddByModel dispatchPlan requirement items.modelNumber items.quantity items.colour')
+    .populate([{ path: 'customer', select: 'code name assignedTo' }, { path: 'assignedTo', select: 'name' }])
+    .lean();
+  if (!enquiry) throw ApiError.notFound('No Production task by that reference');
+  if (isOwnershipScoped(req.user) && !ownsRecord(req.user, enquiry)) throw ApiError.notFound('No Production task by that reference');
+
+  /* The teams after Production on this run of the enquiry: each kind's open task, else its latest. */
+  const others = await Todo.find({ enquiry: enquiry._id, kind: { $in: SIBLING_KINDS }, createdAt: { $gte: task.createdAt } })
+    .populate(TASK_POPULATE).sort({ createdAt: -1 });
+  const teams = {};
+  for (const other of others) {
+    const team = TEAM_OF[other.kind];
+    if (!teams[team] || (teams[team].completed && !other.completed)) teams[team] = other;
+  }
+  const floor = await floorOfEnquiry(enquiry._id);
+  const workOrders = (floor.workOrders || []).map((wo) => ({
+    _id: wo._id, number: wo.number, status: wo.status, modelNumber: wo.modelNumber || null,
+    quantity: wo.quantity || 0, goodQty: wo.goodQty || 0, machine: wo.machine?.code || null,
+    plannedStart: wo.plannedStart || null, plannedEnd: wo.plannedEnd || null,
+  }));
+  const edd = enquiry.edd?.date || null;
+  res.json({
+    success: true,
+    data: {
+      task,
+      enquiry: {
+        _id: enquiry._id, number: enquiry.number, stage: enquiry.stage,
+        customer: enquiry.customer ? { _id: enquiry.customer._id, name: enquiry.customer.name, code: enquiry.customer.code } : null,
+        owner: person(enquiry.assignedTo), edd: enquiry.edd || null, dispatchPlan: enquiry.dispatchPlan?.mode || null,
+      },
+      band: bandOf(edd),
+      summary: summarise({ task, enquiry, teams, floor: { ...floor, running: floor.running.map((run) => ({ ...run, machine: run.machine?.code, mould: run.mould?.mouldCode })) }, workOrders, edd }),
+      models: modelRows({ task, enquiry, teams, workOrders }),
+      teams,
+      workOrders,
+      floor: { running: floor.running, made: floor.made },
     },
   });
 });

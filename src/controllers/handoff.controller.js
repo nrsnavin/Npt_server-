@@ -36,7 +36,7 @@ import { ownershipFilter } from '../services/ownership.service.js';
  * the ordinary task actions (`PATCH /workspace/todos/:id`, `POST …/escalate`).
  */
 
-const TASK_POPULATE = [
+export const TASK_POPULATE = [
   WAITING_ON_POPULATE,
   { path: 'attachment', select: 'key filename size' },
   { path: 'resultFile', select: 'key filename size' },

@@ -17,7 +17,7 @@ import {
   productionDay,
   productionOee,
 } from '../controllers/production.controller.js';
-import { listProductionQueue } from '../controllers/productionQueue.controller.js';
+import { listProductionQueue, productionWorkflow } from '../controllers/productionQueue.controller.js';
 import {
   listDispatches, dispatchBoard, exportDispatches, getDispatch, listReadyStock,
   listOrderDispatches, createDispatch, updateDispatch,
@@ -208,6 +208,8 @@ router.post('/orders/:id/escalations', requireModule('orders'), validate(orderEs
  */
 /* The production queue in EDD order, read by every department that works to it — access checked inside. */
 router.get('/production/queue', listProductionQueue);
+/* One Production task worked whole: models, hand-overs, EDD, work orders [web: pages/ProductionWorkflow.jsx]. */
+router.get('/production/workflow/:taskId', productionWorkflow);
 router.get('/production/day', requireModule('production'), productionDay);
 router.get('/production/oee', requireModule('production'), productionOee);
 router.get('/production/statuses', requireModule('production'), listProductionStatuses);
