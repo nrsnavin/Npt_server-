@@ -139,3 +139,25 @@ test('a print reference with its artwork goes on a line, and follows it to the P
   assert.equal(removed.attachment, undefined);
   assert.equal((await fetch(`${baseUrl}/api/files/${spec.printReference.file.key}`, { headers: { Authorization: `Bearer ${token.siva}` } })).status, 404, 'the old artwork is gone');
 });
+
+test('the Production desk tells taken-for-production from not yet: a work order, a run, or Production Started', async () => {
+  const queue = async () => (await api('/api/production/queue', { as: 'siva' })).json;
+  let reply = await queue();
+  let row = reply.data.find((entry) => String(entry.task._id) === String(task._id));
+  assert.deepEqual(row.production, { taken: false, why: null }, 'raised, nothing started');
+  assert.equal(reply.meta.teams.notTaken, 1);
+  assert.equal(reply.meta.teams.inProduction, 0);
+
+  const { default: Todo } = await import('../src/models/Todo.js');
+  await Todo.updateOne({ _id: task._id }, { $set: { modelStatuses: [{ model: 'CRF-40', status: 'started' }] } });
+  reply = await queue();
+  row = reply.data.find((entry) => String(entry.task._id) === String(task._id));
+  assert.deepEqual(row.production, { taken: true, why: 'Production Started' }, 'one model started is the enquiry taken');
+  assert.equal(reply.meta.teams.inProduction, 1);
+
+  const { productionTaken } = await import('../src/services/productionSummary.service.js');
+  assert.equal(productionTaken({ task: { kind: 'ask_edd', status: 'planning' }, workOrders: [{ number: 'WO-0007' }] }).why, 'Work order WO-0007');
+  assert.equal(productionTaken({ task: { kind: 'ask_edd', status: 'received' }, floor: { running: [{ machine: 'M-3' }] } }).why, 'Moulding on M-3');
+  assert.equal(productionTaken({ task: { kind: 'ask_edd', status: 'mould_issue' } }).taken, false, 'a mould issue before anything ran is not production');
+  assert.equal(productionTaken({ task: { kind: 'ask_edd', status: 'ready_dispatch' } }).taken, true);
+});

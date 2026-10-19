@@ -17,6 +17,28 @@ const TEAM_WORDS = { printing: 'Printing', assembling: 'Assembly', quality: 'Qua
 const pieces = (value) => Number(value || 0).toLocaleString('en-IN');
 
 /** Text cut to `limit` words, with an ellipsis when cut. */
+/*
+ * Whether an enquiry has been taken for production, and what says so — the Production desk's
+ * "In production" / "Not taken yet" filter [web: components/ProductionQueueList.jsx]: a work order
+ * for its released lines, moulding on a press or pieces made, or Production's status at Production
+ * Started or past it (on the task or on any of its models). Until then it is waiting to be taken.
+ */
+const startedKeys = (kind) => {
+  const statuses = statusesOf(kind);
+  const from = statuses.findIndex((entry) => entry.key === 'started');
+  return new Set(from < 0 ? [] : statuses.slice(from).filter((entry) => !entry.issue && !entry.done).map((entry) => entry.key));
+};
+export function productionTaken({ task, workOrders = [], floor = {} }) {
+  if (workOrders.length) return { taken: true, why: `Work order ${workOrders.map((wo) => wo.number).join(', ')}` };
+  const running = floor.running || [];
+  if (running.length) return { taken: true, why: `Moulding on ${running.map((run) => run.machine || 'a press').join(', ')}` };
+  if (floor.made?.runs) return { taken: true, why: `${floor.made.runs} run${floor.made.runs === 1 ? '' : 's'} made ${pieces(floor.made.good)} pcs` };
+  const started = startedKeys(task?.kind || 'ask_edd');
+  const moved = [task?.status, ...(task?.modelStatuses || []).map((row) => row.status)].find((key) => started.has(key));
+  if (moved) return { taken: true, why: labelOf(task?.kind || 'ask_edd', moved) };
+  return { taken: false, why: null };
+}
+
 export function capWords(text, limit = SUMMARY_WORDS) {
   const words = String(text || '').trim().split(/\s+/).filter(Boolean);
   if (words.length <= limit) return words.join(' ');
