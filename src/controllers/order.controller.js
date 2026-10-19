@@ -28,6 +28,7 @@ import { ORDER_ACTIONS, orderActionsFrom } from '../services/orderActions.js';
 import { assertCanOwnBuyer } from '../services/assignment.service.js';
 import { buildSpec, registersFromQuoteLine } from '../services/registers.service.js';
 import { put, remove } from '../services/storage.service.js';
+import { withLineParts } from '../services/orderParts.service.js';
 import { requireEnquiry } from '../services/enquiryLink.service.js';
 import { collect, sendCsv } from '../utils/csv.js';
 import { transactional } from '../utils/transaction.js';
@@ -74,7 +75,12 @@ const POPULATE = [
   { path: 'lines.clipRef', select: 'name code colour kind' },
   { path: 'lines.printRef', select: 'name code kind' },
   { path: 'customerPo.attachment', select: 'key filename mimeType size' },
+  { path: 'lines.printReference.attachment', select: 'key filename mimeType size' },
+  { path: 'lines.printReference.by', select: 'name' },
 ];
+
+/** The order as this person may read it, each line with its hook, clip and print named [orderParts.service]. */
+const orderOut = async (order, user) => withLineParts(orderVisibleTo(order, user));
 
 const EXPORT_LIMIT = 5000;
 
@@ -272,7 +278,7 @@ export const getOrder = asyncHandler(async (req, res) => {
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
 
-  res.json({ success: true, data: orderVisibleTo(order, req.user), checks: checklistFor(order) });
+  res.json({ success: true, data: await orderOut(order, req.user), checks: checklistFor(order) });
 });
 
 export const exportOrders = asyncHandler(async (req, res) => {
@@ -456,7 +462,7 @@ export const createOrder = asyncHandler(transactional(async (req, res) => {
   await planCollection(order, { by: req.user });
 
   await order.populate(POPULATE);
-  res.status(201).json({ success: true, data: orderVisibleTo(order, req.user) });
+  res.status(201).json({ success: true, data: await orderOut(order, req.user) });
 }));
 
 /**
@@ -568,7 +574,7 @@ export const orderFromQuotation = asyncHandler(transactional(async (req, res) =>
   await planCollection(order, { by: req.user });
 
   await order.populate(POPULATE);
-  res.status(201).json({ success: true, data: orderVisibleTo(order, req.user) });
+  res.status(201).json({ success: true, data: await orderOut(order, req.user) });
 }));
 
 /**
@@ -632,7 +638,7 @@ export const updateOrder = asyncHandler(withOrderLock(req => req.params.id, tran
   if (patch.paymentPlan || patch.lines) await planCollection(order, { by: req.user });
 
   await order.populate(POPULATE);
-  res.json({ success: true, data: orderVisibleTo(order, req.user) });
+  res.json({ success: true, data: await orderOut(order, req.user) });
 })));
 
 /* ------------------------------ The §13 gate ------------------------------ */
@@ -694,7 +700,7 @@ export const setOrderCheck = asyncHandler(withOrderLock(req => req.params.id, tr
   await order.populate(POPULATE);
   res.json({
     success: true,
-    data: orderVisibleTo(order, req.user),
+    data: await orderOut(order, req.user),
     checks: checklistFor(order),
     outstanding: order.outstandingChecks,
     releasable: order.releasable,
@@ -804,7 +810,7 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
   await order.populate(POPULATE);
   res.json({
     success: true,
-    data: orderVisibleTo(order, req.user),
+    data: await orderOut(order, req.user),
     checks: checklistFor(order),
     did: recipe.label,
   });
@@ -917,7 +923,7 @@ export const setOrderPo = asyncHandler(withOrderLock(req => req.params.id, async
   }
 
   await order.populate(POPULATE);
-  res.json({ success: true, data: orderVisibleTo(order, req.user) });
+  res.json({ success: true, data: await orderOut(order, req.user) });
 }));
 
 /**
@@ -998,7 +1004,7 @@ export const setOrderPriority = asyncHandler(withOrderLock(req => req.params.id,
   });
 
   await order.populate(POPULATE);
-  res.json({ success: true, data: orderVisibleTo(order, req.user) });
+  res.json({ success: true, data: await orderOut(order, req.user) });
 })));
 
 /**
@@ -1081,7 +1087,7 @@ export const setLinePromisedDate = asyncHandler(withOrderLock(req => req.params.
   await order.populate(POPULATE);
   res.json({
     success: true,
-    data: orderVisibleTo(order, req.user),
+    data: await orderOut(order, req.user),
     line: order.lines.id(req.params.lineId),
   });
 })));
@@ -1118,3 +1124,55 @@ export const waiveOrderPayment = asyncHandler(withOrderLock(req => req.params.id
   await afterWaiver(order, stage, req.user, reason.trim());
   res.json({ success: true, data: await paymentStanding(order) });
 })));
+
+/**
+ * The print reference on one line — the artwork's number, colours, where the logo goes — with the
+ * artwork itself if there is one (a photo or a PDF) [models/SalesOrder.js `printReference`]. The
+ * order team's to give, on an open order or a released one: the plant prints from it, and it
+ * shows on the Production workflow page beside the model. Words and file go together; an empty
+ * reference with no file, or `removeFile`, takes the file off.
+ */
+export const setLinePrintReference = asyncHandler(withOrderLock(req => req.params.id, async (req, res) => {
+  const order = await SalesOrder.findById(req.params.id);
+  if (!order) throw ApiError.notFound('Order not found');
+  if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+  const line = order.lines.id(req.params.lineId);
+  if (!line) throw ApiError.notFound('That line is not on this order');
+  if (CLOSED_ORDER_STATUSES.includes(order.status)) throw ApiError.badRequest(`This order is ${order.status} — its lines are settled`);
+
+  const text = String(req.body?.text ?? '').trim();
+  if (text.length > 500) throw ApiError.badRequest('Keep the print reference to 500 characters — attach the artwork for the rest');
+  const removeFile = ['true', '1', 'yes'].includes(String(req.body?.removeFile || '').toLowerCase());
+  const previous = line.printReference?.attachment || null;
+
+  let attachment = null;
+  if (req.file) {
+    const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+    try {
+      attachment = await Attachment.create({
+        key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
+        uploadedBy: req.user._id, salesOrder: order._id,
+        title: `${order.number} — print reference, ${line.modelNumber || 'line'}`,
+      });
+    } catch (error) {
+      await remove(key);
+      throw error;
+    }
+  }
+  const keptFile = attachment?._id || (removeFile ? null : previous);
+  if (!text && !keptFile && !previous && !removeFile) throw ApiError.badRequest('Give the print reference, or attach the artwork');
+
+  line.printReference = text || keptFile ? { text: text || undefined, attachment: keptFile || undefined, by: req.user._id, at: new Date() } : undefined;
+  await order.save();
+
+  /* The old artwork goes only once the new reference is saved without it. */
+  if (previous && String(previous) !== String(keptFile || '')) {
+    const old = await Attachment.findById(previous);
+    if (old) {
+      await remove(old.key).catch(() => {});
+      await old.deleteOne();
+    }
+  }
+  await order.populate(POPULATE);
+  res.json({ success: true, data: await orderOut(order, req.user) });
+}));

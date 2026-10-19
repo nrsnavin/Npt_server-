@@ -258,6 +258,9 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
     plannedStart: wo.plannedStart || null, plannedEnd: wo.plannedEnd || null,
   }));
   const edd = enquiry.edd?.date || null;
+  /* What each model is made with, from its sales order: hook, clip, print and the print reference. */
+  const { orderSpecsForEnquiry } = await import('../services/orderParts.service.js');
+  const specs = await orderSpecsForEnquiry(enquiry._id);
   res.json({
     success: true,
     data: {
@@ -272,6 +275,7 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
       models: modelRows({ task, enquiry, teams, workOrders }),
       teams,
       workOrders,
+      specs,
       floor: { running: floor.running, made: floor.made },
     },
   });
