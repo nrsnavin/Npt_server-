@@ -32,7 +32,7 @@ import { requireEnquiry } from '../services/enquiryLink.service.js';
 import { collect, sendCsv } from '../utils/csv.js';
 import { transactional } from '../utils/transaction.js';
 import {
-  PAYMENT_PRESETS, PAYMENT_STAGES, assertPaidFor, paymentStanding, planCollection,
+  PAYMENT_PRESETS, PAYMENT_STAGES, afterWaiver, assertPaidFor, paymentStanding, planCollection,
 } from '../services/paymentGates.service.js';
 
 /**
@@ -810,6 +810,41 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
   });
 })));
 
+/**
+ * What stands between the order and the plant, in one place, so the screen can say it before
+ * anybody presses Release: the checks still open (one click confirms them), the advance its terms
+ * ask for — confirmed by Accounts, logged and waiting, or still to come — and whether it is a
+ * Production Holded Order this person may not release.
+ */
+export const orderReleaseCheck = asyncHandler(async (req, res) => {
+  const order = await SalesOrder.findById(req.params.id);
+  if (!order) throw ApiError.notFound('Order not found');
+  if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+  const standing = await paymentStanding(order);
+  const advance = standing.production;
+  const enquiry = order.enquiry ? await Enquiry.findById(order.enquiry).select('stage assignedTo').populate('assignedTo', 'name').lean() : null;
+  const held = enquiry?.stage === 'production_hold';
+  res.json({
+    success: true,
+    data: {
+      releasable: PRE_RELEASE_STATUSES.includes(order.status),
+      checksOpen: order.outstandingChecks.map((key) => VERIFICATION_CHECKS.find((check) => check.key === key).label),
+      advance: {
+        percent: advance.percent,
+        required: advance.required,
+        confirmed: advance.received,
+        awaiting: standing.awaiting,
+        short: advance.short,
+        met: advance.met,
+        waived: advance.waived,
+      },
+      held,
+      mayReleaseHeld: !held || mayReleaseHeld(req.user, enquiry),
+      heldBy: held ? enquiry?.assignedTo?.name || null : null,
+    },
+  });
+});
+
 /** The actions this order can take from where it is, so the screen need not guess. */
 export const listOrderActions = asyncHandler(async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
@@ -1079,5 +1114,7 @@ export const waiveOrderPayment = asyncHandler(withOrderLock(req => req.params.id
     model: 'SalesOrder', doc: order, before, by: req.user,
     note: `Allowed ${stage} without the payment: ${reason.trim()}`,
   });
+  /* Marketing and the SO team hear they may release it; Payment Collection keeps chasing the money. */
+  await afterWaiver(order, stage, req.user, reason.trim());
   res.json({ success: true, data: await paymentStanding(order) });
 })));

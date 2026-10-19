@@ -56,6 +56,11 @@ export const receiptSchema = z.strictObject({
 });
 
 /** Admin's word on a buyer's credit. Absent clears it, and the rule's own reading shows again. */
+/** Accounts did not find a logged payment in the bank [payment.controller `rejectReceipt`]. */
+export const rejectReceiptSchema = z.strictObject({
+  reason: z.string().trim().min(3, 'Say why — what the bank shows').max(500),
+});
+
 export const creditSchema = z
   .strictObject({
     status: z.enum(['good', 'watch', 'hold']).optional(),

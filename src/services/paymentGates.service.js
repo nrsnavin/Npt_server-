@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import SalesOrder, { PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
 import Receivable, { paymentLogEntry } from '../models/Receivable.js';
 import Todo from '../models/Todo.js';
@@ -42,8 +43,16 @@ const round2 = (value) => Math.round(value * 100) / 100;
  * chase ringing, but does not open the gate [models/Receivable.js `confirmed`].
  */
 async function receivedOn(orderId) {
+  return (await moneyOn(orderId)).confirmed;
+}
+
+/** What is confirmed on the order, and what is logged but still waiting for Accounts. */
+async function moneyOn(orderId) {
   const rows = await Receivable.find({ order: orderId });
-  return round2(rows.reduce((sum, row) => sum + (row.confirmedReceived || 0), 0));
+  return {
+    confirmed: round2(rows.reduce((sum, row) => sum + (row.confirmedReceived || 0), 0)),
+    awaiting: round2(rows.reduce((sum, row) => sum + (row.awaitingConfirmation || 0), 0)),
+  };
 }
 
 /**
@@ -52,7 +61,7 @@ async function receivedOn(orderId) {
  */
 export async function paymentStanding(order) {
   const value = order.totalValue || 0;
-  const received = await receivedOn(order._id);
+  const { confirmed: received, awaiting } = await moneyOn(order._id);
   const plan = order.paymentPlan || {};
   const stage = (key, percent) => {
     const required = round2((value * (percent || 0)) / 100);
@@ -71,6 +80,8 @@ export async function paymentStanding(order) {
   return {
     value,
     received,
+    /* Logged by Payment Collection or PRT, not yet seen in the bank by Accounts — it does not open a gate. */
+    awaiting,
     production: stage('production', plan.advancePercent),
     dispatch: stage('dispatch', Math.max(plan.beforeDispatchPercent || 0, plan.advancePercent || 0)),
   };
@@ -245,16 +256,76 @@ async function askForNext(order, standing, { by } = {}) {
 }
 
 /**
- * After money comes in: a stage that is now paid closes its collection task and tells the
- * marketing person, who tells the plant the job can go on.
+ * Admin let the order into production without the advance [order.controller `waiveOrderPayment`]:
+ * marketing and the SO team are told they may release it (a held order: marketing, from the
+ * enquiry). The money is still owed — Payment Collection keeps the chase, told why the plant
+ * may start before it.
+ */
+export async function afterWaiver(order, stage, user, reason) {
+  const open = await Todo.findOne({ originKey: gateKey(order, stage), completed: false });
+  if (open) {
+    const note = `${user.name} (Admin) allowed ${stage} without the payment: ${reason}. The money is still owed — keep collecting it.`;
+    await Todo.updateOne({ _id: open._id }, { $push: { updates: { kind: 'note', text: note, note, by: user._id, at: new Date() } } }, { keepVersion: true });
+  }
+  if (stage !== 'production' || !PRE_RELEASE_STATUSES.includes(order.status)) return;
+  const held = order.enquiry ? (await mongoose.model('Enquiry').findById(order.enquiry).select('stage').lean())?.stage === 'production_hold' : false;
+  if (order.assignedTo) {
+    await raiseTask({
+      user: order.assignedTo,
+      title: held
+        ? `Admin allowed ${order.number} without the advance — a Production Holded Order: move it to Production on the enquiry`
+        : `Admin allowed ${order.number} without the advance — release it to production`,
+      link: held && order.enquiry ? `/enquiries/${order.enquiry}` : `/orders/${order._id}`,
+      originKey: `payment-met:${order._id}:production`,
+      priority: 'high',
+    }).catch(() => null);
+  }
+  if (!held) {
+    await raiseDepartmentTask({
+      department: 'order_confirmation',
+      title: `Admin allowed ${order.number} without the advance — release it to production`,
+      link: `/orders/${order._id}`,
+      originKey: `payment-met-so:${order._id}`,
+      priority: 'high',
+      customer: order.customer,
+      order: order._id,
+      enquiry: order.enquiry || undefined,
+    }).catch(() => null);
+  }
+}
+
+/** Payment Collection's open task for a stage, its title and note brought up to date with the money. */
+async function refreshGateTask(order, stage, standing) {
+  const open = await Todo.findOne({ originKey: gateKey(order, stage), completed: false });
+  if (!open) return;
+  const needed = standing[stage];
+  const title = `Collect ${rupees(needed.short)} ${STAGE_WORDS[stage]} — ${order.number}`;
+  const waiting = standing.awaiting > 0 ? ` ${rupees(standing.awaiting)} logged, waiting for Accounts to confirm.` : '';
+  const notes = `${needed.percent}% of ${rupees(standing.value)} is to be in ${STAGE_WORDS[stage]} `
+    + `(${order.paymentTerms || 'per the order terms'}). ${rupees(needed.received)} confirmed so far.${waiting}`;
+  if (open.title === title && open.notes === notes) return;
+  await Todo.updateOne({ _id: open._id }, { $set: { title, notes } }, { keepVersion: true });
+}
+
+/**
+ * After money comes in (or a logged payment is found not to be in the bank): a stage that is now
+ * paid closes its collection task and tells the marketing person and the SO team, who release the
+ * order; a stage still short keeps its task saying what is still to come.
  */
 export async function afterPayment(orderId) {
   const order = await SalesOrder.findById(orderId);
   if (!order) return null;
   const standing = await paymentStanding(order);
+  /* A Production Holded Order is released by Admin or its marketing person only — from the enquiry. */
+  const held = order.enquiry ? (await mongoose.model('Enquiry').findById(order.enquiry).select('stage').lean())?.stage === 'production_hold' : false;
   for (const stage of PAYMENT_STAGES) {
     const needed = standing[stage];
-    if (needed.required <= 0 || !needed.met) continue;
+    if (needed.required <= 0) continue;
+    if (!needed.met) {
+      /* Still short: Payment Collection's task says what is still to come, and what waits for Accounts. */
+      await refreshGateTask(order, stage, standing);
+      continue;
+    }
     const closed = await resolveTasks(gateKey(order, stage));
     if (closed && order.assignedTo) {
       /* Still waiting at the gate: the marketing person releases it, from the order. */
@@ -262,15 +333,16 @@ export async function afterPayment(orderId) {
       await raiseTask({
         user: order.assignedTo,
         title: stage === 'production'
-          ? toRelease ? `Advance received on ${order.number} — release it to production` : `Advance received on ${order.number} — production can start`
+          ? held ? `Advance received on ${order.number} — a Production Holded Order: move it to Production on the enquiry`
+            : toRelease ? `Advance received on ${order.number} — release it to production` : `Advance received on ${order.number} — production can start`
           : `Payment received on ${order.number} — the goods can be dispatched`,
-        link: toRelease || !order.enquiry ? `/orders/${order._id}` : `/enquiries/${order.enquiry}`,
+        link: held && order.enquiry ? `/enquiries/${order.enquiry}` : toRelease || !order.enquiry ? `/orders/${order._id}` : `/enquiries/${order.enquiry}`,
         originKey: `payment-met:${order._id}:${stage}`,
         priority: 'high',
       }).catch(() => null);
     }
-    /* The SO team releases it too: their desk hears the advance is confirmed. */
-    if (closed && stage === 'production' && PRE_RELEASE_STATUSES.includes(order.status)) {
+    /* The SO team releases it too: their desk hears the advance is confirmed — not for a held order, which is not theirs to release. */
+    if (closed && !held && stage === 'production' && PRE_RELEASE_STATUSES.includes(order.status)) {
       await raiseDepartmentTask({
         department: 'order_confirmation',
         title: `Advance confirmed on ${order.number} — release it to production`,

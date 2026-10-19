@@ -170,6 +170,27 @@ const receivableSchema = new mongoose.Schema(
     dueBy: { type: Date, required: true, index: true },
 
     receipts: { type: [receiptSchema], default: () => [] },
+    /*
+     * Payments logged that Accounts did not find in the bank [payment.controller `rejectReceipt`]:
+     * kept here, out of the figures, with who said so and why — the record of what was claimed.
+     */
+    rejectedReceipts: {
+      type: [new mongoose.Schema({
+        amount: Number,
+        receivedAt: Date,
+        mode: String,
+        reference: String,
+        note: String,
+        recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        rejected: {
+          by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          at: Date,
+          reason: { type: String, trim: true, maxlength: 500 },
+          _id: false,
+        },
+      }, { _id: true })],
+      default: undefined,
+    },
     followUps: { type: [followUpSchema], default: () => [] },
     /** Who to speak to about this money — the payment contact (role requirements §10). */
     paymentContact: {

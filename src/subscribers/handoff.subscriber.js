@@ -240,6 +240,12 @@ export function registerHandoffSubscribers() {
     safely('production has the enquiry', async ({ orderId, by }) => {
       const { default: SalesOrder } = await import('../models/SalesOrder.js');
       const order = await SalesOrder.findById(orderId).select('number enquiry customerPo');
+      /* Released: "release it to production" is done for marketing and the SO team alike. */
+      if (order) {
+        const { resolveTasks } = await import('../services/task.service.js');
+        await resolveTasks(`payment-met:${order._id}:production`);
+        await resolveTasks(`payment-met-so:${order._id}`);
+      }
       if (!order?.enquiry) return;
       const enquiry = await Enquiry.findById(order.enquiry);
       if (enquiry) await markEnquiry(enquiry, { won: true, user: by?._id ? by : undefined, note: `${order.number} released to production` });

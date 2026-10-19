@@ -43,6 +43,7 @@ const POPULATE = [
   { path: 'followUps.by', select: 'name' },
   { path: 'receipts.recordedBy', select: 'name' },
   { path: 'receipts.confirmed.by', select: 'name' },
+  { path: 'rejectedReceipts.recordedBy rejectedReceipts.rejected.by', select: 'name' },
 ];
 
 /*
@@ -643,6 +644,52 @@ export const confirmReceipt = asyncHandler(withOrderLock(async req => (await Rec
     by: req.user, note: `Confirmed ₹${Math.round(receipt.amount).toLocaleString('en-IN')} received`,
   });
   /* Every payment on it seen in the bank: Accounts' task to confirm them is done. */
+  if (receivable.receipts.every((row) => row.confirmed?.at)) await resolveTasks(confirmTaskKey(receivable));
+  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order));
+  await receivable.populate(POPULATE);
+  return res.json({ success: true, data: receivable });
+})));
+
+/**
+ * Accounts did not find a logged payment in the bank: it comes off the figures — kept apart, with
+ * the reason, as the record of what was claimed — and whoever logged it is told to check with the
+ * buyer. The order still waits for its money; Payment Collection's task says so. Only a payment
+ * not yet confirmed: a confirmed one is money in the bank.
+ */
+export const rejectReceipt = asyncHandler(withOrderLock(async req => (await Receivable.findById(req.params.id).select('order'))?.order || req.params.id, transactional(async (req, res) => {
+  if (!seesTheBank(req.user)) throw ApiError.forbidden('Only Accounts or Admin say a payment is not in the bank.');
+  const receivable = await readable(req.params.id, req.user);
+  const receipt = receivable.receipts.id(req.params.receiptId);
+  if (!receipt) throw ApiError.notFound('No such payment on this one — it may already have been marked not in the bank');
+  if (receipt.confirmed?.at) throw ApiError.conflict('This payment is already confirmed in the bank');
+  const before = snapshot(receivable);
+  const reason = req.body.reason.trim();
+  const amount = `₹${Math.round(receipt.amount).toLocaleString('en-IN')}`;
+  const said = [amount, receipt.mode && String(receipt.mode).toUpperCase(), receipt.reference && `ref ${receipt.reference}`].filter(Boolean).join(' · ');
+  receivable.rejectedReceipts = [...(receivable.rejectedReceipts || []), {
+    amount: receipt.amount, receivedAt: receipt.receivedAt, mode: receipt.mode, reference: receipt.reference, note: receipt.note,
+    recordedBy: receipt.recordedBy?._id || receipt.recordedBy,
+    rejected: { by: req.user._id, at: new Date(), reason },
+  }];
+  const logger = receipt.recordedBy?._id || receipt.recordedBy;
+  receipt.deleteOne();
+  receivable.followUps.push({ by: req.user._id, at: new Date(), note: `Payment not found in the bank: ${said} — ${reason}`.slice(0, 1000), status: 'other' });
+  await applyPaymentPositions([receivable]);
+  await receivable.save();
+  await recordChange({ model: 'Receivable', doc: receivable, before, by: req.user, note: `Not in the bank: ${said} — ${reason}` });
+  /* Whoever logged it checks with the buyer. */
+  if (logger) {
+    await raiseTask({
+      user: logger,
+      title: `Payment not found in the bank — ${said} on ${receivable.number}`,
+      notes: `${req.user.name} (Accounts): ${reason}. Check with ${receivable.customer?.name || 'the buyer'} and log it again once it is really in.`,
+      priority: 'high',
+      dueDate: new Date(),
+      link: `/payments/${receivable._id}`,
+      originKey: `receipt-rejected:${req.params.receiptId}`,
+    }).catch(() => null);
+  }
+  /* Nothing left for Accounts to check on this RCV: their task is done. */
   if (receivable.receipts.every((row) => row.confirmed?.at)) await resolveTasks(confirmTaskKey(receivable));
   if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order));
   await receivable.populate(POPULATE);
