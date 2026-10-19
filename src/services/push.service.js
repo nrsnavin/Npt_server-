@@ -35,8 +35,19 @@ async function webPush() {
 
 /** Sends `{ title, body, link }` to every device each person has allowed. Never throws. */
 export async function sendPush(userIds, message) {
-  const ids = [...new Set((userIds || []).map(String))];
+  let ids = [...new Set((userIds || []).map(String))];
   if (!ids.length) return;
+  /* Development: to the one person trying the app, saying who it was for [devRedirect.service]. */
+  const { redirecting, redirectUsers, namesOf } = await import('./devRedirect.service.js');
+  if (redirecting()) {
+    const meant = await namesOf(ids);
+    ids = (await redirectUsers()).map((person) => String(person._id));
+    message = { ...message, title: `[for ${meant}] ${message.title || ''}`.trim() };
+    if (!ids.length) {
+      console.log(`\n[push] development redirect: no user with DEV_NOTIFY_EMAIL — not sent\n${message.title}\n${message.body || ''}\n`);
+      return;
+    }
+  }
   const devices = await PushSubscription.find({ user: { $in: ids } });
   if (!devices.length) return;
   await deliverPush(devices, message);

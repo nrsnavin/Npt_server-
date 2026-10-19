@@ -1,0 +1,131 @@
+/**
+ * Notifications on a development server go to one person [services/devRedirect.service.js];
+ * sign-in codes and password links never do; production sends to the real people. And the
+ * profile's check: what is set up, and a test sent to myself [controllers/push.controller.js].
+ *
+ *   node --test tests/notification-redirect.test.js
+ */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { MongoMemoryServer } from 'mongodb-memory-server';
+import mongoose from 'mongoose';
+
+process.env.RATE_LIMIT_MAX = '100000';
+process.env.JWT_SECRET = 'notification-redirect-test-secret';
+delete process.env.WEB_PUSH_PUBLIC_KEY;
+delete process.env.SMTP_HOST;
+
+let mongo;
+let server;
+let baseUrl;
+let admin;
+let ramesh;
+let rameshId;
+
+const api = async (path, { method = 'GET', body, token } = {}) => {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  return { status: response.status, json: await response.json().catch(() => ({})) };
+};
+const signIn = async (email, password) => (await api('/api/auth/login', { method: 'POST', body: { email, password } })).json.data?.token;
+
+/** What the code printed instead of sending, while `run` runs — with NODE_ENV as given. */
+async function printed(nodeEnv, run) {
+  const lines = [];
+  const original = console.log;
+  const was = process.env.NODE_ENV;
+  console.log = (...parts) => lines.push(parts.join(' '));
+  process.env.NODE_ENV = nodeEnv;
+  try {
+    await run();
+  } finally {
+    console.log = original;
+    process.env.NODE_ENV = was;
+  }
+  return lines.join('\n');
+}
+
+test.before(async () => {
+  mongo = await MongoMemoryServer.create();
+  process.env.MONGO_URI = mongo.getUri();
+  await mongoose.connect(process.env.MONGO_URI);
+  const { default: app } = await import('../src/app.js');
+  server = app.listen(0);
+  await new Promise((resolve) => server.once('listening', resolve));
+  baseUrl = `http://127.0.0.1:${server.address().port}`;
+  await api('/api/auth/register', { method: 'POST', body: { name: 'Navin R', email: 'rsnavin1@gmail.com', password: 'Admin@12345', department: 'management' } });
+  admin = await signIn('rsnavin1@gmail.com', 'Admin@12345');
+  await api('/api/users', { method: 'POST', token: admin, body: { name: 'Ramesh Plant', email: 'ramesh@np.com', password: 'Prod@123456', department: 'production' } });
+  ramesh = await signIn('ramesh@np.com', 'Prod@123456');
+  rameshId = (await api('/api/auth/me', { token: ramesh })).json.data.id;
+});
+
+test.after(async () => {
+  server?.close();
+  await mongoose.connection.close();
+  await mongo?.stop();
+});
+
+test('development: email goes to the one address, saying who it was for; sign-in codes do not', async () => {
+  const { sendEmail } = await import('../src/services/notification.service.js');
+  const dev = await printed('development', () => sendEmail({ to: 'buyer@shop.com', subject: 'Your sample is ready', text: 'Collect it at reception' }));
+  assert.match(dev, /\[email\] to rsnavin1@gmail\.com/);
+  assert.match(dev, /\[DEV → buyer@shop\.com\] Your sample is ready/);
+  assert.match(dev, /meant for buyer@shop\.com/);
+  const code = await printed('development', () => sendEmail({ to: 'ramesh@np.com', subject: 'Your sign-in code', text: '123456', direct: true }));
+  assert.match(code, /\[email\] to ramesh@np\.com/, 'a sign-in code goes to its owner');
+  const real = await printed('test', () => sendEmail({ to: 'buyer@shop.com', subject: 'Your sample is ready', text: 'x' }));
+  assert.match(real, /\[email\] to buyer@shop\.com/, 'outside development, to the real person');
+  process.env.DEV_NOTIFY_EMAIL = '';
+  const off = await printed('development', () => sendEmail({ to: 'buyer@shop.com', subject: 'S', text: 'x' }));
+  delete process.env.DEV_NOTIFY_EMAIL;
+  assert.match(off, /\[email\] to buyer@shop\.com/, 'DEV_NOTIFY_EMAIL empty turns it off');
+});
+
+test('development: a push for a colleague reaches the one person’s devices, named for whom', async () => {
+  const { default: PushSubscription } = await import('../src/models/PushSubscription.js');
+  const { default: User } = await import('../src/models/User.js');
+  const navin = await User.findOne({ email: 'rsnavin1@gmail.com' });
+  await PushSubscription.create({ user: navin._id, endpoint: 'https://push.example/navin', keys: { p256dh: 'k', auth: 'a' } });
+  await PushSubscription.create({ user: rameshId, endpoint: 'https://push.example/ramesh', keys: { p256dh: 'k', auth: 'a' } });
+  const { sendPush } = await import('../src/services/push.service.js');
+  const dev = await printed('development', () => sendPush([rameshId], { title: 'New task', body: 'Run M-101' }));
+  assert.match(dev, new RegExp(`\\[push\\] to user ${navin._id}`));
+  assert.match(dev, /\[for Ramesh Plant\] New task/);
+  assert.doesNotMatch(dev, new RegExp(`to user ${rameshId}`), 'not to Ramesh');
+  const real = await printed('test', () => sendPush([rameshId], { title: 'New task' }));
+  assert.match(real, new RegExp(`\\[push\\] to user ${rameshId}`));
+});
+
+test('development: WhatsApp goes to 7550005370 unless set otherwise', async () => {
+  const { redirectPhone } = await import('../src/services/devRedirect.service.js');
+  process.env.NODE_ENV = 'development';
+  try {
+    assert.equal(await redirectPhone(), '+917550005370');
+    process.env.DEV_NOTIFY_PHONE = '9840011223';
+    assert.equal(await redirectPhone(), '+919840011223');
+  } finally {
+    delete process.env.DEV_NOTIFY_PHONE;
+    process.env.NODE_ENV = 'test';
+  }
+  assert.equal(await redirectPhone(), null, 'off outside development');
+});
+
+test('the profile check says what is set up, and a test reaches me', async () => {
+  const status = await api('/api/workspace/notifications/status', { token: ramesh });
+  assert.equal(status.status, 200, status.json.message);
+  assert.equal(status.json.data.push.configured, false);
+  assert.equal(status.json.data.push.myDevices, 1);
+  assert.equal(status.json.data.email.configured, false);
+  assert.equal(status.json.data.redirect, null, 'the test server is not development');
+  assert.equal(JSON.stringify(status.json.data).includes('PRIVATE'), false);
+  const sent = await api('/api/workspace/notifications/test', { method: 'POST', token: ramesh });
+  assert.equal(sent.status, 200, sent.json.message);
+  assert.equal(sent.json.data.push.devices, 1);
+  assert.equal(sent.json.data.email.sent, false);
+  assert.match(sent.json.data.email.why, /mail server is not set/);
+  assert.equal((await api('/api/workspace/notifications/status')).status, 401);
+});

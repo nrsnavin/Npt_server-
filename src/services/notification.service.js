@@ -2,6 +2,7 @@ import { env, isProduction } from '../config/env.js';
 import ApiError from '../utils/ApiError.js';
 import { isConfigured as twilioConfigured, sendSms as twilioSendSms } from '../providers/twilio.js';
 import { sendWhatsAppCode, whatsappTemplate, isWhatsAppConfigured } from '../providers/whatsapp.js';
+import { redirectEmail } from './devRedirect.service.js';
 
 /**
  * Message delivery: OTP codes over email and SMS, and the customer updates in
@@ -76,7 +77,20 @@ function logFallback(channel, to, body) {
   console.log(`\n[${channel}] to ${to}\n${body}\n`);
 }
 
-export async function sendEmail({ to, subject, text, html, attachments }) {
+/**
+ * `direct`: a sign-in code or a password link — always to the person it is for, never
+ * redirected [devRedirect.service].
+ */
+export async function sendEmail({ to, subject, text, html, attachments, direct = false }) {
+  const redirect = direct ? null : redirectEmail();
+  if (redirect) {
+    const meant = [].concat(to).filter(Boolean).join(', ');
+    const note = `[Development — meant for ${meant}]`;
+    to = redirect;
+    subject = `[DEV → ${meant}] ${subject}`;
+    text = `${note}\n\n${text || ''}`;
+    if (html) html = `<p style="color:#b45309;font-family:sans-serif;font-size:13px">${note.replace(/</g, '&lt;')}</p>${html}`;
+  }
   const transporter = await getMailTransporter();
 
   if (!transporter) {
@@ -146,6 +160,7 @@ export async function sendOtp({ identifier, channel, code, purpose, ttlMinutes }
 
   if (channel === 'email') {
     return sendEmail({
+      direct: true,
       to: identifier,
       subject: OTP_SUBJECTS[purpose] || OTP_SUBJECTS.login,
       text: `Your NPT Hangers verification code is ${code}. It expires in ${expiry}. If you did not request this, you can ignore this email.`,
