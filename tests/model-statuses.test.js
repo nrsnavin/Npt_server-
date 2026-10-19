@@ -191,3 +191,41 @@ test('the summary: a problem first, cut to thirty words', async () => {
   assert.match(said, /^Problem: Mould Issue — Gate broken\. Moulding on IM-3 \(M-101\)\. 3,900 made\. Work orders 1\/2 done, 1 running\. Quality /);
   assert.match(said, /No EDD yet$/);
 });
+
+test('Production’s task closes once every model is handed to Printing or Assembly — not before, and not past a model that goes nowhere', async () => {
+  const { enquiry, production } = await routedOrder();
+  const stageOf = async () => (await (await import('../src/models/Enquiry.js')).default.findById(enquiry._id).lean()).stage;
+  const stage = await stageOf();
+  /* CRF25 to Printing, CRF30 straight to Assembly; CRF40 goes nowhere after moulding. */
+  assert.equal((await move(production._id, 'siva', 'handed_printing', ['CRF25'], 'CRF25 to the print line')).status, 200);
+  assert.equal((await Todo.findById(production._id)).completed, false, 'CRF30 and CRF40 are still with Production');
+  assert.equal((await move(production._id, 'siva', 'handed_assembly', ['CRF30'], 'CRF30 to assembly')).status, 200);
+  assert.equal((await Todo.findById(production._id)).completed, false, 'CRF40 is still with Production');
+  assert.equal((await move(production._id, 'siva', 'ready_dispatch', ['CRF40'], 'CRF40 packed')).status, 200);
+  assert.equal((await Todo.findById(production._id)).completed, false, 'Ready for Dispatch alone does not close it — Task Closed does');
+
+  /* Two models, both handed on: the last hand-over closes it at that status, and the enquiry is not moved to Dispatch. */
+  const { enquiry: second, production: two } = await routedOrder();
+  await api(`/api/workspace/todos/${two._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'CRF25', printing: true }, { model: 'CRF30', assembly: true }] } });
+  assert.equal((await move(two._id, 'siva', 'handed_printing', ['CRF25'], 'CRF25 to the print line')).status, 200);
+  assert.equal((await Todo.findById(two._id)).completed, false);
+  const last = await move(two._id, 'siva', 'handed_assembly', ['CRF30'], 'CRF30 to assembly');
+  assert.equal(last.status, 200, last.json.message);
+  const closed = await Todo.findById(two._id);
+  assert.equal(closed.completed, true, 'every model is with the team after Production');
+  assert.notEqual(closed.status, 'closed', 'it reads its hand-over, not Task Closed');
+  const Enquiry = (await import('../src/models/Enquiry.js')).default;
+  assert.notEqual((await Enquiry.findById(second._id).lean()).stage, 'invoice_dispatch', 'the goods are with Printing and Assembly, not Dispatch');
+  assert.equal(await stageOf(), stage);
+  assert.ok(await Todo.exists({ enquiry: second._id, kind: 'ask_printing', completed: false }), 'Printing still has its task');
+});
+
+test('a whole-task hand-over closes Production’s task when every model goes that way', async () => {
+  const { production } = await routedOrder();
+  await api(`/api/workspace/todos/${production._id}/routing`, { method: 'POST', as: 'siva', body: { models: ['CRF25', 'CRF30', 'CRF40'].map((model) => ({ model, printing: true })) } });
+  const moved = await move(production._id, 'siva', 'handed_printing', null, 'All moulded — to the print line');
+  assert.equal(moved.status, 200, moved.json.message);
+  const task = await Todo.findById(production._id);
+  assert.equal(task.completed, true);
+  assert.equal(task.status, 'handed_printing');
+});
