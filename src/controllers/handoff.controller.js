@@ -47,7 +47,7 @@ const TASK_POPULATE = [
   { path: 'reschedules.by', select: 'name' },
   { path: 'escalation.by', select: 'name department' },
   /* The enquiry's EDD travels with its tasks, so a card can show it or ask for it [web: components/TaskEdd.jsx]. */
-  { path: 'enquiry', select: 'number edd' },
+  { path: 'enquiry', select: 'number edd eddByModel' },
 ];
 
 /** The buttons, the twelve stages and the departments, so the screen draws what the server knows. */

@@ -55,9 +55,15 @@ export const taskStatusSchema = z.object({
 
 /** The expected delivery date, given from the Production / Assembly / Printing task [handoff.service `setTaskEdd`]. */
 export const taskEddSchema = z.object({
-  date: z.string().trim().min(10, 'Give the EDD as a calendar date').max(10),
+  /* One date for every model on the task… */
+  date: z.string().trim().max(10).optional(),
+  /* …or a date for each model [Todo `modelDates`]. */
+  models: z.array(z.object({
+    model: z.string().trim().min(1).max(120),
+    date: z.string().trim().min(10, 'Give each model’s date as a calendar date').max(10),
+  })).max(60).optional(),
   note: z.string().trim().max(2000).optional(),
-});
+}).refine((body) => (body.date && body.date.length === 10) || body.models?.length, { message: 'Give the EDD as a calendar date', path: ['date'] });
 
 /** Production's call, model by model: printed, assembled, both or neither [handoff.service `decideRouting`]. */
 export const taskRoutingSchema = z.object({

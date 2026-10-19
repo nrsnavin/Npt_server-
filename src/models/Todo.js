@@ -94,6 +94,19 @@ const todoSchema = new mongoose.Schema(
      * to. A team that hands on gives a hand-over date; the last team gives the EDD.
      */
     routing: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    /*
+     * The date this team gives for each model it has — Production, Printing or Assembly
+     * [handoff.service `setTaskEdd`]. A model's EDD is the latest any of its teams gives.
+     */
+    modelDates: {
+      type: [new mongoose.Schema({
+        model: { type: String, trim: true, required: true },
+        date: { type: String, match: /^\d{4}-\d{2}-\d{2}$/, required: true },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        at: { type: Date, default: Date.now },
+      }, { _id: false })],
+      default: undefined,
+    },
     /** The PDF sent with the task, if one was [routes: POST /enquiries/:id/handoffs/:taskId/attachment]. */
     attachment: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
     /** The PDF of the work itself — the sales order — uploaded by the department to finish the task. */
