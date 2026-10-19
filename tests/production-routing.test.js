@@ -253,3 +253,75 @@ test('a date per model from each team: a model’s EDD is the latest of its team
   const production = (await api(`/api/enquiries/${second._id}/handoffs`, { as: 'nandhini' })).json.production;
   assert.equal(production.byModel.length, 3, 'the enquiry screen reads each model’s EDD');
 });
+
+async function routedEnquiry(name, phone, items, models) {
+  const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
+  const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name, mobile: phone, assignedTo: me } })).json.data;
+  const made = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customer._id, items, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const task = (await api(`/api/enquiries/${made._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Dates please', brief: { model: items[0].modelNumber } } })).json.data.task;
+  const routed = await api(`/api/workspace/todos/${task._id}/routing`, { method: 'POST', as: 'siva', body: { models } });
+  assert.equal(routed.status, 200, routed.json.message);
+  return { enquiry: made, production: task };
+}
+
+test('marketing sets the final EDD per model — by default the latest; every task is told; a team moving its date does not undo it', async () => {
+  const { enquiry: third, production: asked } = await routedEnquiry('Final EDD Knits', '9840011888', [{ modelNumber: 'FX-1', quantity: 1000 }, { modelNumber: 'FX-2', quantity: 1000 }], [{ model: 'FX-1' }, { model: 'FX-2', printing: true }]);
+  await api(`/api/workspace/todos/${asked._id}/edd`, { method: 'POST', as: 'siva', body: { models: [{ model: 'FX-1', date: indiaDay(3) }, { model: 'FX-2', date: indiaDay(2) }] } });
+  const printing = await Todo.findOne({ enquiry: third._id, kind: 'ask_printing', completed: false });
+  await api(`/api/workspace/todos/${printing._id}/edd`, { method: 'POST', as: 'priya', body: { date: indiaDay(5) } });
+  let state = await Enquiry.findById(third._id).select('edd eddByModel').lean();
+  assert.equal(state.edd.date, indiaDay(5), 'by default the latest');
+
+  assert.equal((await api(`/api/enquiries/${third._id}/edd/models`, { method: 'POST', as: 'siva', body: { models: [{ model: 'FX-2', date: indiaDay(8) }] } })).status, 403, 'Production does not set marketing’s date');
+  const set = await api(`/api/enquiries/${third._id}/edd/models`, { method: 'POST', as: 'nandhini', body: { models: [{ model: 'FX-2', date: indiaDay(8) }], note: 'Buyer agreed the 8th' } });
+  assert.equal(set.status, 200, set.json.message);
+  state = await Enquiry.findById(third._id).select('edd eddByModel').lean();
+  const fx2 = state.eddByModel.find((row) => row.model === 'FX-2');
+  assert.deepEqual([fx2.date, fx2.suggested, fx2.department, fx2.final.date], [indiaDay(8), indiaDay(5), 'marketing', indiaDay(8)]);
+  assert.equal(state.edd.date, indiaDay(8));
+  assert.match((await Todo.findById(printing._id)).updates.at(-1).note, /Final EDD set by Nandhini S: FX-2/);
+  const { default: TaskNotice } = await import('../src/models/TaskNotice.js');
+  const priyaId = (await api('/api/auth/me', { as: 'priya' })).json.data.id;
+  assert.ok(await TaskNotice.exists({ task: printing._id, recipient: priyaId, statusLabel: 'Final EDD set by marketing' }), 'Printing is told');
+
+  await api(`/api/workspace/todos/${printing._id}/edd`, { method: 'POST', as: 'priya', body: { date: indiaDay(6) } });
+  state = await Enquiry.findById(third._id).select('edd eddByModel').lean();
+  const after = state.eddByModel.find((row) => row.model === 'FX-2');
+  assert.deepEqual([after.date, after.suggested], [indiaDay(8), indiaDay(6)], 'marketing’s word stands; the teams’ new date is seen beside it');
+});
+
+test('Production hands the goods to Printing — only where a model was routed there — and Printing hears it', async () => {
+  const { enquiry: fourth, production: asked } = await routedEnquiry('Hand On Knits', '9840011777', [{ modelNumber: 'HO-1', quantity: 1000 }], [{ model: 'HO-1', printing: true }]);
+  const wrong = await api(`/api/workspace/todos/${asked._id}/status`, { method: 'POST', as: 'siva', body: { status: 'handed_assembly', note: 'To assembly' } });
+  assert.equal(wrong.status, 400);
+  assert.match(wrong.json.message, /Nothing on this order goes to Assembly/);
+  const handed = await api(`/api/workspace/todos/${asked._id}/status`, { method: 'POST', as: 'siva', body: { status: 'handed_printing', note: 'All 1,000 moulded' } });
+  assert.equal(handed.status, 200, handed.json.message);
+  const printing = await Todo.findOne({ enquiry: fourth._id, kind: 'ask_printing', completed: false });
+  assert.match(printing.updates.at(-1).note, /Production handed the goods over \(HO-1\)/);
+  assert.equal(printing.routing.received.production, indiaDay(0));
+  assert.equal(await Todo.findOne({ enquiry: fourth._id, kind: 'quality_check' }), null, 'handed on is not ready — Quality waits for Printing');
+});
+
+test('dispatch plan: each model as it is ready — a ready model goes to Quality without waiting for the rest; together waits', async () => {
+  const items = [{ modelNumber: 'DP-1', quantity: 1000 }, { modelNumber: 'DP-2', quantity: 1000 }];
+  const models = [{ model: 'DP-1' }, { model: 'DP-2', printing: true }];
+  const together = await routedEnquiry('Together Knits', '9840011666', items, models);
+  await api(`/api/workspace/todos/${together.production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'DP-1 ready' } });
+  assert.equal(await Todo.findOne({ enquiry: together.enquiry._id, kind: 'quality_check' }), null, 'together: waits for Printing');
+
+  const split = await routedEnquiry('By Model Knits', '9840011555', items, models);
+  assert.equal((await api(`/api/enquiries/${split.enquiry._id}/dispatch-plan`, { method: 'POST', as: 'siva', body: { mode: 'by_model' } })).status, 403, 'marketing’s or Admin’s call');
+  const plan = await api(`/api/enquiries/${split.enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'by_model', note: 'Buyer wants DP-1 first' } });
+  assert.equal(plan.status, 200, plan.json.message);
+  await api(`/api/workspace/todos/${split.production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'DP-1 ready' } });
+  const quality = await Todo.findOne({ enquiry: split.enquiry._id, kind: 'quality_check' });
+  assert.ok(quality, 'a ready model goes on');
+  assert.match(quality.notes || '', /Ready: DP-1 · still to come: DP-2/);
+  const view = (await api(`/api/enquiries/${split.enquiry._id}/handoffs`, { as: 'nandhini' })).json;
+  assert.equal(view.dispatchPlan.mode, 'by_model');
+  assert.deepEqual(view.readiness, { ready: ['DP-1'], waiting: [{ model: 'DP-2', team: 'printing' }] });
+});

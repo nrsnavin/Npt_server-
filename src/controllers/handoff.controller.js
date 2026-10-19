@@ -23,7 +23,7 @@ import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
-  updateHandoff, mayWorkOnHandoff, mayReleaseHeld, raiseAssemblyWith, routingFor, decideRouting,
+  updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, raiseAssemblyWith, routingFor, decideRouting,
 } from '../services/handoff.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -190,6 +190,9 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     /* What the floor is doing for it now, and the journey from SO to LR as steps [journey.service]. */
     floor,
     journey: journeyOf(tasks, { running: floor.running }),
+    /* How a several-model order goes out, and which models are ready [handoff.service `modelReadiness`]. */
+    dispatchPlan: enquiry.dispatchPlan?.mode ? enquiry.dispatchPlan : null,
+    readiness: await modelReadiness(enquiry._id),
   });
 });
 

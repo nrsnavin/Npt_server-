@@ -40,7 +40,7 @@ import { hasRequirement } from '../models/requirement.schema.js';
 import { transactional } from '../utils/transaction.js';
 import { CLOSED_STAGE, SIDE_STAGES, STAGE_KEYS } from '../config/enquiryStages.js';
 import { HANDOFFS } from '../config/handoffs.js';
-import { eddDay, enquiryProgress, ensureHolder, mayHandOff, tellEddSet, writeEnquiryEdd } from '../services/handoff.service.js';
+import { eddDay, enquiryProgress, ensureHolder, mayHandOff, setDispatchPlan, setModelEdds, tellEddSet, writeEnquiryEdd } from '../services/handoff.service.js';
 import { delegateEnquiry, delegationTargets, mayDelegate, moveWorkWith } from '../services/delegation.service.js';
 import { canRead } from '../services/access.service.js';
 import { ENQUIRY_ACTIVITY_KEYS, ENQUIRY_ACTIVITY_TYPES } from '../config/enquiryActivities.js';
@@ -1811,6 +1811,26 @@ export const setEnquiryEdd = asyncHandler(transactional(async (req, res) => {
   const told = await tellEddSet(enquiry, req.user, { day, note: req.body.note });
   const saved = await Enquiry.findById(enquiry._id).select('edd').populate('edd.by', 'name');
   res.json({ success: true, data: saved.edd, meta: { told } });
+}));
+
+/**
+ * Marketing's final EDD for each model [handoff.service `setModelEdds`] — the enquiry's marketing
+ * person (or whoever it is delegated to) and Admin.
+ */
+export const setEnquiryModelEdds = asyncHandler(transactional(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id);
+  if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+  const result = await setModelEdds(enquiry, req.user, req.body);
+  res.json({ success: true, data: result.models, meta: { told: result.told } });
+}));
+
+/** Each model as it is ready, or all together [handoff.service `setDispatchPlan`] — marketing or Admin. */
+export const setEnquiryDispatchPlan = asyncHandler(transactional(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id);
+  if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
+  if (enquiry.stage === CLOSED_STAGE) throw ApiError.badRequest('The enquiry is closed');
+  const result = await setDispatchPlan(enquiry, req.user, req.body);
+  res.json({ success: true, data: result });
 }));
 
 /** Who this enquiry may be handed to — empty when the reader may not hand it on. */
