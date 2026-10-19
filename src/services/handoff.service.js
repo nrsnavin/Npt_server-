@@ -688,12 +688,11 @@ export async function teamTaskPrefill(customerId, user) {
     const found = await Customer.findById(customerId).lean();
     if (found && user && isOwnershipScoped(user) && !ownsRecord(user, found)) throw ApiError.notFound('Customer not found');
     if (found) {
-      const primary = found.contacts?.find((contact) => contact.isPrimary) || found.contacts?.[0];
-      const phone = primary?.mobile || found.mobile || '';
+      const order = orderContactOf(found);
       const place = [found.address, found.area, found.landmark && `near ${found.landmark}`, found.city, found.state, found.pincode].filter(Boolean).join(', ');
       customer = {
-        name: found.name, contactPerson: primary?.name || '', mobile: phone, whatsapp: primary?.whatsapp || found.whatsapp || phone,
-        delivery: `${primary?.name || 'Not added'} · ${phone || 'No number'} · ${place || 'Road not selected'}`,
+        name: found.name, contactPerson: order.name, mobile: order.phone, whatsapp: order.whatsapp,
+        delivery: `${order.name || 'Not added'} · ${order.phone || 'No number'} · ${place || 'Road not selected'}`,
       };
     }
   }
@@ -701,6 +700,25 @@ export async function teamTaskPrefill(customerId, user) {
     customer, items: [], orderItems: [], modelList: [], models: '', materials: '', quantity: '', targetPrice: '', order: { paymentTerms: '', invoiceNumber: '' }, members,
     /* No enquiry to fill the models and parts from: the registers, as dropdowns. */
     registers: await registerLists(),
+  };
+}
+
+/**
+ * The buyer's order contact — who places the orders, the person the SO team calls for the SO and
+ * the GST: the contact the enquiry names, else the primary contact, else the first; with no name
+ * on the customer, the person taken down when it was a prospect. Their number, else the company's
+ * — a contact saved from the enquiry check has only a WhatsApp number.
+ */
+export function orderContactOf(customer, enquiry = null) {
+  const contacts = customer?.contacts || [];
+  const named = enquiry?.contact ? contacts.find((contact) => String(contact._id) === String(enquiry.contact)) : null;
+  const person = named || contacts.find((contact) => contact.isPrimary) || contacts[0] || null;
+  const prospect = enquiry?.prospect || {};
+  const phone = person?.mobile || person?.whatsapp || customer?.mobile || customer?.whatsapp || prospect.mobile || prospect.whatsapp || '';
+  return {
+    name: person?.name || prospect.contactPerson || '',
+    phone,
+    whatsapp: person?.whatsapp || customer?.whatsapp || prospect.whatsapp || phone,
   };
 }
 
@@ -2217,7 +2235,7 @@ export async function taskPrefill(enquiryId) {
   if (!enquiry) return null;
   const newest = (Model, select, populate) => Model.findOne({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select(select).populate(populate).lean();
   const [customer, order, quotation, sample] = await Promise.all([
-    enquiry.customer ? Customer.findById(enquiry.customer).select('name mobile whatsapp contacts address city state pincode').lean() : null,
+    enquiry.customer ? Customer.findById(enquiry.customer).select('name mobile whatsapp contacts address area landmark city state pincode').lean() : null,
     newest(SalesOrder, 'number lines paymentTerms paymentPlan customerPo', parts('lines').filter((entry) => !/hookRef|clipRef|printRef/.test(entry.path))),
     newest(Quotation, 'lines', parts('lines')),
     newest(Sample, 'items', parts('items')),
@@ -2312,17 +2330,17 @@ export async function taskPrefill(enquiryId) {
   const enquiryQuantity = source.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0);
   const orderQuantity = (order?.lines || []).reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
 
-  const primary = customer?.contacts?.find((contact) => contact.isPrimary) || customer?.contacts?.[0];
-  const phone = primary?.mobile || customer?.mobile || '';
-  const place = [customer?.address, customer?.area, customer?.landmark && `near ${customer.landmark}`, customer?.city, customer?.state, customer?.pincode].filter(Boolean).join(', ');
+  /* The order contact, for the SO team to call — a prospect's own person and number until it is a customer. */
+  const contact = orderContactOf(customer, enquiry);
+  const place = [customer?.address, customer?.area, customer?.landmark && `near ${customer.landmark}`, customer?.city || enquiry.prospect?.city, customer?.state, customer?.pincode].filter(Boolean).join(', ');
 
   return {
     customer: {
-      name: customer?.name || '',
-      contactPerson: primary?.name || '',
-      mobile: phone,
-      whatsapp: primary?.whatsapp || customer?.whatsapp || phone,
-      delivery: `${primary?.name || 'Not added'} · ${phone || 'No number'} · ${place || 'Road not selected'}`,
+      name: customer?.name || enquiry.prospect?.name || '',
+      contactPerson: contact.name,
+      mobile: contact.phone,
+      whatsapp: contact.whatsapp,
+      delivery: `${contact.name || 'Not added'} · ${contact.phone || 'No number'} · ${place || 'Road not selected'}`,
     },
     items,
     orderItems,
