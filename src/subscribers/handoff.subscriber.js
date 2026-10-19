@@ -2,6 +2,7 @@ import { MANAGEMENT_QUERY } from '../utils/departments.js';
 import User from '../models/User.js';
 import Customer from '../models/Customer.js';
 import Enquiry from '../models/Enquiry.js';
+import Todo from '../models/Todo.js';
 import { env } from '../config/env.js';
 import { EVENTS, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
 import { describeHandoff, finishQuotationTasks, finishSampleTasks, holderOf, markEnquiry, moveEnquiry } from '../services/handoff.service.js';
@@ -242,11 +243,27 @@ export function registerHandoffSubscribers() {
       if (!order?.enquiry) return;
       const enquiry = await Enquiry.findById(order.enquiry);
       if (enquiry) await markEnquiry(enquiry, { won: true, user: by?._id ? by : undefined, note: `${order.number} released to production` });
+      /* A Production Holded Order released from the Sales orders screen goes to Production too. */
       await moveWhenAt(order.enquiry, {
-        at: SALES_STAGES, kind: 'ask_edd', by, finishes: ['po_so'],
+        at: [...SALES_STAGES, 'production_hold'], kind: 'ask_edd', by, finishes: ['po_so'],
         fields: { poNumber: order.customerPo?.number, soNumber: order.number },
         note: `${order.number} released to production`,
       });
+      /*
+       * Said on the enquiry's own tasks — the SO team's and Production's — so whoever reads the
+       * task sees the order went to the plant, and when, without opening the Sales orders screen.
+       */
+      const who = by?._id ? await User.findById(by._id).select('name').lean() : null;
+      const text = `${order.number}${order.customerPo?.number ? ` (PO ${order.customerPo.number})` : ''}${who?.name ? ` by ${who.name}` : ''}`;
+      const [lastSo] = await Todo.find({ enquiry: order.enquiry, kind: 'po_so' }).sort({ createdAt: -1 }).limit(1).select('_id').lean();
+      const told = [lastSo?._id, ...(await Todo.find({ enquiry: order.enquiry, kind: 'ask_edd', completed: false }).select('_id').lean()).map((task) => task._id)].filter(Boolean);
+      if (told.length) {
+        await Todo.updateMany(
+          { _id: { $in: told } },
+          { $push: { updates: { kind: 'notice', statusLabel: 'Released to production', text, note: `Released to production: ${text}`, by: who?._id, at: new Date() } } },
+          { keepVersion: true }
+        );
+      }
     })
   );
 

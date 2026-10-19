@@ -220,8 +220,14 @@ test('releasing the sales order finishes Sales / SO’s task and gives Productio
     const ticked = await api(`/api/orders/${made.json.data._id}/checks`, { method: 'POST', as: 'priya', body: { check } });
     assert.equal(ticked.status, 200, ticked.json.message);
   }
+  /* Confirmed — every check ticked — it is on the Sales orders screen's Ready to release list, and the enquiry offers the button. */
+  const ready = await api('/api/orders?readyToRelease=true&limit=100', { as: 'priya' });
+  assert.ok(ready.json.data.some((row) => row._id === made.json.data._id), 'on the ready list');
+  const before = (await api(`/api/enquiries/${enquiry}/handoffs`, { as: 'priya' })).json.orders;
+  assert.deepEqual([before[0].number, before[0].mayRelease, before[0].released], [made.json.data.number, true, null]);
   const released = await api(`/api/orders/${made.json.data._id}/actions`, { method: 'POST', as: 'priya', body: { action: 'release' } });
   assert.equal(released.status, 200, released.json.message);
+  assert.ok(!(await api('/api/orders?readyToRelease=true&limit=100', { as: 'priya' })).json.data.some((row) => row._id === made.json.data._id), 'off the ready list once released');
 
   const now = await until(async () => Boolean(await openTask(enquiry, 'ask_edd')));
   assert.ok(now, 'Production has its task');
@@ -232,6 +238,35 @@ test('releasing the sales order finishes Sales / SO’s task and gives Productio
   assert.equal(sales.outcome.fields.soNumber, made.json.data.number, 'the SO number is recorded for Sales');
   assert.equal(sales.outcome.fields.poNumber, 'PO/SCM/4471');
   assert.equal((await holder(enquiry)).department, 'marketing');
+
+  /* The release is said on the SO team's task and Production's, and the enquiry shows when and by whom. */
+  assert.ok(await until(async () => (await openTask(enquiry, 'ask_edd')).updates?.some((entry) => entry.statusLabel === 'Released to production')));
+  assert.match((await Todo.findOne({ enquiry, kind: 'po_so' }).lean()).updates.at(-1).note, new RegExp(`Released to production: ${made.json.data.number} \\(PO PO/SCM/4471\\) by `));
+  const after = (await api(`/api/enquiries/${enquiry}/handoffs`, { as: 'nandhini' })).json.orders[0];
+  assert.equal(after.mayRelease, false);
+  assert.ok(after.released?.at && after.released.by, 'released, when and by whom');
+});
+
+test('a Production Holded Order is released only by Admin or its marketing person — then Production has it', async () => {
+  const enquiry = await freshEnquiry();
+  await Enquiry.updateOne({ _id: enquiry }, { $set: { stage: 'production_hold', marketingStatus: 'production_hold' } });
+  const made = await api('/api/orders', {
+    method: 'POST', as: 'priya',
+    body: { enquiry, customerPo: { number: 'PO/HOLD/1' }, lines: [{ modelNumber: 'NH-400', quantity: 2000, unitPrice: 7.5 }] },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  for (const check of ['poReceived', 'correctModel', 'correctColour', 'printingApproved', 'sampleApproved', 'priceApproved', 'deliveryDateConfirmed', 'packingConfirmed']) {
+    await api(`/api/orders/${made.json.data._id}/checks`, { method: 'POST', as: 'priya', body: { check } });
+  }
+  assert.equal((await api(`/api/enquiries/${enquiry}/handoffs`, { as: 'priya' })).json.orders[0].mayRelease, false, 'not the SO team’s to release');
+  const refused = await api(`/api/orders/${made.json.data._id}/actions`, { method: 'POST', as: 'priya', body: { action: 'release' } });
+  assert.equal(refused.status, 403);
+  assert.match(refused.json.message, /Production Holded Order/);
+  assert.equal((await api(`/api/enquiries/${enquiry}/handoffs`, { as: 'admin' })).json.orders[0].mayRelease, true);
+  const released = await api(`/api/orders/${made.json.data._id}/actions`, { method: 'POST', as: 'admin', body: { action: 'release' } });
+  assert.equal(released.status, 200, released.json.message);
+  assert.ok(await until(async () => Boolean(await openTask(enquiry, 'ask_edd'))), 'Production has its task');
+  assert.equal((await Enquiry.findById(enquiry)).stage, 'production_edd');
 });
 
 test('goods leaving the plant finish Dispatch’s task and ask for the LR copy', async () => {
