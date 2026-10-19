@@ -9,6 +9,8 @@ import SalesOrder, {
   VERIFICATION_KEYS,
 } from '../models/SalesOrder.js';
 import Quotation from '../models/Quotation.js';
+import Enquiry from '../models/Enquiry.js';
+import { mayReleaseHeld } from '../services/handoff.service.js';
 import { mouldWithPhoto } from '../models/Mould.js';
 import Customer from '../models/Customer.js';
 import Attachment from '../models/Attachment.js';
@@ -155,6 +157,11 @@ async function orderFilters(req, { withStatus = true } = {}) {
    * filter on the checks would also match a cancelled order that happened to be half-ticked.
    */
   if (req.query.awaitingRelease === 'true') filter.status = { $in: PRE_RELEASE_STATUSES };
+  /* Confirmed and waiting on the button: every check ticked, not released yet [SalesOrder `canRelease`]. */
+  if (req.query.readyToRelease === 'true') {
+    filter.status = { $in: PRE_RELEASE_STATUSES };
+    for (const key of VERIFICATION_KEYS) filter[`verification.${key}.by`] = { $exists: true, $ne: null };
+  }
 
   return { page, limit, sort, filter, scope };
 }
@@ -738,6 +745,16 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
 
   /* Production starts only once the advance its terms ask for is in [services/paymentGates]. */
   if (action === 'release') await assertPaidFor(order, 'production', { by: req.user });
+  /*
+   * A Production Holded Order goes to the plant only by Admin or its marketing person — the
+   * same rule as Move to Production on the enquiry [handoff.service `mayReleaseHeld`].
+   */
+  if (action === 'release' && order.enquiry) {
+    const held = await Enquiry.findById(order.enquiry).select('stage assignedTo').lean();
+    if (held?.stage === 'production_hold' && !mayReleaseHeld(req.user, held)) {
+      throw ApiError.forbidden('This order is a Production Holded Order — only Admin or its marketing person can release it to production');
+    }
+  }
 
   const before = snapshot(order);
 

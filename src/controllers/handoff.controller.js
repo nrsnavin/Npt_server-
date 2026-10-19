@@ -3,6 +3,7 @@ import Quotation, { CLOSED_QUOTATION_STATUSES } from '../models/Quotation.js';
 import Todo from '../models/Todo.js';
 import Attachment from '../models/Attachment.js';
 import Sample from '../models/Sample.js';
+import SalesOrder, { PRE_RELEASE_STATUSES, VERIFICATION_CHECKS } from '../models/SalesOrder.js';
 import { bufferOf, put, remove, safeFilename } from '../services/storage.service.js';
 import { sendResultToCustomer } from '../services/taskResultMessage.service.js';
 import { publicApiBase, signatureValid } from '../utils/signedLink.js';
@@ -17,9 +18,9 @@ import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
-  updateHandoff, mayWorkOnHandoff, raiseAssemblyWith, routingFor, decideRouting,
+  updateHandoff, mayWorkOnHandoff, mayReleaseHeld, raiseAssemblyWith, routingFor, decideRouting,
 } from '../services/handoff.service.js';
-import { canRead } from '../services/access.service.js';
+import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
 
 /**
@@ -178,8 +179,41 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     lrUploaded: tasks.some((task) => task.kind === 'lr_copy' && task.resultFile),
     /* When the goods will be ready — Production's EDD and the order lines' own dates. */
     production: await productionDates(enquiry._id),
+    /* Its sales orders and whether each has gone to the plant — released here or on the Sales orders screen. */
+    orders: await ordersOnEnquiry(enquiry, req.user),
   });
 });
+
+/**
+ * The enquiry's sales orders as the enquiry screen shows them: released (when, by whom), or
+ * waiting — with the checks still short — and whether this person may press Release to
+ * production. A Production Holded Order is Admin's or its marketing person's to release.
+ */
+async function ordersOnEnquiry(enquiry, user) {
+  const orders = await SalesOrder.find({ enquiry: enquiry._id, status: { $ne: 'cancelled' } })
+    .select('number status customerPo releasedAt releasedBy verification updatedAt lines.quantity')
+    .populate('releasedBy', 'name')
+    .sort({ createdAt: -1 })
+    .limit(20);
+  const mayWriteOrders = canWrite(user, 'orders');
+  const heldOk = enquiry.stage !== 'production_hold' || mayReleaseHeld(user, enquiry);
+  return orders.map((order) => {
+    const short = VERIFICATION_CHECKS.filter((check) => !order.verification?.[check.key]?.by).map((check) => check.label);
+    const waiting = PRE_RELEASE_STATUSES.includes(order.status);
+    return {
+      _id: order._id,
+      number: order.number,
+      status: order.status,
+      poNumber: order.customerPo?.number || null,
+      quantity: (order.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0),
+      released: order.releasedAt ? { at: order.releasedAt, by: order.releasedBy?.name || null } : null,
+      waiting,
+      checksShort: waiting ? short : [],
+      mayRelease: waiting && !short.length && mayWriteOrders && heldOk,
+      updatedAt: order.updatedAt,
+    };
+  });
+}
 
 async function taskFor(req) {
   const task = await Todo.findById(req.params.id);
