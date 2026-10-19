@@ -186,6 +186,20 @@ const paymentFollowUp = {
     /* Hand-over to the field: the PRT case is raised and this task closes with the reason. */
     { key: 'escalate_prt', label: 'Escalated to PRT', comment: true, raises: 'prt_recovery', done: true },
     { key: 'paid', label: 'Paid', followUp: 'payment_sent', recordsReceipt: true, done: true },
+    /*
+     * The money a sales order waits for before production (or dispatch) is in the bank: Payment
+     * Collection confirms it here, and it is recorded as a confirmed receipt on the order. Once
+     * the stage is covered the task closes and marketing and Admin are told to release the order
+     * [paymentGates.service `confirmInwardFromTask`]. Only on a task about a sales order.
+     */
+    {
+      key: 'payment_inward', label: 'Payment Inward Confirmed', confirmsInward: true,
+      fields: [
+        { key: 'amount', label: 'Amount received (₹)', type: 'number', required: true },
+        { key: 'mode', label: 'Mode', options: ['NEFT', 'RTGS', 'UPI', 'Cheque', 'Cash', 'Other'], required: true },
+        { key: 'reference', label: 'UTR / cheque number' },
+      ],
+    },
   ],
   asks: [
     { key: 'contact', label: 'Contact person / WhatsApp', from: 'customer.whatsapp' },
@@ -517,7 +531,8 @@ export const TASK_FORMS = {
   },
 
   team_payment_followup: paymentFollowUp,
-  my_payment_followup: paymentFollowUp,
+  /* The raiser's own tracker: the same, but money in is confirmed by Payment Collection, not here. */
+  my_payment_followup: { ...paymentFollowUp, statuses: paymentFollowUp.statuses.filter((step) => !step.confirmsInward) },
   /* Suggested steps, kept until the plant sends its own. A correction needed shows as an issue on the enquiry. */
   gst_invoice_audit: {
     team: 'Audit Team',

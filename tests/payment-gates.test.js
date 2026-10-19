@@ -263,3 +263,49 @@ test('50% advance, 50% before dispatch: the balance is chased once the advance i
   const next = (await collectionTasks(order)).find((task) => !task.completed);
   assert.match(next.title, /Collect ₹3,750 before dispatch/, 'the balance, not the whole order');
 });
+
+test('release refused for the advance: Payment Collection confirms the payment inward on its task, then marketing releases it', async () => {
+  const enquiry = await freshEnquiry();
+  const order = await book(enquiry, { advancePercent: 50, beforeDispatchPercent: 50 });
+  for (const check of ['poReceived', 'correctModel', 'correctColour', 'printingApproved', 'sampleApproved', 'priceApproved', 'deliveryDateConfirmed', 'packingConfirmed']) {
+    await api(`/api/orders/${order._id}/checks`, { method: 'POST', as: 'admin', body: { check } });
+  }
+  const refused = await api(`/api/orders/${order._id}/actions`, { method: 'POST', as: 'admin', body: { action: 'release' } });
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.message, /Payment Collection has a task to collect it and confirm the payment inward; then marketing or Admin can release it/);
+
+  const [task] = (await collectionTasks(order)).filter((entry) => !entry.completed);
+  assert.equal(task.kind, 'team_payment_followup');
+  const move = (as, body) => api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as, body: { status: 'payment_inward', note: 'NEFT in the bank this morning', ...body } });
+
+  /* Payment Collection's to confirm; more than is owed is refused and nothing moves. */
+  assert.equal((await move('siva', { fields: { amount: 3750, mode: 'NEFT' } })).status, 403);
+  const tooMuch = await move('vijay', { fields: { amount: 9000, mode: 'NEFT' } });
+  assert.equal(tooMuch.status, 400);
+  assert.match(tooMuch.json.message, /more than the ₹3,750 still owed/);
+  assert.equal((await Todo.findById(task._id)).status, task.status, 'nothing moved');
+
+  /* Part of it: confirmed, the task stays open and the gate stays shut. */
+  const part = await move('vijay', { fields: { amount: 1000, mode: 'UPI', reference: 'UPI-77' } });
+  assert.equal(part.status, 200, part.json.message);
+  assert.equal((await Todo.findById(task._id)).completed, false);
+  assert.equal((await api(`/api/orders/${order._id}/actions`, { method: 'POST', as: 'admin', body: { action: 'release' } })).status, 400);
+
+  /* The rest: the receipt is confirmed in Payment Collection's name, the task closes, marketing is told to release it. */
+  const rest = await move('vijay', { fields: { amount: 2750, mode: 'NEFT', reference: 'UTR-991' } });
+  assert.equal(rest.status, 200, rest.json.message);
+  const advance = await Receivable.findOne({ order: order._id, kind: 'advance' }).lean();
+  assert.deepEqual(advance.receipts.map((row) => [row.amount, row.mode, Boolean(row.confirmed?.at)]), [[1000, 'upi', true], [2750, 'neft', true]]);
+  assert.equal((await Todo.findById(task._id)).completed, true, 'the chase closes');
+  assert.ok(await Todo.exists({ user: id.admin, title: new RegExp(`Advance received on ${order.number} — release it to production`), link: `/orders/${order._id}` }));
+
+  const released = await api(`/api/orders/${order._id}/actions`, { method: 'POST', as: 'admin', body: { action: 'release' } });
+  assert.equal(released.status, 200, released.json.message);
+  assert.equal(released.json.data.status, 'approved_for_production');
+});
+
+test('a marketing person’s own payment tracker cannot confirm money in', async () => {
+  const { TASK_FORMS } = await import('../src/config/departmentTaskForms.js');
+  assert.ok(TASK_FORMS.team_payment_followup.statuses.some((step) => step.key === 'payment_inward'));
+  assert.ok(!TASK_FORMS.my_payment_followup.statuses.some((step) => step.key === 'payment_inward'));
+});
