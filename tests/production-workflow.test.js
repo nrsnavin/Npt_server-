@@ -839,7 +839,7 @@ test('the migration hands open LR Copy tasks from Dispatch to Reception, and lea
 });
 
 test('Done on a task with its own workflow closes it at Task Closed and tells marketing and Admin, like choosing it', async () => {
-  const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Stock run for the showroom', brief: { quantity: '2000' } } });
+  const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Stock run for the showroom', brief: { model: 'NPT-400S', quantity: '2000' } } });
   assert.equal(sent.status, 201, sent.json.message);
   const id = sent.json.data.task._id;
   assert.equal((await api(`/api/workspace/todos/${id}/status`, { method: 'POST', as: 'siva', body: { status: 'planning', note: 'On M2 next week' } })).status, 200);
@@ -855,7 +855,7 @@ test('Done on a task with its own workflow closes it at Task Closed and tells ma
 });
 
 test('choosing Task Closed tells them once, not twice', async () => {
-  const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Another stock run' } });
+  const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Another stock run', brief: { model: 'NPT-400S' } } });
   const id = sent.json.data.task._id;
   const before = (await noticesOf('nandhini')).length;
   assert.equal((await api(`/api/workspace/todos/${id}/status`, { method: 'POST', as: 'siva', body: { status: 'closed', note: 'Done and dusted' } })).status, 200);
@@ -872,7 +872,7 @@ test('a team task form only fills in customers its raiser may see, and only Admi
   assert.equal(own.status, 200);
   assert.ok(own.json.data.customer.mobile, 'their own buyer’s contact');
   assert.equal((await api(`/api/workspace/team-tasks/prefill?customer=${id}`, { as: 'admin' })).status, 200, 'Admin sees every buyer');
-  const named = await api('/api/workspace/team-tasks', { method: 'POST', as: 'arun', body: { kind: 'ask_edd', note: 'Stock run', customer: id } });
+  const named = await api('/api/workspace/team-tasks', { method: 'POST', as: 'arun', body: { kind: 'ask_edd', note: 'Stock run', customer: id, brief: { model: 'NPT-400S' } } });
   assert.equal(named.status, 400);
   assert.match(named.json.message, /not on the register/);
 });

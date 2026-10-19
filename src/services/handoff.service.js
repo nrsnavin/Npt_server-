@@ -669,6 +669,13 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
   const picked = await pickedMember(kind, brief);
   const asked = keptBrief(kind, picked.brief, { strict: true });
   assertNote(kind, asked, note);
+  /*
+   * With no enquiry, the model is all Production, Printing and Assembly have to plan by — the
+   * printing and assembly decided for it, the dates given for it [decideRouting].
+   */
+  if (['ask_edd', 'ask_printing', 'ask_assembling_edd'].includes(kind) && !String(asked.model || asked.models || '').trim()) {
+    fail('Name the model — with no enquiry, the team plans by it');
+  }
   /* The instruction is optional when the form's answers — the model, the material, the quantity — say what the team should do. */
   const text = String(note || '').trim();
   if (text.length < 3 && !Object.keys(asked).length) fail('Say what the team should do, or fill in what it is about');

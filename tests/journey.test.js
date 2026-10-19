@@ -223,6 +223,12 @@ test('a Production task raised from the customer, with no enquiry, runs Printing
   assert.deepEqual(flow.json.data.specs, []);
 });
 
+test('a Production, Printing or Assembly task raised from the customer names its model', async () => {
+  const bare = await api('/api/workspace/team-tasks', { method: 'POST', body: { kind: 'ask_edd', note: 'Status of the order', customer: customerId, brief: { quantity: '5000' } } });
+  assert.equal(bare.status, 400);
+  assert.match(bare.json.message, /Name the model/);
+});
+
 test('Assembly asked alone goes Assembly → Dispatch; Printing asked alone goes Printing → Dispatch', async () => {
   for (const [kind, who] of [['ask_assembling_edd', 'admin'], ['ask_printing', 'pandi']]) {
     const raised = await api('/api/workspace/team-tasks', { method: 'POST', body: { kind, note: 'Buyer sent their own hangers', customer: customerId, brief: { model: 'NH-400', quantity: '1200' } } });
