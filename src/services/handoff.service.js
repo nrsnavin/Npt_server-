@@ -2081,10 +2081,16 @@ export async function taskPrefill(enquiryId) {
    * enquiry's quantity and the quotation's price for it (the buyer's target price failing that).
    */
   const quotedFor = (row) => (quotation?.lines || []).find((line) => sameModel(described(line), row) && line.unitPrice != null)?.unitPrice;
+  /* The parts the enquiry (or its newest quotation or sample) gives the same model. */
+  const partsOf = (row) => {
+    const same = items.find((entry) => sameModel(entry, row)) || {};
+    return { hook: row.hook || same.hook || '', clip: row.clip || same.clip || '', print: row.print || same.print || '' };
+  };
   const orderItems = order?.lines?.length
     ? order.lines.map((line) => ({
       model: described(line).model,
       material: materialAndColour(described(line)),
+      ...partsOf(described(line)),
       quantity: line.quantity ? String(line.quantity) : '',
       price: line.unitPrice != null ? String(line.unitPrice) : '',
       edd: day(line.promisedDate || line.deliveryDate),
@@ -2095,6 +2101,7 @@ export async function taskPrefill(enquiryId) {
       return {
         model: row.model,
         material: materialAndColour(row),
+        ...partsOf(row),
         quantity: asked?.quantity ? String(asked.quantity) : '',
         price: price != null ? String(price) : '',
         edd: '',
@@ -2129,6 +2136,8 @@ export async function taskPrefill(enquiryId) {
       : { paymentTerms: '', invoiceNumber: '' },
     /* The people each `member` question may pick — the PRT members for a visit. */
     members: await membersFor(HANDOFFS.flatMap((handoff) => (handoff.asks || []).filter((field) => field.type === 'member').map((field) => field.department))),
+    /* The registers, so a model, material, hook, clip or print is picked, not typed from memory. */
+    registers: await registerLists(),
   };
 }
 

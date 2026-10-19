@@ -83,10 +83,13 @@ const SAMPLE_COLUMNS = [
   { key: 'quantity', label: 'Pcs', type: 'number', blank: '3' },
 ];
 
-/** The rows of a sales order request: each model with its material and colour, how many, the price and the date it is due. */
+/** The rows of a sales order request: each model with its material and colour, its parts, how many, the price and the date it is due. */
 const SO_COLUMNS = [
   { key: 'model', label: 'Model', required: true, register: 'moulds' },
   { key: 'material', label: 'Material & colour', register: 'materials' },
+  { key: 'hook', label: 'Hook', register: 'hooks' },
+  { key: 'clip', label: 'Clip', register: 'clips' },
+  { key: 'print', label: 'Print', register: 'prints' },
   { key: 'quantity', label: 'Qty (pcs)', type: 'number' },
   { key: 'price', label: 'Price (₹ / pc)', type: 'number' },
   { key: 'edd', label: 'EDD', type: 'date' },
