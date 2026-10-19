@@ -295,6 +295,8 @@ function sampleFromBrief(brief = {}) {
   if (row.colour) said.colour = row.colour;
   if (row.colourType) said.colourMandatory = row.colourType === 'Compulsory colour';
   if (Number(row.quantity) > 0) said.quantity = Number(row.quantity);
+  /* Every model's line, for its own row on the sample [sampling.service `statedOnEachRow`]. */
+  if (brief.items.length > 1) said.rows = brief.items;
   return said;
 }
 
@@ -558,6 +560,12 @@ async function moveEnquiryChecked({
         + `${already.user?.name ? ` (${already.user.name})` : ''}. Add to that one, or wait for it to come back.`
     );
   }
+  /*
+   * Raised by the app with nothing asked — a status that moves the enquiry on (sample approved →
+   * Create Quotation), the next team after a status: the form's answers as the enquiry gives them,
+   * a table's rows included, so the department sees the models it would have seen on the form.
+   */
+  if (system && !Object.keys(brief || {}).length) brief = briefFromPrefill(kind, await taskPrefill(enquiry._id));
   /* A member picked on the form (the PRT visitor): theirs by name, kept on the brief by name. */
   const picked = await pickedMember(kind, brief);
   const asked = keptBrief(kind, picked.brief, { strict: !system });
@@ -1668,6 +1676,29 @@ export async function raiseAssemblyWith(task, user) {
  * knows on top: the quantity sent, and today as the dispatch date. Once only: a second
  * Dispatched does not raise a second LR task. A refusal (a payment gate) is left as a note.
  */
+/**
+ * A task's form answered from the enquiry's prefill [taskPrefill] — what the app writes when it
+ * raises a task nobody filled in: each question from its `from`, a table's rows with only the
+ * columns it asks. A member to pick, an info line and the My / Team switch are left for a person.
+ */
+export function briefFromPrefill(kind, prefill) {
+  const read = (path) => path?.split('.').reduce((value, key) => (value == null ? undefined : value[key]), prefill);
+  const brief = {};
+  for (const field of findHandoff(kind)?.asks || []) {
+    if (['info', 'kind', 'member'].includes(field.type) || !field.from) continue;
+    const value = read(field.from);
+    if (field.type === 'items') {
+      const rows = (Array.isArray(value) ? value : [])
+        .map((row) => Object.fromEntries(field.columns.filter((column) => row?.[column.key] != null && row[column.key] !== '').map((column) => [column.key, String(row[column.key])])))
+        .filter((row) => Object.keys(row).length);
+      if (rows.length) brief[field.key] = rows;
+    } else if (value != null && value !== '' && typeof value !== 'object') {
+      brief[field.key] = value;
+    }
+  }
+  return brief;
+}
+
 /** The pieces a request asks for: its quantity, or the sum of its rows (the SO request's lines). */
 function briefQuantity(brief) {
   if (brief?.quantity) return brief.quantity;
@@ -1699,14 +1730,7 @@ async function raiseNextFrom(task, user, step, text) {
     return null;
   }
   const enquiry = await enquiryOfTask(task);
-  const prefill = await taskPrefill(enquiryId);
-  const read = (path) => path?.split('.').reduce((value, key) => (value == null ? undefined : value[key]), prefill);
-  const brief = {};
-  for (const field of findHandoff(step.next)?.asks || []) {
-    if (['info', 'kind', 'items', 'member'].includes(field.type)) continue;
-    const value = read(field.from);
-    if (value != null && value !== '') brief[field.key] = value;
-  }
+  const brief = briefFromPrefill(step.next, await taskPrefill(enquiryId));
   const asked = briefQuantity(task.brief);
   if (asked) brief.quantity = asked;
   if (findHandoff(step.next)?.asks?.some((field) => field.key === 'dispatchedOn')) brief.dispatchedOn = indiaDay(new Date());

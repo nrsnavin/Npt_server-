@@ -202,6 +202,30 @@ const ROW_FIELDS = [
  * says nothing about the second model in the bag, and spreading it across all of them would
  * invent an instruction nobody gave.
  */
+/**
+ * Each model's own line of the request [handoff.service `sampleFromBrief`] — its pieces, colour
+ * and colour rule — on the sample's row for the same model. The first row's alone used to arrive,
+ * so a second model asked at 3 pcs was made at 1.
+ */
+function statedOnEachRow(payload, asked = []) {
+  if (!payload.items?.length || !asked.length) return payload;
+  const key = (value) => String(value || '').toLowerCase().replace(/\s+/g, '');
+  return {
+    ...payload,
+    items: payload.items.map((row) => {
+      const plain = row?.toObject?.() ?? row;
+      const line = asked.find((entry) => key(entry.model) && key(entry.model) === key(plain.modelNumber));
+      if (!line) return plain;
+      return {
+        ...plain,
+        ...(Number(line.quantity) > 0 ? { quantity: Number(line.quantity) } : {}),
+        ...(line.colour ? { colour: line.colour } : {}),
+        ...(line.colourType ? { colourMandatory: line.colourType === 'Compulsory colour' } : {}),
+      };
+    }),
+  };
+}
+
 function statedOnTheFirstRow(payload, said) {
   const rows = payload.items;
   if (!rows?.length) return payload;
@@ -285,7 +309,7 @@ export async function createSampleRequest(
    */
   const atDesk = said.handover === 'collect';
   const sample = await Sample.create({
-    ...statedOnTheFirstRow({ ...inherited, ...said }, said),
+    ...statedOnEachRow(statedOnTheFirstRow({ ...inherited, ...said }, said), input.rows),
     purpose,
     number: await nextNumber('SMP'),
     requiredDate: input.requiredDate || defaultRequiredDate(enquiry),
