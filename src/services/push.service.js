@@ -11,26 +11,57 @@ import PushSubscription from '../models/PushSubscription.js';
  * A device that has gone — uninstalled, permission withdrawn — answers 404 or 410, and its
  * subscription is deleted rather than tried again forever.
  */
-export const pushPublicKey = () => process.env.WEB_PUSH_PUBLIC_KEY || null;
-export const pushConfigured = () =>
-  Boolean(process.env.WEB_PUSH_PUBLIC_KEY && process.env.WEB_PUSH_PRIVATE_KEY && process.env.WEB_PUSH_SUBJECT);
+/*
+ * The three settings as they are meant, whatever the .env did to them: spaces trimmed, quotes
+ * around them dropped, a trailing "# comment" cut off, and a bare address given its "mailto:".
+ * A key pasted with a quote or a stray space was refused by web-push, and the refusal used to be
+ * reported as the package being missing.
+ */
+const clean = (value) => String(value ?? '').trim().replace(/\s+#.*$/, '').trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+export function vapidSettings(source = process.env) {
+  const publicKey = clean(source.WEB_PUSH_PUBLIC_KEY);
+  const privateKey = clean(source.WEB_PUSH_PRIVATE_KEY);
+  let subject = clean(source.WEB_PUSH_SUBJECT);
+  if (subject && !/^(mailto:|https:)/i.test(subject) && /^[^\s@]+@[^\s@]+$/.test(subject)) subject = `mailto:${subject}`;
+  return { publicKey, privateKey, subject };
+}
+
+export const pushPublicKey = () => vapidSettings().publicKey || null;
+export const pushConfigured = () => {
+  const { publicKey, privateKey, subject } = vapidSettings();
+  return Boolean(publicKey && privateKey && subject);
+};
 
 /*
  * `web-push` is loaded on the first push, not when the API starts. A deploy that pulled this code
- * but skipped `npm ci` then loses push — said in the log — rather than the whole API.
+ * but skipped `npm ci` then loses push — said in the log — rather than the whole API. Neither a
+ * missing package nor a refused key is remembered: fixed and restarted, the next push works.
  */
 let client;
+let problem = null;
+/** Why push cannot send right now, in words — null when it can (or has not been tried). */
+export const pushProblem = () => problem;
+
 async function webPush() {
   if (client) return client;
-  /* Not remembered when it fails: once `npm install` has put the package back, the next push finds it. */
+  let webpush;
   try {
-    const { default: webpush } = await import('web-push');
-    webpush.setVapidDetails(process.env.WEB_PUSH_SUBJECT, process.env.WEB_PUSH_PUBLIC_KEY, process.env.WEB_PUSH_PRIVATE_KEY);
-    client = webpush;
+    ({ default: webpush } = await import('web-push'));
   } catch (error) {
-    console.error(`[push] web-push could not be loaded — run \`npm install\` in the server folder and restart. Nothing is sent. (${error.message})`);
+    problem = 'the web-push package is missing on the server — in the server folder run npm install, then restart the API';
+    console.error(`[push] web-push could not be loaded — run \`npm install\` in the server folder and restart. (${error.message})`);
     return null;
   }
+  const { publicKey, privateKey, subject } = vapidSettings();
+  try {
+    webpush.setVapidDetails(subject, publicKey, privateKey);
+  } catch (error) {
+    problem = `the push keys in the server's .env are not accepted: ${error.message.replace(publicKey, '(public key)').replace(privateKey, '(private key)')} — check WEB_PUSH_PUBLIC_KEY, WEB_PUSH_PRIVATE_KEY (not swapped, no quotes or spaces) and WEB_PUSH_SUBJECT (mailto: followed by an address), then restart the API`;
+    console.error(`[push] ${problem}`);
+    return null;
+  }
+  problem = null;
+  client = webpush;
   return client;
 }
 
@@ -93,7 +124,7 @@ export async function deliverPush(devices, message) {
   }
 
   const webpush = await webPush();
-  if (!webpush) return devices.map((device) => ({ service: serviceOf(device.endpoint), ok: false, why: 'the web-push package is missing on the server — in the server folder run npm install, then restart the API' }));
+  if (!webpush) return devices.map((device) => ({ service: serviceOf(device.endpoint), ok: false, why: problem }));
   const payload = JSON.stringify(message);
   return Promise.all(
     devices.map((device) =>

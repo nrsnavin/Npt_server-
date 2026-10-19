@@ -48,5 +48,5 @@ test('a push without web-push installed is logged, not thrown', () => {
     { WEB_PUSH_PUBLIC_KEY: 'pub', WEB_PUSH_PRIVATE_KEY: 'priv', WEB_PUSH_SUBJECT: 'mailto:ops@example.com' }
   );
   assert.match(result.stdout, /SURVIVED/, result.stderr);
-  assert.match(result.stderr, /web-push is not installed/);
+  assert.match(result.stderr, /web-push could not be loaded/);
 });

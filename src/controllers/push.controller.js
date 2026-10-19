@@ -1,7 +1,7 @@
 import PushSubscription from '../models/PushSubscription.js';
 import Setting from '../models/Setting.js';
 import asyncHandler from '../utils/asyncHandler.js';
-import { pushConfigured, pushPublicKey } from '../services/push.service.js';
+import { pushConfigured, pushProblem, pushPublicKey } from '../services/push.service.js';
 
 /** What a device needs to subscribe — and whether this server sends pushes at all. */
 export const pushKey = asyncHandler(async (req, res) => {
@@ -41,7 +41,7 @@ export const notificationStatus = asyncHandler(async (req, res) => {
     data: {
       mode: isProduction ? 'production' : process.env.NODE_ENV || 'not set',
       redirect: redirect.redirecting() ? { email: redirect.redirectEmail(), phone: await redirect.redirectPhone() } : null,
-      push: { configured: pushConfigured(), myDevices },
+      push: { configured: pushConfigured(), myDevices, problem: pushProblem() },
       email: { configured: Boolean(env.smtp.host), host: env.smtp.host || null, from: env.smtp.from || null },
       whatsapp: { configured: isWhatsAppConfigured(), provider: whatsappProvider() || null, lastTest },
     },
