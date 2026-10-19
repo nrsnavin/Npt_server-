@@ -156,7 +156,7 @@ test('the Production desk tells taken-for-production from not yet: a work order,
   assert.equal(reply.meta.teams.inProduction, 1);
 
   const { productionTaken } = await import('../src/services/productionSummary.service.js');
-  assert.equal(productionTaken({ task: { kind: 'ask_edd', status: 'planning' }, workOrders: [{ number: 'WO-0007' }] }).why, 'Work order WO-0007');
+  assert.equal(productionTaken({ task: { kind: 'ask_edd', status: 'planning' }, workOrders: [{ number: 'WO-0007' }] }).taken, false, 'a work order is made on release — Production has not planned it yet');
   assert.equal(productionTaken({ task: { kind: 'ask_edd', status: 'received' }, floor: { running: [{ machine: 'M-3' }] } }).why, 'Moulding on M-3');
   assert.equal(productionTaken({ task: { kind: 'ask_edd', status: 'mould_issue' } }).taken, false, 'a mould issue before anything ran is not production');
   assert.equal(productionTaken({ task: { kind: 'ask_edd', status: 'ready_dispatch' } }).taken, true);

@@ -21,18 +21,18 @@ const pieces = (value) => Number(value || 0).toLocaleString('en-IN');
  * Whether an enquiry is in the production queue, and what says so — the Production desk's
  * "In the production queue" / "Not in the production queue" filter [web:
  * components/ProductionQueueList.jsx]: Production added it [handoff.service
- * `addToProductionQueue`]; or, for work begun before that step existed, a work order
- * for its released lines, moulding on a press or pieces made, or Production's status at Production
- * Started or past it (on the task or on any of its models). Until then it is waiting to be taken.
+ * `addToProductionQueue`]; or, for work begun before that step existed, moulding on a press or
+ * pieces made, or Production's status at Production Started or past it (on the task or on any of
+ * its models). A work order alone does not say it: one is made for every line when the order is
+ * released, before Production has planned anything. Until then it is waiting to be added.
  */
 const startedKeys = (kind) => {
   const statuses = statusesOf(kind);
   const from = statuses.findIndex((entry) => entry.key === 'started');
   return new Set(from < 0 ? [] : statuses.slice(from).filter((entry) => !entry.issue && !entry.done).map((entry) => entry.key));
 };
-export function productionTaken({ task, workOrders = [], floor = {} }) {
+export function productionTaken({ task, floor = {} }) {
   if (task?.queuedAt) return { taken: true, why: 'Added to the production queue', at: task.queuedAt };
-  if (workOrders.length) return { taken: true, why: `Work order ${workOrders.map((wo) => wo.number).join(', ')}` };
   const running = floor.running || [];
   if (running.length) return { taken: true, why: `Moulding on ${running.map((run) => run.machine || 'a press').join(', ')}` };
   if (floor.made?.runs) return { taken: true, why: `${floor.made.runs} run${floor.made.runs === 1 ? '' : 's'} made ${pieces(floor.made.good)} pcs` };

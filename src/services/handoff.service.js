@@ -18,6 +18,8 @@ import { COLLECTION_KINDS, receivablesOf } from './collections.service.js';
 import { MATERIALS } from '../models/Mould.js';
 import { HANDOVER_CHOICES } from '../config/departmentTaskForms.js';
 import { askToRecordReceipt, endOfIndiaDay, logCollectionCall } from './collections.service.js';
+import { chainOf, jobFilter } from './journey.service.js';
+import mongoose from 'mongoose';
 
 /**
  * One department asking another for something about an enquiry — the buttons on the enquiry
@@ -295,6 +297,8 @@ function sampleFromBrief(brief = {}) {
   if (row.colour) said.colour = row.colour;
   if (row.colourType) said.colourMandatory = row.colourType === 'Compulsory colour';
   if (Number(row.quantity) > 0) said.quantity = Number(row.quantity);
+  /* Every model's line, for its own row on the sample [sampling.service `statedOnEachRow`]. */
+  if (brief.items.length > 1) said.rows = brief.items;
   return said;
 }
 
@@ -558,6 +562,12 @@ async function moveEnquiryChecked({
         + `${already.user?.name ? ` (${already.user.name})` : ''}. Add to that one, or wait for it to come back.`
     );
   }
+  /*
+   * Raised by the app with nothing asked — a status that moves the enquiry on (sample approved →
+   * Create Quotation), the next team after a status: the form's answers as the enquiry gives them,
+   * a table's rows included, so the department sees the models it would have seen on the form.
+   */
+  if (system && !Object.keys(brief || {}).length) brief = briefFromPrefill(kind, await taskPrefill(enquiry._id));
   /* A member picked on the form (the PRT visitor): theirs by name, kept on the brief by name. */
   const picked = await pickedMember(kind, brief);
   const asked = keptBrief(kind, picked.brief, { strict: !system });
@@ -676,7 +686,11 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
   let assignee = picked.member?._id;
   if (department === 'owner') ({ userId: assignee, department } = { userId: user._id, department: user.department || 'marketing' });
 
+  /* The first task of its own job: the teams it goes on to carry its id [Todo `chain`]. */
+  const _id = new mongoose.Types.ObjectId();
   const task = await Todo.create({
+    _id,
+    chain: _id,
     customer: buyer?._id,
     kind,
     department,
@@ -1293,24 +1307,28 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   if (!task.user) task.user = user._id;
   await task.save();
   /* A ready date with a status counts for every model on the task; each model's EDD is its teams' latest. */
-  if (readyDate && (dateField === 'edd' || dateField === 'handover') && task.enquiry && EDD_TASK_KINDS.includes(task.kind)) {
+  if (readyDate && (dateField === 'edd' || dateField === 'handover') && EDD_TASK_KINDS.includes(task.kind)) {
     recordModelDates(task, user, (partial ? moving : modelsOfTask(task).length ? modelsOfTask(task) : ['All models']).map((model) => ({ model, date: readyDate })));
     await task.save();
     if (dateField === 'handover') await passHandover(task, user, readyDate, text);
-    await refreshModelEdds(task.enquiry, user, text);
+    if (task.enquiry) await refreshModelEdds(task.enquiry, user, text);
   } else if (readyDate && dateField === 'edd' && task.enquiry) {
     await writeEnquiryEdd(task.enquiry, { day: readyDate, user, department: task.department, note: text });
   }
   if (form.notifyStatus) await noticeStatus(task, user, { step: partial ? { ...step, label } : step, note: text, date: readyDate });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
-  if (step.next && !step.pdf && task.enquiry) await raiseNextFrom(task, user, step, text);
+  if (step.next && !step.pdf) {
+    if (task.enquiry) await raiseNextFrom(task, user, step, text);
+    /* A job with no enquiry goes on the same way: Dispatched gives Reception the LR copy. */
+    else await raiseNextOnChain(task, user, step, text);
+  }
   /* Goods said to have gone from the task alone: the consignment and its invoice still have to be recorded. */
   if (step.next === 'lr_copy' && task.order) await remindConsignment(task, user, step);
   /* Production or Assembly saying the goods are ready reaches the Dispatch request waiting on them. */
-  if (step.readyForDispatch && task.enquiry) await tellDispatchReady(task, user, { ...step, label }, text, { partial });
+  if (step.readyForDispatch) await tellDispatchReady(task, user, { ...step, label }, text, { partial });
   /* The goods handed to the next team: its task hears it, with the day they came [handOn]. */
-  if (step.handsTo && task.enquiry) {
+  if (step.handsTo) {
     await handOn(task, user, step, text, partial ? moving : null);
     await nextOnJourney(task, user, `${label}${text ? ` — ${text}` : ''}`);
   }
@@ -1385,7 +1403,7 @@ function modelMove(task, step, models) {
 async function modelRoutes(task) {
   const rows = task.kind === 'ask_edd'
     ? task.routing?.models
-    : task.enquiry ? (await Todo.findOne({ enquiry: idOf(task.enquiry), kind: 'ask_edd' }).sort({ createdAt: -1 }).select('routing').lean())?.routing?.models : null;
+    : (await Todo.findOne({ ...jobFilter(task), kind: 'ask_edd' }).sort({ createdAt: -1 }).select('routing').lean())?.routing?.models;
   return new Map((rows || []).filter((row) => row?.model).map((row) => [row.model, row]));
 }
 
@@ -1668,6 +1686,29 @@ export async function raiseAssemblyWith(task, user) {
  * knows on top: the quantity sent, and today as the dispatch date. Once only: a second
  * Dispatched does not raise a second LR task. A refusal (a payment gate) is left as a note.
  */
+/**
+ * A task's form answered from the enquiry's prefill [taskPrefill] — what the app writes when it
+ * raises a task nobody filled in: each question from its `from`, a table's rows with only the
+ * columns it asks. A member to pick, an info line and the My / Team switch are left for a person.
+ */
+export function briefFromPrefill(kind, prefill) {
+  const read = (path) => path?.split('.').reduce((value, key) => (value == null ? undefined : value[key]), prefill);
+  const brief = {};
+  for (const field of findHandoff(kind)?.asks || []) {
+    if (['info', 'kind', 'member'].includes(field.type) || !field.from) continue;
+    const value = read(field.from);
+    if (field.type === 'items') {
+      const rows = (Array.isArray(value) ? value : [])
+        .map((row) => Object.fromEntries(field.columns.filter((column) => row?.[column.key] != null && row[column.key] !== '').map((column) => [column.key, String(row[column.key])])))
+        .filter((row) => Object.keys(row).length);
+      if (rows.length) brief[field.key] = rows;
+    } else if (value != null && value !== '' && typeof value !== 'object') {
+      brief[field.key] = value;
+    }
+  }
+  return brief;
+}
+
 /** The pieces a request asks for: its quantity, or the sum of its rows (the SO request's lines). */
 function briefQuantity(brief) {
   if (brief?.quantity) return brief.quantity;
@@ -1686,6 +1727,18 @@ function carriedBrief(task) {
   };
 }
 
+/** The next team task on a job without an enquiry, once — Dispatched → Reception's LR copy. */
+async function raiseNextOnChain(task, user, step, text) {
+  const { raiseNextTeamTask } = await import('./journey.service.js');
+  const asked = briefQuantity(task.brief);
+  return raiseNextTeamTask(task, step.next, user, `${step.label}${text ? ` — ${text}` : ''}`, {
+    brief: {
+      ...(asked ? { quantity: asked } : {}),
+      ...(findHandoff(step.next)?.asks?.some((field) => field.key === 'dispatchedOn') ? { dispatchedOn: indiaDay(new Date()) } : {}),
+    },
+  });
+}
+
 async function raiseNextFrom(task, user, step, text) {
   const enquiryId = task.enquiry?._id || task.enquiry;
   const open = await Todo.findOne({ enquiry: enquiryId, kind: step.next, completed: false }).select('_id');
@@ -1699,14 +1752,7 @@ async function raiseNextFrom(task, user, step, text) {
     return null;
   }
   const enquiry = await enquiryOfTask(task);
-  const prefill = await taskPrefill(enquiryId);
-  const read = (path) => path?.split('.').reduce((value, key) => (value == null ? undefined : value[key]), prefill);
-  const brief = {};
-  for (const field of findHandoff(step.next)?.asks || []) {
-    if (['info', 'kind', 'items', 'member'].includes(field.type)) continue;
-    const value = read(field.from);
-    if (value != null && value !== '') brief[field.key] = value;
-  }
+  const brief = briefFromPrefill(step.next, await taskPrefill(enquiryId));
   const asked = briefQuantity(task.brief);
   if (asked) brief.quantity = asked;
   if (findHandoff(step.next)?.asks?.some((field) => field.key === 'dispatchedOn')) brief.dispatchedOn = indiaDay(new Date());
@@ -1787,12 +1833,12 @@ const WAITING_ON_GOODS = ['received', 'asked_production', 'not_ready'];
  */
 async function tellDispatchReady(task, user, step, text, { partial = false } = {}) {
   const asking = departmentName(task.department);
-  const requests = await Todo.find({ enquiry: task.enquiry?._id || task.enquiry, kind: 'invoice_dispatch', completed: false });
+  const requests = await Todo.find({ ...jobFilter(task), kind: 'invoice_dispatch', completed: false });
   if (!requests.length) return;
   const said = `${asking}: ${step.label}${text ? ` — ${text}` : ''}`;
   const ready = statusesOf({ kind: 'invoice_dispatch' }).find((entry) => entry.key === 'waiting_vehicle');
   /* Some models ready: the request moves on only when the order goes out model by model. */
-  const goesByModel = partial && (await Enquiry.findById(idOf(task.enquiry)).select('dispatchPlan').lean())?.dispatchPlan?.mode === 'by_model';
+  const goesByModel = partial && Boolean(task.enquiry) && (await Enquiry.findById(idOf(task.enquiry)).select('dispatchPlan').lean())?.dispatchPlan?.mode === 'by_model';
   for (const request of requests) {
     request.updates = [...(request.updates || []), { note: said, by: user._id, at: new Date() }];
     const moves = ready && WAITING_ON_GOODS.includes(request.status) && (!partial || goesByModel);
@@ -2477,7 +2523,6 @@ export async function writeEnquiryEdd(enquiryId, { day, user, department, note }
  */
 export async function setTaskEdd(task, user, { date, note, models }) {
   openHandoff(task, user);
-  if (!task.enquiry) fail('A team task has no enquiry to carry an EDD');
   if (!EDD_TASK_KINDS.includes(task.kind)) fail('The EDD is given from the Production, Assembly or Printing task');
   assertRouted(task);
   /* A date for each model, or one date for all of them [Todo `modelDates`]. */
@@ -2501,7 +2546,7 @@ export async function setTaskEdd(task, user, { date, note, models }) {
     await task.save();
     await passHandover(task, user, day, text);
     /* Its date counts towards each model's EDD — the latest of its teams' dates. */
-    await refreshModelEdds(task.enquiry, user, text);
+    if (task.enquiry) await refreshModelEdds(task.enquiry, user, text);
     await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
     if (findHandoff(task.kind)?.form?.notifyStatus) {
       await noticeStatus(task, user, { step: { key: task.status || 'handover', label: `Hand-over date to ${teamWords(handsOn)}` }, note: text, date: day });
@@ -2517,7 +2562,7 @@ export async function setTaskEdd(task, user, { date, note, models }) {
   if (!task.user) task.user = user._id;
   await task.save();
   /* Each model's EDD is the latest its teams give; the enquiry's, the latest model's [refreshModelEdds]. */
-  await refreshModelEdds(task.enquiry, user, text);
+  if (task.enquiry) await refreshModelEdds(task.enquiry, user, text);
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   if (findHandoff(task.kind)?.form?.notifyStatus) {
     await noticeStatus(task, user, { step: { key: task.status || 'edd', label: 'EDD given' }, note: text, date: day });
@@ -2702,7 +2747,6 @@ const UNPLANNED = ['received', 'accepted'];
 export async function addToProductionQueue(task, user, { models, date, note } = {}) {
   openHandoff(task, user);
   if (task.kind !== 'ask_edd') fail('Only a Production task goes on the production queue');
-  if (!task.enquiry) fail('A team task has no enquiry to plan');
   if (task.queuedAt) throw ApiError.conflict('This task is already in the production queue');
   if (MOULDED.includes(task.status)) fail('The goods are already moulded — there is nothing to queue');
   if (models?.length) task = (await decideRouting(task, user, { models })).task;
@@ -2723,7 +2767,7 @@ export async function addToProductionQueue(task, user, { models, date, note } = 
 }
 
 export function assertRouted(task) {
-  if (task.kind !== 'ask_edd' || !task.enquiry) return;
+  if (task.kind !== 'ask_edd') return;
   if (!task.routing?.decidedAt) fail('Decide first which models need printing or assembly — then give the date');
 }
 
@@ -2732,7 +2776,12 @@ export async function routingFor(task, user) {
   if (task.kind !== 'ask_edd') fail('Only Production decides printing and assembly');
   if (!mayWorkOnHandoff(user, task)) throw ApiError.forbidden(`This task is on the ${departmentName(task.department)} queue`);
   const enquiryId = task.enquiry?._id || task.enquiry;
-  if (!enquiryId) fail('A team task has no enquiry to route');
+  /* Raised from the customer with no enquiry: the models the task names. */
+  if (!enquiryId) {
+    const said = (task.routing?.models || []).map((row) => row.model);
+    const models = [...new Set([...said, ...modelsOfTask(task)].filter(Boolean).map((model) => String(model).trim()))];
+    return { models: models.map((model) => ({ model })), routing: task.routing || null };
+  }
   const prefill = await taskPrefill(enquiryId);
   const { default: SalesOrder } = await import('../models/SalesOrder.js');
   const order = task.order ? await SalesOrder.findById(task.order?._id || task.order).select('lines.modelNumber').lean() : null;
@@ -2755,7 +2804,6 @@ export async function routingFor(task, user) {
 export async function decideRouting(task, user, { models }) {
   openHandoff(task, user);
   if (task.kind !== 'ask_edd') fail('Only Production decides printing and assembly');
-  if (!task.enquiry) fail('A team task has no enquiry to route');
   const rows = [];
   for (const row of models || []) {
     const model = String(row?.model || '').trim();
@@ -2783,7 +2831,7 @@ export async function decideRouting(task, user, { models }) {
   if (!task.user) task.user = user._id;
   await task.save();
 
-  const enquiry = await enquiryOfTask(task);
+  const enquiry = task.enquiry ? await enquiryOfTask(task) : null;
   const teams = {
     printing: printed.length ? {
       models: printed.map((row) => row.model),
@@ -2799,22 +2847,22 @@ export async function decideRouting(task, user, { models }) {
   const raised = {};
   for (const [team, plan] of Object.entries(teams)) {
     const kind = ROUTE_KINDS[team];
-    const open = await Todo.findOne({ enquiry: enquiry._id, kind, completed: false });
+    const open = await Todo.findOne({ ...jobFilter(task), kind, completed: false });
     if (!plan) {
       if (open?.routing?.byProduction) await dropRoute(open, user, team);
       continue;
     }
     const words = team === 'printing' ? 'Print' : 'Assemble';
-    const task2 = open || await moveEnquiry({
-      enquiry, kind, user, system: true, openRecords: false, addToOpen: true, keepStage: true, order: task.order,
-      note: `${words} ${plan.models.join(', ')} — routed by Production (${user.name}). ${plan.handsTo.length ? 'Give Assembly your hand-over date.' : 'Give the EDD once you know when it will be ready.'}`,
-      brief: {
-        model: plan.models[0], models: plan.models.join(', '),
-        ...(task.brief?.material ? { material: task.brief.material } : {}),
-        ...(task.brief?.quantity ? { quantity: task.brief.quantity } : {}),
-      },
-      priority: task.priority,
-    });
+    const note = `${words} ${plan.models.join(', ')} — routed by Production (${user.name}). ${plan.handsTo.length ? 'Give Assembly your hand-over date.' : 'Give the EDD once you know when it will be ready.'}`;
+    const brief = {
+      model: plan.models[0], models: plan.models.join(', '),
+      ...(task.brief?.material ? { material: task.brief.material } : {}),
+      ...(task.brief?.quantity ? { quantity: task.brief.quantity } : {}),
+    };
+    /* With no enquiry, the team's task joins this job's chain, for the same buyer [Todo `chain`]. */
+    const task2 = open || (enquiry
+      ? await moveEnquiry({ enquiry, kind, user, system: true, openRecords: false, addToOpen: true, keepStage: true, order: task.order, note, brief, priority: task.priority })
+      : await raiseOnChain(task, kind, user, { note, brief }));
     const incoming = { ...(task2.routing?.incoming || {}) };
     if (plan.from.includes('production') && handOverDate) incoming.production = handOverDate;
     task2.routing = { ...(task2.routing || {}), ...plan, incoming, byProduction: true };
@@ -2838,6 +2886,32 @@ export async function decideRouting(task, user, { models }) {
     await noticeStatus(task, user, { step: { key: task.status || 'routing', label: wasDecided ? 'Routing changed' : 'Printing / assembly decided' }, note: plan });
   }
   return { task, raised };
+}
+
+/** A team's task on a job without an enquiry: the same buyer, on the same chain, told by the app. */
+async function raiseOnChain(task, kind, user, { note, brief }) {
+  const handoff = findHandoff(kind);
+  const statuses = handoff.form?.statuses || [];
+  const buyer = task.customer?.name ? task.customer : task.customer ? await (await import('../models/Customer.js')).default.findById(idOf(task.customer)).select('name').lean() : null;
+  const raised = await Todo.create({
+    customer: idOf(task.customer) || undefined,
+    kind,
+    department: handoff.department,
+    fromDepartment: task.department,
+    createdBy: task.createdBy || user._id,
+    chain: chainOf(task),
+    previousTask: task._id,
+    title: `${handoff.label} — ${buyer?.name || 'team task'}`,
+    notes: note,
+    brief,
+    ...(statuses.length ? { status: statuses[0].key, statusHistory: [{ status: statuses[0].key, by: user._id, at: new Date() }] } : {}),
+    dueDate: endOfDayIST(new Date(Date.now() + 86400000)),
+    priority: task.priority || 'normal',
+    system: true,
+    link: '/departments/mine',
+  });
+  await publish(EVENTS.HANDOFF_SENT, { task: raised, enquiry: null, by: user });
+  return raised;
 }
 
 /** A team Production no longer sends goods to: closed if nobody has started, told otherwise. */
@@ -2864,9 +2938,8 @@ export async function passHandover(task, user, day, text) {
   task.routing = { ...(task.routing || {}), handOverDate: day, handOverAt: new Date(), handOverBy: user._id };
   task.markModified('routing');
   await task.save();
-  const enquiryId = task.enquiry?._id || task.enquiry;
   for (const team of handsOnOf(task)) {
-    const next = await Todo.findOne({ enquiry: enquiryId, kind: ROUTE_KINDS[team], completed: false });
+    const next = await Todo.findOne({ ...jobFilter(task), kind: ROUTE_KINDS[team], completed: false });
     if (!next) continue;
     next.routing = { ...(next.routing || {}), incoming: { ...(next.routing?.incoming || {}), [from]: day } };
     next.markModified('routing');
@@ -2983,7 +3056,7 @@ export async function setDispatchPlan(enquiry, user, { mode, note }) {
  */
 async function handOn(task, user, step, text, only = null) {
   const from = task.kind === 'ask_edd' ? 'production' : task.kind === 'ask_printing' ? 'printing' : 'assembling';
-  const next = await Todo.findOne({ enquiry: task.enquiry?._id || task.enquiry, kind: ROUTE_KINDS[step.handsTo], completed: false });
+  const next = await Todo.findOne({ ...jobFilter(task), kind: ROUTE_KINDS[step.handsTo], completed: false });
   if (!next) return null;
   const day = indiaDay(new Date());
   /* Only some models handed over: the next team hears which, and the day each came. */

@@ -42,6 +42,18 @@ export const ENDS_AT_ITSELF = ['sample_request', 'sample_collect', 'create_quota
 const PAST_QUALITY = ['lr_copy', 'closed', 'my_payment_followup'];
 
 const idOf = (value) => String(value?._id || value || '');
+
+/**
+ * The tasks of one job: an enquiry's, or — raised from the customer with no enquiry — one chain
+ * of team tasks [Todo `chain`]: the first task and every task raised on from it.
+ */
+export function jobFilter(task) {
+  if (task.enquiry) return { enquiry: idOf(task.enquiry) };
+  const root = idOf(task.chain || task._id);
+  return { $or: [{ chain: root }, { _id: root }] };
+}
+/** The chain a task raised on from this one belongs to. */
+export const chainOf = (task) => (task.enquiry ? undefined : idOf(task.chain || task._id));
 /* A finishing team is through when it says Ready for Dispatch, has handed the goods on, or has finished. */
 const isReady = (task) => {
   if (task.completed) return true;
@@ -138,9 +150,22 @@ async function raiseOnEnquiry(enquiryId, kind, user, note) {
 /* ------------------------------ team tasks, with no enquiry ------------------------------ */
 
 /** What follows a team task on the same buyer. */
-const TEAM_NEXT = { po_so: 'ask_edd', ask_edd: 'quality_check', ask_printing: 'quality_check', ask_assembling_edd: 'quality_check', quality_check: 'invoice_dispatch' };
+const TEAM_NEXT = { po_so: 'ask_edd', quality_check: 'invoice_dispatch' };
 
+/**
+ * A job without an enquiry goes the way an enquiry's does: once every finishing team on it —
+ * Production, and the Printing and Assembly it routed to, or the one team asked — is through,
+ * Dispatch is asked, with Quality's check beside it (Quality never holds the goods back). Quality
+ * finishing first asks Dispatch if nobody has.
+ */
 async function advanceTeamTask(task, user, why) {
+  if (FINISHING_KINDS.includes(task.kind)) {
+    const finishing = await Todo.find({ ...jobFilter(task), kind: { $in: FINISHING_KINDS } }).select('kind status completed').lean();
+    if (finishing.some((entry) => !isReady(entry))) return null;
+    const quality = await raiseNextTeamTask(task, 'quality_check', user, why);
+    const dispatch = await raiseNextTeamTask(task, 'invoice_dispatch', user, why || 'Goods ready');
+    return dispatch || quality;
+  }
   const kind = TEAM_NEXT[task.kind];
   if (!kind) return null;
   if (task.kind === 'quality_check' && !task.completed) return null;
@@ -151,8 +176,10 @@ async function advanceTeamTask(task, user, why) {
  * The next team task in the chain, for the same buyer, carrying what the last one knew (model,
  * material, quantity). Once: a chain that already has it is left alone.
  */
-export async function raiseNextTeamTask(task, kind, user, why) {
+export async function raiseNextTeamTask(task, kind, user, why, { brief: given } = {}) {
+  /* Once on the job: Dispatch asked by Assembly is not asked again by Printing. */
   if (await Todo.exists({ previousTask: task._id, kind })) return null;
+  if (!task.enquiry && await Todo.exists({ ...jobFilter(task), kind, completed: false })) return null;
   const handoff = findHandoff(kind);
   if (!handoff?.department) return null;
   const statuses = handoff.form?.statuses || [];
@@ -171,10 +198,11 @@ export async function raiseNextTeamTask(task, kind, user, why) {
     fromDepartment: task.department,
     createdBy: task.createdBy || user?._id,
     previousTask: task._id,
+    chain: chainOf(task),
     order: task.order || undefined,
     title: `${handoff.label} — ${buyer?.name || task.title.split(' — ').slice(1).join(' — ') || 'team task'}`,
     notes: `${findHandoff(task.kind)?.label || task.kind} → ${handoff.label}${why ? `: ${why}` : ''}${user?.name ? ` (${user.name})` : ''}`,
-    ...(Object.keys(carried).length ? { brief: carried } : {}),
+    ...(Object.keys({ ...carried, ...given }).length ? { brief: { ...carried, ...given } } : {}),
     ...(statuses.length ? { status: statuses[0].key, statusHistory: [{ status: statuses[0].key, by: user?._id, at: new Date() }] } : {}),
     dueDate: new Date(Date.now() + 86400000),
     priority: task.priority || 'normal',

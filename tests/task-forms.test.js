@@ -223,6 +223,11 @@ test('a sample of more than 3 pcs needs the instruction; rows keep only the colu
   const { default: Sample } = await import('../src/models/Sample.js');
   const sample = await Sample.findOne({ enquiry: enquiry._id });
   assert.equal(sample.colourMandatory, true);
+  /* Each model's own line reaches its own row — the second model is made at 3 pcs, not 1. */
+  const second = sample.items.find((row) => row.modelNumber === 'OF-8');
+  assert.equal(second.quantity, 3);
+  assert.equal(second.colourMandatory, false);
+  assert.equal(sample.items.find((row) => row.modelNumber === 'UTJRSH-0').quantity, 5);
   assert.equal(sample.quantity, 5, 'how many, from the first row');
 });
 
@@ -289,4 +294,20 @@ test('a quotation request takes a row per model, each with its own parts and tar
     method: 'POST', token: nandhini, body: { kind: 'price_negotiation', brief: { items: [{ material: 'PP' }] } },
   });
   assert.equal(bad.status, 400, 'a row without its model is refused');
+});
+
+test('a task the app raises on its own carries the form’s answers from the enquiry — a table’s rows too', async () => {
+  const { briefFromPrefill } = await import('../src/services/handoff.service.js');
+  const prefill = (await api(`/api/enquiries/${enquiry._id}/handoffs/prefill`, { token: nandhini })).json.data;
+  const quote = briefFromPrefill('create_quotation', prefill);
+  assert.deepEqual(quote.items.map((row) => row.model), ['UTJRSH-0', 'OF-8'], 'a row per model, as the dialog would show');
+  assert.equal(quote.items[0].material, 'PP Black');
+  assert.equal(quote.items[0].targetPrice, '1.8');
+  assert.equal('packing' in quote.items[0], false, 'blank cells are left out');
+  const sample = briefFromPrefill('sample_request', prefill);
+  assert.equal(sample.items.length, 2);
+  assert.equal(sample.items[0].colourType, 'Compulsory colour');
+  const production = briefFromPrefill('ask_edd', prefill);
+  assert.equal(production.model, 'UTJRSH-0', 'a plain answer from its path');
+  assert.equal(production.items, undefined);
 });
