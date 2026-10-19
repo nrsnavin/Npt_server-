@@ -184,6 +184,17 @@ test('uploading the sales order PDF without Production confirmed: Won, held with
   assert.equal(done.json.next, null, 'Production is not asked');
   assert.equal(done.json.held, true);
   assert.match(done.json.nextProblem, /Production Holded Orders/);
+  /* The request's lines are the sales order now — booked, not released while held. */
+  assert.equal(done.json.order.booked, true);
+  assert.equal(done.json.order.released, false);
+  const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
+  const booked = await SalesOrder.findById(done.json.order._id).lean();
+  assert.equal(booked.status, 'po_received');
+  assert.equal(String(booked.sourceTask), soTask._id);
+  assert.deepEqual(booked.lines.map((line) => [line.modelNumber, line.quantity, line.unitPrice, line.colour]), [['UTJRSH-0', 5000, 2.4, 'PP Black']]);
+  assert.equal(booked.lines[0].deliveryDate.toISOString().slice(0, 10), '2026-11-10');
+  assert.equal(String((await Todo.findById(soTask._id)).order), String(booked._id), 'the task is linked to its order');
+  assert.match((await Todo.findById(soTask._id)).updates.at(-1).note, /drafted from the request — 1 line, 5,000 pcs.* — waits for Move to Production/);
   const held = await Enquiry.findById(enquiry._id);
   assert.deepEqual([held.stage, held.marketingStatus, held.status], ['production_hold', 'production_hold', 'won']);
   assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'ask_edd' }), 0);
@@ -205,6 +216,14 @@ test('a held order goes to Production only by Admin or its marketing person', as
   assert.equal(moved.status, 201, moved.json.message);
   assert.equal(moved.json.data.task.department, 'production');
   assert.equal((await Enquiry.findById(enquiry._id)).stage, 'production_edd');
+  /* Its order goes to the plant with it: released, and its work order raised for the planning board. */
+  const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
+  const order = await SalesOrder.findOne({ enquiry: enquiry._id }).lean();
+  assert.equal(order.status, 'approved_for_production');
+  assert.match(order.statusHistory.at(-1).note, /Released with Move to Production/);
+  const { default: WorkOrder } = await import('../src/models/WorkOrder.js');
+  for (let i = 0; i < 40 && !(await WorkOrder.exists({ order: order._id })); i += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(await WorkOrder.exists({ order: order._id }), 'a work order for the line');
 });
 
 test('ticked Production confirmed, the SO prepared goes straight to Production', async () => {
@@ -215,7 +234,7 @@ test('ticked Production confirmed, the SO prepared goes straight to Production',
     body: { customer: customer._id, requirement: { modelNumber: 'UTJRSH-0' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
   })).json.data;
   const sent = await api(`/api/enquiries/${second._id}/handoffs`, {
-    method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'Prepare SO', brief: { items: [{ model: 'UTJRSH-0', quantity: '2000' }], productionConfirmed: true } },
+    method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'Prepare SO', brief: { items: [{ model: 'UTJRSH-0', quantity: '2000', price: '3' }], productionConfirmed: true } },
   });
   assert.equal(sent.status, 201, sent.json.message);
   assert.equal(sent.json.data.task.brief.productionConfirmed, 'Yes');
@@ -226,6 +245,9 @@ test('ticked Production confirmed, the SO prepared goes straight to Production',
     assert.equal(done.status, 200, done.json.message);
     assert.equal(done.json.held, false);
     assert.equal(done.json.next?.department, 'production', 'Production has its task');
+    assert.deepEqual([done.json.order.booked, done.json.order.released], [true, true], 'booked and released at once');
+    const asked2 = await Todo.findOne({ enquiry: second._id, kind: 'ask_edd' });
+    assert.equal(String(asked2.order), done.json.order._id, 'Production’s task carries the order');
     assert.equal((await Enquiry.findById(second._id)).stage, 'production_edd');
     const asked = await Todo.findOne({ enquiry: second._id, kind: 'ask_edd' });
     assert.equal(asked.brief.quantity, '2000', 'the rows’ pieces reach Production');
@@ -268,4 +290,76 @@ test('the EDD Production gives shows with the enquiry', async () => {
   assert.equal(production.edd.pending, '4000');
   assert.equal(production.edd.by, 'Sivakumar');
   assert.equal(production.edd.department, 'production');
+});
+
+test('a request line without its pieces or price books no order, and the task says what is missing', async () => {
+  const { orderLinesFromBrief } = await import('../src/services/soFromTask.service.js');
+  assert.match((await orderLinesFromBrief({ items: [{ model: 'NH-1', quantity: '100' }] })).problem, /line 1 \(NH-1\) has no price/);
+  assert.match((await orderLinesFromBrief({ items: [] })).problem, /no order lines/);
+  const { lines } = await orderLinesFromBrief({ items: [{ model: 'NH-1', quantity: '100', price: '2', hook: 'Unknown hook' }] });
+  assert.equal(lines[0].quantity, 100);
+  assert.match(lines[0].remarks, /Model not on the mould register · Hook: Unknown hook/);
+});
+
+test('the SO PDF read: its lines draft the order, the request fills gaps, and every difference is said', async () => {
+  const { draftFromReading } = await import('../src/services/soFromTask.service.js');
+  const { rows, differences } = draftFromReading(
+    { lines: [{ model: 'NH-400', quantity: 6000, price: 2.5 }, { model: 'NH-500', quantity: 1000 }] },
+    [{ model: 'NH-400', quantity: '5000', price: '2.4', material: 'PP Black', hook: 'Chrome' }, { model: 'NH-900', quantity: '200', price: '4' }],
+  );
+  assert.deepEqual(rows[0], { model: 'NH-400', material: 'PP Black', hook: 'Chrome', clip: undefined, print: undefined, quantity: 6000, price: 2.5, edd: undefined });
+  assert.deepEqual(differences, [
+    'NH-400: 6,000 pcs on the SO, 5,000 on the request',
+    'NH-400: ₹2.5 on the SO, ₹2.4 on the request',
+    'NH-500 is on the SO but not on the request',
+    'NH-900 is on the request but not on the SO',
+  ]);
+});
+
+test('reading an SO: rates, Indian dates and register codes are checked, not taken on trust', async () => {
+  const { parseRate, parseDay, tidySalesOrder, readSalesOrder } = await import('../src/services/soRead.llm.js');
+  assert.equal(parseRate('Rs. 1,250.00'), 1250);
+  assert.equal(parseRate('₹ 2.40/-'), 2.4);
+  assert.equal(parseRate('as agreed'), null);
+  assert.equal(parseDay('10/11/2026'), '2026-11-10', 'day first, as India writes it');
+  assert.equal(parseDay('10-11-26'), '2026-11-10');
+  assert.equal(parseDay('31/02/2026'), '', 'not a day');
+  const rows = [{ ref: 'm1', kind: 'mould', id: 'x1', code: 'NCP-25', key: 'NCP25', altKey: '', words: new Set(['ncp', '25']) }];
+  const tidy = await tidySalesOrder({
+    kind: 'sales_order', soNumber: ' SO/26-27/118 ', soDate: '19/10/2026', poNumber: 'PO-77', poDate: '', buyer: 'SKK', paymentTerms: '100% advance',
+    lines: [
+      { model: 'NCP 25', description: 'Shirt hanger', material: 'PP', colour: 'Black', hook: '', clip: '', print: '', quantity: '5,000 pcs', unitPrice: '₹2.40', deliveryDate: '10/11/2026' },
+      { model: '', description: '', material: '', colour: '', hook: '', clip: '', print: '', quantity: '', unitPrice: '', deliveryDate: '' },
+    ],
+  }, { rows });
+  assert.equal(tidy.soNumber, 'SO/26-27/118');
+  assert.equal(tidy.soDate, '2026-10-19');
+  assert.deepEqual(tidy.lines, [{ model: 'NCP-25', matched: true, description: 'Shirt hanger', material: 'PP Black', hook: undefined, clip: undefined, print: undefined, quantity: 5000, price: 2.4, edd: '2026-11-10' }]);
+  /* No key in the tests: the upload goes on, drafted from the request, and says why. */
+  assert.match((await readSalesOrder({ buffer: Buffer.from('%PDF'), mimeType: 'application/pdf' })).problem, /not set up/);
+});
+
+test('an SO PDF that differs from the request is booked from the PDF but not released', async () => {
+  const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
+  const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'PDF Reader Knits', mobile: '9170875222', assignedTo: me } })).json.data;
+  const third = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customer._id, requirement: { modelNumber: 'UTJRSH-0' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const sent = await api(`/api/enquiries/${third._id}/handoffs`, {
+    method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'Prepare SO', brief: { items: [{ model: 'UTJRSH-0', quantity: '2000', price: '3' }], productionConfirmed: true } },
+  });
+  assert.equal(sent.status, 201, sent.json.message);
+  const { finishWithResult } = await import('../src/services/handoff.service.js');
+  const { default: User } = await import('../src/models/User.js');
+  const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
+  const priya = await User.findOne({ email: 'priya@np.com' });
+  const task = await Todo.findById(sent.json.data.task._id);
+  const reading = { soNumber: 'SO/118', poNumber: 'PO-PDF-9', lines: [{ model: 'UTJRSH-0', quantity: 2500, price: 3 }] };
+  const result = await finishWithResult(task, priya, { attachmentId: new mongoose.Types.ObjectId(), note: 'SO sent', reading });
+  assert.equal(result.order.from, 'so_pdf');
+  assert.equal(result.order.released, false, 'a person settles the difference first');
+  assert.match(result.order.said, /read from the SO PDF \(SO\/118\).*2,500 pcs on the SO, 2,000 on the request.*not released/);
+  const order = await SalesOrder.findById(result.order._id).lean();
+  assert.deepEqual([order.status, order.lines[0].quantity, order.customerPo.number, order.drafted.from, order.drafted.soNumber], ['po_received', 2500, 'PO-PDF-9', 'so_pdf', 'SO/118']);
 });

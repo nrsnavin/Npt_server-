@@ -461,6 +461,24 @@ const salesOrderSchema = new mongoose.Schema(
      */
     quotation: { type: mongoose.Schema.Types.ObjectId, ref: 'Quotation', index: true },
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
+    /*
+     * Booked from the SO team's task [services/soFromTask.service.js]: the task whose request gave
+     * the lines, and the SO PDF the team uploaded there.
+     */
+    sourceTask: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo', index: true },
+    soDocument: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+    /*
+     * How the draft was made: read off the SO PDF (`so_pdf`, with its own number and date, and how
+     * it differs from the request) or from the request's lines — for the SO team to check.
+     */
+    drafted: {
+      from: { type: String, enum: ['so_pdf', 'request'] },
+      soNumber: String,
+      soDate: String,
+      differences: { type: [String], default: undefined },
+      readProblem: String,
+      at: Date,
+    },
 
     /** The owning marketing person: an order is still a customer relationship [§29]. */
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },

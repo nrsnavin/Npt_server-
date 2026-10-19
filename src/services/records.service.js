@@ -5,6 +5,7 @@ import MouldRun from '../models/MouldRun.js';
 import Mould from '../models/Mould.js';
 import Enquiry from '../models/Enquiry.js';
 import Todo from '../models/Todo.js';
+import { tellProductionTask } from './journey.service.js';
 import Trip from '../models/Trip.js';
 import SalesOrder, { OPEN_ORDER_STATUSES, PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
 import Material from '../models/Material.js';
@@ -476,6 +477,14 @@ export async function startRun(input, user) {
       await run.save();
       await startedOn(wo, run, user);
     }
+    /* The enquiry's Production task hears it: Production Started, with the press and the mould [journey.service]. */
+    if (enquiryId) {
+      const planned = run.plannedQuantity ? ` · ${Number(run.plannedQuantity).toLocaleString('en-IN')} pcs to make` : '';
+      await tellProductionTask(enquiryId, {
+        note: `${run.number} moulding on ${machine?.code || 'a press'} — mould ${mould.mouldCode}${run.colour ? `, ${run.colour}` : ''}${planned}`,
+        to: 'started', user,
+      });
+    }
     return run;
   });
 }
@@ -516,6 +525,19 @@ export async function finishRun(run, body, user) {
     if (mould) await remindMould(mould);
   }
   if (run.machine) await Machine.updateOne({ _id: run.machine, status: 'running' }, { $set: { status: 'idle' } }, { keepVersion: true });
+  /*
+   * The enquiry's Production task hears what the run made; once every line of its order is made,
+   * it reads Production Completed [journey.service].
+   */
+  if (run.enquiry) {
+    const order = run.order ? await SalesOrder.findById(run.order).select('number lines.quantity lines.production.producedQty').lean() : null;
+    const made = order?.lines?.length && order.lines.every((line) => (line.production?.producedQty || 0) >= (line.quantity || 0));
+    const pieces = `${Number(run.goodPieces || 0).toLocaleString('en-IN')} good, ${Number(run.rejectedPieces || 0).toLocaleString('en-IN')} rejected`;
+    await tellProductionTask(run.enquiry, {
+      note: `${run.number} ${run.status === 'aborted' ? 'stopped' : 'finished'} — ${pieces}${made ? ` · every line of ${order.number} made` : ''}`,
+      to: made ? 'completed' : null, user,
+    });
+  }
   return run;
 }
 

@@ -1,5 +1,6 @@
 import Todo from '../models/Todo.js';
 import Mould from '../models/Mould.js';
+import MouldRun from '../models/MouldRun.js';
 import { CAPACITY_FIELDS, estimate } from '../services/capacity.service.js';
 import { plantCalendar } from '../services/settings.service.js';
 import ApiError from '../utils/ApiError.js';
@@ -115,6 +116,22 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
   };
   const qtyOf = (value) => Number(String(value ?? '').replace(/[^\d.]/g, '')) || 0;
 
+  /* What the floor is doing for each enquiry now — the press and mould running, and what its runs made [models/MouldRun.js]. */
+  const [liveRuns, madeRows] = ids.length ? await Promise.all([
+    MouldRun.find({ enquiry: { $in: ids }, status: 'running' }).select('enquiry number machine mould modelNumber startedAt plannedQuantity')
+      .populate([{ path: 'machine', select: 'code' }, { path: 'mould', select: 'mouldCode' }]).lean(),
+    MouldRun.aggregate([
+      { $match: { enquiry: { $in: ids }, status: { $in: ['completed', 'aborted'] } } },
+      { $group: { _id: '$enquiry', good: { $sum: { $ifNull: ['$goodPieces', 0] } }, rejected: { $sum: { $ifNull: ['$rejectedPieces', 0] } }, runs: { $sum: 1 } } },
+    ]),
+  ]) : [[], []];
+  const floorOf = (enquiryId) => ({
+    running: liveRuns.filter((run) => String(run.enquiry) === String(enquiryId)).map((run) => ({
+      _id: run._id, number: run.number, machine: run.machine?.code || null, mould: run.mould?.mouldCode || run.modelNumber || null, startedAt: run.startedAt, plannedQuantity: run.plannedQuantity || null,
+    })),
+    made: (({ good = 0, rejected = 0, runs = 0 } = {}) => ({ good, rejected, runs }))(madeRows.find((row) => String(row._id) === String(enquiryId))),
+  });
+
   const rows = mine.map((task) => {
     const enquiry = task.enquiry;
     const edd = enquiry.edd?.date || null;
@@ -151,6 +168,8 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
         models: task.routing.models || [], handsTo: task.routing.handsTo || [], handOverDate: task.routing.handOverDate || null,
       } : null,
       order: task.order ? { _id: task.order._id, number: task.order.number, status: task.order.status } : null,
+      /* Moulding now on a press for this enquiry, and the pieces its runs have made. */
+      floor: floorOf(enquiry._id),
       teams: {
         assembling: teamRow(slot.assembling), printing: teamRow(slot.printing),
         quality: teamRow(slot.quality), despatch: teamRow(slot.despatch),
@@ -175,6 +194,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
         qualityOpen: count((row) => row.teams.quality && !row.teams.quality.completed),
         dispatchWaiting: count((row) => row.teams.despatch && !row.teams.despatch.completed),
         issues: count((row) => row.task.issue),
+        moulding: count((row) => row.floor.running.length > 0),
         unclaimed: count((row) => !row.task.with),
         dueTomorrow: count((row) => row.edd?.date === indiaDay(new Date(now.getTime() + DAY_MS))),
       },
