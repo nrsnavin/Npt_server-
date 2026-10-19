@@ -227,6 +227,17 @@ export const downloadAttachment = asyncHandler(async (req, res) => {
     const mayRead = task && (isManagement(req.user) || inDepartment(req.user, task.department)
       || [task.user, task.createdBy, enquiry?.assignedTo].some((id) => id && String(id) === me));
     if (!mayRead) throw ApiError.notFound('File not found');
+  } else if (attachment.salesOrder) {
+    /*
+     * A sales order's paper — the buyer's PO, a line's print artwork — read as the Production
+     * workflow is [productionQueue.controller READERS]: by the plant's departments, who make and
+     * print from it, the order team, and a marketing person only on their own buyer's order.
+     */
+    const { default: SalesOrder } = await import('../models/SalesOrder.js');
+    const order = await SalesOrder.findById(attachment.salesOrder).select('assignedTo');
+    const mayRead = order && ownsRecord(req.user, order)
+      && ['production', 'dispatch', 'quality', 'orders', 'enquiries'].some((moduleKey) => canRead(req.user, moduleKey));
+    if (!mayRead) throw ApiError.notFound('File not found');
   } else if (attachment.query) {
     /* A file posted in a query thread is exactly as readable as the thread. */
     const query = await Query.findById(attachment.query).select('raisedBy participants');

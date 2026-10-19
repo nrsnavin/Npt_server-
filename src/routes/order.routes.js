@@ -2,7 +2,7 @@ import { Router } from 'express';
 import {
   listOrders, orderBoard, getOrder, exportOrders,
   createOrder, orderFromQuotation, updateOrder,
-  setOrderCheck, applyOrderAction, listOrderActions, setOrderPo, setOrderPriority,
+  setOrderCheck, applyOrderAction, listOrderActions, setOrderPo, setLinePrintReference, setOrderPriority,
   setLinePromisedDate, orderPaymentStanding, orderReleaseCheck, waiveOrderPayment,
 } from '../controllers/order.controller.js';
 import {
@@ -101,6 +101,13 @@ router.patch('/orders/:id', requireModule('orders', 'write'), validate(orderUpda
  * more often than as a photo, though both go through the same door.
  */
 router.put('/orders/:id/po', requireModule('orders', 'write'), singleDocument('file'), setOrderPo);
+
+/*
+ * A line's print reference and artwork. On the read grant, like the priority and the promise:
+ * marketing holds orders at read and is who has the buyer's artwork; the ownership check inside
+ * refuses an order the caller may not open.
+ */
+router.put('/orders/:id/lines/:lineId/print-reference', requireModule('orders'), singleDocument('file'), setLinePrintReference);
 
 /*
  * Asking the plant to pull an order forward [§29].

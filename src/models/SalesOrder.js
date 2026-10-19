@@ -288,6 +288,17 @@ const lineSchema = new mongoose.Schema(
     printing: { type: String, trim: true },
     /** Pieces per carton and marking. Not a register — it is a term of this order. */
     packing: { type: String, trim: true },
+    /**
+     * What the print is to look like — artwork number, Pantone, logo position — and the artwork
+     * itself, a photo or PDF. Given by the order team, and editable after release: the plant
+     * prints from it, so it follows the line to the Production workflow page.
+     */
+    printReference: {
+      text: { type: String, trim: true, maxlength: 500 },
+      attachment: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+    },
 
     /** What was ordered. The figure every other quantity on this line is measured against. */
     quantity: { type: Number, min: 1, required: true },

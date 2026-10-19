@@ -2,7 +2,7 @@ import Todo from '../models/Todo.js';
 import Mould from '../models/Mould.js';
 import MouldRun from '../models/MouldRun.js';
 import WorkOrder from '../models/WorkOrder.js';
-import { modelRows, summarise } from '../services/productionSummary.service.js';
+import { modelRows, productionTaken, summarise } from '../services/productionSummary.service.js';
 import { CAPACITY_FIELDS, estimate } from '../services/capacity.service.js';
 import { plantCalendar } from '../services/settings.service.js';
 import ApiError from '../utils/ApiError.js';
@@ -155,6 +155,8 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
       summary: summarise({ task, enquiry, teams: slot, floor, workOrders, edd }),
       models: modelRows({ task, enquiry, teams: slot, workOrders }),
       workOrders,
+      /* Taken for production yet — a work order, a run, or Production Started — and what says so. */
+      production: productionTaken({ task, workOrders, floor }),
       link: `/production/workflow/${task._id}`,
       task: {
         _id: task._id, status: task.status, statusLabel: statusLabelOf(task), issue: issueOf(task), with: person(task.user),
@@ -212,6 +214,8 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
         qualityOpen: count((row) => row.teams.quality && !row.teams.quality.completed),
         dispatchWaiting: count((row) => row.teams.despatch && !row.teams.despatch.completed),
         issues: count((row) => row.task.issue),
+        inProduction: count((row) => row.production.taken),
+        notTaken: count((row) => !row.production.taken),
         moulding: count((row) => row.floor.running.length > 0),
         unclaimed: count((row) => !row.task.with),
         dueTomorrow: count((row) => row.edd?.date === indiaDay(new Date(now.getTime() + DAY_MS))),
@@ -258,6 +262,9 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
     plannedStart: wo.plannedStart || null, plannedEnd: wo.plannedEnd || null,
   }));
   const edd = enquiry.edd?.date || null;
+  /* What each model is made with, from its sales order: hook, clip, print and the print reference. */
+  const { orderSpecsForEnquiry } = await import('../services/orderParts.service.js');
+  const specs = await orderSpecsForEnquiry(enquiry._id);
   res.json({
     success: true,
     data: {
@@ -272,6 +279,7 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
       models: modelRows({ task, enquiry, teams, workOrders }),
       teams,
       workOrders,
+      specs,
       floor: { running: floor.running, made: floor.made },
     },
   });
