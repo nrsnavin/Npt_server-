@@ -669,6 +669,13 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
   const picked = await pickedMember(kind, brief);
   const asked = keptBrief(kind, picked.brief, { strict: true });
   assertNote(kind, asked, note);
+  /*
+   * With no enquiry, the model is all Production, Printing and Assembly have to plan by — the
+   * printing and assembly decided for it, the dates given for it [decideRouting].
+   */
+  if (['ask_edd', 'ask_printing', 'ask_assembling_edd'].includes(kind) && !String(asked.model || asked.models || '').trim()) {
+    fail('Name the model — with no enquiry, the team plans by it');
+  }
   /* The instruction is optional when the form's answers — the model, the material, the quantity — say what the team should do. */
   const text = String(note || '').trim();
   if (text.length < 3 && !Object.keys(asked).length) fail('Say what the team should do, or fill in what it is about');
@@ -1047,7 +1054,7 @@ const enquiryOfTask = async (task) => {
  * goes next — the next department has it from here. A side request is simply done, and the
  * sender gets it back.
  */
-export async function completeHandoff(task, user, { note, fields = {}, next, system = false, quiet = false }) {
+export async function completeHandoff(task, user, { note, fields = {}, next, system = false, quiet = false, handedOn = false }) {
   /* `system`: the app closing it because the work is recorded elsewhere (the sample sent). */
   if (system) {
     if (task.completed) return task;
@@ -1087,7 +1094,8 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
    * shows it, and the enquiry's marketing person and Admin are told, as when it is chosen from
    * the list — not "done" beside whatever status it last had.
    */
-  const closing = !system && statusesOf(task).find((entry) => entry.done && !entry.pdf);
+  /* `handedOn`: closed at Handed to Printing / Assembly [setTaskStatus] — it ends there, not at Task Closed. */
+  const closing = !system && !handedOn && statusesOf(task).find((entry) => entry.done && !entry.pdf);
   const closesNow = Boolean(closing && task.status !== closing.key);
   if (closesNow) {
     task.status = closing.key;
@@ -1106,13 +1114,15 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
   if (task.kind === 'sample_collect') await collectedAtDesk(task, user, kept);
 
   /* The enquiry moves where this task's finishing says it does — before anybody is told. */
-  await reachEnquiry(task, user, heldBack(task) ? handoff.whenHeld : handoff?.whenDone, text);
+  /* Goods handed to Printing or Assembly are not ready for Dispatch: the enquiry stays where it is. */
+  if (!handedOn) await reachEnquiry(task, user, heldBack(task) ? handoff.whenHeld : handoff?.whenDone, text);
   if (closesNow && handoff?.form?.notifyStatus) await noticeStatus(task, user, { step: closing, note: text });
   const details = (handoff?.records || []).filter((field) => kept[field.key]).map((field) => `${field.label}: ${kept[field.key]}`);
   /* A clarification's answer goes back onto the task that asked; anything else, to its sender. */
   if (task.parentTask) await answerParent(task, user, text);
   /* `quiet`: whoever asked is already told another way (the sample's own feedback task). */
-  else if (!quiet) {
+  /* Handed on: the sender heard the hand-over with the status, and the job goes on with the next team. */
+  else if (!quiet && !handedOn) {
     await backToSender(task, {
       user,
       title: `Done: ${task.title} — next step?`,
@@ -1254,7 +1264,11 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   /* Production says what follows it before it gives any date [decideRouting]. */
   if (readyDate) assertRouted(task);
   /* A task of several models moves model by model: the ones named, or every one [Todo `modelStatuses`]. */
-  const { byModel, moving, partial, after, overall, finishes } = modelMove(task, step, models);
+  const move = modelMove(task, step, models);
+  const { byModel, moving, partial, after } = move;
+  /* Handed on for good — every model with the team after this one, or done — closes the task too [handedOnForGood]. */
+  const finishes = move.finishes || (step.handsTo && (await handedOnForGood(task, step, after, byModel)));
+  const overall = finishes ? step.key : move.overall;
   const unchanged = byModel ? task.status === overall && after.every((row, at) => row.status === modelStatusesOf(task)[at].status) : task.status === status;
   /* The same status again says nothing new — except money confirmed in, which is more money each time. */
   if (unchanged && !readyDate && !step.confirmsInward) return task;
@@ -1315,7 +1329,9 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   } else if (readyDate && dateField === 'edd' && task.enquiry) {
     await writeEnquiryEdd(task.enquiry, { day: readyDate, user, department: task.department, note: text });
   }
-  if (form.notifyStatus) await noticeStatus(task, user, { step: partial ? { ...step, label } : step, note: text, date: readyDate });
+  /* A ready date that is the EDD is the answer to "Ask EDD" — said even where the status itself is not [noticeStatus]. */
+  const eddSaid = Boolean(readyDate && dateField === 'edd');
+  if (form.notifyStatus) await noticeStatus(task, user, { step: { ...step, ...(partial ? { label } : {}), ...(eddSaid ? { edd: true } : {}) }, note: text, date: readyDate });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
   if (step.next && !step.pdf) {
@@ -1354,8 +1370,36 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   /* A status that tells the buyer something — "your sample is ready to collect" — sends it from here. */
   if (step.tellBuyer) await tellBuyerFromTask(task, user, step);
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
-  if (finishes) return completeHandoff(task, user, { note: text || step.label, fields: { ...asked, ...(readyDate ? { [dateField]: readyDate } : {}) } });
+  if (finishes) {
+    return completeHandoff(task, user, {
+      note: text || step.label, fields: { ...asked, ...(readyDate ? { [dateField]: readyDate } : {}) }, handedOn: Boolean(step.handsTo),
+    });
+  }
   return task;
+}
+
+/**
+ * Production's task ends when its goods are with the team after it: Handed to Printing for a
+ * model it routed to Printing, Handed to Assembly for one going straight to Assembly — and
+ * Printing's at Handed to Assembly. True once every model of the task is handed on that way or
+ * done; a model that goes nowhere after (Ready for Dispatch) still keeps the task open.
+ */
+async function handedOnForGood(task, step, after, byModel) {
+  const statuses = statusesOf(task);
+  const routes = await modelRoutes(task);
+  const mine = modelsOfTask(task);
+  const finished = (model, key) => {
+    const at = statuses.find((entry) => entry.key === key);
+    if (at?.done) return true;
+    if (!at?.handsTo) return false;
+    /* No route kept for the model: the hand-over was allowed, so it is the model's [handsOnOf]. */
+    return !routes.has(model) || goesTo(task, routes.get(model), at.handsTo);
+  };
+  if (byModel) return after.every((row) => finished(row.model, row.status));
+  /* One model, or none named: every route this team has, or the one named model's. */
+  const named = mine.length ? [...routes.keys()].filter((model) => mine.includes(model)) : [...routes.keys()];
+  const own = task.kind === 'ask_printing' && !mine.length ? named.filter((model) => routes.get(model).printing) : named;
+  return own.every((model) => finished(model, step.key));
 }
 
 /**
@@ -1871,6 +1915,13 @@ function statusDate(form, step, date) {
  * under "Needs your action" until they read and dismiss it [models/TaskNotice.js].
  */
 export async function noticeStatus(task, user, { step, note, date, also = [], onlyAlso = false }) {
+  /*
+   * Production's moves reach marketing's and Admin's "Needs your action" only when there is
+   * something to act on: the goods Ready for Dispatch, an issue (Mould Issue, machine, raw
+   * material), or the EDD asked for. Every other Production status stays on its task and the
+   * workflow page — a department that asked Production (Dispatch's readiness ask) still hears each.
+   */
+  const routine = task.kind === 'ask_edd' && !onlyAlso && !step?.readyForDispatch && !step?.issue && !step?.edd;
   const [{ default: TaskNotice }, { default: User }] = await Promise.all([
     import('../models/TaskNotice.js'), import('../models/User.js'),
   ]);
@@ -1883,7 +1934,8 @@ export async function noticeStatus(task, user, { step, note, date, also = [], on
   if (task.askedFrom?.length) {
     for (const asking of await Todo.find({ _id: { $in: task.askedFrom }, completed: false }).select('user department').lean()) askers.push(...(await peopleOn(asking)));
   }
-  const recipients = new Set((onlyAlso ? also : [asker, ...admins.map((person) => person._id), ...also, ...askers]).filter(Boolean).map(String));
+  const told = onlyAlso ? also : routine ? askers : [asker, ...admins.map((person) => person._id), ...also, ...askers];
+  const recipients = new Set(told.filter(Boolean).map(String));
   if (user?._id) recipients.delete(String(user._id));
   if (!recipients.size) return;
   await TaskNotice.insertMany([...recipients].map((recipient) => ({
@@ -2565,7 +2617,7 @@ export async function setTaskEdd(task, user, { date, note, models }) {
   if (task.enquiry) await refreshModelEdds(task.enquiry, user, text);
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   if (findHandoff(task.kind)?.form?.notifyStatus) {
-    await noticeStatus(task, user, { step: { key: task.status || 'edd', label: 'EDD given' }, note: text, date: day });
+    await noticeStatus(task, user, { step: { key: task.status || 'edd', label: 'EDD given', edd: true }, note: text, date: day });
   }
   return task;
 }

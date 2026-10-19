@@ -96,13 +96,17 @@ test('every move needs a remark; Ready on Selected Date needs a date, and not a 
   assert.equal(await TaskNotice.countDocuments(), 0, 'a refused move tells nobody');
 });
 
-test('a move is shown to the enquiry’s marketing person and Admin — not to whoever made it', async () => {
+test('only a move to act on reaches marketing and Admin — an issue, Ready for Dispatch, the EDD — and never whoever made it', async () => {
   const moved = await move('siva', 'accepted', { note: 'Accepted — mould is on the shelf' });
   assert.equal(moved.status, 200, moved.json.message);
+  assert.equal((await noticesOf('nandhini')).length, 0, 'EDD Accepted stays on the task');
+  assert.equal((await noticesOf('admin')).length, 0);
+  const issue = await move('siva', 'mould_issue', { note: 'Core cracked — mould team called' });
+  assert.equal(issue.status, 200, issue.json.message);
   for (const who of ['nandhini', 'admin']) {
     const [notice] = await noticesOf(who);
-    assert.equal(notice.statusLabel, 'EDD Accepted', who);
-    assert.equal(notice.note, 'Accepted — mould is on the shelf');
+    assert.equal(notice.statusLabel, 'Mould Issue', who);
+    assert.equal(notice.note, 'Core cracked — mould team called');
     assert.equal(notice.by.name, 'Sivakumar');
     assert.equal(notice.enquiry.number, enquiry.number);
   }
@@ -111,7 +115,7 @@ test('a move is shown to the enquiry’s marketing person and Admin — not to w
 
   /* At the top of the marketing person's dashboard, under "Needs your action". */
   const dashboard = (await api('/api/departments/mine/dashboard', { as: 'nandhini' })).json.data;
-  assert.equal(dashboard.attention.notices[0].statusLabel, 'EDD Accepted');
+  assert.equal(dashboard.attention.notices[0].statusLabel, 'Mould Issue');
 });
 
 test('a ready date becomes the enquiry’s EDD; Ready Tomorrow is tomorrow unless another is given', async () => {
@@ -158,13 +162,14 @@ test('a read notice is gone a day later, unread ones stay', async () => {
   assert.ok(indexes.some((index) => index.key.expireAt === 1 && index.expireAfterSeconds === 0), 'Mongo removes them');
 });
 
-test('Task Closed finishes the task', async () => {
+test('Ready for Dispatch reaches marketing; Task Closed finishes the task quietly', async () => {
+  assert.equal((await move('siva', 'ready_dispatch', { note: 'All 10,000 packed' })).status, 200);
+  assert.equal((await noticesOf('nandhini'))[0].statusLabel, 'Ready for Dispatch');
   assert.equal((await move('siva', 'closed', { note: 'All 10,000 handed to dispatch' })).status, 200);
   const done = await Todo.findById(task._id);
   assert.equal(done.completed, true);
   assert.equal(done.status, 'closed');
-  const [notice] = await noticesOf('nandhini');
-  assert.equal(notice.statusLabel, 'Task Closed');
+  assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Task Closed'), 'nothing to act on');
 });
 
 /* ------------------------------ The Mould team ------------------------------ */
@@ -665,10 +670,10 @@ test('Admin and marketing raise a department task with no enquiry; it lands on t
   assert.ok(desk, 'on the Department tasks tab with the rest');
   assert.equal(desk.enquiry, null);
 
-  const moved = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'planning', note: 'Slotted on M2 after the current run' } });
+  const moved = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'raw_material', note: 'Black PP not in — ordered' } });
   assert.equal(moved.status, 200, moved.json.message);
   const [notice] = await noticesOf('nandhini');
-  assert.equal(notice.statusLabel, 'Planning', 'whoever raised it is told, with no enquiry to own it');
+  assert.equal(notice.statusLabel, 'Raw Material Not Available', 'whoever raised it is told, with no enquiry to own it');
   assert.ok(!notice.enquiry, 'no enquiry on it');
   assert.ok((await noticesOf('admin')).some((entry) => entry.task === String(task._id)), 'and Admin');
 
@@ -839,11 +844,11 @@ test('the migration hands open LR Copy tasks from Dispatch to Reception, and lea
 });
 
 test('Done on a task with its own workflow closes it at Task Closed and tells marketing and Admin, like choosing it', async () => {
-  const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Stock run for the showroom', brief: { quantity: '2000' } } });
+  const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_assembling_edd', note: 'Stock run for the showroom', brief: { model: 'NPT-400S', quantity: '2000' } } });
   assert.equal(sent.status, 201, sent.json.message);
   const id = sent.json.data.task._id;
-  assert.equal((await api(`/api/workspace/todos/${id}/status`, { method: 'POST', as: 'siva', body: { status: 'planning', note: 'On M2 next week' } })).status, 200);
-  const done = await api(`/api/workspace/todos/${id}/done`, { method: 'POST', as: 'siva', body: { note: 'All 2,000 made and handed to stores' } });
+  assert.equal((await api(`/api/workspace/todos/${id}/status`, { method: 'POST', as: 'anand', body: { status: 'started', note: 'On the line next week' } })).status, 200);
+  const done = await api(`/api/workspace/todos/${id}/done`, { method: 'POST', as: 'anand', body: { note: 'All 2,000 made and handed to stores' } });
   assert.equal(done.status, 200, done.json.message);
   const task = await Todo.findById(id);
   assert.equal(task.completed, true);
@@ -855,10 +860,10 @@ test('Done on a task with its own workflow closes it at Task Closed and tells ma
 });
 
 test('choosing Task Closed tells them once, not twice', async () => {
-  const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Another stock run' } });
+  const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_assembling_edd', note: 'Another stock run', brief: { model: 'NPT-400S' } } });
   const id = sent.json.data.task._id;
   const before = (await noticesOf('nandhini')).length;
-  assert.equal((await api(`/api/workspace/todos/${id}/status`, { method: 'POST', as: 'siva', body: { status: 'closed', note: 'Done and dusted' } })).status, 200);
+  assert.equal((await api(`/api/workspace/todos/${id}/status`, { method: 'POST', as: 'anand', body: { status: 'closed', note: 'Done and dusted' } })).status, 200);
   assert.equal((await noticesOf('nandhini')).length, before + 1);
 });
 
@@ -872,7 +877,7 @@ test('a team task form only fills in customers its raiser may see, and only Admi
   assert.equal(own.status, 200);
   assert.ok(own.json.data.customer.mobile, 'their own buyer’s contact');
   assert.equal((await api(`/api/workspace/team-tasks/prefill?customer=${id}`, { as: 'admin' })).status, 200, 'Admin sees every buyer');
-  const named = await api('/api/workspace/team-tasks', { method: 'POST', as: 'arun', body: { kind: 'ask_edd', note: 'Stock run', customer: id } });
+  const named = await api('/api/workspace/team-tasks', { method: 'POST', as: 'arun', body: { kind: 'ask_edd', note: 'Stock run', customer: id, brief: { model: 'NPT-400S' } } });
   assert.equal(named.status, 400);
   assert.match(named.json.message, /not on the register/);
 });

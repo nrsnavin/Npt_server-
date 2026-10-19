@@ -180,6 +180,13 @@ test('a Production task raised from the customer, with no enquiry, runs Printing
   assert.equal(added.status, 200, added.json.message);
   const printing = await chainOf('ask_printing');
   const assembly = await chainOf('ask_assembling_edd');
+  /* It stands in the production queue as its own job while Production has it. */
+  const queue = (await api('/api/production/queue', { as: 'siva' })).json;
+  const row = queue.data.find((entry) => String(entry.task._id) === String(production));
+  assert.ok(row, 'the team task is on the production queue');
+  assert.equal(row.enquiry.team, true);
+  assert.equal(row.enquiry.customer._id, customerId);
+  assert.equal(row.production.taken, true, 'added to the queue');
   assert.ok(printing && assembly, 'Printing and Assembly are tasked on the same job');
   assert.equal(String(printing.customer), customerId);
   assert.equal(printing.enquiry, undefined);
@@ -188,11 +195,18 @@ test('a Production task raised from the customer, with no enquiry, runs Printing
 
   /* The goods move team to team; nothing goes to Dispatch until the last team is ready. */
   assert.equal((await move(production, 'siva', 'started', 'On press 2')).status, 200);
+  const doneAsks = () => Todo.countDocuments({ title: /^Done: / });
+  const asksBefore = await doneAsks();
   assert.equal((await move(production, 'siva', 'handed_printing', 'Moulded — to the print line')).status, 200);
+  const handed = await Todo.findById(production);
+  assert.equal(handed.completed, true, 'Production’s task ends when the goods go to Printing');
+  assert.equal(handed.status, 'handed_printing', 'and reads Handed to Printing, not Task Closed');
+  assert.equal(await doneAsks(), asksBefore, 'no "next step?" to marketing — the job goes on with Printing');
   assert.ok((await Todo.findById(printing._id)).routing.received.production, 'Printing hears the goods came');
   assert.equal(await chainOf('invoice_dispatch'), null, 'not yet: Printing and Assembly are still at it');
   assert.equal((await move(printing._id, 'pandi', 'started', 'Printing')).status, 200);
   assert.equal((await move(printing._id, 'pandi', 'handed_assembly', 'Printed — to assembly')).status, 200);
+  assert.equal((await Todo.findById(printing._id)).completed, true, 'Printing’s task ends when the goods go to Assembly');
   assert.ok((await Todo.findById(assembly._id)).routing.received.printing, 'Assembly hears the goods came from Printing');
   assert.equal(await chainOf('invoice_dispatch'), null);
   assert.equal((await move(assembly._id, 'admin', 'ready_dispatch', 'Assembled and packed')).status, 200);
@@ -207,20 +221,20 @@ test('a Production task raised from the customer, with no enquiry, runs Printing
   assert.ok(lr, 'Dispatched gives Reception the LR copy');
   assert.equal(lr.brief.quantity, '5000');
 
-  /* It stands in the production queue as its own job, and its workflow page shows the chain's teams. */
-  const queue = (await api('/api/production/queue', { as: 'siva' })).json;
-  const row = queue.data.find((entry) => String(entry.task._id) === String(production));
-  assert.ok(row, 'the team task is on the production queue');
-  assert.equal(row.enquiry.team, true);
-  assert.equal(row.enquiry.customer._id, customerId);
-  assert.equal(row.production.taken, true, 'added to the queue');
-  assert.equal(row.teams.printing.label, 'Handed to Assembly');
-  assert.equal(row.teams.assembling.label, 'Ready for Dispatch');
+  /* Handed on, Production's task left the queue; its workflow page still shows the chain's teams. */
+  const after = (await api('/api/production/queue', { as: 'siva' })).json;
+  assert.equal(after.data.some((entry) => String(entry.task._id) === String(production)), false, 'off the queue once handed on');
   const flow = await api(`/api/production/workflow/${production}`, { as: 'siva' });
   assert.equal(flow.status, 200, flow.json.message);
   assert.equal(flow.json.data.enquiry.team, true);
   assert.deepEqual(Object.keys(flow.json.data.teams).sort(), ['assembling', 'despatch', 'printing', 'quality']);
   assert.deepEqual(flow.json.data.specs, []);
+});
+
+test('a Production, Printing or Assembly task raised from the customer names its model', async () => {
+  const bare = await api('/api/workspace/team-tasks', { method: 'POST', body: { kind: 'ask_edd', note: 'Status of the order', customer: customerId, brief: { quantity: '5000' } } });
+  assert.equal(bare.status, 400);
+  assert.match(bare.json.message, /Name the model/);
 });
 
 test('Assembly asked alone goes Assembly → Dispatch; Printing asked alone goes Printing → Dispatch', async () => {
