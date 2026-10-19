@@ -187,13 +187,13 @@ const paymentFollowUp = {
     { key: 'escalate_prt', label: 'Escalated to PRT', comment: true, raises: 'prt_recovery', done: true },
     { key: 'paid', label: 'Paid', followUp: 'payment_sent', recordsReceipt: true, done: true },
     /*
-     * The money a sales order waits for before production (or dispatch) is in the bank: Payment
-     * Collection confirms it here, and it is recorded as a confirmed receipt on the order. Once
-     * the stage is covered the task closes and marketing and Admin are told to release the order
-     * [paymentGates.service `confirmInwardFromTask`]. Only on a task about a sales order.
+     * The money a sales order waits for before production (or dispatch) has come in: Payment
+     * Collection logs it here — a receipt on the order's RCV — and Accounts gets a task to confirm
+     * it in the bank. Once Accounts confirms and the stage is covered, this task closes and the SO
+     * team and marketing are told to release the order [paymentGates.service `confirmInwardFromTask`].
      */
     {
-      key: 'payment_inward', label: 'Payment Inward Confirmed', confirmsInward: true,
+      key: 'payment_inward', label: 'Payment Logged — Accounts to Confirm', confirmsInward: true,
       fields: [
         { key: 'amount', label: 'Amount received (₹)', type: 'number', required: true },
         { key: 'mode', label: 'Mode', options: ['NEFT', 'RTGS', 'UPI', 'Cheque', 'Cash', 'Other'], required: true },

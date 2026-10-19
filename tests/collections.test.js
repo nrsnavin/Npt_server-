@@ -121,8 +121,8 @@ test('Payment Recovery is a department of its own, with the PRT Recovery task; t
   assert.ok(!prt.hidden);
   assert.ok(buttons.find((button) => button.key === 'request_prt_visit').hidden, 'replaced, kept readable');
   const labels = (key) => buttons.find((button) => button.key === key).form.statuses.map((entry) => entry.label);
-  assert.deepEqual(labels('team_payment_followup'), ['Assigned', 'Contacted', 'Promised', 'Part Paid', 'Promise Broken', 'Not Reachable', 'Disputed', 'Escalated to PRT', 'Paid', 'Payment Inward Confirmed']);
-  assert.deepEqual(labels('my_payment_followup'), labels('team_payment_followup').slice(0, -1), 'the same tracker on the raiser’s own list — money in is Payment Collection’s to confirm');
+  assert.deepEqual(labels('team_payment_followup'), ['Assigned', 'Contacted', 'Promised', 'Part Paid', 'Promise Broken', 'Not Reachable', 'Disputed', 'Escalated to PRT', 'Paid', 'Payment Logged — Accounts to Confirm']);
+  assert.deepEqual(labels('my_payment_followup'), labels('team_payment_followup').slice(0, -1), 'the same tracker on the raiser’s own list — money in is logged by Payment Collection');
   assert.deepEqual(labels('prt_recovery'), ['Assigned', 'Visit Planned', 'Visited', 'Collected', 'Part Collected', 'Promised', 'Promise Broken', 'Cannot Recover', 'Task Closed']);
   assert.equal(prt.asks.find((field) => field.type === 'member').department, 'payment_recovery');
   assert.ok(!prt.asks.find((field) => field.type === 'member').required, 'the automation raises it with nobody named');
@@ -287,9 +287,10 @@ test('PRT works the case in the field; what it collects waits for Accounts befor
   assert.equal(standing.dispatch.met, false);
   assert.equal(standing.received, 0);
 
-  /* PRT cannot confirm its own receipt; Accounts (or Payment Collection, who confirm money in) can, once. */
+  /* PRT cannot confirm its own receipt; Accounts can, once. */
   const receiptId = recorded.json.data.receipts[0]._id;
   assert.equal((await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'senthil' })).status, 403);
+  assert.equal((await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'vijay' })).status, 403);
   const confirmed = await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'kiran' });
   assert.equal(confirmed.status, 200, confirmed.json.message);
   assert.equal(confirmed.json.data.receipts[0].confirmed.by.name, 'Kiran Accounts');

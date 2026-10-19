@@ -88,7 +88,7 @@ async function createOnce(fields, sameTask) {
  * who has already started.
  */
 export async function raiseDepartmentTask({
-  department, title, notes, dueDate, priority = 'normal', link, originKey, customer, order,
+  department, title, notes, dueDate, priority = 'normal', link, originKey, customer, order, enquiry,
 }) {
   if (!department || !title) return null;
 
@@ -98,7 +98,7 @@ export async function raiseDepartmentTask({
   }
 
   return createOnce(
-    { department, title, notes, dueDate, priority, link, originKey, customer, order, system: true },
+    { department, title, notes, dueDate, priority, link, originKey, customer, order, enquiry, system: true },
     { department, originKey, completed: false }
   );
 }

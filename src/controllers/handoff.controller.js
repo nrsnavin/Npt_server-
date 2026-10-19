@@ -278,15 +278,18 @@ export async function floorOf(enquiryId) {
  */
 async function ordersOnEnquiry(enquiry, user) {
   const orders = await SalesOrder.find({ enquiry: enquiry._id, status: { $ne: 'cancelled' } })
-    .select('number status customerPo releasedAt releasedBy verification updatedAt lines.quantity')
     .populate('releasedBy', 'name')
     .sort({ createdAt: -1 })
     .limit(20);
   const mayWriteOrders = canWrite(user, 'orders');
   const heldOk = enquiry.stage !== 'production_hold' || mayReleaseHeld(user, enquiry);
-  return orders.map((order) => {
+  const { paymentStanding } = await import('../services/paymentGates.service.js');
+  return Promise.all(orders.map(async (order) => {
     const short = VERIFICATION_CHECKS.filter((check) => !order.verification?.[check.key]?.by).map((check) => check.label);
     const waiting = PRE_RELEASE_STATUSES.includes(order.status);
+    /* The advance its terms ask for before production: released only once Accounts has confirmed it (or Admin waived it). */
+    const advance = waiting ? (await paymentStanding(order)).production : null;
+    const advanceShort = advance && !advance.met && !advance.waived ? advance.short : 0;
     return {
       _id: order._id,
       number: order.number,
@@ -296,10 +299,11 @@ async function ordersOnEnquiry(enquiry, user) {
       released: order.releasedAt ? { at: order.releasedAt, by: order.releasedBy?.name || null } : null,
       waiting,
       checksShort: waiting ? short : [],
-      mayRelease: waiting && !short.length && mayWriteOrders && heldOk,
+      advanceShort,
+      mayRelease: waiting && !short.length && !advanceShort && mayWriteOrders && heldOk,
       updatedAt: order.updatedAt,
     };
-  });
+  }));
 }
 
 async function taskFor(req) {

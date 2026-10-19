@@ -10,10 +10,10 @@ import { nextNumber } from '../services/numbering.service.js';
 import { listParams, paginated } from '../utils/query.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { customerScope, isOwnershipScoped, ownershipFilter, ownsRecord } from '../services/ownership.service.js';
-import { raiseTask } from '../services/task.service.js';
+import { raiseTask, resolveTasks } from '../services/task.service.js';
 import { dueDateFor, orderPosition } from '../services/receivable.service.js';
 import { afterCommit, transactional } from '../utils/transaction.js';
-import { afterPayment } from '../services/paymentGates.service.js';
+import { afterPayment, askAccountsToConfirm, confirmTaskKey } from '../services/paymentGates.service.js';
 import { FOLLOW_UP_MODES, FOLLOW_UP_STATUSES } from '../config/paymentFollowUp.js';
 import { endOfDayIST } from '../services/handoff.service.js';
 import Todo from '../models/Todo.js';
@@ -46,12 +46,11 @@ const POPULATE = [
 ];
 
 /*
- * Accounts, Admin and Payment Collection: the people who confirm money in, and so the ones whose
- * receipt counts at the gate as it is written. Payment Collection logs the payment inward — it is
- * their job to see it in [paymentGates `confirmInwardFromTask`]. PRT's cash from the field still
- * waits for one of them.
+ * Accounts, or Admin: the people who can see the bank, and so the only ones whose receipt counts
+ * at the gate. Payment Collection and PRT log the payment; Accounts gets a task to confirm it
+ * [paymentGates `askAccountsToConfirm`].
  */
-const seesTheBank = (user) => isManagement(user) || inDepartment(user, 'accounts') || inDepartment(user, 'payment_collection');
+const seesTheBank = (user) => isManagement(user) || inDepartment(user, 'accounts');
 
 /** Refuses a receivable the caller may not see, in the shape reading it would take. */
 async function readable(id, user) {
@@ -580,6 +579,7 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
   await applyPaymentPositions([receivable]);
   /* Logged on the receivable's own log too, beside the calls, with who took it. */
   receivable.followUps.push(paymentLogEntry(req.user, req.body, { partial: receivable.balance > 0 }));
+  const logged = receivable.receipts.at(-1);
 
   /* Settled: the ladder stops, and a re-opened balance starts it again from wherever it stands
      rather than from where it left off. */
@@ -613,6 +613,8 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
     }).catch(() => null);
   }
 
+  /* Logged, not seen in the bank: Accounts gets a task to confirm it. */
+  if (!logged.confirmed?.at) await askAccountsToConfirm(receivable, logged, req.user);
   /* Money in may open production or dispatch on the order's terms: close the chase, tell marketing. */
   if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order));
 
@@ -625,7 +627,7 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
  * Only then does it count at the payment gate, which is why the gate is re-checked after it.
  */
 export const confirmReceipt = asyncHandler(withOrderLock(async req => (await Receivable.findById(req.params.id).select('order'))?.order || req.params.id, transactional(async (req, res) => {
-  if (!seesTheBank(req.user)) throw ApiError.forbidden('Only Accounts, Payment Collection or Admin confirm a receipt — they are the ones who see the money in.');
+  if (!seesTheBank(req.user)) throw ApiError.forbidden('Only Accounts or Admin confirm a receipt — they are the ones who can see the bank.');
   const receivable = await readable(req.params.id, req.user);
   const receipt = receivable.receipts.id(req.params.receiptId);
   if (!receipt) throw ApiError.notFound('No such receipt on this one');
@@ -640,6 +642,8 @@ export const confirmReceipt = asyncHandler(withOrderLock(async req => (await Rec
     model: 'Receivable', doc: receivable, before,
     by: req.user, note: `Confirmed ₹${Math.round(receipt.amount).toLocaleString('en-IN')} received`,
   });
+  /* Every payment on it seen in the bank: Accounts' task to confirm them is done. */
+  if (receivable.receipts.every((row) => row.confirmed?.at)) await resolveTasks(confirmTaskKey(receivable));
   if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order));
   await receivable.populate(POPULATE);
   return res.json({ success: true, data: receivable });

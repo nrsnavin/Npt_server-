@@ -3,7 +3,7 @@ import Receivable, { paymentLogEntry } from '../models/Receivable.js';
 import Todo from '../models/Todo.js';
 import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
-import { raiseTask, resolveTasks } from './task.service.js';
+import { raiseDepartmentTask, raiseTask, resolveTasks } from './task.service.js';
 import { whenTransactionEnds } from '../utils/transaction.js';
 import { settleCollectionTasks } from './collections.service.js';
 
@@ -114,10 +114,10 @@ const refusal = (order, stage, needed) =>
 const MODE_KEYS = { NEFT: 'neft', RTGS: 'rtgs', UPI: 'upi', CHEQUE: 'cheque', CASH: 'cash' };
 
 /**
- * Payment Collection confirms the money is in, from its task on the order [departmentTaskForms
- * `payment_inward`]: written as a receipt on the order's advance, confirmed in their name — it is
- * their job to see it in — so the gate opens on it. More than is owed is refused, and nothing
- * moves; a second confirmation with the same reference is the same money, not more.
+ * Payment Collection logs the money in, from its task on the order [departmentTaskForms
+ * `payment_inward`]: written as a receipt on the order's advance, and Accounts gets a task to
+ * confirm it in the bank — the gate opens on what Accounts confirms. More than is owed is
+ * refused, and nothing moves; a second log with the same reference is the same money, not more.
  */
 export async function confirmInwardFromTask(task, user, { amount, mode, reference, note }) {
   const orderId = task.order?._id || task.order;
@@ -142,14 +142,46 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
     receivedAt: at,
     mode: MODE_KEYS[String(mode || '').toUpperCase()] || 'other',
     reference: ref || undefined,
-    note: [`Confirmed inward by Payment Collection on the task`, note].filter(Boolean).join(' — ').slice(0, 500),
+    note: [`Logged by Payment Collection on the task`, note].filter(Boolean).join(' — ').slice(0, 500),
     recordedBy: user._id,
-    confirmed: { by: user._id, at },
   });
   /* Logged on the receivable beside the calls: who took it, how much, how, the UTR. */
   receivable.followUps.push(paymentLogEntry(user, { amount: value, mode, reference: ref, note }, { partial: value + 0.5 < owed }));
   await receivable.save();
+  await askAccountsToConfirm(receivable, receivable.receipts.at(-1), user, order);
   return { order, receivable, again: false };
+}
+
+export const confirmTaskKey = (receivable) => `confirm-receipt:${receivable._id}`;
+
+/**
+ * A payment logged by Payment Collection or PRT: Accounts gets a task to see it in the bank and
+ * confirm it, on the RCV — one task per RCV, each further payment added to it. Confirming every
+ * payment on the RCV closes it [payment.controller `confirmReceipt`].
+ */
+export async function askAccountsToConfirm(receivable, receipt, by, order = null) {
+  const so = order || (receivable.order?.number ? receivable.order : await SalesOrder.findById(receivable.order?._id || receivable.order).select('number enquiry customer'));
+  const said = [`${rupees(receipt.amount)}`, receipt.mode && String(receipt.mode).toUpperCase(), receipt.reference && `ref ${receipt.reference}`, by?.name && `logged by ${by.name}`]
+    .filter(Boolean).join(' · ');
+  const originKey = confirmTaskKey(receivable);
+  const open = await Todo.findOne({ department: 'accounts', originKey, completed: false });
+  if (open) {
+    open.updates = [...(open.updates || []), { kind: 'note', text: `Also: ${said}`, note: `Payment logged: ${said}`, by: by?._id, at: new Date() }];
+    await open.save();
+    return open;
+  }
+  return raiseDepartmentTask({
+    department: 'accounts',
+    title: `Confirm the payment in the bank — ${receivable.number}${so?.number ? ` (${so.number})` : ''}`,
+    notes: `${said}. Check it in the bank and confirm it on ${receivable.number}${so?.number ? `; ${so.number} waits on confirmed money before production or dispatch` : ''}.`,
+    priority: 'high',
+    dueDate: new Date(),
+    link: `/payments/${receivable._id}`,
+    originKey,
+    customer: receivable.customer?._id || receivable.customer,
+    order: so?._id || receivable.order?._id || receivable.order,
+    enquiry: receivable.enquiry?._id || receivable.enquiry || so?.enquiry || undefined,
+  });
 }
 
 /** Refuses unless the order's money for this stage is in, or Admin waived it. */
@@ -235,6 +267,19 @@ export async function afterPayment(orderId) {
         link: toRelease || !order.enquiry ? `/orders/${order._id}` : `/enquiries/${order.enquiry}`,
         originKey: `payment-met:${order._id}:${stage}`,
         priority: 'high',
+      }).catch(() => null);
+    }
+    /* The SO team releases it too: their desk hears the advance is confirmed. */
+    if (closed && stage === 'production' && PRE_RELEASE_STATUSES.includes(order.status)) {
+      await raiseDepartmentTask({
+        department: 'order_confirmation',
+        title: `Advance confirmed on ${order.number} — release it to production`,
+        link: `/orders/${order._id}`,
+        originKey: `payment-met-so:${order._id}`,
+        priority: 'high',
+        customer: order.customer,
+        order: order._id,
+        enquiry: order.enquiry || undefined,
       }).catch(() => null);
     }
   }
