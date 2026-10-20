@@ -338,6 +338,13 @@ export const handoffSendBack = asyncHandler(transactional(async (req, res) => {
   await answer(res, task);
 }));
 
+/** Marketing or Admin says how soon the buyer needs a Dispatch request's goods [deliveryUrgency.service]. */
+export const handoffDeliveryUrgency = asyncHandler(transactional(async (req, res) => {
+  const { setDeliveryUrgency } = await import('../services/deliveryUrgency.service.js');
+  const task = await setDeliveryUrgency(await taskFor(req), req.user, req.body);
+  await answer(res, task);
+}));
+
 /** Admin closes any department task where it stands, with a reason [handoff.service `closeByAdmin`]. */
 export const handoffAdminClose = asyncHandler(transactional(async (req, res) => {
   const task = await closeByAdmin(await taskFor(req), req.user, req.body);

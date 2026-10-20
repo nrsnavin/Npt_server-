@@ -19,6 +19,12 @@ import {
  * transporters (and their booking offices) and the plant's own delivery routes.
  */
 
+/** The delivery queue: open Dispatch requests by delivery urgency [deliveryUrgency.service]. */
+export const getDeliveryQueue = asyncHandler(async (req, res) => {
+  const { deliveryQueue } = await import('../services/deliveryUrgency.service.js');
+  res.json({ success: true, data: await deliveryQueue() });
+});
+
 export const getDispatchPlan = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await dispatchPlan() });
 });

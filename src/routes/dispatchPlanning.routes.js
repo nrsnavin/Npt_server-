@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
-  createTripHandler, deliveryRoutes, getDispatchPlan, getTrip, listTripsHandler, scheduleDispatchGroup, setDeliveryDetails,
+  createTripHandler, deliveryRoutes, getDeliveryQueue, getDispatchPlan, getTrip, listTripsHandler, scheduleDispatchGroup, setDeliveryDetails,
   dispatchReportHandler, makeSuggestedTrips, setStopStatusHandler, setTripStatusHandler, suggestTripsHandler, tellBuyersHandler, transporters, tripSheet,
   updateTripHandler, vehicles,
 } from '../controllers/dispatchPlanning.controller.js';
@@ -21,6 +21,8 @@ const router = Router();
 router.use(authenticate);
 
 router.get('/dispatch-planning/plan', requireModule('dispatch'), getDispatchPlan);
+/* The delivery queue — every open request by delivery urgency, the most pressing first. */
+router.get('/dispatch-planning/queue', requireModule('dispatch'), getDeliveryQueue);
 router.post('/dispatch-planning/schedule', requireModule('dispatch', 'write'), validate(scheduleGroupSchema), scheduleDispatchGroup);
 router.get('/dispatch-planning/report', requireModule('dispatch'), dispatchReportHandler);
 router.get('/dispatch-planning/suggest', requireModule('dispatch'), suggestTripsHandler);

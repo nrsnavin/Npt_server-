@@ -228,7 +228,8 @@ test('the dispatch request offers the plant’s schedules and bookings; the task
   const { buttons } = (await api('/api/handoffs', { as: 'nandhini' })).json.data;
   const form = buttons.find((button) => button.key === 'invoice_dispatch').form;
   const asks = Object.fromEntries(form.asks.map((field) => [field.key, field]));
-  assert.deepEqual(asks.schedule.options, ['Today Dispatch', 'Today Evening Dispatch', 'Tomorrow Dispatch', 'Tomorrow First Dispatch', 'Top Most Urgent Dispatch']);
+  assert.equal(asks.schedule.label, 'Delivery urgency');
+  assert.deepEqual(asks.schedule.options, ['Top Most Urgent Dispatch', 'Today Morning Dispatch', 'Today Evening Dispatch', 'Today Dispatch', 'Tomorrow Dispatch']);
   assert.deepEqual(asks.booking.options, ['Normal Booking', 'Book Before 4 PM', 'Book Before 7 PM', 'Party Will Collect', 'Local Delivery']);
   assert.equal(asks.piNumber.required, undefined, 'PI number is optional');
   assert.deepEqual(form.statuses.map((entry) => entry.label), [
@@ -253,6 +254,14 @@ test('the dispatch request offers the plant’s schedules and bookings; the task
   assert.equal(sent.json.data.task._id, String(auto._id), 'onto the open request, not a second one');
   dispatchTask = await Todo.findById(sent.json.data.task._id);
   assert.equal(dispatchTask.status, 'received');
+  /* The schedule marketing added is the request's delivery urgency; the To-do asking for it is done. */
+  let delivery;
+  for (let tries = 0; tries < 60 && !delivery?.urgency; tries += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    delivery = (await Todo.findById(dispatchTask._id).lean()).delivery;
+  }
+  assert.equal(delivery?.urgency, 'today_evening');
+  assert.equal(await Todo.countDocuments({ originKey: `delivery-urgency:${dispatchTask._id}`, completed: false }), 0);
 });
 
 test('a Dispatch move needs a remark; only Dispatched reaches marketing and Admin', async () => {

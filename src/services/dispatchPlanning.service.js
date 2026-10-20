@@ -135,7 +135,15 @@ function groupOf(mode, customer, { transporters, routes }) {
 }
 
 /** Lower is sooner. A late request is treated as Today at the latest. */
+/* The delivery urgency marketing gave, on the planner's scale [config/deliveryUrgency.js]. */
+const DELIVERY_RANK = { top_urgent: 0, today_morning: 1, today: 1, today_evening: 2, tomorrow: 4 };
+
 function urgencyOf(task) {
+  if (task.delivery?.urgency in DELIVERY_RANK) {
+    let given = DELIVERY_RANK[task.delivery.urgency];
+    if (task.delivery.dueBy && new Date(task.delivery.dueBy) < new Date()) given = Math.min(given, 1);
+    return given;
+  }
   let rank = RANK_BY_KEY[task.status] ?? (task.brief?.schedule ? RANK_BY_KEY[scheduleKey(task.brief.schedule)] : undefined) ?? SCHEDULE_ORDER.length;
   if (task.dueDate && new Date(task.dueDate) < new Date()) rank = Math.min(rank, 1);
   if (task.priority === 'high') rank = Math.min(rank, 1);
@@ -146,7 +154,7 @@ export async function dispatchPlan() {
   /* A request already on a trip is planned; it shows on its trip, not in a group. */
   const onTrips = await requestsOnTrips();
   const tasks = (await Todo.find({ kind: 'invoice_dispatch', completed: false })
-    .select('enquiry customer title brief dueDate priority status user createdAt')
+    .select('enquiry customer title brief dueDate priority status user createdAt delivery')
     .populate([{ path: 'enquiry', select: 'number customer' }, { path: 'user', select: 'name' }])
     .sort({ dueDate: 1, createdAt: 1 })
     .lean()).filter((task) => !onTrips.has(String(task._id)));
