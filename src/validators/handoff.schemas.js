@@ -101,6 +101,11 @@ export const handoffReturnSchema = z.object({
   reason: z.string().trim().min(5, 'Say why it is being sent back').max(500),
 });
 
+export const deliveryUrgencySchema = z.object({
+  urgency: z.enum(['top_urgent', 'today_morning', 'today_evening', 'today', 'tomorrow']),
+  note: z.string().trim().max(500).optional(),
+});
+
 export const handoffAdminCloseSchema = z.object({
   reason: z.string().trim().min(5, 'Say why the task is being closed').max(500),
 });

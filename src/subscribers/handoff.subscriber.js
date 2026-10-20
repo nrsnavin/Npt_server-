@@ -142,6 +142,17 @@ export function registerHandoffSubscribers() {
     return busSubscribe(event, listener);
   };
 
+  /* A Dispatch request: its delivery urgency from its own schedule, or asked of its marketing person. */
+  subscribe(
+    EVENTS.HANDOFF_SENT,
+    safely('ask the delivery urgency', async ({ task }) => {
+      if (task?.kind !== 'invoice_dispatch') return;
+      const { askForUrgency } = await import('../services/deliveryUrgency.service.js');
+      const fresh = await Todo.findById(task._id);
+      await askForUrgency(fresh);
+    })
+  );
+
   subscribe(
     EVENTS.HANDOFF_SENT,
     safely('tell the department', async ({ task, by }) => {

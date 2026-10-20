@@ -95,6 +95,13 @@ const todoSchema = new mongoose.Schema(
      */
     routing: { type: mongoose.Schema.Types.Mixed, default: undefined },
     /*
+     * On a Dispatch request: how soon the buyer needs the goods, as marketing or Admin said it
+     * [services/deliveryUrgency.service.js] — `urgency` (config/deliveryUrgency.js), its label,
+     * `dueBy` (the cut-off after which it reads late), who said it and when. The delivery queue
+     * on the Dispatch desk is ordered by it.
+     */
+    delivery: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    /*
      * When Production added this task to its production queue, and who [handoff.service
      * `addToProductionQueue`] — planned for the press, printing and assembly decided. A task not
      * added sits under "Not in the production queue" on the desk until it is.

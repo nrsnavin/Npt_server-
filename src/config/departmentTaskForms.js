@@ -1,4 +1,5 @@
 import { FOLLOW_UP_STATUSES } from './paymentFollowUp.js';
+import { SCHEDULE_CHOICES } from './deliveryUrgency.js';
 
 /**
  * The form each department task opens with, when somebody clicks a department on an enquiry
@@ -496,7 +497,8 @@ export const TASK_FORMS = {
     ],
     asks: [
       ...modelAndQuantity,
-      { key: 'schedule', label: 'Dispatch schedule', type: 'choice', options: DISPATCH_SCHEDULES },
+      /* How soon the buyer needs it — the request's delivery urgency, which orders the Dispatch queue [config/deliveryUrgency.js]. */
+      { key: 'schedule', label: 'Delivery urgency', type: 'choice', options: SCHEDULE_CHOICES },
       { key: 'booking', label: 'Booking / Collection', type: 'choice', options: ['Normal Booking', 'Book Before 4 PM', 'Book Before 7 PM', 'Party Will Collect', 'Local Delivery'] },
       { key: 'piNumber', label: 'PI Number (optional)', placeholder: 'Enter PI number' },
       { key: 'delivery', label: 'Delivery contact & vehicle route', type: 'info', from: 'customer.delivery' },
