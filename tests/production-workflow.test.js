@@ -1043,3 +1043,37 @@ test('Production tasks Assembly from the queue row, and a finished Assembly task
   assert.equal(row.teams.assembling.label, 'Task Closed');
   assert.equal(row.needsAssembly, true);
 });
+
+test('Admin closes any department task with a reason; it ends there, and only its team is told', async () => {
+  const customer = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data.customer;
+  const fresh = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customer._id || customer, requirement: { modelNumber: 'UTJRSH-0' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const raised = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Raised twice by mistake', brief: { model: 'UTJRSH-0', quantity: '1000' } } });
+  assert.equal(raised.status, 201, raised.json.message);
+  const id = raised.json.data.task._id;
+  const stage = (await api(`/api/enquiries/${fresh._id}`, { as: 'nandhini' })).json.data.stage;
+  const close = (as, reason) => api(`/api/workspace/todos/${id}/admin-close`, { method: 'POST', as, body: { reason } });
+
+  assert.equal((await close('nandhini', 'Not needed any more')).status, 403, 'marketing cannot');
+  assert.equal((await close('siva', 'Not needed any more')).status, 403, 'nor the department itself');
+  assert.equal((await close('admin', 'no')).status, 400, 'a reason is needed');
+  const nandhiniBefore = (await noticesOf('nandhini')).length;
+
+  const closed = await close('admin', 'Duplicate of the other Production task');
+  assert.equal(closed.status, 200, closed.json.message);
+  const task = await Todo.findById(id);
+  assert.equal(task.completed, true);
+  assert.equal(task.status, 'closed', 'its card reads Task Closed');
+  assert.equal(task.outcome.result, 'closed_by_admin');
+  assert.equal(task.outcome.note, 'Duplicate of the other Production task');
+  assert.match(task.updates.at(-1).note, /Closed by Admin: Duplicate/);
+  assert.ok(await Todo.exists({ _id: id }), 'kept on the record, not deleted');
+
+  assert.equal(await Todo.countDocuments({ enquiry: fresh._id, kind: { $in: ['quality_check', 'invoice_dispatch'] } }), 0, 'nothing follows from it');
+  assert.equal((await api(`/api/enquiries/${fresh._id}`, { as: 'nandhini' })).json.data.stage, stage, 'the enquiry stays where it was');
+  assert.ok((await noticesOf('siva')).some((notice) => notice.statusLabel === 'Closed by Admin'), 'Production, whose task it was, is told');
+  assert.equal((await noticesOf('nandhini')).length, nandhiniBefore, 'not marketing');
+  assert.equal((await close('admin', 'Closing it again')).status, 409, 'already finished');
+});
