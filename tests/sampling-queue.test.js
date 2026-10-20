@@ -162,23 +162,21 @@ test('not available needs a reason, and goes back to marketing as an urgent task
   assert.ok(task, 'marketing was told');
   assert.match(task.notes, /No natural PP/);
 
-  /* Admin and the buyer's marketer hear the move under Needs your action, with the reason. */
+  /* The urgent task is how marketing hears it; Needs your action stays clear [handoff.service `ADMIN_MARKETING_NOTICES`]. */
   for (const token of [admin, nandhini]) {
     const notices = (await api('/api/workspace/notices', { token })).json.data || [];
-    const notice = notices.find((entry) => entry.statusLabel === `Sample ${sample.number} — Not available`);
-    assert.ok(notice, 'told under Needs your action');
-    assert.match(notice.note, /No natural PP/);
+    assert.ok(!notices.some((entry) => entry.statusLabel === `Sample ${sample.number} — Not available`));
   }
 });
 
-test('every move on the bench reaches Admin and the buyer’s marketer', async () => {
+test('a move on the bench stays off Admin’s and the marketer’s Needs your action', async () => {
   const { sample } = await requestSample();
   assert.equal((await move(sample._id, { status: 'checking_stock' })).status, 200);
   await settle();
   const notices = (await api('/api/workspace/notices', { token: admin })).json.data || [];
-  assert.ok(notices.some((entry) => entry.statusLabel === `Sample ${sample.number} — Checking stock`), 'Admin told');
+  assert.ok(!notices.some((entry) => entry.statusLabel === `Sample ${sample.number} — Checking stock`), 'not Admin');
   const theirs = (await api('/api/workspace/notices', { token: nandhini })).json.data || [];
-  assert.ok(theirs.some((entry) => entry.statusLabel === `Sample ${sample.number} — Checking stock`), 'the marketer told');
+  assert.ok(!theirs.some((entry) => entry.statusLabel === `Sample ${sample.number} — Checking stock`), 'nor the marketer');
 });
 
 test('handed over in person: no courier or AWB, but a contact or a phone', async () => {

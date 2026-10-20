@@ -59,7 +59,7 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-test('a production move is told to everyone who is Admin — the role, and Management as an extra department', async () => {
+test('a production Mould Issue is told to everyone who is Admin — the role, and Management as an extra department', async () => {
   const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'Aruna Knits', mobile: '9840011001', assignedTo: ids.nandhini } })).json.data;
   const enquiry = (await api('/api/enquiries', {
     method: 'POST', as: 'nandhini',
@@ -68,10 +68,13 @@ test('a production move is told to everyone who is Admin — the role, and Manag
   const task = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'When?' } })).json.data.task;
   /* Production says what follows moulding before it gives a date. */
   assert.equal((await api(`/api/workspace/todos/${task._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'NPT-400S' }] } })).status, 200);
-  const moved = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'planning', note: 'Planned for next week', date: inDays(5) } });
-  assert.equal(moved.status, 200, moved.json.message);
-
   const noticed = async (as) => ((await api('/api/workspace/notices', { as })).json.data || []).some((notice) => String(notice.task?._id || notice.task) === String(task._id));
+  const planned = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'planning', note: 'Planned for next week', date: inDays(5) } });
+  assert.equal(planned.status, 200, planned.json.message);
+  assert.equal(await noticed('admin'), false, 'Planning is not one Admin acts on');
+  /* A Mould Issue is: Admin and marketing hear it. */
+  const moved = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'mould_issue', note: 'Core cracked' } });
+  assert.equal(moved.status, 200, moved.json.message);
   assert.equal(await noticed('nandhini'), true, 'the enquiry’s marketing person');
   assert.equal(await noticed('admin'), true, 'Admin by role');
   assert.equal(await noticed('meena'), true, 'Admin by an extra department');

@@ -556,9 +556,9 @@ test('a rejected lot warns Dispatch on the open request — and the request stil
   const told = await Todo.findById(request._id).lean();
   assert.ok(told.updates.some((row) => row.note.includes(rejected.json.data.number) && /not held/.test(row.note)));
   const notices = await TaskNotice.find({ task: request._id }).lean();
-  assert.ok(notices.length > before, 'Dispatch, marketing and Admin hear it');
+  assert.ok(notices.length > before, 'Dispatch hears it');
   assert.ok(notices.some((row) => String(row.recipient) === ids.ravi), 'the dispatch desk');
-  assert.ok(notices.some((row) => String(row.recipient) === ids.nandhini), 'the marketing person');
+  assert.ok(!notices.some((row) => String(row.recipient) === ids.nandhini), 'not marketing — only a Mould Issue, Raw Material or Dispatched reaches them');
 
   /* The plan and the SO's dispatch details show it; the request moves on regardless. */
   const plan = (await api('/api/dispatch-planning/plan', { as: 'ravi' })).json.data;
