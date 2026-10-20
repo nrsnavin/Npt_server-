@@ -62,7 +62,17 @@ function summary(reading, { companyFromName } = {}) {
   return lines.join('\n');
 }
 
-const what = (card) => (card.kind === 'chat' ? 'this chat' : 'this card');
+/** How each kind of picture is spoken of: in the reply, on the customer, on the enquiry. */
+const KIND_WORDS = {
+  card: { this: 'this card', source: 'card', notes: 'On the card' },
+  chat: { this: 'this chat', source: 'WhatsApp chat screenshot', notes: 'The conversation' },
+  email: { this: 'this email', source: 'email', notes: 'The email' },
+  screenshot: { this: 'this screenshot', source: 'screenshot', notes: 'On the screenshot' },
+};
+const wordsFor = (card) => KIND_WORDS[card.kind] || KIND_WORDS.card;
+const what = (card) => wordsFor(card).this;
+/* A chat or an email thread often takes several screenshots; only the first names the buyer. */
+const THREAD_KINDS = ['chat', 'email'];
 
 /**
  * The WhatsApp message that tells the sender what was recognised. It saves a draft and says so —
@@ -89,14 +99,15 @@ async function matchExisting(card) {
 }
 
 /**
- * The chat an unheaded screenshot belongs to: the same person's chat screenshot from the last
- * few minutes that is still waiting. Null when there is none — the screenshot then stands alone.
+ * The thread an unheaded screenshot belongs to: the same person's chat (or email) screenshot of
+ * the same kind from the last few minutes that is still waiting. Null when there is none — the
+ * screenshot then stands alone.
  */
-async function chatItContinues(card) {
+async function chatItContinues(card, kind = 'chat') {
   return BuyerCard.findOne({
     _id: { $ne: card._id },
     sender: card.sender,
-    kind: 'chat',
+    kind,
     status: { $in: ['ready', 'unreadable'] },
     createdAt: { $gte: new Date(Date.now() - SAME_CHAT_MINUTES * 60000) },
   }).sort({ createdAt: -1 });
@@ -138,8 +149,8 @@ export async function processCard(card, { notify = true } = {}) {
       : { kind: null, reading: {}, problem: 'The picture could not be opened.' };
 
     /* The rest of a long chat: no header, so no buyer — it belongs with the screenshot that had one. */
-    if (kind === 'chat' && !hasIdentity(reading)) {
-      const target = await chatItContinues(card);
+    if (THREAD_KINDS.includes(kind) && !hasIdentity(reading)) {
+      const target = await chatItContinues(card, kind);
       if (target) {
         mergeInto(target, reading, { imageKey: card.imageKey, mimeType: card.mimeType });
         await matchExisting(target);
@@ -160,8 +171,8 @@ export async function processCard(card, { notify = true } = {}) {
     }
     card.readBy = problem && !Object.keys(reading).length ? 'none' : 'model';
     card.problem = problem
-      || (kind === 'chat' && !hasIdentity(reading)
-        ? 'This screenshot does not show who the buyer is. Send the one with their name or number at the top, or reply with their number.'
+      || (THREAD_KINDS.includes(kind) && !hasIdentity(reading)
+        ? `This screenshot does not show who the buyer is. Send the one with their name or number${kind === 'email' ? ' (the sender and signature)' : ' at the top'}, or reply with their number.`
         : undefined);
     card.status = card.problem && !card.reading.company ? 'unreadable' : 'ready';
     await matchExisting(card);
@@ -343,7 +354,7 @@ async function confirmCardChecked(card, user, edits = {}, { owner, items, custom
   const chosen = owner ? { user: owner, rotated: null } : await ownerForNewBuyer(sender);
 
   const how = [
-    `From a ${card.kind === 'chat' ? 'WhatsApp chat screenshot' : 'card'} ${card.via === 'whatsapp' ? 'sent on WhatsApp' : 'uploaded'} by ${sender?.name || 'a colleague'},`,
+    `From ${/^[aeiou]/.test(wordsFor(card).source) ? 'an' : 'a'} ${wordsFor(card).source} ${card.via === 'whatsapp' ? 'sent on WhatsApp' : 'uploaded'} by ${sender?.name || 'a colleague'},`,
     card.readBy === 'model' ? 'read by AI, checked and completed by' : 'typed in by',
     `${user.name}.`,
     chosen.rotated ? `Assigned to ${chosen.rotated} by rotation.` : '',
@@ -359,14 +370,14 @@ async function confirmCardChecked(card, user, edits = {}, { owner, items, custom
     fields.productInterest && `Wants: ${fields.productInterest}`,
     fields.estimatedQuantity && `About ${Number(fields.estimatedQuantity).toLocaleString('en-IN')} pcs`,
     card.caption && `Note with the photo: "${card.caption}"`,
-    fields.notes && `${card.kind === 'chat' ? 'The conversation' : 'On the card'}: ${fields.notes}`,
+    fields.notes && `${wordsFor(card).notes}: ${fields.notes}`,
   ].filter(Boolean).join('. ');
 
   const models = enquiryItemsFrom(items, card.reading);
   const enquiry = await raiseFirstEnquiry({
     customer,
     ...(models.length ? { items: models } : {}),
-    remarks: wants || `New buyer from a ${card.kind === 'chat' ? 'chat screenshot' : 'card'} — find out what they want.`,
+    remarks: wants || `New buyer from ${/^[aeiou]/.test(wordsFor(card).source) ? 'an' : 'a'} ${wordsFor(card).source} — find out what they want.`,
     /* The salesperson's own next step — not one the app made up. */
     /* Optional: a draft can be saved before the next step is known, and set on the enquiry later. */
     nextAction: String(fields.nextAction || '').trim() || undefined,

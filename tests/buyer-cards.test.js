@@ -623,12 +623,76 @@ test('the rest of a long chat joins the screenshot that showed who it was with',
   await api(`/api/buyer-cards/${merged._id}/discard`, { method: 'POST', token: nandhini });
 });
 
+/* ------------------------------ Emails and other screenshots ------------------------------ */
+
+test('the reader is told how to read a card, an email, a WhatsApp chat and any other screenshot — models from every kind', async () => {
+  cardReply = card({ company: 'Prompt Check Fabrics', mobile: '9840077401' });
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  const request = sent.findLast((entry) => /copy the buyer/.test(JSON.stringify(entry.system)));
+  const system = JSON.stringify(request.system);
+  for (const words of ['card: a visiting card', 'chat: a screenshot of a WhatsApp', 'email: a photo or screenshot of an email', 'IndiaMART', 'For an email', 'models: one entry for each separate hanger model the buyer asks about, from any kind of picture', 'never our own company']) {
+    assert.ok(system.includes(words), words);
+  }
+  assert.deepEqual(request.output_config.format.schema.properties.kind.enum, ['card', 'chat', 'email', 'screenshot', 'other']);
+  await api(`/api/buyer-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
+});
+
+test('an email screenshot is drafted with the sender as the buyer and a model per line', async () => {
+  cardReply = [{
+    ...blank, kind: 'email', company: 'Arun Exports', contactName: 'Arun Kumar', email: 'Arun@ArunExports.in', mobile: '98400 55667',
+    city: 'Tiruppur', state: 'Tamil Nadu', productInterest: 'shirt and suit hangers', quantity: '3000 pcs',
+    notes: 'Asks for rates for two models; artwork attached as a PDF.',
+    models: [{ asked: 'NCP 25', quantity: '2000 pcs', colour: 'black' }, { asked: '400mm wooden suit hanger', quantity: '1000', colour: '' }],
+  }, { picks: [] }];
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  assert.equal(draft.kind, 'email');
+  assert.equal(draft.reading.email, 'arun@arunexports.in');
+  assert.deepEqual(draft.reading.models.map((row) => row.asked), ['NCP 25', '400mm wooden suit hanger'], 'one model per line of the email');
+  assert.match(latestReply(), /Saved as a draft enquiry from this email:/);
+
+  const done = await finish(draft._id, { ...theRest, source: 'email', nextAction: 'Send the rates' });
+  assert.equal(done.status, 200, done.json.message);
+  assert.match(done.json.data.customer.notes, /From an email/);
+  const enquiry = await Enquiry.findById(done.json.data.enquiry._id);
+  assert.match(enquiry.remarks, /The email: Asks for rates for two models/);
+});
+
+test('the rest of an email thread joins the screenshot that showed the sender', async () => {
+  const email = (fields) => ({ ...blank, kind: 'email', ...fields });
+  cardReply = [
+    email({ contactName: 'Meena', company: 'Meena Garments', email: 'meena@meenagarments.in', notes: 'Asked for kids hangers.' }),
+    email({ quantity: '4000', models: [{ asked: 'kids top hanger with clips', quantity: '4000', colour: 'pink' }], notes: 'Wants delivery in two weeks.' }),
+  ];
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const first = await readCardOf(nandhini);
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const open = (await api('/api/buyer-cards', { token: nandhini })).json.data.filter((row) => row.reading?.company === 'Meena Garments' || !row.reading?.company);
+  assert.equal(open.length, 1, 'one thread, not two drafts');
+  assert.equal(open[0]._id, first._id);
+  assert.equal(open[0].reading.estimatedQuantity, 4000);
+  assert.ok(open[0].reading.models.some((row) => row.asked === 'kids top hanger with clips'));
+  await api(`/api/buyer-cards/${open[0]._id}/discard`, { method: 'POST', token: nandhini });
+});
+
+test('an IndiaMART screenshot is a screenshot draft', async () => {
+  cardReply = { ...blank, kind: 'screenshot', company: 'Lead Mart Fabrics', contactName: 'Vijay', mobile: '9840077402', city: 'Erode', productInterest: 'plastic shirt hangers', notes: 'IndiaMART lead from 18 Oct.', models: [] };
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  assert.equal(draft.kind, 'screenshot');
+  assert.equal(draft.status, 'ready');
+  assert.match(latestReply(), /from this screenshot:/);
+  await api(`/api/buyer-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
+});
+
 test('a picture that is neither a card nor a chat says so and adds nothing', async () => {
   cardReply = { ...blank, kind: 'other' };
   await whatsapp(NANDHINI_PHONE, { photo: true });
   const draft = await readCardOf(nandhini);
   assert.equal(draft.status, 'unreadable');
-  assert.match(latestReply(), /does not look like a card, an enquiry slip or a chat/);
+  assert.match(latestReply(), /does not look like a card, an email, a chat or a screenshot about a buyer/);
   await api(`/api/buyer-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
 });
 
