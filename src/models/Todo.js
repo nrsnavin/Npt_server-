@@ -186,9 +186,9 @@ const todoSchema = new mongoose.Schema(
       at: Date,
       _id: false,
     },
-    /** Done (with what they recorded) or sent back (with why), by whom and when, and where it went next. */
+    /** Done (with what they recorded), sent back (with why), or closed by Admin (with why) — by whom and when, and where it went next. */
     outcome: {
-      result: { type: String, enum: ['done', 'returned', 'moved'] },
+      result: { type: String, enum: ['done', 'returned', 'moved', 'closed_by_admin'] },
       note: { type: String, trim: true, maxlength: 2000 },
       fields: { type: Map, of: String, default: undefined },
       by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

@@ -24,7 +24,7 @@ import { HANDOFFS, TILE_KIND, findHandoff } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
+  WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, closeByAdmin, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
   updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, registerLists, raiseAssemblyWith, routingFor, decideRouting, addToProductionQueue,
 } from '../services/handoff.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
@@ -335,6 +335,12 @@ export const handoffUpdate = asyncHandler(againOnConflict(transactional(async (r
 
 export const handoffSendBack = asyncHandler(transactional(async (req, res) => {
   const task = await returnHandoff(await taskFor(req), req.user, req.body);
+  await answer(res, task);
+}));
+
+/** Admin closes any department task where it stands, with a reason [handoff.service `closeByAdmin`]. */
+export const handoffAdminClose = asyncHandler(transactional(async (req, res) => {
+  const task = await closeByAdmin(await taskFor(req), req.user, req.body);
   await answer(res, task);
 }));
 

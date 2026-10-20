@@ -2319,6 +2319,40 @@ export async function returnHandoff(task, user, { reason }) {
   return task;
 }
 
+/**
+ * Admin closes a department task where it stands — one raised by mistake, a duplicate, work the
+ * buyer no longer wants. Closed rather than deleted: who asked, what was done and why it stopped
+ * stay on the record and in the enquiry's history. It ends here and nothing follows from it: no
+ * next team is asked, the enquiry does not move, nobody is sent a "next step?" task. The team
+ * that had it is told, with the reason.
+ */
+export async function closeByAdmin(task, user, { reason }) {
+  if (!isAdmin(user)) throw ApiError.forbidden('Only Admin closes a department task outright');
+  openHandoff(task, user);
+  if (task.holds) fail('This task is the enquiry itself — close the enquiry with Task Closed instead');
+  const why = String(reason || '').trim();
+  if (why.length < 5) fail('Say why the task is being closed');
+  const now = new Date();
+  /* A task with its own workflow reads its last status, so its card shows it closed. */
+  const closing = statusesOf(task).find((entry) => entry.done && !entry.pdf);
+  if (closing && task.status !== closing.key) {
+    task.status = closing.key;
+    task.statusHistory = [...(task.statusHistory || []), { status: closing.key, note: `Closed by Admin: ${why}`, by: user._id, at: now }];
+  }
+  task.completed = true;
+  task.completedAt = now;
+  task.completedBy = user._id;
+  task.outcome = { result: 'closed_by_admin', note: why, by: user._id, at: now };
+  task.attention = undefined;
+  task.updates = [...(task.updates || []), {
+    kind: 'status', status: closing?.key, statusLabel: 'Closed by Admin', text: why, note: `Closed by Admin: ${why}`, by: user._id, at: now,
+  }];
+  await task.save();
+  await noticeStatus(task, user, { step: { key: 'closed_by_admin', label: 'Closed by Admin' }, note: why, also: await peopleOn(task), onlyAlso: true });
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  return task;
+}
+
 /** Marketing's holding task is due on the follow-up date; moving the date moves the task. */
 export async function syncOwnerDueDate(enquiry) {
   const holder = await holderOf(enquiry._id);
