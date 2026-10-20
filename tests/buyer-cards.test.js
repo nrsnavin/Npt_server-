@@ -677,6 +677,36 @@ test('the rest of an email thread joins the screenshot that showed the sender', 
   await api(`/api/buyer-cards/${open[0]._id}/discard`, { method: 'POST', token: nandhini });
 });
 
+test('an email footer gives the person, the company and every number — ours left out', async () => {
+  cardReply = [{
+    ...blank, kind: 'email', contactName: 'Arun Exports', company: 'Mr. Arun Kumar', designation: 'Proprietor', email: 'info@arunexports.in',
+    mobile: '', whatsapp: '+91 98765 43210', otherNumbers: '0421 4334690, +91 98765 43210, 641663, 33AABCU9603R1ZM',
+    notes: 'Wants rates for kids hangers.',
+  }];
+  await whatsapp(NANDHINI_PHONE, { photo: true });
+  const draft = await readCardOf(nandhini);
+  assert.equal(draft.reading.company, 'Arun Exports', 'the business words make it the company');
+  assert.equal(draft.reading.contactName, 'Mr. Arun Kumar', 'and the titled name the person');
+  assert.equal(draft.reading.mobile, '+919876543210', 'a WhatsApp number is a mobile to call');
+  assert.match(draft.reading.notes, /Other numbers: 0421 4334690$/, 'the landline kept; the repeat, the PIN code and the GSTIN dropped');
+  const request = sent.findLast((entry) => /copy the buyer/.test(JSON.stringify(entry.system)));
+  for (const words of ['Read the footer', 'contactName: always a PERSON', 'company: always a BUSINESS', 'otherNumbers: every other phone of the buyer']) {
+    assert.ok(JSON.stringify(request.system).includes(words), words);
+  }
+  await api(`/api/buyer-cards/${draft._id}/discard`, { method: 'POST', token: nandhini });
+});
+
+test('names are sorted into the person and the company only on clear signs', async () => {
+  const { sortNames, otherNumbersOf } = await import('../src/services/buyerCard.llm.js');
+  assert.deepEqual(sortNames({ company: '', contactName: 'Velan Textiles' }), { company: 'Velan Textiles', contactName: '' });
+  assert.deepEqual(sortNames({ company: 'Karthik', contactName: 'Velan Tex' }), { company: 'Velan Tex', contactName: 'Karthik' });
+  assert.deepEqual(sortNames({ company: 'Mr. Prabhu', contactName: '' }), { company: '', contactName: 'Mr. Prabhu' });
+  assert.deepEqual(sortNames({ company: 'Sri Murugan Garments', contactName: 'R. Senthil' }), { company: 'Sri Murugan Garments', contactName: 'R. Senthil' }, 'Sri before a business is not a title');
+  assert.deepEqual(sortNames({ company: 'Ramesh', contactName: 'Ramesh' }), { company: '', contactName: 'Ramesh' }, 'one name is the person; the draft says so');
+  assert.deepEqual(sortNames({ company: 'Ganesh', contactName: 'Priya' }), { company: 'Ganesh', contactName: 'Priya' }, 'no clear sign: left as read');
+  assert.deepEqual(otherNumbersOf('Off: 0422-2345678; 9840011223 / 641663', ['+91 98400 11223']), ['Off: 0422-2345678']);
+});
+
 test('an IndiaMART screenshot is a screenshot draft', async () => {
   cardReply = { ...blank, kind: 'screenshot', company: 'Lead Mart Fabrics', contactName: 'Vijay', mobile: '9840077402', city: 'Erode', productInterest: 'plastic shirt hangers', notes: 'IndiaMART lead from 18 Oct.', models: [] };
   await whatsapp(NANDHINI_PHONE, { photo: true });
