@@ -71,7 +71,7 @@ test('the three workflows come from the server, in order', async () => {
   assert.deepEqual(labels('prt_recovery'), ['Assigned', 'Visit Planned', 'Visited', 'Collected', 'Part Collected', 'Promised', 'Promise Broken', 'Cannot Recover', 'Task Closed']);
 });
 
-test('a costing moves with a remark, marketing hears it, and Task Closed finishes it', async () => {
+test('a costing moves with a remark and Task Closed finishes it', async () => {
   const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'create_quotation', note: 'Price for 10,000', brief: { models: 'NH-400', quantity: '10000' } } });
   assert.equal(sent.status, 201, sent.json.message);
   assert.ok(sent.json.data.quotation?._id, 'the reply names the costing sheet it raised, so a coster lands on it');
@@ -81,7 +81,7 @@ test('a costing moves with a remark, marketing hears it, and Task Closed finishe
   assert.equal((await move('kumar', task, 'costing')).status, 400, 'a move needs a remark');
   const costing = await move('kumar', task, 'costing', 'Working out the PP rate');
   assert.equal(costing.status, 200, costing.json.message);
-  assert.ok(await TaskNotice.exists({ task, recipient: ids.nandhini, status: 'costing' }));
+  assert.equal(await TaskNotice.exists({ task, recipient: ids.nandhini, status: 'costing' }), null, 'stays on the task');
   const closed = await move('kumar', task, 'closed', 'Quote NP/26-27/014 sent');
   assert.equal(closed.status, 200, closed.json.message);
   assert.equal((await Todo.findById(task).lean()).completed, true);

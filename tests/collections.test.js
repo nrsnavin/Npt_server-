@@ -156,11 +156,9 @@ test('a collector’s moves are the receivable’s calls; a promise is its promi
   assert.equal(saved.updates.at(-1).date, indiaDay(3));
   assert.equal(saved.updates.at(-1).dateLabel, 'Promised date');
 
-  /* Admin and the marketing person hear the move, as for every department. */
-  const [notice] = await noticesOf('nandhini');
-  assert.equal(notice.statusLabel, 'Promised');
-  assert.equal(notice.date, indiaDay(3));
-  assert.ok((await noticesOf('admin')).some((entry) => entry.task === String(task._id)));
+  /* Not one Admin or marketing acts on: it stays on the task [handoff.service `ADMIN_MARKETING_NOTICES`]. */
+  assert.ok(!(await noticesOf('nandhini')).some((entry) => entry.task === String(task._id)));
+  assert.ok(!(await noticesOf('admin')).some((entry) => entry.task === String(task._id)));
 
   /* The chase screen reads it under "Promised, still ahead". */
   const day = (await api('/api/payments/day', { as: 'vijay' })).json;
@@ -184,8 +182,8 @@ test('the morning after a promised date with nothing in, the sweep breaks the pr
   assert.equal(broken.status, 'promise_broken');
   assert.equal(broken.priority, 'high');
   assert.equal(broken.updates.at(-1).statusLabel, 'Promise Broken');
-  assert.ok(await TaskNotice.exists({ task: task._id, recipient: ids.nandhini, status: 'promise_broken' }), 'marketing is told');
-  assert.ok(await TaskNotice.exists({ task: task._id, recipient: ids.admin, status: 'promise_broken' }), 'and Admin');
+  assert.equal(await TaskNotice.exists({ task: task._id, recipient: ids.nandhini, status: 'promise_broken' }), null, 'on the task; not in marketing’s Needs your action');
+  assert.equal(await TaskNotice.exists({ task: task._id, recipient: ids.admin, status: 'promise_broken' }), null, 'nor Admin’s');
   assert.equal(await TaskNotice.countDocuments({ task: task._id, recipient: ids.vijay, status: 'promise_broken' }), 1, 'and the collector, since nobody made the move');
 
   /* Broken once only: a second sweep leaves it. */
@@ -211,7 +209,7 @@ test('30 days overdue, or two broken promises: the rule proposes PRT on the task
   assert.match(saved.suggestion.reason, /35 days overdue/);
   assert.equal(saved.priority, 'high');
   assert.match(saved.updates.at(-1).text, /Escalate to PRT\?/);
-  assert.ok(await TaskNotice.exists({ task: task._id, recipient: ids.admin, statusLabel: 'Escalate to PRT?' }), 'Admin hears the proposal');
+  assert.equal(await TaskNotice.exists({ task: task._id, recipient: ids.admin, statusLabel: 'Escalate to PRT?' }), null, 'on the task, not in Admin’s Needs your action');
   await sweep();
   assert.equal((await Todo.findById(task._id)).updates.filter((entry) => entry.statusLabel === 'Escalate to PRT?').length, 1, 'proposed once');
 

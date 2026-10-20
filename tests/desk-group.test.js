@@ -115,8 +115,9 @@ test('one desk, one queue: a Quality login works Assembly’s and Printing’s t
   assert.deepEqual(other, [], 'Production asking for the desk gets nothing');
 });
 
-test('every update, send-back and new date on a task reaches Admin and the marketing person under Needs your action', async () => {
+test('updates, send-backs and new dates stay on the task — not in Admin’s or marketing’s Needs your action', async () => {
   const before = (await noticesFor('nandhini')).length;
+  const adminBefore = (await noticesFor('admin')).length;
   const updated = await api(`/api/workspace/todos/${ids.assembling}/update`, { method: 'POST', as: 'ravi', body: { note: 'Clips fitted on 4,000 pieces' } });
   assert.equal(updated.status, 200, updated.json.message);
   const inFiveDays = new Date(Date.now() + 5 * 86400000).toISOString();
@@ -125,23 +126,9 @@ test('every update, send-back and new date on a task reaches Admin and the marke
   const back = await api(`/api/workspace/todos/${ids.quality}/send-back`, { method: 'POST', as: 'suresh', body: { reason: 'No lot to check yet — ask again when packed' } });
   assert.equal(back.status, 200, back.json.message);
 
-  const notices = await noticesFor('nandhini');
-  assert.equal(notices.length - before, 3, 'the update, the new date and the send-back');
-  const labels = notices.slice(0, 3).map((notice) => notice.statusLabel);
-  assert.ok(labels.includes('Sent back'), labels.join(' | '));
-  assert.ok(labels.some((label) => label.startsWith('Date moved to ')), labels.join(' | '));
-  assert.ok(labels.some((label) => label.startsWith('Update')), labels.join(' | '));
-  /* And the printing status move from the test before, as every status move always was. */
-  assert.ok(notices.some((notice) => notice.statusLabel === 'Started' && notice.department === 'printing'));
-  const update = notices.find((notice) => notice.statusLabel.startsWith('Update'));
-  assert.equal(update.note, 'Clips fitted on 4,000 pieces');
-  assert.equal(update.by.name, 'Ravi A');
-  assert.equal(update.department, 'assembling');
-
-  const admin = await noticesFor('admin');
-  assert.ok(admin.some((notice) => notice.statusLabel.startsWith('Update') && notice.note === 'Clips fitted on 4,000 pieces'), 'Admin hears it too');
-  const stranger = await noticesFor('siva');
-  assert.equal(stranger.length, 0, 'nobody else does');
+  assert.equal((await noticesFor('nandhini')).length, before, 'the marketing person is not told');
+  assert.equal((await noticesFor('admin')).length, adminBefore, 'nor Admin');
+  assert.equal((await noticesFor('siva')).length, 0, 'nor anybody else');
 });
 
 test('My Payment Follow-up lands on the login that raises it, each person their own, and shows on their desk', async () => {
@@ -164,10 +151,10 @@ test('My Payment Follow-up lands on the login that raises it, each person their 
   const board = (await api('/api/dashboard/tasks', { as: 'nandhini' })).json.data;
   assert.ok(board.some((task) => task._id === hers._id), 'and on the board');
 
-  /* A follow-up note on it reaches Admin — the raiser is not told about their own. */
+  /* A follow-up note on it stays on the task — not in Admin's Needs your action. */
   const noted = await api(`/api/workspace/todos/${hers._id}/update`, { method: 'POST', as: 'nandhini', body: { note: 'Accounts promised Friday' } });
   assert.equal(noted.status, 200, noted.json.message);
-  assert.ok((await noticesFor('admin')).some((notice) => notice.note === 'Accounts promised Friday'));
+  assert.ok(!(await noticesFor('admin')).some((notice) => notice.note === 'Accounts promised Friday'));
 });
 
 test('the Quality · Printing · Assembly desk reads as lines: enquiry, buyer, EDD, a 20–30 word state, the Production workflow page', async () => {

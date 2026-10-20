@@ -81,8 +81,8 @@ const buyerCardSchema = new mongoose.Schema(
 
     imageKey: { type: String, required: true },
     mimeType: { type: String, required: true },
-    /** What the picture is: a card (or slip, or letterhead), or a screenshot of a chat with the buyer. */
-    kind: { type: String, enum: ['card', 'chat', 'other'] },
+    /** What the picture is: a card (or slip, or letterhead), a chat screenshot, an email, or another screenshot about the buyer. */
+    kind: { type: String, enum: ['card', 'chat', 'email', 'screenshot', 'other'] },
     /** Later screenshots of a long chat — they arrive without the header that says who it is. */
     moreImages: { type: [extraImageSchema], default: undefined },
 

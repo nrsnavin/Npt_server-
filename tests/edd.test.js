@@ -150,7 +150,7 @@ test('Production gives the EDD from its task, without a status move; it becomes 
 
   /* Marketing and Admin hear it under "Needs your action", as they hear a move. */
   const notices = (await api('/api/workspace/notices', { as: 'nandhini' })).json.data;
-  assert.ok(notices.some((notice) => notice.statusLabel === 'EDD given' && notice.date === day), 'marketing is told');
+  assert.ok(!notices.some((notice) => notice.statusLabel === 'EDD given'), 'on the enquiry and the task — not in Needs your action');
 });
 
 test('a ready date given with a status move is the EDD too', async () => {

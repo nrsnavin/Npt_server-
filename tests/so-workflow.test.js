@@ -110,7 +110,7 @@ test('Preparing; Prepared only by uploading the PDF; another department cannot m
   assert.equal(preparing.json.data.status, 'preparing');
   const { default: TaskNotice } = await import('../src/models/TaskNotice.js');
   const nandhiniId = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
-  assert.ok(await TaskNotice.exists({ task: soTask._id, recipient: nandhiniId, status: 'preparing' }), 'marketing is told of the move');
+  assert.equal(await TaskNotice.exists({ task: soTask._id, recipient: nandhiniId, status: 'preparing' }), null, 'the move stays on the task — not in marketing’s Needs your action');
   const prepared = await status('priya', 'prepared');
   assert.equal(prepared.status, 400);
   assert.match(prepared.json.message, /Upload the PDF to mark it SO Prepared/);

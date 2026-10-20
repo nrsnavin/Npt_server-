@@ -209,6 +209,9 @@ test('a Production task raised from the customer, with no enquiry, runs Printing
   assert.equal((await Todo.findById(printing._id)).completed, true, 'Printing’s task ends when the goods go to Assembly');
   assert.ok((await Todo.findById(assembly._id)).routing.received.printing, 'Assembly hears the goods came from Printing');
   assert.equal(await chainOf('invoice_dispatch'), null);
+  const assemblyEdd = new Date(Date.now() + 6 * 86400000).toISOString().slice(0, 10);
+  const given = await api(`/api/workspace/todos/${assembly._id}/edd`, { method: 'POST', as: 'admin', body: { date: assemblyEdd, note: 'Packed by then' } });
+  assert.equal(given.status, 200, given.json.message);
   assert.equal((await move(assembly._id, 'admin', 'ready_dispatch', 'Assembled and packed')).status, 200);
 
   const dispatch = await chainOf('invoice_dispatch');
@@ -229,6 +232,13 @@ test('a Production task raised from the customer, with no enquiry, runs Printing
   assert.equal(flow.json.data.enquiry.team, true);
   assert.deepEqual(Object.keys(flow.json.data.teams).sort(), ['assembling', 'despatch', 'printing', 'quality']);
   assert.deepEqual(flow.json.data.specs, []);
+  /* The model table says each team's date: Production's hand-over to Printing, Assembly's EDD — the job's EDD. */
+  const [line] = flow.json.data.models;
+  assert.equal(line.production.label, 'Handed to Printing', 'closed at the hand-over, and says so');
+  assert.equal(line.production.given.label, 'Hand-over');
+  assert.equal(line.production.given.date, new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10));
+  assert.deepEqual(line.assemblyStatus.given, { date: assemblyEdd, label: 'EDD' });
+  assert.equal(line.edd, assemblyEdd);
 });
 
 test('a Production, Printing or Assembly task raised from the customer names its model', async () => {

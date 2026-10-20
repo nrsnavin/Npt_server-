@@ -96,7 +96,7 @@ test('every move needs a remark; Ready on Selected Date needs a date, and not a 
   assert.equal(await TaskNotice.countDocuments(), 0, 'a refused move tells nobody');
 });
 
-test('only a move to act on reaches marketing and Admin — an issue, Ready for Dispatch, the EDD — and never whoever made it', async () => {
+test('only Mould Issue or Raw Material Not Available reaches marketing and Admin from Production — never whoever made it', async () => {
   const moved = await move('siva', 'accepted', { note: 'Accepted — mould is on the shelf' });
   assert.equal(moved.status, 200, moved.json.message);
   assert.equal((await noticesOf('nandhini')).length, 0, 'EDD Accepted stays on the task');
@@ -126,8 +126,8 @@ test('a ready date becomes the enquiry’s EDD; Ready Tomorrow is tomorrow unles
   let { production } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
   assert.equal(production.edd.edd, day);
   assert.equal(production.asked.status, 'Ready on Selected Date');
-  const [notice] = await noticesOf('nandhini');
-  assert.equal(notice.date, day);
+  assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Ready on Selected Date'), 'the date is on the enquiry and the task');
+  assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Ready on Selected Date'));
 
   assert.equal((await move('siva', 'ready_tomorrow', { note: 'Last 2,000 on the night shift' })).status, 200);
   ({ production } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json);
@@ -147,7 +147,7 @@ test('a notice is read, then dismissed — and only by whoever it is for', async
 
   assert.equal((await api(`/api/workspace/notices/${notice._id}`, { method: 'DELETE', as: 'nandhini' })).status, 200);
   assert.ok(!(await noticesOf('nandhini')).some((entry) => entry._id === notice._id), 'dismissed');
-  assert.ok((await noticesOf('admin')).length >= 3, 'Admin’s own copies are untouched');
+  assert.ok((await noticesOf('admin')).length >= 1, 'Admin’s own copy is untouched');
 });
 
 test('a read notice is gone a day later, unread ones stay', async () => {
@@ -162,9 +162,10 @@ test('a read notice is gone a day later, unread ones stay', async () => {
   assert.ok(indexes.some((index) => index.key.expireAt === 1 && index.expireAfterSeconds === 0), 'Mongo removes them');
 });
 
-test('Ready for Dispatch reaches marketing; Task Closed finishes the task quietly', async () => {
+test('Ready for Dispatch and Task Closed stay on Production’s task', async () => {
   assert.equal((await move('siva', 'ready_dispatch', { note: 'All 10,000 packed' })).status, 200);
-  assert.equal((await noticesOf('nandhini'))[0].statusLabel, 'Ready for Dispatch');
+  assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Ready for Dispatch'), 'Dispatch is told on its own request');
+  assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Ready for Dispatch'));
   assert.equal((await move('siva', 'closed', { note: 'All 10,000 handed to dispatch' })).status, 200);
   const done = await Todo.findById(task._id);
   assert.equal(done.completed, true);
@@ -190,18 +191,13 @@ test('the Mould task has its own workflow, starting at Development', async () =>
   assert.deepEqual(form.statuses.map((entry) => entry.label), ['Development', 'Development EDR', 'Rework', 'Rework EDR', 'Mould Ready', 'Task Closed']);
 });
 
-test('a Mould move needs a remark; the EDR moves need the mould’s ready date; marketing and Admin are told', async () => {
+test('a Mould move needs a remark; the EDR moves need the mould’s ready date; the move stays on the task', async () => {
   const before = (await noticesOf('nandhini')).length;
   assert.equal((await mouldMove('admin', 'development_edr', { date: indiaDay(6) })).status, 400, 'no remark');
   assert.match((await mouldMove('admin', 'development_edr', { note: 'Steel ordered, core in CNC' })).json.message, /EDR \/ Mould ready date/);
   const moved = await mouldMove('admin', 'development_edr', { note: 'Steel ordered, core in CNC', date: indiaDay(6) });
   assert.equal(moved.status, 200, moved.json.message);
-  const notices = await noticesOf('nandhini');
-  assert.equal(notices.length, before + 1);
-  assert.equal(notices[0].statusLabel, 'Development EDR');
-  assert.equal(notices[0].department, 'mould');
-  assert.equal(notices[0].date, indiaDay(6));
-  assert.ok(!(await noticesOf('admin')).some((entry) => entry.statusLabel === 'Development EDR'), 'Admin made this move');
+  assert.equal((await noticesOf('nandhini')).length, before, 'not in marketing’s Needs your action');
 });
 
 test('marketing’s enquiry list shows the stage, the mould’s ERD, Production’s EDD and the issues', async () => {
@@ -259,15 +255,12 @@ test('the dispatch request offers the plant’s schedules and bookings; the task
   assert.equal(dispatchTask.status, 'received');
 });
 
-test('a Dispatch move needs a remark, and marketing and Admin are told', async () => {
+test('a Dispatch move needs a remark; only Dispatched reaches marketing and Admin', async () => {
   assert.equal((await dispatchMove('ravi', 'top_most_urgent_dispatch')).status, 400);
   const moved = await dispatchMove('ravi', 'top_most_urgent_dispatch', { note: 'Buyer’s truck at the gate at 5' });
   assert.equal(moved.status, 200, moved.json.message);
-  for (const who of ['nandhini', 'admin']) {
-    const [notice] = await noticesOf(who);
-    assert.equal(notice.statusLabel, 'Top Most Urgent Dispatch', who);
-    assert.equal(notice.department, 'despatch');
-  }
+  assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Top Most Urgent Dispatch'), 'stays on the dispatch task');
+  assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Top Most Urgent Dispatch'));
 });
 
 test('Ask Production raises a Production task from the dispatch task, and the task says so', async () => {
@@ -284,8 +277,8 @@ test('Ask Production raises a Production task from the dispatch task, and the ta
   assert.equal(raised.kind, 'ask_edd');
   assert.match(raised.notes, /Is the 10,000 packed/);
   assert.equal((await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data.stage, stage, 'the enquiry stays at its stage');
-  const [notice] = await noticesOf('nandhini');
-  assert.equal(notice.statusLabel, 'Asked Production Readiness');
+  assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Asked Production Readiness'), 'the ask is on the dispatch task');
+  assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Asked Production Readiness'));
 
   const again = await ask('ravi', { kind: 'ask_edd', note: 'Still waiting — truck is here' });
   assert.equal(again.status, 200, again.json.message);
@@ -322,7 +315,7 @@ test('while Production or Assembly has the readiness ask open, the dispatch task
   assert.equal((await Todo.findById(dispatchTask._id)).status, 'asked_assembling');
 });
 
-test('Assembly’s task moves Asked Assembling Readiness → … → Task Closed, each with a remark, and marketing and Admin are told', async () => {
+test('Assembly’s task moves Asked Assembling Readiness → … → Task Closed, each with a remark, on the task', async () => {
   const { buttons } = (await api('/api/handoffs', { as: 'anand' })).json.data;
   assert.deepEqual(buttons.find((button) => button.key === 'ask_assembling_edd').form.statuses.map((entry) => entry.label), [
     'Asked Assembling Readiness', 'Started', 'Spares Ready', 'Part Quantity Ready', 'Full Quantity Ready', 'Ready for Dispatch', 'Task Closed',
@@ -334,11 +327,8 @@ test('Assembly’s task moves Asked Assembling Readiness → … → Task Closed
   assert.equal((await moveAssembly('part_ready')).status, 400, 'no remark');
   const moved = await moveAssembly('part_ready', { note: '6,000 clipped and packed', date: indiaDay(2) });
   assert.equal(moved.status, 200, moved.json.message);
-  for (const who of ['nandhini', 'admin']) {
-    const [notice] = await noticesOf(who);
-    assert.equal(notice.statusLabel, 'Part Quantity Ready', who);
-    assert.equal(notice.department, 'assembling');
-  }
+  assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Part Quantity Ready'), 'not in Needs your action');
+  assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Part Quantity Ready'));
   const { production } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
   assert.equal(production.edd.edd, indiaDay(2), 'Assembly’s ready date is the EDD');
 
@@ -409,8 +399,8 @@ test('uploading the LR (a photo will do) sends it to the buyer by email and What
   assert.match(messages[0].body, /LR copy attached/);
   assert.match(messages[0].subject, /INV-2026-0412/);
 
-  const labels = (await noticesOf('nandhini')).slice(0, 2).map((notice) => notice.statusLabel);
-  assert.deepEqual(labels, ['LR Copy Sent to Customer', 'LR Copy Received'], 'marketing sees both moves');
+  assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'LR Copy Sent to Customer'), 'the LR moves stay on the task');
+  assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'LR Copy Sent to Customer'));
 
   /* The LR uploaded reads LR Sent; the enquiry stays open until a person closes it [config/handoffs.js whenResult]. */
   const { default: Enquiry } = await import('../src/models/Enquiry.js');
@@ -480,11 +470,8 @@ test('a Quality complaint moves Complaint Received → … → Task Closed with 
   assert.equal((await moveQuality('checking')).status, 400, 'no remark');
   assert.equal((await moveQuality('replacement', '2,000 pcs being remade with the new hook')).status, 200);
   assert.deepEqual(await issues(), ['Quality Issue — Replacement In Progress']);
-  for (const who of ['nandhini', 'admin']) {
-    const [notice] = await noticesOf(who);
-    assert.equal(notice.statusLabel, 'Replacement In Progress', who);
-    assert.equal(notice.department, 'quality');
-  }
+  assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Replacement In Progress'), 'on the task and the enquiry’s issues');
+  assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Replacement In Progress'));
 
   assert.equal((await moveQuality('resolved', 'Replacement delivered; buyer confirmed')).status, 200);
   assert.deepEqual(await issues(), [], 'resolved is no longer an issue');
@@ -492,7 +479,7 @@ test('a Quality complaint moves Complaint Received → … → Task Closed with 
   assert.equal((await Todo.findById(task._id)).completed, true);
 });
 
-test('a Quality Check runs the same Quality workflow, with remarks and notices — but is not a complaint on the enquiry', async () => {
+test('a Quality Check runs the same Quality workflow, with remarks — but is not a complaint on the enquiry', async () => {
   const { buttons } = (await api('/api/handoffs', { as: 'kavi' })).json.data;
   assert.deepEqual(buttons.find((button) => button.key === 'quality_check').form.statuses.map((entry) => entry.label), [
     'Complaint Received', 'Under Checking', 'Attended', 'Corrective Action', 'Replacement In Progress', 'Replaced', 'Resolved', 'Task Closed',
@@ -504,8 +491,8 @@ test('a Quality Check runs the same Quality workflow, with remarks and notices �
   const move = (status, note) => api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'kavi', body: { status, ...(note ? { note } : {}) } });
   assert.equal((await move('checking')).status, 400, 'no remark');
   assert.equal((await move('checking', 'Pulling 50 pcs from the lot')).status, 200);
-  const [notice] = await noticesOf('nandhini');
-  assert.equal(notice.statusLabel, 'Under Checking');
+  assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Under Checking'), 'on the task');
+  assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Under Checking'));
   const issues = (await listed()).progress.issues.filter((issue) => issue.department === 'quality' && issue.label.startsWith('Quality Check'));
   assert.deepEqual(issues, [], 'a routine check is not an issue');
   assert.equal((await move('closed', 'Lot passed')).status, 200);
@@ -531,9 +518,8 @@ test('Accounts’ task moves Payment Approval Required → … → Task Closed w
   assert.equal((await moveAccounts('hold', 'Old balance of ₹42,000 unpaid since August')).status, 200);
   const issues = async () => (await listed()).progress.issues.filter((issue) => issue.department === 'accounts').map((issue) => issue.label);
   assert.deepEqual(await issues(), ['Hold']);
-  const [notice] = await noticesOf('nandhini');
-  assert.equal(notice.statusLabel, 'Hold');
-  assert.equal(notice.department, 'accounts');
+  assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Hold'), 'on the enquiry’s issues');
+  assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Hold'));
 
   assert.equal((await moveAccounts('clarified', 'Second receipt is for SO-0412')).status, 200);
   assert.deepEqual(await issues(), []);
@@ -803,6 +789,12 @@ test('Dispatch marking it Dispatched hands Reception the LR copy, with the dispa
   const move = (status, note) => api(`/api/workspace/todos/${dispatchId}/status`, { method: 'POST', as: 'ravi', body: { status, note } });
 
   assert.equal((await move('dispatched', 'Left with VRL, vehicle TN39 AB 1234')).status, 200);
+  /* Dispatched is one marketing and Admin hear [handoff.service `ADMIN_MARKETING_NOTICES`]. */
+  for (const who of ['nandhini', 'admin']) {
+    const notice = (await noticesOf(who)).find((entry) => String(entry.task?._id || entry.task) === String(dispatchId));
+    assert.equal(notice?.statusLabel, 'Dispatched', who);
+    assert.equal(notice.department, 'despatch');
+  }
   const lr = await Todo.findOne({ enquiry: fresh._id, kind: 'lr_copy', completed: false });
   assert.ok(lr, 'Reception has the LR copy task');
   assert.equal(lr.department, 'reception');
@@ -825,9 +817,8 @@ test('Dispatch marking it Dispatched hands Reception the LR copy, with the dispa
   assert.equal(transit.status, 200, transit.json.message);
   const delivered = await api(`/api/workspace/todos/${lr._id}/status`, { method: 'POST', as: 'rekha', body: { status: 'delivered', note: 'Buyer confirmed receipt' } });
   assert.equal(delivered.status, 200);
-  const [notice] = await noticesOf('nandhini');
-  assert.equal(notice.statusLabel, 'Delivered');
-  assert.equal(notice.department, 'reception');
+  assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Delivered'), 'Reception’s moves stay on the LR task');
+  assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Delivered'));
 });
 
 test('the migration hands open LR Copy tasks from Dispatch to Reception, and leaves finished ones', async () => {
@@ -843,7 +834,7 @@ test('the migration hands open LR Copy tasks from Dispatch to Reception, and lea
   assert.equal((await moveLrTasks({ write: true, log: () => {} })).moved, 0, 'run twice, nothing more to do');
 });
 
-test('Done on a task with its own workflow closes it at Task Closed and tells marketing and Admin, like choosing it', async () => {
+test('Done on a task with its own workflow closes it at Task Closed, like choosing it', async () => {
   const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_assembling_edd', note: 'Stock run for the showroom', brief: { model: 'NPT-400S', quantity: '2000' } } });
   assert.equal(sent.status, 201, sent.json.message);
   const id = sent.json.data.task._id;
@@ -854,17 +845,15 @@ test('Done on a task with its own workflow closes it at Task Closed and tells ma
   assert.equal(task.completed, true);
   assert.equal(task.status, 'closed', 'not left showing Planning');
   assert.equal(task.statusHistory.at(-1).status, 'closed');
-  const [notice] = await noticesOf('nandhini');
-  assert.equal(notice.statusLabel, 'Task Closed');
-  assert.equal(notice.note, 'All 2,000 made and handed to stores');
+  assert.equal(task.outcome.note, 'All 2,000 made and handed to stores');
 });
 
-test('choosing Task Closed tells them once, not twice', async () => {
+test('choosing Task Closed on Assembly’s task stays off marketing’s Needs your action', async () => {
   const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_assembling_edd', note: 'Another stock run', brief: { model: 'NPT-400S' } } });
   const id = sent.json.data.task._id;
   const before = (await noticesOf('nandhini')).length;
   assert.equal((await api(`/api/workspace/todos/${id}/status`, { method: 'POST', as: 'anand', body: { status: 'closed', note: 'Done and dusted' } })).status, 200);
-  assert.equal((await noticesOf('nandhini')).length, before + 1);
+  assert.equal((await noticesOf('nandhini')).length, before);
 });
 
 test('a team task form only fills in customers its raiser may see, and only Admin and marketing get it', async () => {
