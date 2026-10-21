@@ -339,11 +339,12 @@ export const TASK_FORMS = {
       { key: 'paymentTerms', label: 'Payment terms', type: 'choice', options: PAYMENT_TERMS, from: 'order.paymentTerms', placeholder: 'Select payment terms' },
       { key: 'poNumber', label: 'Customer PO number', from: 'order.poNumber', placeholder: 'The buyer’s PO number, if there is one' },
       /*
-       * Ticked: the SO prepared sends the order straight to Production. Left blank: it comes back
+       * Ticked: the SO prepared sends the order straight to Production. Unticked: it comes back
        * to marketing as a Production Holded Order, and Admin or the enquiry's marketing person
        * (or whoever it was delegated to) moves it to Production [config/handoffs.js po_so `holdUnless`].
+       * The form starts ticked (`checked`); marketing unticks it to hold the order.
        */
-      { key: 'productionConfirmed', label: 'Production confirmed — send to Production once the SO is prepared', type: 'check' },
+      { key: 'productionConfirmed', label: 'Production confirmed — send to Production once the SO is prepared', type: 'check', checked: true },
     ],
   },
   ask_edd: {
