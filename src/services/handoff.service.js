@@ -8,7 +8,7 @@ import { findDepartment } from '../config/modules.js';
 import { HANDOFFS, findHandoff } from '../config/handoffs.js';
 import { canRead } from './access.service.js';
 import { isOwnershipScoped, ownsRecord } from './ownership.service.js';
-import { departmentsOf, inDepartment, isManagement, MANAGEMENT_QUERY } from '../utils/departments.js';
+import { departmentsOf, inDepartment, isManagement, isProductionInCharge, MANAGEMENT_QUERY } from '../utils/departments.js';
 import { EVENTS, publish } from './events.service.js';
 import ApiError from '../utils/ApiError.js';
 import { dispatchBalance } from './enquiryGates.service.js';
@@ -835,6 +835,7 @@ async function returnToMarketing({ enquiry, note, fields, user, system }) {
   }
   const text = String(note || '').trim();
   const kept = keptFields(current.kind, fields);
+  if (!system && kept.edd) assertPlansProduction(current, user, 'gives the EDD — leave the expected date empty');
   const claimed = await Todo.updateOne({ _id: current._id, completed: false }, {
     $set: {
       completed: true,
@@ -1084,6 +1085,8 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
 
   const handoff = findHandoff(task.kind);
   const kept = keptFields(task.kind, fields);
+  /* The "Expected date" recorded on Production's Done is its EDD: the Production in charge's to give. */
+  if (!system && kept.edd) assertPlansProduction(task, user, 'gives the EDD — leave the expected date empty');
   /* A collection finished from Done rather than "Buyer collected" still says who took the sample — before anything is saved. */
   if (task.kind === 'sample_collect' && task.brief?.sample && !String(kept.collectorName || '').trim() && !String(kept.collectorPhone || '').trim()
     && (await sampleOfTask(task))?.status !== 'delivered') {
@@ -1261,6 +1264,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   if (step.comment && text.length < 3) fail(`Say what is needed — ${step.label} asks for a comment`);
   if (form.remarkRequired && text.length < 3) fail(`Add a remark to move it to ${step.label}`);
   const readyDate = statusDate(form, step, date);
+  /* A date on Production's task is its EDD or hand-over date: the Production in charge's to give. */
+  if (readyDate) assertPlansProduction(task, user, `gives the date — ${step.label} sets the ${form.statusDate?.label || 'ready date'}`);
   /* Production says what follows it before it gives any date [decideRouting]. */
   if (readyDate) assertRouted(task);
   /* A task of several models moves model by model: the ones named, or every one [Todo `modelStatuses`]. */
@@ -2269,6 +2274,8 @@ export async function updateHandoff(task, user, { note, fields = {} }) {
   const text = String(note || '').trim();
   if (text.length < 2) fail('Say what the update is');
   const kept = keptFields(task.kind, fields);
+  /* An "Expected date" on Production's update reads as its EDD [productionDates]: the Production in charge's. */
+  if (kept.edd) assertPlansProduction(task, user, 'gives the EDD — leave the expected date empty');
   task.updates = [...(task.updates || []), {
     kind: 'note', text, note: text, fields: Object.keys(kept).length ? kept : undefined, by: user._id, at: new Date(),
   }];
@@ -2626,6 +2633,7 @@ export async function writeEnquiryEdd(enquiryId, { day, user, department, note }
 export async function setTaskEdd(task, user, { date, note, models }) {
   openHandoff(task, user);
   if (!EDD_TASK_KINDS.includes(task.kind)) fail('The EDD is given from the Production, Assembly or Printing task');
+  assertPlansProduction(task, user, 'gives the EDD and the hand-over dates');
   assertRouted(task);
   /* A date for each model, or one date for all of them [Todo `modelDates`]. */
   const entries = datesForModels(task, { date, models });
@@ -2849,6 +2857,7 @@ const UNPLANNED = ['received', 'accepted'];
 export async function addToProductionQueue(task, user, { models, date, note } = {}) {
   openHandoff(task, user);
   if (task.kind !== 'ask_edd') fail('Only a Production task goes on the production queue');
+  assertPlansProduction(task, user, 'adds work to the production queue');
   if (task.queuedAt) throw ApiError.conflict('This task is already in the production queue');
   if (MOULDED.includes(task.status)) fail('The goods are already moulded — there is nothing to queue');
   if (models?.length) task = (await decideRouting(task, user, { models })).task;
@@ -2868,6 +2877,17 @@ export async function addToProductionQueue(task, user, { models, date, note } = 
   return task;
 }
 
+/**
+ * Production's plan — the EDD and hand-over dates, what follows moulding, the production queue —
+ * is the Production in charge's, or Admin's [utils/departments.js `isProductionInCharge`]. The
+ * rest of Production sees all of it and moves the statuses: Mould Issue, Part 1 Ready, Handed to
+ * Assembly. Other teams' tasks (Printing's, Assembly's own dates) are not touched.
+ */
+export function assertPlansProduction(task, user, what) {
+  if (task.kind !== 'ask_edd' || isProductionInCharge(user)) return;
+  throw ApiError.forbidden(`Only the Production in charge ${what}. You can update the status; they give the dates and decide printing and assembly.`);
+}
+
 export function assertRouted(task) {
   if (task.kind !== 'ask_edd') return;
   if (!task.routing?.decidedAt) fail('Decide first which models need printing or assembly — then give the date');
@@ -2882,7 +2902,7 @@ export async function routingFor(task, user) {
   if (!enquiryId) {
     const said = (task.routing?.models || []).map((row) => row.model);
     const models = [...new Set([...said, ...modelsOfTask(task)].filter(Boolean).map((model) => String(model).trim()))];
-    return { models: models.map((model) => ({ model })), routing: task.routing || null };
+    return { models: models.map((model) => ({ model })), routing: task.routing || null, mayDecide: isProductionInCharge(user) };
   }
   const prefill = await taskPrefill(enquiryId);
   const { default: SalesOrder } = await import('../models/SalesOrder.js');
@@ -2894,7 +2914,8 @@ export async function routingFor(task, user) {
   const hints = Object.fromEntries((prefill.items || []).map((row) => [row.model, {
     print: row.print || '', hook: row.hook || '', clip: row.clip || '',
   }]));
-  return { models: models.map((model) => ({ model, ...(hints[model] || {}) })), routing: task.routing || null };
+  /* Everyone in Production reads the decision; only the Production in charge (or Admin) makes it. */
+  return { models: models.map((model) => ({ model, ...(hints[model] || {}) })), routing: task.routing || null, mayDecide: isProductionInCharge(user) };
 }
 
 /**
@@ -2906,6 +2927,7 @@ export async function routingFor(task, user) {
 export async function decideRouting(task, user, { models }) {
   openHandoff(task, user);
   if (task.kind !== 'ask_edd') fail('Only Production decides printing and assembly');
+  assertPlansProduction(task, user, 'decides printing and assembly');
   const rows = [];
   for (const row of models || []) {
     const model = String(row?.model || '').trim();

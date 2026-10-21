@@ -53,6 +53,8 @@ export const createUserSchema = z.object({
   department: z.enum(DEPARTMENT_KEYS),
   /** Other departments this person also works in. */
   extraDepartments: z.array(z.enum(DEPARTMENT_KEYS)).max(9).optional(),
+  /** Production in charge — gives the EDD and decides printing / assembly [models/User.js]. */
+  productionInCharge: z.boolean().optional(),
   phone: z.string().optional(),
   /** Omit to accept the department's defaults. */
   moduleAccess: z.array(moduleGrant).optional(),
@@ -63,6 +65,7 @@ export const updateUserSchema = z.object({
   role: z.enum(ROLE_VALUES).optional(),
   department: z.enum(DEPARTMENT_KEYS).optional(),
   extraDepartments: z.array(z.enum(DEPARTMENT_KEYS)).max(9).optional(),
+  productionInCharge: z.boolean().optional(),
   phone: z.string().optional(),
   isActive: z.boolean().optional(),
 });

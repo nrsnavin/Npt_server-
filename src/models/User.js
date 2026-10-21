@@ -40,6 +40,15 @@ const userSchema = new mongoose.Schema(
      */
     extraDepartments: { type: [{ type: String, enum: DEPARTMENT_KEYS }], default: () => [] },
     /**
+     * Production in charge: the person who gives Production's EDD (and the hand-over dates) and
+     * decides, model by model, what follows moulding — printing, assembly, both or neither — and
+     * puts the work on the production queue. Anyone Admin marks, from any department (a
+     * marketing person too); marking them adds Production to their departments with its full
+     * access. Everyone else in Production sees all of it and moves the statuses
+     * [utils/departments.js `isProductionInCharge`].
+     */
+    productionInCharge: { type: Boolean, default: false },
+    /**
      * Explicit per-module grants. Absent means no access. Stored on the user rather than
      * derived from the department, so access is auditable and changing someone's
      * department never silently changes what they can already do.

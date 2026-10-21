@@ -53,7 +53,7 @@ test.before(async () => {
     ['nandhini', 'Nandhini S', 'marketing'], ['siva', 'Sivakumar', 'production'],
     ['priya', 'Priya Print', 'printing'], ['anand', 'Anand Assembly', 'assembling'],
   ]) {
-    const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department } });
+    const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department, productionInCharge: department === 'production' } });
     assert.equal(made.status, 201, made.json.message);
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
   }

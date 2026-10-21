@@ -97,7 +97,7 @@ test.before(async () => {
     { name: 'Suresh P', email: 'suresh@np.com', password: 'Prod@123456', department: 'production' },
   ];
   for (const person of people) {
-    await api('/api/users', { method: 'POST', token: admin, body: person });
+    await api('/api/users', { method: 'POST', token: admin, body: { ...person, productionInCharge: person.department === 'production' } });
   }
   [nandhini, arun, kavitha, ravi, suresh] = await Promise.all(
     people.map((person) => signIn(person.email, person.password))

@@ -23,6 +23,14 @@ export const inDepartment = (user, key) => Boolean(key) && departmentsOf(user).i
 export const isManagement = (user) => user?.role === 'admin' || inDepartment(user, 'management');
 
 /**
+ * Who plans Production's work [models/User.js `productionInCharge`]: the EDD and hand-over dates,
+ * the printing / assembly decision per model, and putting a task on the production queue. The
+ * Production in charge — anyone Admin marks, from any department; marking them adds Production
+ * to their departments [user.controller] — or Admin. The rest of Production moves the statuses.
+ */
+export const isProductionInCharge = (user) => isManagement(user) || user?.productionInCharge === true;
+
+/**
  * Every Admin, as a query — the same people `isManagement` says yes to: the admin role, or the
  * Admin (management) department as the main one or an extra. Notices and escalations used two
  * narrower versions, so somebody in Management as an extra department, or by department without

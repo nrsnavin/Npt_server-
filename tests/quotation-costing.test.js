@@ -95,7 +95,7 @@ test.before(async () => {
     { name: 'Kumar Q', email: 'kumar@np.com', password: 'Quote@12345', department: 'quotation' },
     { name: 'Priya Orders', email: 'priya@np.com', password: 'Orders@1234', department: 'order_confirmation' },
   ]) {
-    const made = await api('/api/users', { method: 'POST', token: admin, body: person });
+    const made = await api('/api/users', { method: 'POST', token: admin, body: { ...person, productionInCharge: person.department === 'production' } });
     assert.equal(made.status, 201, made.json.message);
   }
   nandhini = await signIn('nandhini@np.com', 'Mktg@123456');
