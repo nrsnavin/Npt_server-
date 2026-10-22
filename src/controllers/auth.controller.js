@@ -11,6 +11,7 @@ import { maskIdentifier } from '../utils/phone.js';
 import { moduleAccessFor } from '../services/access.service.js';
 import { departmentsOf } from '../utils/departments.js';
 import { inspectLink, redeemLink, sendReset } from '../services/passwordLink.service.js';
+import { staffEmailOn } from '../services/notification.service.js';
 import PasswordToken from '../models/PasswordToken.js';
 import { securityPolicy } from '../services/settings.service.js';
 
@@ -136,7 +137,9 @@ export const requestLoginOtp = asyncHandler(async (req, res) => {
   const respond = (extra = {}) =>
     res.json({
       success: true,
-      message: `If an account exists for ${maskIdentifier(identifier)}, a code is on its way.`,
+      message: extra.onScreen
+        ? 'Email is switched off for now — your sign-in code is shown on this screen.'
+        : `If an account exists for ${maskIdentifier(identifier)}, a code is on its way.`,
       data: {
         identifier,
         maskedIdentifier: maskIdentifier(identifier),
@@ -157,7 +160,12 @@ export const requestLoginOtp = asyncHandler(async (req, res) => {
     requestIp: req.ip,
   });
 
-  return respond({ expiresAt: issued.expiresAt, ...(issued.devCode ? { devCode: issued.devCode } : {}) });
+  return respond({
+    expiresAt: issued.expiresAt,
+    /* Staff email off: the code is shown on the sign-in screen instead of sent [otp.service]. */
+    ...(issued.onScreen ? { code: issued.code, onScreen: true } : {}),
+    ...(issued.devCode ? { devCode: issued.devCode } : {}),
+  });
 });
 
 /** Step two of OTP sign-in: exchange a valid code for a token. */
@@ -246,11 +254,12 @@ export const requestVerificationOtp = asyncHandler(async (req, res) => {
 
   res.json({
     success: true,
-    message: `Code sent to ${maskIdentifier(identifier)}`,
+    message: issued.onScreen ? 'Email is switched off for now — your code is shown here.' : `Code sent to ${maskIdentifier(identifier)}`,
     data: {
       maskedIdentifier: maskIdentifier(identifier),
       channel,
       expiresAt: issued.expiresAt,
+      ...(issued.onScreen ? { code: issued.code, onScreen: true } : {}),
       ...(issued.devCode ? { devCode: issued.devCode } : {}),
     },
   });
@@ -315,6 +324,14 @@ const RESET_COOLDOWN_MS = 60 * 1000;
  * reset anybody's password by typing their address.
  */
 export const forgotPassword = asyncHandler(async (req, res) => {
+  /* Staff email off: no link is made, since it could only travel by email. The person signs in with a code shown on the screen, or asks the administrator for a fresh link. */
+  if (!staffEmailOn()) {
+    return res.json({
+      success: true,
+      message: 'Email is switched off for now, so no reset link can be sent. Sign in with a one-time code from the sign-in page — it is shown on the screen — then change your password under My account. Or ask your administrator for a new sign-in link.',
+      data: { emailOff: true },
+    });
+  }
   const user = await User.findOne({ email: req.body.email });
 
   if (user?.isActive) {
@@ -326,7 +343,7 @@ export const forgotPassword = asyncHandler(async (req, res) => {
     if (!recent) await sendReset(user);
   }
 
-  res.json({
+  return res.json({
     success: true,
     message: 'If that address has an account, a link to reset the password is on its way. It works for an hour.',
   });

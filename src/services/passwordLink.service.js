@@ -6,7 +6,7 @@ import { env } from '../config/env.js';
 import { company } from '../config/company.js';
 import { findDepartment } from '../config/modules.js';
 import { moduleAccessFor } from './access.service.js';
-import { sendEmail } from './notification.service.js';
+import { sendEmailToStaff } from './notification.service.js';
 
 /**
  * Password links: how a new person gets in, and how a forgotten password is replaced.
@@ -181,10 +181,11 @@ export async function sendReset(user) {
 
 async function deliver(user, subject, content, link) {
   try {
-    const sent = await sendEmail({ direct: true, to: user.email, subject, text: textOf(content), html: layout(content) });
+    /* Staff email off: nothing is sent, and the administrator is handed the link to pass on [notification.service `sendEmailToStaff`]. */
+    const sent = await sendEmailToStaff({ direct: true, to: user.email, subject, text: textOf(content), html: layout(content) });
     return sent.delivered
       ? { delivered: true, expiresAt: link.expiresAt }
-      : { delivered: false, expiresAt: link.expiresAt, link: link.url };
+      : { delivered: false, expiresAt: link.expiresAt, link: link.url, ...(sent.skipped ? { emailOff: true } : {}) };
   } catch (error) {
     console.error(`[password-link] ${subject} to ${user.email} not sent: ${error.message}`);
     return { delivered: false, expiresAt: link.expiresAt, link: link.url };

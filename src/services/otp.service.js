@@ -78,8 +78,9 @@ export async function issueOtp({ identifier, channel, purpose = 'login', user, r
     requestIp,
   });
 
+  let sent;
   try {
-    await sendOtp({
+    sent = await sendOtp({
       identifier,
       channel,
       code,
@@ -96,6 +97,8 @@ export async function issueOtp({ identifier, channel, purpose = 'login', user, r
   return {
     tokenId: token._id,
     expiresAt: token.expiresAt,
+    /* Staff email off: the code went nowhere, so the screen that asked shows it [config/env.js `staffEmail`]. */
+    ...(sent?.onScreen ? { code, onScreen: true } : {}),
     // Never leak the code in production, whatever the configuration says.
     ...(env.otp.exposeInResponse && !isProduction ? { devCode: code } : {}),
   };

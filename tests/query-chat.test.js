@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
+process.env.STAFF_EMAIL = 'on'; /* these tests are about the mails themselves */
 process.env.JWT_SECRET = 'query-chat-test-secret';
 delete process.env.ANTHROPIC_API_KEY;
 

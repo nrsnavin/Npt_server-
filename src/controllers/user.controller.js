@@ -418,12 +418,14 @@ export const requestDeleteCode = asyncHandler(async (req, res) => {
   const issued = await issueOtp({ identifier: String(req.user.email).toLowerCase(), channel: 'email', purpose: 'delete_admin', user: req.user, requestIp: req.ip });
   res.json({
     success: true,
-    message: `A code is on its way to ${maskEmail(req.user.email)}.`,
+    message: issued.onScreen ? 'Email is switched off for now — the code is shown here.' : `A code is on its way to ${maskEmail(req.user.email)}.`,
     data: {
       required: true,
       sentTo: maskEmail(req.user.email),
       expiresInMinutes: env.otp.ttlMinutes,
       expiresAt: issued.expiresAt,
+      /* Staff email off: the code is shown on the screen instead of sent [otp.service]. */
+      ...(issued.onScreen ? { code: issued.code, onScreen: true } : {}),
       ...(issued.devCode ? { devCode: issued.devCode } : {}),
     },
   });

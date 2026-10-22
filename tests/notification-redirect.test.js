@@ -11,6 +11,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
 process.env.RATE_LIMIT_MAX = '100000';
+process.env.STAFF_EMAIL = 'on'; /* these tests are about the mails themselves */
 process.env.JWT_SECRET = 'notification-redirect-test-secret';
 delete process.env.WEB_PUSH_PUBLIC_KEY;
 delete process.env.SMTP_HOST;

@@ -68,6 +68,14 @@ export const env = {
     requirePreDispatchCheck: process.env.QUALITY_REQUIRE_PRE_DISPATCH === 'true',
   },
 
+  /**
+   * Email to the plant's own people — welcome links, password resets, sign-in codes, task and
+   * query alerts, the test notification. Off unless STAFF_EMAIL=on: while off nothing goes to a
+   * staff address, sign-in codes are shown on the screen instead, and the administrator is
+   * handed each set-password link to pass on. Email to buyers is untouched by this.
+   */
+  staffEmail: { enabled: process.env.STAFF_EMAIL === 'on' },
+
   smtp: {
     host: process.env.SMTP_HOST,
     port: Number(process.env.SMTP_PORT || 587),

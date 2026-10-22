@@ -55,6 +55,7 @@ const graph = http.createServer((req, res) => {
 });
 await new Promise((resolve) => graph.listen(0, '127.0.0.1', resolve));
 
+process.env.STAFF_EMAIL = 'on'; /* the delivery itself is under test */
 process.env.JWT_SECRET = 'whatsapp-meta-test-secret';
 process.env.OTP_EXPOSE_IN_RESPONSE = 'true';
 process.env.META_WA_TOKEN = 'meta-test-token';
