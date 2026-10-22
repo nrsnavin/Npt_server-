@@ -51,7 +51,7 @@ const BAND_RANK = { late: 0, today: 1, week: 2, later: 3, none: 4 };
  * plant desk beside marketing. Scoping them by their main department hid the queue from an in
  * charge who is marketing first: the desk counted the tasks, the queue showed none.
  */
-const readsWholeQueue = (user) => !isOwnershipScoped(user) || isProductionInCharge(user)
+export const readsWholeQueue = (user) => !isOwnershipScoped(user) || isProductionInCharge(user)
   || departmentsOf(user).some((key) => key !== 'marketing');
 
 const statusLabelOf = (task) => (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status)?.label || null;
