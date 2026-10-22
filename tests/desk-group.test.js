@@ -51,7 +51,7 @@ test.before(async () => {
   for (const [key, name, department] of [
     ['nandhini', 'Nandhini S', 'marketing'], ['suresh', 'Suresh Q', 'quality'], ['ravi', 'Ravi A', 'assembling'], ['mani', 'Mani P', 'printing'], ['siva', 'Sivakumar', 'production'],
   ]) {
-    const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department } });
+    const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department, productionInCharge: department === 'production' } });
     assert.equal(made.status, 201, made.json.message);
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
     ids[key] = (await api('/api/auth/me', { as: key })).json.data.id;

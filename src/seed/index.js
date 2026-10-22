@@ -71,7 +71,8 @@ const PEOPLE = [
   { name: 'Priya Orders', email: 'orders@npthangers.com', password: 'Orders@1234', department: 'order_confirmation', phone: '9876500005' },
   { name: 'Sivakumar Quotes', email: 'quotation@npthangers.com', password: 'Quote@12345', department: 'quotation', phone: '9876500017' },
   { name: 'Devi Printing', email: 'printing@npthangers.com', password: 'Print@12345', department: 'printing', phone: '9876500018' },
-  { name: 'Ramesh Plant', email: 'production@npthangers.com', password: 'Prod@123456', department: 'production', phone: '9876500006' },
+  /* Production in charge: gives the EDD and decides printing / assembly [models/User.js]. */
+  { name: 'Ramesh Plant', email: 'production@npthangers.com', password: 'Prod@123456', department: 'production', phone: '9876500006', productionInCharge: true },
   { name: 'Sunil Quality', email: 'quality@npthangers.com', password: 'Qual@123456', department: 'quality', phone: '9876500007' },
   { name: 'Anita Despatch', email: 'despatch@npthangers.com', password: 'Desp@123456', department: 'despatch', phone: '9876500008' },
   { name: 'Rekha Reception', email: 'reception@npthangers.com', password: 'Recep@12345', department: 'reception', phone: '9876500014' },

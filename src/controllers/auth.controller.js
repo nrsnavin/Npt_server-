@@ -22,6 +22,8 @@ const publicUser = (user) => ({
   department: user.department,
   extraDepartments: user.extraDepartments || [],
   departments: departmentsOf(user),
+  /** Gives Production's EDD and decides printing / assembly [utils/departments.js `isProductionInCharge`]. */
+  productionInCharge: Boolean(user.productionInCharge),
   phone: user.phone,
   emailVerified: user.emailVerified,
   phoneVerified: user.phoneVerified,

@@ -83,7 +83,7 @@ test.before(async () => {
     ['Kavitha D', 'kavitha@np.com', 'quality', PHONES.kavitha],
     ['Murugan M', 'murugan@np.com', 'mould', undefined],
   ]) {
-    const made = await api('/api/users', { method: 'POST', token: admin, body: { name, email, password: 'Pass@123456', department, ...(phone ? { phone } : {}) } });
+    const made = await api('/api/users', { method: 'POST', token: admin, body: { name, email, password: 'Pass@123456', department, productionInCharge: department === 'production', ...(phone ? { phone } : {}) } });
     assert.equal(made.status, 201, made.json.message);
   }
   nandhini = await signIn('nandhini@np.com', 'Pass@123456');

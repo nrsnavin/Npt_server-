@@ -83,7 +83,7 @@ test.before(async () => {
     ['Meera S', 'meera@np.com', 'sampling', 'Samp@123456'],
     ['Priya R', 'priya@np.com', 'marketing', 'Mktg@123456'],
   ]) {
-    await api('/api/users', { method: 'POST', token: admin, body: { name, email, password, department } });
+    await api('/api/users', { method: 'POST', token: admin, body: { name, email, password, department, productionInCharge: department === 'production' } });
   }
   nandhini = await signIn('nandhini@np.com', 'Mktg@123456');
   meera = await signIn('meera@np.com', 'Samp@123456');

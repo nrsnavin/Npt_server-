@@ -46,7 +46,7 @@ test.before(async () => {
     /* Quality by day, and in Management too — Admin in every screen, not by role. */
     ['meena', 'Meena K', 'quality', ['management']],
   ]) {
-    const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department, extraDepartments } });
+    const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department, extraDepartments, productionInCharge: department === 'production' } });
     assert.equal(made.status, 201, made.json.message);
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
     ids[key] = (await api('/api/auth/me', { as: key })).json.data.id;

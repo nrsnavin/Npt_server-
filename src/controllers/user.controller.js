@@ -17,6 +17,15 @@ import { listParams } from '../utils/query.js';
 import { sendWelcome } from '../services/passwordLink.service.js';
 import { canOwnBuyer } from '../services/assignment.service.js';
 
+/** Grants with these added — a level raised, never lowered; nothing taken away. */
+const withGrants = (current, added) => {
+  const held = new Map((current || []).map((grant) => [grant.module, grant.level]));
+  for (const { module, level } of added) {
+    if (!held.has(module) || LEVEL_RANK[level] > LEVEL_RANK[held.get(module)]) held.set(module, level);
+  }
+  return [...held].map(([module, level]) => ({ module, level }));
+};
+
 const publicUser = (user) => ({
   id: user._id,
   name: user.name,
@@ -25,6 +34,7 @@ const publicUser = (user) => ({
   department: user.department,
   extraDepartments: user.extraDepartments || [],
   departments: departmentsOf(user),
+  productionInCharge: Boolean(user.productionInCharge),
   phone: user.phone,
   emailVerified: user.emailVerified,
   phoneVerified: user.phoneVerified,
@@ -116,6 +126,12 @@ export const create = asyncHandler(async (req, res) => {
   const { name, email, password, role, department, phone, moduleAccess } = req.body;
   /* The main department is not also an extra one. */
   const extraDepartments = [...new Set(req.body.extraDepartments || [])].filter((key) => key !== department);
+  /*
+   * The Production in charge can be anyone — a marketing person, say. Marked, they work in
+   * Production too: it joins their departments, with Production's full access.
+   */
+  const inCharge = Boolean(req.body.productionInCharge) && role !== 'admin';
+  if (inCharge && department !== 'production' && !extraDepartments.includes('production')) extraDepartments.push('production');
 
   if (await User.findOne({ email: email.toLowerCase() })) {
     throw ApiError.conflict('An account with this email already exists');
@@ -128,9 +144,10 @@ export const create = asyncHandler(async (req, res) => {
     }
   }
 
-  const grants = moduleAccess?.length
+  const chosen = moduleAccess?.length
     ? normaliseGrants(moduleAccess)
     : defaultAccessForAll([department, ...extraDepartments]);
+  const grants = inCharge ? withGrants(chosen, defaultAccessForAll(['production'])) : chosen;
 
   const user = await User.create({
     name,
@@ -139,6 +156,7 @@ export const create = asyncHandler(async (req, res) => {
     phone,
     department,
     extraDepartments,
+    productionInCharge: inCharge,
     role: role || 'member',
     // An admin's access is implicit, so storing grants for one would only mislead.
     moduleAccess: role === 'admin' ? [] : grants,
@@ -199,18 +217,27 @@ export const update = asyncHandler(async (req, res) => withOwnerLocks([req.param
      * trim, as changing a main department always has.
      */
     const added = departmentsOf(user).filter((key) => !before.has(key));
-    if (added.length && user.role !== 'admin') {
-      const held = new Map((user.moduleAccess || []).map((grant) => [grant.module, grant.level]));
-      for (const { module, level } of defaultAccessForAll(added)) {
-        if (!held.has(module) || LEVEL_RANK[level] > LEVEL_RANK[held.get(module)]) held.set(module, level);
-      }
-      user.moduleAccess = [...held].map(([module, level]) => ({ module, level }));
-    }
+    if (added.length && user.role !== 'admin') user.moduleAccess = withGrants(user.moduleAccess, defaultAccessForAll(added));
   } else if (department && user.extraDepartments?.includes(department)) {
     user.extraDepartments = user.extraDepartments.filter((key) => key !== department);
   }
   if (role) user.role = role;
   if (isActive !== undefined) user.isActive = isActive;
+  /*
+   * Production in charge: anyone Admin marks — from Production, Marketing or any department.
+   * Marked, Production joins their departments with Production's full access (raised, never
+   * lowered). Unmarked, they keep Production until Admin takes it away. Taken out of Production
+   * later, the mark goes with it, so it never lingers on someone who no longer plans the work.
+   */
+  if (req.body.productionInCharge !== undefined) {
+    user.productionInCharge = req.body.productionInCharge && user.role !== 'admin';
+    if (user.productionInCharge) {
+      if (!departmentsOf(user).includes('production')) user.extraDepartments = [...(user.extraDepartments || []), 'production'];
+      user.moduleAccess = withGrants(user.moduleAccess, defaultAccessForAll(['production']));
+    }
+  } else if (user.productionInCharge && !departmentsOf(user).includes('production')) {
+    user.productionInCharge = false;
+  }
 
   if (phone !== undefined) {
     const next = phone ? resolveIdentifier(phone).identifier : undefined;
