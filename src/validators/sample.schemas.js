@@ -129,6 +129,8 @@ export const sampleStatusSchema = z.object({
   dispatchedAt: z.coerce.date().optional(),
   dispatchedQuantity: z.number().int().positive('A dispatch sends at least one piece').optional(),
   dispatchedColour: z.string().max(60).optional(),
+  /* Sample Sent closes the bench's task in the same move, unless the bench unticks it [the work queue]. */
+  closeTask: z.boolean().optional(),
   /* The handover: by courier (courier + AWB), or in person (a contact or a phone). */
   deliveryMethod: z.enum(DELIVERY_METHODS).optional(),
   handedTo: z.string().trim().max(120).optional(),

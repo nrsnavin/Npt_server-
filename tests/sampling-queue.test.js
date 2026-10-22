@@ -258,6 +258,30 @@ test('closing the task: a sent sample leaves the queue; an unsent one is cancell
   assert.equal(reasoned.json.data.status, 'cancelled');
 });
 
+test('Sample Sent closes the bench task in the same move when asked, and leaves it open when not', async () => {
+  const { sample: one } = await requestSample();
+  await move(one._id, { status: 'sample_ready' });
+  const sent = await move(one._id, { status: 'dispatched', deliveryMethod: 'direct', handedTo: 'Mr Ravi', dispatchedQuantity: 3, closeTask: true });
+  assert.equal(sent.status, 200, JSON.stringify(sent.json));
+  assert.equal(sent.json.data.status, 'dispatched');
+  assert.ok(sent.json.data.benchClosedAt, 'closed with the move');
+  assert.equal((await rowOf(one._id)).queueStatus, 'closed');
+  const again = await api(`/api/samples/${one._id}/close-task`, { method: 'POST', token: meera, body: {} });
+  assert.equal(again.status, 400, 'nothing left to close');
+
+  const { sample: two } = await requestSample();
+  await move(two._id, { status: 'sample_ready' });
+  const kept = await move(two._id, { status: 'dispatched', deliveryMethod: 'direct', handedTo: 'Mr Ravi', dispatchedQuantity: 3, closeTask: false });
+  assert.equal(kept.status, 200, JSON.stringify(kept.json));
+  assert.equal(kept.json.data.benchClosedAt, undefined, 'unticked: stays on the queue');
+  assert.notEqual((await rowOf(two._id)).queueStatus, 'closed');
+  /* The flag is the dispatch move's alone: a Sample Ready move with it does nothing. */
+  const { sample: three } = await requestSample();
+  const early = await move(three._id, { status: 'sample_ready', closeTask: true });
+  assert.equal(early.status, 200);
+  assert.equal(early.json.data.benchClosedAt, undefined);
+});
+
 test('closing a not-available task ends the request, with a reason', async () => {
   const { sample } = await requestSample();
   await move(sample._id, { status: 'not_available', note: 'Mould under repair' });

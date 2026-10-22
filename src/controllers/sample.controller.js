@@ -780,6 +780,16 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
   const from = sample.status;
   sample.status = status;
   sample.statusHistory.push({ from, to: status, by: req.user._id, note: note?.trim() || undefined });
+  /*
+   * Sample Sent is the end of the bench's work: the bag has gone and what the buyer says is
+   * marketing's to chase. So the move closes the task on the queue in the same step — the
+   * work queue sends `closeTask` ticked by default — rather than leaving a second Close for
+   * the bench to remember [closeSampleTask]. Unticked, the row stays on the queue as before.
+   */
+  if (status === 'dispatched' && req.body.closeTask === true && !sample.benchClosedAt) {
+    sample.benchClosedAt = new Date();
+    sample.benchClosedBy = req.user._id;
+  }
   await sample.save();
 
   /*
