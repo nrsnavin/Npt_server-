@@ -59,7 +59,8 @@ test.before(async () => {
   for (const [name, email, department] of [
     ['Nandhini S', 'nandhini@np.com', 'marketing'], ['Arun K', 'arun@np.com', 'sampling'], ['Sivakumar', 'siva@np.com', 'production'],
   ]) {
-    const made = await api('/api/users', { method: 'POST', token: admin, body: { name, email, password: 'Pass@123456', department, productionInCharge: department === 'production' } });
+    /* Siva is a Production hand, not the in charge: an in charge reads every enquiry [PRODUCTION_IN_CHARGE_ACCESS]. */
+    const made = await api('/api/users', { method: 'POST', token: admin, body: { name, email, password: 'Pass@123456', department } });
     assert.equal(made.status, 201, made.json.message);
   }
   nandhini = await signIn('nandhini@np.com', 'Pass@123456');
@@ -105,7 +106,7 @@ test('each department has its own form; the follow-up owner picks My or Team', a
   const form = (key) => buttons.find((button) => button.key === key).form;
   assert.equal(form('sample_request').team, 'Sampling Team');
   assert.deepEqual(buttons.find((button) => button.key === 'po_so').asks.map((field) => field.label), [
-    'Contact person', 'Mobile number', 'Sales order details', 'Payment terms', 'Customer PO number', 'Production confirmed — send to Production once the SO is prepared',
+    'Contact person', 'Mobile number', 'Sales order details', 'Payment terms', 'Customer PO number', 'Production confirmed — send to Production once the SO is prepared', 'QC compulsory before dispatch',
   ]);
   assert.equal(form('invoice_dispatch').title, 'Send Dispatch Request');
   assert.equal(form('invoice_dispatch').priority, false);
@@ -144,8 +145,8 @@ test('the form is filled from the enquiry: models with their parts, the buyer, t
   assert.equal(prefill.targetPrice, '1.8');
   /* A quotation for two models asks line by line: each with its material, parts and the buyer's target. */
   assert.deepEqual(prefill.quoteItems, [
-    { model: 'UTJRSH-0', material: 'PP Black', hook: 'Chrome hook 3 mm', clip: '', print: 'Logo, 1 colour', packing: '', quantity: '', targetPrice: '1.8' },
-    { model: 'OF-8', material: 'HIPS White', hook: '', clip: '', print: '', packing: '', quantity: '', targetPrice: '1.8' },
+    { model: 'UTJRSH-0', material: 'PP Black', hook: 'Chrome hook 3 mm', clip: '', print: 'Logo, 1 colour', packing: '', quantity: '', targetPrice: '1.8', qcRequired: false },
+    { model: 'OF-8', material: 'HIPS White', hook: '', clip: '', print: '', packing: '', quantity: '', targetPrice: '1.8', qcRequired: false },
   ]);
   assert.equal(prefill.customer.contactPerson, 'Ramesh Jain');
   assert.match(prefill.customer.mobile, /9170875207/);

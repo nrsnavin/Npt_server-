@@ -98,7 +98,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
     .populate([
       {
         path: 'enquiry',
-        select: 'number stage status customer assignedTo edd eddByModel requirement.modelNumber requirement.colour requirement.quantity requirement.mould items.modelNumber items.mould',
+        select: 'number stage status customer assignedTo edd eddByModel qcRequired requirement.modelNumber requirement.colour requirement.quantity requirement.mould items.modelNumber items.mould',
         populate: [{ path: 'customer', select: 'code name assignedTo' }, { path: 'assignedTo', select: 'name' }],
       },
       { path: 'user', select: 'name' },
@@ -238,6 +238,8 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
         const est = quantity ? estimate(left, mouldOf(task), plant, now) : null;
         return riskOf({ edd, left: quantity ? left : 0, est, status: task.status, now });
       })(),
+      /* QC compulsory before dispatch, and whether Quality has passed it [qcGate.service]. */
+      qc: { required: Boolean(enquiry.qcRequired) || ticked(task.brief?.qcRequired), cleared: Boolean(slot.quality?.completed && !issueOf(slot.quality)) },
       /* Needs assembly: Production routed a model to it, ticked on an older task, or Assembly already has its task. */
       needsAssembly: (task.routing?.models || []).some((row) => row.assembly) || ticked(task.brief?.assembly) || Boolean(slot.assembling),
       needsPrinting: (task.routing?.models || []).some((row) => row.printing) || Boolean(slot.printing),

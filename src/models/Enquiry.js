@@ -488,6 +488,8 @@ const enquirySchema = new mongoose.Schema(
      * is ready (`by_model`), or everything together once the last is (`together`, the default).
      * Marketing's or Admin's call.
      */
+    /** QC compulsory before dispatch: set when the job goes to Production [services/qcGate.service.js]. */
+    qcRequired: { type: Boolean, default: false },
     dispatchPlan: {
       mode: { type: String, enum: ['together', 'by_model'] },
       by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

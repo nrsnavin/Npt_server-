@@ -279,7 +279,9 @@ export function paymentLogEntry(user, { amount, mode, reference, note }, { parti
 /* Every receivable carries its order's enquiry, however it was raised — an advance, a consignment's invoice, a seed. */
 receivableSchema.pre('validate', async function linkEnquiry() {
   if (this.enquiry || !this.order) return;
-  const order = await mongoose.model('SalesOrder').findById(this.order).select('enquiry').lean();
+  /* Loaded here, not by name: a worker or a test that reaches receivables alone has not registered the order model. */
+  const { default: SalesOrder } = await import('./SalesOrder.js');
+  const order = await SalesOrder.findById(this.order).select('enquiry').lean();
   if (order?.enquiry) this.enquiry = order.enquiry;
 });
 

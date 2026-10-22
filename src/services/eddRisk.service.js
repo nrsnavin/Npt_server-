@@ -54,3 +54,31 @@ export function riskOf({ edd, left = 0, est = null, status = null, now = new Dat
   }
   return { ...base, level: 'on_track', why: `On track — ${days(daysLeft)} left${daysNeeded && left > 0 ? `, ${days(daysNeeded)} on the press` : ''}` };
 }
+
+/**
+ * The same four readings for Printing's and Assembly's queues [finishingQueue.controller], with
+ * no press rate to count by: red past the date the team works to; orange when the goods have not
+ * come and the team before said it hands over on or after that date (or gave no day and the date
+ * is tomorrow or today); yellow within three days; green otherwise. None without a date, or once
+ * the team says ready.
+ *
+ * @param edd      the date the team works to (its own, else the enquiry's), YYYY-MM-DD
+ * @param waiting  models still with the team before
+ * @param expected the earliest day the team before said it hands those over, or null
+ * @param ready    the task reads Ready for Dispatch, handed on, or closed
+ */
+export function riskOfFinishing({ edd, waiting = 0, expected = null, ready = false, now = new Date() }) {
+  const day = dayOf(edd);
+  if (!day) return { level: 'none', why: null, daysLeft: null };
+  if (ready) return { level: 'none', why: 'Ready', daysLeft: null };
+  const today = indiaDay(now);
+  const daysLeft = daysBetween(today, day);
+  const due = dayOf(expected);
+  const base = { daysLeft, expected: due };
+  if (daysLeft < 0) return { ...base, level: 'late', why: `Past the EDD by ${days(-daysLeft)}` };
+  if (waiting > 0 && ((due && due >= day) || (!due && daysLeft <= 1))) {
+    return { ...base, level: 'at_risk', why: due ? `May miss the EDD — the goods come ${due === day ? 'on the EDD itself' : `${days(daysBetween(day, due))} after it`}` : `May miss the EDD — the goods are not here and ${daysLeft === 0 ? 'it is today' : 'it is tomorrow'}` };
+  }
+  if (daysLeft <= CLOSE_WITHIN_DAYS) return { ...base, level: 'close', why: `Close to the EDD — ${daysLeft === 0 ? 'due today' : `${days(daysLeft)} left`}${waiting > 0 && due ? `, goods due ${days(daysBetween(today, due))} from now` : ''}` };
+  return { ...base, level: 'on_track', why: `On track — ${days(daysLeft)} left` };
+}

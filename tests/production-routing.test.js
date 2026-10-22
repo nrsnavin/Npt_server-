@@ -310,10 +310,13 @@ test('dispatch plan: each model as it is ready — a ready model goes to Quality
   const items = [{ modelNumber: 'DP-1', quantity: 1000 }, { modelNumber: 'DP-2', quantity: 1000 }];
   const models = [{ model: 'DP-1' }, { model: 'DP-2', printing: true }];
   const together = await routedEnquiry('Together Knits', '9840011666', items, models);
+  /* QC compulsory on both, so the ready model goes to Quality rather than straight to Dispatch [qcGate.service]. */
+  await Enquiry.updateOne({ _id: together.enquiry._id }, { $set: { qcRequired: true } });
   await api(`/api/workspace/todos/${together.production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'DP-1 ready' } });
   assert.equal(await Todo.findOne({ enquiry: together.enquiry._id, kind: 'quality_check' }), null, 'together: waits for Printing');
 
   const split = await routedEnquiry('By Model Knits', '9840011555', items, models);
+  await Enquiry.updateOne({ _id: split.enquiry._id }, { $set: { qcRequired: true } });
   assert.equal((await api(`/api/enquiries/${split.enquiry._id}/dispatch-plan`, { method: 'POST', as: 'siva', body: { mode: 'by_model' } })).status, 403, 'marketing’s or Admin’s call');
   const plan = await api(`/api/enquiries/${split.enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'by_model', note: 'Buyer wants DP-1 first' } });
   assert.equal(plan.status, 200, plan.json.message);

@@ -63,11 +63,13 @@ const isReady = (task) => {
 
 /** The enquiry's dispatch plan [Enquiry `dispatchPlan`], and which models are ready. */
 async function planOf(enquiryId) {
-  const enquiry = await Enquiry.findById(enquiryId).select('dispatchPlan').lean();
-  if (enquiry?.dispatchPlan?.mode !== 'by_model') return { byModel: false };
+  const enquiry = await Enquiry.findById(enquiryId).select('dispatchPlan qcRequired').lean();
+  const qcRequired = Boolean(enquiry?.qcRequired);
+  if (enquiry?.dispatchPlan?.mode !== 'by_model') return { byModel: false, qcRequired };
   const { modelReadiness } = await import('./handoff.service.js');
-  return { byModel: true, ...(await modelReadiness(enquiryId)) };
+  return { byModel: true, qcRequired, ...(await modelReadiness(enquiryId)) };
 }
+const tickedQc = (value) => value === true || value === 'true' || value === 'Yes' || value === 'on';
 const readyWords = ({ ready = [], waiting = [] }) => `Ready: ${ready.join(', ') || 'none'}${waiting.length ? ` · still to come: ${waiting.map((row) => row.model).join(', ')}` : ''}`;
 
 /**
@@ -94,11 +96,19 @@ async function advanceOnEnquiry(task, user, why) {
 
   if (FINISHING_KINDS.includes(task.kind)) {
     /*
+     * QC compulsory [Enquiry `qcRequired`, or ticked on the Production request]: Quality is asked and
+     * Dispatch waits for its pass. Otherwise the goods go straight to Dispatch [qcGate.service].
+     */
+    const plan = await planOf(enquiryId);
+    const production = await Todo.findOne({ enquiry: enquiryId, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('brief').lean();
+    const qcRequired = plan.qcRequired || tickedQc(production?.brief?.qcRequired);
+    /*
      * Already further on — Dispatch asked (by a person, or Dispatch asked Production itself) or the
      * LR in: a finishing team closing its task late does not send the order back through Quality.
+     * With QC compulsory, Dispatch asked early is not further on: Quality is still owed its check.
      */
     const ahead = await Todo.exists({
-      enquiry: enquiryId, kind: { $in: ['invoice_dispatch', 'lr_copy'] },
+      enquiry: enquiryId, kind: { $in: qcRequired ? ['lr_copy'] : ['invoice_dispatch', 'lr_copy'] },
       $or: [{ completed: false }, { createdAt: { $gte: start.createdAt } }],
     });
     if (ahead) return null;
@@ -110,12 +120,22 @@ async function advanceOnEnquiry(task, user, why) {
      * Printing or Assembly still making its share: Quality waits for the last of them — unless the
      * order goes out model by model, when a model ready is enough [Enquiry `dispatchPlan`].
      */
-    const plan = await planOf(enquiryId);
     if (plan.byModel ? !plan.ready.length : finishing.some((entry) => !isReady(entry))) return null;
+    if (!qcRequired) {
+      if (await raisedSince('invoice_dispatch')) return null;
+      const said = plan.byModel ? `${readyWords(plan)} — dispatch plan: each model as it is ready` : why || 'Goods ready';
+      return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, said);
+    }
     if (!(await raisedSince('quality_check'))) {
-      const said = plan.byModel ? `${readyWords(plan)} — dispatch plan: each model as it is ready` : why || 'Goods ready — check them before dispatch';
+      const said = plan.byModel ? `${readyWords(plan)} — dispatch plan: each model as it is ready` : why || 'Goods ready — QC compulsory: check them before dispatch';
       return raiseOnEnquiry(enquiryId, 'quality_check', user, said);
     }
+    return null;
+  }
+  /* Quality passed with the Dispatch request already open (QC compulsory): the request reads Goods Ready now. */
+  if (task.kind === 'quality_check' && task.completed && (await raisedSince('invoice_dispatch'))) {
+    const { tellDispatchReady } = await import('./handoff.service.js');
+    await tellDispatchReady(task, user, { key: 'quality_passed', label: 'Quality passed' }, why || '');
     return null;
   }
   /* Quality done on an order on its way: Dispatch has it next, unless already asked. */
@@ -160,11 +180,14 @@ const TEAM_NEXT = { po_so: 'ask_edd', quality_check: 'invoice_dispatch' };
  */
 async function advanceTeamTask(task, user, why) {
   if (FINISHING_KINDS.includes(task.kind)) {
-    const finishing = await Todo.find({ ...jobFilter(task), kind: { $in: FINISHING_KINDS } }).select('kind status completed').lean();
+    const finishing = await Todo.find({ ...jobFilter(task), kind: { $in: FINISHING_KINDS } }).select('kind status completed brief').lean();
     if (finishing.some((entry) => !isReady(entry))) return null;
-    const quality = await raiseNextTeamTask(task, 'quality_check', user, why);
-    const dispatch = await raiseNextTeamTask(task, 'invoice_dispatch', user, why || 'Goods ready');
-    return dispatch || quality;
+    /* QC compulsory, ticked on the Production task (or the one team asked): Quality first, Dispatch on its pass. */
+    const production = finishing.find((entry) => entry.kind === 'ask_edd') || finishing[0];
+    if (tickedQc(production?.brief?.qcRequired) || tickedQc(task.brief?.qcRequired)) {
+      return raiseNextTeamTask(task, 'quality_check', user, why || 'Goods ready — QC compulsory: check them before dispatch');
+    }
+    return raiseNextTeamTask(task, 'invoice_dispatch', user, why || 'Goods ready');
   }
   const kind = TEAM_NEXT[task.kind];
   if (!kind) return null;

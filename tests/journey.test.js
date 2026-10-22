@@ -79,9 +79,10 @@ test('a sample request ends at the sample — nothing further is raised', async 
   assert.equal(await Todo.countDocuments({ enquiry, kind: { $in: ['ask_edd', 'quality_check', 'invoice_dispatch'] } }), 0);
 });
 
-test('Production done → QC is asked; QC done → Dispatch is asked; the journey shows each step', async () => {
+test('QC compulsory: Production done → QC is asked; QC done → Dispatch is asked; the journey shows each step', async () => {
   const enquiry = await freshEnquiry();
-  const production = (await send(enquiry, 'ask_edd')).json.data.task;
+  const production = (await send(enquiry, 'ask_edd', { brief: { qcRequired: true } })).json.data.task;
+  assert.equal((await Enquiry.findById(enquiry)).qcRequired, true, 'the tick is kept on the enquiry');
   const closed = await move(production._id, 'siva', 'closed', 'All 10,000 made');
   assert.equal(closed.status, 200, closed.json.message);
   const quality = await open(enquiry, 'quality_check');
@@ -105,7 +106,7 @@ test('Production done → QC is asked; QC done → Dispatch is asked; the journe
 
 test('with Printing asked, Quality waits until Printing has its share ready too', async () => {
   const enquiry = await freshEnquiry();
-  const production = (await send(enquiry, 'ask_edd')).json.data.task;
+  const production = (await send(enquiry, 'ask_edd', { brief: { qcRequired: true } })).json.data.task;
   const printing = (await send(enquiry, 'ask_printing', { brief: { model: 'NH-400' } })).json.data.task;
   assert.equal((await move(production._id, 'siva', 'ready_dispatch', 'Moulded, with Printing')).status, 200);
   assert.equal(await open(enquiry, 'quality_check'), null, 'Printing is still at it');
@@ -148,8 +149,8 @@ test('a mould running for an enquiry shows on its Production task, the enquiry, 
   assert.deepEqual([after.running.length, after.made.good], [0, 3900]);
 });
 
-test('a team task with no enquiry follows the same chain for the same buyer', async () => {
-  const team = await api('/api/workspace/team-tasks', { method: 'POST', body: { kind: 'ask_edd', note: 'Walk-in buyer, 2,000 pcs', customer: customerId, brief: { model: 'NH-400', quantity: '2000' } } });
+test('a team task with no enquiry follows the same chain for the same buyer — Quality first only when QC was ticked', async () => {
+  const team = await api('/api/workspace/team-tasks', { method: 'POST', body: { kind: 'ask_edd', note: 'Walk-in buyer, 2,000 pcs', customer: customerId, brief: { model: 'NH-400', quantity: '2000', qcRequired: true } } });
   assert.equal(team.status, 201, team.json.message);
   const closedTeam = await move(team.json.data.task._id, 'siva', 'closed', 'Made');
   assert.equal(closedTeam.status, 200, closedTeam.json.message);
@@ -157,9 +158,54 @@ test('a team task with no enquiry follows the same chain for the same buyer', as
   assert.ok(quality, 'Quality has the next team task');
   assert.equal(quality.brief.quantity, '2000');
   assert.equal(String(quality.customer), customerId);
-  assert.ok(await Todo.findOne({ previousTask: team.json.data.task._id, kind: 'invoice_dispatch' }), 'Dispatch is asked beside it — Quality never holds the goods');
+  assert.equal(await Todo.findOne({ previousTask: team.json.data.task._id, kind: 'invoice_dispatch' }), null, 'Dispatch waits for Quality’s pass');
   assert.equal((await move(quality._id, 'kavitha', 'closed', 'Passed')).status, 200);
-  assert.equal(await Todo.countDocuments({ chain: team.json.data.task._id, kind: 'invoice_dispatch' }), 1, 'Quality closing does not ask Dispatch twice');
+  assert.equal(await Todo.countDocuments({ chain: team.json.data.task._id, kind: 'invoice_dispatch' }), 1, 'Quality passing asks Dispatch, once');
+
+  /* Not ticked: the goods go straight to Dispatch; Quality is not asked. */
+  const plain = await api('/api/workspace/team-tasks', { method: 'POST', body: { kind: 'ask_edd', note: 'Repeat, 1,000 pcs', customer: customerId, brief: { model: 'NH-400', quantity: '1000' } } });
+  assert.equal((await move(plain.json.data.task._id, 'siva', 'closed', 'Made')).status, 200);
+  assert.ok(await Todo.findOne({ previousTask: plain.json.data.task._id, kind: 'invoice_dispatch' }), 'Dispatch asked straight away');
+  assert.equal(await Todo.findOne({ previousTask: plain.json.data.task._id, kind: 'quality_check' }), null, 'no QC asked');
+});
+
+test('QC not ticked: Production done → Dispatch is asked straight away, no Quality step', async () => {
+  const enquiry = await freshEnquiry();
+  const production = (await send(enquiry, 'ask_edd')).json.data.task;
+  assert.equal((await Enquiry.findById(enquiry)).qcRequired, false);
+  assert.equal((await move(production._id, 'siva', 'closed', 'All made')).status, 200);
+  assert.equal(await open(enquiry, 'quality_check'), null, 'Quality is not asked');
+  const dispatch = await open(enquiry, 'invoice_dispatch');
+  assert.ok(dispatch, 'Dispatch has its task');
+  const { journey } = (await api(`/api/enquiries/${enquiry}/handoffs`)).json;
+  assert.deepEqual(journey.steps.map((step) => [step.key, step.state]).filter(([key]) => key !== 'quality'), [
+    ['production', 'done'], ['dispatch', 'open'], ['lr', 'todo'],
+  ]);
+});
+
+test('QC compulsory with Dispatch asked early: the request waits at Received, Dispatched is refused, Quality’s pass frees it', async () => {
+  const enquiry = await freshEnquiry();
+  const production = (await send(enquiry, 'ask_edd', { brief: { qcRequired: true } })).json.data.task;
+  /* Marketing asks Dispatch before the goods are made, as it often does. */
+  const early = await send(enquiry, 'invoice_dispatch', { brief: { quantity: '2000' } });
+  assert.equal(early.status, 201, early.json.message);
+  const request = early.json.data.task;
+  assert.equal((await move(production._id, 'siva', 'ready_dispatch', 'Moulded and packed')).status, 200);
+  const held = await Todo.findById(request._id);
+  assert.notEqual(held.status, 'waiting_vehicle', 'not Goods Ready while QC is compulsory and not passed');
+  assert.match(held.updates.at(-1).note, /QC compulsory: waits for Quality/);
+  const refused = await move(request._id, 'anita', 'dispatched', 'Vehicle loaded');
+  assert.equal(refused.status, 400);
+  assert.match(refused.json.message, /QC is compulsory on this order/);
+  const readyRefused = await move(request._id, 'anita', 'waiting_vehicle', 'Packed');
+  assert.equal(readyRefused.status, 400);
+  const quality = await open(enquiry, 'quality_check');
+  assert.ok(quality, 'Quality was asked');
+  assert.equal((await move(quality._id, 'kavitha', 'closed', 'Passed — 80 checked')).status, 200);
+  const freed = await Todo.findById(request._id);
+  assert.equal(freed.status, 'waiting_vehicle', 'Quality’s pass reads Goods Ready on the request');
+  const went = await move(request._id, 'anita', 'dispatched', 'Vehicle loaded');
+  assert.equal(went.status, 200, went.json.message);
 });
 
 test('a Production task raised from the customer, with no enquiry, runs Printing → Assembly → Dispatch → LR copy', async () => {
@@ -216,7 +262,7 @@ test('a Production task raised from the customer, with no enquiry, runs Printing
 
   const dispatch = await chainOf('invoice_dispatch');
   assert.ok(dispatch, 'the last team ready: Dispatch is asked');
-  assert.ok(await chainOf('quality_check'), 'and Quality checks beside it');
+  assert.equal(await chainOf('quality_check'), null, 'QC was not ticked on the job: Quality is not asked');
   assert.equal(String(dispatch.customer), customerId);
   assert.equal(dispatch.brief.quantity, '5000');
   assert.equal((await move(dispatch._id, 'anita', 'dispatched', 'Left on TN 39 AB 4471')).status, 200);
@@ -230,7 +276,7 @@ test('a Production task raised from the customer, with no enquiry, runs Printing
   const flow = await api(`/api/production/workflow/${production}`, { as: 'siva' });
   assert.equal(flow.status, 200, flow.json.message);
   assert.equal(flow.json.data.enquiry.team, true);
-  assert.deepEqual(Object.keys(flow.json.data.teams).sort(), ['assembling', 'despatch', 'printing', 'quality']);
+  assert.deepEqual(Object.keys(flow.json.data.teams).sort(), ['assembling', 'despatch', 'printing'], 'QC not ticked: no Quality step on the chain');
   assert.deepEqual(flow.json.data.specs, []);
   /* The model table says each team's date: Production's hand-over to Printing, Assembly's EDD — the job's EDD. */
   const [line] = flow.json.data.models;

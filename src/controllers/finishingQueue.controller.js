@@ -6,6 +6,8 @@ import { findHandoff } from '../config/handoffs.js';
 import { canRead } from '../services/access.service.js';
 import { ownsRecord } from '../services/ownership.service.js';
 import { bandOf, readsWholeQueue } from './productionQueue.controller.js';
+import { RISK_LEVELS, riskOfFinishing } from '../services/eddRisk.service.js';
+import { ticked as qcTicked } from '../services/qcGate.service.js';
 
 /**
  * Printing's and Assembly's queues, in the order the goods are due [web: components/
@@ -128,7 +130,7 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
     .populate([
       {
         path: 'enquiry',
-        select: 'number stage status customer assignedTo edd eddByModel requirement.modelNumber requirement.colour requirement.quantity items.modelNumber',
+        select: 'number stage status customer assignedTo edd eddByModel qcRequired requirement.modelNumber requirement.colour requirement.quantity items.modelNumber',
         populate: [{ path: 'customer', select: 'code name assignedTo' }, { path: 'assignedTo', select: 'name' }],
       },
       { path: 'user', select: 'name' },
@@ -148,7 +150,7 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
   /* The job's other teams: Production (the routing, where the goods are) and Printing before Assembly. */
   const enquiryIds = mine.filter((task) => task.enquiry).map((task) => task.enquiry._id);
   const chainIds = mine.filter((task) => !task.enquiry).map((task) => task.chain || task._id);
-  const kinds = ['ask_edd', ...(req.params.team === 'assembling' ? ['ask_printing'] : [])];
+  const kinds = ['ask_edd', 'quality_check', ...(req.params.team === 'assembling' ? ['ask_printing'] : [])];
   const others = (enquiryIds.length || chainIds.length)
     ? await Todo.find({
       kind: { $in: kinds },
@@ -156,7 +158,7 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
         ...(enquiryIds.length ? [{ enquiry: { $in: enquiryIds } }] : []),
         ...(chainIds.length ? [{ chain: { $in: chainIds } }, { _id: { $in: chainIds } }] : []),
       ],
-    }).select('enquiry chain kind status completed completedAt modelStatuses routing updatedAt createdAt').sort({ createdAt: -1 }).lean()
+    }).select('enquiry chain kind status completed completedAt modelStatuses routing brief updatedAt createdAt').sort({ createdAt: -1 }).lean()
     : [];
   const jobKeyOf = (task) => (task.enquiry ? `e:${String(task.enquiry._id || task.enquiry)}` : `c:${String(task.chain || task._id)}`);
   const siblings = new Map();
@@ -210,6 +212,10 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
       /* The date the row is queued by, and where it came from. */
       edd: date ? { date, source: own ? 'team' : 'enquiry', label: own && handsOn ? 'Hand-over' : 'EDD', own, enquiry: enquiryEdd } : null,
       band: bandOf(date, now),
+      /* Red, orange, yellow, green against the date the team works to [eddRisk.service `riskOfFinishing`]. */
+      risk: riskOfFinishing({ edd: date, waiting: models.length - received, expected, ready: Boolean(step?.readyForDispatch || step?.done || step?.handsTo), now }),
+      /* QC compulsory before dispatch, and whether Quality has passed it [qcGate.service]. */
+      qc: { required: Boolean(enquiry?.qcRequired) || qcTicked(production?.brief?.qcRequired), cleared: Boolean(slot.quality_check?.completed && !stepOf('quality_check', slot.quality_check.status)?.issue) },
       /* The goods: from whom, when they are due, how many models have come. */
       goods: {
         from: [...new Set(models.map((entry) => entry.from))], expected, received, total: models.length,
@@ -232,6 +238,7 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
     meta: {
       team: req.params.team, label: team.label, asOf: now, day: indiaDay(now),
       bands: Object.fromEntries(Object.keys(BAND_RANK).map((band) => [band, count((row) => row.band === band)])),
+      risk: Object.fromEntries(RISK_LEVELS.map((level) => [level, count((row) => row.risk?.level === level)])),
       goods: {
         waiting: count((row) => !row.goods.inHand),
         inHand: count((row) => row.goods.inHand),

@@ -1,3 +1,4 @@
+import { assertQcCleared } from '../services/qcGate.service.js';
 import { withOrderLock } from '../services/operationLock.service.js';
 import { inDepartment, isManagement } from '../utils/departments.js';
 import Dispatch, {
@@ -480,6 +481,8 @@ async function orderForDispatch(id, user) {
  */
 export const createDispatch = asyncHandler(withOrderLock(req => req.body.order, transactional(async (req, res) => {
   const order = await orderForDispatch(req.body.order, req.user);
+  /* QC compulsory on the order's enquiry: no consignment until Quality has passed it [qcGate.service]. */
+  if (order.enquiry) await assertQcCleared({ enquiry: order.enquiry }, 'raise the consignment');
   /* `address` and `pincode` as well, or the prefill below has nothing to read. */
   await order.populate('customer', 'code name address city state pincode');
 

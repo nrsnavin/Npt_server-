@@ -72,6 +72,13 @@ const modelAndQuantity = [
   { key: 'quantity', label: 'Quantity', type: 'number', from: 'quantity', placeholder: 'Example: 10,000 pcs' },
 ];
 
+/**
+ * QC compulsory before dispatch: marketing or Admin tick it when the job goes to Production (on
+ * the SO request, or the Ask EDD form). Ticked, the goods go to Quality after the finishing
+ * teams and only Quality's pass lets them go to Dispatch [services/qcGate.service.js].
+ */
+const QC_ASK = { key: 'qcRequired', label: 'QC compulsory before dispatch', type: 'check', from: 'qcRequired', hint: 'Ticked: Quality checks the goods after Production, Printing and Assembly, and Dispatch waits for its pass' };
+
 /** The rows of a sample request: each model with its parts, the colour rule and how many. */
 const SAMPLE_COLUMNS = [
   { key: 'model', label: 'Mould / model', required: true, register: 'moulds' },
@@ -345,6 +352,7 @@ export const TASK_FORMS = {
        * The form starts ticked (`checked`); marketing unticks it to hold the order.
        */
       { key: 'productionConfirmed', label: 'Production confirmed — send to Production once the SO is prepared', type: 'check', checked: true },
+      QC_ASK,
     ],
   },
   ask_edd: {
@@ -354,7 +362,7 @@ export const TASK_FORMS = {
      * model on the task before it gives any date [handoff.service `decideRouting`]: Printing's and
      * Assembly's tasks are raised from that, and the last team in the chain gives the EDD.
      */
-    asks: modelAndQuantity,
+    asks: [...modelAndQuantity, QC_ASK],
     routes: true,
     /* Every move says why, and the enquiry's marketing person and Admin are told of it. */
     remarkRequired: true,

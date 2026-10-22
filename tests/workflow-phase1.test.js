@@ -111,13 +111,13 @@ test.before(async () => {
   }).then((response) => response.json());
   await raw('/api/auth/register', { name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', department: 'management' });
   token.admin = (await raw('/api/auth/login', { email: 'admin@np.com', password: 'Admin@12345' })).data.token;
-  for (const [key, name, department] of [
+  for (const [key, name, department, inCharge] of [
     ['nandhini', 'Nandhini S', 'marketing'], ['priya', 'Priya Orders', 'order_confirmation'],
-    ['siva', 'Sivakumar', 'production'], ['asha', 'Asha Assembly', 'assembling'],
+    ['siva', 'Sivakumar', 'production', true], ['ravi', 'Ravi Hand', 'production', false], ['asha', 'Asha Assembly', 'assembling'],
     ['kavitha', 'Kavitha D', 'quality'], ['anita', 'Anita Despatch', 'despatch'], ['kiran', 'Kiran Accounts', 'accounts'],
     ['vijay', 'Vijay Collections', 'payment_collection'],
   ]) {
-    const made = await raw('/api/users', { name, email: `${key}@np.com`, password: 'Pass@123456', department, productionInCharge: department === 'production' }, token.admin);
+    const made = await raw('/api/users', { name, email: `${key}@np.com`, password: 'Pass@123456', department, productionInCharge: Boolean(inCharge) }, token.admin);
     assert.ok(made.data, made.message);
     token[key] = (await raw('/api/auth/login', { email: `${key}@np.com`, password: 'Pass@123456' })).data.token;
   }
@@ -347,17 +347,24 @@ test('a department without the enquiry module opens the enquiries it works, and 
   const worked = await inProduction();
   const untouched = await freshEnquiry('NH-900');
 
-  const opened = await api(`/api/enquiries/${worked}`, { as: 'siva' });
+  /* A Production hand: the enquiries the team works, and only those. */
+  const opened = await api(`/api/enquiries/${worked}`, { as: 'ravi' });
   assert.equal(opened.status, 200, opened.json.message);
   assert.equal(opened.json.data._id, worked);
 
-  const hidden = await api(`/api/enquiries/${untouched}`, { as: 'siva' });
+  const hidden = await api(`/api/enquiries/${untouched}`, { as: 'ravi' });
   assert.equal(hidden.status, 404, 'one Production never touched stays hidden');
 
-  const list = await api('/api/enquiries', { as: 'siva' });
+  const list = await api('/api/enquiries', { as: 'ravi' });
   assert.equal(list.status, 403, 'and the enquiry list itself is still marketing\'s');
-  const change = await api(`/api/enquiries/${worked}`, { method: 'PATCH', as: 'siva', body: { remarks: 'x' } });
+  const change = await api(`/api/enquiries/${worked}`, { method: 'PATCH', as: 'ravi', body: { remarks: 'x' } });
   assert.equal(change.status, 403, 'reading is not editing');
+
+  /* The in charge reads every enquiry — their floor — to plan from, and still cannot edit one. */
+  const planner = await api(`/api/enquiries/${untouched}`, { as: 'siva' });
+  assert.equal(planner.status, 200, planner.json.message);
+  const plannerEdit = await api(`/api/enquiries/${worked}`, { method: 'PATCH', as: 'siva', body: { remarks: 'x' } });
+  assert.equal(plannerEdit.status, 403, 'read, not write');
 });
 
 /* ------------------------------ 6. The records move the enquiry from wherever it is ------------------------------ */

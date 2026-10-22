@@ -19,6 +19,7 @@ import { MATERIALS } from '../models/Mould.js';
 import { HANDOVER_CHOICES } from '../config/departmentTaskForms.js';
 import { askToRecordReceipt, endOfIndiaDay, logCollectionCall } from './collections.service.js';
 import { chainOf, jobFilter } from './journey.service.js';
+import { assertQcCleared, qcGateFor, ticked as qcTicked } from './qcGate.service.js';
 import mongoose from 'mongoose';
 
 /**
@@ -987,6 +988,10 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
   if (handoff.department) {
     const wasHeld = enquiry.stage === 'production_hold';
     const raised = await moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, order, user });
+    /* QC compulsory before dispatch, as marketing or Admin ticked it when the job went to Production [qcGate.service]. */
+    if (['ask_edd', 'po_so'].includes(kind) && brief && brief.qcRequired !== undefined) {
+      await Enquiry.updateOne({ _id: enquiry._id }, { $set: { qcRequired: qcTicked(brief.qcRequired) } });
+    }
     /* A Production Holded Order moved to Production: the order booked from its SO request goes to the plant too. */
     if (wasHeld && kind === 'ask_edd') {
       const { releaseHeldOrders } = await import('./soFromTask.service.js');
@@ -1305,6 +1310,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   const step = statusesOf(task).find((entry) => entry.key === status);
   if (!step) fail('That is not one of this task’s statuses');
   if (step.pdf) fail(`Upload the PDF to mark it ${step.label}`);
+  /* The goods leave only on Quality's pass where QC is compulsory [qcGate.service]. */
+  if (task.kind === 'invoice_dispatch' && DISPATCH_GOES.includes(step.key)) await assertQcCleared(task, `mark it ${step.label}`);
   const text = String(note || '').trim();
   /* What the status asks for beside the remark — who collected the sample, how many pieces. */
   const asked = stepFields(step, fields);
@@ -1924,6 +1931,8 @@ async function askToRecordPayment(task, user, step) {
 
 /* The Dispatch statuses that mean "still waiting on the goods" — a ready signal moves these on. */
 const WAITING_ON_GOODS = ['received', 'asked_production', 'not_ready'];
+/* The Dispatch moves that send the goods out, or say they may go: refused while QC is compulsory and not passed. */
+const DISPATCH_GOES = ['waiting_vehicle', 'party_collect', 'part_dispatched', 'fully_dispatched', 'dispatched'];
 
 /**
  * Production (or Assembly) says Ready for Dispatch: every open Dispatch request on the enquiry is
@@ -1932,17 +1941,20 @@ const WAITING_ON_GOODS = ['received', 'asked_production', 'not_ready'];
  * Dispatch person on it, or the whole team when nobody has taken it, is told under "Needs your
  * action", as are the enquiry's marketing person and Admin.
  */
-async function tellDispatchReady(task, user, step, text, { partial = false } = {}) {
+export async function tellDispatchReady(task, user, step, text, { partial = false } = {}) {
   const asking = departmentName(task.department);
   const requests = await Todo.find({ ...jobFilter(task), kind: 'invoice_dispatch', completed: false });
   if (!requests.length) return;
-  const said = `${asking}: ${step.label}${text ? ` — ${text}` : ''}`;
+  /* QC compulsory: the request hears the goods are made, but reads Goods Ready only on Quality's pass [qcGate.service]. */
+  const gate = await qcGateFor(task);
+  const heldForQc = gate.required && !gate.cleared;
+  const said = `${asking}: ${step.label}${text ? ` — ${text}` : ''}${heldForQc ? ' — QC compulsory: waits for Quality’s pass before dispatch' : ''}`;
   const ready = statusesOf({ kind: 'invoice_dispatch' }).find((entry) => entry.key === 'waiting_vehicle');
   /* Some models ready: the request moves on only when the order goes out model by model. */
   const goesByModel = partial && Boolean(task.enquiry) && (await Enquiry.findById(idOf(task.enquiry)).select('dispatchPlan').lean())?.dispatchPlan?.mode === 'by_model';
   for (const request of requests) {
     request.updates = [...(request.updates || []), { note: said, by: user._id, at: new Date() }];
-    const moves = ready && WAITING_ON_GOODS.includes(request.status) && (!partial || goesByModel);
+    const moves = ready && WAITING_ON_GOODS.includes(request.status) && (!partial || goesByModel) && !heldForQc;
     if (moves) {
       request.status = ready.key;
       request.statusHistory = [...(request.statusHistory || []), { status: ready.key, note: said, by: user._id, at: new Date() }];
@@ -2683,6 +2695,8 @@ export async function taskPrefill(enquiryId) {
       packing: row.packing,
       quantity: asked?.quantity ? String(asked.quantity) : '',
       targetPrice: enquiry.targetPrice != null ? String(enquiry.targetPrice) : '',
+      /* QC compulsory before dispatch, as the SO request or an earlier Production ask set it [qcGate.service]. */
+      qcRequired: Boolean(enquiry.qcRequired),
     };
   });
   const modelList = [...new Set(items.map((row) => row.model).filter(Boolean))];
