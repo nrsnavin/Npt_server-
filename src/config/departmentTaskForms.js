@@ -515,8 +515,15 @@ export const TASK_FORMS = {
       { key: 'not_ready', label: 'Goods Not Yet Ready', issue: true },
       { key: 'waiting_vehicle', label: 'Goods Ready — Waiting for Vehicle' },
       { key: 'party_collect', label: 'Party Will Collect' },
-      /* A part load has its own LR: Reception's LR copy task is raised, or told of the further load. */
-      { key: 'part_dispatched', label: 'Part Quantity Dispatched', next: 'lr_copy' },
+      /*
+       * A part load has its own LR: Reception's LR copy task is raised, or told of the further load.
+       * Which models went, so an order going out model by model reads which are sent and which
+       * are still to come [handoff.service `modelReadiness`]; the enquiry reads Part sent.
+       */
+      {
+        key: 'part_dispatched', label: 'Part Quantity Dispatched', next: 'lr_copy', marketing: 'part_sent',
+        fields: [{ key: 'modelsSent', label: 'Models sent in this load', placeholder: 'CRF25, CRF30' }, { key: 'piecesSent', label: 'Pieces sent', type: 'number' }],
+      },
       /* Gone: Reception gets the LR copy task, with the dispatch details. */
       { key: 'fully_dispatched', label: 'Fully Dispatched', next: 'lr_copy' },
       { key: 'dispatched', label: 'Dispatched', next: 'lr_copy' },
