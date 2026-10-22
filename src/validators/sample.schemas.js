@@ -134,6 +134,9 @@ export const sampleStatusSchema = z.object({
   /* Sample Ready without a photo of every piece: allowed with a reason [setSampleStatus]. */
   noPhoto: z.boolean().optional(),
   noPhotoReason: z.string().trim().max(300).optional(),
+  /* A difference the check found on a finished piece: Sample Ready steps past it with a reason [setSampleStatus]. */
+  checkOverride: z.boolean().optional(),
+  checkOverrideReason: z.string().trim().max(300).optional(),
   /* Another shade against an exact-colour condition: allowed with a reason, and marketing is told. */
   colourOverride: z.boolean().optional(),
   colourOverrideReason: z.string().trim().max(300).optional(),
@@ -147,6 +150,9 @@ export const sampleStatusSchema = z.object({
     .optional()
     .or(z.literal('')),
 });
+
+/** Picking one of the register models a photo was matched to [pickMatchedModel]. */
+export const pickModelSchema = z.object({ ref: z.string().min(2).max(40) });
 
 /**
  * Marketing's answer to Not available [decideNotAvailable]: wait for a run, change the spec (with

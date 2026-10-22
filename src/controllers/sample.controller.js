@@ -799,6 +799,9 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
    * re-sample starts from it. A piece already in the bag is not held for the camera: the bench
    * ticks No photo and says why, and that stays on the record beside the move.
    */
+  /* What the move says beyond the note: the exact colour stepped past, the check's difference accepted. */
+  let stepped = false;
+  let checkedPast = null;
   if (status === 'sample_ready') {
     const rows = (sample.items || []).filter((row) => row.mould || row.modelNumber || row.colour || row.category);
     const without = rows.filter((row) => !row.photo);
@@ -811,9 +814,25 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
       );
     }
     if (without.length) sample.readyWithoutPhoto = { reason, by: req.user._id, at: new Date() };
+
+    /*
+     * A difference the check found [sampleVision.llm.js] never blocks on its own — the model
+     * suggests, a person decides — but the bench decides out loud: it ticks past with a reason,
+     * which stays on the row and on the move, and marketing sees the note on the dispatch draft.
+     */
+    const flagged = rows.filter((row) => row.check?.verdict === 'differs' && !row.checkAccepted?.reason);
+    const checkReason = String(req.body.checkOverrideReason || '').trim();
+    if (flagged.length && !(req.body.checkOverride === true && checkReason.length >= BACKWARD_REASON_MIN)) {
+      throw ApiError.badRequest(
+        `The check found a difference on ${flagged.map((row) => row.modelNumber || 'a piece').join(', ')} — ` +
+          `${flagged.map((row) => row.check.summary || row.check.findings?.[0]).filter(Boolean).join('; ')}. ` +
+          'Retake the piece, or tick Checked and say why it goes as it is.'
+      );
+    }
+    for (const row of flagged) row.checkAccepted = { reason: checkReason, by: req.user._id, at: new Date() };
+    if (flagged.length) checkedPast = `Checked past the difference on ${flagged.map((row) => row.modelNumber || 'a piece').join(', ')}: ${checkReason}`;
   }
 
-  let stepped = false;
   if (status === 'dispatched') {
     // Whatever was arranged earlier stands unless this call overrides it, so details entered
     // in advance do not have to be typed a second time to get the sample out of the door.
@@ -859,7 +878,7 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
   const noPhotoNote = status === 'sample_ready' && sample.readyWithoutPhoto?.reason && sample.isModified('readyWithoutPhoto')
     ? `No photo: ${sample.readyWithoutPhoto.reason}` : null;
   const colourNote = stepped ? `Exact colour stepped past — sent in ${sample.colourOverride.sent}, asked ${sample.colourOverride.asked}: ${sample.colourOverride.reason}` : null;
-  sample.statusHistory.push({ from, to: status, by: req.user._id, note: [note?.trim(), noPhotoNote, colourNote].filter(Boolean).join(' — ') || undefined });
+  sample.statusHistory.push({ from, to: status, by: req.user._id, note: [note?.trim(), noPhotoNote, checkedPast, colourNote].filter(Boolean).join(' — ') || undefined });
   /*
    * Sample Sent is the end of the bench's work: the bag has gone and what the buyer says is
    * marketing's to chase. So the move closes the task on the queue in the same step — the

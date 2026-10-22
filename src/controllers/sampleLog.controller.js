@@ -16,6 +16,10 @@ import { canWrite } from '../services/access.service.js';
 import { SAMPLE_POPULATE, withRefs } from './sample.controller.js';
 import { signatureValid } from '../utils/signedLink.js';
 import { safeFilename } from '../services/storage.service.js';
+import Mould from '../models/Mould.js';
+import {
+  checkFinishedPiece, keepReading, keptReading, matchToRegister, pictureOf, readCourierSlip, specWords, visionConfigured,
+} from '../services/sampleVision.llm.js';
 
 /**
  * The sample's working record: notes, photos, and comments on either.
@@ -371,6 +375,9 @@ const setRowPhoto = (field) => asyncHandler(async (req, res) => {
 
   row[field] = attachment._id;
   slot.onSet(row, req.user);
+  /* A new picture is a new question: the old check and match no longer describe it. */
+  if (field === 'photo') { row.check = undefined; row.checkAccepted = undefined; }
+  if (field === 'referencePhoto') row.match = undefined;
   await sample.save();
 
   if (previous) {
@@ -381,7 +388,98 @@ const setRowPhoto = (field) => asyncHandler(async (req, res) => {
     }
   }
 
+  /* The finished piece is checked against the reference as it lands — a line under the photo, never a gate [item 4]. */
+  if (field === 'photo' && visionConfigured()) await runCheck(sample, row, { buffer: req.file.buffer, mimeType: req.file.mimetype, attachment }).catch((error) => console.error(`[sample-check] ${error.message}`));
+
   res.json({ success: true, data: await withRefs(sample), meta: { item: String(row._id), field } });
+});
+
+/** The reference a row is checked against: its own, or the request's. */
+const referenceFor = (sample, row) => row.referencePhoto || sample.referencePhoto || null;
+
+/** Runs the check for one row and keeps it on the row and on the picture. `finished` is the bytes when the caller has them. */
+async function runCheck(sample, row, finished = null) {
+  const photo = finished?.attachment || await Attachment.findById(row.photo);
+  if (!photo) return null;
+  const referenceId = referenceFor(sample, row);
+  const reference = referenceId ? await Attachment.findById(referenceId) : null;
+  const salt = `check:${reference?._id || 'none'}:${specWords(row)}`;
+  let result = await keptReading(photo, 'check', salt);
+  if (!result) {
+    const bytes = finished?.buffer ? { buffer: finished.buffer, mimeType: finished.mimeType } : await pictureOf(photo);
+    result = await checkFinishedPiece({ finished: bytes, reference: reference ? await pictureOf(reference) : null, spec: specWords(row) });
+    if (result?.verdict) await keepReading(photo, 'check', result, salt);
+  }
+  if (!result?.verdict) return result;
+  row.check = { verdict: result.verdict, findings: result.findings, summary: result.summary, at: new Date(), reference: reference?._id };
+  await sample.save();
+  return result;
+}
+
+/** Re-run the check on one row — after the reference arrived, or to look again. */
+export const checkItemPhoto = asyncHandler(async (req, res) => {
+  const sample = await reachableSample(req);
+  const row = rowOf(sample, req.params.itemId);
+  if (!row.photo) throw ApiError.badRequest('Photograph the finished piece first');
+  const result = await runCheck(sample, row);
+  res.json({ success: true, data: await withRefs(sample), meta: { item: String(row._id), check: result } });
+});
+
+/**
+ * The buyer's photo on a row against the mould register [item 3]: three nearest models with a
+ * confidence each, or "not one of ours" with what the model saw. Kept on the row and on the
+ * picture; a person picks one [pickMatchedModel] — nothing is filled in by itself.
+ */
+export const matchItemPhoto = asyncHandler(async (req, res) => {
+  const sample = await reachableSample(req);
+  const row = rowOf(sample, req.params.itemId);
+  const referenceId = referenceFor(sample, row);
+  if (!referenceId) throw ApiError.badRequest('Add the buyer\'s photo of this model first');
+  const reference = await Attachment.findById(referenceId);
+  if (!reference) throw ApiError.notFound('The reference photo is missing');
+  let result = await keptReading(reference, 'match');
+  if (!result || req.query.fresh === 'true') {
+    const bytes = await pictureOf(reference);
+    result = bytes ? await matchToRegister({ ...bytes, caption: row.modelNumber }) : { candidates: [], none: true, seen: null, problem: 'The picture could not be opened.' };
+    if (!result.problem) await keepReading(reference, 'match', result);
+  }
+  row.match = { candidates: result.candidates, none: result.none, seen: result.seen, at: new Date(), problem: result.problem || undefined };
+  await sample.save();
+  res.json({ success: true, data: await withRefs(sample), meta: { item: String(row._id), match: result } });
+});
+
+/** Tapping one of the matched models fills the row's model from the register — the person's choice, not the model's. */
+export const pickMatchedModel = asyncHandler(async (req, res) => {
+  const sample = await reachableSample(req);
+  if (!canWrite(req.user, 'samples') && !canWrite(req.user, 'enquiries')) throw ApiError.forbidden('You cannot change this sample');
+  if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) throw ApiError.badRequest(`A ${sample.status} sample can no longer be changed`);
+  const row = rowOf(sample, req.params.itemId);
+  const ref = String(req.body.ref || '');
+  const candidate = row.match?.candidates?.find((entry) => entry.ref === ref);
+  if (!candidate) throw ApiError.badRequest('Pick one of the models the photo was matched to');
+  if (candidate.kind !== 'mould') throw ApiError.badRequest('Only a model on the mould register can be picked onto a sample row');
+  const mould = await Mould.findById(candidate.id).select('mouldCode category sizeMm hookType material');
+  if (!mould) throw ApiError.notFound('That mould is no longer on the register');
+  row.mould = mould._id;
+  row.modelNumber = mould.mouldCode;
+  /* Matched to a tool on the register, it is no longer a development with no steel. */
+  if (row.isNewDevelopment !== undefined) row.isNewDevelopment = false;
+  /* The tool says what it makes: its category and size replace the guess typed off the photo. */
+  if (mould.category) row.category = mould.category;
+  if (mould.sizeMm) row.sizeMm = mould.sizeMm;
+  if (!row.material && mould.material) row.material = mould.material;
+  /* The first row is the top line, kept in step by the model; say it was picked from the photo. */
+  if (String(sample.items[0]?._id) === String(row._id)) { sample.mould = mould._id; sample.modelNumber = mould.mouldCode; }
+  sample.statusHistory.push({ from: sample.status, to: sample.status, by: req.user._id, note: `${mould.mouldCode} picked from the buyer's photo (matched at ${Math.round((candidate.confidence || 0) * 100)}%)` });
+  await sample.save();
+  res.json({ success: true, data: await withRefs(sample) });
+});
+
+/** The courier and the AWB read off the courier copy [item 9] — a suggestion the bench checks, into the dispatch fields. */
+export const readCourierCopy = asyncHandler(async (req, res) => {
+  if (!req.file) throw ApiError.badRequest('Attach a photo of the courier copy');
+  const reading = await readCourierSlip({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+  res.json({ success: true, data: reading });
 });
 
 const clearRowPhoto = (field) => asyncHandler(async (req, res) => {

@@ -229,6 +229,36 @@ const itemSchema = new mongoose.Schema(
     photo: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
     photoAt: Date,
     photoBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    /**
+     * The finished piece checked against the reference and the spec [sampleVision.llm.js
+     * `checkFinishedPiece`]: a finding the bench reads under the photo, never a gate on its own.
+     * A difference is ticked past with a reason at Sample Ready [`checkAccepted`].
+     */
+    check: {
+      type: new mongoose.Schema(
+        { verdict: { type: String, enum: ['matches', 'differs', 'unsure'] }, findings: [String], summary: String, at: Date, reference: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' } },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+    checkAccepted: {
+      type: new mongoose.Schema({ reason: String, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, at: Date }, { _id: false }),
+      default: undefined,
+    },
+    /** The register models the buyer's photo was matched to [`matchToRegister`]; a person picks one, or none. */
+    match: {
+      type: new mongoose.Schema(
+        {
+          candidates: [{ _id: false, ref: String, kind: String, id: String, code: String, name: String, confidence: Number, sure: Boolean }],
+          none: Boolean,
+          seen: { type: mongoose.Schema.Types.Mixed },
+          at: Date,
+          problem: String,
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
   },
   { _id: true }
 );

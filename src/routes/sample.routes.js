@@ -10,6 +10,7 @@ import {
   listSampleLogs, addSampleLog, addLogComment, removeSampleLog, removeLogComment,
   downloadAttachment, setReferencePhoto, clearReferencePhoto,
   setItemPhoto, clearItemPhoto, setItemReferencePhoto, clearItemReferencePhoto,
+  checkItemPhoto, matchItemPhoto, pickMatchedModel, readCourierCopy,
 } from '../controllers/sampleLog.controller.js';
 import {
   sampleDashboard, sampleDay, sampleQueue, sampleAnalyticsReport,
@@ -21,7 +22,7 @@ import {
   sampleSchema, sampleUpdateSchema, sampleAssignSchema,
   sampleStatusSchema, sampleFeedbackSchema, resampleSchema, customerMessageSchema,
   dispatchDetailsSchema, sampleCloseTaskSchema, sampleLogSchema, logCommentSchema, linkEnquirySchema, linkCustomerSchema, handOverSchema,
-  notAvailableDecisionSchema,
+  notAvailableDecisionSchema, pickModelSchema,
 } from '../validators/sample.schemas.js';
 
 const router = Router();
@@ -47,6 +48,8 @@ router.get('/day', requireModule('samples'), sampleDay);
 router.get('/analytics', requireModule('samples'), sampleAnalyticsReport);
 /* The sampling department's work queue: every request with its status, priority and handover. */
 router.get('/queue', requireModule('samples'), sampleQueue);
+/* The courier and AWB read off a photo of the courier copy — a suggestion for the dispatch form [sampleVision.llm.js]. */
+router.post('/read-courier-copy', requireModule('samples', 'write'), singleImage('photo'), readCourierCopy);
 router.get('/', requireModule('samples'), listSamples);
 /*
  * Raising a request is not the same as working one. A buyer asking at the counter is
@@ -169,5 +172,9 @@ router.put('/:id/items/:itemId/reference-photo', referencePhotoGrant, singleImag
 router.delete('/:id/items/:itemId/reference-photo', referencePhotoGrant, clearItemReferencePhoto);
 router.put('/:id/items/:itemId/photo', requireModule('samples', 'write'), singleImage('photo'), setItemPhoto);
 router.delete('/:id/items/:itemId/photo', requireModule('samples', 'write'), clearItemPhoto);
+/* The model's readings of those pictures, suggest only [sampleVision.llm.js]: the finished piece checked, the reference matched, a match picked. */
+router.post('/:id/items/:itemId/check', requireModule('samples', 'write'), checkItemPhoto);
+router.post('/:id/items/:itemId/match', requireModule('samples'), matchItemPhoto);
+router.post('/:id/items/:itemId/pick-model', referencePhotoGrant, validate(pickModelSchema), pickMatchedModel);
 
 export default router;

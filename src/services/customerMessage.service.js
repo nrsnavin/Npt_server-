@@ -60,6 +60,13 @@ export async function photosFor(sample, event) {
     .map((entry) => ({ ...entry, filename: entry.attachment.filename || `${entry.model || 'sample'}.jpg`, key: entry.attachment.key }));
 }
 
+/** Each row's check, for the person reading the draft: a difference the bench ticked past is theirs to know before the buyer does. */
+function checksFor(sample) {
+  return (sample.items || [])
+    .filter((row) => row.check?.verdict)
+    .map((row) => ({ model: row.modelNumber || null, verdict: row.check.verdict, summary: row.check.summary || null, accepted: row.checkAccepted?.reason || null }));
+}
+
 /** The address a channel would use, or nothing if the customer has not given us one. */
 const addressFor = (channel, customer) =>
   channel === 'whatsapp' ? customer?.whatsapp || customer?.mobile : customer?.email;
@@ -89,7 +96,7 @@ export async function previewFor(sample, event) {
     .sort('-sentAt');
 
   const photos = (await photosFor(sample, event)).map((photo) => ({ model: photo.model, key: photo.key, filename: photo.filename }));
-  return { ...draft, customer, channels, alreadySent, photos };
+  return { ...draft, customer, channels, alreadySent, photos, checks: checksFor(sample) };
 }
 
 /** One record per channel, whether or not anything left the building. */
