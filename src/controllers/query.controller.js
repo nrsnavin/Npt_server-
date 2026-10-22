@@ -14,7 +14,7 @@ import { canRead as mayOpen } from '../services/access.service.js';
 import { raiseTask } from '../services/task.service.js';
 import Attachment from '../models/Attachment.js';
 import { put, remove } from '../services/storage.service.js';
-import { sendEmail } from '../services/notification.service.js';
+import { sendEmailToStaff } from '../services/notification.service.js';
 import { isWhatsAppConfigured, sendWhatsApp, whatsappTemplate } from '../providers/whatsapp.js';
 import { env } from '../config/env.js';
 import { DEPARTMENT_KEYS, findDepartment } from '../config/modules.js';
@@ -904,7 +904,7 @@ async function notifyTagged(query, people, tagger, said) {
   const urgent = query.isUrgent ? 'URGENT: ' : '';
   for (const person of people) {
     if (person.email) {
-      await sendEmail({
+      await sendEmailToStaff({
         to: person.email,
         subject: `${urgent}${tagger.name} tagged you in ${query.number}`,
         text: `${tagger.name} tagged you in ${query.number} — ${query.subject}\n\n"${said}"\n\nOpen the thread: ${link}`,
@@ -980,7 +980,7 @@ async function notifyUrgent(query, admin) {
   });
   for (const person of people) {
     if (!person.email) continue;
-    await sendEmail({
+    await sendEmailToStaff({
       to: person.email,
       subject: `URGENT: ${query.number} — ${query.subject}`,
       text: `${admin.name} flagged ${query.number} urgent${reason}.\n\nOpen the thread: ${link}`,

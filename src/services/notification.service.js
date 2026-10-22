@@ -77,6 +77,22 @@ function logFallback(channel, to, body) {
   console.log(`\n[${channel}] to ${to}\n${body}\n`);
 }
 
+/** Whether email to the plant's own people goes at all [config/env.js `staffEmail`]. */
+export const staffEmailOn = () => env.staffEmail.enabled;
+
+/**
+ * An email to one of the plant's own people — a welcome link, an alert, a test. Not sent while
+ * staff email is off: the caller hears it was skipped, and says so on the screen or hands over
+ * what the email would have carried. Buyers' email goes through `sendEmail` as ever.
+ */
+export async function sendEmailToStaff(message) {
+  if (!staffEmailOn()) {
+    console.log(`[email] to ${[].concat(message.to).filter(Boolean).join(', ')} skipped — staff email is off (STAFF_EMAIL)\n${message.subject}`);
+    return { delivered: false, channel: 'email', skipped: 'staff_email_off' };
+  }
+  return sendEmail(message);
+}
+
 /**
  * `direct`: a sign-in code or a password link — always to the person it is for, never
  * redirected [devRedirect.service].
@@ -157,6 +173,12 @@ const OTP_SUBJECTS = {
 /** Sends a code over whichever channel matches the identifier. */
 export async function sendOtp({ identifier, channel, code, purpose, ttlMinutes }) {
   const expiry = `${ttlMinutes} minute${ttlMinutes === 1 ? '' : 's'}`;
+
+  /* Staff email off: no code goes anywhere — it is shown on the screen that asked for it [otp.service `issueOtp`]. */
+  if (!staffEmailOn()) {
+    console.log(`[otp] ${purpose} code for ${identifier} shown on screen — staff email is off (STAFF_EMAIL)`);
+    return { delivered: false, channel, onScreen: true };
+  }
 
   if (channel === 'email') {
     return sendEmail({

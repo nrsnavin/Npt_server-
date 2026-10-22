@@ -92,15 +92,17 @@ export const notificationStatus = asyncHandler(async (req, res) => {
  * notification takes (so on a development server, redirected too). Says what happened to each.
  */
 export const sendTestNotification = asyncHandler(async (req, res) => {
-  const [{ sendPush }, { sendEmail }] = await Promise.all([import('../services/push.service.js'), import('../services/notification.service.js')]);
+  const [{ sendPush }, { sendEmailToStaff }] = await Promise.all([import('../services/push.service.js'), import('../services/notification.service.js')]);
   const devices = await PushSubscription.countDocuments({ user: req.user._id });
   const when = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
   const delivered = await sendPush([req.user._id], { title: 'Test notification', body: `Notifications work on this device — ${when}`, link: '/profile', kind: 'test' });
   let email = { sent: false, why: 'No email address on your profile' };
   if (req.user.email) {
     try {
-      const result = await sendEmail({ to: req.user.email, subject: 'Test notification from NPT Hangers', text: `If you can read this, email from the app works. Sent ${when}.` });
-      email = result.delivered ? { sent: true } : { sent: false, why: 'The mail server is not set — the server printed it to its log instead' };
+      const result = await sendEmailToStaff({ to: req.user.email, subject: 'Test notification from NPT Hangers', text: `If you can read this, email from the app works. Sent ${when}.` });
+      email = result.delivered ? { sent: true }
+        : result.skipped ? { sent: false, why: 'Email to staff is switched off for now (STAFF_EMAIL) — nothing is sent to anybody’s work address' }
+          : { sent: false, why: 'The mail server is not set — the server printed it to its log instead' };
     } catch (error) {
       email = { sent: false, why: error.message };
     }

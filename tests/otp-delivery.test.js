@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
+process.env.STAFF_EMAIL = 'on'; /* these tests are about the mails themselves */
 process.env.JWT_SECRET = 'otp-delivery-test-secret';
 process.env.OTP_EXPOSE_IN_RESPONSE = 'true';
 // A real cooldown, so the test can prove a failed send does not consume it.

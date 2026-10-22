@@ -240,3 +240,17 @@ test('a whole-task hand-over closes Production’s task when every model goes th
   assert.equal(task.completed, true);
   assert.equal(task.status, 'handed_printing');
 });
+
+test('a task carries the enquiry’s dispatch plan, so a model’s own workflow can say whether it goes as soon as it is ready', async () => {
+  const { enquiry, production } = await routedOrder();
+  const before = await move(production._id, 'siva', 'started', ['CRF25'], 'Moulding CRF25');
+  assert.equal(before.status, 200, before.json.message);
+  assert.equal(before.json.data.enquiry.dispatchPlan?.mode ?? 'together', 'together');
+  assert.equal((await api(`/api/enquiries/${enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'by_model' } })).status, 200);
+  const after = await move(production._id, 'siva', 'part1_ready', ['CRF25'], 'Half done');
+  assert.equal(after.json.data.enquiry.dispatchPlan.mode, 'by_model');
+  /* Printing's task, raised for CRF25, carries it too, and its models as a list. */
+  const printing = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json.data.find((row) => row.kind === 'ask_printing');
+  assert.equal(printing.enquiry.dispatchPlan.mode, 'by_model');
+  assert.equal(printing.brief.models, 'CRF25');
+});

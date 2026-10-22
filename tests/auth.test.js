@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
+process.env.STAFF_EMAIL = 'on'; /* these tests are about the mails themselves */
 process.env.JWT_SECRET = 'test-secret-value-for-auth-tests';
 process.env.OTP_EXPOSE_IN_RESPONSE = 'true';
 process.env.OTP_RESEND_COOLDOWN_SECONDS = '0';

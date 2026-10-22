@@ -51,8 +51,9 @@ export const TASK_POPULATE = [
   { path: 'escalation.by', select: 'name department' },
   { path: 'adminEscalation.by', select: 'name department' },
   { path: 'adminEscalation.resolvedBy', select: 'name' },
-  /* The enquiry's EDD travels with its tasks, so a card can show it or ask for it [web: components/TaskEdd.jsx]. */
-  { path: 'enquiry', select: 'number edd eddByModel' },
+  /* The enquiry's EDD travels with its tasks, so a card can show it or ask for it [web: components/TaskEdd.jsx];
+     its dispatch plan too, so a model's own workflow can say whether it goes as soon as it is ready. */
+  { path: 'enquiry', select: 'number edd eddByModel dispatchPlan' },
 ];
 
 /** The buttons, the twelve stages and the departments, so the screen draws what the server knows. */

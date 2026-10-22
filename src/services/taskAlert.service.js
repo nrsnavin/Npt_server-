@@ -3,7 +3,7 @@ import { findHandoff } from '../config/handoffs.js';
 import { deskMates, findDepartment } from '../config/modules.js';
 import { env } from '../config/env.js';
 import { sendPush } from './push.service.js';
-import { sendEmail } from './notification.service.js';
+import { sendEmailToStaff, staffEmailOn } from './notification.service.js';
 
 /**
  * A new task rings the team it is for, the moment it is raised [models/Todo.js post-save].
@@ -63,12 +63,13 @@ export async function alertNewTask(task) {
     await sendPush(alert.to, { title, body, link, kind: 'task', taskId: String(task._id) });
 
     const withEmail = told.filter((person) => person.email);
-    if (!env.smtp.host) {
-      if (withEmail.length) console.log(`[task-alert] ${title} — would email ${withEmail.map((person) => person.name).join(', ')}`);
+    /* Staff email off, or no mail server: the push and the task on their list are how it reaches them. */
+    if (!staffEmailOn() || !env.smtp.host) {
+      if (withEmail.length) console.log(`[task-alert] ${title} — ${staffEmailOn() ? 'would email' : 'staff email is off, not emailing'} ${withEmail.map((person) => person.name).join(', ')}`);
       return alert;
     }
     const url = `${env.appUrl}${link}`;
-    await Promise.all(withEmail.map((person) => sendEmail({
+    await Promise.all(withEmail.map((person) => sendEmailToStaff({
       to: person.email,
       subject: `${task.priority === 'high' ? 'HIGH: ' : ''}${title}`,
       text: `${task.title}\n\n${task.notes || ''}\n\n${by?.name ? `Raised by ${by.name}. ` : ''}${task.dueDate ? `Due ${new Date(task.dueDate).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })}. ` : ''}\nOpen it: ${url}`,
