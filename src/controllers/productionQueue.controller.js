@@ -10,6 +10,7 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { findHandoff } from '../config/handoffs.js';
 import { canRead } from '../services/access.service.js';
 import { isOwnershipScoped, ownsRecord } from '../services/ownership.service.js';
+import { departmentsOf, isProductionInCharge } from '../utils/departments.js';
 
 /**
  * The production queue, as every department reads it [web: pages/ProductionQueue.jsx].
@@ -43,6 +44,15 @@ export function bandOf(edd, now = new Date()) {
   return 'later';
 }
 const BAND_RANK = { late: 0, today: 1, week: 2, later: 3, none: 4 };
+
+/*
+ * Who reads the whole queue: everyone but a salesperson — and a salesperson too when they work
+ * to it, as the Production in charge [utils/departments.js `isProductionInCharge`] or from a
+ * plant desk beside marketing. Scoping them by their main department hid the queue from an in
+ * charge who is marketing first: the desk counted the tasks, the queue showed none.
+ */
+const readsWholeQueue = (user) => !isOwnershipScoped(user) || isProductionInCharge(user)
+  || departmentsOf(user).some((key) => key !== 'marketing');
 
 const statusLabelOf = (task) => (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status)?.label || null;
 const issueOf = (task) => Boolean((findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status)?.issue);
@@ -108,8 +118,8 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
   for (const task of teamTasks) {
     task.enquiry = teamJob(task, chainTasks.filter((entry) => String(entry.chain) === String(task.chain || task._id)));
   }
-  /* Marketing reads its own buyers' rows (and the team tasks it raised); the plant's departments read the whole queue. */
-  const mayRead = (task) => !isOwnershipScoped(req.user)
+  /* Marketing reads its own buyers' rows (and the team tasks it raised); whoever works to the queue reads the whole of it. */
+  const mayRead = (task) => readsWholeQueue(req.user)
     || (task.enquiry._team
       ? String(task.createdBy?._id || task.createdBy) === String(req.user._id) || (task.customer && ownsRecord(req.user, task.customer))
       : ownsRecord(req.user, task.enquiry));
@@ -289,7 +299,7 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
       .populate([{ path: 'customer', select: 'code name assignedTo' }, { path: 'assignedTo', select: 'name' }])
       .lean();
   if (!enquiry) throw ApiError.notFound('No Production task by that reference');
-  const mayRead = !isOwnershipScoped(req.user) || (team
+  const mayRead = readsWholeQueue(req.user) || (team
     ? String(task.createdBy?._id || task.createdBy) === String(req.user._id) || (task.customer && ownsRecord(req.user, task.customer))
     : ownsRecord(req.user, enquiry));
   if (!mayRead) throw ApiError.notFound('No Production task by that reference');
