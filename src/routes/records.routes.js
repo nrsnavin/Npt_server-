@@ -2,7 +2,7 @@ import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHand
 import { componentStockSchema } from '../validators/component.schemas.js';
 import { applyPlanHandler, askProductionHandler, floorMessagesHandler, maintenanceRiskHandler, purchaseForecastHandler, suggestPlanHandler } from '../controllers/productionInsights.controller.js';
 import { Router } from 'express';
-import { authenticate, requireModule } from '../middleware/auth.js';
+import { authenticate, requireModule, requireProductionInCharge } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import ApiError from '../utils/ApiError.js';
 import { accessLevel } from '../services/access.service.js';
@@ -21,6 +21,14 @@ import {
  * dispatch register (dispatch).
  */
 const router = Router();
+
+/* A work order change that plans — press, start, order, release, re-plan, cancel — not the floor's pause / resume / complete. */
+const FLOOR_MOVES = ['pause', 'resume', 'complete'];
+const plansWorkOrder = (req) => {
+  const body = req.body || {};
+  if (['machine', 'plannedStart', 'sequence', 'step'].some((key) => body[key] !== undefined)) return true;
+  return Boolean(body.move) && !FLOOR_MOVES.includes(body.move);
+};
 router.use(authenticate);
 
 /** Either grant is enough. */
@@ -36,9 +44,9 @@ router.get('/qc-records/:id/certificate', requireModule('quality'), qcCertificat
 router.post('/qc-records/:id/approve', requireModule('quality', 'write'), approveQc);
 
 router.get('/machines', anyModule([['production', 'read'], ['moulds', 'read']]), listMachines);
-router.post('/machines', requireModule('production', 'write'), validate(machineSchema), createMachine);
+router.post('/machines', requireModule('production', 'write'), requireProductionInCharge(), validate(machineSchema), createMachine);
 router.get('/machines/:id', anyModule([['production', 'read'], ['moulds', 'read']]), machineDetail);
-router.patch('/machines/:id', requireModule('production', 'write'), validate(machineUpdateSchema), updateMachine);
+router.patch('/machines/:id', requireModule('production', 'write'), requireProductionInCharge(), validate(machineUpdateSchema), updateMachine);
 
 router.get('/maintenance', anyModule([['production', 'read'], ['moulds', 'read']]), listMaintenance);
 router.post('/maintenance', anyModule([['production', 'write'], ['moulds', 'write']]), validate(maintenanceSchema), createMaintenance);
@@ -48,7 +56,8 @@ router.post('/mould-runs', requireModule('production', 'write'), validate(runSta
 /* Work orders: one per released order line, planned onto a press and fed by the runs. */
 router.get('/work-orders', anyModule([['production', 'read'], ['orders', 'read']]), listWorkOrdersHandler);
 router.get('/work-orders/:id', anyModule([['production', 'read'], ['orders', 'read']]), getWorkOrderHandler);
-router.patch('/work-orders/:id', requireModule('production', 'write'), validate(workOrderPlanSchema), planWorkOrderHandler);
+/* Planning a work order (press, start, order, release, re-plan, cancel) is the Production in charge's; pause / resume / complete are the floor's. */
+router.patch('/work-orders/:id', requireModule('production', 'write'), requireProductionInCharge(plansWorkOrder), validate(workOrderPlanSchema), planWorkOrderHandler);
 /* The planning board: presses by day, the fit of a mould on a press, and a press's queue light to dark. */
 router.get('/production/plan', anyModule([['production', 'read'], ['orders', 'read']]), planningBoardHandler);
 router.get('/production/fit', requireModule('production'), fitHandler);
@@ -62,10 +71,10 @@ router.post('/machines/:machineId/andon/clear', requireModule('production', 'wri
 router.get('/production/shortages', anyModule([['production', 'read'], ['materials', 'read']]), shortagesHandler);
 router.get('/components/:id/stock', requireModule('materials'), componentBookHandler);
 router.post('/components/:id/stock', anyModule([['materials', 'write'], ['production', 'write']]), validate(componentStockSchema), componentStockHandler);
-router.post('/production/plan/:machineId/sequence-by-colour', requireModule('production', 'write'), sequenceByColourHandler);
+router.post('/production/plan/:machineId/sequence-by-colour', requireModule('production', 'write'), requireProductionInCharge(), sequenceByColourHandler);
 /* Looking ahead: a suggested schedule, maintenance risk, when to buy, the floor's WhatsApp readings, and questions. */
 router.post('/production/plan/suggest', requireModule('production'), suggestPlanHandler);
-router.post('/production/plan/apply', requireModule('production', 'write'), validate(planApplySchema), applyPlanHandler);
+router.post('/production/plan/apply', requireModule('production', 'write'), requireProductionInCharge(), validate(planApplySchema), applyPlanHandler);
 router.get('/production/maintenance-risk', anyModule([['production', 'read'], ['moulds', 'read']]), maintenanceRiskHandler);
 router.get('/production/purchase-forecast', anyModule([['production', 'read'], ['materials', 'read']]), purchaseForecastHandler);
 router.get('/production/floor-messages', requireModule('production'), floorMessagesHandler);

@@ -142,6 +142,26 @@ export function registerHandoffSubscribers() {
     return busSubscribe(event, listener);
   };
 
+  /* A Production task: the Production in charge is asked for its EDD — Admin, when nobody is in charge. */
+  subscribe(
+    EVENTS.HANDOFF_SENT,
+    safely('ask the Production in charge', async ({ task }) => {
+      if (task?.kind !== 'ask_edd') return;
+      const { askToPlan } = await import('../services/productionInCharge.service.js');
+      await askToPlan(await Todo.findById(task._id));
+    })
+  );
+  /* Production's task finished or closed: nobody is still asked for its EDD; nobody confirms a finished team's. */
+  subscribe(
+    EVENTS.HANDOFF_DONE,
+    safely('close the in charge’s asks', async ({ task }) => {
+      if (!task) return;
+      const { planned, confirmed } = await import('../services/productionInCharge.service.js');
+      if (task.kind === 'ask_edd') await planned(task);
+      if (['ask_printing', 'ask_assembling_edd'].includes(task.kind)) await confirmed(task);
+    })
+  );
+
   /* A Dispatch request: its delivery urgency from its own schedule, or asked of its marketing person. */
   subscribe(
     EVENTS.HANDOFF_SENT,

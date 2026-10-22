@@ -101,6 +101,11 @@ const todoSchema = new mongoose.Schema(
      * on the Dispatch desk is ordered by it.
      */
     delivery: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    /**
+     * The EDD Printing or Assembly gave, confirmed by the Production in charge: { date, by, at }
+     * [services/productionInCharge.service.js]. Cleared when the team gives another date.
+     */
+    eddConfirmed: { type: mongoose.Schema.Types.Mixed, default: undefined },
     /*
      * When Production added this task to its production queue, and who [handoff.service
      * `addToProductionQueue`] — planned for the press, printing and assembly decided. A task not
