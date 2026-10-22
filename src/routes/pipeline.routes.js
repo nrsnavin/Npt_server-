@@ -55,7 +55,7 @@ import {
 import { componentSchema, componentUpdateSchema } from '../validators/component.schemas.js';
 import { customerTimeline } from '../controllers/timeline.controller.js';
 import {
-  attachTaskPdf, departmentDashboardFor, departmentsOverview, enquiryTaskPrefill, handoffCatalogue, listEnquiryHandoffs,
+  attachTaskPdf, departmentDashboardFor, soDeskFor, departmentsOverview, enquiryTaskPrefill, handoffCatalogue, listEnquiryHandoffs,
   sendEnquiryHandoff,
 } from '../controllers/handoff.controller.js';
 import { handoffSchema } from '../validators/handoff.schemas.js';
@@ -202,6 +202,8 @@ router.post('/enquiries/:id/handoffs/:taskId/attachment', singlePdf('file'), att
 /* Department dashboards: Admin's overview of all ten, and each department's own. */
 router.get('/departments/overview', departmentsOverview);
 router.get('/departments/:key/dashboard', departmentDashboardFor);
+/* The SO team's desk: readiness, size, buyer, duplicates, clarifications, what the week booked. */
+router.get('/departments/order_confirmation/so-desk', soDeskFor);
 
 // Enquiries
 router.get('/enquiries/export', requireModule('enquiries'), exportEnquiries);

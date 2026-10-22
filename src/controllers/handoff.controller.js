@@ -576,6 +576,12 @@ export const departmentsOverview = asyncHandler(async (req, res) => {
 });
 
 /** One department's dashboard — its own people, or Admin. */
+/** The SO team's desk read at a glance [services/soDesk.service.js]. */
+export const soDeskFor = asyncHandler(async (req, res) => {
+  const { soDesk } = await import('../services/soDesk.service.js');
+  res.json({ success: true, data: await soDesk(req.user) });
+});
+
 export const departmentDashboardFor = asyncHandler(async (req, res) => {
   const key = req.params.key === 'mine' ? req.user.department : req.params.key;
   if (!DEPARTMENT_KEYS.includes(key)) throw ApiError.notFound('No such department');
