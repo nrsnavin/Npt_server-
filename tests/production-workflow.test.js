@@ -62,7 +62,8 @@ test.before(async () => {
     body: { customer: customer._id, requirement: { modelNumber: 'UTJRSH-0' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
   })).json.data;
   const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
-    method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Buyer needs the date', brief: { model: 'UTJRSH-0', quantity: '10000' } },
+    /* QC compulsory, so Quality is asked when Production finishes and Dispatch waits for its pass [qcGate.service]. */
+    method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Buyer needs the date', brief: { model: 'UTJRSH-0', quantity: '10000', qcRequired: true } },
   });
   assert.equal(sent.status, 201, sent.json.message);
   task = await Todo.findById(sent.json.data.task._id);
@@ -562,7 +563,7 @@ test('a sample sent closes the Sample Request task with the despatch details the
   assert.ok(sample, 'the request opened a sample on the bench');
 
   for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
-    const moved = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status } });
+    const moved = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) } });
     assert.equal(moved.status, 200, `${status}: ${moved.json.message}`);
   }
   assert.equal((await Todo.findById(taskId)).completed, false, 'ready is not sent');

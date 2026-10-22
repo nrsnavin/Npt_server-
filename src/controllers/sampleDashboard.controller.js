@@ -7,6 +7,8 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { ownershipFilter } from '../services/ownership.service.js';
 import { stalledSamples } from '../services/anomaly.service.js';
 import { readyTime, sampleAnalytics } from '../services/sampleAnalytics.service.js';
+import { nudgeFor, usualHoursAtStatus } from '../services/samplingNudges.service.js';
+import { benchSummary } from '../services/samplingSummary.llm.js';
 
 /**
  * The sampling dashboard [BLUEPRINT §22, docs/DASHBOARDS.md §4].
@@ -257,7 +259,7 @@ export const sampleDay = asyncHandler(async (req, res) => {
   })
     .select(
       'number modelNumber colour colourMandatory status purpose requiredDate requestedAt ' +
-        'createdAt requestedBy assignedTo customer escalationLevel'
+        'createdAt requestedBy assignedTo customer escalationLevel statusHistory problem dispatchedAt'
     )
     .populate('requestedBy', 'name')
     .populate('assignedTo', 'name')
@@ -267,6 +269,8 @@ export const sampleDay = asyncHandler(async (req, res) => {
     .limit(500);
 
   const mine = (sample) => String(sample.assignedTo?._id || sample.assignedTo) === String(req.user._id);
+  /* The usual time at each status, from the bench's own history, for the nudge on a row sitting past it [item 5]. */
+  const usual = await usualHoursAtStatus({ now });
 
   /** One row, as the day screen draws it. */
   const card = (sample) => ({
@@ -290,6 +294,10 @@ export const sampleDay = asyncHandler(async (req, res) => {
     waitingDays: ageInDays(sample.requestedAt || sample.createdAt, now),
     daysLate: sample.requiredDate ? ageInDays(sample.requiredDate, now) : 0,
     nextStep: SAMPLE_NEXT_STEP[sample.status] || null,
+    /* Sitting past the usual time at this status — a suggestion on the row, never an escalation. */
+    nudge: nudgeFor(sample, usual, now)?.text || null,
+    /* A problem the bench wrote in the log, until the next move [sampleProblems.service]. */
+    problem: sample.problem?.words ? { words: sample.problem.words, note: sample.problem.note, at: sample.problem.at } : null,
     link: `/samples/${sample._id}`,
   });
 
@@ -315,14 +323,30 @@ export const sampleDay = asyncHandler(async (req, res) => {
     )
     .sort(oldestFirst);
 
+  const cards = { fresh: fresh.map(card), overdue: late.map(card), inWork: inWork.map(card) };
+
+  /*
+   * The bench in under sixty words [samplingSummary.llm.js]: from the same facts the screen
+   * shows, so it can say nothing the rows do not. Also the buyer's side — samples sitting with
+   * buyers past three days — which this screen otherwise leaves to marketing.
+   */
+  const waitingOnBuyer = await Sample.find({ ...scope, ...NOT_INTERNAL, status: { $in: WITH_CUSTOMER_STATUSES }, dispatchedAt: { $lte: new Date(now - 3 * DAY) } })
+    .select('number modelNumber dispatchedAt').limit(50).lean();
+  const facts = {
+    late: cards.overdue.map((row) => ({ number: row.number, model: row.model, daysLate: row.daysLate, status: row.status, nudge: row.nudge })),
+    fresh: cards.fresh.map((row) => ({ number: row.number, model: row.model, assignedTo: row.assignedTo })),
+    inWork: cards.inWork.map((row) => ({ number: row.number, model: row.model, status: row.status, nextStep: row.nextStep })),
+    nudged: [...cards.overdue, ...cards.fresh, ...cards.inWork].filter((row) => row.nudge).map((row) => ({ number: row.number, nudge: row.nudge })),
+    problems: [...cards.overdue, ...cards.fresh, ...cards.inWork].filter((row) => row.problem).map((row) => ({ number: row.number, problem: row.problem.words })),
+    waitingOnBuyer: waitingOnBuyer.map((row) => ({ number: row.number, model: row.modelNumber || null, days: Math.floor((now - new Date(row.dispatchedAt).getTime()) / DAY) })),
+  };
+  const summary = await benchSummary(facts, { now }).catch(() => null);
+
   res.json({
     success: true,
-    data: {
-      fresh: fresh.map(card),
-      overdue: late.map(card),
-      inWork: inWork.map(card),
-    },
+    data: cards,
     meta: {
+      summary,
       fresh: fresh.length,
       /*
        * Unclaimed across everything open, not only the new ones.
@@ -413,16 +437,20 @@ export const sampleQueue = asyncHandler(async (req, res) => {
       'number items modelNumber material colour colourMandatory quantity remarks purpose status ' +
         'requiredDate requestedAt createdAt updatedAt requestedBy assignedTo customer enquiry ' +
         'escalationLevel courier awbNumber deliveryMethod handedTo recipientPhone dispatchedAt ' +
-        'dispatchedQuantity dispatchedColour benchClosedAt statusHistory'
+        'dispatchedQuantity dispatchedColour benchClosedAt statusHistory problem chaseDraft'
     )
     .populate('requestedBy', 'name')
     .populate('assignedTo', 'name')
     .populate('customer', 'name')
     .populate('enquiry', 'number status')
+    /* Each row's two pictures, as thumbnails on the queue — marketing sees the piece without opening it. */
+    .populate('items.photo', 'key')
+    .populate('items.referencePhoto', 'key')
     .sort({ requiredDate: 1, createdAt: 1 })
     .limit(500)
     .lean();
 
+  const usual = await usualHoursAtStatus({ now });
   const rows = samples.map((sample) => {
     const queueStatus = queueStatusOf(sample);
     const closed = queueStatus === 'closed' || CLOSED_SAMPLE_STATUSES.includes(sample.status);
@@ -446,12 +474,17 @@ export const sampleQueue = asyncHandler(async (req, res) => {
       requestedBy: sample.requestedBy?.name || null,
       assignedTo: sample.assignedTo ? { _id: sample.assignedTo._id, name: sample.assignedTo.name } : null,
       models: items.map((item) => ({
+        _id: item._id ? String(item._id) : null,
         model: item.modelNumber || null,
         material: item.material || null,
         colour: item.colour || null,
         colourMandatory: Boolean(item.colourMandatory),
         quantity: item.quantity || 1,
+        photo: item.photo?.key || null,
+        referencePhoto: item.referencePhoto?.key || null,
       })),
+      /* Finished pieces photographed, out of the models in the bag [the sampling audit, item 1]. */
+      photos: { taken: items.filter((item) => item.photo?.key).length, of: items.length },
       pieces: items.reduce((sum, item) => sum + (item.quantity || 1), 0),
       colour: sample.colour || null,
       request: [sample.remarks, items.map(itemLine).join('; ')].filter(Boolean).join(' | '),
@@ -463,7 +496,11 @@ export const sampleQueue = asyncHandler(async (req, res) => {
       late,
       dueToday,
       priority: urgent ? 'urgent' : 'normal',
-      highlighted: urgent || sample.status === 'not_available',
+      highlighted: urgent || sample.status === 'not_available' || Boolean(sample.problem?.words),
+      /* Sitting past the usual time at this status [samplingNudges.service]; a problem flagged in the log [sampleProblems.service]. */
+      nudge: closed ? null : nudgeFor(sample, usual, now)?.text || null,
+      problem: sample.problem?.words ? { words: sample.problem.words, note: sample.problem.note } : null,
+      chaseDrafted: Boolean(sample.chaseDraft?.body),
       requiredDate: sample.requiredDate || null,
       handover: WITH_CUSTOMER_STATUSES.includes(sample.status) || sample.dispatchedAt
         ? {

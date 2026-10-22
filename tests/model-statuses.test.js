@@ -34,12 +34,12 @@ const api = async (path, { method = 'GET', body, as } = {}) => {
 const move = (task, as, status, models, note = 'Moving it on') => api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, note, ...(models ? { models } : {}) } });
 const statusOf = async (task, model) => (await Todo.findById(task).lean()).modelStatuses?.find((row) => row.model === model)?.status;
 
-async function routedOrder() {
+async function routedOrder({ qcRequired } = {}) {
   const enquiry = (await api('/api/enquiries', {
     method: 'POST', as: 'nandhini',
     body: { customer: customerId, items: [{ modelNumber: 'CRF25', quantity: 10000 }, { modelNumber: 'CRF30', quantity: 4000 }, { modelNumber: 'CRF40', quantity: 2000 }], nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
   })).json.data;
-  const production = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Make these', brief: { model: 'CRF25' } } })).json.data.task;
+  const production = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Make these', brief: { model: 'CRF25', ...(qcRequired ? { qcRequired: true } : {}) } } })).json.data.task;
   const routed = await api(`/api/workspace/todos/${production._id}/routing`, {
     method: 'POST', as: 'siva', body: { models: [{ model: 'CRF25', printing: true }, { model: 'CRF30', assembly: true }, { model: 'CRF40' }] },
   });
@@ -124,16 +124,27 @@ test('the task closes only when every model is closed', async () => {
   assert.equal(task.status, 'closed');
 });
 
-test('model by model: one model ready from its last team asks Quality; together, Quality waits', async () => {
-  const { enquiry, production } = await routedOrder();
+test('model by model: one model ready from its last team asks Quality (QC compulsory) or Dispatch; together, both wait', async () => {
+  /* QC ticked on the Production request: Quality is asked for the ready model. */
+  const { enquiry, production } = await routedOrder({ qcRequired: true });
   assert.equal((await move(production._id, 'siva', 'ready_dispatch', ['CRF40'], 'CRF40 packed')).status, 200);
-  assert.equal(await Todo.exists({ enquiry: enquiry._id, kind: 'quality_check' }), null, 'all together: the rest are still being made');
+  assert.equal(await Todo.exists({ enquiry: enquiry._id, kind: { $in: ['quality_check', 'invoice_dispatch'] } }), null, 'all together: the rest are still being made');
 
   const plan = await api(`/api/enquiries/${enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'by_model' } });
   assert.equal(plan.status, 200, plan.json.message);
   const quality = await Todo.findOne({ enquiry: enquiry._id, kind: 'quality_check' }).lean();
   assert.ok(quality, 'CRF40 is ready: Quality is asked for it');
   assert.match(quality.notes || quality.updates?.[0]?.note || '', /Ready: CRF40/);
+  assert.equal(await Todo.exists({ enquiry: enquiry._id, kind: 'invoice_dispatch' }), null, 'Dispatch waits for Quality’s pass');
+
+  /* QC not ticked: the ready model goes to Dispatch straight away, with no Quality step. */
+  const plain = await routedOrder();
+  assert.equal((await move(plain.production._id, 'siva', 'ready_dispatch', ['CRF40'], 'CRF40 packed')).status, 200);
+  assert.equal((await api(`/api/enquiries/${plain.enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'by_model' } })).status, 200);
+  const dispatch = await Todo.findOne({ enquiry: plain.enquiry._id, kind: 'invoice_dispatch' }).lean();
+  assert.ok(dispatch, 'CRF40 is ready: Dispatch is asked for it');
+  assert.match(dispatch.notes || dispatch.updates?.[0]?.note || '', /Ready: CRF40/);
+  assert.equal(await Todo.exists({ enquiry: plain.enquiry._id, kind: 'quality_check' }), null, 'no Quality step without the tick');
 });
 
 test('the queue says each enquiry in at most thirty words, with its models and work orders; the workflow page has the model table', async () => {

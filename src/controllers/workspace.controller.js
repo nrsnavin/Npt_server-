@@ -13,6 +13,7 @@ import { ownershipFilter } from '../services/ownership.service.js';
 import { suggestRouting, routingModelConfigured } from '../services/taskRouting.llm.js';
 import { DEPARTMENT_KEYS } from '../config/modules.js';
 import { listParams, paginated } from '../utils/query.js';
+import { withClosable } from '../services/taskClosable.service.js';
 import { transactional } from '../utils/transaction.js';
 
 /**
@@ -143,7 +144,7 @@ export const listTodos = asyncHandler(async (req, res) => {
     Todo.countDocuments(filter),
   ]);
 
-  paginated(res, todos, { page, limit, total }, {
+  paginated(res, await withClosable(todos), { page, limit, total }, {
     meta: {
       scope: req.query.scope || 'mine',
       department: req.user.department || null,

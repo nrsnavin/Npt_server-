@@ -35,6 +35,11 @@ const sampleLogSchema = new mongoose.Schema(
     attachment: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
 
     comments: [commentSchema],
+
+    /** An entry that read as a problem [sampleProblems.service]: the words that said so, and when the flag came off. */
+    flag: { type: String, enum: ['problem'] },
+    flaggedWords: { type: String, trim: true },
+    flagClearedAt: Date,
   },
   { timestamps: true }
 );

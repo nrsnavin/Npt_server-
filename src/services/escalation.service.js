@@ -1,6 +1,7 @@
 import { MANAGEMENT_QUERY } from '../utils/departments.js';
-import Sample, { NOT_ESCALATED_STATUSES, lateBefore, lateSince } from '../models/Sample.js';
+import Sample, { NOT_ESCALATED_STATUSES, WITH_CUSTOMER_STATUSES, lateBefore, lateSince } from '../models/Sample.js';
 import User from '../models/User.js';
+import Customer from '../models/Customer.js';
 import { raiseDepartmentTask, raiseTask } from './task.service.js';
 
 /**
@@ -116,5 +117,62 @@ export async function runSamplingEscalations({ now = Date.now() } = {}) {
     raised.push({ sample: sample.number, level, recipients: tasks.length });
   }
 
+  return raised;
+}
+
+/* ------------------------- The buyer's answer, chased [the sampling audit, item 6] ------------------------- */
+
+/** How long a sample sits with the buyer before marketing is reminded to ask. */
+export const FEEDBACK_REMINDER_DAYS = Number(process.env.SAMPLE_FEEDBACK_REMINDER_DAYS) || 3;
+
+/**
+ * A sample with the buyer and no answer recorded for three days: whoever asked for it, and the
+ * buyer's marketing person, are reminded once — with the finished piece's photo a tap away on
+ * the sample — to ask. Not an escalation: nothing is late on the plant's side, the enquiry is
+ * simply sitting at Sample while the buyer may already have said yes on the phone.
+ *
+ * Once per sample [`feedbackReminderAt`]; the §25 sweep stays the only thing that escalates.
+ */
+export async function runFeedbackReminders({ now = Date.now() } = {}) {
+  const before = new Date(now - FEEDBACK_REMINDER_DAYS * DAY);
+  const waiting = await Sample.find({
+    status: { $in: WITH_CUSTOMER_STATUSES },
+    feedbackReminderAt: null,
+    $or: [{ dispatchedAt: { $lte: before } }, { dispatchedAt: null, updatedAt: { $lte: before } }],
+  })
+    .select('number modelNumber colour quantity dispatchedQuantity deliveryMethod courier status dispatchedAt requestedBy customer items')
+    .populate('items.photo', 'key');
+  const { chaseDraft } = await import('./samplingSummary.llm.js');
+
+  const raised = [];
+  for (const sample of waiting) {
+    const since = sample.dispatchedAt || sample.updatedAt;
+    const days = Math.max(FEEDBACK_REMINDER_DAYS, Math.floor((now - new Date(since).getTime()) / DAY));
+    const buyer = sample.customer ? await Customer.findById(sample.customer).select('assignedTo name contacts').lean() : null;
+    const owner = buyer?.assignedTo || null;
+    const primary = buyer?.contacts?.find((contact) => contact.isPrimary) || buyer?.contacts?.[0];
+    const photos = (sample.items || []).filter((row) => row.photo?.key).length;
+    /* A draft chase, ready on the sample for marketing to read, edit and send [the sampling audit, item 5]. */
+    const draft = await chaseDraft({ sample, customer: buyer ? { name: buyer.name, contactPerson: primary?.name || null } : null, days }).catch(() => null);
+    if (draft?.body) sample.chaseDraft = { body: draft.body, at: new Date(now), byModel: Boolean(draft.byModel) };
+    const people = [...new Set([sample.requestedBy, owner].filter(Boolean).map((who) => String(who?._id || who)))];
+    const tasks = [];
+    for (const person of people) {
+      tasks.push(await raiseTask({
+        user: person,
+        title: `Ask the buyer about sample ${sample.number}`,
+        notes: `${sample.modelNumber || 'Sample'} has been with the buyer ${days} days with no answer recorded.` +
+          `${photos ? ` The finished ${photos === 1 ? 'piece is' : 'pieces are'} on the sample to send them again.` : ''}` +
+          `${draft?.body ? ' A chase message is drafted on the sample — read it and send.' : ''}` +
+          ' Record what they said, or raise the next attempt.',
+        priority: 'normal',
+        link: `/samples/${sample._id}`,
+        originKey: `sample:${sample._id}:feedback-reminder`,
+      }));
+    }
+    sample.feedbackReminderAt = new Date(now);
+    await sample.save();
+    raised.push({ sample: sample.number, days, recipients: tasks.filter(Boolean).length });
+  }
   return raised;
 }

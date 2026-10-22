@@ -148,7 +148,7 @@ test('Sample requested asks the sampling team; the sample going out moves it to 
   const sample = (await api(`/api/samples?enquiry=${enquiry._id}`, { token: meera })).json.data[0];
   assert.ok(sample, 'the sample request was raised');
 
-  await move(sample._id, { status: 'sample_ready' });
+  await move(sample._id, { status: 'sample_ready', noPhoto: true, noPhotoReason: 'No camera on the test bench' });
   await move(sample._id, { status: 'dispatched', deliveryMethod: 'direct', handedTo: 'Mr Ravi', dispatchedQuantity: 1 });
   await settle();
   const after = await read(enquiry._id);

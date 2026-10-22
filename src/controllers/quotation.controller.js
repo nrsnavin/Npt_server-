@@ -1044,7 +1044,8 @@ async function deliverAndMarkSent(req, res) {
   if (current) current.sentAt = quotation.sentAt;
 
   await quotation.save();
-  await publish(EVENTS.QUOTATION_SENT, { quotation, by: req.user });
+  /* The quotation task closes with the send by default; unticked, it reads Quote Sent and stays open [handoff.subscriber]. */
+  await publish(EVENTS.QUOTATION_SENT, { quotation, by: req.user, closeTask: req.body?.closeTask !== false });
   res.json({ success: true, data: visibleTo(await loadDetail(quotation._id), req.user), deliveries });
 }
 

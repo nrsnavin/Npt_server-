@@ -126,6 +126,51 @@ export function summarise(samples) {
   };
 }
 
+const ANSWERS = ['approved', 'modification_required', 'rejected'];
+
+/** Approval by a key: how many were answered, how many approved, how many sent back or rejected. */
+export function approvalBreakdown(samples, keyOf, { order } = {}) {
+  const groups = new Map();
+  for (const sample of samples) {
+    const key = keyOf(sample);
+    if (key == null) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(sample);
+  }
+  const rows = [...groups.entries()].map(([label, members]) => {
+    const approved = members.filter((sample) => sample.status === 'approved').length;
+    const modified = members.filter((sample) => sample.status === 'modification_required').length;
+    const rejected = members.filter((sample) => sample.status === 'rejected').length;
+    return { label, answered: members.length, approved, modified, rejected, approvedPercent: Math.round((approved / members.length) * 100), reliable: members.length >= RELIABLE_SAMPLE_SIZE };
+  });
+  return order
+    ? rows.sort((a, b) => order.indexOf(a.label) - order.indexOf(b.label))
+    : rows.sort((a, b) => b.answered - a.answered || b.approvedPercent - a.approvedPercent);
+}
+
+/** Spacing and case are not a different shade. */
+const sameShade = (a, b) => String(a || '').trim().toLowerCase().replace(/\s+/g, ' ') === String(b || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+/**
+ * The exact-colour conditions, and how often the bag held another shade: stepped past out loud
+ * [Sample `colourOverride`], and preferences substituted. The audit's gap 7, counted.
+ */
+export function colourMisses(samples) {
+  const withColour = samples.filter((sample) => sample.colour && sample.dispatchedColour);
+  const compulsory = withColour.filter((sample) => sample.colourMandatory);
+  const steppedPast = compulsory.filter((sample) => sample.colourOverride?.reason || !sameShade(sample.colour, sample.dispatchedColour));
+  const substituted = withColour.filter((sample) => !sample.colourMandatory && !sameShade(sample.colour, sample.dispatchedColour));
+  const row = (sample) => ({ number: sample.number, model: sample.modelNumber || null, asked: sample.colour, sent: sample.dispatchedColour, reason: sample.colourOverride?.reason || null, bench: sample.bench || null });
+  return {
+    sent: withColour.length,
+    compulsory: compulsory.length,
+    steppedPast: steppedPast.length,
+    steppedPastPercent: compulsory.length ? Math.round((steppedPast.length / compulsory.length) * 100) : null,
+    substituted: substituted.length,
+    rows: [...steppedPast.map(row), ...substituted.map(row)].slice(0, 20),
+  };
+}
+
 /** Groups samples by an attribute and summarises each group, busiest first. */
 function breakdown(samples, keyOf, { order } = {}) {
   const groups = new Map();
@@ -243,8 +288,9 @@ function trend(samples, to, monthsBack = TREND_MONTHS) {
 export async function sampleAnalytics({ scope = {}, from, to }) {
   const raw = await Sample.find(scope).select(
     'status purpose category material hookType printing quantity requiredDate requestedAt ' +
-      'createdAt statusHistory dispatchedAt deliveredAt'
-  ).lean(); // Read-only arithmetic over every sample; a full document each was the cost.
+      'createdAt statusHistory dispatchedAt deliveredAt number modelNumber assignedTo feedbackAt ' +
+      'colour colourMandatory dispatchedColour colourOverride'
+  ).populate('assignedTo', 'name').lean(); // Read-only arithmetic over every sample; a full document each was the cost.
 
   // Decorate once: every figure below is derived from these two spans.
   const all = raw.map((sample) => {
@@ -253,6 +299,15 @@ export async function sampleAnalytics({ scope = {}, from, to }) {
     const dispatchedAt = sample.dispatchedAt || reached(sample, 'dispatched');
 
     return {
+      number: sample.number,
+      modelNumber: sample.modelNumber || null,
+      bench: sample.assignedTo?.name || null,
+      feedbackAt: sample.feedbackAt || null,
+      colour: sample.colour || null,
+      colourMandatory: Boolean(sample.colourMandatory),
+      dispatchedColour: sample.dispatchedColour || null,
+      colourOverride: sample.colourOverride || null,
+      dispatchedAt,
       status: sample.status,
       purpose: sample.purpose,
       category: sample.category,
@@ -278,6 +333,10 @@ export async function sampleAnalytics({ scope = {}, from, to }) {
     (sample) => new Date(sample.requestedAt) >= from && new Date(sample.requestedAt) <= to
   );
 
+  /* Answered in the period: the buyer's verdict is dated by `feedbackAt`, not by when the piece was made. */
+  const answeredInPeriod = all.filter((sample) => ANSWERS.includes(sample.status) && sample.feedbackAt && new Date(sample.feedbackAt) >= from && new Date(sample.feedbackAt) <= to);
+  const sentInPeriod = all.filter((sample) => sample.dispatchedAt && new Date(sample.dispatchedAt) >= from && new Date(sample.dispatchedAt) <= to);
+
   const toCustomer = inPeriod
     .map((sample) => sample.toCustomerMs)
     .filter((value) => value != null)
@@ -297,6 +356,14 @@ export async function sampleAnalytics({ scope = {}, from, to }) {
     trend: trend(all, to),
     timeInStage: timeInStage(inPeriod),
     byPurpose: breakdown(inPeriod, (sample) => sample.purpose, { order: SAMPLE_PURPOSES }),
+    /* What the buyer said, by what it was and who made it [the sampling audit, item 10]. */
+    approval: {
+      answered: answeredInPeriod.length,
+      byModel: approvalBreakdown(answeredInPeriod, (sample) => sample.modelNumber || 'New development'),
+      byPurpose: approvalBreakdown(answeredInPeriod, (sample) => sample.purpose, { order: SAMPLE_PURPOSES }),
+      byBench: approvalBreakdown(answeredInPeriod, (sample) => sample.bench || 'Nobody on it'),
+    },
+    colourMisses: colourMisses(sentInPeriod),
     // Printing is free text — what matters analytically is whether there was any.
     byPrinting: breakdown(inPeriod, (sample) =>
       sample.printing?.trim() ? 'printed' : 'plain'

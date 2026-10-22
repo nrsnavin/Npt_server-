@@ -24,11 +24,12 @@ import { HANDOFFS, TILE_KIND, findHandoff } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, closeByAdmin, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
+  WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, closeByAdmin, escalateToAdmin, resolveEscalation, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
   updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, registerLists, raiseAssemblyWith, routingFor, decideRouting, addToProductionQueue,
 } from '../services/handoff.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
+import { taskWithClosable, withClosable } from '../services/taskClosable.service.js';
 
 /**
  * Department tasks about an enquiry [config/handoffs.js, services/handoff.service.js]: the
@@ -48,6 +49,8 @@ export const TASK_POPULATE = [
   { path: 'updates.by', select: 'name' },
   { path: 'reschedules.by', select: 'name' },
   { path: 'escalation.by', select: 'name department' },
+  { path: 'adminEscalation.by', select: 'name department' },
+  { path: 'adminEscalation.resolvedBy', select: 'name' },
   /* The enquiry's EDD travels with its tasks, so a card can show it or ask for it [web: components/TaskEdd.jsx]. */
   { path: 'enquiry', select: 'number edd eddByModel' },
 ];
@@ -183,7 +186,8 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
   const floor = await floorOf(enquiry._id);
   res.json({
     success: true,
-    data: tasks,
+    /* Each open task says whether it may be closed now [taskClosable.service]. */
+    data: await withClosable(tasks),
     stage: enquiry.stage,
     stageHistory: enquiry.stageHistory,
     holder,
@@ -313,7 +317,8 @@ async function taskFor(req) {
   return task;
 }
 
-const answer = async (res, task) => res.json({ success: true, data: await task.populate(TASK_POPULATE) });
+/* The task as moved, with whether it may now be closed — the screen offers the dialog on that [taskClosable.service]. */
+const answer = async (res, task) => res.json({ success: true, data: await taskWithClosable(await task.populate(TASK_POPULATE)) });
 
 export const handoffDone = asyncHandler(transactional(async (req, res) => {
   const task = await completeHandoff(await taskFor(req), req.user, req.body);
@@ -348,6 +353,18 @@ export const handoffDeliveryUrgency = asyncHandler(transactional(async (req, res
 /** Admin closes any department task where it stands, with a reason [handoff.service `closeByAdmin`]. */
 export const handoffAdminClose = asyncHandler(transactional(async (req, res) => {
   const task = await closeByAdmin(await taskFor(req), req.user, req.body);
+  await answer(res, task);
+}));
+
+/** An issue the department cannot settle goes to Admin alone, under "Needs your action". */
+export const handoffEscalate = asyncHandler(transactional(async (req, res) => {
+  const task = await escalateToAdmin(await taskFor(req), req.user, req.body);
+  await answer(res, task);
+}));
+
+/** Admin's answer: on the task, back to whoever raised it; off every Admin's list. */
+export const handoffResolveEscalation = asyncHandler(transactional(async (req, res) => {
+  const task = await resolveEscalation(await taskFor(req), req.user, req.body);
   await answer(res, task);
 }));
 

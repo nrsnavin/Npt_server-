@@ -42,6 +42,9 @@ const attachmentSchema = new mongoose.Schema(
      */
     docType: { type: String, trim: true },
 
+    /** What the model read off this picture, by kind, with the bytes' hash it read [services/sampleVision.llm.js]. */
+    readings: { type: mongoose.Schema.Types.Mixed, default: undefined },
+
     /** What the file is, in the reader's words: "Buyer drawing", "Signed approval". */
     title: { type: String, trim: true },
   },

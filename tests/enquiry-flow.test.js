@@ -77,9 +77,10 @@ const inOpenList = async () =>
   (await api('/api/enquiries?open=true&limit=100', { as: 'nandhini' })).json.data.some((row) => String(row._id) === String(enquiry._id));
 
 test('the sales order uploaded: the enquiry reads Production, and Production has its task', async () => {
-  const raised = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'PO 4471 received', brief: { items: [{ model: 'NPT-400S', quantity: 10000 }], productionConfirmed: true } } });
+  const raised = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'PO 4471 received', brief: { items: [{ model: 'NPT-400S', quantity: 10000 }], productionConfirmed: true, qcRequired: true } } });
   assert.equal(raised.status, 201, raised.json.message);
   assert.deepEqual([(await state()).stage, (await state()).marketingStatus], ['po_so', 'po_received']);
+  assert.equal((await Enquiry.findById(enquiry._id).select('qcRequired').lean()).qcRequired, true, 'QC compulsory, as ticked on the SO request');
 
   const sent = await upload('priya', raised.json.data.task._id, { bytes: PDF, type: 'application/pdf', name: 'SO-0231.pdf', note: 'SO 0231' });
   assert.equal(sent.status, 200, sent.json.message);

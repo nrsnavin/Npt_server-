@@ -131,6 +131,23 @@ export const TEMPLATES = {
   },
 };
 
+/*
+ * The chase, days after the sample reached the buyer with no answer [escalation.service
+ * `runFeedbackReminders`]. Never automatic: marketing reads the draft on the sample and sends it.
+ * The drafted words replace this body when the sample carries one [customerMessage.service].
+ */
+TEMPLATES.sample_feedback_chase = {
+  label: 'Sample feedback chase',
+  subject: (ctx) => `Your sample ${ctx.sampleNumber} — how does it suit? — ${ctx.company}`,
+  body: (ctx) =>
+    `Hello ${ctx.customerName},\n\n` +
+    `Your sample ${ctx.sampleNumber} — ${ctx.description} — reached you a few days ago. ` +
+    'Does it suit, or is there anything you would like changed — the colour, the hook, the print? We can send another piece or adjust it.\n\n' +
+    `Regards,\n${ctx.company}`,
+  variables: (ctx) => ({ 1: ctx.customerName, 2: ctx.sampleNumber, 3: ctx.description }),
+  contentSid: () => whatsappTemplate('sample_feedback_chase'),
+};
+
 export const EVENT_KEYS = Object.keys(TEMPLATES);
 
 /** Renders a draft. Returns the subject and body a human can then edit before sending. */

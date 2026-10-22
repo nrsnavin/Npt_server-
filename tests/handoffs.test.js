@@ -31,7 +31,8 @@ let admin;
 let nandhini; // marketing, holds the enquiry
 let priya; // marketing, a colleague
 let arun; // sampling
-let siva; // production
+let siva; // production — the in charge
+let ravi; // production — a hand, not in charge
 let kavitha; // quality
 let murugan; // mould
 let enquiryId;
@@ -75,21 +76,23 @@ test.before(async () => {
 
   await api('/api/auth/register', { method: 'POST', body: { name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', department: 'management' } });
   admin = await signIn('admin@np.com', 'Admin@12345');
-  for (const [name, email, department, phone] of [
+  for (const [name, email, department, phone, inCharge] of [
     ['Nandhini S', 'nandhini@np.com', 'marketing', PHONES.nandhini],
     ['Priya R', 'priya@np.com', 'marketing', undefined],
     ['Arun K', 'arun@np.com', 'sampling', PHONES.arun],
-    ['Sivakumar', 'siva@np.com', 'production', PHONES.siva],
+    ['Sivakumar', 'siva@np.com', 'production', PHONES.siva, true],
+    ['Ravi P', 'ravi@np.com', 'production', undefined, false],
     ['Kavitha D', 'kavitha@np.com', 'quality', PHONES.kavitha],
     ['Murugan M', 'murugan@np.com', 'mould', undefined],
   ]) {
-    const made = await api('/api/users', { method: 'POST', token: admin, body: { name, email, password: 'Pass@123456', department, productionInCharge: department === 'production', ...(phone ? { phone } : {}) } });
+    const made = await api('/api/users', { method: 'POST', token: admin, body: { name, email, password: 'Pass@123456', department, productionInCharge: Boolean(inCharge), ...(phone ? { phone } : {}) } });
     assert.equal(made.status, 201, made.json.message);
   }
   nandhini = await signIn('nandhini@np.com', 'Pass@123456');
   priya = await signIn('priya@np.com', 'Pass@123456');
   arun = await signIn('arun@np.com', 'Pass@123456');
   siva = await signIn('siva@np.com', 'Pass@123456');
+  ravi = await signIn('ravi@np.com', 'Pass@123456');
   kavitha = await signIn('kavitha@np.com', 'Pass@123456');
   murugan = await signIn('murugan@np.com', 'Pass@123456');
 
@@ -545,9 +548,11 @@ test('a department sees the enquiries at its own stages; the enquiry list filter
   );
   assert.ok(await Enquiry.exists({ _id: priyas, stage: 'enquiry' }));
 
-  /* Production cannot open enquiries, so it is not shown any. */
-  const production = await api('/api/departments/mine/dashboard', { token: siva });
-  assert.deepEqual(production.json.data.atStages, []);
+  /* A Production hand cannot open enquiries, so is shown none; the in charge reads them (their floor) and sees the stage. */
+  const hand = await api('/api/departments/mine/dashboard', { token: ravi });
+  assert.deepEqual(hand.json.data.atStages, []);
+  const inCharge = await api('/api/departments/mine/dashboard', { token: siva });
+  assert.deepEqual(inCharge.json.data.atStages.map((stage) => stage.key), ['production_edd']);
 
   const listed = await api('/api/enquiries?stage=po_so&limit=100', { token: admin });
   assert.ok(listed.json.data.length >= 1);

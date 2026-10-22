@@ -2,16 +2,20 @@ import { Router } from 'express';
 import {
   listSamples, listStalledSamples, getSample, createSample, updateSample, assignSample,
   setSampleStatus, closeSampleTask, setDispatchDetails, recordFeedback, resample, samplePipeline, sampleBoard, handOverSample,
+  decideNotAvailable,
   linkEnquiry, linkCustomer,
   previewCustomerMessage, sendCustomerMessage, listCustomerMessages,
 } from '../controllers/sample.controller.js';
 import {
   listSampleLogs, addSampleLog, addLogComment, removeSampleLog, removeLogComment,
   downloadAttachment, setReferencePhoto, clearReferencePhoto,
+  setItemPhoto, clearItemPhoto, setItemReferencePhoto, clearItemReferencePhoto,
+  checkItemPhoto, matchItemPhoto, pickMatchedModel, readCourierCopy,
 } from '../controllers/sampleLog.controller.js';
 import {
   sampleDashboard, sampleDay, sampleQueue, sampleAnalyticsReport,
 } from '../controllers/sampleDashboard.controller.js';
+import { listRack, removeRackLine, setRack } from '../controllers/sampleRack.controller.js';
 import { adminOnly, authenticate, requireAnyModule, requireModule } from '../middleware/auth.js';
 import { singleImage } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
@@ -19,6 +23,7 @@ import {
   sampleSchema, sampleUpdateSchema, sampleAssignSchema,
   sampleStatusSchema, sampleFeedbackSchema, resampleSchema, customerMessageSchema,
   dispatchDetailsSchema, sampleCloseTaskSchema, sampleLogSchema, logCommentSchema, linkEnquirySchema, linkCustomerSchema, handOverSchema,
+  notAvailableDecisionSchema, pickModelSchema, rackSchema,
 } from '../validators/sample.schemas.js';
 
 const router = Router();
@@ -44,6 +49,12 @@ router.get('/day', requireModule('samples'), sampleDay);
 router.get('/analytics', requireModule('samples'), sampleAnalyticsReport);
 /* The sampling department's work queue: every request with its status, priority and handover. */
 router.get('/queue', requireModule('samples'), sampleQueue);
+/* The sample rack as a stock list: read by anyone on samples, counted by the bench, debited by a visit hand-over. */
+router.get('/rack', requireModule('samples'), listRack);
+router.put('/rack', requireModule('samples', 'write'), validate(rackSchema), setRack);
+router.delete('/rack/:lineId', requireModule('samples', 'write'), removeRackLine);
+/* The courier and AWB read off a photo of the courier copy — a suggestion for the dispatch form [sampleVision.llm.js]. */
+router.post('/read-courier-copy', requireModule('samples', 'write'), singleImage('photo'), readCourierCopy);
 router.get('/', requireModule('samples'), listSamples);
 /*
  * Raising a request is not the same as working one. A buyer asking at the counter is
@@ -80,6 +91,17 @@ router.post(
   recordFeedback
 );
 router.post('/:id/resample', requireModule('samples', 'write'), validate(resampleSchema), resample);
+/*
+ * Not available is marketing's to answer [the sampling audit, item 7]: wait for a run, change the
+ * spec, or cancel. On marketing's grant, as the feedback is — the buyer's side of the decision —
+ * and the bench's too, for a trial with no buyer.
+ */
+router.post(
+  '/:id/not-available',
+  requireAnyModule(['enquiries', 'write'], ['samples', 'write']),
+  validate(notAvailableDecisionSchema),
+  decideNotAvailable
+);
 /* The marketing person handing the piece over themselves, on a visit — a photo may ride with it. */
 router.post(
   '/:id/hand-over',
@@ -139,8 +161,25 @@ router.delete('/:id/logs/:logId', requireModule('samples'), adminOnly, removeSam
 router.post('/:id/logs/:logId/comments', requireModule('samples'), validate(logCommentSchema), addLogComment);
 router.delete('/:id/logs/:logId/comments/:commentId', requireModule('samples'), adminOnly, removeLogComment);
 
-// The buyer's own reference, as opposed to what the bench produced.
-router.put('/:id/reference-photo', requireModule('samples', 'write'), singleImage('photo'), setReferencePhoto);
-router.delete('/:id/reference-photo', requireModule('samples', 'write'), clearReferencePhoto);
+/*
+ * The buyer's own reference, as opposed to what the bench produced. Marketing's too: they spoke
+ * to the buyer and hold the picture, and they raise the request on `enquiries` write.
+ */
+const referencePhotoGrant = requireAnyModule(['samples', 'write'], ['enquiries', 'write']);
+router.put('/:id/reference-photo', referencePhotoGrant, singleImage('photo'), setReferencePhoto);
+router.delete('/:id/reference-photo', referencePhotoGrant, clearReferencePhoto);
+
+/*
+ * The two pictures on each model row [the sampling audit, items 1 and 2]: the buyer's reference
+ * for that model, and the finished piece the bench photographs at Sample Ready.
+ */
+router.put('/:id/items/:itemId/reference-photo', referencePhotoGrant, singleImage('photo'), setItemReferencePhoto);
+router.delete('/:id/items/:itemId/reference-photo', referencePhotoGrant, clearItemReferencePhoto);
+router.put('/:id/items/:itemId/photo', requireModule('samples', 'write'), singleImage('photo'), setItemPhoto);
+router.delete('/:id/items/:itemId/photo', requireModule('samples', 'write'), clearItemPhoto);
+/* The model's readings of those pictures, suggest only [sampleVision.llm.js]: the finished piece checked, the reference matched, a match picked. */
+router.post('/:id/items/:itemId/check', requireModule('samples', 'write'), checkItemPhoto);
+router.post('/:id/items/:itemId/match', requireModule('samples'), matchItemPhoto);
+router.post('/:id/items/:itemId/pick-model', referencePhotoGrant, validate(pickModelSchema), pickMatchedModel);
 
 export default router;

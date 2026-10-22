@@ -19,6 +19,7 @@ import { MATERIALS } from '../models/Mould.js';
 import { HANDOVER_CHOICES } from '../config/departmentTaskForms.js';
 import { askToRecordReceipt, endOfIndiaDay, logCollectionCall } from './collections.service.js';
 import { chainOf, jobFilter } from './journey.service.js';
+import { assertQcCleared, qcGateFor, ticked as qcTicked } from './qcGate.service.js';
 import mongoose from 'mongoose';
 
 /**
@@ -987,6 +988,10 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
   if (handoff.department) {
     const wasHeld = enquiry.stage === 'production_hold';
     const raised = await moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, order, user });
+    /* QC compulsory before dispatch, as marketing or Admin ticked it when the job went to Production [qcGate.service]. */
+    if (['ask_edd', 'po_so'].includes(kind) && brief && brief.qcRequired !== undefined) {
+      await Enquiry.updateOne({ _id: enquiry._id }, { $set: { qcRequired: qcTicked(brief.qcRequired) } });
+    }
     /* A Production Holded Order moved to Production: the order booked from its SO request goes to the plant too. */
     if (wasHeld && kind === 'ask_edd') {
       const { releaseHeldOrders } = await import('./soFromTask.service.js');
@@ -1239,6 +1244,37 @@ export async function finishQuotationTasks(quotation, by) {
   return finishAll(tasks, by, { note, fields });
 }
 
+/**
+ * The quotation went out but the sender kept the task open [the send dialog, Close the task
+ * unticked]: the pricing tasks move to Quote Sent — the card says the quote is with the buyer —
+ * and stay on the Quotation desk until the team closes them, for a second quote or a price
+ * still being talked over.
+ */
+export async function markQuotationTasksSent(quotation, by) {
+  const enquiryId = quotation?.enquiry?._id || quotation?.enquiry;
+  if (!enquiryId) return [];
+  const tasks = await Todo.find({
+    enquiry: enquiryId, kind: { $in: ['create_quotation', 'price_negotiation'] }, completed: false, holds: { $ne: true },
+  });
+  const said = `${quotation.number}${quotation.revision ? ` rev ${quotation.revision}` : ''} sent to the buyer — task kept open`;
+  const now = new Date();
+  const moved = [];
+  for (const task of tasks) {
+    const step = statusesOf(task).find((entry) => entry.key === 'sent');
+    if (step && task.status !== step.key) {
+      task.status = step.key;
+      task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: said, by: by?._id, at: now }];
+    }
+    task.updates = [...(task.updates || []), {
+      kind: 'status', status: step?.key, statusLabel: step?.label || 'Quote Sent', text: said, note: said, by: by?._id, at: now,
+    }];
+    await task.save();
+    await publish(EVENTS.HANDOFF_UPDATED, { task, by });
+    moved.push(task);
+  }
+  return moved;
+}
+
 /* ------------------------------ A department's own workflow ------------------------------ */
 
 const statusesOf = (task) => findHandoff(task.kind)?.form?.statuses || [];
@@ -1274,6 +1310,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   const step = statusesOf(task).find((entry) => entry.key === status);
   if (!step) fail('That is not one of this task’s statuses');
   if (step.pdf) fail(`Upload the PDF to mark it ${step.label}`);
+  /* The goods leave only on Quality's pass where QC is compulsory [qcGate.service]. */
+  if (task.kind === 'invoice_dispatch' && DISPATCH_GOES.includes(step.key)) await assertQcCleared(task, `mark it ${step.label}`);
   const text = String(note || '').trim();
   /* What the status asks for beside the remark — who collected the sample, how many pieces. */
   const asked = stepFields(step, fields);
@@ -1893,6 +1931,8 @@ async function askToRecordPayment(task, user, step) {
 
 /* The Dispatch statuses that mean "still waiting on the goods" — a ready signal moves these on. */
 const WAITING_ON_GOODS = ['received', 'asked_production', 'not_ready'];
+/* The Dispatch moves that send the goods out, or say they may go: refused while QC is compulsory and not passed. */
+const DISPATCH_GOES = ['waiting_vehicle', 'party_collect', 'part_dispatched', 'fully_dispatched', 'dispatched'];
 
 /**
  * Production (or Assembly) says Ready for Dispatch: every open Dispatch request on the enquiry is
@@ -1901,17 +1941,20 @@ const WAITING_ON_GOODS = ['received', 'asked_production', 'not_ready'];
  * Dispatch person on it, or the whole team when nobody has taken it, is told under "Needs your
  * action", as are the enquiry's marketing person and Admin.
  */
-async function tellDispatchReady(task, user, step, text, { partial = false } = {}) {
+export async function tellDispatchReady(task, user, step, text, { partial = false } = {}) {
   const asking = departmentName(task.department);
   const requests = await Todo.find({ ...jobFilter(task), kind: 'invoice_dispatch', completed: false });
   if (!requests.length) return;
-  const said = `${asking}: ${step.label}${text ? ` — ${text}` : ''}`;
+  /* QC compulsory: the request hears the goods are made, but reads Goods Ready only on Quality's pass [qcGate.service]. */
+  const gate = await qcGateFor(task);
+  const heldForQc = gate.required && !gate.cleared;
+  const said = `${asking}: ${step.label}${text ? ` — ${text}` : ''}${heldForQc ? ' — QC compulsory: waits for Quality’s pass before dispatch' : ''}`;
   const ready = statusesOf({ kind: 'invoice_dispatch' }).find((entry) => entry.key === 'waiting_vehicle');
   /* Some models ready: the request moves on only when the order goes out model by model. */
   const goesByModel = partial && Boolean(task.enquiry) && (await Enquiry.findById(idOf(task.enquiry)).select('dispatchPlan').lean())?.dispatchPlan?.mode === 'by_model';
   for (const request of requests) {
     request.updates = [...(request.updates || []), { note: said, by: user._id, at: new Date() }];
-    const moves = ready && WAITING_ON_GOODS.includes(request.status) && (!partial || goesByModel);
+    const moves = ready && WAITING_ON_GOODS.includes(request.status) && (!partial || goesByModel) && !heldForQc;
     if (moves) {
       request.status = ready.key;
       request.statusHistory = [...(request.statusHistory || []), { status: ready.key, note: said, by: user._id, at: new Date() }];
@@ -2383,6 +2426,75 @@ export async function closeByAdmin(task, user, { reason }) {
   return task;
 }
 
+/**
+ * Escalated to Admin: an issue on the task that the department cannot settle — a buyer's
+ * demand, a clash between teams, a decision above the desk. Raised by whoever works the task,
+ * the enquiry's marketing person, or whoever raised the task; with the issue in words. Only
+ * Admin hears it — under "Needs your action" and on their phones — and the task stays where it
+ * is, with the escalation on it until Admin answers [resolveEscalation]. One at a time.
+ */
+export async function escalateToAdmin(task, user, { reason }) {
+  if (!task.kind) fail('That is not a department task');
+  if (task.completed) throw ApiError.conflict('That task is already finished');
+  const enquiry = task.enquiry ? await Enquiry.findById(idOf(task.enquiry)).select('assignedTo customer number').lean() : null;
+  const theirs = mayWorkOnHandoff(user, task)
+    || idOf(task.createdBy) === idOf(user._id)
+    || (enquiry && idOf(enquiry.assignedTo) === idOf(user._id));
+  if (!theirs) throw ApiError.forbidden('Only the team on this task, or its marketing person, escalates it');
+  if (task.adminEscalation?.at && !task.adminEscalation.resolvedAt) fail('This task is already with Admin — wait for the answer, or add to it with Update');
+  const why = String(reason || '').trim();
+  if (why.length < 5) fail('Say what the issue is');
+  const now = new Date();
+  task.adminEscalation = { reason: why, by: user._id, at: now };
+  task.updates = [...(task.updates || []), {
+    kind: 'note', text: `Escalated to Admin: ${why}`, note: `Escalated to Admin by ${user.name}: ${why}`, by: user._id, at: now,
+  }];
+  if (!task.user && mayWorkOnHandoff(user, task)) task.user = user._id;
+  await task.save();
+  /* Admin alone: not the marketing person, not the asking department — this is for Admin to settle. */
+  const [{ default: TaskNotice }, { default: User }] = await Promise.all([import('../models/TaskNotice.js'), import('../models/User.js')]);
+  const admins = (await User.find({ ...MANAGEMENT_QUERY, isActive: { $ne: false } }).select('_id').lean())
+    .map((person) => String(person._id)).filter((id) => id !== String(user._id));
+  if (admins.length) {
+    await TaskNotice.insertMany(admins.map((recipient) => ({
+      recipient, task: task._id, enquiry: enquiry?._id, customer: task.customer?._id || task.customer || enquiry?.customer,
+      department: task.department, kind: task.kind, status: 'escalated', statusLabel: 'Escalated to Admin', note: why, by: user._id, at: now,
+    })));
+    const body = [task.title, why, `by ${user.name}`].filter(Boolean).join(' — ').slice(0, 200);
+    afterCommit(() => import('./push.service.js')
+      .then(({ sendPush }) => sendPush(admins, { title: `${departmentName(task.department)}: escalated to Admin`, body, link: enquiry ? `/enquiries/${enquiry._id}` : '/departments/mine', kind: 'task-status', taskId: String(task._id) }))
+      .catch((error) => console.error(`[handoff] escalation push not sent: ${error.message}`)));
+  }
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  return task;
+}
+
+/**
+ * Admin answers the escalation: what was decided goes on the task and back to whoever raised
+ * it (and the team on the task), under their "Needs your action"; the escalation leaves every
+ * Admin's. The task is not moved — the team does that with what Admin said.
+ */
+export async function resolveEscalation(task, user, { note }) {
+  if (!isAdmin(user)) throw ApiError.forbidden('Only Admin answers an escalation');
+  if (!task.adminEscalation?.at || task.adminEscalation.resolvedAt) fail('Nothing is escalated on this task');
+  const said = String(note || '').trim();
+  if (said.length < 2) fail('Say what was decided');
+  const now = new Date();
+  const raisedBy = idOf(task.adminEscalation.by);
+  task.adminEscalation = { reason: task.adminEscalation.reason, by: raisedBy, at: task.adminEscalation.at, resolvedAt: now, resolvedBy: user._id, resolution: said };
+  task.markModified('adminEscalation');
+  task.updates = [...(task.updates || []), {
+    kind: 'note', text: `Admin (${user.name}): ${said}`, note: `Admin answered the escalation: ${said}`, by: user._id, at: now,
+  }];
+  await task.save();
+  const { default: TaskNotice } = await import('../models/TaskNotice.js');
+  await TaskNotice.deleteMany({ task: task._id, status: 'escalated' });
+  const also = [...new Set([raisedBy, ...(await peopleOn(task)).map(String)].filter(Boolean))];
+  await noticeStatus(task, user, { step: { key: 'escalation_answered', label: 'Admin answered the escalation' }, note: said, also, onlyAlso: true });
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  return task;
+}
+
 /** Marketing's holding task is due on the follow-up date; moving the date moves the task. */
 export async function syncOwnerDueDate(enquiry) {
   const holder = await holderOf(enquiry._id);
@@ -2583,6 +2695,8 @@ export async function taskPrefill(enquiryId) {
       packing: row.packing,
       quantity: asked?.quantity ? String(asked.quantity) : '',
       targetPrice: enquiry.targetPrice != null ? String(enquiry.targetPrice) : '',
+      /* QC compulsory before dispatch, as the SO request or an earlier Production ask set it [qcGate.service]. */
+      qcRequired: Boolean(enquiry.qcRequired),
     };
   });
   const modelList = [...new Set(items.map((row) => row.model).filter(Boolean))];
@@ -3661,9 +3775,11 @@ export async function enquiriesHeldBy(department, user, { now = new Date(), limi
     .then(plainTasks);
 
   const ids = tasks.map((task) => task.enquiry?._id).filter(Boolean);
-  const [{ default: Sample }, { default: Quotation }, { default: SalesOrder }] = await Promise.all([
-    import('../models/Sample.js'), import('../models/Quotation.js'), import('../models/SalesOrder.js'),
+  const [{ default: Sample }, { default: Quotation }, { default: SalesOrder }, { withClosable }] = await Promise.all([
+    import('../models/Sample.js'), import('../models/Quotation.js'), import('../models/SalesOrder.js'), import('./taskClosable.service.js'),
   ]);
+  /* Each task says whether it may be closed now — the desk offers the dialog on that [taskClosable.service]. */
+  await withClosable(tasks);
   /* The newest of each per enquiry. */
   const newest = async (Model, select) => {
     const rows = await Model.find({ enquiry: { $in: ids } }).select(`enquiry number status ${select}`).sort({ createdAt: -1 }).lean();

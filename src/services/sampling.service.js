@@ -382,6 +382,8 @@ export async function recordHandover(sample, user, { receivedBy, phone, pieces, 
       ...(photo ? { photo } : {}),
     },
   });
+  /* A piece taken from the rack on a visit comes off the rack's stock list [models/SampleRack.js]. */
+  if (via === 'visit' && sample.handover === 'in_person') await debitRack(sample, user, count).catch((error) => console.error(`[sample-rack] ${error.message}`));
   const where = via === 'desk' ? 'collected at reception' : 'handed over in person';
   sample.statusHistory.push({
     from, to: 'delivered', by: user._id,
@@ -392,4 +394,30 @@ export async function recordHandover(sample, user, { receivedBy, phone, pieces, 
   /* It has left the building, which is what everything downstream listens for [sampling.subscriber, handoff.subscriber]. */
   await publish(EVENTS.SAMPLE_DISPATCHED, { sample, from, by: user });
   return sample;
+}
+
+/**
+ * Takes the pieces of an in-person hand-over off the rack, model by model: the row for the
+ * model and colour where there is one, never below zero. A model the rack does not list is
+ * noted on the sample rather than invented on the rack.
+ */
+export async function debitRack(sample, user, pieces) {
+  const { default: SampleRack, rackKey } = await import('../models/SampleRack.js');
+  const rows = sample.items?.length ? sample.items : [sample];
+  const took = [];
+  for (const row of rows) {
+    if (!row.modelNumber) continue;
+    const each = rows.length > 1 ? Number(row.quantity) || 1 : Number(pieces) || Number(row.quantity) || 1;
+    const line = await SampleRack.findOne({ modelKey: rackKey(row.modelNumber), colourKey: rackKey(row.colour) })
+      || await SampleRack.findOne({ modelKey: rackKey(row.modelNumber) });
+    if (!line) { took.push(`${row.modelNumber}: not on the rack list`); continue; }
+    const before = line.pieces || 0;
+    line.pieces = Math.max(0, before - each);
+    line.lastTaken = { at: new Date(), by: user._id, sample: sample._id, pieces: each };
+    line.updatedBy = user._id;
+    await line.save();
+    took.push(`${row.modelNumber}${row.colour ? ` ${row.colour}` : ''}: ${before} → ${line.pieces} on the rack`);
+  }
+  if (took.length) sample.statusHistory.push({ from: sample.status, to: sample.status, by: user._id, note: `Rack: ${took.join('; ')}` });
+  return took;
 }

@@ -190,7 +190,7 @@ export function registerSamplingSubscribers() {
         await raiseTask({
           user: person,
           title: `Sample ${sample.number} is not available`,
-          notes: [reason, 'Tell the buyer and decide: another model, wait for a run, or cancel.'].filter(Boolean).join(' — '),
+          notes: [reason, 'Decide on the sample: wait for a run, change the spec, or cancel — the three choices are on the sample.'].filter(Boolean).join(' — '),
           priority: 'high',
           link: `/samples/${sample._id}`,
           originKey: key(sample, 'not-available'),
@@ -216,6 +216,7 @@ export function registerSamplingSubscribers() {
     EVENTS.SAMPLE_APPROVED,
     safely('approval handover', async ({ sample }) => {
       await resolveTasks(key(sample, 'feedback'));
+      await resolveTasks(key(sample, 'feedback-reminder'));
       // An approved sample is what pricing has been waiting for [§7].
       await advanceEnquiry(sample.enquiry, 'pricing_required', `Sample ${sample.number} approved`);
     })
@@ -225,6 +226,7 @@ export function registerSamplingSubscribers() {
     EVENTS.SAMPLE_REJECTED,
     safely('rejection notice', async ({ sample }) => {
       await resolveTasks(key(sample, 'feedback'));
+      await resolveTasks(key(sample, 'feedback-reminder'));
       // Deliberately does not close the enquiry: a rejected sample is often re-tried, and
       // whether the enquiry is lost is marketing's call, not the sample team's.
       await raiseTask({
@@ -258,6 +260,7 @@ export function registerSamplingSubscribers() {
     EVENTS.SAMPLE_MODIFICATION_REQUIRED,
     safely('modification handover', async ({ sample }) => {
       await resolveTasks(key(sample, 'feedback'));
+      await resolveTasks(key(sample, 'feedback-reminder'));
       await raiseTask({
         user: sample.requestedBy,
         title: `Sample ${sample.number} needs modification`,

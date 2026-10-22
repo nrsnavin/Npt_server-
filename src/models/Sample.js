@@ -216,6 +216,49 @@ const itemSchema = new mongoose.Schema(
     ...requirementFields(),
     mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould' },
     quantity: { type: Number, min: 1, default: 1 },
+    /**
+     * The two pictures of this model, side by side [the sampling audit, gaps 1 and 2].
+     *
+     *   `referencePhoto`  what the buyer sent for this model — a three-model bag used to have one
+     *                     picture for the whole request, and the bench guessed which row it was.
+     *   `photo`           the finished piece, taken on the bench at Sample Ready. It travels with
+     *                     the sample from then on: the queue, the buyer's messages, the enquiry,
+     *                     the order's approved-sample check, the mould register.
+     */
+    referencePhoto: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+    photo: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+    photoAt: Date,
+    photoBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    /**
+     * The finished piece checked against the reference and the spec [sampleVision.llm.js
+     * `checkFinishedPiece`]: a finding the bench reads under the photo, never a gate on its own.
+     * A difference is ticked past with a reason at Sample Ready [`checkAccepted`].
+     */
+    check: {
+      type: new mongoose.Schema(
+        { verdict: { type: String, enum: ['matches', 'differs', 'unsure'] }, findings: [String], summary: String, at: Date, reference: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' } },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+    checkAccepted: {
+      type: new mongoose.Schema({ reason: String, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, at: Date }, { _id: false }),
+      default: undefined,
+    },
+    /** The register models the buyer's photo was matched to [`matchToRegister`]; a person picks one, or none. */
+    match: {
+      type: new mongoose.Schema(
+        {
+          candidates: [{ _id: false, ref: String, kind: String, id: String, code: String, name: String, confidence: Number, sure: Boolean }],
+          none: Boolean,
+          seen: { type: mongoose.Schema.Types.Mixed },
+          at: Date,
+          problem: String,
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
   },
   { _id: true }
 );
@@ -265,7 +308,8 @@ function keepFirstItemInStep(doc) {
     return;
   }
 
-  if (ITEM_FIELDS.some((field) => doc.isModified(field))) doc.items.set(at, top);
+  /* Merged onto the row rather than replacing it, so the row keeps its id and its photos. */
+  if (ITEM_FIELDS.some((field) => doc.isModified(field))) doc.items[at].set(top);
 }
 
 /**
@@ -385,6 +429,19 @@ const sampleSchema = new mongoose.Schema(
     referencePhoto: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
     remarks: String,
 
+    /**
+     * Sample Ready without a photo of every finished piece [setSampleStatus]. The rule is firm —
+     * a photo per model row — but a piece already in the bag is not held for it: the bench ticks
+     * No photo and says why, and that stays on the record beside the move.
+     */
+    readyWithoutPhoto: {
+      type: new mongoose.Schema(
+        { reason: { type: String, trim: true }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, at: Date },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+
     status: { type: String, enum: SAMPLE_STATUSES, default: 'request_received', index: true },
     statusHistory: [statusChangeSchema],
 
@@ -454,6 +511,47 @@ const sampleSchema = new mongoose.Schema(
     benchClosedAt: Date,
     benchClosedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
+    /**
+     * The feedback-pending reminder [escalation.service `runFeedbackReminders`]: three days after
+     * the sample reached the buyer with no answer recorded, marketing is reminded once, with
+     * the finished-piece photo on the task.
+     */
+    feedbackReminderAt: Date,
+
+    /**
+     * The exact-colour condition stepped past at dispatch [setSampleStatus]: the bench sent
+     * another shade, said why, and marketing was told. Kept beside the move so a rejection
+     * three weeks later has its explanation on the record.
+     */
+    colourOverride: {
+      type: new mongoose.Schema(
+        { reason: { type: String, trim: true }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, at: Date, asked: String, sent: String },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+
+    /**
+     * A draft chase to the buyer, written when the feedback reminder went [samplingSummary.llm.js
+     * `chaseDraft`]: marketing reads, edits and sends it from the sample — never sent by itself.
+     */
+    chaseDraft: {
+      type: new mongoose.Schema({ body: String, at: Date, byModel: Boolean }, { _id: false }),
+      default: undefined,
+    },
+
+    /**
+     * A problem the bench wrote in a log entry — mould issue, resin short — flagged so the queue
+     * and the sweep see it [sampleProblems.service]. Cleared by the next move.
+     */
+    problem: {
+      type: new mongoose.Schema(
+        { note: String, words: String, at: Date, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, log: { type: mongoose.Schema.Types.ObjectId, ref: 'SampleLog' }, raisedAt: Date },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+
     /** What the customer said, recorded by marketing. */
     feedbackAt: Date,
     feedbackBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -490,6 +588,13 @@ sampleSchema.virtual('piecesToMake').get(function piecesToMake() {
   const rows = this.items || [];
   if (!rows.length) return this.quantity ?? 0;
   return rows.reduce((sum, row) => sum + (row.quantity || 0), 0);
+});
+
+/** The finished-piece photos in the bag, one per model row that has one [itemSchema `photo`]. */
+sampleSchema.virtual('finishedPhotos').get(function finishedPhotos() {
+  return (this.items || [])
+    .filter((row) => row.photo)
+    .map((row) => ({ item: row._id, model: row.modelNumber || null, photo: row.photo }));
 });
 
 /** True for a request that is not attached to an enquiry. */

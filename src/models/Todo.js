@@ -179,6 +179,21 @@ const todoSchema = new mongoose.Schema(
      * Something on the task the department has not acted on yet — an answer to its question.
      * Shown at the top of its dashboard until somebody there moves the task or says they saw it.
      */
+    /**
+     * Escalated to Admin by whoever works the task, with the issue [handoff.service
+     * `escalateToAdmin`] — apart from `escalation` below, a personal to-do passed to a
+     * department. Only Admin sees it, under "Needs your action", until Admin answers it
+     * [`resolveEscalation`]; the answer comes back to whoever raised it. The task stays where it is.
+     */
+    adminEscalation: {
+      reason: { type: String, trim: true, maxlength: 2000 },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      resolvedAt: Date,
+      resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      resolution: { type: String, trim: true, maxlength: 2000 },
+      _id: false,
+    },
     attention: {
       kind: { type: String, enum: ['reply'] },
       note: { type: String, trim: true, maxlength: 2000 },

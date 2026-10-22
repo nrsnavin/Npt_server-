@@ -5,7 +5,7 @@ import Enquiry from '../models/Enquiry.js';
 import Todo from '../models/Todo.js';
 import { env } from '../config/env.js';
 import { EVENTS, subscribe as busSubscribe, unsubscribe } from '../services/events.service.js';
-import { describeHandoff, finishQuotationTasks, finishSampleTasks, holderOf, markEnquiry, moveEnquiry } from '../services/handoff.service.js';
+import { describeHandoff, finishQuotationTasks, finishSampleTasks, holderOf, markEnquiry, markQuotationTasksSent, moveEnquiry } from '../services/handoff.service.js';
 import { CLOSED_STAGE, STAGE_KEYS } from '../config/enquiryStages.js';
 import { sendPush } from '../services/push.service.js';
 import { raiseDepartmentTask, resolveTasks } from '../services/task.service.js';
@@ -344,7 +344,12 @@ export function registerHandoffSubscribers() {
   /* The quotation has gone to the buyer: the pricing tasks on the enquiry are done, and the costing ask without one. */
   subscribe(
     EVENTS.QUOTATION_SENT,
-    safely('close the pricing tasks', async ({ quotation, by }) => {
+    safely('close the pricing tasks', async ({ quotation, by, closeTask = true }) => {
+      /* The sender kept the task open: it reads Quote Sent, and the team closes it when it is through. */
+      if (closeTask === false) {
+        await markQuotationTasksSent(quotation, by);
+        return;
+      }
       await finishQuotationTasks(quotation, by);
       if (quotation?._id) await resolveTasks(`pricing:${quotation._id}:cost`);
     })

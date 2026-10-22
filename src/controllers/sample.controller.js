@@ -23,7 +23,8 @@ import { listParams, paginated } from '../utils/query.js';
 import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
-import { raiseTask } from '../services/task.service.js';
+import { raiseDepartmentTask, raiseTask, resolveTasks } from '../services/task.service.js';
+import { clearProblem } from '../services/sampleProblems.service.js';
 import { requireEnquiry } from '../services/enquiryLink.service.js';
 import { CLOSED_STAGE } from '../config/enquiryStages.js';
 import { transactional } from '../utils/transaction.js';
@@ -77,7 +78,13 @@ const POPULATE = [
   { path: 'items.clipRef', select: 'name code colour kind' },
   { path: 'items.printRef', select: 'name code kind' },
   { path: 'referencePhoto', select: 'key filename mimeType size' },
+  /* Each row's two pictures: the buyer's reference for that model, and the finished piece. */
+  { path: 'items.referencePhoto', select: 'key filename mimeType size' },
+  { path: 'items.photo', select: 'key filename mimeType size' },
 ];
+
+/** Exported for the photo handlers [sampleLog.controller], which answer with the same record. */
+export { POPULATE as SAMPLE_POPULATE };
 
 const LINKED = [
   { path: 'previousSample', select: 'number status' },
@@ -88,6 +95,8 @@ const LINKED = [
   /* Who put it in the buyer's hands, and the photo of it [Sample `collection`]. */
   { path: 'collection.collectedBy', select: 'name' },
   { path: 'collection.photo', select: 'key filename mimeType' },
+  { path: 'items.photoBy', select: 'name' },
+  { path: 'readyWithoutPhoto.by', select: 'name' },
 ];
 
 /**
@@ -97,7 +106,7 @@ const LINKED = [
  * record than the one it is already showing — the customer, enquiry and model would blank
  * out until the next reload. Re-reading is one query and keeps the contract identical.
  */
-const withRefs = (sample) => sample.populate([...POPULATE, ...LINKED]);
+export const withRefs = (sample) => sample.populate([...POPULATE, ...LINKED]);
 
 /**
  * What the sample queue understands, shared by the list and the board.
@@ -516,13 +525,29 @@ export const updateSample = asyncHandler(transactional(async (req, res) => {
    */
   const patch = withoutVersion(req.body);
   /* The rows get the same resolution the top line does, on this door as on the create one. */
-  if (patch.items) patch.items = await specRows(patch.items);
+  if (patch.items) patch.items = keepRowPhotos(sample, await specRows(patch.items));
   Object.assign(sample, await applySpec(sample, patch));
   await sample.save();
   await recordChange({ model: 'Sample', doc: sample, before, by: req.user });
 
   res.json({ success: true, data: await withRefs(sample) });
 }));
+
+/**
+ * A corrected bag keeps each row's photos and id. The form sends the rows as it shows them —
+ * the spec, never the pictures — so a row written back without this would lose the finished
+ * piece the bench photographed and the reference the buyer sent. Matched by id where the row
+ * carries one, by position otherwise.
+ */
+function keepRowPhotos(sample, rows) {
+  const was = (sample.items || []).map((row) => row.toObject?.() ?? row);
+  const KEPT = ['_id', 'photo', 'photoAt', 'photoBy', 'referencePhoto'];
+  return rows.map((row, index) => {
+    const before = (row._id && was.find((entry) => String(entry._id) === String(row._id))) || was[index];
+    if (!before) return row;
+    return { ...Object.fromEntries(KEPT.filter((key) => before[key] != null).map((key) => [key, before[key]])), ...row };
+  });
+}
 
 /** What may still change on a sample the customer holds [`updateSample`]. */
 const AFTER_DISPATCH_FIELDS = new Set(['remarks', 'referenceImageUrl', 'expectedUpdatedAt']);
@@ -582,15 +607,47 @@ const sameShade = (a, b) =>
  * buyer at the end of it, not a field the bench fills in for itself at five o'clock. Any
  * override the maker can grant themselves is the same as no rule.
  */
-function assertColourAllowed(sample) {
-  if (!sample.colourMandatory || !sample.colour || !sample.dispatchedColour) return;
-  if (sameShade(sample.colour, sample.dispatchedColour)) return;
+/**
+ * There was deliberately no reason box here at first: an override the maker grants themselves
+ * is the same as no rule. The sampling audit [item 8] asked for the other balance — a wall the
+ * bench can step past *out loud*: it ticks Send it anyway, says why, the reason sits on the move
+ * beside the shade sent, and marketing is told at once rather than by the buyer three weeks
+ * later. The quiet way round (arranging the shade through the details form) stays shut.
+ *
+ * Returns true when the condition was stepped past on this call, so the caller tells marketing.
+ */
+function assertColourAllowed(sample, { override = false, reason = '', by } = {}) {
+  if (!sample.colourMandatory || !sample.colour || !sample.dispatchedColour) return false;
+  if (sameShade(sample.colour, sample.dispatchedColour)) return false;
+
+  const said = String(reason || '').trim();
+  if (override && said.length >= BACKWARD_REASON_MIN && by) {
+    sample.colourOverride = { reason: said, by: by._id, at: new Date(), asked: sample.colour, sent: sample.dispatchedColour };
+    return true;
+  }
 
   throw ApiError.badRequest(
     `${sample.number} was asked for in ${sample.colour} exactly, so it cannot be sent in ` +
-      `${sample.dispatchedColour}. Either send it in ${sample.colour}, or have whoever asked ` +
-      'for it drop the exact-colour condition first.'
+      `${sample.dispatchedColour}. Either send it in ${sample.colour}, have whoever asked ` +
+      'for it drop the exact-colour condition first, or tick Send it anyway and say why — ' +
+      'marketing is told the moment it goes.'
   );
+}
+
+/** Marketing hears, under Needs your action, that the exact colour was stepped past [assertColourAllowed]. */
+async function tellMarketingColourStepped(sample, by) {
+  const owner = sample.customer ? (await Customer.findById(sample.customer).select('assignedTo').lean())?.assignedTo : null;
+  const people = [...new Set([sample.requestedBy, owner].filter(Boolean).map((who) => String(who?._id || who)))];
+  for (const person of people) {
+    await raiseTask({
+      user: person,
+      title: `${sample.number} went out in ${sample.colourOverride.sent} against the exact-colour condition (${sample.colourOverride.asked})`,
+      notes: `${by?.name || 'The bench'} sent it anyway: ${sample.colourOverride.reason}. Tell the buyer before the bag is opened, or raise the next attempt.`,
+      priority: 'high',
+      link: `/samples/${sample._id}`,
+      originKey: `sample-colour-override:${sample._id}`,
+    }).catch(() => null);
+  }
 }
 
 /**
@@ -737,6 +794,46 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
     );
   }
 
+  /*
+   * **Sample Ready carries a photo of every finished piece** [the sampling audit, gap 1]. The
+   * buyer approves what they can see, the order check compares it with the order, and a
+   * re-sample starts from it. A piece already in the bag is not held for the camera: the bench
+   * ticks No photo and says why, and that stays on the record beside the move.
+   */
+  /* What the move says beyond the note: the exact colour stepped past, the check's difference accepted. */
+  let stepped = false;
+  let checkedPast = null;
+  if (status === 'sample_ready') {
+    const rows = (sample.items || []).filter((row) => row.mould || row.modelNumber || row.colour || row.category);
+    const without = rows.filter((row) => !row.photo);
+    const reason = String(req.body.noPhotoReason || '').trim();
+    if (without.length && !(req.body.noPhoto === true && reason.length >= BACKWARD_REASON_MIN)) {
+      const named = without.map((row, index) => row.modelNumber || `item ${rows.indexOf(row) + 1 || index + 1}`).join(', ');
+      throw ApiError.badRequest(
+        `Sample Ready needs a photo of each finished piece — ${named || 'the piece'} ${without.length === 1 ? 'has' : 'have'} none. ` +
+          'Attach one per model, or tick No photo and say why.'
+      );
+    }
+    if (without.length) sample.readyWithoutPhoto = { reason, by: req.user._id, at: new Date() };
+
+    /*
+     * A difference the check found [sampleVision.llm.js] never blocks on its own — the model
+     * suggests, a person decides — but the bench decides out loud: it ticks past with a reason,
+     * which stays on the row and on the move, and marketing sees the note on the dispatch draft.
+     */
+    const flagged = rows.filter((row) => row.check?.verdict === 'differs' && !row.checkAccepted?.reason);
+    const checkReason = String(req.body.checkOverrideReason || '').trim();
+    if (flagged.length && !(req.body.checkOverride === true && checkReason.length >= BACKWARD_REASON_MIN)) {
+      throw ApiError.badRequest(
+        `The check found a difference on ${flagged.map((row) => row.modelNumber || 'a piece').join(', ')} — ` +
+          `${flagged.map((row) => row.check.summary || row.check.findings?.[0]).filter(Boolean).join('; ')}. ` +
+          'Retake the piece, or tick Checked and say why it goes as it is.'
+      );
+    }
+    for (const row of flagged) row.checkAccepted = { reason: checkReason, by: req.user._id, at: new Date() };
+    if (flagged.length) checkedPast = `Checked past the difference on ${flagged.map((row) => row.modelNumber || 'a piece').join(', ')}: ${checkReason}`;
+  }
+
   if (status === 'dispatched') {
     // Whatever was arranged earlier stands unless this call overrides it, so details entered
     // in advance do not have to be typed a second time to get the sample out of the door.
@@ -771,7 +868,7 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
     }
 
     Object.assign(sample, details);
-    assertColourAllowed(sample);
+    stepped = assertColourAllowed(sample, { override: req.body.colourOverride === true, reason: req.body.colourOverrideReason, by: req.user });
     sample.dispatchedAt = dispatchedAt || sample.dispatchedAt || new Date();
   }
 
@@ -779,8 +876,26 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
 
   const from = sample.status;
   sample.status = status;
-  sample.statusHistory.push({ from, to: status, by: req.user._id, note: note?.trim() || undefined });
+  /* The bench has moved on: a problem it flagged in the log is answered, one way or the other. */
+  await clearProblem(sample);
+  const noPhotoNote = status === 'sample_ready' && sample.readyWithoutPhoto?.reason && sample.isModified('readyWithoutPhoto')
+    ? `No photo: ${sample.readyWithoutPhoto.reason}` : null;
+  const colourNote = stepped ? `Exact colour stepped past — sent in ${sample.colourOverride.sent}, asked ${sample.colourOverride.asked}: ${sample.colourOverride.reason}` : null;
+  sample.statusHistory.push({ from, to: status, by: req.user._id, note: [note?.trim(), noPhotoNote, checkedPast, colourNote].filter(Boolean).join(' — ') || undefined });
+  /*
+   * Sample Sent is the end of the bench's work: the bag has gone and what the buyer says is
+   * marketing's to chase. So the move closes the task on the queue in the same step — the
+   * work queue sends `closeTask` ticked by default — rather than leaving a second Close for
+   * the bench to remember [closeSampleTask]. Unticked, the row stays on the queue as before.
+   */
+  if (status === 'dispatched' && req.body.closeTask === true && !sample.benchClosedAt) {
+    sample.benchClosedAt = new Date();
+    sample.benchClosedBy = req.user._id;
+  }
   await sample.save();
+
+  /* The exact colour stepped past: marketing hears now, not from the buyer [assertColourAllowed]. */
+  if (stepped) await tellMarketingColourStepped(sample, req.user);
 
   /*
    * A sample that went out in a different shade from the one on the sheet.
@@ -794,6 +909,7 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
    */
   if (
     status === 'dispatched' &&
+    !stepped &&
     sample.colour &&
     sample.dispatchedColour &&
     !sameShade(sample.colour, sample.dispatchedColour) &&
@@ -815,6 +931,70 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
   if (specific) await publish(specific, { sample, from, by: req.user });
   /* Ready, and the buyer collects it: Reception gets the task, the bench's closes. */
   if (status === 'sample_ready' && sample.handover === 'collect') await raiseCollection(sample, req.user);
+
+  res.json({ success: true, data: await withRefs(sample) });
+}));
+
+/**
+ * Marketing's answer to Not available [the sampling audit, item 7].
+ *
+ * The bench says it cannot supply the piece and the request parks; nothing asked marketing to
+ * decide, and the buyer heard nothing. Three answers, each a move the bench can read:
+ *
+ *   wait    marketing will wait for a run — back to Checking stock with the note, the bench
+ *           picks it up again when it can;
+ *   change  the spec changes (another shade, a different model, more time) — the corrected
+ *           rows go on the request and it goes back to the bench;
+ *   cancel  the buyer will not wait — the request ends, with why.
+ *
+ * Marketing's, as the feedback is: the buyer's side of the decision. The bench may answer a
+ * trial with no buyer. The not-available task clears whichever way it goes.
+ */
+export const decideNotAvailable = asyncHandler(transactional(async (req, res) => {
+  const sample = await Sample.findById(req.params.id);
+  if (!sample) throw ApiError.notFound('Sample not found');
+  if (!owns(req.user, sample)) throw ApiError.notFound('Sample not found');
+  if (sample.status !== 'not_available') throw ApiError.badRequest(`${sample.number} is not waiting on a Not available decision — it is at ${stageWords(sample.status)}`);
+  if (sample.customer && !canWrite(req.user, 'enquiries')) {
+    throw ApiError.forbidden('Deciding what the buyer gets is marketing’s — whoever spoke to them');
+  }
+
+  const { choice, note } = req.body;
+  const said = String(note || '').trim();
+  if (choice !== 'wait' && said.length < BACKWARD_REASON_MIN) {
+    throw ApiError.badRequest(choice === 'cancel' ? `Cancelling ${sample.number} needs a reason, so the bench and the buyer know why.` : 'Say what changes, so the bench makes the right thing.');
+  }
+
+  const from = sample.status;
+  if (choice === 'change') {
+    const patch = {};
+    for (const field of ['colour', 'colourMandatory', 'requiredDate', 'remarks']) if (req.body[field] !== undefined) patch[field] = req.body[field];
+    if (req.body.items) patch.items = keepRowPhotos(sample, await specRows(req.body.items));
+    Object.assign(sample, await applySpec(sample, patch));
+  }
+  if (choice === 'cancel') {
+    sample.status = 'cancelled';
+    sample.statusHistory.push({ from, to: 'cancelled', by: req.user._id, note: `Marketing: ${said}` });
+  } else {
+    sample.status = 'checking_stock';
+    sample.statusHistory.push({
+      from, to: 'checking_stock', by: req.user._id,
+      note: choice === 'wait' ? `Marketing: wait for a run${said ? ` — ${said}` : ''}` : `Marketing changed the spec — ${said}`,
+    });
+  }
+  await sample.save();
+
+  await resolveTasks(`sample:${sample._id}:not-available`);
+  await publish(EVENTS.SAMPLE_STATUS_CHANGED, { sample, from, to: sample.status, by: req.user });
+  if (choice !== 'cancel') {
+    /* The bench hears the answer on its own queue — the person on it, or the whole bench when nobody is. */
+    const base = {
+      title: choice === 'wait' ? `${sample.number}: marketing says wait — make it when you can` : `${sample.number}: marketing changed the spec — check stock again`,
+      notes: said || undefined, priority: 'normal', link: `/samples/${sample._id}`, originKey: `sample:${sample._id}:not-available-answer`,
+    };
+    if (sample.assignedTo) await raiseTask({ user: sample.assignedTo, ...base }).catch(() => null);
+    else await raiseDepartmentTask({ department: 'sampling', ...base }).catch(() => null);
+  }
 
   res.json({ success: true, data: await withRefs(sample) });
 }));

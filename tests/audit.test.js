@@ -398,7 +398,7 @@ test('the automated route into pricing raises the same handover as the manual on
       await api(`/api/samples/${sample._id}/status`, {
         method: 'POST',
         token: meera,
-        body: { status, courier: 'Blue Dart', awbNumber: '77219900001', dispatchedQuantity: 5 },
+        body: { status, courier: 'Blue Dart', awbNumber: '77219900001', dispatchedQuantity: 5, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) },
       });
     }
     await settle();

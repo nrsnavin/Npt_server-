@@ -110,6 +110,14 @@ export const handoffAdminCloseSchema = z.object({
   reason: z.string().trim().min(5, 'Say why the task is being closed').max(500),
 });
 
+export const handoffEscalateSchema = z.object({
+  reason: z.string().trim().min(5, 'Say what the issue is').max(2000),
+});
+
+export const handoffEscalationResolveSchema = z.object({
+  note: z.string().trim().min(2, 'Say what was decided').max(2000),
+});
+
 export const handoffRescheduleSchema = z.object({
   dueDate: z.coerce.date(),
   reason: z.string().trim().min(5, 'Say why the date is moving').max(500),

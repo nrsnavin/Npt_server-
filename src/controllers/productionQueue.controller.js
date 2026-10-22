@@ -4,6 +4,7 @@ import MouldRun from '../models/MouldRun.js';
 import WorkOrder from '../models/WorkOrder.js';
 import { modelRows, productionTaken, summarise } from '../services/productionSummary.service.js';
 import { CAPACITY_FIELDS, estimate } from '../services/capacity.service.js';
+import { RISK_LEVELS, riskOf } from '../services/eddRisk.service.js';
 import { plantCalendar } from '../services/settings.service.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -51,7 +52,7 @@ const BAND_RANK = { late: 0, today: 1, week: 2, later: 3, none: 4 };
  * plant desk beside marketing. Scoping them by their main department hid the queue from an in
  * charge who is marketing first: the desk counted the tasks, the queue showed none.
  */
-const readsWholeQueue = (user) => !isOwnershipScoped(user) || isProductionInCharge(user)
+export const readsWholeQueue = (user) => !isOwnershipScoped(user) || isProductionInCharge(user)
   || departmentsOf(user).some((key) => key !== 'marketing');
 
 const statusLabelOf = (task) => (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status)?.label || null;
@@ -97,7 +98,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
     .populate([
       {
         path: 'enquiry',
-        select: 'number stage status customer assignedTo edd eddByModel requirement.modelNumber requirement.colour requirement.quantity requirement.mould items.modelNumber items.mould',
+        select: 'number stage status customer assignedTo edd eddByModel qcRequired requirement.modelNumber requirement.colour requirement.quantity requirement.mould items.modelNumber items.mould',
         populate: [{ path: 'customer', select: 'code name assignedTo' }, { path: 'assignedTo', select: 'name' }],
       },
       { path: 'user', select: 'name' },
@@ -226,6 +227,19 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
         return { ...estimate(quantity, mould, plant, now), mould: mould?.mouldCode || null, quantity };
       })(),
       band: bandOf(edd, now),
+      /*
+       * Will it make the EDD, from the quantity: the pieces still to mould against the days left
+       * [eddRisk.service] — red past the EDD, orange when the press days run past it,
+       * yellow close to it, green otherwise.
+       */
+      risk: (() => {
+        const quantity = qtyOf(task.brief?.quantity || enquiry.requirement?.quantity);
+        const left = Math.max(0, quantity - (floor.made?.good || 0));
+        const est = quantity ? estimate(left, mouldOf(task), plant, now) : null;
+        return riskOf({ edd, left: quantity ? left : 0, est, status: task.status, now });
+      })(),
+      /* QC compulsory before dispatch, and whether Quality has passed it [qcGate.service]. */
+      qc: { required: Boolean(enquiry.qcRequired) || ticked(task.brief?.qcRequired), cleared: Boolean(slot.quality?.completed && !issueOf(slot.quality)) },
       /* Needs assembly: Production routed a model to it, ticked on an older task, or Assembly already has its task. */
       needsAssembly: (task.routing?.models || []).some((row) => row.assembly) || ticked(task.brief?.assembly) || Boolean(slot.assembling),
       needsPrinting: (task.routing?.models || []).some((row) => row.printing) || Boolean(slot.printing),
@@ -253,6 +267,8 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
     meta: {
       asOf: now, day: indiaDay(now),
       bands: Object.fromEntries(Object.keys(BAND_RANK).map((band) => [band, count((row) => row.band === band)])),
+      /* Red, orange, yellow, green: how many rows at each reading [eddRisk.service]. */
+      risk: Object.fromEntries(RISK_LEVELS.map((level) => [level, count((row) => row.risk?.level === level)])),
       teams: {
         needsAssembly: count((row) => row.needsAssembly && !row.teams.assembling),
         toRoute: count((row) => !row.routing),
@@ -324,10 +340,14 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
   /* What each model is made with, from its sales order: hook, clip, print and the print reference. */
   const { orderSpecsForEnquiry } = await import('../services/orderParts.service.js');
   const specs = team ? [] : await orderSpecsForEnquiry(enquiry._id);
+  /* Each task says whether it may be closed now — the page offers the dialog on that [taskClosable.service]. */
+  const { withClosable } = await import('../services/taskClosable.service.js');
+  const [taskOut, ...teamsOut] = await withClosable([task, ...Object.values(teams)]);
+  const teamsWithClosable = Object.fromEntries(Object.keys(teams).map((team, at) => [team, teamsOut[at]]));
   res.json({
     success: true,
     data: {
-      task,
+      task: taskOut,
       enquiry: {
         _id: enquiry._id, number: enquiry.number, stage: enquiry.stage, team,
         customer: enquiry.customer ? { _id: enquiry.customer._id, name: enquiry.customer.name, code: enquiry.customer.code } : null,
@@ -336,7 +356,7 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
       band: bandOf(edd),
       summary: summarise({ task, enquiry, teams, floor: { ...floor, running: floor.running.map((run) => ({ ...run, machine: run.machine?.code, mould: run.mould?.mouldCode })) }, workOrders, edd }),
       models: modelRows({ task, enquiry, teams, workOrders }),
-      teams,
+      teams: teamsWithClosable,
       workOrders,
       specs,
       floor: { running: floor.running, made: floor.made },

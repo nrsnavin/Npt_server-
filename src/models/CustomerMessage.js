@@ -54,6 +54,8 @@ const customerMessageSchema = new mongoose.Schema(
     providerStatus: String,
     /** True when it went as an approved WhatsApp template rather than as free text. */
     usedTemplate: { type: Boolean, default: false },
+    /** How many finished-piece photos went with it [customerMessage.service `photosFor`]. */
+    photos: { type: Number, min: 0 },
 
     /**
      * Null when the automation sent it. §42 wants a person on every send; the automatic

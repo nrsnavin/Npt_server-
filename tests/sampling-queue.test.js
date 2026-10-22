@@ -121,7 +121,7 @@ test('the tiles count exactly what they are called: late, due today, ready to se
   const { sample: late } = await requestSample();
   await Sample.updateOne({ _id: late._id }, { requiredDate: new Date(Date.now() - 2 * 86400000) });
   const { sample: ready } = await requestSample();
-  await move(ready._id, { status: 'sample_ready' });
+  await move(ready._id, { status: 'sample_ready', noPhoto: true, noPhotoReason: 'No camera on the test bench' });
   /* Not available, overdue by the date: the bench has answered, so it is marketing's turn, not late. */
   const { sample: unavailable } = await requestSample();
   await move(unavailable._id, { status: 'not_available', note: 'No stock of this resin this month' });
@@ -181,7 +181,7 @@ test('a move on the bench stays off Admin’s and the marketer’s Needs your ac
 
 test('handed over in person: no courier or AWB, but a contact or a phone', async () => {
   const { enquiry, sample } = await requestSample();
-  await move(sample._id, { status: 'sample_ready' });
+  await move(sample._id, { status: 'sample_ready', noPhoto: true, noPhotoReason: 'No camera on the test bench' });
 
   const nobody = await move(sample._id, { status: 'dispatched', deliveryMethod: 'direct', dispatchedQuantity: 3 });
   assert.equal(nobody.status, 400);
@@ -218,7 +218,7 @@ test('handed over in person: no courier or AWB, but a contact or a phone', async
 
 test('by courier still needs the courier and the AWB', async () => {
   const { sample } = await requestSample();
-  await move(sample._id, { status: 'sample_ready' });
+  await move(sample._id, { status: 'sample_ready', noPhoto: true, noPhotoReason: 'No camera on the test bench' });
 
   const noAwb = await move(sample._id, { status: 'dispatched', deliveryMethod: 'courier', courier: 'DTDC', dispatchedQuantity: 3 });
   assert.equal(noAwb.status, 400);
@@ -235,7 +235,7 @@ test('by courier still needs the courier and the AWB', async () => {
 
 test('closing the task: a sent sample leaves the queue; an unsent one is cancelled with a reason', async () => {
   const { sample: sent } = await requestSample();
-  await move(sent._id, { status: 'sample_ready' });
+  await move(sent._id, { status: 'sample_ready', noPhoto: true, noPhotoReason: 'No camera on the test bench' });
   await move(sent._id, { status: 'dispatched', deliveryMethod: 'direct', handedTo: 'Gate security', dispatchedQuantity: 3 });
 
   const closed = await api(`/api/samples/${sent._id}/close-task`, { method: 'POST', token: meera, body: {} });
@@ -256,6 +256,30 @@ test('closing the task: a sent sample leaves the queue; an unsent one is cancell
   });
   assert.equal(reasoned.status, 200);
   assert.equal(reasoned.json.data.status, 'cancelled');
+});
+
+test('Sample Sent closes the bench task in the same move when asked, and leaves it open when not', async () => {
+  const { sample: one } = await requestSample();
+  await move(one._id, { status: 'sample_ready', noPhoto: true, noPhotoReason: 'No camera on the test bench' });
+  const sent = await move(one._id, { status: 'dispatched', deliveryMethod: 'direct', handedTo: 'Mr Ravi', dispatchedQuantity: 3, closeTask: true });
+  assert.equal(sent.status, 200, JSON.stringify(sent.json));
+  assert.equal(sent.json.data.status, 'dispatched');
+  assert.ok(sent.json.data.benchClosedAt, 'closed with the move');
+  assert.equal((await rowOf(one._id)).queueStatus, 'closed');
+  const again = await api(`/api/samples/${one._id}/close-task`, { method: 'POST', token: meera, body: {} });
+  assert.equal(again.status, 400, 'nothing left to close');
+
+  const { sample: two } = await requestSample();
+  await move(two._id, { status: 'sample_ready', noPhoto: true, noPhotoReason: 'No camera on the test bench' });
+  const kept = await move(two._id, { status: 'dispatched', deliveryMethod: 'direct', handedTo: 'Mr Ravi', dispatchedQuantity: 3, closeTask: false });
+  assert.equal(kept.status, 200, JSON.stringify(kept.json));
+  assert.equal(kept.json.data.benchClosedAt, undefined, 'unticked: stays on the queue');
+  assert.notEqual((await rowOf(two._id)).queueStatus, 'closed');
+  /* The flag is the dispatch move's alone: a Sample Ready move with it does nothing. */
+  const { sample: three } = await requestSample();
+  const early = await move(three._id, { status: 'sample_ready', noPhoto: true, noPhotoReason: 'No camera on the test bench', closeTask: true });
+  assert.equal(early.status, 200);
+  assert.equal(early.json.data.benchClosedAt, undefined);
 });
 
 test('closing a not-available task ends the request, with a reason', async () => {

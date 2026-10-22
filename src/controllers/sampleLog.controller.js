@@ -11,6 +11,15 @@ import { ownsRecord } from '../services/ownership.service.js';
 import { canRead } from '../services/access.service.js';
 import { put, remove, streamOf } from '../services/storage.service.js';
 import { listParams, paginated } from '../utils/query.js';
+import { CLOSED_SAMPLE_STATUSES } from '../models/Sample.js';
+import { canWrite } from '../services/access.service.js';
+import { SAMPLE_POPULATE, withRefs } from './sample.controller.js';
+import { signatureValid } from '../utils/signedLink.js';
+import { safeFilename } from '../services/storage.service.js';
+import Mould from '../models/Mould.js';
+import {
+  checkFinishedPiece, keepReading, keptReading, matchToRegister, pictureOf, readCourierSlip, specWords, visionConfigured,
+} from '../services/sampleVision.llm.js';
 
 /**
  * The sample's working record: notes, photos, and comments on either.
@@ -103,7 +112,11 @@ export const addSampleLog = asyncHandler(async (req, res) => {
     attachment: attachment?._id,
   });
 
-  res.status(201).json({ success: true, data: await log.populate(POPULATE) });
+  /* A note that reads as a problem raises the flag the queue and the sweep see [item 11]. */
+  const { flagProblemFrom } = await import('../services/sampleProblems.service.js');
+  const flagged = await flagProblemFrom(sample, log, req.user).catch(() => null);
+
+  res.status(201).json({ success: true, data: await log.populate(POPULATE), meta: { problem: flagged } });
 });
 
 /** A comment, on a photo or on a note. */
@@ -322,3 +335,200 @@ export const clearReferencePhoto = asyncHandler(async (req, res) => {
 
   res.json({ success: true, data: sample });
 });
+
+/* ------------------------- The two pictures on each model row ------------------------- */
+
+/**
+ * One row of the bag, or a refusal that names it. The bag's rows carry their own ids once
+ * saved; a request written the old way, with the model on its top line only, has none.
+ */
+function rowOf(sample, itemId) {
+  const row = sample.items?.id?.(itemId) || null;
+  if (!row) throw ApiError.notFound('That model is not in this bag');
+  return row;
+}
+
+/** The two slots on a row, and who may fill each [the sampling audit, items 1 and 2]. */
+const ROW_PHOTOS = {
+  /* The finished piece: the bench's, at Sample Ready. Marketing reads it; the bench takes it. */
+  photo: { docType: 'finished_photo', title: (row) => `Finished piece — ${row.modelNumber || 'sample'}`, may: (user) => canWrite(user, 'samples'), onSet: (row, user) => { row.photoAt = new Date(); row.photoBy = user._id; }, onClear: (row) => { row.photoAt = undefined; row.photoBy = undefined; } },
+  /* The buyer's reference for this model: marketing's, who spoke to the buyer, or the bench's. */
+  referencePhoto: { docType: 'reference_photo', title: (row) => `Buyer's reference — ${row.modelNumber || 'sample'}`, may: (user) => canWrite(user, 'samples') || canWrite(user, 'enquiries'), onSet: () => {}, onClear: () => {} },
+};
+
+const setRowPhoto = (field) => asyncHandler(async (req, res) => {
+  const slot = ROW_PHOTOS[field];
+  const sample = await reachableSample(req);
+  if (!slot.may(req.user)) throw ApiError.forbidden('You cannot add photos to this sample');
+  if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) throw ApiError.badRequest(`A ${sample.status} sample can no longer take photos`);
+  if (!req.file) throw ApiError.badRequest('Attach a photo');
+  const row = rowOf(sample, req.params.itemId);
+  const previous = row[field];
+
+  const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+  let attachment;
+  try {
+    attachment = await Attachment.create({
+      key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
+      uploadedBy: req.user._id, sample: sample._id, docType: slot.docType, title: slot.title(row),
+    });
+  } catch (error) {
+    await remove(key);
+    throw error;
+  }
+
+  row[field] = attachment._id;
+  slot.onSet(row, req.user);
+  /* A new picture is a new question: the old check and match no longer describe it. */
+  if (field === 'photo') { row.check = undefined; row.checkAccepted = undefined; }
+  if (field === 'referencePhoto') row.match = undefined;
+  await sample.save();
+
+  if (previous) {
+    const old = await Attachment.findById(previous);
+    if (old) {
+      await remove(old.key).catch(() => null);
+      await old.deleteOne();
+    }
+  }
+
+  /* The finished piece is checked against the reference as it lands — a line under the photo, never a gate [item 4]. */
+  if (field === 'photo' && visionConfigured()) await runCheck(sample, row, { buffer: req.file.buffer, mimeType: req.file.mimetype, attachment }).catch((error) => console.error(`[sample-check] ${error.message}`));
+
+  res.json({ success: true, data: await withRefs(sample), meta: { item: String(row._id), field } });
+});
+
+/** The reference a row is checked against: its own, or the request's. */
+const referenceFor = (sample, row) => row.referencePhoto || sample.referencePhoto || null;
+
+/** Runs the check for one row and keeps it on the row and on the picture. `finished` is the bytes when the caller has them. */
+async function runCheck(sample, row, finished = null) {
+  const photo = finished?.attachment || await Attachment.findById(row.photo);
+  if (!photo) return null;
+  const referenceId = referenceFor(sample, row);
+  const reference = referenceId ? await Attachment.findById(referenceId) : null;
+  const salt = `check:${reference?._id || 'none'}:${specWords(row)}`;
+  let result = await keptReading(photo, 'check', salt);
+  if (!result) {
+    const bytes = finished?.buffer ? { buffer: finished.buffer, mimeType: finished.mimeType } : await pictureOf(photo);
+    result = await checkFinishedPiece({ finished: bytes, reference: reference ? await pictureOf(reference) : null, spec: specWords(row) });
+    if (result?.verdict) await keepReading(photo, 'check', result, salt);
+  }
+  if (!result?.verdict) return result;
+  row.check = { verdict: result.verdict, findings: result.findings, summary: result.summary, at: new Date(), reference: reference?._id };
+  await sample.save();
+  return result;
+}
+
+/** Re-run the check on one row — after the reference arrived, or to look again. */
+export const checkItemPhoto = asyncHandler(async (req, res) => {
+  const sample = await reachableSample(req);
+  const row = rowOf(sample, req.params.itemId);
+  if (!row.photo) throw ApiError.badRequest('Photograph the finished piece first');
+  const result = await runCheck(sample, row);
+  res.json({ success: true, data: await withRefs(sample), meta: { item: String(row._id), check: result } });
+});
+
+/**
+ * The buyer's photo on a row against the mould register [item 3]: three nearest models with a
+ * confidence each, or "not one of ours" with what the model saw. Kept on the row and on the
+ * picture; a person picks one [pickMatchedModel] — nothing is filled in by itself.
+ */
+export const matchItemPhoto = asyncHandler(async (req, res) => {
+  const sample = await reachableSample(req);
+  const row = rowOf(sample, req.params.itemId);
+  const referenceId = referenceFor(sample, row);
+  if (!referenceId) throw ApiError.badRequest('Add the buyer\'s photo of this model first');
+  const reference = await Attachment.findById(referenceId);
+  if (!reference) throw ApiError.notFound('The reference photo is missing');
+  let result = await keptReading(reference, 'match');
+  if (!result || req.query.fresh === 'true') {
+    const bytes = await pictureOf(reference);
+    result = bytes ? await matchToRegister({ ...bytes, caption: row.modelNumber }) : { candidates: [], none: true, seen: null, problem: 'The picture could not be opened.' };
+    if (!result.problem) await keepReading(reference, 'match', result);
+  }
+  row.match = { candidates: result.candidates, none: result.none, seen: result.seen, at: new Date(), problem: result.problem || undefined };
+  await sample.save();
+  res.json({ success: true, data: await withRefs(sample), meta: { item: String(row._id), match: result } });
+});
+
+/** Tapping one of the matched models fills the row's model from the register — the person's choice, not the model's. */
+export const pickMatchedModel = asyncHandler(async (req, res) => {
+  const sample = await reachableSample(req);
+  if (!canWrite(req.user, 'samples') && !canWrite(req.user, 'enquiries')) throw ApiError.forbidden('You cannot change this sample');
+  if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) throw ApiError.badRequest(`A ${sample.status} sample can no longer be changed`);
+  const row = rowOf(sample, req.params.itemId);
+  const ref = String(req.body.ref || '');
+  const candidate = row.match?.candidates?.find((entry) => entry.ref === ref);
+  if (!candidate) throw ApiError.badRequest('Pick one of the models the photo was matched to');
+  if (candidate.kind !== 'mould') throw ApiError.badRequest('Only a model on the mould register can be picked onto a sample row');
+  const mould = await Mould.findById(candidate.id).select('mouldCode category sizeMm hookType material');
+  if (!mould) throw ApiError.notFound('That mould is no longer on the register');
+  row.mould = mould._id;
+  row.modelNumber = mould.mouldCode;
+  /* Matched to a tool on the register, it is no longer a development with no steel. */
+  if (row.isNewDevelopment !== undefined) row.isNewDevelopment = false;
+  /* The tool says what it makes: its category and size replace the guess typed off the photo. */
+  if (mould.category) row.category = mould.category;
+  if (mould.sizeMm) row.sizeMm = mould.sizeMm;
+  if (!row.material && mould.material) row.material = mould.material;
+  /* The first row is the top line, kept in step by the model; say it was picked from the photo. */
+  if (String(sample.items[0]?._id) === String(row._id)) { sample.mould = mould._id; sample.modelNumber = mould.mouldCode; }
+  sample.statusHistory.push({ from: sample.status, to: sample.status, by: req.user._id, note: `${mould.mouldCode} picked from the buyer's photo (matched at ${Math.round((candidate.confidence || 0) * 100)}%)` });
+  await sample.save();
+  res.json({ success: true, data: await withRefs(sample) });
+});
+
+/** The courier and the AWB read off the courier copy [item 9] — a suggestion the bench checks, into the dispatch fields. */
+export const readCourierCopy = asyncHandler(async (req, res) => {
+  if (!req.file) throw ApiError.badRequest('Attach a photo of the courier copy');
+  const reading = await readCourierSlip({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+  res.json({ success: true, data: reading });
+});
+
+const clearRowPhoto = (field) => asyncHandler(async (req, res) => {
+  const slot = ROW_PHOTOS[field];
+  const sample = await reachableSample(req);
+  if (!slot.may(req.user)) throw ApiError.forbidden('You cannot remove photos from this sample');
+  if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) throw ApiError.badRequest(`A ${sample.status} sample can no longer be changed`);
+  const row = rowOf(sample, req.params.itemId);
+  const attachment = row[field] ? await Attachment.findById(row[field]) : null;
+  row[field] = undefined;
+  slot.onClear(row);
+  await sample.save();
+  if (attachment) {
+    await remove(attachment.key).catch(() => null);
+    await attachment.deleteOne();
+  }
+  res.json({ success: true, data: await withRefs(sample) });
+});
+
+/** The finished piece on a model row: taken on the bench at Sample Ready, replaced if retaken. */
+export const setItemPhoto = setRowPhoto('photo');
+export const clearItemPhoto = clearRowPhoto('photo');
+/** The buyer's reference for one model row, beside the finished piece. */
+export const setItemReferencePhoto = setRowPhoto('referencePhoto');
+export const clearItemReferencePhoto = clearRowPhoto('referencePhoto');
+
+/* The link WhatsApp fetches a sample photo from: signed, lapsing, no session [customerMessage.service `samplePhotoUrl`]. */
+export const SAMPLE_PHOTO_LINK = 'sample-photo';
+
+/** A finished-piece photo behind a signed link. The signature is the permission; a bent or lapsed one says only that it expired. */
+export const publicSamplePhoto = asyncHandler(async (req, res) => {
+  const { id, expires, signature } = req.params;
+  if (!signatureValid(SAMPLE_PHOTO_LINK, id, expires, signature)) throw ApiError.notFound('This link has expired.');
+  const attachment = await Attachment.findById(id).catch(() => null);
+  /* Only a sample's own pictures travel this way — never a buyer's drawing or an order's PO. */
+  if (!attachment?.sample || !['finished_photo', 'reference_photo'].includes(attachment.docType)) throw ApiError.notFound('This link has expired.');
+  const stream = streamOf(attachment.key);
+  if (!stream) throw ApiError.notFound('This link has expired.');
+  res.setHeader('Content-Type', attachment.mimeType);
+  res.setHeader('Content-Length', attachment.size);
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+  res.setHeader('Content-Disposition', `inline; filename="${safeFilename(attachment.filename || 'sample.jpg', 'sample.jpg')}"`);
+  stream.on('error', () => res.destroy());
+  stream.pipe(res);
+});
+
+/** Exported for the sample's own doors that answer with the populated record. */
+export { SAMPLE_POPULATE };

@@ -129,6 +129,17 @@ export const sampleStatusSchema = z.object({
   dispatchedAt: z.coerce.date().optional(),
   dispatchedQuantity: z.number().int().positive('A dispatch sends at least one piece').optional(),
   dispatchedColour: z.string().max(60).optional(),
+  /* Sample Sent closes the bench's task in the same move, unless the bench unticks it [the work queue]. */
+  closeTask: z.boolean().optional(),
+  /* Sample Ready without a photo of every piece: allowed with a reason [setSampleStatus]. */
+  noPhoto: z.boolean().optional(),
+  noPhotoReason: z.string().trim().max(300).optional(),
+  /* A difference the check found on a finished piece: Sample Ready steps past it with a reason [setSampleStatus]. */
+  checkOverride: z.boolean().optional(),
+  checkOverrideReason: z.string().trim().max(300).optional(),
+  /* Another shade against an exact-colour condition: allowed with a reason, and marketing is told. */
+  colourOverride: z.boolean().optional(),
+  colourOverrideReason: z.string().trim().max(300).optional(),
   /* The handover: by courier (courier + AWB), or in person (a contact or a phone). */
   deliveryMethod: z.enum(DELIVERY_METHODS).optional(),
   handedTo: z.string().trim().max(120).optional(),
@@ -138,6 +149,34 @@ export const sampleStatusSchema = z.object({
     .regex(/^\d{10}$/, 'A 10-digit phone number')
     .optional()
     .or(z.literal('')),
+});
+
+/** The rack counted: lines by model and colour [sampleRack.controller]. */
+export const rackSchema = z.object({
+  rows: z.array(z.object({
+    modelNumber: z.string().trim().min(1).max(60),
+    colour: z.string().trim().max(60).optional(),
+    pieces: z.number().int().min(0).max(100000),
+    shelf: z.string().trim().max(40).optional(),
+    mould: objectId.optional(),
+  })).min(1).max(200),
+});
+
+/** Picking one of the register models a photo was matched to [pickMatchedModel]. */
+export const pickModelSchema = z.object({ ref: z.string().min(2).max(40) });
+
+/**
+ * Marketing's answer to Not available [decideNotAvailable]: wait for a run, change the spec (with
+ * the corrected rows, colour or date), or cancel — each with a note the bench reads.
+ */
+export const notAvailableDecisionSchema = z.object({
+  choice: z.enum(['wait', 'change', 'cancel']),
+  note: z.string().trim().max(500).optional(),
+  items: sampleCore.items,
+  colour: z.string().optional(),
+  colourMandatory: z.boolean().optional(),
+  requiredDate: z.coerce.date().optional(),
+  remarks: z.string().optional(),
 });
 
 /** The sample team closing its task: a reason only when the sample never went out. */
