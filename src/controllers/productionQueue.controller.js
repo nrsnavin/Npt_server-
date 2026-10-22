@@ -4,6 +4,7 @@ import MouldRun from '../models/MouldRun.js';
 import WorkOrder from '../models/WorkOrder.js';
 import { modelRows, productionTaken, summarise } from '../services/productionSummary.service.js';
 import { CAPACITY_FIELDS, estimate } from '../services/capacity.service.js';
+import { RISK_LEVELS, riskOf } from '../services/eddRisk.service.js';
 import { plantCalendar } from '../services/settings.service.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -226,6 +227,17 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
         return { ...estimate(quantity, mould, plant, now), mould: mould?.mouldCode || null, quantity };
       })(),
       band: bandOf(edd, now),
+      /*
+       * Will it make the EDD, from the quantity: the pieces still to mould against the days left
+       * [eddRisk.service] — red past the EDD, orange when the press days run past it,
+       * yellow close to it, green otherwise.
+       */
+      risk: (() => {
+        const quantity = qtyOf(task.brief?.quantity || enquiry.requirement?.quantity);
+        const left = Math.max(0, quantity - (floor.made?.good || 0));
+        const est = quantity ? estimate(left, mouldOf(task), plant, now) : null;
+        return riskOf({ edd, left: quantity ? left : 0, est, status: task.status, now });
+      })(),
       /* Needs assembly: Production routed a model to it, ticked on an older task, or Assembly already has its task. */
       needsAssembly: (task.routing?.models || []).some((row) => row.assembly) || ticked(task.brief?.assembly) || Boolean(slot.assembling),
       needsPrinting: (task.routing?.models || []).some((row) => row.printing) || Boolean(slot.printing),
@@ -253,6 +265,8 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
     meta: {
       asOf: now, day: indiaDay(now),
       bands: Object.fromEntries(Object.keys(BAND_RANK).map((band) => [band, count((row) => row.band === band)])),
+      /* Red, orange, yellow, green: how many rows at each reading [eddRisk.service]. */
+      risk: Object.fromEntries(RISK_LEVELS.map((level) => [level, count((row) => row.risk?.level === level)])),
       teams: {
         needsAssembly: count((row) => row.needsAssembly && !row.teams.assembling),
         toRoute: count((row) => !row.routing),
