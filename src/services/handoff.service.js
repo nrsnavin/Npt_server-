@@ -724,6 +724,14 @@ export async function teamTaskPrefill(customerId, user) {
   }
   const members = await membersFor(HANDOFFS.flatMap((handoff) => (handoff.asks || []).filter((field) => field.type === 'member').map((field) => field.department)));
   let customer = { name: '', contactPerson: '', mobile: '', whatsapp: '', delivery: '' };
+  /*
+   * The buyer's latest enquiry fills the rows — its models with their material, hook, clip and
+   * print, the pieces asked for, the quotation's price — so an SO request raised for a buyer
+   * from the task menu carries what the enquiry already says. The newest open enquiry; a closed
+   * one failing that. Every answer stays editable, and the form says which enquiry it came from.
+   */
+  let rows = { items: [], orderItems: [], quoteItems: [], modelList: [], models: '', materials: '', quantity: '', targetPrice: '', order: { paymentTerms: '', invoiceNumber: '' } };
+  let from = null;
   if (customerId && /^[0-9a-f]{24}$/i.test(String(customerId))) {
     const { default: Customer } = await import('../models/Customer.js');
     const found = await Customer.findById(customerId).lean();
@@ -735,11 +743,19 @@ export async function teamTaskPrefill(customerId, user) {
         name: found.name, contactPerson: order.name, mobile: order.phone, whatsapp: order.whatsapp,
         delivery: `${order.name || 'Not added'} · ${order.phone || 'No number'} · ${place || 'Road not selected'}`,
       };
+      const latest = await Enquiry.findOne({ customer: found._id, stage: { $ne: CLOSED_STAGE } }).sort({ createdAt: -1 }).select('_id number').lean()
+        || await Enquiry.findOne({ customer: found._id }).sort({ createdAt: -1 }).select('_id number').lean();
+      const filled = latest ? await taskPrefill(latest._id) : null;
+      if (filled) {
+        const { items, orderItems, quoteItems, modelList, models, materials, quantity, targetPrice, order: onIt } = filled;
+        rows = { items, orderItems, quoteItems, modelList, models, materials, quantity, targetPrice, order: onIt };
+        from = { enquiry: { _id: latest._id, number: latest.number } };
+      }
     }
   }
   return {
-    customer, items: [], orderItems: [], quoteItems: [], modelList: [], models: '', materials: '', quantity: '', targetPrice: '', order: { paymentTerms: '', invoiceNumber: '' }, members,
-    /* No enquiry to fill the models and parts from: the registers, as dropdowns. */
+    customer, ...rows, members, from,
+    /* The registers, as dropdowns, for a model or part the enquiry did not name. */
     registers: await registerLists(),
   };
 }
@@ -2522,6 +2538,8 @@ export async function taskPrefill(enquiryId) {
    * enquiry's quantity and the quotation's price for it (the buyer's target price failing that).
    */
   const quotedFor = (row) => (quotation?.lines || []).find((line) => sameModel(described(line), row) && line.unitPrice != null)?.unitPrice;
+  /* An enquiry's row names no pieces [models/Enquiry.js]; the quotation's line for the model does. */
+  const quotedPiecesFor = (row) => (quotation?.lines || []).find((line) => sameModel(described(line), row) && line.quantity)?.quantity;
   /* The parts the enquiry (or its newest quotation or sample) gives the same model. */
   const partsOf = (row) => {
     const same = items.find((entry) => sameModel(entry, row)) || {};
@@ -2539,11 +2557,12 @@ export async function taskPrefill(enquiryId) {
     : items.map((row) => {
       const asked = source.find((entry) => sameModel(described(entry), row));
       const price = quotedFor(row) ?? enquiry.targetPrice;
+      const pieces = asked?.quantity || quotedPiecesFor(row);
       return {
         model: row.model,
         material: materialAndColour(row),
         ...partsOf(row),
-        quantity: asked?.quantity ? String(asked.quantity) : '',
+        quantity: pieces ? String(pieces) : '',
         price: price != null ? String(price) : '',
         edd: '',
       };

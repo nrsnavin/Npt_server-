@@ -685,6 +685,18 @@ export const RETIRED_MODULES = {
  * The grants several departments suggest together — the higher level wins where two name the
  * same module. For a person who works in more than one [models/User.js `extraDepartments`].
  */
+/**
+ * The Production in charge's floor [models/User.js `productionInCharge`]: full Production access
+ * — the production module, the mould and material registers and tasks at write, the orders,
+ * quality, samples and enquiries they plan from at read. Applied when they are marked, and kept
+ * under every later change to their grants, so an in charge is never left unable to plan.
+ */
+export const PRODUCTION_IN_CHARGE_ACCESS = Object.freeze([
+  { module: 'production', level: 'write' }, { module: 'moulds', level: 'write' }, { module: 'materials', level: 'write' },
+  { module: 'tasks', level: 'write' }, { module: 'orders', level: 'read' }, { module: 'quality', level: 'read' },
+  { module: 'samples', level: 'read' }, { module: 'enquiries', level: 'read' },
+].filter((grant) => MODULE_KEYS.includes(grant.module)));
+
 export function defaultAccessForAll(departmentKeys = []) {
   const best = new Map();
   for (const key of departmentKeys) {

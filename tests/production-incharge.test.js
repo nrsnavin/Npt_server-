@@ -99,6 +99,26 @@ test('Admin marks the Production in charge from any department; Production and i
   assert.ok(off.json.data.departments.includes('production'));
 });
 
+test('an in charge keeps full Production access whatever Admin sets later — replaced, reset or trimmed', async () => {
+  /* Replaced wholesale with less: Production comes back under it. */
+  const replaced = await api(`/api/users/${ids.kala}/access`, { method: 'PUT', as: 'admin', body: { moduleAccess: [{ module: 'enquiries', level: 'write' }, { module: 'production', level: 'read' }] } });
+  assert.equal(replaced.status, 200, replaced.json.message);
+  assert.equal(levelOf(replaced.json.data, 'production'), 'write');
+  assert.equal(levelOf(replaced.json.data, 'moulds'), 'write');
+  assert.equal(levelOf(replaced.json.data, 'materials'), 'write');
+  assert.equal(levelOf(replaced.json.data, 'tasks'), 'write');
+  assert.equal(levelOf(replaced.json.data, 'enquiries'), 'write', 'what Admin gave above the floor stays');
+  /* Reset to the departments' defaults: marketing's plus Production's, never below the floor. */
+  const reset = await api(`/api/users/${ids.kala}/access/reset`, { method: 'POST', as: 'admin' });
+  if (reset.status === 200) assert.equal(levelOf(reset.json.data, 'production'), 'write');
+  /* Unmarked, Admin may trim freely again. */
+  await api(`/api/users/${ids.kala}`, { method: 'PATCH', as: 'admin', body: { productionInCharge: false } });
+  const trimmed = await api(`/api/users/${ids.kala}/access`, { method: 'PUT', as: 'admin', body: { moduleAccess: [{ module: 'enquiries', level: 'write' }] } });
+  assert.equal(levelOf(trimmed.json.data, 'production'), undefined);
+  await api(`/api/users/${ids.kala}`, { method: 'PATCH', as: 'admin', body: { productionInCharge: true } });
+  assert.equal(levelOf((await api(`/api/users/${ids.kala}`, { as: 'admin' })).json.data, 'production'), 'write', 'marked again, the floor is back');
+});
+
 test('a Production member sees the routing but cannot decide it, give the EDD or queue the task', async () => {
   const form = await api(on('routing'), { as: 'mani' });
   assert.equal(form.status, 200, form.json.message);
