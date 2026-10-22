@@ -107,7 +107,7 @@ async function requestSample(enquiryId) {
 /** Walks a sample up to the point where the customer has it. */
 async function dispatchSample(sampleId) {
   for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
-    await api(`/api/samples/${sampleId}/status`, { method: 'POST', token: meera, body: { status } });
+    await api(`/api/samples/${sampleId}/status`, { method: 'POST', token: meera, body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) } });
   }
   return api(`/api/samples/${sampleId}/status`, {
     method: 'POST',
@@ -299,7 +299,7 @@ test('a sample asked for in one colour exactly cannot be dispatched in another',
   const sample = await requestSample(enquiry._id);
 
   for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
-    await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status } });
+    await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) } });
   }
 
   const wrong = await api(`/api/samples/${sample._id}/status`, {
@@ -349,7 +349,7 @@ test('a preferred colour may be substituted, and whoever asked is told it was', 
   const sample = await requestSample(enquiry._id);
 
   for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
-    await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status } });
+    await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) } });
   }
 
   const sent = await api(`/api/samples/${sample._id}/status`, {
@@ -456,7 +456,7 @@ test('dispatching demands the courier, AWB and quantity', async () => {
     const { status: code } = await api(`/api/samples/${sample._id}/status`, {
       method: 'POST',
       token: meera,
-      body: { status },
+      body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) },
     });
     assert.equal(code, 200, `should move to ${status}`);
   }
@@ -738,7 +738,7 @@ test('Task Closed on the enquiry takes its unsent sample off the bench', async (
   const sample = await requestSample(enquiry._id);
   await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status: 'checking_stock' } });
   await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status: 'sample_available' } });
-  await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status: 'sample_ready' } });
+  await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status: 'sample_ready', noPhoto: true, noPhotoReason: 'No camera on the test bench' } });
   await new Promise((resolve) => setTimeout(resolve, 120));
   assert.ok(await Todo.findOne({ originKey: `sample:${sample._id}:ready`, completed: false }), 'the ready notice was raised');
 
@@ -867,7 +867,7 @@ test('a trial with a customer still waits for the customer', async () => {
   });
   const id = created.json.data._id;
 
-  await api(`/api/samples/${id}/status`, { method: 'POST', token: meera, body: { status: 'sample_ready' } });
+  await api(`/api/samples/${id}/status`, { method: 'POST', token: meera, body: { status: 'sample_ready', noPhoto: true, noPhotoReason: 'No camera on the test bench' } });
 
   const { status, json } = await api(`/api/samples/${id}/feedback`, {
     method: 'POST',
@@ -1379,7 +1379,7 @@ test('a sample cannot reach the customer without having been sent', async () => 
    */
   for (const status of ['delivered', 'customer_feedback_pending']) {
     const jumped = await api(`/api/samples/${sample._id}/status`, {
-      method: 'POST', token: meera, body: { status },
+      method: 'POST', token: meera, body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) },
     });
     assert.equal(jumped.status, 400, `a sample reached ${status} without leaving the building`);
     assert.match(jumped.json.message, /has not been sent yet/i);
@@ -1419,7 +1419,7 @@ test('a sample with the customer cannot be dragged back onto the bench', async (
 
   for (const status of ['checking_stock', 'production_required', 'sample_ready', 'request_received']) {
     const back = await api(`/api/samples/${sample._id}/status`, {
-      method: 'POST', token: meera, body: { status },
+      method: 'POST', token: meera, body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) },
     });
     assert.equal(back.status, 400, `a dispatched sample went back to ${status}`);
     assert.match(back.json.message, /already gone to the customer/i);
@@ -1446,7 +1446,7 @@ test('a sample goes back a stage only with a reason, which lands in the history'
     api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body });
 
   for (const status of ['checking_stock', 'production_required', 'sample_ready']) {
-    const forward = await move({ status });
+    const forward = await move({ status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) });
     assert.equal(forward.status, 200, `going on to ${status}: ${forward.json.message}`);
   }
 
@@ -1470,7 +1470,7 @@ test('a sample goes back a stage only with a reason, which lands in the history'
   assert.equal(sideways.status, 200, sideways.json.message);
 
   /* Once it has gone, stepping back inside the customer's stages is still a step back. */
-  await move({ status: 'sample_ready' });
+  await move({ status: 'sample_ready', noPhoto: true, noPhotoReason: 'No camera on the test bench' });
   await dispatchSample(sample._id);
   assert.equal((await move({ status: 'delivered' })).status, 200);
   const undelivered = await move({ status: 'dispatched' });
@@ -1510,7 +1510,7 @@ test('the server refuses what the sample screens refuse', async () => {
   }
 
   for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
-    assert.equal((await move({ status })).status, 200);
+    assert.equal((await move({ status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) })).status, 200);
   }
 
   /* Nothing in the bag is not a dispatch — neither sent directly nor arranged in advance. */

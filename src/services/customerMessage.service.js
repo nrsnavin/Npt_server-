@@ -6,6 +6,9 @@ import { sendEmail } from './notification.service.js';
 import { isWhatsAppConfigured, sendWhatsApp } from '../providers/whatsapp.js';
 import { isProduction } from '../config/env.js';
 import { customerEmail } from './emailSignature.js';
+import Attachment from '../models/Attachment.js';
+import { bufferOf } from './storage.service.js';
+import { publicApiBaseWithoutRequest, signedPath } from '../utils/signedLink.js';
 
 /**
  * Sending an update to a customer, and recording that it happened [BLUEPRINT §42].
@@ -31,6 +34,30 @@ async function resolve(sample) {
     sample.populated('enquiry') ? sample.enquiry : Enquiry.findById(sample.enquiry),
   ]);
   return { customer, enquiry };
+}
+
+/** The notices that carry the finished-piece photos: the buyer approves from a picture of what is coming. */
+const WITH_PHOTOS = new Set(['sample_ready', 'sample_ready_collect', 'sample_dispatched']);
+
+/** A signed link to one finished-piece photo, for WhatsApp, which fetches media by URL. Lapses in 30 days. */
+export const samplePhotoUrl = (attachment, baseUrl = publicApiBaseWithoutRequest()) =>
+  `${baseUrl}/public/sample-photos${signedPath('sample-photo', String(attachment._id), attachment.filename || 'sample.jpg')}`;
+
+/**
+ * The finished-piece photos in the bag, one per model row that has one [Sample items `photo`],
+ * with the row's model beside each — or none, for a notice that carries no pictures.
+ */
+export async function photosFor(sample, event) {
+  if (!WITH_PHOTOS.has(event)) return [];
+  const rows = (sample.items || []).filter((row) => row.photo);
+  if (!rows.length) return [];
+  const ids = rows.map((row) => row.photo?._id || row.photo);
+  const files = await Attachment.find({ _id: { $in: ids } }).select('key filename mimeType size').lean();
+  const byId = new Map(files.map((file) => [String(file._id), file]));
+  return rows
+    .map((row) => ({ model: row.modelNumber || null, attachment: byId.get(String(row.photo?._id || row.photo)) }))
+    .filter((entry) => entry.attachment)
+    .map((entry) => ({ ...entry, filename: entry.attachment.filename || `${entry.model || 'sample'}.jpg`, key: entry.attachment.key }));
 }
 
 /** The address a channel would use, or nothing if the customer has not given us one. */
@@ -61,34 +88,55 @@ export async function previewFor(sample, event) {
     .populate('sentBy', 'name')
     .sort('-sentAt');
 
-  return { ...draft, customer, channels, alreadySent };
+  const photos = (await photosFor(sample, event)).map((photo) => ({ model: photo.model, key: photo.key, filename: photo.filename }));
+  return { ...draft, customer, channels, alreadySent, photos };
 }
 
 /** One record per channel, whether or not anything left the building. */
 const record = (base, extra) => CustomerMessage.create({ ...base, ...extra });
 
-async function deliver({ channel, address, draft, event, context }) {
+async function deliver({ channel, address, draft, event, context, photos = [] }) {
   if (channel === 'email') {
+    /* The finished pieces ride on the email, one picture per model. */
+    const attachments = [];
+    for (const photo of photos) {
+      const content = await bufferOf(photo.key).catch(() => null);
+      if (content) attachments.push({ filename: photo.filename, content, contentType: photo.attachment.mimeType });
+    }
     const result = await sendEmail({
       to: address,
       subject: draft.subject,
       /* Signed with the plant's footer [services/emailSignature.js]. */
       ...customerEmail(draft.body),
+      ...(attachments.length ? { attachments } : {}),
     });
-    return { providerId: result.messageId, providerStatus: result.delivered ? 'sent' : 'logged' };
+    return { providerId: result.messageId, providerStatus: result.delivered ? 'sent' : 'logged', ...(attachments.length ? { photos: attachments.length } : {}) };
   }
 
   const template = TEMPLATES[event];
   const contentSid = template.contentSid();
 
-  const result = await sendWhatsApp({
-    to: address,
-    body: draft.body,
-    template: contentSid,
-    variables: contentSid ? template.variables(context) : undefined,
-  });
+  /*
+   * WhatsApp carries one picture a message: the words go with the first photo, each further model
+   * follows on its own, named. The buyer's phone fetches each from a signed link.
+   */
+  const parts = photos.length
+    ? photos.map((photo, index) => ({ body: index === 0 ? draft.body : (photo.model || 'Sample'), document: { url: samplePhotoUrl(photo.attachment), filename: photo.filename } }))
+    : [{ body: draft.body }];
+  let first;
+  for (const [index, part] of parts.entries()) {
+    const result = await sendWhatsApp({
+      to: address,
+      body: part.body,
+      /* The approved template carries the words; a photo that follows is a plain media message. */
+      template: index === 0 ? contentSid : undefined,
+      variables: index === 0 && contentSid ? template.variables(context) : undefined,
+      document: part.document,
+    });
+    first = first || result;
+  }
 
-  return { providerId: result.id, providerStatus: result.status, usedTemplate: Boolean(contentSid) };
+  return { providerId: first.id, providerStatus: first.status, usedTemplate: Boolean(contentSid), photos: photos.length };
 }
 
 /**
@@ -129,6 +177,7 @@ export async function notifyCustomer({
 
   const wanted = channels?.length ? channels : ['whatsapp', 'email'];
   const results = [];
+  const photos = await photosFor(sample, event);
 
   for (const channel of wanted) {
     const address = addressFor(channel, customer);
@@ -164,13 +213,13 @@ export async function notifyCustomer({
         results.push(await record(base, { channel, status: 'skipped', skipReason: 'no_provider', recipient: address }));
         continue;
       }
-      console.log(`\n[whatsapp] to ${address}\n${draft.body}\n`);
-      results.push(await record(base, { channel, status: 'sent', recipient: address, ...draft, providerStatus: 'logged' }));
+      console.log(`\n[whatsapp] to ${address}\n${draft.body}${photos.map((photo) => `\n${samplePhotoUrl(photo.attachment)}`).join('')}\n`);
+      results.push(await record(base, { channel, status: 'sent', recipient: address, ...draft, providerStatus: 'logged', ...(photos.length ? { photos: photos.length } : {}) }));
       continue;
     }
 
     try {
-      const delivery = await deliver({ channel, address, draft, event, context });
+      const delivery = await deliver({ channel, address, draft, event, context, photos });
       results.push(await record(base, { channel, status: 'sent', recipient: address, ...draft, ...delivery }));
     } catch (error) {
       console.error(`[customer-message] ${event} on ${channel} failed:`, error.message);

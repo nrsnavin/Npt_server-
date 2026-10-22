@@ -123,7 +123,7 @@ async function pipelineTo(status, { customer: customerOverrides = {}, sample: sa
 
   for (const step of ['checking_stock', 'sample_available', 'sample_ready']) {
     if (status === 'request_received') break;
-    await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status: step } });
+    await api(`/api/samples/${sample._id}/status`, { method: 'POST', token: meera, body: { status: step, ...(step === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) } });
     if (step === status) break;
   }
 
@@ -266,7 +266,7 @@ test('courier details arranged in advance reach the ready message', async () => 
   await api(`/api/samples/${sample._id}/status`, {
     method: 'POST',
     token: meera,
-    body: { status: 'sample_ready' },
+    body: { status: 'sample_ready', noPhoto: true, noPhotoReason: 'No camera on the test bench' },
   });
   await settle();
 

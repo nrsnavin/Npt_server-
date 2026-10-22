@@ -347,13 +347,16 @@ test('a reference photo sits on the sample, and replacing it removes the old one
   assert.equal(sample.json.data.referencePhoto.key, second.json.data.referencePhoto.key);
 });
 
-test('marketing cannot change the reference photo, only see it', async () => {
-  const { status } = await post(`/api/samples/${sampleId}/reference-photo`, {
+test('marketing sets the reference photo too — they hold the buyer’s picture; a colleague on another buyer still cannot', async () => {
+  const { status, json } = await post(`/api/samples/${sampleId}/reference-photo`, {
     method: 'PUT',
     token: nandhini,
     file: PNG,
   });
-  assert.equal(status, 403);
+  assert.equal(status, 200, json.message);
+  assert.ok(json.data.referencePhoto?.key);
+  const other = await post(`/api/samples/${sampleId}/reference-photo`, { method: 'PUT', token: priya, file: PNG });
+  assert.equal(other.status, 404, 'not her sample');
 });
 
 /* -------------------------------- Who may look -------------------------------- */

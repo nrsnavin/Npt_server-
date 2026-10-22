@@ -8,6 +8,7 @@ import { collect, sendCsv } from '../utils/csv.js';
 import Attachment from '../models/Attachment.js';
 import { put, remove } from '../services/storage.service.js';
 import { allMouldsVisibleTo, mouldVisibleTo, seesMachineRate } from '../services/pricingVisibility.js';
+import { withSamplePhotos } from '../services/samplePhotos.service.js';
 import { transactional } from '../utils/transaction.js';
 import { describeUsage, usageOf } from '../services/recordUsage.service.js';
 
@@ -96,7 +97,8 @@ export const listMoulds = asyncHandler(async (req, res) => {
     Mould.countDocuments(filter),
   ]);
 
-  paginated(res, allMouldsVisibleTo(data, req.user), { page, limit, total });
+  /* A tool with no photo of its own wears the latest finished sample made on it [samplePhotos.service]. */
+  paginated(res, await withSamplePhotos(allMouldsVisibleTo(data, req.user)), { page, limit, total });
 });
 
 export const getMould = asyncHandler(async (req, res) => {
@@ -104,7 +106,7 @@ export const getMould = asyncHandler(async (req, res) => {
     .populate('photo', 'key filename mimeType')
     .populate('ownedByCustomer', 'name code');
   if (!mould) throw ApiError.notFound('Mould not found');
-  res.json({ success: true, data: mouldVisibleTo(mould, req.user) });
+  res.json({ success: true, data: (await withSamplePhotos([mouldVisibleTo(mould, req.user)]))[0] });
 });
 
 /**

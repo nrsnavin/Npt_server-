@@ -563,7 +563,7 @@ test('a sample sent closes the Sample Request task with the despatch details the
   assert.ok(sample, 'the request opened a sample on the bench');
 
   for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
-    const moved = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status } });
+    const moved = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) } });
     assert.equal(moved.status, 200, `${status}: ${moved.json.message}`);
   }
   assert.equal((await Todo.findById(taskId)).completed, false, 'ready is not sent');

@@ -131,6 +131,9 @@ export const sampleStatusSchema = z.object({
   dispatchedColour: z.string().max(60).optional(),
   /* Sample Sent closes the bench's task in the same move, unless the bench unticks it [the work queue]. */
   closeTask: z.boolean().optional(),
+  /* Sample Ready without a photo of every piece: allowed with a reason [setSampleStatus]. */
+  noPhoto: z.boolean().optional(),
+  noPhotoReason: z.string().trim().max(300).optional(),
   /* The handover: by courier (courier + AWB), or in person (a contact or a phone). */
   deliveryMethod: z.enum(DELIVERY_METHODS).optional(),
   handedTo: z.string().trim().max(120).optional(),

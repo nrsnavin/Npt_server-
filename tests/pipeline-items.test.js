@@ -517,7 +517,7 @@ test('a re-sample is the same bag, with what the bench changed', async () => {
       token: admin,
       body: status === 'dispatched'
         ? { status, courier: 'Professional', awbNumber: 'PC-778', dispatchedQuantity: 7 }
-        : { status },
+        : { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) },
     });
     assert.equal(moved.status, 200, moved.json.message);
   }

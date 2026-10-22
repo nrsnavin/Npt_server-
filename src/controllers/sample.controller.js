@@ -77,7 +77,13 @@ const POPULATE = [
   { path: 'items.clipRef', select: 'name code colour kind' },
   { path: 'items.printRef', select: 'name code kind' },
   { path: 'referencePhoto', select: 'key filename mimeType size' },
+  /* Each row's two pictures: the buyer's reference for that model, and the finished piece. */
+  { path: 'items.referencePhoto', select: 'key filename mimeType size' },
+  { path: 'items.photo', select: 'key filename mimeType size' },
 ];
+
+/** Exported for the photo handlers [sampleLog.controller], which answer with the same record. */
+export { POPULATE as SAMPLE_POPULATE };
 
 const LINKED = [
   { path: 'previousSample', select: 'number status' },
@@ -88,6 +94,8 @@ const LINKED = [
   /* Who put it in the buyer's hands, and the photo of it [Sample `collection`]. */
   { path: 'collection.collectedBy', select: 'name' },
   { path: 'collection.photo', select: 'key filename mimeType' },
+  { path: 'items.photoBy', select: 'name' },
+  { path: 'readyWithoutPhoto.by', select: 'name' },
 ];
 
 /**
@@ -97,7 +105,7 @@ const LINKED = [
  * record than the one it is already showing — the customer, enquiry and model would blank
  * out until the next reload. Re-reading is one query and keeps the contract identical.
  */
-const withRefs = (sample) => sample.populate([...POPULATE, ...LINKED]);
+export const withRefs = (sample) => sample.populate([...POPULATE, ...LINKED]);
 
 /**
  * What the sample queue understands, shared by the list and the board.
@@ -516,13 +524,29 @@ export const updateSample = asyncHandler(transactional(async (req, res) => {
    */
   const patch = withoutVersion(req.body);
   /* The rows get the same resolution the top line does, on this door as on the create one. */
-  if (patch.items) patch.items = await specRows(patch.items);
+  if (patch.items) patch.items = keepRowPhotos(sample, await specRows(patch.items));
   Object.assign(sample, await applySpec(sample, patch));
   await sample.save();
   await recordChange({ model: 'Sample', doc: sample, before, by: req.user });
 
   res.json({ success: true, data: await withRefs(sample) });
 }));
+
+/**
+ * A corrected bag keeps each row's photos and id. The form sends the rows as it shows them —
+ * the spec, never the pictures — so a row written back without this would lose the finished
+ * piece the bench photographed and the reference the buyer sent. Matched by id where the row
+ * carries one, by position otherwise.
+ */
+function keepRowPhotos(sample, rows) {
+  const was = (sample.items || []).map((row) => row.toObject?.() ?? row);
+  const KEPT = ['_id', 'photo', 'photoAt', 'photoBy', 'referencePhoto'];
+  return rows.map((row, index) => {
+    const before = (row._id && was.find((entry) => String(entry._id) === String(row._id))) || was[index];
+    if (!before) return row;
+    return { ...Object.fromEntries(KEPT.filter((key) => before[key] != null).map((key) => [key, before[key]])), ...row };
+  });
+}
 
 /** What may still change on a sample the customer holds [`updateSample`]. */
 const AFTER_DISPATCH_FIELDS = new Set(['remarks', 'referenceImageUrl', 'expectedUpdatedAt']);
@@ -737,6 +761,26 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
     );
   }
 
+  /*
+   * **Sample Ready carries a photo of every finished piece** [the sampling audit, gap 1]. The
+   * buyer approves what they can see, the order check compares it with the order, and a
+   * re-sample starts from it. A piece already in the bag is not held for the camera: the bench
+   * ticks No photo and says why, and that stays on the record beside the move.
+   */
+  if (status === 'sample_ready') {
+    const rows = (sample.items || []).filter((row) => row.mould || row.modelNumber || row.colour || row.category);
+    const without = rows.filter((row) => !row.photo);
+    const reason = String(req.body.noPhotoReason || '').trim();
+    if (without.length && !(req.body.noPhoto === true && reason.length >= BACKWARD_REASON_MIN)) {
+      const named = without.map((row, index) => row.modelNumber || `item ${rows.indexOf(row) + 1 || index + 1}`).join(', ');
+      throw ApiError.badRequest(
+        `Sample Ready needs a photo of each finished piece — ${named || 'the piece'} ${without.length === 1 ? 'has' : 'have'} none. ` +
+          'Attach one per model, or tick No photo and say why.'
+      );
+    }
+    if (without.length) sample.readyWithoutPhoto = { reason, by: req.user._id, at: new Date() };
+  }
+
   if (status === 'dispatched') {
     // Whatever was arranged earlier stands unless this call overrides it, so details entered
     // in advance do not have to be typed a second time to get the sample out of the door.
@@ -779,7 +823,9 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
 
   const from = sample.status;
   sample.status = status;
-  sample.statusHistory.push({ from, to: status, by: req.user._id, note: note?.trim() || undefined });
+  const noPhotoNote = status === 'sample_ready' && sample.readyWithoutPhoto?.reason && sample.isModified('readyWithoutPhoto')
+    ? `No photo: ${sample.readyWithoutPhoto.reason}` : null;
+  sample.statusHistory.push({ from, to: status, by: req.user._id, note: [note?.trim(), noPhotoNote].filter(Boolean).join(' — ') || undefined });
   /*
    * Sample Sent is the end of the bench's work: the bag has gone and what the buyer says is
    * marketing's to chase. So the move closes the task on the queue in the same step — the

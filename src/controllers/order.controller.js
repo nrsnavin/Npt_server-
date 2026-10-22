@@ -29,6 +29,7 @@ import { assertCanOwnBuyer } from '../services/assignment.service.js';
 import { buildSpec, registersFromQuoteLine } from '../services/registers.service.js';
 import { put, remove } from '../services/storage.service.js';
 import { withLineParts } from '../services/orderParts.service.js';
+import { approvedSampleFor } from '../services/samplePhotos.service.js';
 import { requireEnquiry } from '../services/enquiryLink.service.js';
 import { collect, sendCsv } from '../utils/csv.js';
 import { transactional } from '../utils/transaction.js';
@@ -281,7 +282,9 @@ export const getOrder = asyncHandler(async (req, res) => {
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
   await withSoDocument(order);
 
-  res.json({ success: true, data: await orderOut(order, req.user), checks: checklistFor(order) });
+  /* The piece the buyer approved, with its photos, beside the checks made against it [§13]. */
+  const approvedSample = await approvedSampleFor(order.enquiry?._id || order.enquiry);
+  res.json({ success: true, data: await orderOut(order, req.user), checks: checklistFor(order), approvedSample });
 });
 
 /**

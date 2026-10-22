@@ -44,3 +44,14 @@ export function publicApiBase(req, configured = process.env.PUBLIC_API_URL) {
   if (!set) return `${req.protocol}://${req.get('host')}/api`;
   return /\/api$/i.test(set) ? set : `${set}/api`;
 }
+
+/**
+ * The public API base where no request is in hand — a notice sent by the automation. The
+ * configured PUBLIC_API_URL, or the web app's address with /api beside it, which is where every
+ * deployment so far serves the API.
+ */
+export function publicApiBaseWithoutRequest(configured = process.env.PUBLIC_API_URL) {
+  const set = String(configured || '').trim().replace(/\/+$/, '');
+  if (set) return /\/api$/i.test(set) ? set : `${set}/api`;
+  return `${env.appUrl}/api`;
+}

@@ -216,6 +216,19 @@ const itemSchema = new mongoose.Schema(
     ...requirementFields(),
     mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould' },
     quantity: { type: Number, min: 1, default: 1 },
+    /**
+     * The two pictures of this model, side by side [the sampling audit, gaps 1 and 2].
+     *
+     *   `referencePhoto`  what the buyer sent for this model — a three-model bag used to have one
+     *                     picture for the whole request, and the bench guessed which row it was.
+     *   `photo`           the finished piece, taken on the bench at Sample Ready. It travels with
+     *                     the sample from then on: the queue, the buyer's messages, the enquiry,
+     *                     the order's approved-sample check, the mould register.
+     */
+    referencePhoto: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+    photo: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+    photoAt: Date,
+    photoBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { _id: true }
 );
@@ -265,7 +278,8 @@ function keepFirstItemInStep(doc) {
     return;
   }
 
-  if (ITEM_FIELDS.some((field) => doc.isModified(field))) doc.items.set(at, top);
+  /* Merged onto the row rather than replacing it, so the row keeps its id and its photos. */
+  if (ITEM_FIELDS.some((field) => doc.isModified(field))) doc.items[at].set(top);
 }
 
 /**
@@ -385,6 +399,19 @@ const sampleSchema = new mongoose.Schema(
     referencePhoto: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
     remarks: String,
 
+    /**
+     * Sample Ready without a photo of every finished piece [setSampleStatus]. The rule is firm —
+     * a photo per model row — but a piece already in the bag is not held for it: the bench ticks
+     * No photo and says why, and that stays on the record beside the move.
+     */
+    readyWithoutPhoto: {
+      type: new mongoose.Schema(
+        { reason: { type: String, trim: true }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, at: Date },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+
     status: { type: String, enum: SAMPLE_STATUSES, default: 'request_received', index: true },
     statusHistory: [statusChangeSchema],
 
@@ -490,6 +517,13 @@ sampleSchema.virtual('piecesToMake').get(function piecesToMake() {
   const rows = this.items || [];
   if (!rows.length) return this.quantity ?? 0;
   return rows.reduce((sum, row) => sum + (row.quantity || 0), 0);
+});
+
+/** The finished-piece photos in the bag, one per model row that has one [itemSchema `photo`]. */
+sampleSchema.virtual('finishedPhotos').get(function finishedPhotos() {
+  return (this.items || [])
+    .filter((row) => row.photo)
+    .map((row) => ({ item: row._id, model: row.modelNumber || null, photo: row.photo }));
 });
 
 /** True for a request that is not attached to an enquiry. */

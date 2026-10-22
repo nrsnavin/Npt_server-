@@ -11,6 +11,11 @@ import { ownsRecord } from '../services/ownership.service.js';
 import { canRead } from '../services/access.service.js';
 import { put, remove, streamOf } from '../services/storage.service.js';
 import { listParams, paginated } from '../utils/query.js';
+import { CLOSED_SAMPLE_STATUSES } from '../models/Sample.js';
+import { canWrite } from '../services/access.service.js';
+import { SAMPLE_POPULATE, withRefs } from './sample.controller.js';
+import { signatureValid } from '../utils/signedLink.js';
+import { safeFilename } from '../services/storage.service.js';
 
 /**
  * The sample's working record: notes, photos, and comments on either.
@@ -322,3 +327,106 @@ export const clearReferencePhoto = asyncHandler(async (req, res) => {
 
   res.json({ success: true, data: sample });
 });
+
+/* ------------------------- The two pictures on each model row ------------------------- */
+
+/**
+ * One row of the bag, or a refusal that names it. The bag's rows carry their own ids once
+ * saved; a request written the old way, with the model on its top line only, has none.
+ */
+function rowOf(sample, itemId) {
+  const row = sample.items?.id?.(itemId) || null;
+  if (!row) throw ApiError.notFound('That model is not in this bag');
+  return row;
+}
+
+/** The two slots on a row, and who may fill each [the sampling audit, items 1 and 2]. */
+const ROW_PHOTOS = {
+  /* The finished piece: the bench's, at Sample Ready. Marketing reads it; the bench takes it. */
+  photo: { docType: 'finished_photo', title: (row) => `Finished piece — ${row.modelNumber || 'sample'}`, may: (user) => canWrite(user, 'samples'), onSet: (row, user) => { row.photoAt = new Date(); row.photoBy = user._id; }, onClear: (row) => { row.photoAt = undefined; row.photoBy = undefined; } },
+  /* The buyer's reference for this model: marketing's, who spoke to the buyer, or the bench's. */
+  referencePhoto: { docType: 'reference_photo', title: (row) => `Buyer's reference — ${row.modelNumber || 'sample'}`, may: (user) => canWrite(user, 'samples') || canWrite(user, 'enquiries'), onSet: () => {}, onClear: () => {} },
+};
+
+const setRowPhoto = (field) => asyncHandler(async (req, res) => {
+  const slot = ROW_PHOTOS[field];
+  const sample = await reachableSample(req);
+  if (!slot.may(req.user)) throw ApiError.forbidden('You cannot add photos to this sample');
+  if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) throw ApiError.badRequest(`A ${sample.status} sample can no longer take photos`);
+  if (!req.file) throw ApiError.badRequest('Attach a photo');
+  const row = rowOf(sample, req.params.itemId);
+  const previous = row[field];
+
+  const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+  let attachment;
+  try {
+    attachment = await Attachment.create({
+      key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
+      uploadedBy: req.user._id, sample: sample._id, docType: slot.docType, title: slot.title(row),
+    });
+  } catch (error) {
+    await remove(key);
+    throw error;
+  }
+
+  row[field] = attachment._id;
+  slot.onSet(row, req.user);
+  await sample.save();
+
+  if (previous) {
+    const old = await Attachment.findById(previous);
+    if (old) {
+      await remove(old.key).catch(() => null);
+      await old.deleteOne();
+    }
+  }
+
+  res.json({ success: true, data: await withRefs(sample), meta: { item: String(row._id), field } });
+});
+
+const clearRowPhoto = (field) => asyncHandler(async (req, res) => {
+  const slot = ROW_PHOTOS[field];
+  const sample = await reachableSample(req);
+  if (!slot.may(req.user)) throw ApiError.forbidden('You cannot remove photos from this sample');
+  if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) throw ApiError.badRequest(`A ${sample.status} sample can no longer be changed`);
+  const row = rowOf(sample, req.params.itemId);
+  const attachment = row[field] ? await Attachment.findById(row[field]) : null;
+  row[field] = undefined;
+  slot.onClear(row);
+  await sample.save();
+  if (attachment) {
+    await remove(attachment.key).catch(() => null);
+    await attachment.deleteOne();
+  }
+  res.json({ success: true, data: await withRefs(sample) });
+});
+
+/** The finished piece on a model row: taken on the bench at Sample Ready, replaced if retaken. */
+export const setItemPhoto = setRowPhoto('photo');
+export const clearItemPhoto = clearRowPhoto('photo');
+/** The buyer's reference for one model row, beside the finished piece. */
+export const setItemReferencePhoto = setRowPhoto('referencePhoto');
+export const clearItemReferencePhoto = clearRowPhoto('referencePhoto');
+
+/* The link WhatsApp fetches a sample photo from: signed, lapsing, no session [customerMessage.service `samplePhotoUrl`]. */
+export const SAMPLE_PHOTO_LINK = 'sample-photo';
+
+/** A finished-piece photo behind a signed link. The signature is the permission; a bent or lapsed one says only that it expired. */
+export const publicSamplePhoto = asyncHandler(async (req, res) => {
+  const { id, expires, signature } = req.params;
+  if (!signatureValid(SAMPLE_PHOTO_LINK, id, expires, signature)) throw ApiError.notFound('This link has expired.');
+  const attachment = await Attachment.findById(id).catch(() => null);
+  /* Only a sample's own pictures travel this way — never a buyer's drawing or an order's PO. */
+  if (!attachment?.sample || !['finished_photo', 'reference_photo'].includes(attachment.docType)) throw ApiError.notFound('This link has expired.');
+  const stream = streamOf(attachment.key);
+  if (!stream) throw ApiError.notFound('This link has expired.');
+  res.setHeader('Content-Type', attachment.mimeType);
+  res.setHeader('Content-Length', attachment.size);
+  res.setHeader('Cache-Control', 'private, max-age=86400');
+  res.setHeader('Content-Disposition', `inline; filename="${safeFilename(attachment.filename || 'sample.jpg', 'sample.jpg')}"`);
+  stream.on('error', () => res.destroy());
+  stream.pipe(res);
+});
+
+/** Exported for the sample's own doors that answer with the populated record. */
+export { SAMPLE_POPULATE };

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { publicQuotationPdf } from '../controllers/quotation.controller.js';
 import { publicTaskFile } from '../controllers/handoff.controller.js';
 import { publicEnquiryDocument } from '../controllers/enquiryMessage.controller.js';
+import { publicSamplePhoto } from '../controllers/sampleLog.controller.js';
 
 /**
  * Documents behind signed, expiring links — what WhatsApp fetches, and what a buyer opens from
@@ -19,5 +20,7 @@ router.get('/quotations/:id/:expires/:signature/:file', publicQuotationPdf);
 router.get('/files/:id/:expires/:signature/:file', publicTaskFile);
 /* An enquiry's paper sent on WhatsApp [services/enquiryDocuments.service.js]. */
 router.get('/documents/:id/:expires/:signature/:file', publicEnquiryDocument);
+/* A sample's finished-piece photo, sent with the ready and dispatch notices [customerMessage.service]. */
+router.get('/sample-photos/:id/:expires/:signature/:file', publicSamplePhoto);
 
 export default router;

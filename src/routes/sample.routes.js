@@ -8,6 +8,7 @@ import {
 import {
   listSampleLogs, addSampleLog, addLogComment, removeSampleLog, removeLogComment,
   downloadAttachment, setReferencePhoto, clearReferencePhoto,
+  setItemPhoto, clearItemPhoto, setItemReferencePhoto, clearItemReferencePhoto,
 } from '../controllers/sampleLog.controller.js';
 import {
   sampleDashboard, sampleDay, sampleQueue, sampleAnalyticsReport,
@@ -139,8 +140,21 @@ router.delete('/:id/logs/:logId', requireModule('samples'), adminOnly, removeSam
 router.post('/:id/logs/:logId/comments', requireModule('samples'), validate(logCommentSchema), addLogComment);
 router.delete('/:id/logs/:logId/comments/:commentId', requireModule('samples'), adminOnly, removeLogComment);
 
-// The buyer's own reference, as opposed to what the bench produced.
-router.put('/:id/reference-photo', requireModule('samples', 'write'), singleImage('photo'), setReferencePhoto);
-router.delete('/:id/reference-photo', requireModule('samples', 'write'), clearReferencePhoto);
+/*
+ * The buyer's own reference, as opposed to what the bench produced. Marketing's too: they spoke
+ * to the buyer and hold the picture, and they raise the request on `enquiries` write.
+ */
+const referencePhotoGrant = requireAnyModule(['samples', 'write'], ['enquiries', 'write']);
+router.put('/:id/reference-photo', referencePhotoGrant, singleImage('photo'), setReferencePhoto);
+router.delete('/:id/reference-photo', referencePhotoGrant, clearReferencePhoto);
+
+/*
+ * The two pictures on each model row [the sampling audit, items 1 and 2]: the buyer's reference
+ * for that model, and the finished piece the bench photographs at Sample Ready.
+ */
+router.put('/:id/items/:itemId/reference-photo', referencePhotoGrant, singleImage('photo'), setItemReferencePhoto);
+router.delete('/:id/items/:itemId/reference-photo', referencePhotoGrant, clearItemReferencePhoto);
+router.put('/:id/items/:itemId/photo', requireModule('samples', 'write'), singleImage('photo'), setItemPhoto);
+router.delete('/:id/items/:itemId/photo', requireModule('samples', 'write'), clearItemPhoto);
 
 export default router;

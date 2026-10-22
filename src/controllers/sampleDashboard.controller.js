@@ -419,6 +419,9 @@ export const sampleQueue = asyncHandler(async (req, res) => {
     .populate('assignedTo', 'name')
     .populate('customer', 'name')
     .populate('enquiry', 'number status')
+    /* Each row's two pictures, as thumbnails on the queue — marketing sees the piece without opening it. */
+    .populate('items.photo', 'key')
+    .populate('items.referencePhoto', 'key')
     .sort({ requiredDate: 1, createdAt: 1 })
     .limit(500)
     .lean();
@@ -446,12 +449,17 @@ export const sampleQueue = asyncHandler(async (req, res) => {
       requestedBy: sample.requestedBy?.name || null,
       assignedTo: sample.assignedTo ? { _id: sample.assignedTo._id, name: sample.assignedTo.name } : null,
       models: items.map((item) => ({
+        _id: item._id ? String(item._id) : null,
         model: item.modelNumber || null,
         material: item.material || null,
         colour: item.colour || null,
         colourMandatory: Boolean(item.colourMandatory),
         quantity: item.quantity || 1,
+        photo: item.photo?.key || null,
+        referencePhoto: item.referencePhoto?.key || null,
       })),
+      /* Finished pieces photographed, out of the models in the bag [the sampling audit, item 1]. */
+      photos: { taken: items.filter((item) => item.photo?.key).length, of: items.length },
       pieces: items.reduce((sum, item) => sum + (item.quantity || 1), 0),
       colour: sample.colour || null,
       request: [sample.remarks, items.map(itemLine).join('; ')].filter(Boolean).join(' | '),

@@ -211,7 +211,7 @@ test('a regular sample can be carried by the marketing person once the bench has
   assert.equal(early.status, 400);
   assert.match(early.json.message, /still on the bench/);
   for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
-    await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status } });
+    await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) } });
   }
   await settle();
   assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'sample_collect' }), 0, 'no desk task on a courier sample');
