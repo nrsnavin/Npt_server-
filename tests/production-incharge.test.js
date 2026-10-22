@@ -119,6 +119,28 @@ test('an in charge keeps full Production access whatever Admin sets later — re
   assert.equal(levelOf((await api(`/api/users/${ids.kala}`, { as: 'admin' })).json.data, 'production'), 'write', 'marked again, the floor is back');
 });
 
+test('an in charge who is marketing first reads the whole production queue, not only their own buyers', async () => {
+  /* The task is on Nandhini's buyer; Kala is marketing by main department and in charge. */
+  const queue = await api('/api/production/queue', { as: 'kala' });
+  assert.equal(queue.status, 200, queue.json.message);
+  assert.ok(queue.json.data.some((row) => String(row.task._id) === String(production._id)), 'the queue shows another salesperson’s enquiry to the in charge');
+  const job = await api(`/api/production/workflow/${production._id}`, { as: 'kala' });
+  assert.equal(job.status, 200, job.json.message);
+  /* Unmarked but still on the Production desk, Kala works to the queue and reads it whole. */
+  await api(`/api/users/${ids.kala}`, { method: 'PATCH', as: 'admin', body: { productionInCharge: false } });
+  const desk = await api('/api/production/queue', { as: 'kala' });
+  assert.ok(desk.json.data.some((row) => String(row.task._id) === String(production._id)), 'a marketing person with a Production desk reads the queue');
+  await api(`/api/users/${ids.kala}`, { method: 'PATCH', as: 'admin', body: { productionInCharge: true } });
+  /* A salesperson with no plant desk still reads only their own buyers' rows. */
+  const other = await api('/api/users', { method: 'POST', as: 'admin', body: { name: 'Kavi R', email: 'kavi@np.com', password: 'Pass@123456', department: 'marketing' } });
+  assert.equal(other.status, 201, other.json.message);
+  token.kavi = (await api('/api/auth/login', { method: 'POST', body: { email: 'kavi@np.com', password: 'Pass@123456' } })).json.data.token;
+  const theirs = await api('/api/production/queue', { as: 'kavi' });
+  assert.equal(theirs.status, 200, theirs.json.message);
+  assert.equal(theirs.json.data.length, 0, 'not their buyer');
+  assert.equal((await api(`/api/production/workflow/${production._id}`, { as: 'kavi' })).status, 404);
+});
+
 test('a Production member sees the routing but cannot decide it, give the EDD or queue the task', async () => {
   const form = await api(on('routing'), { as: 'mani' });
   assert.equal(form.status, 200, form.json.message);
