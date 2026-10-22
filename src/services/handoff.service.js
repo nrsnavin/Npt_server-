@@ -1239,6 +1239,37 @@ export async function finishQuotationTasks(quotation, by) {
   return finishAll(tasks, by, { note, fields });
 }
 
+/**
+ * The quotation went out but the sender kept the task open [the send dialog, Close the task
+ * unticked]: the pricing tasks move to Quote Sent — the card says the quote is with the buyer —
+ * and stay on the Quotation desk until the team closes them, for a second quote or a price
+ * still being talked over.
+ */
+export async function markQuotationTasksSent(quotation, by) {
+  const enquiryId = quotation?.enquiry?._id || quotation?.enquiry;
+  if (!enquiryId) return [];
+  const tasks = await Todo.find({
+    enquiry: enquiryId, kind: { $in: ['create_quotation', 'price_negotiation'] }, completed: false, holds: { $ne: true },
+  });
+  const said = `${quotation.number}${quotation.revision ? ` rev ${quotation.revision}` : ''} sent to the buyer — task kept open`;
+  const now = new Date();
+  const moved = [];
+  for (const task of tasks) {
+    const step = statusesOf(task).find((entry) => entry.key === 'sent');
+    if (step && task.status !== step.key) {
+      task.status = step.key;
+      task.statusHistory = [...(task.statusHistory || []), { status: step.key, note: said, by: by?._id, at: now }];
+    }
+    task.updates = [...(task.updates || []), {
+      kind: 'status', status: step?.key, statusLabel: step?.label || 'Quote Sent', text: said, note: said, by: by?._id, at: now,
+    }];
+    await task.save();
+    await publish(EVENTS.HANDOFF_UPDATED, { task, by });
+    moved.push(task);
+  }
+  return moved;
+}
+
 /* ------------------------------ A department's own workflow ------------------------------ */
 
 const statusesOf = (task) => findHandoff(task.kind)?.form?.statuses || [];

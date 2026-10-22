@@ -244,6 +244,51 @@ test('a quote whose every channel was refused is not marked sent', async () => {
   assert.notEqual(still.json.data.status, 'sent');
 });
 
+/* The quotation task is raised and closed by events; the record catches up within a moment. */
+const taskOn = async (enquiryId, test = () => true) => {
+  const { default: Todo } = await import('../src/models/Todo.js');
+  for (let tries = 0; tries < 40; tries += 1) {
+    const task = await Todo.findOne({ enquiry: enquiryId, kind: 'create_quotation' }).sort({ createdAt: -1 }).lean();
+    if (task && test(task)) return task;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return Todo.findOne({ enquiry: enquiryId, kind: 'create_quotation' }).sort({ createdAt: -1 }).lean();
+};
+
+/* An enquiry sent to the Quotation desk by marketing, then quoted: the task the send closes. */
+const quotedEnquiry = async () => {
+  const enquiry = (await api('/api/enquiries', {
+    method: 'POST', token: nandhini,
+    body: { customer, items: [{ modelNumber: 'NH-400', quantity: 5000 }], nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const asked = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', token: nandhini, body: { kind: 'create_quotation', note: 'Please quote', brief: { items: [{ model: 'NH-400', quantity: '5000' }] } } });
+  assert.equal(asked.status, 201, asked.json.message);
+  const made = await api('/api/quotations', {
+    method: 'POST', token: nandhini,
+    body: { customer, enquiry: enquiry._id, paymentTerms: '30 days', validUntil: inDays(30), lines: [{ modelNumber: 'NH-400', unitPrice: 7.5, moq: 5000 }] },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  return { enquiryId: enquiry._id, quotation: made.json.data };
+};
+
+test('sending closes the quotation task by default; Close the task unticked keeps it open as Quote Sent', async () => {
+  const { enquiryId, quotation: made } = await quotedEnquiry();
+  assert.ok(await taskOn(enquiryId), 'the quotation task is on the desk');
+  const sent = await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: { note: 'Handed over' } });
+  assert.equal(sent.status, 200, sent.json.message);
+  const closed = await taskOn(enquiryId, (task) => task.completed);
+  assert.equal(closed.completed, true, 'closed with the send');
+
+  const { enquiryId: keptEnquiry, quotation: kept } = await quotedEnquiry();
+  assert.ok(await taskOn(keptEnquiry));
+  const sentOpen = await api(`/api/quotations/${kept._id}/send`, { method: 'POST', token: nandhini, body: { note: 'Handed over', closeTask: false } });
+  assert.equal(sentOpen.status, 200, sentOpen.json.message);
+  const open = await taskOn(keptEnquiry, (task) => task.status === 'sent');
+  assert.equal(open.completed, false, 'kept open');
+  assert.equal(open.status, 'sent', 'reads Quote Sent');
+  assert.match(open.updates.at(-1).note, /sent to the buyer — task kept open/);
+});
+
 test('recording a quote handed over in person still works — no channel, no message', async () => {
   const made = await quote();
   const sent = await api(`/api/quotations/${made._id}/send`, { method: 'POST', token: nandhini, body: { note: 'Given at the meeting' } });

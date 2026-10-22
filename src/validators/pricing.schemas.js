@@ -137,6 +137,8 @@ export const quotationDecisionSchema = z.object({
 
 export const quotationSendSchema = z.object({
   note: z.string().optional(),
+  /* The quotation task closes with the send unless the sender unticks it [the send dialog]; then it reads Quote Sent and stays open. */
+  closeTask: z.boolean().optional(),
   email: z.object({
     send: z.boolean(),
     to: z.string().trim().max(200).optional(),
