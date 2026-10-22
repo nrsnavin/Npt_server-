@@ -340,10 +340,14 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
   /* What each model is made with, from its sales order: hook, clip, print and the print reference. */
   const { orderSpecsForEnquiry } = await import('../services/orderParts.service.js');
   const specs = team ? [] : await orderSpecsForEnquiry(enquiry._id);
+  /* Each task says whether it may be closed now — the page offers the dialog on that [taskClosable.service]. */
+  const { withClosable } = await import('../services/taskClosable.service.js');
+  const [taskOut, ...teamsOut] = await withClosable([task, ...Object.values(teams)]);
+  const teamsWithClosable = Object.fromEntries(Object.keys(teams).map((team, at) => [team, teamsOut[at]]));
   res.json({
     success: true,
     data: {
-      task,
+      task: taskOut,
       enquiry: {
         _id: enquiry._id, number: enquiry.number, stage: enquiry.stage, team,
         customer: enquiry.customer ? { _id: enquiry.customer._id, name: enquiry.customer.name, code: enquiry.customer.code } : null,
@@ -352,7 +356,7 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
       band: bandOf(edd),
       summary: summarise({ task, enquiry, teams, floor: { ...floor, running: floor.running.map((run) => ({ ...run, machine: run.machine?.code, mould: run.mould?.mouldCode })) }, workOrders, edd }),
       models: modelRows({ task, enquiry, teams, workOrders }),
-      teams,
+      teams: teamsWithClosable,
       workOrders,
       specs,
       floor: { running: floor.running, made: floor.made },

@@ -29,6 +29,7 @@ import {
 } from '../services/handoff.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
+import { taskWithClosable, withClosable } from '../services/taskClosable.service.js';
 
 /**
  * Department tasks about an enquiry [config/handoffs.js, services/handoff.service.js]: the
@@ -185,7 +186,8 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
   const floor = await floorOf(enquiry._id);
   res.json({
     success: true,
-    data: tasks,
+    /* Each open task says whether it may be closed now [taskClosable.service]. */
+    data: await withClosable(tasks),
     stage: enquiry.stage,
     stageHistory: enquiry.stageHistory,
     holder,
@@ -315,7 +317,8 @@ async function taskFor(req) {
   return task;
 }
 
-const answer = async (res, task) => res.json({ success: true, data: await task.populate(TASK_POPULATE) });
+/* The task as moved, with whether it may now be closed — the screen offers the dialog on that [taskClosable.service]. */
+const answer = async (res, task) => res.json({ success: true, data: await taskWithClosable(await task.populate(TASK_POPULATE)) });
 
 export const handoffDone = asyncHandler(transactional(async (req, res) => {
   const task = await completeHandoff(await taskFor(req), req.user, req.body);

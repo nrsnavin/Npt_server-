@@ -9,6 +9,7 @@ import { askForLocation } from '../services/customerLocation.service.js';
 import { canRead } from '../services/access.service.js';
 import { mayHandOff } from '../services/handoff.service.js';
 import Enquiry from '../models/Enquiry.js';
+import Todo from '../models/Todo.js';
 import Machine from '../models/Machine.js';
 import MouldRun from '../models/MouldRun.js';
 import ApiError from '../utils/ApiError.js';
@@ -44,7 +45,15 @@ export const getQc = asyncHandler(async (req, res) => {
 });
 export const createQc = asyncHandler(transactional(async (req, res) => {
   const made = await createQcRecord(req.body, req.user);
-  res.status(201).json({ success: true, data: await populateQc(QcRecord.findById(made._id)) });
+  const data = (await populateQc(QcRecord.findById(made._id))).toJSON();
+  /* The sheet answers a Quality task: the screen offers to close that task now [taskClosable.service]. */
+  if (made.task) {
+    const { closableOf } = await import('../services/taskClosable.service.js');
+    const task = await Todo.findById(made.task).select('kind status completed enquiry createdAt title department');
+    const closable = task ? await closableOf(task) : null;
+    if (closable) data.closeTask = { _id: task._id, title: task.title, department: task.department, why: closable.why };
+  }
+  res.status(201).json({ success: true, data });
 }));
 export const approveQc = asyncHandler(transactional(async (req, res) => {
   const record = await approveQcRecord(await byId(QcRecord, req.params.id, 'QC record'), req.user);

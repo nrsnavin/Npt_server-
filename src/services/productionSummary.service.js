@@ -82,11 +82,15 @@ function statusFor(task, model, handsOn = false) {
   const own = (task.modelStatuses || []).find((row) => row.model === model)?.status;
   const key = own || task.status;
   const step = statusesOf(task.kind).find((entry) => entry.key === key);
+  /* The model is through this team: handed to the next one, ready for dispatch, or the team closed. */
+  const through = Boolean(step?.handsTo || step?.readyForDispatch || step?.done);
   return {
     key: key || null,
     label: task.completed ? (step && !step.done ? step.label : 'Done') : step?.label || 'Asked',
     issue: !task.completed && isIssue(task.kind, key),
-    done: Boolean(task.completed),
+    done: Boolean(task.completed) || through,
+    /* Said on the row while the task itself stays open for its other models. */
+    through: through && !task.completed,
     given: dateFor(task, model, handsOn),
   };
 }

@@ -3775,9 +3775,11 @@ export async function enquiriesHeldBy(department, user, { now = new Date(), limi
     .then(plainTasks);
 
   const ids = tasks.map((task) => task.enquiry?._id).filter(Boolean);
-  const [{ default: Sample }, { default: Quotation }, { default: SalesOrder }] = await Promise.all([
-    import('../models/Sample.js'), import('../models/Quotation.js'), import('../models/SalesOrder.js'),
+  const [{ default: Sample }, { default: Quotation }, { default: SalesOrder }, { withClosable }] = await Promise.all([
+    import('../models/Sample.js'), import('../models/Quotation.js'), import('../models/SalesOrder.js'), import('./taskClosable.service.js'),
   ]);
+  /* Each task says whether it may be closed now — the desk offers the dialog on that [taskClosable.service]. */
+  await withClosable(tasks);
   /* The newest of each per enquiry. */
   const newest = async (Model, select) => {
     const rows = await Model.find({ enquiry: { $in: ids } }).select(`enquiry number status ${select}`).sort({ createdAt: -1 }).lean();
