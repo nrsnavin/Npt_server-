@@ -38,10 +38,10 @@ import {
 import { notificationStatus, pushKey, renewPush, sendTestNotification, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments,
+  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments,
 } from '../controllers/handoff.controller.js';
 import {
-  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, handoffAdminCloseSchema, deliveryUrgencySchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, taskRoutingSchema, taskStatusSchema, productionQueueAddSchema,
+  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, handoffAdminCloseSchema, handoffEscalateSchema, handoffEscalationResolveSchema, deliveryUrgencySchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, taskRoutingSchema, taskStatusSchema, productionQueueAddSchema,
 } from '../validators/handoff.schemas.js';
 import { singlePdf, singleTaskResult } from '../middleware/upload.js';
 
@@ -83,6 +83,9 @@ router.post('/todos/:id/done', validate(handoffDoneSchema), handoffDone);
 router.post('/todos/:id/update', validate(handoffUpdateSchema), handoffUpdate);
 router.post('/todos/:id/send-back', validate(handoffReturnSchema), handoffSendBack);
 router.post('/todos/:id/admin-close', validate(handoffAdminCloseSchema), handoffAdminClose);
+/* An issue on the task goes to Admin alone, under "Needs your action"; Admin's answer comes back to whoever raised it. */
+router.post('/todos/:id/escalate-admin', validate(handoffEscalateSchema), handoffEscalate);
+router.post('/todos/:id/escalate-admin/resolve', validate(handoffEscalationResolveSchema), handoffResolveEscalation);
 router.post('/todos/:id/delivery', validate(deliveryUrgencySchema), handoffDeliveryUrgency);
 router.post('/todos/:id/reschedule', validate(handoffRescheduleSchema), handoffReschedule);
 router.post('/todos/:id/status', validate(taskStatusSchema), handoffStatus);

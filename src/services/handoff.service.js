@@ -2383,6 +2383,75 @@ export async function closeByAdmin(task, user, { reason }) {
   return task;
 }
 
+/**
+ * Escalated to Admin: an issue on the task that the department cannot settle — a buyer's
+ * demand, a clash between teams, a decision above the desk. Raised by whoever works the task,
+ * the enquiry's marketing person, or whoever raised the task; with the issue in words. Only
+ * Admin hears it — under "Needs your action" and on their phones — and the task stays where it
+ * is, with the escalation on it until Admin answers [resolveEscalation]. One at a time.
+ */
+export async function escalateToAdmin(task, user, { reason }) {
+  if (!task.kind) fail('That is not a department task');
+  if (task.completed) throw ApiError.conflict('That task is already finished');
+  const enquiry = task.enquiry ? await Enquiry.findById(idOf(task.enquiry)).select('assignedTo customer number').lean() : null;
+  const theirs = mayWorkOnHandoff(user, task)
+    || idOf(task.createdBy) === idOf(user._id)
+    || (enquiry && idOf(enquiry.assignedTo) === idOf(user._id));
+  if (!theirs) throw ApiError.forbidden('Only the team on this task, or its marketing person, escalates it');
+  if (task.adminEscalation?.at && !task.adminEscalation.resolvedAt) fail('This task is already with Admin — wait for the answer, or add to it with Update');
+  const why = String(reason || '').trim();
+  if (why.length < 5) fail('Say what the issue is');
+  const now = new Date();
+  task.adminEscalation = { reason: why, by: user._id, at: now };
+  task.updates = [...(task.updates || []), {
+    kind: 'note', text: `Escalated to Admin: ${why}`, note: `Escalated to Admin by ${user.name}: ${why}`, by: user._id, at: now,
+  }];
+  if (!task.user && mayWorkOnHandoff(user, task)) task.user = user._id;
+  await task.save();
+  /* Admin alone: not the marketing person, not the asking department — this is for Admin to settle. */
+  const [{ default: TaskNotice }, { default: User }] = await Promise.all([import('../models/TaskNotice.js'), import('../models/User.js')]);
+  const admins = (await User.find({ ...MANAGEMENT_QUERY, isActive: { $ne: false } }).select('_id').lean())
+    .map((person) => String(person._id)).filter((id) => id !== String(user._id));
+  if (admins.length) {
+    await TaskNotice.insertMany(admins.map((recipient) => ({
+      recipient, task: task._id, enquiry: enquiry?._id, customer: task.customer?._id || task.customer || enquiry?.customer,
+      department: task.department, kind: task.kind, status: 'escalated', statusLabel: 'Escalated to Admin', note: why, by: user._id, at: now,
+    })));
+    const body = [task.title, why, `by ${user.name}`].filter(Boolean).join(' — ').slice(0, 200);
+    afterCommit(() => import('./push.service.js')
+      .then(({ sendPush }) => sendPush(admins, { title: `${departmentName(task.department)}: escalated to Admin`, body, link: enquiry ? `/enquiries/${enquiry._id}` : '/departments/mine', kind: 'task-status', taskId: String(task._id) }))
+      .catch((error) => console.error(`[handoff] escalation push not sent: ${error.message}`)));
+  }
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  return task;
+}
+
+/**
+ * Admin answers the escalation: what was decided goes on the task and back to whoever raised
+ * it (and the team on the task), under their "Needs your action"; the escalation leaves every
+ * Admin's. The task is not moved — the team does that with what Admin said.
+ */
+export async function resolveEscalation(task, user, { note }) {
+  if (!isAdmin(user)) throw ApiError.forbidden('Only Admin answers an escalation');
+  if (!task.adminEscalation?.at || task.adminEscalation.resolvedAt) fail('Nothing is escalated on this task');
+  const said = String(note || '').trim();
+  if (said.length < 2) fail('Say what was decided');
+  const now = new Date();
+  const raisedBy = idOf(task.adminEscalation.by);
+  task.adminEscalation = { reason: task.adminEscalation.reason, by: raisedBy, at: task.adminEscalation.at, resolvedAt: now, resolvedBy: user._id, resolution: said };
+  task.markModified('adminEscalation');
+  task.updates = [...(task.updates || []), {
+    kind: 'note', text: `Admin (${user.name}): ${said}`, note: `Admin answered the escalation: ${said}`, by: user._id, at: now,
+  }];
+  await task.save();
+  const { default: TaskNotice } = await import('../models/TaskNotice.js');
+  await TaskNotice.deleteMany({ task: task._id, status: 'escalated' });
+  const also = [...new Set([raisedBy, ...(await peopleOn(task)).map(String)].filter(Boolean))];
+  await noticeStatus(task, user, { step: { key: 'escalation_answered', label: 'Admin answered the escalation' }, note: said, also, onlyAlso: true });
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  return task;
+}
+
 /** Marketing's holding task is due on the follow-up date; moving the date moves the task. */
 export async function syncOwnerDueDate(enquiry) {
   const holder = await holderOf(enquiry._id);
