@@ -155,7 +155,14 @@ export async function bookOrderFromTask(task, user, { reading = null, readProble
 
   /* Already booked on the Sales orders screen (or by an earlier upload): the task is linked to it. */
   const open = await SalesOrder.findOne({ enquiry: enquiryId, status: { $nin: ['cancelled', 'closed'] } }).sort({ createdAt: -1 });
-  if (open) return { order: open, linked: true };
+  if (open) {
+    /* The SO PDF uploaded on the request is the order's too, where it has none yet. */
+    if (task.resultFile && !open.soDocument) {
+      open.soDocument = task.resultFile;
+      await open.save();
+    }
+    return { order: open, linked: true };
+  }
 
   const requestRows = Array.isArray(task.brief?.items) ? task.brief.items : [];
   let drafted = { from: 'request', readProblem: readProblem || undefined };

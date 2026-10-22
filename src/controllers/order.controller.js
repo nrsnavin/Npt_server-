@@ -75,6 +75,8 @@ const POPULATE = [
   { path: 'lines.clipRef', select: 'name code colour kind' },
   { path: 'lines.printRef', select: 'name code kind' },
   { path: 'customerPo.attachment', select: 'key filename mimeType size' },
+  /* The sales order as sent — the PDF the SO team uploaded on the enquiry's SO request [handoff.service `finishWithResult`]. */
+  { path: 'soDocument', select: 'key filename mimeType size createdAt' },
   { path: 'lines.printReference.attachment', select: 'key filename mimeType size' },
   { path: 'lines.printReference.by', select: 'name' },
 ];
@@ -277,9 +279,27 @@ export const getOrder = asyncHandler(async (req, res) => {
 
   if (!order) throw ApiError.notFound('Order not found');
   if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+  await withSoDocument(order);
 
   res.json({ success: true, data: await orderOut(order, req.user), checks: checklistFor(order) });
 });
+
+/**
+ * The sales order PDF on an order booked before it was kept here, or booked on this screen and
+ * then linked to the enquiry's SO request: the newest PDF uploaded on that request [Todo
+ * `resultFile`], kept on the order from now on.
+ */
+async function withSoDocument(order) {
+  if (order.soDocument || !order.enquiry) return order;
+  const { default: Todo } = await import('../models/Todo.js');
+  const task = await Todo.findOne({ enquiry: order.enquiry._id || order.enquiry, kind: 'po_so', resultFile: { $exists: true, $ne: null } })
+    .sort({ completedAt: -1, updatedAt: -1 }).select('resultFile').lean();
+  if (!task?.resultFile) return order;
+  await SalesOrder.updateOne({ _id: order._id, soDocument: null }, { $set: { soDocument: task.resultFile } });
+  order.soDocument = task.resultFile;
+  await order.populate({ path: 'soDocument', select: 'key filename mimeType size createdAt' });
+  return order;
+}
 
 export const exportOrders = asyncHandler(async (req, res) => {
   const { sort, filter } = await orderFilters(req);
