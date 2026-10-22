@@ -149,6 +149,23 @@ function qualityWorkflow({ complaint }) {
 }
 
 /**
+ * What a Quality task is about: one row per model with its material, the pieces concerned and
+ * the complaint or check on that model, then the complaint received as a whole (required on a
+ * Quality Issue) — beside the task's instruction. Filled from the enquiry's models; any number of
+ * rows, so one task covers an order of several models.
+ */
+const QUALITY_COLUMNS = [
+  { key: 'model', label: 'Model', required: true, register: 'moulds' },
+  { key: 'material', label: 'Material & colour', register: 'materials' },
+  { key: 'quantity', label: 'Qty (pcs)', type: 'number' },
+  { key: 'complaint', label: 'Complaint / what to check on this model' },
+];
+const qualityAsks = ({ complaintRequired }) => [
+  { key: 'items', label: 'Models for Quality', type: 'items', from: 'items', add: '+ Add Model', columns: QUALITY_COLUMNS },
+  { key: 'problem', label: complaintRequired ? 'Complaint received' : 'Complaint received, if any', required: complaintRequired, placeholder: 'What the buyer reported, or what was found' },
+];
+
+/**
  * The Quotation team's workflow on a costing or a price negotiation — suggested steps, kept until
  * the plant sends its own: Request Received → Costing → Waiting for Admin Approval → Quote Sent →
  * Task Closed. Each move with a remark, told to the enquiry's marketing person and Admin.
@@ -469,10 +486,16 @@ export const TASK_FORMS = {
     ],
   },
   /* Every Quality team task runs the same workflow [qualityWorkflow]; only a complaint flags the enquiry. */
-  quality_check: { team: 'Quality Team', asks: modelAndQuantity, ...qualityWorkflow({ complaint: false }) },
+  quality_check: {
+    team: 'Quality Team',
+    note: { label: 'Additional instruction to Quality', placeholder: 'What to check, which lot, what the buyer said' },
+    asks: qualityAsks({ complaintRequired: false }),
+    ...qualityWorkflow({ complaint: false }),
+  },
   quality_issue: {
     team: 'Quality Team',
-    asks: [...modelAndQuantity, { key: 'problem', label: 'The problem', required: true }],
+    note: { label: 'Additional instruction to Quality', placeholder: 'What the buyer said, what they want done, by when' },
+    asks: qualityAsks({ complaintRequired: true }),
     ...qualityWorkflow({ complaint: true }),
   },
   invoice_dispatch: {
