@@ -56,6 +56,11 @@ function startEscalationSweep() {
         console.log(`Sample feedback: reminded marketing about ${unanswered.length} (${unanswered.map((entry) => `${entry.sample} ${entry.days}d`).join(', ')})`);
       }
 
+      /* And the problems the bench wrote in its log — mould issue, resin short — flagged, and told once. */
+      const { runProblemFlags } = await import('./services/sampleProblems.service.js');
+      const problems = await runProblemFlags();
+      if (problems.length) console.log(`Sample problems: flagged ${problems.length} (${problems.map((entry) => `${entry.sample} ${entry.words}`).join(', ')})`);
+
       const stalled = await runStallSweep();
       if (stalled.length) {
         console.log(

@@ -151,6 +151,17 @@ export const sampleStatusSchema = z.object({
     .or(z.literal('')),
 });
 
+/** The rack counted: lines by model and colour [sampleRack.controller]. */
+export const rackSchema = z.object({
+  rows: z.array(z.object({
+    modelNumber: z.string().trim().min(1).max(60),
+    colour: z.string().trim().max(60).optional(),
+    pieces: z.number().int().min(0).max(100000),
+    shelf: z.string().trim().max(40).optional(),
+    mould: objectId.optional(),
+  })).min(1).max(200),
+});
+
 /** Picking one of the register models a photo was matched to [pickMatchedModel]. */
 export const pickModelSchema = z.object({ ref: z.string().min(2).max(40) });
 

@@ -77,9 +77,16 @@ const addressFor = (channel, customer) =>
  * The preview endpoint and the automatic path render the same thing from the same context,
  * so what a person approves is what the automation would have sent.
  */
+/** The template's words — or, for the chase, the draft written for this sample [Sample `chaseDraft`]. */
+function wordsFor(sample, event, context) {
+  const generated = render(event, context);
+  if (event === 'sample_feedback_chase' && sample.chaseDraft?.body) return { ...generated, body: sample.chaseDraft.body, drafted: true };
+  return generated;
+}
+
 export async function previewFor(sample, event) {
   const { customer, enquiry } = await resolve(sample);
-  const draft = render(event, contextFor({ sample, enquiry, customer }));
+  const draft = wordsFor(sample, event, contextFor({ sample, enquiry, customer }));
 
   const channels = ['whatsapp', 'email'].map((channel) => ({
     channel,
@@ -168,7 +175,7 @@ export async function notifyCustomer({
   if (!customer) return [];
 
   const context = contextFor({ sample, enquiry, customer });
-  const generated = render(event, context);
+  const generated = wordsFor(sample, event, context);
   const draft = { subject: subject ?? generated.subject, body: body ?? generated.body };
   const edited = Boolean((body && body !== generated.body) || (subject && subject !== generated.subject));
 

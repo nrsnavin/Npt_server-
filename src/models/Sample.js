@@ -531,6 +531,27 @@ const sampleSchema = new mongoose.Schema(
       default: undefined,
     },
 
+    /**
+     * A draft chase to the buyer, written when the feedback reminder went [samplingSummary.llm.js
+     * `chaseDraft`]: marketing reads, edits and sends it from the sample — never sent by itself.
+     */
+    chaseDraft: {
+      type: new mongoose.Schema({ body: String, at: Date, byModel: Boolean }, { _id: false }),
+      default: undefined,
+    },
+
+    /**
+     * A problem the bench wrote in a log entry — mould issue, resin short — flagged so the queue
+     * and the sweep see it [sampleProblems.service]. Cleared by the next move.
+     */
+    problem: {
+      type: new mongoose.Schema(
+        { note: String, words: String, at: Date, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, log: { type: mongoose.Schema.Types.ObjectId, ref: 'SampleLog' }, raisedAt: Date },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+
     /** What the customer said, recorded by marketing. */
     feedbackAt: Date,
     feedbackBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

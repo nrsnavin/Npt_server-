@@ -112,7 +112,11 @@ export const addSampleLog = asyncHandler(async (req, res) => {
     attachment: attachment?._id,
   });
 
-  res.status(201).json({ success: true, data: await log.populate(POPULATE) });
+  /* A note that reads as a problem raises the flag the queue and the sweep see [item 11]. */
+  const { flagProblemFrom } = await import('../services/sampleProblems.service.js');
+  const flagged = await flagProblemFrom(sample, log, req.user).catch(() => null);
+
+  res.status(201).json({ success: true, data: await log.populate(POPULATE), meta: { problem: flagged } });
 });
 
 /** A comment, on a photo or on a note. */

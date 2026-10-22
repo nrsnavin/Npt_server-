@@ -24,6 +24,7 @@ import { buildBoard, perColumnFrom } from '../services/board.service.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { raiseDepartmentTask, raiseTask, resolveTasks } from '../services/task.service.js';
+import { clearProblem } from '../services/sampleProblems.service.js';
 import { requireEnquiry } from '../services/enquiryLink.service.js';
 import { CLOSED_STAGE } from '../config/enquiryStages.js';
 import { transactional } from '../utils/transaction.js';
@@ -875,6 +876,8 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
 
   const from = sample.status;
   sample.status = status;
+  /* The bench has moved on: a problem it flagged in the log is answered, one way or the other. */
+  await clearProblem(sample);
   const noPhotoNote = status === 'sample_ready' && sample.readyWithoutPhoto?.reason && sample.isModified('readyWithoutPhoto')
     ? `No photo: ${sample.readyWithoutPhoto.reason}` : null;
   const colourNote = stepped ? `Exact colour stepped past — sent in ${sample.colourOverride.sent}, asked ${sample.colourOverride.asked}: ${sample.colourOverride.reason}` : null;

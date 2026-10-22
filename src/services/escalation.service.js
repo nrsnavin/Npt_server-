@@ -140,15 +140,21 @@ export async function runFeedbackReminders({ now = Date.now() } = {}) {
     feedbackReminderAt: null,
     $or: [{ dispatchedAt: { $lte: before } }, { dispatchedAt: null, updatedAt: { $lte: before } }],
   })
-    .select('number modelNumber status dispatchedAt requestedBy customer items')
+    .select('number modelNumber colour quantity dispatchedQuantity deliveryMethod courier status dispatchedAt requestedBy customer items')
     .populate('items.photo', 'key');
+  const { chaseDraft } = await import('./samplingSummary.llm.js');
 
   const raised = [];
   for (const sample of waiting) {
     const since = sample.dispatchedAt || sample.updatedAt;
     const days = Math.max(FEEDBACK_REMINDER_DAYS, Math.floor((now - new Date(since).getTime()) / DAY));
-    const owner = sample.customer ? (await Customer.findById(sample.customer).select('assignedTo').lean())?.assignedTo : null;
+    const buyer = sample.customer ? await Customer.findById(sample.customer).select('assignedTo name contacts').lean() : null;
+    const owner = buyer?.assignedTo || null;
+    const primary = buyer?.contacts?.find((contact) => contact.isPrimary) || buyer?.contacts?.[0];
     const photos = (sample.items || []).filter((row) => row.photo?.key).length;
+    /* A draft chase, ready on the sample for marketing to read, edit and send [the sampling audit, item 5]. */
+    const draft = await chaseDraft({ sample, customer: buyer ? { name: buyer.name, contactPerson: primary?.name || null } : null, days }).catch(() => null);
+    if (draft?.body) sample.chaseDraft = { body: draft.body, at: new Date(now), byModel: Boolean(draft.byModel) };
     const people = [...new Set([sample.requestedBy, owner].filter(Boolean).map((who) => String(who?._id || who)))];
     const tasks = [];
     for (const person of people) {
@@ -157,6 +163,7 @@ export async function runFeedbackReminders({ now = Date.now() } = {}) {
         title: `Ask the buyer about sample ${sample.number}`,
         notes: `${sample.modelNumber || 'Sample'} has been with the buyer ${days} days with no answer recorded.` +
           `${photos ? ` The finished ${photos === 1 ? 'piece is' : 'pieces are'} on the sample to send them again.` : ''}` +
+          `${draft?.body ? ' A chase message is drafted on the sample — read it and send.' : ''}` +
           ' Record what they said, or raise the next attempt.',
         priority: 'normal',
         link: `/samples/${sample._id}`,

@@ -15,6 +15,7 @@ import {
 import {
   sampleDashboard, sampleDay, sampleQueue, sampleAnalyticsReport,
 } from '../controllers/sampleDashboard.controller.js';
+import { listRack, removeRackLine, setRack } from '../controllers/sampleRack.controller.js';
 import { adminOnly, authenticate, requireAnyModule, requireModule } from '../middleware/auth.js';
 import { singleImage } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
@@ -22,7 +23,7 @@ import {
   sampleSchema, sampleUpdateSchema, sampleAssignSchema,
   sampleStatusSchema, sampleFeedbackSchema, resampleSchema, customerMessageSchema,
   dispatchDetailsSchema, sampleCloseTaskSchema, sampleLogSchema, logCommentSchema, linkEnquirySchema, linkCustomerSchema, handOverSchema,
-  notAvailableDecisionSchema, pickModelSchema,
+  notAvailableDecisionSchema, pickModelSchema, rackSchema,
 } from '../validators/sample.schemas.js';
 
 const router = Router();
@@ -48,6 +49,10 @@ router.get('/day', requireModule('samples'), sampleDay);
 router.get('/analytics', requireModule('samples'), sampleAnalyticsReport);
 /* The sampling department's work queue: every request with its status, priority and handover. */
 router.get('/queue', requireModule('samples'), sampleQueue);
+/* The sample rack as a stock list: read by anyone on samples, counted by the bench, debited by a visit hand-over. */
+router.get('/rack', requireModule('samples'), listRack);
+router.put('/rack', requireModule('samples', 'write'), validate(rackSchema), setRack);
+router.delete('/rack/:lineId', requireModule('samples', 'write'), removeRackLine);
 /* The courier and AWB read off a photo of the courier copy — a suggestion for the dispatch form [sampleVision.llm.js]. */
 router.post('/read-courier-copy', requireModule('samples', 'write'), singleImage('photo'), readCourierCopy);
 router.get('/', requireModule('samples'), listSamples);
