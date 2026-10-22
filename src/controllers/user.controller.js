@@ -7,7 +7,7 @@ import {
   moduleAccessFor,
   normaliseGrants,
 } from '../services/access.service.js';
-import { defaultAccessForAll, findDepartment, LEVEL_RANK } from '../config/modules.js';
+import { defaultAccessForAll, findDepartment, LEVEL_RANK, PRODUCTION_IN_CHARGE_ACCESS } from '../config/modules.js';
 import { departmentsOf, isManagement } from '../utils/departments.js';
 import { env } from '../config/env.js';
 import { issueOtp, resolveIdentifier, verifyOtp } from '../services/otp.service.js';
@@ -25,6 +25,9 @@ const withGrants = (current, added) => {
   }
   return [...held].map(([module, level]) => ({ module, level }));
 };
+
+/** An in charge's grants never fall below full Production access, whatever else Admin sets. */
+const withInChargeFloor = (user, grants) => (user.productionInCharge && user.role !== 'admin' ? withGrants(grants, PRODUCTION_IN_CHARGE_ACCESS) : grants);
 
 const publicUser = (user) => ({
   id: user._id,
@@ -147,7 +150,7 @@ export const create = asyncHandler(async (req, res) => {
   const chosen = moduleAccess?.length
     ? normaliseGrants(moduleAccess)
     : defaultAccessForAll([department, ...extraDepartments]);
-  const grants = inCharge ? withGrants(chosen, defaultAccessForAll(['production'])) : chosen;
+  const grants = inCharge ? withGrants(withGrants(chosen, defaultAccessForAll(['production'])), PRODUCTION_IN_CHARGE_ACCESS) : chosen;
 
   const user = await User.create({
     name,
@@ -233,7 +236,7 @@ export const update = asyncHandler(async (req, res) => withOwnerLocks([req.param
     user.productionInCharge = req.body.productionInCharge && user.role !== 'admin';
     if (user.productionInCharge) {
       if (!departmentsOf(user).includes('production')) user.extraDepartments = [...(user.extraDepartments || []), 'production'];
-      user.moduleAccess = withGrants(user.moduleAccess, defaultAccessForAll(['production']));
+      user.moduleAccess = withGrants(withGrants(user.moduleAccess, defaultAccessForAll(['production'])), PRODUCTION_IN_CHARGE_ACCESS);
     }
   } else if (user.productionInCharge && !departmentsOf(user).includes('production')) {
     user.productionInCharge = false;
@@ -251,6 +254,7 @@ export const update = asyncHandler(async (req, res) => withOwnerLocks([req.param
   }
 
   if (user.role === 'admin') user.moduleAccess = [];
+  else user.moduleAccess = withInChargeFloor(user, user.moduleAccess);
 
   await user.save();
   res.json({ success: true, data: publicUser(user) });
@@ -265,7 +269,8 @@ export const setAccess = asyncHandler(async (req, res) => {
     throw ApiError.badRequest('Admins already have access to every module');
   }
 
-  user.moduleAccess = normaliseGrants(req.body.moduleAccess);
+  /* Replaced wholesale — but an in charge keeps full Production access under it. */
+  user.moduleAccess = withInChargeFloor(user, normaliseGrants(req.body.moduleAccess));
   await user.save();
 
   res.json({ success: true, data: publicUser(user) });
@@ -284,7 +289,7 @@ export const resetAccessToDepartment = asyncHandler(async (req, res) => {
   }
 
   /* Every department they work in, together. */
-  user.moduleAccess = defaultAccessForAll(departmentsOf(user));
+  user.moduleAccess = withInChargeFloor(user, defaultAccessForAll(departmentsOf(user)));
   await user.save();
 
   res.json({ success: true, data: publicUser(user) });
