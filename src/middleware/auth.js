@@ -1,5 +1,5 @@
 import jwt from 'jsonwebtoken';
-import { isManagement } from '../utils/departments.js';
+import { isManagement, isProductionInCharge } from '../utils/departments.js';
 import { env } from '../config/env.js';
 import User, { userCacheKey } from '../models/User.js';
 import { cacheGet, cacheSet } from '../services/cache.service.js';
@@ -62,6 +62,18 @@ export const authenticate = asyncHandler(async (req, _res, next) => {
  * the data, and it is the same function the profile screen reports from, so what a user
  * is shown always matches what the API allows.
  */
+/**
+ * Production's plan is the Production in charge's, or Admin's [utils/departments.js
+ * `isProductionInCharge`]: which press a job runs on, in what order and from when, the machine
+ * register, a suggested schedule applied. `when(req)` narrows it to the requests that plan —
+ * a work order paused or completed from the floor is anyone's in Production.
+ */
+export const requireProductionInCharge = (when = () => true) => (req, _res, next) => {
+  if (!req.user) return next(ApiError.unauthorized());
+  if (!when(req) || isProductionInCharge(req.user)) return next();
+  return next(ApiError.forbidden('Only the Production in charge plans the presses — which machine, in what order, from when. You can pause, resume or complete a job and log the runs.'));
+};
+
 export const requireModule =
   (moduleKey, required = 'read') =>
   (req, _res, next) => {

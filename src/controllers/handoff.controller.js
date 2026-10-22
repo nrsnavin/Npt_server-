@@ -362,6 +362,19 @@ export const handoffRouting = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await routingFor(await taskFor(req), req.user) });
 });
 
+/** The Production in charge confirms the EDD Printing or Assembly gave [handoff.service `confirmTaskEdd`]. */
+export const handoffConfirmEdd = asyncHandler(transactional(async (req, res) => {
+  const { confirmTaskEdd } = await import('../services/handoff.service.js');
+  const task = await confirmTaskEdd(await taskFor(req), req.user);
+  await answer(res, task);
+}));
+
+/** Who is Production in charge — for the desks' banner; empty when nobody is marked. */
+export const productionInChargeList = asyncHandler(async (_req, res) => {
+  const { productionInCharge } = await import('../services/productionInCharge.service.js');
+  res.json({ success: true, data: (await productionInCharge()).map((person) => ({ id: person._id, name: person.name })) });
+});
+
 /** Production's call, model by model: Printing's and Assembly's tasks are raised from it. */
 export const handoffRoute = asyncHandler(transactional(async (req, res) => {
   const { task, raised } = await decideRouting(await taskFor(req), req.user, req.body);

@@ -155,6 +155,92 @@ test('a Production member moves the statuses, but not one that sets a date', asy
   assert.equal(dated.status, 200, dated.json.message);
 });
 
+const Todo = () => mongoose.connection.collection('todos');
+const notices = () => mongoose.connection.collection('tasknotices');
+const idOf = (key) => new mongoose.Types.ObjectId(ids[key]);
+
+test('EDD Accepted and Planning are the in charge’s moves too', async () => {
+  for (const key of ['accepted', 'planning']) {
+    const refused = await status('mani', { status: key, note: 'Taking it on' });
+    assert.equal(refused.status, 403, key);
+    assert.match(refused.json.message, /Only the Production in charge moves it to/);
+  }
+});
+
+test('the in charge was asked for the EDD when the task came in; giving the date closed it', async () => {
+  const asks = await Todo().find({ originKey: `production-plan:${production._id}` }).toArray();
+  assert.ok(asks.some((ask) => String(ask.user) === ids.siva), 'Sivakumar was asked');
+  assert.match(asks[0].title, /^Give the EDD — /);
+  assert.equal(asks[0].link, `/production/workflow/${production._id}`);
+  assert.ok(asks.every((ask) => ask.completed), 'closed once the date was given');
+});
+
+test('the planning board is the in charge’s; the floor still pauses and completes jobs', async () => {
+  const fake = new mongoose.Types.ObjectId();
+  const moved = await api(`/api/work-orders/${fake}`, { method: 'PATCH', as: 'mani', body: { machine: String(new mongoose.Types.ObjectId()) } });
+  assert.equal(moved.status, 403);
+  assert.match(moved.json.message, /Only the Production in charge plans the presses/);
+  assert.equal((await api(`/api/work-orders/${fake}`, { method: 'PATCH', as: 'mani', body: { move: 'release' } })).status, 403);
+  /* Pausing is the floor's: past the gate, to a work order that is not there. */
+  assert.equal((await api(`/api/work-orders/${fake}`, { method: 'PATCH', as: 'mani', body: { move: 'pause' } })).status, 404);
+  assert.equal((await api('/api/production/plan/apply', { method: 'POST', as: 'mani', body: { moves: [{ workOrder: String(fake), machine: String(fake), sequence: 1 }] } })).status, 403);
+  assert.equal((await api('/api/machines', { method: 'POST', as: 'mani', body: { code: 'IM-9' } })).status, 403);
+  const added = await api('/api/machines', { method: 'POST', as: 'siva', body: { code: 'IM-9', name: 'Press 9' } });
+  assert.equal(added.status, 201, added.json.message);
+});
+
+test('Assembly gives the EDD; the in charge is asked to confirm it, confirms, and the ask closes', async () => {
+  const assembly = await Todo().findOne({ kind: 'ask_assembling_edd', completed: false });
+  assert.ok(assembly?.routing?.byProduction, 'Assembly’s task came from the routing');
+  const given = await api(`/api/workspace/todos/${assembly._id}/edd`, { method: 'POST', as: 'anand', body: { date: indiaDay(9) } });
+  assert.equal(given.status, 200, given.json.message);
+  const ask = await Todo().findOne({ originKey: `production-confirm:${assembly._id}`, user: idOf('siva'), completed: false });
+  assert.ok(ask, 'the in charge is asked');
+  assert.match(ask.title, /^Confirm the EDD Assembly gave — /);
+  assert.equal((await api(`/api/workspace/todos/${assembly._id}/edd/confirm`, { method: 'POST', as: 'mani' })).status, 403);
+  const confirmed = await api(`/api/workspace/todos/${assembly._id}/edd/confirm`, { method: 'POST', as: 'siva' });
+  assert.equal(confirmed.status, 200, confirmed.json.message);
+  assert.equal(confirmed.json.data.eddConfirmed.date, indiaDay(9));
+  assert.equal((await Todo().findOne({ _id: ask._id })).completed, true);
+  /* Assembly moves its date: the confirmation goes, and the in charge is asked again. */
+  await api(`/api/workspace/todos/${assembly._id}/edd`, { method: 'POST', as: 'anand', body: { date: indiaDay(10) } });
+  assert.equal((await Todo().findOne({ _id: assembly._id })).eddConfirmed, undefined);
+  assert.ok(await Todo().findOne({ originKey: `production-confirm:${assembly._id}`, completed: false }));
+  /* The in charge gives Assembly's EDD themselves: no confirming their own word. */
+  const own = await api(`/api/workspace/todos/${assembly._id}/edd`, { method: 'POST', as: 'siva', body: { date: indiaDay(11) } });
+  assert.equal(own.status, 200, own.json.message);
+  assert.equal(own.json.data.eddConfirmed.date, indiaDay(11));
+  assert.equal(await Todo().countDocuments({ originKey: `production-confirm:${assembly._id}`, completed: false }), 0);
+});
+
+test('Admin can still plan, and the in charge is told when Admin does', async () => {
+  const before = await notices().countDocuments({ recipient: idOf('siva') });
+  const moved = await status('admin', { status: 'planning', note: 'Customer called the MD' });
+  assert.equal(moved.status, 200, moved.json.message);
+  const told = await notices().find({ recipient: idOf('siva') }).toArray();
+  assert.equal(told.length, before + 1);
+  assert.match(told.at(-1).statusLabel, /^Admin moved it to Planning/);
+});
+
+test('who is in charge is listed for the desks; nobody marked, Admin is asked for the EDD', async () => {
+  const listed = await api('/api/workspace/production-in-charge', { as: 'mani' });
+  assert.deepEqual(listed.json.data.map((person) => person.name).sort(), ['Kala M', 'Sivakumar']);
+  for (const key of ['siva', 'kala']) await api(`/api/users/${ids[key]}`, { method: 'PATCH', as: 'admin', body: { productionInCharge: false } });
+  assert.deepEqual((await api('/api/workspace/production-in-charge', { as: 'mani' })).json.data, []);
+  const sent = await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Another lot', customer: (await mongoose.connection.collection('customers').findOne({}))._id, brief: { model: 'NPT-410V' } } });
+  assert.equal(sent.status, 201, sent.json.message);
+  const task = sent.json.data.task || sent.json.data;
+  /* The ask follows the task's event: give it a moment. */
+  let ask = null;
+  for (let tries = 0; tries < 40 && !ask; tries += 1) {
+    ask = await Todo().findOne({ originKey: `production-plan:${task._id}` });
+    if (!ask) await new Promise((resolve) => { setTimeout(resolve, 100); });
+  }
+  assert.ok(ask, 'Admin is asked');
+  assert.match(ask.notes, /Nobody is marked Production in charge/);
+  for (const key of ['siva']) await api(`/api/users/${ids[key]}`, { method: 'PATCH', as: 'admin', body: { productionInCharge: true } });
+});
+
 test('moved out of Production, the mark goes with them', async () => {
   const moved = await api(`/api/users/${ids.siva}`, { method: 'PATCH', as: 'admin', body: { department: 'quality' } });
   assert.equal(moved.status, 200, moved.json.message);

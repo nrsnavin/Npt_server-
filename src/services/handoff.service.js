@@ -1263,6 +1263,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   const asked = stepFields(step, fields);
   if (step.comment && text.length < 3) fail(`Say what is needed — ${step.label} asks for a comment`);
   if (form.remarkRequired && text.length < 3) fail(`Add a remark to move it to ${step.label}`);
+  /* EDD Accepted and Planning say Production has taken the job on its plan: the Production in charge's word. */
+  if (step.plans) assertPlansProduction(task, user, `moves it to ${step.label}`);
   const readyDate = statusDate(form, step, date);
   /* A date on Production's task is its EDD or hand-over date: the Production in charge's to give. */
   if (readyDate) assertPlansProduction(task, user, `gives the date — ${step.label} sets the ${form.statusDate?.label || 'ready date'}`);
@@ -1331,10 +1333,15 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
     await task.save();
     if (dateField === 'handover') await passHandover(task, user, readyDate, text);
     if (task.enquiry) await refreshModelEdds(task.enquiry, user, text);
+    await afterProductionDate(task, user, { day: readyDate, edd: dateField === 'edd' });
   } else if (readyDate && dateField === 'edd' && task.enquiry) {
     await writeEnquiryEdd(task.enquiry, { day: readyDate, user, department: task.department, note: text });
   }
   if (form.notifyStatus) await noticeStatus(task, user, { step: partial ? { ...step, label } : step, note: text, date: readyDate });
+  /* EDD Accepted / Planning moved by Admin in the in charge's place (a dated move told them above). */
+  if (step.plans && !readyDate) await toldOfAdminPlan(task, user, `moved it to ${step.label}`);
+  /* Production's task ended: nobody is still asked for its EDD. */
+  if (task.kind === 'ask_edd' && task.completed) await (await import('./productionInCharge.service.js')).planned(task);
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
   if (step.next && !step.pdf) {
@@ -2631,7 +2638,8 @@ export async function writeEnquiryEdd(enquiryId, { day, user, department, note }
  * the enquiry, where every other screen reads it; marketing and Admin hear it as they hear a move.
  */
 export async function setTaskEdd(task, user, { date, note, models }) {
-  openHandoff(task, user);
+  /* The Production in charge may give the EDD on Printing's or Assembly's task too, in place of confirming theirs. */
+  if (task.completed || !(EDD_TASK_KINDS.includes(task.kind) && task.kind !== 'ask_edd' && isProductionInCharge(user))) openHandoff(task, user);
   if (!EDD_TASK_KINDS.includes(task.kind)) fail('The EDD is given from the Production, Assembly or Printing task');
   assertPlansProduction(task, user, 'gives the EDD and the hand-over dates');
   assertRouted(task);
@@ -2661,6 +2669,7 @@ export async function setTaskEdd(task, user, { date, note, models }) {
     if (findHandoff(task.kind)?.form?.notifyStatus) {
       await noticeStatus(task, user, { step: { key: task.status || 'handover', label: `Hand-over date to ${teamWords(handsOn)}` }, note: text, date: day });
     }
+    await afterProductionDate(task, user, { day, edd: false });
     return task;
   }
   const said = `EDD ${prettyDay(day)}${perModel}`;
@@ -2677,6 +2686,64 @@ export async function setTaskEdd(task, user, { date, note, models }) {
   if (findHandoff(task.kind)?.form?.notifyStatus) {
     await noticeStatus(task, user, { step: { key: task.status || 'edd', label: 'EDD given' }, note: text, date: day });
   }
+  await afterProductionDate(task, user, { day, edd: true });
+  return task;
+}
+
+/**
+ * After a date on a task of the Production chain [services/productionInCharge.service.js]:
+ * Production's own closes the in charge's "Give the EDD"; the EDD Printing or Assembly gives —
+ * last in the chain — goes to the in charge to confirm, unless they gave it themselves. Admin
+ * dating Production's task in the in charge's place tells them.
+ */
+async function afterProductionDate(task, user, { day, edd }) {
+  const inCharge = await import('./productionInCharge.service.js');
+  if (task.kind === 'ask_edd') {
+    await inCharge.planned(task);
+    await toldOfAdminPlan(task, user, `gave the ${edd ? 'EDD' : 'hand-over date'} ${prettyDay(day)}`);
+    return;
+  }
+  if (!edd || !task.routing?.byProduction) return;
+  if (isProductionInCharge(user)) {
+    task.eddConfirmed = { date: day, by: user._id, at: new Date() };
+    await task.save();
+    await inCharge.confirmed(task);
+  } else {
+    if (task.eddConfirmed) {
+      task.eddConfirmed = undefined;
+      await task.save();
+    }
+    await inCharge.askToConfirm(task, user, prettyDay(day));
+  }
+}
+
+/** Admin planned Production's work in the in charge's place: everyone in charge hears what. */
+async function toldOfAdminPlan(task, user, what) {
+  if (task.kind !== 'ask_edd' || !isManagement(user) || user?.productionInCharge === true) return;
+  const { inChargeIds } = await import('./productionInCharge.service.js');
+  const also = await inChargeIds();
+  if (also.length) await noticeStatus(task, user, { step: { key: 'admin_plan', label: `Admin ${what}` }, note: '', onlyAlso: true, also });
+}
+
+/**
+ * The Production in charge confirms the EDD Printing or Assembly gave — the last word on the date
+ * the buyer is promised. Said on the task; their "Confirm the EDD" to-do closes.
+ */
+export async function confirmTaskEdd(task, user) {
+  if (!isProductionInCharge(user)) throw ApiError.forbidden('Only the Production in charge confirms the EDD');
+  if (!['ask_printing', 'ask_assembling_edd'].includes(task.kind)) fail('Only the EDD Printing or Assembly gives is confirmed');
+  if (task.completed) throw ApiError.conflict('That task is already finished');
+  /* An update's fields are a Map on the document. */
+  const eddOf = (entry) => (entry.fields?.get ? entry.fields.get('edd') : entry.fields?.edd);
+  const given = eddOf([...(task.updates || [])].reverse().find((entry) => eddOf(entry)) || {});
+  if (!given) fail('No EDD has been given on this task yet');
+  task.eddConfirmed = { date: given, by: user._id, at: new Date() };
+  const said = `EDD ${prettyDay(given)} confirmed by ${user.name} (Production in charge)`;
+  task.updates = [...(task.updates || []), { kind: 'note', text: said, note: said, by: user._id, at: new Date() }];
+  await task.save();
+  const { confirmed } = await import('./productionInCharge.service.js');
+  await confirmed(task);
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   return task;
 }
 
@@ -2871,6 +2938,7 @@ export async function addToProductionQueue(task, user, { models, date, note } = 
   }
   task.queuedAt = new Date();
   task.queuedBy = user._id;
+  await toldOfAdminPlan(task, user, 'added it to the production queue');
   task.updates = [...(task.updates || []), { kind: 'note', text: 'Added to the production queue', note: `Added to the production queue: ${text}`, by: user._id, at: new Date() }];
   if (!task.user) task.user = user._id;
   await task.save();
@@ -2954,6 +3022,7 @@ export async function decideRouting(task, user, { models }) {
   }];
   if (!task.user) task.user = user._id;
   await task.save();
+  await toldOfAdminPlan(task, user, `decided printing / assembly — ${plan}`);
 
   const enquiry = task.enquiry ? await enquiryOfTask(task) : null;
   const teams = {

@@ -98,7 +98,7 @@ test.before(async () => {
     { name: 'Kavitha D', email: 'kavitha@np.com', password: 'Desp@123456', department: 'despatch' },
     { name: 'Suresh P', email: 'suresh@np.com', password: 'Prod@123456', department: 'production' },
   ]) {
-    await api('/api/users', { method: 'POST', token: admin, body: person });
+    await api('/api/users', { method: 'POST', token: admin, body: { ...person, productionInCharge: person.department === 'production' } });
   }
   kavitha = await signIn('kavitha@np.com', 'Desp@123456');
   suresh = await signIn('suresh@np.com', 'Prod@123456');

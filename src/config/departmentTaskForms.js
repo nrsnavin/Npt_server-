@@ -375,8 +375,9 @@ export const TASK_FORMS = {
     ],
     statuses: [
       { key: 'received', label: 'EDD Request Received' },
-      { key: 'accepted', label: 'EDD Accepted' },
-      { key: 'planning', label: 'Planning' },
+      /* `plans`: the Production in charge's moves (or Admin's), as the dates are [handoff.service `assertPlansProduction`]. */
+      { key: 'accepted', label: 'EDD Accepted', plans: true },
+      { key: 'planning', label: 'Planning', plans: true },
       { key: 'ready_tomorrow', label: 'Ready Tomorrow', date: 'tomorrow' },
       { key: 'ready_on_date', label: 'Ready on Selected Date', date: 'required' },
       { key: 'started', label: 'Production Started' },
