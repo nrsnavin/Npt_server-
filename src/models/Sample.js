@@ -481,6 +481,26 @@ const sampleSchema = new mongoose.Schema(
     benchClosedAt: Date,
     benchClosedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 
+    /**
+     * The feedback-pending reminder [escalation.service `runFeedbackReminders`]: three days after
+     * the sample reached the buyer with no answer recorded, marketing is reminded once, with
+     * the finished-piece photo on the task.
+     */
+    feedbackReminderAt: Date,
+
+    /**
+     * The exact-colour condition stepped past at dispatch [setSampleStatus]: the bench sent
+     * another shade, said why, and marketing was told. Kept beside the move so a rejection
+     * three weeks later has its explanation on the record.
+     */
+    colourOverride: {
+      type: new mongoose.Schema(
+        { reason: { type: String, trim: true }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, at: Date, asked: String, sent: String },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+
     /** What the customer said, recorded by marketing. */
     feedbackAt: Date,
     feedbackBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

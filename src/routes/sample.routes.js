@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   listSamples, listStalledSamples, getSample, createSample, updateSample, assignSample,
   setSampleStatus, closeSampleTask, setDispatchDetails, recordFeedback, resample, samplePipeline, sampleBoard, handOverSample,
+  decideNotAvailable,
   linkEnquiry, linkCustomer,
   previewCustomerMessage, sendCustomerMessage, listCustomerMessages,
 } from '../controllers/sample.controller.js';
@@ -20,6 +21,7 @@ import {
   sampleSchema, sampleUpdateSchema, sampleAssignSchema,
   sampleStatusSchema, sampleFeedbackSchema, resampleSchema, customerMessageSchema,
   dispatchDetailsSchema, sampleCloseTaskSchema, sampleLogSchema, logCommentSchema, linkEnquirySchema, linkCustomerSchema, handOverSchema,
+  notAvailableDecisionSchema,
 } from '../validators/sample.schemas.js';
 
 const router = Router();
@@ -81,6 +83,17 @@ router.post(
   recordFeedback
 );
 router.post('/:id/resample', requireModule('samples', 'write'), validate(resampleSchema), resample);
+/*
+ * Not available is marketing's to answer [the sampling audit, item 7]: wait for a run, change the
+ * spec, or cancel. On marketing's grant, as the feedback is — the buyer's side of the decision —
+ * and the bench's too, for a trial with no buyer.
+ */
+router.post(
+  '/:id/not-available',
+  requireAnyModule(['enquiries', 'write'], ['samples', 'write']),
+  validate(notAvailableDecisionSchema),
+  decideNotAvailable
+);
 /* The marketing person handing the piece over themselves, on a visit — a photo may ride with it. */
 router.post(
   '/:id/hand-over',

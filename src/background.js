@@ -1,6 +1,6 @@
 import { env, escalationIntervalMinutes } from './config/env.js';
 import { reconcileDispatches } from './services/dispatchRecovery.service.js';
-import { runSamplingEscalations } from './services/escalation.service.js';
+import { runFeedbackReminders, runSamplingEscalations } from './services/escalation.service.js';
 import { runStallSweep } from './services/anomaly.service.js';
 import { runLateTaskSweep } from './services/handoff.service.js';
 import { runQueryEscalations } from './services/queryEscalation.service.js';
@@ -50,6 +50,12 @@ function startEscalationSweep() {
        * anyone has touched it — and a stall is the overdue of next week, worth catching while
        * there is still time to do something about it.
        */
+      /* And the samples the buyer has had for days with no answer recorded: marketing is reminded to ask, once. */
+      const unanswered = await runFeedbackReminders();
+      if (unanswered.length) {
+        console.log(`Sample feedback: reminded marketing about ${unanswered.length} (${unanswered.map((entry) => `${entry.sample} ${entry.days}d`).join(', ')})`);
+      }
+
       const stalled = await runStallSweep();
       if (stalled.length) {
         console.log(

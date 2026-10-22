@@ -134,6 +134,9 @@ export const sampleStatusSchema = z.object({
   /* Sample Ready without a photo of every piece: allowed with a reason [setSampleStatus]. */
   noPhoto: z.boolean().optional(),
   noPhotoReason: z.string().trim().max(300).optional(),
+  /* Another shade against an exact-colour condition: allowed with a reason, and marketing is told. */
+  colourOverride: z.boolean().optional(),
+  colourOverrideReason: z.string().trim().max(300).optional(),
   /* The handover: by courier (courier + AWB), or in person (a contact or a phone). */
   deliveryMethod: z.enum(DELIVERY_METHODS).optional(),
   handedTo: z.string().trim().max(120).optional(),
@@ -143,6 +146,20 @@ export const sampleStatusSchema = z.object({
     .regex(/^\d{10}$/, 'A 10-digit phone number')
     .optional()
     .or(z.literal('')),
+});
+
+/**
+ * Marketing's answer to Not available [decideNotAvailable]: wait for a run, change the spec (with
+ * the corrected rows, colour or date), or cancel — each with a note the bench reads.
+ */
+export const notAvailableDecisionSchema = z.object({
+  choice: z.enum(['wait', 'change', 'cancel']),
+  note: z.string().trim().max(500).optional(),
+  items: sampleCore.items,
+  colour: z.string().optional(),
+  colourMandatory: z.boolean().optional(),
+  requiredDate: z.coerce.date().optional(),
+  remarks: z.string().optional(),
 });
 
 /** The sample team closing its task: a reason only when the sample never went out. */
