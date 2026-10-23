@@ -735,7 +735,7 @@ test('quantities are read the way people write them', async () => {
   assert.equal(typed.typedNumber, undefined, 'not a field of its own on the card');
   const header = tidyReading({ kind: 'chat', contactName: 'Senthil', mobile: '+91 90000 00000', typedNumber: '' });
   assert.equal(header.mobile, '+919000000000', 'without one, the header stands');
-  assert.equal(header.whatsapp, undefined);
+  assert.equal(header.whatsapp, '+919000000000', 'the mobile is their WhatsApp too, unless another was read');
   const words = tidyReading({ kind: 'chat', mobile: '+91 90000 00000', typedNumber: 'ok will send' });
   assert.equal(words.mobile, '+919000000000', 'words in the box are not a number');
   assert.equal(parseQuantity('5000 pcs'), 5000);

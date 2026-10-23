@@ -37,6 +37,8 @@ export const MARKETING_STATUSES = [
   { key: 'assembling', label: 'Assembling' },
   { key: 'qc', label: 'QC' },
   { key: 'dispatch', label: 'Dispatch' },
+  /* Part of the order gone — a model sent on its own under a dispatch plan of each model as it is ready. */
+  { key: 'part_sent', label: 'Part sent' },
   { key: 'lr_copy', label: 'LR Copy' },
   /* The LR uploaded and on its way to the buyer [handoffs `whenResult`]; closed by hand once every lorry has gone. */
   { key: 'lr_sent', label: 'LR Sent' },
@@ -85,7 +87,7 @@ export const FROM_TASK = {
   invoice_dispatch: 'dispatch',
   lr_copy: 'lr_copy',
 };
-export const PLANT_STATUSES = ['production', 'mould', 'assembling', 'qc', 'dispatch', 'lr_copy', 'lr_sent'];
+export const PLANT_STATUSES = ['production', 'mould', 'assembling', 'qc', 'dispatch', 'part_sent', 'lr_copy', 'lr_sent'];
 
 /**
  * Where the enquiry stands, by marketing's word, so the list's three columns never disagree:
@@ -100,6 +102,7 @@ export const STAGE_FOR_MARKETING = {
   assembling: 'assembling',
   qc: 'quality',
   dispatch: 'invoice_dispatch',
+  part_sent: 'invoice_dispatch',
   lr_copy: 'lr_copy',
   lr_sent: 'lr_copy',
 };

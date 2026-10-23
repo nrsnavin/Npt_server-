@@ -22,7 +22,8 @@ import ApiError from '../utils/ApiError.js';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Still being worked: not closed by Task Closed, not lost. */
-const activeEnquiries = (user) => ({ ...ownershipFilter(user), stage: { $ne: 'closed' }, status: { $ne: 'lost' } });
+/* Not closed, not lost, and not marked Task Closed by marketing — the Enquiries list's own Open [pipeline.controller]. */
+const activeEnquiries = (user) => ({ ...ownershipFilter(user), stage: { $ne: 'closed' }, status: { $ne: 'lost' }, marketingStatus: { $ne: 'task_closed' } });
 
 /*
  * Open for marketing — the Enquiries list's own "Open" and "Due now" [pipeline.controller]: not

@@ -244,6 +244,8 @@ export function tidyReading(answer) {
   delete out.typedNumber;
   /* A WhatsApp number is a mobile too: a buyer who gave only that still has a number to call. */
   if (!out.mobile && out.whatsapp) out.mobile = out.whatsapp;
+  /* And a mobile is nearly always their WhatsApp: filled in so the draft can message them, and changed on the screen when it is not. */
+  if (!out.whatsapp && out.mobile) out.whatsapp = out.mobile;
   /* The buyer's other numbers ride on the notes, minus the ones already kept. */
   const others = otherNumbersOf(out.otherNumbers, [out.mobile, out.whatsapp]);
   delete out.otherNumbers;

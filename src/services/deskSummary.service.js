@@ -29,17 +29,36 @@ function statusWords(task) {
   return labelOf(task.kind, task.status) || 'Asked';
 }
 
+/**
+ * The models a task is about, as the desk lists them: its rows (a Quality task's, with the pieces
+ * and the complaint on each), else the models named flat on the brief.
+ */
+export function modelsOfBrief(brief = {}) {
+  const rows = Array.isArray(brief?.items) ? brief.items : [];
+  if (rows.length) {
+    return rows.filter((row) => row?.model).map((row) => ({
+      model: String(row.model).trim(), quantity: row.quantity ? Number(row.quantity) || null : null, complaint: String(row.complaint || '').trim() || null,
+    }));
+  }
+  const named = String(brief?.models || brief?.model || '').split(',').map((model) => model.trim()).filter(Boolean);
+  return named.map((model, at) => ({ model, quantity: at === 0 && brief?.quantity ? Number(brief.quantity) || null : null, complaint: null }));
+}
+const modelWords = (brief) => modelsOfBrief(brief).map((row) => `${row.model}${row.quantity ? ` (${row.quantity} pcs)` : ''}${row.complaint ? ` — ${row.complaint}` : ''}`).join(', ');
+
 /** What the task's own records say, as lines for the model to read. */
 function factsOf(row, production) {
   const { task, enquiry } = row;
   const team = findHandoff(task.kind)?.label || task.kind;
-  const models = String(task.brief?.models || task.brief?.model || '').trim();
+  const models = modelWords(task.brief);
+  const complaint = String(task.brief?.problem || '').trim();
   const received = Object.entries(task.routing?.receivedModels || {}).map(([model, date]) => `${model} on ${date}`).join(', ');
   const incoming = Object.entries(task.routing?.incoming || {}).map(([from, date]) => `${from} hands over ${date}`).join(', ');
   const updates = (task.updates || []).slice(-3).map((entry) => `- ${day(entry.at) || ''} ${entry.note || entry.text || entry.statusLabel || ''}`.trim());
   return [
     `Task: ${team} for ${enquiry?.number || 'a team task'}${enquiry?.customer?.name ? ` (${enquiry.customer.name})` : ''}`,
     models && `Models: ${models}`,
+    complaint && `Complaint: ${complaint}`,
+    task.notes && `Instruction: ${task.notes}`,
     `Status: ${statusWords(task)}`,
     received && `Goods received: ${received}`,
     incoming && `Expected: ${incoming}`,
@@ -106,6 +125,9 @@ export async function withDeskSummaries(rows = []) {
     ...row,
     summary: lines.get(id)?.summary || '',
     summaryBy: lines.get(id)?.writtenBy || 'rules',
+    /* What the task is about, for the list: each model with its pieces and complaint, and the complaint received. */
+    models: modelsOfBrief(row.task.brief),
+    complaint: String(row.task.brief?.problem || '').trim() || null,
     edd: row.enquiry?.edd?.date || (row.task.modelDates || []).map((entry) => entry.date).filter(Boolean).sort().at(-1) || null,
     workflow: production ? `/production/workflow/${production._id}` : null,
   }));

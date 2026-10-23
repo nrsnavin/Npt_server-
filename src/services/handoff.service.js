@@ -166,7 +166,9 @@ async function moveStage(enquiry, to, { user, task, note, heldBy, marketing: sai
    * — or are said outright by the rule that moved the enquiry [config/handoffs.js `whenDone`].
    */
   const current = marketingStatusOf(enquiry);
-  const follows = said ? (said !== current ? said : null) : task?.kind && followTask(task.kind, current);
+  let follows = said ? (said !== current ? said : null) : task?.kind && followTask(task.kind, current);
+  /* A part load's LR copy does not move an enquiry on from Part sent while the rest is still to go. */
+  if (follows && (await holdsPartSent(enquiry, follows))) follows = null;
   const marketing = follows
     ? { from: enquiry.marketingStatus || null, to: follows, at: new Date(), by: user?._id, note: task?.title || note }
     : null;
@@ -945,6 +947,16 @@ export async function closeEnquiryAutomatically({ enquiry, note, marketing, exce
 }
 
 /**
+ * An enquiry reading Part sent [departmentTaskForms invoice_dispatch `part_dispatched`] keeps
+ * reading it through the part load's LR copy and LR sent, while its dispatch request still has
+ * goods to send; once the request reads Dispatched the LR moves it on as usual.
+ */
+async function holdsPartSent(enquiry, target) {
+  if (marketingStatusOf(enquiry) !== 'part_sent' || !['lr_copy', 'lr_sent'].includes(target)) return false;
+  return Boolean(await Todo.exists({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false, status: { $nin: ['dispatched', 'fully_dispatched', 'closed'] } }));
+}
+
+/**
  * Where a task's own rule moves the enquiry [config/handoffs.js `whenDone`, `whenResult`]: the
  * SO uploaded reads Production, Production finished reads Dispatch, the LR uploaded reads LR
  * Sent — and is closed by a person, with the Close the enquiry screen offers once an LR is in.
@@ -960,7 +972,7 @@ async function reachEnquiry(task, user, reach, note) {
    * order booked — stands.
    */
   const current = marketingStatusOf(enquiry);
-  if (reach.marketing && marketingRank(reach.marketing) < marketingRank(current)) {
+  if (reach.marketing && (marketingRank(reach.marketing) < marketingRank(current) || (await holdsPartSent(enquiry, reach.marketing)))) {
     await moveStage(enquiry, null, { user, task, note: note || task.title, marketing: current, won: Boolean(reach.won) });
     return;
   }
@@ -1374,10 +1386,12 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   const said = [label, readyDate && `${dateText} ${readyDate}`].filter(Boolean).join(' · ');
   /* A ready date is the enquiry's EDD (Production) or ERD (the mould) from here on [enquiryProgress]. */
   const dateField = handsOn.length ? 'handover' : form.statusDate?.field || 'edd';
+  /* What the move recorded — the models and pieces in a part load, who collected a sample — kept on the line with its date. */
+  const recorded = { ...asked, ...(readyDate ? { [dateField]: readyDate } : {}) };
   task.updates = [...(task.updates || []), {
     kind: 'status', status: step.key, statusLabel: label, text: text || undefined,
     ...(readyDate ? { date: readyDate, dateLabel: handsOn.length ? 'Hand-over' : form.statusDate?.label || 'Ready date' } : {}),
-    note: text ? `${said}: ${text}` : said, ...(readyDate ? { fields: { [dateField]: readyDate } } : {}), by: user._id, at: new Date(),
+    note: text ? `${said}: ${text}` : said, ...(Object.keys(recorded).length ? { fields: recorded } : {}), by: user._id, at: new Date(),
   }];
   if (!task.user) task.user = user._id;
   await task.save();
@@ -1397,6 +1411,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   /* Production's task ended: nobody is still asked for its EDD. */
   if (task.kind === 'ask_edd' && task.completed) await (await import('./productionInCharge.service.js')).planned(task);
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  /* A status with a word for marketing — Part Quantity Dispatched reads Part sent on the enquiry [config/marketingStatuses.js]. */
+  if (step.marketing && task.enquiry) await reachEnquiry(task, user, { marketing: step.marketing }, text ? `${said}: ${text}` : said);
   /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
   if (step.next && !step.pdf) {
     if (task.enquiry) await raiseNextFrom(task, user, step, text);
@@ -3346,7 +3362,26 @@ export async function modelReadiness(enquiryId) {
     if (isDone(task, model)) ready.push(model);
     else waiting.push({ model, team: last });
   }
-  return { ready, waiting };
+  /*
+   * Which of them have gone: a part load names its models [departmentTaskForms invoice_dispatch
+   * `part_dispatched` fields]; Dispatched or Fully Dispatched sends every model made by then.
+   */
+  const requests = await Todo.find({ enquiry: id, kind: 'invoice_dispatch', createdAt: { $gte: start.createdAt } }).select('statusHistory updates').lean();
+  const sent = new Set();
+  const key = (model) => String(model || '').trim().toLowerCase();
+  for (const request of requests) {
+    for (const line of request.updates || []) {
+      if (line.kind !== 'status') continue;
+      if (['dispatched', 'fully_dispatched'].includes(line.status)) ready.forEach((model) => sent.add(model));
+      if (line.status === 'part_dispatched') {
+        for (const named of String(line.fields?.modelsSent || '').split(',').map(key).filter(Boolean)) {
+          const match = routes.find((route) => key(route.model) === named);
+          if (match) sent.add(match.model);
+        }
+      }
+    }
+  }
+  return { ready, waiting, sent: routes.map((route) => route.model).filter((model) => sent.has(model)) };
 }
 
 /**

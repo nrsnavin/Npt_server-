@@ -921,7 +921,12 @@ async function enquiryFilters(req, { withStatus = true } = {}) {
      */
     else if (req.query.open === 'true') {
       filter.status = { $ne: 'lost' };
-      filter.$and = [...(filter.$and || []), { stage: { $ne: CLOSED_STAGE } }];
+      /* Marketing marking it Task Closed takes it off the open list too, whatever stage it sits at. */
+      filter.$and = [...(filter.$and || []), { stage: { $ne: CLOSED_STAGE } }, { marketingStatus: { $ne: 'task_closed' } }];
+    }
+    /* The closed list: exactly what Open leaves out — closed, lost, or marked Task Closed. */
+    else if (req.query.open === 'false') {
+      filter.$and = [...(filter.$and || []), { $or: [{ stage: CLOSED_STAGE }, { status: 'lost' }, { marketingStatus: 'task_closed' }] }];
     }
   }
 

@@ -632,6 +632,8 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
   const merged = uniqueTasks(perDepartment.flatMap((row) => row.held), (row) => row.task._id);
   /* Printing, Assembly and Quality read their desk as lines: enquiry, buyer, EDD, the state in 20–30 words, the workflow page. */
   const held = members.every((member) => FINISHING_DEPARTMENTS.includes(member)) ? await withDeskSummaries(merged) : merged;
+  /* Dispatch's desk: for an order going out model by model, which models are ready to go, sent, or still being made [handoff.service `modelReadiness`]. */
+  if (key === 'despatch') await withReadiness(held);
   /* The queue less the enquiries themselves: side requests, like a PRT visit or photos sent. */
   const heldIds = new Set(held.map((row) => String(row.task._id)));
   const requests = dashboard.queue.filter((task) => !heldIds.has(String(task._id)));
@@ -639,6 +641,23 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
   const baskets = key === 'despatch' ? await dispatchBaskets() : undefined;
   res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, attention, baskets, ...(desk ? { desk } : {}) } });
 });
+
+/**
+ * Each dispatch request on an enquiry whose dispatch plan is "each model as it is ready" gets
+ * `readiness` — `{ ready, sent, waiting }` by model — so the Dispatch desk shows what may go now.
+ */
+async function withReadiness(rows) {
+  const ids = [...new Set(rows.filter((row) => row.enquiry?._id && row.task.kind === 'invoice_dispatch').map((row) => String(row.enquiry._id)))];
+  if (!ids.length) return rows;
+  const plans = await Enquiry.find({ _id: { $in: ids }, 'dispatchPlan.mode': 'by_model' }).select('_id').lean();
+  const byModel = new Set(plans.map((row) => String(row._id)));
+  for (const row of rows) {
+    if (row.enquiry?._id && byModel.has(String(row.enquiry._id)) && row.task.kind === 'invoice_dispatch') {
+      row.readiness = { plan: 'by_model', ...(await modelReadiness(row.enquiry._id)) };
+    }
+  }
+  return rows;
+}
 
 const uniqueTasks = (rows, idOf) => {
   const seen = new Set();
