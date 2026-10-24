@@ -145,7 +145,7 @@ test('Production’s date is the hand-over date to the next teams, not the EDD',
   assert.equal((await eddOf())?.date, undefined);
 });
 
-test('Printing hands over to Assembly; Assembly, last in the chain, gives the EDD', async () => {
+test('Printing hands over to Assembly; Assembly, last in the chain, gives the completion date', async () => {
   const printing = await openTask('ask_printing');
   const handed = await api(`/api/workspace/todos/${printing._id}/edd`, { method: 'POST', as: 'priya', body: { date: indiaDay(7) } });
   assert.equal(handed.status, 200, handed.json.message);
@@ -157,9 +157,12 @@ test('Printing hands over to Assembly; Assembly, last in the chain, gives the ED
   const edd = await api(`/api/workspace/todos/${assembly._id}/edd`, { method: 'POST', as: 'anand', body: { date: indiaDay(10), note: 'Clips arrive Monday' } });
   assert.equal(edd.status, 200, edd.json.message);
   assert.equal(edd.json.data.updates.at(-1).fields.edd, indiaDay(10));
-  const written = await eddOf();
-  assert.equal(written.date, indiaDay(10));
-  assert.equal(written.department, 'assembling');
+  /* Assembly's is the completion date; the EDD stays marketing's to give. */
+  assert.equal((await eddOf())?.date, undefined);
+  const state = await Enquiry.findById(enquiry._id).select('eddByModel').lean();
+  const row = state.eddByModel.find((entry) => entry.model === 'NPT-410V');
+  assert.deepEqual([row.completion, row.completionBy], [indiaDay(10), 'assembling']);
+  assert.deepEqual(row.teams.map((team) => [team.department, team.kind]).sort(), [['assembling', 'completion'], ['printing', 'handover'], ['production', 'handover']].sort());
 });
 
 test('changing the routing closes an untouched task that is no longer needed', async () => {
@@ -179,14 +182,15 @@ test('changing the routing closes an untouched task that is no longer needed', a
   assert.equal(assembly.brief.models, 'NPT-410V, NPT-400S');
 });
 
-test('with nothing after moulding, Production’s date is the EDD, as before', async () => {
+test('with nothing after moulding, Production’s date is the completion date — the EDD stays marketing’s', async () => {
   const rerouted = await route([{ model: 'NPT-410V' }, { model: 'NPT-400S' }, { model: 'NPT-300K' }]);
   assert.equal(rerouted.status, 200, rerouted.json.message);
   assert.deepEqual(rerouted.json.data.routing.handsTo, []);
   const given = await api(`/api/workspace/todos/${production._id}/edd`, { method: 'POST', as: 'siva', body: { date: indiaDay(6) } });
   assert.equal(given.status, 200, given.json.message);
-  assert.equal((await eddOf()).date, indiaDay(6));
-  assert.equal((await eddOf()).department, 'production');
+  assert.equal((await eddOf())?.date, undefined);
+  const state = await Enquiry.findById(enquiry._id).select('eddByModel').lean();
+  assert.ok(state.eddByModel.every((row) => row.completion === indiaDay(6) && row.completionBy === 'production'));
 });
 
 test('the plant calendar is Production’s to set, and the queue estimates press days from the mould', async () => {
@@ -209,7 +213,7 @@ test('the plant calendar is Production’s to set, and the queue estimates press
   assert.equal(row.capacity.days, 1, '10,000 pieces in one press day');
 });
 
-test('a date per model from each team: a model’s EDD is the latest of its teams, the enquiry’s the latest model', async () => {
+test('a date per model from each team: hand-over dates where a model goes on, the last team’s completion date — never the EDD', async () => {
   const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
   const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'Per Model Knits', mobile: '9840011999', assignedTo: me } })).json.data;
   const second = (await api('/api/enquiries', {
@@ -229,30 +233,27 @@ test('a date per model from each team: a model’s EDD is the latest of its team
   const fromProduction = await edd(asked._id, 'siva', { models: [{ model: 'CRF25', date: indiaDay(2) }, { model: 'CRF30', date: indiaDay(3) }, { model: 'CRF40', date: indiaDay(4) }] });
   assert.equal(fromProduction.status, 200, fromProduction.json.message);
   let state = await stateOf();
-  assert.equal(state.eddByModel.find((row) => row.model === 'CRF40').date, indiaDay(4), 'nothing after moulding: Production’s date is its EDD');
-  assert.equal(state.eddByModel.find((row) => row.model === 'CRF25').date, undefined, 'Printing and Assembly still to give theirs');
-  assert.equal(state.edd?.date, undefined, 'no enquiry EDD until every model has one');
+  const of = (model) => state.eddByModel.find((row) => row.model === model);
+  assert.equal(of('CRF40').completion, indiaDay(4), 'nothing after moulding: Production’s date is its completion date');
+  assert.equal(of('CRF25').completion, undefined, 'Printing and Assembly still to give theirs');
+  assert.deepEqual(of('CRF25').teams.map((row) => [row.department, row.date, row.kind]), [['production', indiaDay(2), 'handover']], 'Production’s date for it is a hand-over');
+  assert.equal(state.edd?.date, undefined, 'the EDD is marketing’s — the plant never writes it');
 
   const printing = await Todo.findOne({ enquiry: second._id, kind: 'ask_printing', completed: false });
   const assembly = await Todo.findOne({ enquiry: second._id, kind: 'ask_assembling_edd', completed: false });
-  /* Printing 1st, Assembly 5th (here: day 6 and day 9): the model's EDD is Assembly's, the later. */
   assert.equal((await edd(printing._id, 'priya', { models: [{ model: 'CRF25', date: indiaDay(6) }] })).status, 200);
-  assert.equal((await stateOf()).eddByModel.find((row) => row.model === 'CRF25').date, undefined, 'still waiting on Assembly');
+  state = await stateOf();
+  assert.equal(of('CRF25').completion, undefined, 'still waiting on Assembly');
   const fromAssembly = await edd(assembly._id, 'anand', { models: [{ model: 'CRF25', date: indiaDay(9) }, { model: 'CRF30', date: indiaDay(5) }] });
   assert.equal(fromAssembly.status, 200, fromAssembly.json.message);
   state = await stateOf();
-  const crf25 = state.eddByModel.find((row) => row.model === 'CRF25');
-  assert.deepEqual([crf25.date, crf25.department], [indiaDay(9), 'assembling']);
-  assert.deepEqual(crf25.teams.map((row) => [row.department, row.date]).sort(), [['assembling', indiaDay(9)], ['printing', indiaDay(6)], ['production', indiaDay(2)]].sort());
-  assert.equal(state.eddByModel.find((row) => row.model === 'CRF30').date, indiaDay(5));
-  assert.deepEqual([state.edd.date, state.edd.department], [indiaDay(9), 'assembling'], 'the order goes when its last model is ready');
-  assert.match(state.edd.note, /latest of 3 models \(CRF25\)/);
-
-  /* Assembly moves CRF25 earlier than Printing's date: the later of the two still stands. */
-  await edd(assembly._id, 'anand', { models: [{ model: 'CRF25', date: indiaDay(5) }] });
-  assert.equal((await stateOf()).eddByModel.find((row) => row.model === 'CRF25').date, indiaDay(6), 'Printing’s 6th is later than Assembly’s 5th');
+  assert.deepEqual([of('CRF25').completion, of('CRF25').completionBy], [indiaDay(9), 'assembling']);
+  assert.deepEqual(of('CRF25').teams.map((row) => [row.department, row.date, row.kind]).sort(), [['assembling', indiaDay(9), 'completion'], ['printing', indiaDay(6), 'handover'], ['production', indiaDay(2), 'handover']].sort());
+  assert.equal(of('CRF30').completion, indiaDay(5));
+  assert.equal(state.edd?.date, undefined, 'still marketing’s to give');
   const production = (await api(`/api/enquiries/${second._id}/handoffs`, { as: 'nandhini' })).json.production;
-  assert.equal(production.byModel.length, 3, 'the enquiry screen reads each model’s EDD');
+  assert.equal(production.byModel.length, 3, 'the enquiry screen reads each model’s dates');
+  assert.deepEqual(production.completion, { date: indiaDay(9), complete: true }, 'the plant’s completion: the latest model’s');
 });
 
 async function routedEnquiry(name, phone, items, models) {
@@ -268,30 +269,33 @@ async function routedEnquiry(name, phone, items, models) {
   return { enquiry: made, production: task };
 }
 
-test('marketing sets the final EDD per model — by default the latest; every task is told; a team moving its date does not undo it', async () => {
+test('marketing sets the EDD per model; every task is told; a team moving its date does not undo it', async () => {
   const { enquiry: third, production: asked } = await routedEnquiry('Final EDD Knits', '9840011888', [{ modelNumber: 'FX-1', quantity: 1000 }, { modelNumber: 'FX-2', quantity: 1000 }], [{ model: 'FX-1' }, { model: 'FX-2', printing: true }]);
   await api(`/api/workspace/todos/${asked._id}/edd`, { method: 'POST', as: 'siva', body: { models: [{ model: 'FX-1', date: indiaDay(3) }, { model: 'FX-2', date: indiaDay(2) }] } });
   const printing = await Todo.findOne({ enquiry: third._id, kind: 'ask_printing', completed: false });
   await api(`/api/workspace/todos/${printing._id}/edd`, { method: 'POST', as: 'priya', body: { date: indiaDay(5) } });
   let state = await Enquiry.findById(third._id).select('edd eddByModel').lean();
-  assert.equal(state.edd.date, indiaDay(5), 'by default the latest');
+  assert.equal(state.edd?.date, undefined, 'the plant’s dates are not the EDD');
+  assert.equal(state.eddByModel.find((row) => row.model === 'FX-2').completion, indiaDay(5));
 
   assert.equal((await api(`/api/enquiries/${third._id}/edd/models`, { method: 'POST', as: 'siva', body: { models: [{ model: 'FX-2', date: indiaDay(8) }] } })).status, 403, 'Production does not set marketing’s date');
   const set = await api(`/api/enquiries/${third._id}/edd/models`, { method: 'POST', as: 'nandhini', body: { models: [{ model: 'FX-2', date: indiaDay(8) }], note: 'Buyer agreed the 8th' } });
   assert.equal(set.status, 200, set.json.message);
   state = await Enquiry.findById(third._id).select('edd eddByModel').lean();
   const fx2 = state.eddByModel.find((row) => row.model === 'FX-2');
-  assert.deepEqual([fx2.date, fx2.suggested, fx2.department, fx2.final.date], [indiaDay(8), indiaDay(5), 'marketing', indiaDay(8)]);
-  assert.equal(state.edd.date, indiaDay(8));
-  assert.match((await Todo.findById(printing._id)).updates.at(-1).note, /Final EDD set by Nandhini S: FX-2/);
+  assert.deepEqual([fx2.date, fx2.completion, fx2.department, fx2.final.date], [indiaDay(8), indiaDay(5), 'marketing', indiaDay(8)]);
+  assert.equal(state.edd.date, indiaDay(8), 'the enquiry’s EDD follows marketing’s');
+  assert.equal(state.edd.department, 'marketing');
+  assert.match((await Todo.findById(printing._id)).updates.at(-1).note, /EDD set by Nandhini S \(marketing\): FX-2/);
   const { default: TaskNotice } = await import('../src/models/TaskNotice.js');
   const priyaId = (await api('/api/auth/me', { as: 'priya' })).json.data.id;
-  assert.ok(await TaskNotice.exists({ task: printing._id, recipient: priyaId, statusLabel: 'Final EDD set by marketing' }), 'Printing is told');
+  assert.ok(await TaskNotice.exists({ task: printing._id, recipient: priyaId, statusLabel: 'EDD set by marketing' }), 'Printing is told');
 
   await api(`/api/workspace/todos/${printing._id}/edd`, { method: 'POST', as: 'priya', body: { date: indiaDay(6) } });
   state = await Enquiry.findById(third._id).select('edd eddByModel').lean();
   const after = state.eddByModel.find((row) => row.model === 'FX-2');
-  assert.deepEqual([after.date, after.suggested], [indiaDay(8), indiaDay(6)], 'marketing’s word stands; the teams’ new date is seen beside it');
+  assert.deepEqual([after.date, after.completion], [indiaDay(8), indiaDay(6)], 'marketing’s word stands; the team’s new date is seen beside it');
+  assert.equal(state.edd.date, indiaDay(8));
 });
 
 test('Production hands the goods to Printing — only where a model was routed there — and Printing hears it', async () => {

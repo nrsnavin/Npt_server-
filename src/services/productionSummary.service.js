@@ -116,9 +116,11 @@ export function modelRows({ task, enquiry = {}, teams = {}, workOrders = [] }) {
       printingReceived: route?.printing ? teams.printing?.routing?.receivedModels?.[model] || null : null,
       assemblyStatus: route?.assembly ? statusFor(teams.assembling, model) : null,
       assemblyReceived: route?.assembly ? teams.assembling?.routing?.receivedModels?.[model] || null : null,
-      /* The enquiry's EDD for the model; on a team task (no enquiry), the date its last team gave. */
-      edd: edd ? edd.final?.date || edd.date || null
-        : dateFor(route?.assembly ? teams.assembling : route?.printing ? teams.printing : task, model, false)?.date || null,
+      /* Marketing's EDD for the model: set for it, else the enquiry's. */
+      edd: edd?.final?.date || enquiry.edd?.date || null,
+      /* The plant's completion date for it: the last team's [handoff.service `refreshModelEdds`]; on a team task, the date that team gave. */
+      completion: edd?.completion
+        || dateFor(route?.assembly ? teams.assembling : route?.printing ? teams.printing : task, model, false)?.date || null,
       workOrders: workOrders.filter((wo) => codeKey(wo.modelNumber) === codeKey(model)).map((wo) => wo.number),
     };
   });

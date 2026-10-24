@@ -442,8 +442,8 @@ export const TASK_FORMS = {
     /* Every move says why, and the enquiry's marketing person and Admin are told of it. */
     remarkRequired: true,
     notifyStatus: true,
-    /* Production's ready date — the enquiry's EDD [handoff.service `productionDates`]. */
-    statusDate: { label: 'ERD / Ready date', field: 'edd' },
+    /* Production's completion date (or hand-over date, where a model goes on) — never the EDD, which is marketing's [handoff.service `refreshModelEdds`]. */
+    statusDate: { label: 'Completion date', field: 'edd' },
     remark: { label: 'Remarks', placeholder: 'Add production / assembling remark' },
     /*
      * Handed on from the Production desk: each raises that team's task on the enquiry, told back
@@ -488,8 +488,8 @@ export const TASK_FORMS = {
     asks: [...modelAndQuantity, { key: 'models', label: 'Models to assemble' }],
     remarkRequired: true,
     notifyStatus: true,
-    /* Assembly's ready date is the enquiry's EDD, as Production's is. */
-    statusDate: { label: 'ERD / Ready date', field: 'edd' },
+    /* Assembly's completion date, shown on the enquiry beside marketing's EDD. */
+    statusDate: { label: 'Completion date', field: 'edd' },
     remark: { label: 'Remarks', placeholder: 'Add assembling / printing remark' },
     statuses: [
       { key: 'asked', label: 'Asked Assembling Readiness' },
@@ -511,7 +511,7 @@ export const TASK_FORMS = {
     asks: [...modelAndQuantity, { key: 'models', label: 'Models to print' }],
     remarkRequired: true,
     notifyStatus: true,
-    statusDate: { label: 'Ready date', field: 'edd' },
+    statusDate: { label: 'Completion date', field: 'edd' },
     remark: { label: 'Remarks', placeholder: 'Add printing remark — artwork, colours, pieces done' },
     statuses: [
       { key: 'asked', label: 'Asked Printing Readiness' },

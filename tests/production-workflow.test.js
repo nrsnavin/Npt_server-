@@ -84,14 +84,14 @@ test('the Production task starts at EDD Request Received; the seventeen statuses
     'Production Completed', 'Handed to Printing', 'Handed to Assembly', 'Assembling', 'Ready for Dispatch', 'Task Closed',
   ]);
   assert.equal(form.remarkRequired, true);
-  assert.equal(form.statusDate.label, 'ERD / Ready date');
+  assert.equal(form.statusDate.label, 'Completion date');
   assert.equal(task.status, 'received');
 });
 
 test('every move needs a remark; Ready on Selected Date needs a date, and not a past one', async () => {
   assert.equal((await move('siva', 'accepted')).status, 400, 'no remark');
   assert.match((await move('siva', 'accepted', { note: 'ok' })).json.message, /remark/i, 'too short to be a remark');
-  assert.match((await move('siva', 'ready_on_date', { note: 'Machine 4 free from Friday' })).json.message, /ERD \/ Ready date/);
+  assert.match((await move('siva', 'ready_on_date', { note: 'Machine 4 free from Friday' })).json.message, /Completion date/);
   assert.match((await move('siva', 'ready_on_date', { note: 'Machine 4 free', date: indiaDay(-2) })).json.message, /past/);
   assert.equal((await move('arun', 'accepted', { note: 'Taking this one' })).status, 403, 'marketing does not move Production’s task');
   assert.equal(await TaskNotice.countDocuments(), 0, 'a refused move tells nobody');
@@ -119,20 +119,21 @@ test('only Mould Issue or Raw Material Not Available reaches marketing and Admin
   assert.equal(dashboard.attention.notices[0].statusLabel, 'Mould Issue');
 });
 
-test('a ready date becomes the enquiry’s EDD; Ready Tomorrow is tomorrow unless another is given', async () => {
+test('a ready date is Production’s completion date, shown on the enquiry; Ready Tomorrow is tomorrow unless another is given', async () => {
   const day = indiaDay(5);
-  /* Production decides first that nothing follows moulding; its date is then the EDD. */
+  /* Production decides first that nothing follows moulding; its date is then the completion date. */
   assert.equal((await api(`/api/workspace/todos/${task._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'UTJRSH-0' }] } })).status, 200);
   assert.equal((await move('siva', 'ready_on_date', { note: 'Machine 4 free by then', date: day })).status, 200);
   let { production } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
-  assert.equal(production.edd.edd, day);
+  assert.equal(production.edd, null, 'the EDD is marketing’s — Production does not give it');
+  assert.equal(production.byModel.find((row) => row.model === 'UTJRSH-0').completion, day);
   assert.equal(production.asked.status, 'Ready on Selected Date');
   assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Ready on Selected Date'), 'the date is on the enquiry and the task');
   assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Ready on Selected Date'));
 
   assert.equal((await move('siva', 'ready_tomorrow', { note: 'Last 2,000 on the night shift' })).status, 200);
   ({ production } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json);
-  assert.equal(production.edd.edd, indiaDay(1));
+  assert.equal(production.byModel.find((row) => row.model === 'UTJRSH-0').completion, indiaDay(1));
 });
 
 test('a notice is read, then dismissed — and only by whoever it is for', async () => {
@@ -200,12 +201,13 @@ test('a Mould move needs a remark; the EDR moves need the mould’s ready date; 
   assert.equal((await noticesOf('nandhini')).length, before, 'not in marketing’s Needs your action');
 });
 
-test('marketing’s enquiry list shows the stage, the mould’s ERD, Production’s EDD and the issues', async () => {
+test('marketing’s enquiry list shows the stage, the mould’s ERD, Production’s completion date and the issues', async () => {
   let row = await listed();
   assert.ok(row.stage, 'the enquiry’s stage');
   assert.equal(row.progress.erd.date, indiaDay(6));
   assert.equal(row.progress.erd.department, 'mould');
-  assert.equal(row.progress.edd.date, indiaDay(1), 'Production’s Ready Tomorrow');
+  assert.equal(row.progress.completion.date, indiaDay(1), 'Production’s Ready Tomorrow is its completion date');
+  assert.equal(row.progress.completion.department, 'production');
   assert.deepEqual(row.progress.issues, []);
 
   assert.equal((await mouldMove('admin', 'rework', { note: 'Trial shots short on cavity 2' })).status, 200);

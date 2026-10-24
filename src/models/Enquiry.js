@@ -446,13 +446,12 @@ const enquirySchema = new mongoose.Schema(
     quotationAskedAt: { type: Date },
 
     /**
-     * The expected delivery date — the one date the plant works to on this enquiry, shown on the
-     * Production and Dispatch tasks and on marketing's list. Marketing sets it on the enquiry;
-     * Production (or Assembly, Printing) gives or changes it from its task, and a ready date given
-     * with a status move writes it too [handoff.service `setTaskStatus`, `setTaskEdd`]. The latest
-     * word wins, whoever's it is; `department` says whose. The date is a calendar day, YYYY-MM-DD,
-     * as every ready date on the tasks is: a day in India, not an instant that reads as the day
-     * before on a clock set elsewhere.
+     * The expected delivery date — the day the buyer is promised, and the one date the plant works
+     * to: the Production queue runs in its order. Marketing's alone: set on the enquiry, on the SO
+     * request's rows, or model by model [pipeline.controller `setEnquiryEdd`, handoff.service
+     * `setModelEdds`]. Production, Printing and Assembly never write it — they give their own
+     * hand-over and completion dates, kept beside it on `eddByModel`. The date is a calendar day,
+     * YYYY-MM-DD: a day in India, not an instant that reads as the day before elsewhere.
      */
     edd: {
       date: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
@@ -462,16 +461,23 @@ const enquirySchema = new mongoose.Schema(
       note: String,
     },
     /*
-     * Each model's EDD: the latest date any team that makes or finishes it gave — Production,
-     * Printing, Assembly [handoff.service `refreshModelEdds`]. The enquiry's EDD is the latest of these.
+     * Each model's dates [handoff.service `refreshModelEdds`]: marketing's EDD for it (`date`,
+     * with `final` saying who set it; none means the enquiry's EDD stands for it), and each team's
+     * own date — Production's and Printing's hand-over date where the model goes on to the next
+     * team, the last team's completion date (`completion`) where it ends. The plant's dates never
+     * become the EDD; the screens show them beside it, and the risk reading compares the two.
      */
     eddByModel: {
       type: [new mongoose.Schema({
         model: { type: String, trim: true },
         date: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
         department: String,
-        teams: { type: [new mongoose.Schema({ department: String, date: String }, { _id: false })], default: undefined },
-        /* The latest of the teams' dates — what the EDD would be without marketing's word. */
+        /* `kind`: `handover` (to the next team on the model's route) or `completion` (the last team's). */
+        teams: { type: [new mongoose.Schema({ department: String, date: String, kind: String }, { _id: false })], default: undefined },
+        /* The last team's completion date for the model, and whose — once that team has given it. */
+        completion: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
+        completionBy: String,
+        /* The same date, under its older name, for the screens that still read it. */
         suggested: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
         /* Marketing's final EDD for the model, which stands over the teams' dates until changed. */
         final: {

@@ -127,7 +127,7 @@ test('routed: Printing queues the printed models, Assembly the assembled ones, e
   const s400 = asm.models.find((row) => row.model === 'NPT-400S');
   assert.equal(v410.from, 'printing');
   assert.equal(v410.next, null, 'Assembly is last');
-  assert.equal(v410.givenLabel, 'EDD');
+  assert.equal(v410.givenLabel, 'Completion');
   assert.equal(s400.from, 'production');
   assert.equal(s400.expected, indiaDay(5));
   assert.deepEqual(asm.goods.from.sort(), ['printing', 'production']);
@@ -150,7 +150,7 @@ test('the goods come: Production hands over one model, the row says which came a
   assert.deepEqual(asm.goods.toQueue, ['NPT-400S'], 'in hand, to put in the work queue');
 });
 
-test('the queue is in the order of the date the team works to — its own once given, the enquiry’s until then', async () => {
+test('the queue runs by marketing’s EDD; a job with none goes by the team’s own date', async () => {
   /* Printing's hand-over date to Assembly reaches Assembly's row as the day the goods are expected. */
   const printing = await openTask('ask_printing');
   const handOver = await api(`/api/workspace/todos/${printing._id}/edd`, { method: 'POST', as: 'pandi', body: { date: indiaDay(4), note: 'Two colours' } });
@@ -163,15 +163,17 @@ test('the queue is in the order of the date the team works to — its own once g
   let [asm] = (await queue('assembling')).data;
   assert.equal(asm.models.find((row) => row.model === 'NPT-410V').expected, indiaDay(4));
 
-  /* Assembly, last in the chain, gives the EDD; the enquiry's EDD follows and the row is banded by it. */
+  /* Assembly, last in the chain, gives its completion date; with no EDD from marketing yet, the row is banded by it. */
   const assembly = await openTask('ask_assembling_edd');
   const edd = await api(`/api/workspace/todos/${assembly._id}/edd`, { method: 'POST', as: 'anand', body: { date: indiaDay(6), note: 'Clips in' } });
   assert.equal(edd.status, 200, edd.json.message);
   [asm] = (await queue('assembling')).data;
   assert.equal(asm.edd.date, indiaDay(6));
-  assert.equal(asm.edd.label, 'EDD');
+  assert.equal(asm.edd.label, 'Completion');
   assert.equal(asm.band, 'week');
-  assert.equal(asm.models.find((row) => row.model === 'NPT-410V').edd, indiaDay(6), 'the enquiry’s EDD for the model — the latest its teams gave');
+  const v410 = asm.models.find((row) => row.model === 'NPT-410V');
+  assert.equal(v410.edd, null, 'no EDD from marketing yet — the team’s date is not one');
+  assert.equal(v410.given, indiaDay(6));
   const meta = (await queue('assembling')).meta;
   assert.equal(meta.bands.week, 1);
   assert.equal(meta.noDate, 0);

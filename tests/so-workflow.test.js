@@ -275,10 +275,12 @@ test('asking Production again adds to its open task instead of refusing', async 
   assert.equal(task.brief.quantity, '5000');
 });
 
-test('the EDD Production gives shows with the enquiry', async () => {
+test('the date Production gives shows with the enquiry, apart from the EDD', async () => {
   const task = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_edd', completed: false });
   const asked = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json.production;
-  assert.equal(asked.edd, null, 'no date given yet');
+  /* The EDD marketing gave on the SO request's row is the enquiry's [handoff.service `eddsFromOrderRows`]. */
+  assert.deepEqual([asked.edd.edd, asked.edd.department], ['2026-11-10', 'marketing']);
+  assert.equal(asked.byModel.find((row) => row.model === 'UTJRSH-0').final.date, '2026-11-10');
   assert.equal(asked.asked.department, 'production', 'but Production has been asked');
 
   const update = await api(`/api/workspace/todos/${task._id}/update`, {
@@ -286,10 +288,10 @@ test('the EDD Production gives shows with the enquiry', async () => {
   });
   assert.equal(update.status, 200, update.json.message);
   const { production } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
-  assert.equal(production.edd.edd, '2026-10-24');
-  assert.equal(production.edd.pending, '4000');
-  assert.equal(production.edd.by, 'Sivakumar');
-  assert.equal(production.edd.department, 'production');
+  /* Production's date is its own, listed with the teams' dates; the EDD stays marketing's. */
+  assert.equal(production.edd.edd, '2026-11-10', 'still marketing’s');
+  const said = production.teamDates[0];
+  assert.deepEqual([said.edd, said.pending, said.by, said.department], ['2026-10-24', '4000', 'Sivakumar', 'production']);
 });
 
 test('a request line without its pieces or price books no order, and the task says what is missing', async () => {

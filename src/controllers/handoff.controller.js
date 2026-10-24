@@ -22,6 +22,7 @@ import { inTransaction, transactional } from '../utils/transaction.js';
 import { retryOnConflict } from '../utils/concurrency.js';
 import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
 import { HANDOFFS, QUERY_KINDS, TILE_KIND, findHandoff } from '../config/handoffs.js';
+import { deliveryRiskFor } from '../services/deliveryRisk.service.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
@@ -198,6 +199,8 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     lrUploaded: tasks.some((task) => task.kind === 'lr_copy' && task.resultFile),
     /* When the goods will be ready — Production's EDD and the order lines' own dates. */
     production: await productionDates(enquiry._id),
+    /* Will it make marketing's EDD — from the work still to do and the plant's own pace [deliveryRisk.service]. */
+    risk: (await deliveryRiskFor([enquiry._id])).get(String(enquiry._id)) || null,
     /* Its sales orders and whether each has gone to the plant — released here or on the Sales orders screen. */
     orders: await ordersOnEnquiry(enquiry, req.user),
     /* What the floor is doing for it now, and the journey from SO to LR as steps [journey.service]. */
@@ -645,6 +648,9 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
   const held = members.every((member) => FINISHING_DEPARTMENTS.includes(member)) ? await withDeskSummaries(merged) : merged;
   /* Dispatch's desk: for an order going out model by model, which models are ready to go, sent, or still being made [handoff.service `modelReadiness`]. */
   if (key === 'despatch') await withReadiness(held);
+  /* Each task on an enquiry: will the order make its EDD [deliveryRisk.service] — read on the desk's cards. */
+  const risks = await deliveryRiskFor([...held, ...queries].map((row) => row.enquiry?._id));
+  for (const row of [...held, ...queries]) if (row.enquiry?._id) row.delivery = risks.get(String(row.enquiry._id)) || null;
   /* The queue less the enquiries themselves: side requests, like a PRT visit or photos sent. */
   const heldIds = new Set(every.map((row) => String(row.task._id)));
   const requests = dashboard.queue.filter((task) => !heldIds.has(String(task._id)));
