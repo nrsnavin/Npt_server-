@@ -396,3 +396,33 @@ test('Admin allowing production without the advance tells marketing and the SO t
   assert.match(chase.updates.at(-1).note, /allowed production without the payment: Old buyer, pays on time\. The money is still owed/);
   assert.equal((await api(`/api/orders/${order._id}/release-check`, { as: 'priya' })).json.data.advance.waived, true);
 });
+
+test('an SO with an advance in its terms: Payment Collection gets the task on upload, and Accounts’ confirmation releases it to production by itself', async () => {
+  const enquiry = await freshEnquiry('NH-410');
+  const sent = await api(`/api/enquiries/${enquiry}/handoffs`, {
+    method: 'POST', as: 'nandhini',
+    body: { kind: 'po_so', note: 'Prepare SO', brief: { items: [{ model: 'NH-410', quantity: '1000', price: '5' }], paymentTerms: '50% advance, 50% against delivery', productionConfirmed: true } },
+  });
+  assert.equal(sent.status, 201, sent.json.message);
+  const so = sent.json.data.task;
+  const form = new FormData();
+  form.append('file', new Blob(['%PDF-1.4 so'], { type: 'application/pdf' }), 'SO-ADV.pdf');
+  const uploaded = await fetch(`${baseUrl}/api/workspace/todos/${so._id}/result`, { method: 'POST', headers: { Authorization: `Bearer ${token.priya}` }, body: form }).then((response) => response.json());
+  assert.equal(uploaded.data.completed, true, uploaded.message);
+  assert.equal(uploaded.order.released, false, 'not released — the advance is not in');
+  assert.equal(await Todo.exists({ enquiry, kind: 'ask_edd' }), null, 'Production is not asked yet');
+  const order = await SalesOrder.findById(uploaded.order._id);
+  const [chase] = (await collectionTasks(order)).filter((entry) => !entry.completed);
+  assert.ok(chase, 'Payment Collection has the task the moment the SO is uploaded');
+  assert.match(chase.title, /^Collect ₹2,500 before production/);
+
+  const logged = await api(`/api/workspace/todos/${chase._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'payment_inward', note: 'NEFT in', fields: { amount: 2500, mode: 'NEFT', reference: 'UTR-ADV-1' } } });
+  assert.equal(logged.status, 200, logged.json.message);
+  assert.equal((await SalesOrder.findById(order._id)).status === 'approved_for_production', false, 'logged is not confirmed — still waits');
+  const advance = await Receivable.findOne({ order: order._id, kind: 'advance' }).lean();
+  const confirmed = await api(`/api/payments/${advance._id}/receipts/${advance.receipts[0]._id}/confirm`, { method: 'POST', as: 'kiran' });
+  assert.equal(confirmed.status, 200, confirmed.json.message);
+  assert.ok(await until(async () => (await SalesOrder.findById(order._id)).status === 'approved_for_production'), 'released to production by itself');
+  assert.ok(await until(async () => Todo.exists({ enquiry, kind: 'ask_edd', completed: false })), 'Production has its task');
+  assert.ok(await until(async () => Todo.exists({ title: new RegExp(`Advance confirmed on ${order.number} — released to production`) })), 'marketing is told it went, not asked to release it');
+});

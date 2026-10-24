@@ -312,12 +312,26 @@ async function refreshGateTask(order, stage, standing) {
  * paid closes its collection task and tells the marketing person and the SO team, who release the
  * order; a stage still short keeps its task saying what is still to come.
  */
-export async function afterPayment(orderId) {
-  const order = await SalesOrder.findById(orderId);
+export async function afterPayment(orderId, { by } = {}) {
+  let order = await SalesOrder.findById(orderId);
   if (!order) return null;
   const standing = await paymentStanding(order);
   /* A Production Holded Order is released by Admin or its marketing person only — from the enquiry. */
   const held = order.enquiry ? (await mongoose.model('Enquiry').findById(order.enquiry).select('stage').lean())?.stage === 'production_hold' : false;
+  /*
+   * The advance confirmed in the bank, on an order the SO request sent with Production confirmed:
+   * it is released to production now and Production gets its task — nobody has to press release
+   * [handoff.service `releaseOnAdvance`]. A held order still waits for its marketing person.
+   */
+  let autoReleased = false;
+  if (by && !held && standing.production.required > 0 && standing.production.met && PRE_RELEASE_STATUSES.includes(order.status)) {
+    const { releaseOnAdvance } = await import('./handoff.service.js');
+    autoReleased = await releaseOnAdvance(order, by).catch((error) => {
+      console.error(`[payments] ${order.number} not released on the advance: ${error.message}`);
+      return false;
+    });
+    if (autoReleased) order = await SalesOrder.findById(orderId);
+  }
   for (const stage of PAYMENT_STAGES) {
     const needed = standing[stage];
     if (needed.required <= 0) continue;
@@ -328,13 +342,14 @@ export async function afterPayment(orderId) {
     }
     const closed = await resolveTasks(gateKey(order, stage));
     if (closed && order.assignedTo) {
-      /* Still waiting at the gate: the marketing person releases it, from the order. */
+      /* Still waiting at the gate: the marketing person releases it, from the order — unless it was released just now. */
       const toRelease = stage === 'production' && PRE_RELEASE_STATUSES.includes(order.status);
       await raiseTask({
         user: order.assignedTo,
         title: stage === 'production'
           ? held ? `Advance received on ${order.number} — a Production Holded Order: move it to Production on the enquiry`
-            : toRelease ? `Advance received on ${order.number} — release it to production` : `Advance received on ${order.number} — production can start`
+            : autoReleased ? `Advance confirmed on ${order.number} — released to production, Production has its task`
+              : toRelease ? `Advance received on ${order.number} — release it to production` : `Advance received on ${order.number} — production can start`
           : `Payment received on ${order.number} — the goods can be dispatched`,
         link: held && order.enquiry ? `/enquiries/${order.enquiry}` : toRelease || !order.enquiry ? `/orders/${order._id}` : `/enquiries/${order.enquiry}`,
         originKey: `payment-met:${order._id}:${stage}`,

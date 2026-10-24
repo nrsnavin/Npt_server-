@@ -1570,7 +1570,7 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   if (step.sampleReady) await readyAtDesk(task, user);
   /* Money confirmed in: a stage now covered closes this task and tells marketing to release the order [paymentGates `afterPayment`]. */
   if (inward && !inward.again) {
-    await afterPayment(inward.order._id);
+    await afterPayment(inward.order._id, { by: user });
     return (await Todo.findById(task._id)) || task;
   }
   /* A status that tells the buyer something — "your sample is ready to collect" — sends it from here. */
@@ -1790,6 +1790,35 @@ async function lrToReception(task, user, attachmentId, said) {
   await lr.save();
   await publish(EVENTS.HANDOFF_UPDATED, { task: lr, by: user });
   return lr;
+}
+
+/**
+ * The advance is confirmed in the bank on an order its SO request sent with Production confirmed
+ * [paymentGates.service `afterPayment`]: released to production — the same release as the Sales
+ * orders screen's — and Production asked for it on the enquiry (or the job's next team task), as
+ * the SO upload would have done had the money been in. Returns whether it was released.
+ */
+export async function releaseOnAdvance(order, user) {
+  const source = order.sourceTask ? await Todo.findById(order.sourceTask) : null;
+  /* Only an order booked from an SO request that said Production confirmed goes on by itself. */
+  if (!source || source.kind !== 'po_so' || heldBack(source)) return false;
+  const { releaseFromTask, noteOrderOnTask } = await import('./soFromTask.service.js');
+  const why = `Released automatically — the advance on ${order.number} is confirmed in the bank`;
+  const result = await releaseFromTask(order, user, why);
+  if (!result.released) return false;
+  const brief = carriedBrief(source);
+  if (order.enquiry) {
+    const open = await Todo.exists({ enquiry: order.enquiry, kind: 'ask_edd', completed: false });
+    if (!open) {
+      const enquiry = await Enquiry.findById(order.enquiry);
+      if (enquiry) await moveEnquiry({ enquiry, kind: 'ask_edd', note: why, user, system: true, order: order._id, brief });
+    }
+  } else {
+    const { raiseNextTeamTask } = await import('./journey.service.js');
+    await raiseNextTeamTask(source, 'ask_edd', user, why, { brief });
+  }
+  await noteOrderOnTask(source, user, `${order.number} released to production — advance confirmed; Production has its task`).catch(() => null);
+  return true;
 }
 
 /** A task whose workflow ends by uploading its PDF (the sales order). */

@@ -617,7 +617,7 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
   /* Logged, not seen in the bank: Accounts gets a task to confirm it. */
   if (!logged.confirmed?.at) await askAccountsToConfirm(receivable, logged, req.user);
   /* Money in may open production or dispatch on the order's terms: close the chase, tell marketing. */
-  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order));
+  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order, { by: req.user }));
 
   await receivable.populate(POPULATE);
   res.status(201).json({ success: true, data: receivable });
@@ -645,7 +645,7 @@ export const confirmReceipt = asyncHandler(withOrderLock(async req => (await Rec
   });
   /* Every payment on it seen in the bank: Accounts' task to confirm them is done. */
   if (receivable.receipts.every((row) => row.confirmed?.at)) await resolveTasks(confirmTaskKey(receivable));
-  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order));
+  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order, { by: req.user }));
   await receivable.populate(POPULATE);
   return res.json({ success: true, data: receivable });
 })));
@@ -691,7 +691,7 @@ export const rejectReceipt = asyncHandler(withOrderLock(async req => (await Rece
   }
   /* Nothing left for Accounts to check on this RCV: their task is done. */
   if (receivable.receipts.every((row) => row.confirmed?.at)) await resolveTasks(confirmTaskKey(receivable));
-  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order));
+  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order, { by: req.user }));
   await receivable.populate(POPULATE);
   return res.json({ success: true, data: receivable });
 })));
