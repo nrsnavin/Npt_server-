@@ -83,6 +83,12 @@ export const productionQueueAddSchema = z.object({
   note: z.string().trim().max(2000).optional(),
 });
 
+/** Printing or Assembly takes goods that came into its work queue: the models (all in hand when none), a remark. */
+export const workQueueAddSchema = z.object({
+  models: z.array(z.string().trim().min(1).max(120)).max(100).optional(),
+  note: z.string().trim().max(2000).optional(),
+});
+
 /** Another department asked from this task — Dispatch's "Ask Production"; checked by the service. */
 export const taskAskSchema = z.object({
   kind: z.string().trim().min(1).max(40),

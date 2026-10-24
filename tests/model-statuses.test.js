@@ -165,7 +165,7 @@ test('the queue says each enquiry in at most thirty words, with its models and w
   const queue = (await api('/api/production/queue', { as: 'siva' })).json.data;
   const row = queue.find((entry) => entry.enquiry._id === enquiry._id);
   assert.ok(row.summary.split(/\s+/).length <= 30, row.summary);
-  assert.match(row.summary, /^CRF25 Handed to Printing; CRF30, CRF40 Production Started\. Work orders 0\/2 done\. Printing Asked Printing Readiness/);
+  assert.match(row.summary, /^CRF25 Handed to Printing; CRF30, CRF40 Production Started\. Work orders 0\/2 done\. Printing Goods Received/, 'CRF25 handed over reads Goods Received at Printing');
   assert.equal(row.link, `/production/workflow/${production._id}`);
   assert.deepEqual(row.workOrders.map((wo) => wo.modelNumber).sort(), ['CRF25', 'CRF30']);
   assert.deepEqual(row.models.map((entry) => [entry.model, entry.production.label, entry.printing]), [['CRF25', 'Handed to Printing', true], ['CRF30', 'Production Started', false], ['CRF40', 'Production Started', false]]);
@@ -177,7 +177,7 @@ test('the queue says each enquiry in at most thirty words, with its models and w
   assert.equal(data.task._id, String(production._id));
   assert.ok(data.teams.printing, 'Printing’s task beside it');
   const crf25 = data.models.find((entry) => entry.model === 'CRF25');
-  assert.equal(crf25.printingStatus.label, 'Asked Printing Readiness');
+  assert.equal(crf25.printingStatus.label, 'Goods Received');
   assert.ok(crf25.printingReceived, 'the day CRF25 reached Printing');
   assert.equal(crf25.workOrders.length, 1);
   assert.equal(data.workOrders.length, 2);

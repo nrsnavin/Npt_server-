@@ -97,12 +97,22 @@ function finishingClosable(task, context) {
   return { why, models };
 }
 
+/* The Quality Check status a passing QC record closes it with. */
+const CHECK_CLOSES = { passed: 'passed', passed_with_deviation: 'passed_deviation' };
+
 function qualityClosable(task, context) {
   const mine = context.qc.filter((record) => (record.task ? idOf(record.task) === idOf(task._id)
     : task.enquiry && idOf(record.enquiry) === idOf(task.enquiry) && new Date(record.inspectedAt || record.createdAt) >= new Date(task.createdAt)));
   if (mine.length) {
     const latest = mine.sort((a, b) => new Date(b.inspectedAt || b.createdAt) - new Date(a.inspectedAt || a.createdAt))[0];
-    return { why: `QC record ${latest.number} entered — ${VERDICT_WORDS[latest.verdict] || latest.verdict}`, models: [], record: { _id: latest._id, number: latest.number, verdict: latest.verdict } };
+    /*
+     * The check before dispatch finishes only on a pass [departmentTaskForms quality_check]: the
+     * record's verdict says which — QC Passed or Passed with Deviation — and a failing record
+     * offers nothing; the goods go back for rework.
+     */
+    const status = task.kind === 'quality_check' ? CHECK_CLOSES[latest.verdict] : 'closed';
+    if (!status) return null;
+    return { why: `QC record ${latest.number} entered — ${VERDICT_WORDS[latest.verdict] || latest.verdict}`, models: [], status, record: { _id: latest._id, number: latest.number, verdict: latest.verdict } };
   }
   if (task.status === 'resolved') return { why: 'Resolved', models: [] };
   return null;

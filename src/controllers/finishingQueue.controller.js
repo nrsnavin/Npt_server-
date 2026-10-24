@@ -21,6 +21,11 @@ import { ticked as qcTicked } from '../services/qcGate.service.js';
  * desk opens on what is in hand to work and what is still on the press — and a model not yet
  * come is never mistaken for one waiting on this team.
  *
+ * Each model's goods stand at one of three: still to come, received (Goods Received — the team
+ * puts them in its work queue from here [handoff.service `addToWorkQueue`]), or in the work queue.
+ * The row's `goods.stage` is the earliest of its models that has come: received while any model
+ * waits to be taken on.
+ *
  * Read by whoever reads the production queue; nothing is changed here. The row opens the task
  * (statuses, the date) or the enquiry's Production workflow page.
  */
@@ -37,6 +42,7 @@ const indiaDay = (date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ko
 const person = (user) => (user && typeof user === 'object' ? { _id: user._id, name: user.name } : null);
 const statusesOf = (kind) => findHandoff(kind)?.form?.statuses || [];
 const stepOf = (kind, key) => statusesOf(kind).find((entry) => entry.key === key) || null;
+const rankOf = (kind, key) => statusesOf(kind).findIndex((entry) => entry.key === key);
 const latestOf = (task) => {
   const last = (task.updates || []).at(-1);
   return last ? { note: last.note || last.text || null, at: last.at, by: person(last.by) } : null;
@@ -80,10 +86,16 @@ function modelRowsFor(team, task, production, printing, enquiry) {
     const next = team === 'printing' && route?.assembly ? 'assembling' : null;
     const own = statusFor(task, model);
     const came = received[model] || null;
+    /* In the work queue: taken on by this team [handoff.service `addToWorkQueue`], or already further on. */
+    const queuedOn = task.routing?.queuedModels?.[model] || null;
+    const queued = Boolean(queuedOn) || rankOf(task.kind, own?.key) >= rankOf(task.kind, 'in_queue');
     return {
       model,
       from, fromLabel: FROM_LABEL[from], before,
       expected: incoming[from] || null, received: came,
+      /* Where the goods stand here: still to come, received (to put in the work queue), in the work queue. */
+      queued: Boolean(came) && queued, queuedOn,
+      goods: !came ? 'to_come' : queued ? 'in_queue' : 'received',
       status: own,
       /* The date this team gave: its hand-over day where the model goes on, its EDD where it is last. */
       given: givenFor(task, model), givenLabel: next ? 'Hand-over' : 'EDD', next,
@@ -130,7 +142,7 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
     .populate([
       {
         path: 'enquiry',
-        select: 'number stage status customer assignedTo edd eddByModel qcRequired requirement.modelNumber requirement.colour requirement.quantity items.modelNumber',
+        select: 'number stage status customer assignedTo edd eddByModel qcRequired dispatchPlan requirement.modelNumber requirement.colour requirement.quantity items.modelNumber',
         populate: [{ path: 'customer', select: 'code name assignedTo' }, { path: 'assignedTo', select: 'name' }],
       },
       { path: 'user', select: 'name' },
@@ -183,6 +195,8 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
     const date = own || enquiryEdd;
     const expected = models.filter((entry) => !entry.received).map((entry) => entry.expected).filter(Boolean).sort()[0] || null;
     const received = models.filter((entry) => entry.received).length;
+    const toQueue = models.filter((entry) => entry.goods === 'received').map((entry) => entry.model);
+    const inQueue = models.filter((entry) => entry.goods === 'in_queue').length;
     const step = stepOf(task.kind, task.status);
     const row = {
       link: production ? `/production/workflow/${production._id}` : null,
@@ -193,6 +207,15 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
         brief: task.brief || {}, createdAt: task.createdAt, updatedAt: task.updatedAt, raisedBy: person(task.createdBy), latest: latestOf(task),
         modelStatuses: task.modelStatuses || [], modelDates: task.modelDates || [], routing: task.routing || null, customer: task.customer || null,
         attention: task.attention ? { kind: task.attention.kind, note: task.attention.note, at: task.attention.at } : null,
+        /*
+         * What the task panel opened from the row shows [web: components/TaskPanel.jsx]: the enquiry
+         * it is for, who asked, what was asked and everything said on it since — without them the
+         * panel read a task on an enquiry as a team task with no history.
+         */
+        title: task.title, notes: task.notes || null, fromDepartment: task.fromDepartment || null, completed: Boolean(task.completed),
+        enquiry: enquiry ? { _id: enquiry._id, number: enquiry.number, dispatchPlan: enquiry.dispatchPlan || null } : null,
+        createdBy: person(task.createdBy), order: task.order ? { _id: task.order._id, number: task.order.number } : null,
+        updates: task.updates || [], statusHistory: task.statusHistory || [],
       },
       enquiry: enquiry ? {
         _id: enquiry._id, number: enquiry.number, stage: enquiry.stage, team: false,
@@ -220,6 +243,9 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
       goods: {
         from: [...new Set(models.map((entry) => entry.from))], expected, received, total: models.length,
         inHand: received > 0, all: models.length > 0 && received === models.length,
+        /* Came and not yet taken on — the desk's "Goods received", with Add to work queue — and taken on. */
+        toQueue, queued: inQueue,
+        stage: toQueue.length ? 'received' : inQueue ? 'in_queue' : received ? 'in_queue' : 'to_come',
       },
       handsOn, next: handsOn ? 'assembling' : null,
       production: production ? { _id: production._id, status: production.status || null, statusLabel: stepOf('ask_edd', production.status)?.label || null, completed: Boolean(production.completed) } : null,
@@ -242,6 +268,9 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
       goods: {
         waiting: count((row) => !row.goods.inHand),
         inHand: count((row) => row.goods.inHand),
+        received: count((row) => row.goods.stage === 'received'),
+        inQueue: count((row) => row.goods.stage === 'in_queue'),
+        toCome: count((row) => row.goods.stage === 'to_come'),
         dueToday: count((row) => !row.goods.all && row.goods.expected === indiaDay(now)),
         overdue: count((row) => !row.goods.all && row.goods.expected && row.goods.expected < indiaDay(now)),
       },

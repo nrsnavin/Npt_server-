@@ -326,5 +326,5 @@ test('dispatch plan: each model as it is ready — a ready model goes to Quality
   assert.match(quality.notes || '', /Ready: DP-1 · still to come: DP-2/);
   const view = (await api(`/api/enquiries/${split.enquiry._id}/handoffs`, { as: 'nandhini' })).json;
   assert.equal(view.dispatchPlan.mode, 'by_model');
-  assert.deepEqual(view.readiness, { ready: ['DP-1'], waiting: [{ model: 'DP-2', team: 'printing' }], sent: [] });
+  assert.deepEqual(view.readiness, { ready: ['DP-1'], waiting: [{ model: 'DP-2', team: 'printing' }], sent: [], qc: { required: true, passed: [], atQc: ['DP-1'] } }, 'made, and with Quality until it passes');
 });

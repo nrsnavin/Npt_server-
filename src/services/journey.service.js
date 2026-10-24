@@ -126,37 +126,83 @@ async function advanceOnEnquiry(task, user, why) {
       const said = plan.byModel ? `${readyWords(plan)} — dispatch plan: each model as it is ready` : why || 'Goods ready';
       return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, said);
     }
-    if (!(await raisedSince('quality_check'))) {
-      const said = plan.byModel ? `${readyWords(plan)} — dispatch plan: each model as it is ready` : why || 'Goods ready — QC compulsory: check them before dispatch';
-      return raiseOnEnquiry(enquiryId, 'quality_check', user, said);
-    }
-    return null;
+    return askQuality(enquiryId, since, plan, user, why);
   }
+  if (task.kind !== 'quality_check' || !task.completed) return null;
+  /* Quality closed it without a pass (Admin closed a failed check): nothing goes to Dispatch on it. */
+  const { qcPassed, qcModelsOf } = await import('./qcGate.service.js');
+  if (!qcPassed(task)) return null;
+  const passed = qcModelsOf(task);
+  const passedWords = passed.length ? ` ${passed.join(', ')}` : '';
   /* Quality passed with the Dispatch request already open (QC compulsory): the request reads Goods Ready now. */
-  if (task.kind === 'quality_check' && task.completed && (await raisedSince('invoice_dispatch'))) {
+  if (await raisedSince('invoice_dispatch')) {
     const { tellDispatchReady } = await import('./handoff.service.js');
-    await tellDispatchReady(task, user, { key: 'quality_passed', label: 'Quality passed' }, why || '');
+    /* Part of the order passed, more still to pass: the request moves on only when it goes out model by model. */
+    const { qcGateFor } = await import('./qcGate.service.js');
+    const gate = await qcGateFor({ enquiry: enquiryId });
+    await tellDispatchReady(task, user, { key: 'quality_passed', label: `Quality passed${passedWords}` }, why || '', { partial: !gate.cleared });
     return null;
   }
-  /* Quality done on an order on its way: Dispatch has it next, unless already asked. */
-  if (task.kind === 'quality_check' && task.completed && !(await raisedSince('invoice_dispatch'))) {
-    /* An in-process check while the goods are still being made does not send them to Dispatch — model by model, one ready model is enough. */
-    const finishing = await Todo.find({ ...since, kind: { $in: FINISHING_KINDS } }).select('kind status completed').lean();
-    const plan = await planOf(enquiryId);
-    if (plan.byModel ? !plan.ready.length : finishing.some((entry) => !isReady(entry))) return null;
-    if (plan.byModel) return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, `Quality checked — ${readyWords(plan)}. Dispatch plan: each model as it is ready`);
-    const result = task.outcome?.fields?.result || task.statusHistory?.at(-1)?.note || '';
-    return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, `Quality ${/fail/i.test(result) ? 'reported a problem — see the QC task' : 'checked'}${why ? ` — ${why}` : ''}`);
-  }
-  return null;
+  /* Quality done on an order on its way: Dispatch has it next. An in-process check while the goods are still being made does not send them — model by model, one ready model is enough. */
+  const finishing = await Todo.find({ ...since, kind: { $in: FINISHING_KINDS } }).select('kind status completed').lean();
+  const plan = await planOf(enquiryId);
+  if (plan.byModel ? !plan.ready.length : finishing.some((entry) => !isReady(entry))) return null;
+  if (plan.byModel) return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, `Quality passed${passedWords} — ${readyWords(plan)}. Dispatch plan: each model as it is ready`);
+  return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, `Quality passed${passedWords}${why ? ` — ${why}` : ''}`);
 }
 
-async function raiseOnEnquiry(enquiryId, kind, user, note) {
+/**
+ * QC compulsory and goods ready: Quality is asked to check the models ready that it has not
+ * passed and is not already checking — all of them together, or each as it is ready when the
+ * order goes out model by model. A Quality task already open has them added to it; otherwise a
+ * Quality task is raised with just those models, the order's pieces on each.
+ */
+async function askQuality(enquiryId, since, plan, user, why) {
+  const { modelReadiness } = await import('./handoff.service.js');
+  const readiness = plan.byModel ? plan : await modelReadiness(enquiryId);
+  const ready = plan.byModel ? plan.ready : [...(readiness.ready || []), ...(readiness.waiting || []).map((row) => row.model)];
+  const { qcPassed, qcModelsOf } = await import('./qcGate.service.js');
+  const checks = await Todo.find({ ...since, kind: 'quality_check' }).sort({ createdAt: -1 });
+  /* A check that names no model is the whole order's. */
+  const covering = checks.filter((check) => !check.completed || qcPassed(check));
+  if (covering.some((check) => !qcModelsOf(check).length)) return null;
+  const covered = new Set(covering.flatMap(qcModelsOf).map((model) => model.toLowerCase()));
+  const fresh = ready.filter((model) => !covered.has(String(model).toLowerCase()));
+  /* No models known (an old Production request): one check for the order, once. */
+  if (!ready.length) {
+    if (checks.length) return null;
+    return raiseOnEnquiry(enquiryId, 'quality_check', user, why || 'Goods ready — QC compulsory: check them before dispatch');
+  }
+  if (!fresh.length) return null;
+  const { taskPrefill } = await import('./handoff.service.js');
+  const prefill = await taskPrefill(enquiryId);
+  const rowOf = (model) => {
+    const row = (prefill.qualityItems || []).find((entry) => String(entry.model || '').toLowerCase() === String(model).toLowerCase());
+    return Object.fromEntries(Object.entries({ model, material: row?.material, quantity: row?.quantity }).filter(([, value]) => value));
+  };
+  const said = plan.byModel
+    ? `${readyWords(plan)} — dispatch plan: each model as it is ready. Check ${fresh.join(', ')} before dispatch`
+    : why || `Goods ready — QC compulsory: check ${fresh.join(', ')} before dispatch`;
+  const open = checks.find((check) => !check.completed);
+  if (open) {
+    const brief = open.brief?.toObject?.() ?? { ...(open.brief || {}) };
+    open.brief = { ...brief, items: [...(Array.isArray(brief.items) ? brief.items : []), ...fresh.map(rowOf)] };
+    open.markModified('brief');
+    open.updates = [...(open.updates || []), { kind: 'note', text: `Also check ${fresh.join(', ')} — ready now`, note: `Added for QC: ${fresh.join(', ')}`, by: user?._id, at: new Date() }];
+    await open.save();
+    const { noticeStatus, peopleOn } = await import('./handoff.service.js');
+    await noticeStatus(open, user, { step: { key: open.status || 'received', label: `More goods for QC: ${fresh.join(', ')}` }, note: said, also: await peopleOn(open), onlyAlso: true });
+    return open;
+  }
+  return raiseOnEnquiry(enquiryId, 'quality_check', user, said, { items: fresh.map(rowOf) });
+}
+
+async function raiseOnEnquiry(enquiryId, kind, user, note, brief) {
   const { moveEnquiry } = await import('./handoff.service.js');
   const enquiry = await Enquiry.findById(enquiryId).populate('customer', 'code name');
   if (!enquiry || enquiry.stage === 'closed') return null;
   try {
-    return await moveEnquiry({ enquiry, kind, note, user, system: true, openRecords: false });
+    return await moveEnquiry({ enquiry, kind, note, user, system: true, openRecords: false, ...(brief ? { brief } : {}) });
   } catch (error) {
     /* Already open (somebody raised it), or a gate said no — the advance not in: Payment Collection is asked. */
     if ([400, 409].includes(error?.statusCode)) {
@@ -192,6 +238,8 @@ async function advanceTeamTask(task, user, why) {
   const kind = TEAM_NEXT[task.kind];
   if (!kind) return null;
   if (task.kind === 'quality_check' && !task.completed) return null;
+  /* Only Quality's pass sends the goods on; a failed check closed by Admin does not. */
+  if (task.kind === 'quality_check' && !(await import('./qcGate.service.js')).qcPassed(task)) return null;
   return raiseNextTeamTask(task, kind, user, why);
 }
 
@@ -285,7 +333,7 @@ export async function tellProductionTask(enquiryId, { note, to, user, model }) {
  * The journey as steps for the enquiry screen: which chain it is on, each step done, in hand or
  * still to come, and what the floor is doing in Production right now.
  */
-export function journeyOf(tasks = [], { running = [] } = {}) {
+export function journeyOf(tasks = [], { running = [], qcRequired = false } = {}) {
   const ofKind = (kinds) => tasks.filter((task) => kinds.includes(task.kind)).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   const has = (kinds) => ofKind(kinds).length > 0;
   const step = (key, label, kinds, { optional = false } = {}) => {
@@ -314,7 +362,8 @@ export function journeyOf(tasks = [], { running = [] } = {}) {
     production,
     step('printing', 'Printing', ['ask_printing'], { optional: true }),
     step('assembly', 'Assembly', ['ask_assembling_edd'], { optional: true }),
-    step('quality', 'QC', ['quality_check']),
+    /* QC only where it is compulsory, or Quality was asked anyway; otherwise the goods go straight to Dispatch. */
+    step('quality', 'QC', ['quality_check'], { optional: !qcRequired }),
     step('dispatch', 'Dispatch', ['invoice_dispatch']),
     step('lr', 'LR', ['lr_copy']),
   ].filter(Boolean);

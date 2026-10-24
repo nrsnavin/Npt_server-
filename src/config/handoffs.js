@@ -146,11 +146,14 @@ const BUTTONS = [
     records: [{ key: 'lrNumber', label: 'LR / docket number' }],
   },
   {
-    /* The check before goods go — asked when the plant wants it; it does not lock Dispatch. */
+    /*
+     * The check before goods go. Asked by the journey when QC is compulsory on the order, and then
+     * only its pass lets the goods go to Dispatch [qcGate.service]; asked by hand any other time.
+     */
     key: 'quality_check', label: 'Quality Check', department: 'quality', stage: 'quality',
     hint: 'Check the goods before they are invoiced and sent',
     records: [
-      { key: 'result', label: 'Result', type: 'choice', options: ['Passed', 'Failed'] },
+      { key: 'result', label: 'Result', type: 'choice', options: ['Passed', 'Passed with deviation', 'Failed'] },
       { key: 'passedQty', label: 'Passed quantity' },
       { key: 'correction', label: 'Correction needed' },
     ],

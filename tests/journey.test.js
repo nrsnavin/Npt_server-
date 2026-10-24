@@ -90,11 +90,11 @@ test('QC compulsory: Production done → QC is asked; QC done → Dispatch is as
   assert.equal(quality.department, 'quality');
   assert.equal(await open(enquiry, 'invoice_dispatch'), null, 'Dispatch waits for Quality');
 
-  const checked = await move(quality._id, 'kavitha', 'closed', 'Passed — 80 checked, none rejected');
+  const checked = await move(quality._id, 'kavitha', 'passed', 'Passed — 80 checked, none rejected');
   assert.equal(checked.status, 200, checked.json.message);
   const dispatch = await open(enquiry, 'invoice_dispatch');
   assert.ok(dispatch, 'Dispatch has its task');
-  assert.match(dispatch.notes || dispatch.updates?.[0]?.note || '', /Quality checked/);
+  assert.match(dispatch.notes || dispatch.updates?.[0]?.note || '', /Quality passed/);
   assert.equal((await Enquiry.findById(enquiry)).stage, 'invoice_dispatch');
 
   const { journey } = (await api(`/api/enquiries/${enquiry}/handoffs`)).json;
@@ -159,7 +159,7 @@ test('a team task with no enquiry follows the same chain for the same buyer — 
   assert.equal(quality.brief.quantity, '2000');
   assert.equal(String(quality.customer), customerId);
   assert.equal(await Todo.findOne({ previousTask: team.json.data.task._id, kind: 'invoice_dispatch' }), null, 'Dispatch waits for Quality’s pass');
-  assert.equal((await move(quality._id, 'kavitha', 'closed', 'Passed')).status, 200);
+  assert.equal((await move(quality._id, 'kavitha', 'passed', 'Passed')).status, 200);
   assert.equal(await Todo.countDocuments({ chain: team.json.data.task._id, kind: 'invoice_dispatch' }), 1, 'Quality passing asks Dispatch, once');
 
   /* Not ticked: the goods go straight to Dispatch; Quality is not asked. */
@@ -201,7 +201,7 @@ test('QC compulsory with Dispatch asked early: the request waits at Received, Di
   assert.equal(readyRefused.status, 400);
   const quality = await open(enquiry, 'quality_check');
   assert.ok(quality, 'Quality was asked');
-  assert.equal((await move(quality._id, 'kavitha', 'closed', 'Passed — 80 checked')).status, 200);
+  assert.equal((await move(quality._id, 'kavitha', 'passed', 'Passed — 80 checked')).status, 200);
   const freed = await Todo.findById(request._id);
   assert.equal(freed.status, 'waiting_vehicle', 'Quality’s pass reads Goods Ready on the request');
   const went = await move(request._id, 'anita', 'dispatched', 'Vehicle loaded');

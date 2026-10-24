@@ -180,15 +180,20 @@ test('Dispatch can be asked without a Quality pass — the plant dropped that lo
   assert.equal((await holder(enquiry)).department, 'marketing');
 });
 
-test('a Quality Check still records Passed or Failed, and nothing else', async () => {
+test('a Quality Check records Passed, Passed with deviation or Failed — and a fail is not closed but sent for rework', async () => {
   const enquiry = await inProduction();
   const check = (await send(enquiry, 'quality_check', 'siva')).json.data.task;
   assert.equal(check.department, 'quality');
   const notAChoice = await done(check, 'kavitha', { note: 'Looked', fields: { result: 'Maybe' } });
   assert.equal(notAChoice.status, 400);
-  assert.match(notAChoice.json.message, /Result is one of: Passed, Failed/);
+  assert.match(notAChoice.json.message, /Result is one of: Passed, Passed with deviation, Failed/);
   const failed = await done(check, 'kavitha', { note: 'Flash on the hook', fields: { result: 'Failed' } });
-  assert.equal(failed.status, 200, failed.json.message);
+  assert.equal(failed.status, 400, 'a failed check is not closed');
+  assert.match(failed.json.message, /QC Failed — Rework/);
+  const passed = await done(check, 'kavitha', { note: 'Reworked lot passes' });
+  assert.equal(passed.status, 200, passed.json.message);
+  assert.equal(passed.json.data.status, 'passed', 'Done on a check is its pass');
+  assert.equal(passed.json.data.outcome.fields.result, 'Passed');
 });
 
 /* ---------------------------- 4. Dispatch closes its own task ---------------------------- */

@@ -145,7 +145,9 @@ test('the goods come: Production hands over one model, the row says which came a
   assert.equal(asm.goods.inHand, true);
   assert.equal(asm.goods.all, false);
   assert.match(asm.summary, /NPT-410V still with Printing/);
-  assert.match(asm.summary, /NPT-400S: Asked/);
+  assert.match(asm.summary, /NPT-400S: Goods Received/, 'the hand-over reads Goods Received on Assembly’s task');
+  assert.equal(asm.models.find((row) => row.model === 'NPT-400S').goods, 'received');
+  assert.deepEqual(asm.goods.toQueue, ['NPT-400S'], 'in hand, to put in the work queue');
 });
 
 test('the queue is in the order of the date the team works to — its own once given, the enquiry’s until then', async () => {
@@ -196,6 +198,11 @@ test('the queue is in the order of the date the team works to — its own once g
 
 test('Printing hands over to Assembly: Printing’s row says so, Assembly’s says the goods came', async () => {
   const printing = await openTask('ask_printing');
+  /* Printing cannot hand over what never reached it: Production hands NPT-410V to Printing first. */
+  const early = await move(printing._id, 'pandi', 'handed_assembly', null, 'Printed');
+  assert.equal(early.status, 400);
+  assert.match(early.json.message, /NPT-410V is still with Production/);
+  assert.equal((await move(production._id, 'siva', 'handed_printing', ['NPT-410V'], 'Moulded')).status, 200);
   const handed = await move(printing._id, 'pandi', 'handed_assembly', null, 'Printed');
   assert.equal(handed.status, 200, handed.json.message);
   const [asm] = (await queue('assembling')).data.filter((row) => row.enquiry.number === enquiry.number);

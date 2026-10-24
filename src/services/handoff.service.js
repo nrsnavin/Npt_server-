@@ -19,7 +19,7 @@ import { MATERIALS } from '../models/Mould.js';
 import { HANDOVER_CHOICES } from '../config/departmentTaskForms.js';
 import { askToRecordReceipt, endOfIndiaDay, logCollectionCall } from './collections.service.js';
 import { chainOf, jobFilter } from './journey.service.js';
-import { assertQcCleared, qcGateFor, ticked as qcTicked } from './qcGate.service.js';
+import { assertQcCleared, qcGateFor, qcPassedModels, ticked as qcTicked } from './qcGate.service.js';
 import mongoose from 'mongoose';
 
 /**
@@ -1152,7 +1152,12 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
    */
   /* `handedOn`: closed at Handed to Printing / Assembly [setTaskStatus] — it ends there, not at Task Closed. */
   const closing = !system && !handedOn && statusesOf(task).find((entry) => entry.done && !entry.pdf);
-  const closesNow = Boolean(closing && task.status !== closing.key);
+  /* Done on Quality's check is its pass: a failed check goes back for rework, it is not closed. */
+  if (closing?.result) {
+    if (/fail|reject/i.test(String(kept.result || ''))) fail('A failed check is not closed — mark it QC Failed — Rework, and pass it once the reworked goods are checked again');
+    if (!kept.result) kept.result = closing.result;
+  }
+  const closesNow = Boolean(closing && task.status !== closing.key && !(closing.result && statusesOf(task).find((entry) => entry.key === task.status)?.done));
   if (closesNow) {
     task.status = closing.key;
     task.statusHistory = [...(task.statusHistory || []), { status: closing.key, note: text, by: user._id, at: new Date() }];
@@ -1346,8 +1351,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   const step = statusesOf(task).find((entry) => entry.key === status);
   if (!step) fail('That is not one of this task’s statuses');
   if (step.pdf) fail(`Upload the PDF to mark it ${step.label}`);
-  /* The goods leave only on Quality's pass where QC is compulsory [qcGate.service]. */
-  if (task.kind === 'invoice_dispatch' && DISPATCH_GOES.includes(step.key)) await assertQcCleared(task, `mark it ${step.label}`);
+  /* The goods leave only on Quality's pass where QC is compulsory [qcGate.service] — model by model for a part load. */
+  if (task.kind === 'invoice_dispatch' && DISPATCH_GOES.includes(step.key)) await assertDispatchQc(task, step, fields);
   const text = String(note || '').trim();
   /* What the status asks for beside the remark — who collected the sample, how many pieces. */
   const asked = stepFields(step, fields);
@@ -1360,6 +1365,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   if (readyDate) assertPlansProduction(task, user, `gives the date — ${step.label} sets the ${form.statusDate?.label || 'ready date'}`);
   /* Production says what follows it before it gives any date [decideRouting]. */
   if (readyDate) assertRouted(task);
+  /* Only the models the move fits: a hand-over where they go, Ready for Dispatch where they end, work where the goods have come [movesFor]. */
+  models = await movesFor(task, step, models);
   /* A task of several models moves model by model: the ones named, or every one [Todo `modelStatuses`]. */
   const move = modelMove(task, step, models);
   const { byModel, moving, partial, after } = move;
@@ -1418,6 +1425,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
     note: text ? `${said}: ${text}` : said, ...(Object.keys(recorded).length ? { fields: recorded } : {}), by: user._id, at: new Date(),
   }];
   if (!task.user) task.user = user._id;
+  /* Goods Received said by this team itself, In Work Queue: kept by model, as a hand-over keeps them [handOn]. */
+  if (step.receives || step.queues) recordGoodsIn(task, step, partial ? moving : modelsOfTask(task));
   await task.save();
   /* A ready date with a status counts for every model on the task; each model's EDD is its teams' latest. */
   if (readyDate && (dateField === 'edd' || dateField === 'handover') && EDD_TASK_KINDS.includes(task.kind)) {
@@ -1456,6 +1465,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   if (step.readyForDispatch && !step.done) await nextOnJourney(task, user, `${label}${text ? ` — ${text}` : ''}`);
   /* Some models closed, others still going: a model done may be enough to go on [Enquiry `dispatchPlan`]. */
   if (step.done && !finishes) await nextOnJourney(task, user, `${label}${text ? ` — ${text}` : ''}`);
+  /* Quality failed the goods: the teams that made them, and the Dispatch request, hear it is rework. */
+  if (step.qcFailed) await tellQcFailed(task, user, text);
   /* The Mould team saying the tool is ready reaches Production. */
   if (step.tells && task.enquiry) await tellOpenTasks(task, user, step, text, step.tells);
   /* Accounts confirming a payment the order is still held for: somebody has to record it. */
@@ -1476,7 +1487,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   /* The last status finishes the task (Task Closed), and its sender hears it is done. */
   if (finishes) {
     return completeHandoff(task, user, {
-      note: text || step.label, fields: { ...asked, ...(readyDate ? { [dateField]: readyDate } : {}) }, handedOn: Boolean(step.handsTo),
+      /* A pass records its result, which is what lets the goods go [qcGate.service `qcPassed`]. */
+      note: text || step.label, fields: { ...asked, ...(step.result ? { result: step.result } : {}), ...(readyDate ? { [dateField]: readyDate } : {}) }, handedOn: Boolean(step.handsTo),
     });
   }
   return task;
@@ -1562,6 +1574,157 @@ const goesTo = (task, row, team) => {
   if (team === 'assembling') return Boolean(row.assembly) && (task.kind === 'ask_printing' || !row.printing);
   return false;
 };
+
+/** Whether a model goes on from this team after it: Production's to Printing or Assembly, Printing's to Assembly. */
+const goesOnFrom = (task, row) => {
+  if (!row) return false;
+  if (task.kind === 'ask_edd') return Boolean(row.printing || row.assembly);
+  if (task.kind === 'ask_printing') return Boolean(row.assembly);
+  return false;
+};
+/* Printing's and Assembly's goods come from the team before: who, in words. */
+const GOODS_FROM = { ask_printing: 'Production', ask_assembling_edd: 'Production or Printing' };
+const plural = (models, one, many) => (models.length > 1 ? many : one);
+
+/**
+ * The models a move is for, once it is checked against where each one goes and where its goods
+ * are [setTaskStatus]:
+ *   - Handed to Printing / Assembly only for the models routed there, Ready for Dispatch only for
+ *     those that end with this team — a whole-task move on a task of several models moves just
+ *     those, and names the rest; a move named for a model it does not fit is refused;
+ *   - on Printing's and Assembly's tasks routed by Production, no work on a model before its goods
+ *     have come (Goods Received, by the hand-over or by this team) — a whole-task move moves the
+ *     models in hand; the issues and closing the task are never held.
+ * Returns the models to move, or `models` as given when nothing narrows them.
+ */
+async function movesFor(task, step, models) {
+  if (!EDD_TASK_KINDS.includes(task.kind)) return models;
+  const own = modelsOfTask(task);
+  const perModel = modelStatusesOf(task).length > 0;
+  const named = [...new Set((Array.isArray(models) ? models : []).map((model) => String(model || '').trim()).filter(Boolean))];
+  let pool = named.length ? named : own;
+  let narrowed = false;
+
+  const routes = await modelRoutes(task);
+  /* A hand-over to a team nothing goes to is refused below, in those words [setTaskStatus]. */
+  const handsThere = !step.handsTo || handsOnOf(task).includes(step.handsTo);
+  if (routes.size && handsThere && (step.handsTo || step.readyForDispatch) && task.kind !== 'ask_assembling_edd') {
+    const fits = (model) => {
+      const row = routes.get(model);
+      if (!row) return true;
+      return step.handsTo ? goesTo(task, row, step.handsTo) : !goesOnFrom(task, row);
+    };
+    const candidates = pool.length ? pool : task.kind === 'ask_edd' ? [...routes.keys()] : [];
+    const off = candidates.filter((model) => !fits(model));
+    if (off.length) {
+      if (named.length || !perModel || off.length === candidates.length) {
+        if (step.handsTo) {
+          fail(`${off.join(', ')} ${plural(off, 'does', 'do')} not go to ${ROUTE_LABEL[step.handsTo] || step.handsTo} — Production routed ${plural(off, 'it', 'them')} elsewhere`);
+        }
+        const next = (model) => (task.kind === 'ask_edd' && routes.get(model)?.printing ? 'Printing' : 'Assembly');
+        fail(`${off.join(', ')} ${plural(off, 'goes', 'go')} on to ${[...new Set(off.map(next))].join(' and ')} — mark ${plural(off, 'it', 'them')} Handed to ${[...new Set(off.map(next))].join(' / ')} instead of Ready for Dispatch`);
+      }
+      pool = candidates.filter(fits);
+      narrowed = true;
+    }
+  }
+
+  /* No work before the goods: only on a task Production routed, and only for a move that is work. */
+  const first = statusesOf(task)[0]?.key;
+  const isWork = !step.receives && !step.issue && !step.done && step.key !== first;
+  if (GOODS_FROM[task.kind] && task.routing?.byProduction && isWork && pool.length) {
+    const received = task.routing?.receivedModels || {};
+    const missing = pool.filter((model) => !received[model]);
+    if (missing.length) {
+      if (named.length || !perModel || missing.length === pool.length) {
+        fail(`${missing.join(', ')} ${plural(missing, 'is', 'are')} still with ${GOODS_FROM[task.kind]} — ${step.label} once the goods have come. `
+          + `${GOODS_FROM[task.kind]} marks ${plural(missing, 'it', 'them')} handed over, or record Goods Received here when they reach you.`);
+      }
+      pool = pool.filter((model) => received[model]);
+      narrowed = true;
+    }
+  }
+  return narrowed ? pool : models;
+}
+
+/**
+ * Goods Received and In Work Queue on Printing's and Assembly's tasks, kept by model: the day the
+ * goods came (as a hand-over writes it [handOn]) and the day they went into the work queue.
+ */
+function recordGoodsIn(task, step, models) {
+  if (!GOODS_FROM[task.kind]) return;
+  const day = indiaDay(new Date());
+  const list = models.length ? models : ['All models'];
+  const routing = { ...(task.routing?.toObject?.() ?? task.routing ?? {}) };
+  if (step.receives || step.queues) {
+    /* Into the work queue means the goods are here, whoever said so first. */
+    routing.receivedModels = { ...(routing.receivedModels || {}), ...Object.fromEntries(list.filter((model) => !routing.receivedModels?.[model]).map((model) => [model, day])) };
+  }
+  if (step.queues) routing.queuedModels = { ...(routing.queuedModels || {}), ...Object.fromEntries(list.map((model) => [model, day])) };
+  task.routing = routing;
+  task.markModified('routing');
+}
+
+/**
+ * What Printing or Assembly may put in its work queue: the models whose goods have come and are
+ * not in it yet [web: components/FinishingQueueList.jsx "Add to work queue"]. A move to In Work
+ * Queue for those, with the remark the workflow asks for.
+ */
+export async function addToWorkQueue(task, user, { models, note } = {}) {
+  if (!GOODS_FROM[task.kind]) fail('Only a Printing or Assembly task has a work queue');
+  const received = task.routing?.receivedModels || {};
+  const own = modelsOfTask(task);
+  /* A model already at In Work Queue or further on (started straight away) is in the work queue. */
+  const statuses = statusesOf(task);
+  const rank = (key) => statuses.findIndex((entry) => entry.key === key);
+  const rows = modelStatusesOf(task);
+  const statusOf = (model) => rows.find((row) => row.model === model)?.status || task.status;
+  const queued = { ...Object.fromEntries(own.filter((model) => rank(statusOf(model)) >= rank('in_queue')).map((model) => [model, true])), ...(task.routing?.queuedModels || {}) };
+  const named = [...new Set((Array.isArray(models) ? models : []).map((model) => String(model || '').trim()).filter(Boolean))];
+  const pool = named.length ? named : own.filter((model) => received[model] && !queued[model]);
+  if (own.length && !pool.length) fail(own.some((model) => !received[model]) ? `No goods in hand to queue — they are still with ${GOODS_FROM[task.kind]}` : 'Every model is already in the work queue');
+  const already = pool.filter((model) => queued[model]);
+  if (named.length && already.length === pool.length) throw ApiError.conflict(`${already.join(', ')} ${plural(already, 'is', 'are')} already in the work queue`);
+  const text = String(note || '').trim() || `Added to the work queue${pool.length ? ` — ${pool.join(', ')}` : ''}`;
+  return setTaskStatus(task, user, { status: 'in_queue', note: text, models: own.length > 1 ? pool : undefined });
+}
+
+/**
+ * Quality failed the goods: the teams that made them hear it is rework — their latest task on the
+ * job, open or not, with a line and a notice — and so does the open Dispatch request.
+ */
+async function tellQcFailed(task, user, text) {
+  const finishing = await Todo.find({ ...jobFilter(task), kind: { $in: EDD_TASK_KINDS } }).sort({ createdAt: -1 });
+  const latest = new Map();
+  for (const entry of finishing) if (!latest.has(entry.kind)) latest.set(entry.kind, entry);
+  const requests = await Todo.find({ ...jobFilter(task), kind: 'invoice_dispatch', completed: false });
+  const said = `Quality failed the goods — rework, then Quality checks them again${text ? `: ${text}` : ''} (${user.name})`;
+  for (const other of [...latest.values(), ...requests]) {
+    other.updates = [...(other.updates || []), { kind: 'notice', statusLabel: 'QC failed', text: said, note: said, by: user._id, at: new Date() }];
+    await other.save();
+    await noticeStatus(other, user, { step: { key: other.status || 'qc_failed', label: 'QC failed — rework' }, note: said, also: await peopleOn(other), onlyAlso: true });
+    await publish(EVENTS.HANDOFF_UPDATED, { task: other, by: user });
+  }
+}
+
+/**
+ * Dispatch's moves while QC is compulsory: Goods Ready / Party Will Collect once Quality has passed
+ * something; a part load only with models Quality has passed, named; everything gone only once
+ * Quality has passed every model [qcGate.service].
+ */
+async function assertDispatchQc(task, step, fields = {}) {
+  const what = `mark it ${step.label}`;
+  if (step.key === 'part_dispatched') {
+    const sent = String(fields?.modelsSent || '').split(',').map((model) => model.trim()).filter(Boolean);
+    return assertQcCleared(task, what, { models: sent });
+  }
+  if (['waiting_vehicle', 'party_collect'].includes(step.key)) {
+    const gate = await qcGateFor(task);
+    if (gate.required && !gate.cleared && !gate.checked.length) fail(`QC is compulsory on this order — ${gate.why}. Quality records its pass, then Dispatch can ${what}.`);
+    return gate;
+  }
+  return assertQcCleared(task, what);
+}
 
 /** The answers a status asks for [departmentTaskForms `statuses[].fields`], required ones refused when blank. */
 function stepFields(step, fields = {}) {
@@ -1987,7 +2150,8 @@ export async function tellDispatchReady(task, user, step, text, { partial = fals
   if (!requests.length) return;
   /* QC compulsory: the request hears the goods are made, but reads Goods Ready only on Quality's pass [qcGate.service]. */
   const gate = await qcGateFor(task);
-  const heldForQc = gate.required && !gate.cleared;
+  /* Quality's own pass of some models moves it, for the models it passed; a team's goods made wait for Quality. */
+  const heldForQc = gate.required && !gate.cleared && !(task.kind === 'quality_check' && gate.checked.length);
   const said = `${asking}: ${step.label}${text ? ` — ${text}` : ''}${heldForQc ? ' — QC compulsory: waits for Quality’s pass before dispatch' : ''}`;
   const ready = statusesOf({ kind: 'invoice_dispatch' }).find((entry) => entry.key === 'waiting_vehicle');
   /* Some models ready: the request moves on only when the order goes out model by model. */
@@ -2739,6 +2903,8 @@ export async function taskPrefill(enquiryId) {
       qcRequired: Boolean(enquiry.qcRequired),
     };
   });
+  /* Quality's rows: each model with its material and the pieces on the order — not a sample's three. */
+  const qualityItems = orderItems.map((row) => ({ model: row.model, material: row.material, quantity: row.quantity }));
   const modelList = [...new Set(items.map((row) => row.model).filter(Boolean))];
   const enquiryQuantity = source.reduce((sum, row) => sum + (Number(row.quantity) || 0), 0);
   const orderQuantity = (order?.lines || []).reduce((sum, line) => sum + (Number(line.quantity) || 0), 0);
@@ -2758,6 +2924,7 @@ export async function taskPrefill(enquiryId) {
     items,
     orderItems,
     quoteItems,
+    qualityItems,
     modelList,
     models: modelList.join(', '),
     materials: items.map(materialAndColour).filter(Boolean).join(', '),
@@ -3405,7 +3572,12 @@ export async function modelReadiness(enquiryId) {
       }
     }
   }
-  return { ready, waiting, sent: routes.map((route) => route.model).filter((model) => sent.has(model)) };
+  /* QC compulsory: of the models made, which Quality has passed — only those may go — and which are with Quality. */
+  const gate = await qcGateFor({ enquiry: id });
+  const qc = gate.required
+    ? { required: true, passed: ready.filter((model) => qcPassedModels(gate, [model])), atQc: ready.filter((model) => !qcPassedModels(gate, [model])) }
+    : { required: false };
+  return { ready, waiting, sent: routes.map((route) => route.model).filter((model) => sent.has(model)), qc };
 }
 
 /**
@@ -3444,16 +3616,44 @@ async function handOn(task, user, step, text, only = null) {
   const next = await Todo.findOne({ ...jobFilter(task), kind: ROUTE_KINDS[step.handsTo], completed: false });
   if (!next) return null;
   const day = indiaDay(new Date());
-  /* Only some models handed over: the next team hears which, and the day each came. */
-  const handed = only?.length ? only : (next.routing?.models || []);
+  /*
+   * Only some models handed over: the next team hears which, and the day each came. Of the next
+   * team's models, only those that come from this team — Assembly's printed models come from
+   * Printing, not from Production's hand-over of the rest.
+   */
+  const routes = await modelRoutes(task);
+  const comesFromHere = (model) => {
+    const row = routes.get(model);
+    if (!row || step.handsTo !== 'assembling') return true;
+    return from === 'printing' ? Boolean(row.printing) : !row.printing;
+  };
+  const handed = (only?.length ? only : (next.routing?.models || [])).filter(comesFromHere);
   const models = handed.join(', ');
   const said = `${ROUTE_LABEL[from]} handed the goods over${models ? ` (${models})` : ''} — ${user.name}${text ? `: ${text}` : ''}`;
   next.routing = {
-    ...(next.routing || {}),
+    ...(next.routing?.toObject?.() ?? next.routing ?? {}),
     received: { ...(next.routing?.received || {}), [from]: day },
     receivedModels: { ...(next.routing?.receivedModels || {}), ...Object.fromEntries(handed.map((model) => [model, day])) },
   };
   next.markModified('routing');
+  /* The goods are at the next team: its models still at Asked read Goods Received — forward only, never over a status it set. */
+  const first = statusesOf(next)[0]?.key;
+  const received = statusesOf(next).find((entry) => entry.receives);
+  if (received) {
+    const now = new Date();
+    const rows = modelStatusesOf(next);
+    if (rows.length) {
+      const moved = rows.filter((row) => handed.includes(row.model) && (!row.status || row.status === first));
+      if (moved.length) {
+        next.modelStatuses = rows.map((row) => (moved.includes(row) ? { model: row.model, status: received.key, note: said, by: user._id, at: now } : row));
+        next.status = slowestStatus(next, next.modelStatuses);
+        next.statusHistory = [...(next.statusHistory || []), { status: received.key, note: said, ...(moved.length < rows.length ? { models: moved.map((row) => row.model) } : {}), by: user._id, at: now }];
+      }
+    } else if (!next.status || next.status === first) {
+      next.status = received.key;
+      next.statusHistory = [...(next.statusHistory || []), { status: received.key, note: said, by: user._id, at: now }];
+    }
+  }
   next.updates = [...(next.updates || []), { kind: 'note', text: said, note: said, date: day, dateLabel: `From ${ROUTE_LABEL[from]}`, by: user._id, at: new Date() }];
   await next.save();
   await noticeStatus(next, user, { step: { key: next.status || 'received', label: `Goods from ${ROUTE_LABEL[from]}` }, note: said, also: await peopleOn(next), onlyAlso: true });

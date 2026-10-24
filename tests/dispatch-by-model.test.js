@@ -81,7 +81,7 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   const desk = await api('/api/departments/despatch/dashboard', { as: 'ravi' });
   assert.equal(desk.status, 200, desk.json.message);
   const row = desk.json.data.enquiries.find((entry) => String(entry.task._id) === String(dispatch._id));
-  assert.deepEqual(row.readiness, { plan: 'by_model', ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: [] });
+  assert.deepEqual(row.readiness, { plan: 'by_model', ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: [], qc: { required: false } });
 
   /* Dispatch sends CRF25 on its own: the models sent are recorded on the move; the enquiry reads Part sent. */
   const part = await move(dispatch._id, 'ravi', 'part_dispatched', { note: 'VRL, LR 55021', fields: { modelsSent: 'crf25', piecesSent: 10000 } });
@@ -90,16 +90,20 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   const after = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data;
   assert.equal(after.marketingStatus, 'part_sent');
   const { readiness } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
-  assert.deepEqual(readiness, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: ['CRF25'] }, 'matched to the model however it was typed');
+  assert.deepEqual(readiness, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: ['CRF25'], qc: { required: false } }, 'matched to the model however it was typed');
   assert.ok(await Todo.exists({ enquiry: enquiry._id, kind: 'lr_copy' }), 'the part load has its LR task');
 
   /* CRF30 assembled and ready: the same request hears it, and Dispatched sends what is left. */
   const assembly = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_assembling_edd', completed: false }).lean();
   assert.ok(assembly);
+  /* Assembly works only on goods that have reached it: Production hands CRF30 over first. */
+  assert.equal((await move(assembly._id, 'anand', 'ready_dispatch', { note: 'CRF30 clipped and packed' })).status, 400, 'CRF30 is still with Production');
+  assert.equal((await move(production._id, 'siva', 'handed_assembly', { models: ['CRF30'], note: 'CRF30 moulded' })).status, 200);
+  assert.equal((await Todo.findById(assembly._id).lean()).status, 'goods_received', 'the hand-over reads Goods Received on Assembly’s task');
   assert.equal((await move(assembly._id, 'anand', 'ready_dispatch', { note: 'CRF30 clipped and packed' })).status, 200);
   await settle();
   const again = (await api('/api/departments/despatch/dashboard', { as: 'ravi' })).json.data.enquiries.find((entry) => String(entry.task._id) === String(dispatch._id));
-  assert.deepEqual(again.readiness, { plan: 'by_model', ready: ['CRF25', 'CRF30'], waiting: [], sent: ['CRF25'] });
+  assert.deepEqual(again.readiness, { plan: 'by_model', ready: ['CRF25', 'CRF30'], waiting: [], sent: ['CRF25'], qc: { required: false } });
   const gone = await move(dispatch._id, 'ravi', 'dispatched', { note: 'Rest gone' });
   assert.equal(gone.status, 200, gone.json.message);
   assert.deepEqual((await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json.readiness.sent, ['CRF25', 'CRF30']);
