@@ -307,6 +307,57 @@ function sampleFromBrief(brief = {}) {
 }
 
 const COLLECT_LABEL = HANDOVER_CHOICES.find((choice) => choice.key === 'collect')?.label;
+const IN_PERSON_LABEL = HANDOVER_CHOICES.find((choice) => choice.key === 'in_person')?.label;
+
+/**
+ * A Sample Request the marketing person hands over themselves, from the sample rack
+ * [HANDOVER_CHOICES `in_person`]: no task for Sampling — the bench never makes it. The sample is
+ * raised ready (taken from the rack), any bench task already open on the enquiry closes, and the
+ * enquiry notes that it is to be handed over by the marketing person — a finished record on the
+ * enquiry, never a queue task. They confirm the hand-over (to whom, how many) on the enquiry once
+ * it is with the buyer [sample.controller `handOverSample`].
+ */
+async function raiseRackSample({ enquiry, asked, note, user }) {
+  const { createSampleForEnquiry } = await import('./sampling.service.js');
+  const { sample, created } = await createSampleForEnquiry(enquiry, { ...sampleFromBrief(asked), handover: 'in_person' }, { autoCreated: true });
+  if (!created && sample.handover !== 'in_person') {
+    sample.handover = 'in_person';
+    if (!sample.benchClosedAt) {
+      sample.benchClosedAt = new Date();
+      sample.benchClosedBy = user?._id;
+    }
+    /* Still on the bench's early steps: it comes off the rack instead, ready now. */
+    const to = ['request_received', 'checking_stock', 'sample_available', 'not_available', 'production_required', 'printing_required'].includes(sample.status) ? 'sample_ready' : sample.status;
+    sample.statusHistory.push({ from: sample.status, to, by: user?._id, note: `Changed to a hand-over by ${user?.name || 'the marketing person'} from the sample rack` });
+    sample.status = to;
+    await sample.save();
+  }
+  const name = user?.name || 'the marketing person';
+  const said = `${sample.number} — to be handed over by ${name} from the sample rack. Confirm the hand-over on the enquiry once it is with the buyer.`;
+  const benchTasks = await Todo.find({ enquiry: enquiry._id, kind: 'sample_request', completed: false, holds: { $ne: true } });
+  if (benchTasks.length) await finishAll(benchTasks, user, { note: `Sample ${sample.number} — handed over by ${name} from the sample rack; the bench is not needed` });
+  const text = String(note || '').trim();
+  const now = new Date();
+  const record = await Todo.create({
+    enquiry: enquiry._id,
+    customer: enquiry.customer?._id || enquiry.customer,
+    kind: 'sample_request',
+    department: user?.department || 'marketing',
+    user: user?._id,
+    fromDepartment: user?.department || undefined,
+    createdBy: user?._id,
+    title: `Sample Request — ${await aboutWithName(enquiry)} (hand-over by ${name})`,
+    notes: [said, text].filter(Boolean).join(' — '),
+    completed: true,
+    completedAt: now,
+    completedBy: user?._id,
+    outcome: { result: 'done', note: said, by: user?._id, at: now },
+    link: `/samples/${sample._id}`,
+  });
+  await moveStage(enquiry, findHandoff('sample_request')?.stage || 'sample', { user, task: record, note: said });
+  record.$locals.rackSample = { _id: sample._id, number: sample.number };
+  return record;
+}
 
 /**
  * A Sample Request the buyer collects at reception [HANDOVER_CHOICES `collect`]: the sample is
@@ -577,6 +628,11 @@ async function moveEnquiryChecked({
   const picked = await pickedMember(kind, brief);
   const asked = keptBrief(kind, picked.brief, { strict: !system });
   if (!system) assertNote(kind, asked, note);
+  /* The marketing person hands it over from the rack: noted on the enquiry, no task for Sampling —
+     a bench task already open is closed, not added to. */
+  if (kind === 'sample_request' && asked.handover === IN_PERSON_LABEL) {
+    return raiseRackSample({ enquiry, asked, note, user });
+  }
   if (already) {
     const added = await addToOpenTask(already, { handoff, note, asked, priority, requiredDate, user });
     /* Asked again with more models: they go onto the quotation being priced too. */
