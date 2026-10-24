@@ -231,28 +231,18 @@ test('the planning board is the in charge’s; the floor still pauses and comple
   assert.equal(added.status, 201, added.json.message);
 });
 
-test('Assembly gives the EDD; the in charge is asked to confirm it, confirms, and the ask closes', async () => {
+test('Assembly gives its own completion date: nobody is asked to confirm it, and the in charge cannot set it', async () => {
   const assembly = await Todo().findOne({ kind: 'ask_assembling_edd', completed: false });
   assert.ok(assembly?.routing?.byProduction, 'Assembly’s task came from the routing');
   const given = await api(`/api/workspace/todos/${assembly._id}/edd`, { method: 'POST', as: 'anand', body: { date: indiaDay(9) } });
   assert.equal(given.status, 200, given.json.message);
-  const ask = await Todo().findOne({ originKey: `production-confirm:${assembly._id}`, user: idOf('siva'), completed: false });
-  assert.ok(ask, 'the in charge is asked');
-  assert.match(ask.title, /^Confirm the EDD Assembly gave — /);
-  assert.equal((await api(`/api/workspace/todos/${assembly._id}/edd/confirm`, { method: 'POST', as: 'mani' })).status, 403);
-  const confirmed = await api(`/api/workspace/todos/${assembly._id}/edd/confirm`, { method: 'POST', as: 'siva' });
-  assert.equal(confirmed.status, 200, confirmed.json.message);
-  assert.equal(confirmed.json.data.eddConfirmed.date, indiaDay(9));
-  assert.equal((await Todo().findOne({ _id: ask._id })).completed, true);
-  /* Assembly moves its date: the confirmation goes, and the in charge is asked again. */
-  await api(`/api/workspace/todos/${assembly._id}/edd`, { method: 'POST', as: 'anand', body: { date: indiaDay(10) } });
-  assert.equal((await Todo().findOne({ _id: assembly._id })).eddConfirmed, undefined);
-  assert.ok(await Todo().findOne({ originKey: `production-confirm:${assembly._id}`, completed: false }));
-  /* The in charge gives Assembly's EDD themselves: no confirming their own word. */
+  assert.equal(await Todo().countDocuments({ originKey: `production-confirm:${assembly._id}` }), 0, 'no “Confirm the EDD Assembly gave” for the in charge');
+  const confirm = await api(`/api/workspace/todos/${assembly._id}/edd/confirm`, { method: 'POST', as: 'siva' });
+  assert.equal(confirm.status, 400, 'nothing to confirm — the date is Assembly’s');
   const own = await api(`/api/workspace/todos/${assembly._id}/edd`, { method: 'POST', as: 'siva', body: { date: indiaDay(11) } });
-  assert.equal(own.status, 200, own.json.message);
-  assert.equal(own.json.data.eddConfirmed.date, indiaDay(11));
-  assert.equal(await Todo().countDocuments({ originKey: `production-confirm:${assembly._id}`, completed: false }), 0);
+  assert.ok([403, 404].includes(own.status), 'the in charge does not set Assembly’s date');
+  const line = (await Todo().findOne({ _id: assembly._id })).updates.at(-1);
+  assert.match(line.note, new RegExp(`^Completion date`), 'Assembly’s own date stands');
 });
 
 test('Admin can still plan, and the in charge is told when Admin does', async () => {

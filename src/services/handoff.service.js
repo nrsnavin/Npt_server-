@@ -3209,8 +3209,8 @@ export async function writeEnquiryEdd(enquiryId, { day, user, department, note }
  * the enquiry, where every other screen reads it; marketing and Admin hear it as they hear a move.
  */
 export async function setTaskEdd(task, user, { date, note, models }) {
-  /* The Production in charge may give the EDD on Printing's or Assembly's task too, in place of confirming theirs. */
-  if (task.completed || !(EDD_TASK_KINDS.includes(task.kind) && task.kind !== 'ask_edd' && isProductionInCharge(user))) openHandoff(task, user);
+  /* Each team gives its own date — Printing's and Assembly's are theirs, not Production's to set. */
+  openHandoff(task, user);
   if (!EDD_TASK_KINDS.includes(task.kind)) fail('The EDD is given from the Production, Assembly or Printing task');
   assertPlansProduction(task, user, 'gives the EDD and the hand-over dates');
   assertRouted(task);
@@ -3264,29 +3264,16 @@ export async function setTaskEdd(task, user, { date, note, models }) {
 
 /**
  * After a date on a task of the Production chain [services/productionInCharge.service.js]:
- * Production's own closes the in charge's "Give the EDD"; the EDD Printing or Assembly gives —
- * last in the chain — goes to the in charge to confirm, unless they gave it themselves. Admin
- * dating Production's task in the in charge's place tells them.
+ * Production's own closes the in charge's "Give the EDD", and Admin dating Production's task in
+ * the in charge's place tells them. Printing's and Assembly's dates are their own — nobody is
+ * asked to confirm them; Production, Admin and marketing read them on the enquiry and the
+ * production workflow.
  */
 async function afterProductionDate(task, user, { day, edd }) {
+  if (task.kind !== 'ask_edd') return;
   const inCharge = await import('./productionInCharge.service.js');
-  if (task.kind === 'ask_edd') {
-    await inCharge.planned(task);
-    await toldOfAdminPlan(task, user, `gave the ${edd ? 'EDD' : 'hand-over date'} ${prettyDay(day)}`);
-    return;
-  }
-  if (!edd || !task.routing?.byProduction) return;
-  if (isProductionInCharge(user)) {
-    task.eddConfirmed = { date: day, by: user._id, at: new Date() };
-    await task.save();
-    await inCharge.confirmed(task);
-  } else {
-    if (task.eddConfirmed) {
-      task.eddConfirmed = undefined;
-      await task.save();
-    }
-    await inCharge.askToConfirm(task, user, prettyDay(day));
-  }
+  await inCharge.planned(task);
+  await toldOfAdminPlan(task, user, `gave the ${edd ? 'EDD' : 'hand-over date'} ${prettyDay(day)}`);
 }
 
 /** Admin planned Production's work in the in charge's place: everyone in charge hears what. */
@@ -3302,6 +3289,8 @@ async function toldOfAdminPlan(task, user, what) {
  * the buyer is promised. Said on the task; their "Confirm the EDD" to-do closes.
  */
 export async function confirmTaskEdd(task, user) {
+  /* Printing's and Assembly's dates are their own now: Production reads them, nobody confirms them. */
+  if (['ask_printing', 'ask_assembling_edd'].includes(task.kind)) fail('Printing’s and Assembly’s completion dates are their own — Production reads them on the workflow, nothing to confirm');
   if (!isProductionInCharge(user)) throw ApiError.forbidden('Only the Production in charge confirms the EDD');
   if (!['ask_printing', 'ask_assembling_edd'].includes(task.kind)) fail('Only the EDD Printing or Assembly gives is confirmed');
   if (task.completed) throw ApiError.conflict('That task is already finished');
