@@ -413,6 +413,12 @@ export const TASK_FORMS = {
     resultLabel: 'Upload Sales Order PDF',
     /* What the uploaded PDF is called where the enquiry shows it. */
     resultTitle: 'Sales order',
+    /*
+     * Beside its statuses and the SO upload, the task offers only Escalate to Admin — no Update,
+     * Send back or Change date, which made the SO team's workflow hard to read [handoff.service
+     * `assertTaskAction`]. Only the uploaded SO finishes it.
+     */
+    taskActions: ['escalate'],
     asks: [
       { key: 'contactPerson', label: 'Contact person', section: 'Company & contact details', from: 'customer.contactPerson', placeholder: 'Name of person to call for SO / GST', editable: true },
       { key: 'mobile', label: 'Mobile number', from: 'customer.mobile', editable: true },

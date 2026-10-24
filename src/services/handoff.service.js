@@ -1188,6 +1188,10 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
   if (system) {
     if (task.completed) return task;
   } else openHandoff(task, user);
+  /* A task its PDF finishes — the SO team's, by the sales order — is not finished by a word [departmentTaskForms `po_so`]. */
+  if (!system && !task.resultFile && finishedByUpload(task)) {
+    fail(`Upload the ${(findHandoff(task.kind)?.form?.resultTitle || 'PDF').toLowerCase()} to finish this task — that is what finishes it`);
+  }
   const text = String(note || '').trim();
   if (text.length < 2) fail('Say what was done');
 
@@ -1690,6 +1694,20 @@ const goesOnFrom = (task, row) => {
   if (task.kind === 'ask_printing') return Boolean(row.assembly);
   return false;
 };
+/** A task whose workflow ends by uploading its PDF (the sales order). */
+const finishedByUpload = (task) => (findHandoff(task.kind)?.form?.statuses || []).some((step) => step.pdf && step.done);
+
+/**
+ * The plain task actions a form allows beside its own workflow [departmentTaskForms `taskActions`]:
+ * the SO team's task keeps only Escalate to Admin — its workflow and the SO upload are the rest.
+ */
+function assertTaskAction(task, action) {
+  const allowed = findHandoff(task.kind)?.form?.taskActions;
+  if (!allowed || allowed.includes(action)) return;
+  const words = { update: 'Updates are given', back: 'Sending it back is done', date: 'The date is moved' }[action] || 'That is done';
+  fail(`${words} through the task's own statuses here — or escalate it to Admin`);
+}
+
 /**
  * Whether a date given for these models is a hand-over to the next team: some model among them
  * goes on from here by Production's routing [goesOnFrom]. One with no routing yet, or a date for
@@ -2747,6 +2765,7 @@ async function mayFillDetails(task, user) {
  */
 export async function updateHandoff(task, user, { note, fields = {} }) {
   openHandoff(task, user);
+  assertTaskAction(task, 'update');
   const text = String(note || '').trim();
   if (text.length < 2) fail('Say what the update is');
   const kept = keptFields(task.kind, fields);
@@ -2777,6 +2796,7 @@ export async function updateHandoff(task, user, { note, fields = {} }) {
  */
 export async function returnHandoff(task, user, { reason }) {
   openHandoff(task, user);
+  assertTaskAction(task, 'back');
   const why = String(reason || '').trim();
   if (why.length < 5) fail('Say why it is being sent back');
 
@@ -2919,6 +2939,7 @@ export async function syncOwnerDueDate(enquiry) {
 /** A new due date, with the reason on the record. */
 export async function rescheduleHandoff(task, user, { dueDate, reason }) {
   openHandoff(task, user);
+  assertTaskAction(task, 'date');
   const why = String(reason || '').trim();
   if (why.length < 5) fail('Say why the date is moving');
   const to = new Date(dueDate);
