@@ -91,6 +91,7 @@ export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) =>
   const task = await sendHandoff({
     enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, brief: req.body.brief,
     priority: req.body.priority, requiredDate: req.body.requiredDate || undefined, addToOpen: req.body.addToOpen === true, order: req.body.order, user: req.user,
+    edd: req.body.edd || undefined,
   });
   /* A hanger that needs assembly: Assembly is tasked beside Production, on the same enquiry. */
   const assembly = req.body.kind === 'ask_edd' ? await raiseAssemblyWith(task, req.user) : null;
@@ -711,3 +712,10 @@ function mergeDashboards(dashboards, { key, label }) {
     cameBack: uniqueTasks(dashboards.flatMap((row) => row.cameBack), (task) => task._id).sort(byDone),
   };
 }
+
+/** A job raised from the customer: marketing or Admin set its EDD from any of its tasks [eddAsk.service `setJobEdd`]. */
+export const setTaskJobEdd = asyncHandler(transactional(async (req, res) => {
+  const { setJobEdd } = await import('../services/eddAsk.service.js');
+  const task = await setJobEdd(await taskFor(req), req.user, req.body);
+  res.json({ success: true, data: await task.populate(TASK_POPULATE) });
+}));

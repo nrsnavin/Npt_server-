@@ -19,6 +19,7 @@ import { MATERIALS } from '../models/Mould.js';
 import { HANDOVER_CHOICES } from '../config/departmentTaskForms.js';
 import { askToRecordReceipt, endOfIndiaDay, logCollectionCall } from './collections.service.js';
 import { chainOf, jobFilter } from './journey.service.js';
+import { askForEdd, eddDayOf, eddGiven, setsEdd } from './eddAsk.service.js';
 import { assertQcCleared, qcGateFor, qcPassedModels, ticked as qcTicked } from './qcGate.service.js';
 import mongoose from 'mongoose';
 
@@ -656,6 +657,8 @@ async function moveEnquiryChecked({
   const aside = SIDE_STAGES.includes(handoff.stage) && enquiry.stage && !SALES_STAGE_KEYS.includes(enquiry.stage);
   if (!keepStage) await moveStage(enquiry, aside ? null : handoff.stage, { user, task, note: text || handoff.label });
   if (openRecords) await openWorkRecord(kind, enquiry, asked);
+  /* A queue task with no EDD on the enquiry: its marketing person is asked for one [eddAsk.service]. */
+  await askForEdd(task);
 
   await publish(EVENTS.HANDOFF_SENT, { task, enquiry, by: user });
   return task;
@@ -669,7 +672,7 @@ async function moveEnquiryChecked({
  * same way, except for the steps that only make sense on an enquiry (asking its marketing
  * person, raising the next department's task on it), which say so.
  */
-export async function raiseTeamTask({ kind, note, brief, priority, requiredDate, customer, user }) {
+export async function raiseTeamTask({ kind, note, brief, priority, requiredDate, customer, user, edd }) {
   if (!(isAdmin(user) || inDepartment(user, 'marketing'))) {
     throw ApiError.forbidden('Only Admin and the marketing team raise team tasks without an enquiry');
   }
@@ -720,7 +723,11 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
     dueDate: due,
     priority: PRIORITIES.includes(priority) ? priority : 'normal',
     link: '/departments/mine',
+    /* The job's EDD, given on the form — the queues run by it [eddAsk.service]. */
+    ...(String(edd || '').trim() ? { jobEdd: { date: eddDayOf(edd), by: user._id, at: new Date(), department: 'marketing' } } : {}),
   });
+  /* Raised with none: whoever raised it is asked for it [eddAsk.service]. */
+  await askForEdd(task);
   /*
    * Create Quotation for a buyer with no enquiry: the quotation is raised for the buyer with the
    * models the form named, and the task points at it — the Quotation desk opens it from the card,
@@ -1007,7 +1014,7 @@ async function reachEnquiry(task, user, reach, note) {
  * One button pressed on the enquiry screen. Returns the task (or the record, for the buttons
  * that only record). `enquiry` must be a document with `customer` populated or an id.
  */
-export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, addToOpen, order, user }) {
+export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, addToOpen, order, user, edd }) {
   const handoff = findHandoff(kind);
   if (!handoff || handoff.hidden) fail('That is not one of the buttons');
 
@@ -1018,6 +1025,16 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
 
   /* Every button that names a department raises that department's task. */
   if (handoff.department) {
+    /*
+     * The EDD given on the form, by marketing or Admin raising a queue task [eddAsk.service]: the
+     * enquiry's, written first, so the task is raised with its place in the queue already.
+     */
+    if (String(edd || '').trim() && setsEdd(user) && (!enquiry.edd?.date || String(edd).slice(0, 10) !== enquiry.edd.date)) {
+      const day = eddDayOf(edd);
+      await writeEnquiryEdd(enquiry._id, { day, user, department: 'marketing', note: 'given when the task was raised' });
+      await tellEddSet(enquiry, user, { day, note: '' });
+      enquiry.edd = { date: day, department: 'marketing' };
+    }
     const wasHeld = enquiry.stage === 'production_hold';
     const raised = await moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, order, user });
     /* The EDD marketing gave on the SO request's rows is the enquiry's [eddsFromOrderRows]. */
@@ -3057,6 +3074,8 @@ export async function taskPrefill(enquiryId) {
     members: await membersFor(HANDOFFS.flatMap((handoff) => (handoff.asks || []).filter((field) => field.type === 'member').map((field) => field.department))),
     /* The registers, so a model, material, hook, clip or print is picked, not typed from memory. */
     registers: await registerLists(),
+    /* Marketing's EDD, so the form asks for it only when there is none [eddAsk.service]. */
+    edd: enquiry.edd?.date || '',
   };
 }
 
@@ -3088,6 +3107,8 @@ export async function writeEnquiryEdd(enquiryId, { day, user, department, note }
   await Enquiry.updateOne({ _id: enquiryId?._id || enquiryId }, {
     $set: { edd: { date: day, by: user._id, at: new Date(), department, note: text || undefined } },
   });
+  /* The To-do asking marketing for it is answered [eddAsk.service]. */
+  await eddGiven({ enquiry: enquiryId?._id || enquiryId });
 }
 
 /**
@@ -3551,6 +3572,8 @@ async function raiseOnChain(task, kind, user, { note, brief }) {
     createdBy: task.createdBy || user._id,
     chain: chainOf(task),
     previousTask: task._id,
+    /* The job's EDD goes with it [eddAsk.service]. */
+    ...(task.jobEdd?.date ? { jobEdd: task.jobEdd } : {}),
     title: `${handoff.label} — ${buyer?.name || 'team task'}`,
     notes: note,
     brief,
@@ -3560,6 +3583,7 @@ async function raiseOnChain(task, kind, user, { note, brief }) {
     system: true,
     link: '/departments/mine',
   });
+  await askForEdd(raised);
   await publish(EVENTS.HANDOFF_SENT, { task: raised, enquiry: null, by: user });
   return raised;
 }
@@ -3625,6 +3649,7 @@ async function writeMarketingEdds(enquiryId, rows, user, note) {
   await Enquiry.updateOne({ _id: enquiry._id }, {
     $set: { eddByModel: table, ...(day ? { edd: { date: day, by: user._id, at: new Date(), department: 'marketing', note: [words, text].filter(Boolean).join(' — ') || undefined } } : {}) },
   });
+  if (day) await eddGiven({ enquiry: enquiry._id });
 }
 
 /**

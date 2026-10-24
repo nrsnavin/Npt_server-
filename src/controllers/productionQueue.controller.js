@@ -69,13 +69,15 @@ const ticked = (value) => value === true || value === 'true' || value === 'Yes';
 const chainKey = (task) => `chain:${String(task.chain || task._id)}`;
 const jobKey = (task) => (task.enquiry?._team ? chainKey(task) : String(task.enquiry?._id || ''));
 function teamJob(task, chainTasks = []) {
+  /* The job's EDD — marketing's, on its tasks [eddAsk.service] — else the latest date its teams gave. */
+  const jobEdd = [task, ...chainTasks].map((entry) => entry.jobEdd).find((entry) => entry?.date) || null;
   const dates = [task, ...chainTasks].flatMap((entry) => (entry.modelDates || []).map((row) => row.date)).filter(Boolean).sort();
-  const latest = dates.at(-1) || null;
+  const latest = jobEdd?.date || dates.at(-1) || null;
   return {
     _id: null, _team: true, number: null, stage: null,
     customer: task.customer && typeof task.customer === 'object' ? task.customer : null,
     assignedTo: task.createdBy && typeof task.createdBy === 'object' ? task.createdBy : null,
-    edd: latest ? { date: latest, department: null, at: null } : null,
+    edd: latest ? { date: latest, department: jobEdd ? 'marketing' : null, at: jobEdd?.at || null } : null,
     eddByModel: [], items: [],
     requirement: { modelNumber: task.brief?.model || null, quantity: task.brief?.quantity || null, colour: task.brief?.material || null },
   };
@@ -115,7 +117,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
   const chainIds = teamTasks.map((task) => task.chain || task._id);
   const chainTasks = chainIds.length
     ? await Todo.find({ chain: { $in: chainIds }, kind: { $in: [...SIBLING_KINDS, 'ask_edd'] } })
-      .select('chain kind status completed completedAt user dueDate updatedAt createdAt modelStatuses modelDates routing').populate('user', 'name').lean()
+      .select('chain kind status completed completedAt user dueDate updatedAt createdAt modelStatuses modelDates routing jobEdd').populate('user', 'name').lean()
     : [];
   for (const task of teamTasks) {
     task.enquiry = teamJob(task, chainTasks.filter((entry) => String(entry.chain) === String(task.chain || task._id)));

@@ -18,6 +18,8 @@ export const handoffSchema = z.object({
   requiredDate: z.string().trim().max(40).optional().or(z.literal('')),
   /** Which of the enquiry's sales orders the task is for, when it has several; else its newest. */
   order: z.string().regex(/^[0-9a-f]{24}$/i, 'Not a valid id').optional().or(z.literal('')).transform((value) => value || undefined),
+  /** Marketing's EDD, given on the form of a task the queues run by [services/eddAsk.service.js]. */
+  edd: z.string().trim().max(10).optional().or(z.literal('')),
 });
 
 /** A department task raised for a team without an enquiry; a customer may be named. */
@@ -28,6 +30,14 @@ export const teamTaskSchema = z.object({
   priority: z.enum(['low', 'normal', 'high']).optional(),
   requiredDate: z.string().trim().max(40).optional().or(z.literal('')),
   customer: z.string().trim().max(40).optional().or(z.literal('')),
+  /** The job's EDD, marketing's [services/eddAsk.service.js]. */
+  edd: z.string().trim().max(10).optional().or(z.literal('')),
+});
+
+/** A job raised from the customer: its EDD, set by marketing or Admin from any of its tasks. */
+export const jobEddSchema = z.object({
+  date: z.string().trim().min(1, 'Give the EDD').max(10),
+  note: z.string().trim().max(500).optional(),
 });
 
 /** Done: what was done, and the details the button asks for [config/handoffs.js]. */

@@ -270,6 +270,8 @@ export async function raiseNextTeamTask(task, kind, user, why, { brief: given } 
     createdBy: task.createdBy || user?._id,
     previousTask: task._id,
     chain: chainOf(task),
+    /* The job's EDD goes with it [eddAsk.service]. */
+    ...(task.jobEdd?.date ? { jobEdd: task.jobEdd } : {}),
     order: task.order || undefined,
     title: `${handoff.label} — ${buyer?.name || task.title.split(' — ').slice(1).join(' — ') || 'team task'}`,
     notes: `${findHandoff(task.kind)?.label || task.kind} → ${handoff.label}${why ? `: ${why}` : ''}${user?.name ? ` (${user.name})` : ''}`,
@@ -280,6 +282,8 @@ export async function raiseNextTeamTask(task, kind, user, why, { brief: given } 
     system: true,
     link: '/departments/mine',
   });
+  const { askForEdd } = await import('./eddAsk.service.js');
+  await askForEdd(next);
   return next;
 }
 

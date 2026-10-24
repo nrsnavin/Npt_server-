@@ -190,7 +190,8 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
     const production = slot.ask_edd || null;
     const models = modelRowsFor(req.params.team, task, production, slot.ask_printing || null, enquiry);
     const own = (task.modelDates || []).map((entry) => entry.date).filter(Boolean).sort().at(-1) || null;
-    const enquiryEdd = enquiry?.edd?.date || null;
+    /* Marketing's EDD: the enquiry's, or on a job raised from the customer, the job's [eddAsk.service]. */
+    const enquiryEdd = enquiry?.edd?.date || task.jobEdd?.date || null;
     const handsOn = models.some((entry) => entry.next);
     /* The queue runs by marketing's EDD, as Production's does; a team task with none goes by the team's own date. */
     const date = enquiryEdd || own;
