@@ -365,4 +365,26 @@ test('Printing’s date for a model with no assembly after is its completion dat
   const onlySet = await api(`/api/workspace/todos/${printing._id}/edd`, { method: 'POST', as: 'priya', body: { models: [{ model: 'CRF-SET', date: indiaDay(6) }] } });
   assert.equal(onlySet.status, 200, onlySet.json.message);
   assert.match((await Todo.findById(printing._id).lean()).updates.at(-1).note, /^Completion date/);
+  /* Both models at once: Assembly hears the date of the one that goes to it, not the later one that ends here. */
+  const mixed = await api(`/api/workspace/todos/${printing._id}/edd`, { method: 'POST', as: 'priya', body: { models: [{ model: 'CRF-SET', date: indiaDay(8) }, { model: 'CRF-AS', date: indiaDay(7) }] } });
+  assert.equal(mixed.status, 200, mixed.json.message);
+  assert.equal((await assembly())?.routing?.incoming?.printing, indiaDay(7));
+});
+
+test('no QC on the order: a ready model goes straight to Dispatch when it goes out model by model; together waits for the rest', async () => {
+  const items = [{ modelNumber: 'NQ-1', quantity: 1000 }, { modelNumber: 'NQ-2', quantity: 1000 }];
+  const models = [{ model: 'NQ-1' }, { model: 'NQ-2', printing: true }];
+  const together = await routedEnquiry('No QC Together', '9840013562', items, models);
+  await api(`/api/workspace/todos/${together.production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'NQ-1 ready', models: ['NQ-1'] } });
+  assert.equal(await Todo.findOne({ enquiry: together.enquiry._id, kind: 'invoice_dispatch' }), null, 'together: waits for Printing’s model');
+  assert.equal(await Todo.findOne({ enquiry: together.enquiry._id, kind: 'quality_check' }), null, 'no QC asked for');
+
+  const split = await routedEnquiry('No QC By Model', '9840013563', items, models);
+  const plan = await api(`/api/enquiries/${split.enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'by_model' } });
+  assert.equal(plan.status, 200, plan.json.message);
+  await api(`/api/workspace/todos/${split.production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'NQ-1 ready', models: ['NQ-1'] } });
+  const dispatch = await Todo.findOne({ enquiry: split.enquiry._id, kind: 'invoice_dispatch', completed: false });
+  assert.ok(dispatch, 'the ready model is on Dispatch’s desk — and so in its delivery queue');
+  assert.equal(dispatch.department, 'despatch');
+  assert.equal(await Todo.findOne({ enquiry: split.enquiry._id, kind: 'quality_check' }), null, 'no Quality step without QC');
 });

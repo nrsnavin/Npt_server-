@@ -3225,20 +3225,24 @@ export async function setTaskEdd(task, user, { date, note, models }) {
   /* A team that hands on gives the next team its hand-over date; the last team — or a model that ends here — gives its completion date. */
   const handsOn = (await goOnFromHere(task, entries.map((entry) => entry.model))) ? handsOnOf(task) : [];
   if (handsOn.length) {
-    const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(day)}${perModel}`;
+    /* The next team hears the date of the models that go on to it — a model that ends here is its completion date, not theirs. */
+    const onward = [];
+    for (const entry of entries) if (await goOnFromHere(task, [entry.model])) onward.push(entry);
+    const handOverDay = (onward.length ? onward : entries).reduce((latest, entry) => (entry.date > latest ? entry.date : latest), '');
+    const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(handOverDay)}${perModel}`;
     task.updates = [...(task.updates || []), {
       kind: 'note', text: text ? `${said}: ${text}` : said, note: text ? `${said}: ${text}` : said,
-      date: day, dateLabel: 'Hand-over', fields: { handover: day }, by: user._id, at: new Date(),
+      date: handOverDay, dateLabel: 'Hand-over', fields: { handover: handOverDay }, by: user._id, at: new Date(),
     }];
     task.attention = undefined;
     if (!task.user) task.user = user._id;
     await task.save();
-    await passHandover(task, user, day, text);
+    await passHandover(task, user, handOverDay, text);
     /* Its date counts towards each model's EDD — the latest of its teams' dates. */
     if (task.enquiry) await refreshModelEdds(task.enquiry, user, text);
     await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
     if (findHandoff(task.kind)?.form?.notifyStatus) {
-      await noticeStatus(task, user, { step: { key: task.status || 'handover', label: `Hand-over date to ${teamWords(handsOn)}` }, note: text, date: day });
+      await noticeStatus(task, user, { step: { key: task.status || 'handover', label: `Hand-over date to ${teamWords(handsOn)}` }, note: text, date: handOverDay });
     }
     await afterProductionDate(task, user, { day, edd: false });
     return task;
