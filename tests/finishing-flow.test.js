@@ -110,7 +110,18 @@ test('goods handed over arrive as Goods Received, only for the models routed the
   assert.equal(onward.status, 400);
   assert.match(onward.json.message, /B-2 goes on to Assembly/);
   assert.equal((await move(production, 'siva', 'handed_assembly', { models: ['B-2'] })).status, 200);
+  /* Each model closes on Production's task as it leaves; marketing and Admin get the alert. */
+  assert.equal((await taskOf(enquiry, 'ask_edd')).completed, false, 'C-3 is still with Production');
+  const alerts = (await api('/api/workspace/notices', { as: 'nandhini' })).json.data.map((notice) => notice.statusLabel);
+  assert.ok(alerts.some((label) => /A-1 closed on Production — Handed to Printing/.test(label)), 'alert: A-1 closed');
+  assert.ok(alerts.some((label) => /B-2 closed on Production — Handed to Assembly/.test(label)), 'alert: B-2 closed');
+  const reopen = await move(production, 'siva', 'part1_ready', { models: ['A-1'] });
+  assert.equal(reopen.status, 400, 'a closed model moves no more');
   assert.equal((await move(production, 'siva', 'ready_dispatch', { models: ['C-3'] })).status, 200);
+  const doneHere = await taskOf(enquiry, 'ask_edd');
+  assert.equal(doneHere.completed, true, 'the last model out closes Production’s task');
+  assert.notEqual(doneHere.status, 'closed', 'not Task Closed: it ended with its last model leaving');
+  assert.deepEqual(['A-1', 'B-2', 'C-3'].map((model) => statusOf(doneHere, model)), ['handed_printing', 'handed_assembly', 'ready_dispatch'], 'each model says where it went');
 
   /* Assembly has B-2 from Production; A-1 is still with Printing — not received from Production's hand-over. */
   const asm = (await queue('assembling', 'anand')).data.find((row) => row.enquiry.number === enquiry.number);
@@ -136,6 +147,9 @@ test('goods handed over arrive as Goods Received, only for the models routed the
   assert.equal((await move(assembly, 'anand', 'started')).status, 200);
   assert.equal(await taskOf(enquiry, 'invoice_dispatch'), null, 'not ready yet');
   assert.equal((await move(assembly, 'anand', 'ready_dispatch')).status, 200);
+  const assembled = await taskOf(enquiry, 'ask_assembling_edd');
+  assert.equal(assembled.completed, true, 'Ready for Dispatch from Assembly, the last team, closes its task');
+  assert.equal(assembled.status, 'ready_dispatch');
 
   /* No QC on the order: straight to Dispatch, Quality never asked. */
   assert.ok(await taskOf(enquiry, 'invoice_dispatch'), 'Dispatch has the request');

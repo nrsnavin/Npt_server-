@@ -163,14 +163,13 @@ test('a read notice is gone a day later, unread ones stay', async () => {
   assert.ok(indexes.some((index) => index.key.expireAt === 1 && index.expireAfterSeconds === 0), 'Mongo removes them');
 });
 
-test('Ready for Dispatch and Task Closed stay on Production’s task', async () => {
+test('Ready for Dispatch from the last team closes Production’s task', async () => {
   assert.equal((await move('siva', 'ready_dispatch', { note: 'All 10,000 packed' })).status, 200);
   assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Ready for Dispatch'), 'Dispatch is told on its own request');
   assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Ready for Dispatch'));
-  assert.equal((await move('siva', 'closed', { note: 'All 10,000 handed to dispatch' })).status, 200);
   const done = await Todo.findById(task._id);
-  assert.equal(done.completed, true);
-  assert.equal(done.status, 'closed');
+  assert.equal(done.completed, true, 'nothing follows Production here — the goods have left it');
+  assert.equal(done.status, 'ready_dispatch');
   assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Task Closed'), 'nothing to act on');
 });
 
@@ -1047,13 +1046,14 @@ test('Production tasks Assembly from the queue row, and a finished Assembly task
   assert.equal(row.needsAssembly, true);
   assert.equal(row.teams.assembling.completed, false);
 
-  for (const status of ['started', 'spares_ready', 'full_ready', 'ready_dispatch', 'closed']) {
+  /* Ready for Dispatch, Assembly being last, closes its task. */
+  for (const status of ['started', 'spares_ready', 'full_ready', 'ready_dispatch']) {
     const moved = await api(`/api/workspace/todos/${assembly._id}/status`, { method: 'POST', as: 'anand', body: { status, note: `Now ${status}` } });
     assert.equal(moved.status, 200, `${status}: ${moved.json.message}`);
   }
   row = (await api('/api/production/queue', { as: 'ravi' })).json.data.find((entry) => entry.enquiry.model === 'UTJRSH-13');
   assert.equal(row.teams.assembling.completed, true, 'Dispatch sees Assembly finished');
-  assert.equal(row.teams.assembling.label, 'Task Closed');
+  assert.equal(row.teams.assembling.label, 'Ready for Dispatch');
   assert.equal(row.needsAssembly, true);
 });
 

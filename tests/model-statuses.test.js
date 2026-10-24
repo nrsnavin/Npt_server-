@@ -203,7 +203,7 @@ test('the summary: a problem first, cut to thirty words', async () => {
   assert.match(said, /No EDD yet$/);
 });
 
-test('Production’s task closes once every model is handed to Printing or Assembly — not before, and not past a model that goes nowhere', async () => {
+test('each model closes on Production’s task as it leaves — handed to Printing or Assembly, or Ready for Dispatch where nothing follows; the task closes with the last', async () => {
   const { enquiry, production } = await routedOrder();
   const stageOf = async () => (await (await import('../src/models/Enquiry.js')).default.findById(enquiry._id).lean()).stage;
   const stage = await stageOf();
@@ -212,8 +212,14 @@ test('Production’s task closes once every model is handed to Printing or Assem
   assert.equal((await Todo.findById(production._id)).completed, false, 'CRF30 and CRF40 are still with Production');
   assert.equal((await move(production._id, 'siva', 'handed_assembly', ['CRF30'], 'CRF30 to assembly')).status, 200);
   assert.equal((await Todo.findById(production._id)).completed, false, 'CRF40 is still with Production');
+  /* A model closed here moves no more. */
+  const again = await move(production._id, 'siva', 'part1_ready', ['CRF25'], 'more of CRF25');
+  assert.equal(again.status, 400);
+  assert.match(again.json.message, /CRF25 is already closed on this task/);
+  const open = await Todo.findById(production._id).lean();
+  assert.match(open.updates.find((line) => line.status === 'handed_printing').statusLabel, /closed here for CRF25/, 'the move says the model closed');
   assert.equal((await move(production._id, 'siva', 'ready_dispatch', ['CRF40'], 'CRF40 packed')).status, 200);
-  assert.equal((await Todo.findById(production._id)).completed, false, 'Ready for Dispatch alone does not close it — Task Closed does');
+  assert.equal((await Todo.findById(production._id)).completed, true, 'CRF40 Ready for Dispatch — the last model closed — closes the task');
 
   /* Two models, both handed on: the last hand-over closes it at that status, and the enquiry is not moved to Dispatch. */
   const { enquiry: second, production: two } = await routedOrder();
