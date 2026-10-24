@@ -669,10 +669,21 @@ async function withReadiness(rows) {
   if (!ids.length) return rows;
   const plans = await Enquiry.find({ _id: { $in: ids }, 'dispatchPlan.mode': 'by_model' }).select('_id').lean();
   const byModel = new Set(plans.map((row) => String(row._id)));
+  const read = new Map();
   for (const row of rows) {
-    if (row.enquiry?._id && byModel.has(String(row.enquiry._id)) && row.task.kind === 'invoice_dispatch') {
-      row.readiness = { plan: 'by_model', ...(await modelReadiness(row.enquiry._id)) };
-    }
+    if (!row.enquiry?._id || row.task.kind !== 'invoice_dispatch') continue;
+    const key = String(row.enquiry._id);
+    if (!read.has(key)) read.set(key, await modelReadiness(row.enquiry._id));
+    const readiness = read.get(key);
+    if (byModel.has(key)) row.readiness = { plan: 'by_model', ...readiness };
+    /*
+     * Every request: which models are ready, which are still with which team, and whether QC is
+     * compulsory and passed — the Dispatch table's "Goods ready / QC" column [web: DispatchTable].
+     */
+    row.goods = {
+      ready: readiness.ready, waiting: readiness.waiting, sent: readiness.sent || [],
+      qc: readiness.qc?.required ? { required: true, passed: readiness.qc.passed, atQc: readiness.qc.atQc } : { required: false },
+    };
   }
   return rows;
 }
