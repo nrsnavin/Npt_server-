@@ -244,3 +244,82 @@ test('the Sample Request tile asks how it reaches the buyer, and the sample take
   const listed = (await api('/api/samples?handover=collect', { as: 'meera' })).json.data;
   assert.ok(listed.every((row) => row.handover === 'collect') && listed.length >= 2, 'the register narrows to what the buyer collects');
 });
+
+test('"I will hand it over" from the tile: no Sampling task — the enquiry notes the marketing person hands it over, confirmed later', async () => {
+  const enquiry = await raiseEnquiry('NPT-440R');
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', as: 'nandhini',
+    body: { kind: 'sample_request', note: 'Visiting Monday', brief: { items: [{ model: 'NPT-440R', quantity: '2' }], handover: 'I will hand it over on my visit (from the sample rack)' } },
+  });
+  assert.equal(sent.status, 201, sent.json.message);
+  await settle();
+  const record = sent.json.data.task;
+  assert.equal(record.completed, true, 'a finished record on the enquiry, not a queue task');
+  assert.match(record.title, /hand-over by Nandhini S/);
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, completed: false, department: 'sampling' }), 0, 'nothing for Sampling');
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, completed: false, kind: { $in: ['sample_request', 'sample_collect'] } }), 0, 'no bench or desk task');
+  const [sample] = (await api(`/api/samples?enquiry=${enquiry._id}`, { as: 'nandhini' })).json.data;
+  assert.equal(sample.handover, 'in_person');
+  assert.equal(sample.status, 'sample_ready', 'taken from the rack — ready now');
+  const after = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data;
+  assert.match(after.stageHistory.at(-1).note, /to be handed over by Nandhini S from the sample rack/);
+  assert.match((await Todo.findById(record._id)).notes, /Visiting Monday/);
+
+  /* Confirmed from the enquiry once it is with the buyer. */
+  const handed = await api(`/api/samples/${sample._id}/hand-over`, { method: 'POST', as: 'nandhini', body: { receivedBy: 'Kumar', pieces: 2 } });
+  assert.equal(handed.status, 200, handed.json.message);
+  assert.equal(handed.json.data.status, 'delivered');
+});
+
+test('"I will hand it over" on an enquiry already on the bench: the bench task closes, nothing is added to it', async () => {
+  const enquiry = await raiseEnquiry('NPT-450Q');
+  const bench = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', as: 'nandhini',
+    body: { kind: 'sample_request', note: 'Make two', brief: { items: [{ model: 'NPT-450Q', quantity: '2' }], handover: 'Sent by the bench (courier or at the gate)' } },
+  });
+  assert.equal(bench.status, 201, bench.json.message);
+  await settle();
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'sample_request', completed: false }), 1);
+  const rack = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', as: 'nandhini',
+    body: { kind: 'sample_request', addToOpen: true, note: 'Have one on the rack', brief: { items: [{ model: 'NPT-450Q', quantity: '2' }], handover: 'I will hand it over on my visit (from the sample rack)' } },
+  });
+  assert.equal(rack.status, 201, rack.json.message);
+  await settle();
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'sample_request', completed: false }), 0, 'the bench task closed');
+  const [sample] = (await api(`/api/samples?enquiry=${enquiry._id}`, { as: 'nandhini' })).json.data;
+  assert.equal(sample.handover, 'in_person');
+  assert.ok(sample.benchClosedAt);
+  assert.equal(sample.status, 'sample_ready', 'off the rack — ready to hand over');
+});
+
+test('the Reception desk reads as a table: the sample, the buyer’s phone, who collected it and the slip', async () => {
+  const enquiry = await raiseEnquiry('NPT-460P');
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', as: 'nandhini',
+    body: { kind: 'sample_request', note: 'Coming Tuesday', brief: { items: [{ model: 'NPT-460P', quantity: '2' }], handover: 'Buyer collects at reception' } },
+  });
+  assert.equal(sent.status, 201, sent.json.message);
+  await settle();
+  const read = async () => (await api('/api/departments/reception/dashboard', { as: 'rekha' })).json.data.enquiries.find((entry) => entry.task._id === sent.json.data.task._id);
+  let row = await read();
+  assert.ok(row.sample, 'the sample on the row');
+  assert.match(row.sample.number, /^SMP-/);
+  assert.match(row.buyer.phone, /9876500011$/);
+  assert.deepEqual(row.documents, []);
+
+  const form = new FormData();
+  form.append('docType', 'handover_photo');
+  form.append('file', new Blob([Buffer.from('89504e470d0a1a0a', 'hex')], { type: 'image/png' }), 'slip.png');
+  const slip = await api(`/api/workspace/todos/${row.task._id}/documents`, { method: 'POST', as: 'rekha', form });
+  assert.equal(slip.status, 201, slip.json.message);
+  for (const status of ['ready', 'handed']) {
+    const moved = await api(`/api/workspace/todos/${row.task._id}/status`, { method: 'POST', as: 'rekha', body: { status, ...(status === 'handed' ? { fields: { collectorName: 'Kumar', collectorPhone: '9843000001', pieces: 2 } } : {}) } });
+    assert.equal(moved.status, 200, moved.json.message);
+  }
+  await settle();
+  row = await read();
+  assert.ok(row, 'still on the desk until closed');
+  assert.equal(row.sample.collection.collectorName, 'Kumar');
+  assert.equal(row.documents[0].docType, 'handover_photo');
+});

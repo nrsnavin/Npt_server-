@@ -82,6 +82,8 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   assert.equal(desk.status, 200, desk.json.message);
   const row = desk.json.data.enquiries.find((entry) => String(entry.task._id) === String(dispatch._id));
   assert.deepEqual(row.readiness, { plan: 'by_model', ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: [], qc: { required: false } });
+  /* Every Dispatch row carries the goods state for the desk's table, whatever the plan. */
+  assert.deepEqual(row.goods, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: [], qc: { required: false } });
 
   /* Dispatch sends CRF25 on its own: the models sent are recorded on the move; the enquiry reads Part sent. */
   const part = await move(dispatch._id, 'ravi', 'part_dispatched', { note: 'VRL, LR 55021', fields: { modelsSent: 'crf25', piecesSent: 10000 } });

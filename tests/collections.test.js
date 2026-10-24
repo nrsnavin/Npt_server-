@@ -382,3 +382,39 @@ test('every buyer carries a credit status: the rule derives it, Admin overrides 
   const enquiry = await api('/api/enquiries', { method: 'POST', as: 'nandhini', body: { customer: customerId, requirement: { modelNumber: 'NH-400' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() } });
   assert.equal(enquiry.status, 201, 'a hold warns, it does not stop the plant');
 });
+
+test('the Payment Collection, PRT and Accounts desks read as tables: what is due, how late, the promise, the buyer’s phone, the order’s value', async () => {
+  const { order, task } = await caseOn({ overdueDays: 12, value: 30000 });
+  const promised = await move('vijay', task._id, 'promised', 'Accountant says Friday', indiaDay(3));
+  assert.equal(promised.status, 200, promised.json.message);
+  const desk = (await api('/api/departments/payment_collection/dashboard', { as: 'vijay' })).json.data;
+  const row = desk.enquiries.find((entry) => entry.task._id === task._id);
+  assert.ok(row, 'the follow-up is on the desk');
+  assert.equal(row.money.due, 30000);
+  assert.equal(row.money.overdueDays, 12);
+  assert.ok(row.money.promisedDate, 'the promise from the log');
+  assert.ok(row.money.nextCall, 'the next call');
+  assert.match(row.buyer.phone, /9840050001$/);
+  assert.match(row.buyer.whatsapp, /9840050001$/);
+  assert.ok(['good', 'watch', 'hold'].includes(row.buyer.credit.status));
+
+  const disputed = await move('vijay', task._id, 'disputed', 'Says the second invoice was for samples');
+  assert.equal(disputed.status, 200, disputed.json.message);
+  await settle();
+  const accounts = (await api('/api/departments/accounts/dashboard', { as: 'kiran' })).json.data;
+  const clarify = accounts.enquiries.find((entry) => entry.task.kind === 'ac_clarify' && String(entry.enquiry?._id) === String(task.enquiry?._id || task.enquiry));
+  assert.ok(clarify, 'A/C Clarify is on the Accounts desk');
+  assert.equal(clarify.money.due, 30000);
+  assert.ok(clarify.buyer.credit, 'with the credit status');
+  if (clarify.task.order) assert.equal(clarify.money.order.number, order.number);
+
+  const { task: other } = await caseOn({ overdueDays: 50, value: 12000 });
+  const escalated = await move('vijay', other._id, 'escalate_prt', 'Not answering for two weeks');
+  assert.equal(escalated.status, 200, escalated.json.message);
+  await settle();
+  const prt = (await api('/api/departments/payment_recovery/dashboard', { as: 'senthil' })).json.data;
+  const visit = prt.enquiries.find((entry) => entry.task.kind === 'prt_recovery' && String(entry.enquiry?._id) === String(other.enquiry?._id || other.enquiry));
+  assert.ok(visit, 'the PRT case is on the PRT desk');
+  assert.equal(visit.money.due, 12000);
+  assert.equal(visit.money.collected, 0);
+});

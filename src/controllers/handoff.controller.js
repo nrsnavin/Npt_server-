@@ -32,6 +32,7 @@ import {
 import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
 import { taskWithClosable, withClosable } from '../services/taskClosable.service.js';
+import { withDeskDetails } from '../services/deskDetails.service.js';
 
 /**
  * Department tasks about an enquiry [config/handoffs.js, services/handoff.service.js]: the
@@ -605,13 +606,16 @@ export const departmentsOverview = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await allDepartmentFigures(DEPARTMENT_KEYS) });
 });
 
-/** One department's dashboard — its own people, or Admin. */
+/** The desks read as one table a task [web: components/DeskTables.jsx]. */
+const TABLE_DESKS = ['reception', 'payment_collection', 'payment_recovery', 'accounts'];
+
 /** The SO team's desk read at a glance [services/soDesk.service.js]. */
 export const soDeskFor = asyncHandler(async (req, res) => {
   const { soDesk } = await import('../services/soDesk.service.js');
   res.json({ success: true, data: await soDesk(req.user) });
 });
 
+/** One department's dashboard — its own people, or Admin. */
 export const departmentDashboardFor = asyncHandler(async (req, res) => {
   const key = req.params.key === 'mine' ? req.user.department : req.params.key;
   if (!DEPARTMENT_KEYS.includes(key)) throw ApiError.notFound('No such department');
@@ -649,6 +653,8 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
   const held = members.every((member) => FINISHING_DEPARTMENTS.includes(member)) ? await withDeskSummaries(merged) : merged;
   /* Dispatch's desk: for an order going out model by model, which models are ready to go, sent, or still being made [handoff.service `modelReadiness`]. */
   if (key === 'despatch') await withReadiness(held);
+  /* Reception, Payment Collection, PRT and Accounts read their desks as tables: the buyer's phone, the sample, the money [deskDetails.service]. */
+  if (TABLE_DESKS.includes(key)) await withDeskDetails(held);
   /* Each task on an enquiry: will the order make its EDD [deliveryRisk.service] — read on the desk's cards. */
   const risks = await deliveryRiskFor([...held, ...queries].map((row) => row.enquiry?._id));
   for (const row of [...held, ...queries]) if (row.enquiry?._id) row.delivery = risks.get(String(row.enquiry._id)) || null;
@@ -669,10 +675,21 @@ async function withReadiness(rows) {
   if (!ids.length) return rows;
   const plans = await Enquiry.find({ _id: { $in: ids }, 'dispatchPlan.mode': 'by_model' }).select('_id').lean();
   const byModel = new Set(plans.map((row) => String(row._id)));
+  const read = new Map();
   for (const row of rows) {
-    if (row.enquiry?._id && byModel.has(String(row.enquiry._id)) && row.task.kind === 'invoice_dispatch') {
-      row.readiness = { plan: 'by_model', ...(await modelReadiness(row.enquiry._id)) };
-    }
+    if (!row.enquiry?._id || row.task.kind !== 'invoice_dispatch') continue;
+    const key = String(row.enquiry._id);
+    if (!read.has(key)) read.set(key, await modelReadiness(row.enquiry._id));
+    const readiness = read.get(key);
+    if (byModel.has(key)) row.readiness = { plan: 'by_model', ...readiness };
+    /*
+     * Every request: which models are ready, which are still with which team, and whether QC is
+     * compulsory and passed — the Dispatch table's "Goods ready / QC" column [web: DispatchTable].
+     */
+    row.goods = {
+      ready: readiness.ready, waiting: readiness.waiting, sent: readiness.sent || [],
+      qc: readiness.qc?.required ? { required: true, passed: readiness.qc.passed, atQc: readiness.qc.atQc } : { required: false },
+    };
   }
   return rows;
 }
