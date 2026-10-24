@@ -200,7 +200,9 @@ test('the morning after a promised date with nothing in, the sweep breaks the pr
   const paid = await api(`/api/payments/${kept.receivable._id}/receipts`, { method: 'POST', as: 'kiran', body: { amount: 12000, reference: 'UTR-KEPT' } });
   assert.equal(paid.status, 201, paid.json.message);
   await sweep({ now: tomorrow });
-  assert.equal((await Todo.findById(kept.task._id)).status, 'promised', 'the money came — nothing to break');
+  const settled = await Todo.findById(kept.task._id);
+  assert.equal(settled.status, 'paid', 'the money came — nothing to break: paid in full, it reads Paid');
+  assert.equal(settled.completed, true);
   void receivable;
 });
 
@@ -280,7 +282,7 @@ test('PRT works the case in the field; what it collects waits for Accounts befor
   const recorded = await api(`/api/payments/${receivable._id}/receipts`, { method: 'POST', as: 'senthil', body: { amount: 20000, mode: 'cash', reference: 'RB-44' } });
   assert.equal(recorded.status, 201, recorded.json.message);
   assert.equal(recorded.json.data.balance, 0, 'the chase stops');
-  assert.equal(recorded.json.data.state, 'paid');
+  assert.equal(recorded.json.data.state, 'awaiting_confirmation', 'Paid reads only once Accounts has seen it');
   assert.equal(recorded.json.data.awaitingConfirmation, 20000, 'but Accounts has not seen it');
   assert.equal(recorded.json.data.receipts[0].confirmed?.at, undefined);
 
@@ -297,6 +299,7 @@ test('PRT works the case in the field; what it collects waits for Accounts befor
   assert.equal(confirmed.status, 200, confirmed.json.message);
   assert.equal(confirmed.json.data.receipts[0].confirmed.by.name, 'Kiran Accounts');
   assert.equal(confirmed.json.data.awaitingConfirmation, 0);
+  assert.equal(confirmed.json.data.state, 'paid', 'confirmed in the bank: Paid');
   const again = await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(20000) });
   assert.equal(again.json.replayed, true);
   standing = await paymentStanding(await SalesOrder.findById(order._id));

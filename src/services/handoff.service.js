@@ -1701,14 +1701,18 @@ const goesOnFrom = (task, row) => {
  * (together, or each model as it is ready), and the modes of travel with the paper each needs.
  * The models are the order's lines, else the enquiry's items, else the request's own.
  */
-export async function dispatchSheet(task) {
-  if (task.kind !== 'invoice_dispatch') fail('Only a Dispatch request is dispatched from the form');
+/**
+ * What the job ordered, model by model: the SO's lines, else the enquiry's items, else the models
+ * the task names. `task` may be a Dispatch request or null (an enquiry alone).
+ */
+export async function orderedModelsOf({ task = null, enquiryId = null } = {}) {
   const { default: SalesOrder } = await import('../models/SalesOrder.js');
-  const enquiryId = task.enquiry?._id || task.enquiry || null;
-  const order = task.order
-    ? await SalesOrder.findById(task.order?._id || task.order).select('number lines.modelNumber lines.quantity').lean()
-    : enquiryId ? await SalesOrder.findOne({ enquiry: enquiryId, status: { $ne: 'cancelled' } }).sort({ createdAt: -1 }).select('number lines.modelNumber lines.quantity').lean() : null;
-  const enquiry = enquiryId ? await Enquiry.findById(enquiryId).select('items requirement dispatchPlan').lean() : null;
+  const enquiryKey = enquiryId || task?.enquiry?._id || task?.enquiry || null;
+  const orderKey = task?.order?._id || task?.order || null;
+  const order = orderKey
+    ? await SalesOrder.findById(orderKey).select('number lines.modelNumber lines.quantity').lean()
+    : enquiryKey ? await SalesOrder.findOne({ enquiry: enquiryKey, status: { $ne: 'cancelled' } }).sort({ createdAt: -1 }).select('number lines.modelNumber lines.quantity').lean() : null;
+  const enquiry = enquiryKey ? await Enquiry.findById(enquiryKey).select('items requirement dispatchPlan').lean() : null;
   const ordered = new Map();
   const add = (model, quantity) => {
     const name = String(model || '').trim();
@@ -1717,12 +1721,71 @@ export async function dispatchSheet(task) {
   };
   if (order?.lines?.length) for (const line of order.lines) add(line.modelNumber, line.quantity);
   else if (enquiry?.items?.length) for (const item of enquiry.items) add(item.modelNumber, item.quantity);
-  if (!ordered.size) {
-    const named = String(task.brief?.models || task.brief?.model || enquiry?.requirement?.modelNumber || '').split(',').map((entry) => entry.trim()).filter(Boolean);
-    for (const model of named) add(model, named.length === 1 ? briefQuantity(task.brief) : 0);
+  /* No SO and no quantities on the enquiry: the pieces the Production request carried, model by model. */
+  if (!order?.lines?.length && enquiryKey && [...ordered.values()].every((quantity) => !quantity)) {
+    const production = await Todo.findOne({ enquiry: enquiryKey, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('brief').lean();
+    const none = !ordered.size;
+    for (const row of Array.isArray(production?.brief?.items) ? production.brief.items : []) {
+      const name = String(row?.model || row?.modelNumber || '').trim();
+      const quantity = Number(String(row?.quantity ?? '').replace(/,/g, '')) || 0;
+      if (!name || !quantity) continue;
+      const match = [...ordered.keys()].find((model) => model.toLowerCase() === name.toLowerCase());
+      if (match || none) ordered.set(match || name, quantity);
+    }
   }
+  /* No SO: a request for one model says how many are to go. */
+  const asked = Number(String(briefQuantity(task?.brief) || '').replace(/,/g, ''));
+  if (!order?.lines?.length && ordered.size === 1 && asked > 0) ordered.set([...ordered.keys()][0], asked);
+  if (!ordered.size) {
+    const named = String(task?.brief?.models || task?.brief?.model || enquiry?.requirement?.modelNumber || '').split(',').map((entry) => entry.trim()).filter(Boolean);
+    for (const model of named) add(model, named.length === 1 ? briefQuantity(task?.brief) : 0);
+  }
+  return { order, enquiry, ordered };
+}
+
+/**
+ * Every load sent on the job's Dispatch requests, oldest first — the enquiry's since its newest
+ * Production request (or the team job's chain) — so a second request, raised for a model ready
+ * later, knows what the first one sent [recordDispatchLoad, dispatchSheet, modelReadiness].
+ * `current`: a request in hand whose loads are newer than what is saved.
+ */
+export async function jobDispatchLoads({ enquiryId = null, task = null, current = null } = {}) {
+  const enquiryKey = enquiryId || task?.enquiry?._id || task?.enquiry || null;
+  let where;
+  if (enquiryKey) {
+    const start = await Todo.findOne({ enquiry: enquiryKey, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt').lean();
+    where = { enquiry: enquiryKey, ...(start ? { createdAt: { $gte: start.createdAt } } : {}) };
+  } else if (task) {
+    where = { $or: [{ chain: task.chain || task._id }, { _id: task.chain || task._id }] };
+  } else return [];
+  const requests = await Todo.find({ ...where, kind: 'invoice_dispatch' }).select('loads order createdAt').sort({ createdAt: 1 }).lean();
+  const rows = [];
+  for (const request of requests) {
+    const loads = current && String(current._id) === String(request._id) ? current.loads || [] : request.loads || [];
+    for (const load of loads) rows.push({ ...(load.toObject?.() ?? load), task: request._id });
+  }
+  if (current && !requests.some((request) => String(request._id) === String(current._id))) {
+    for (const load of current.loads || []) rows.push({ ...(load.toObject?.() ?? load), task: current._id });
+  }
+  return rows.sort((a, b) => new Date(a.at) - new Date(b.at));
+}
+
+/** Pieces sent of each model across the loads. */
+const sentByModel = (loads) => {
   const sent = new Map();
-  for (const load of task.loads || []) for (const line of load.lines || []) sent.set(line.model, (sent.get(line.model) || 0) + (line.quantity || 0));
+  for (const load of loads) for (const line of load.lines || []) sent.set(line.model, (sent.get(line.model) || 0) + (line.quantity || 0));
+  return sent;
+};
+
+/** Every model ordered has gone in full — a model with no quantity known, once any of it went. */
+const everythingSent = (ordered, sent) => [...ordered].every(([model, quantity]) => (quantity > 0 ? (sent.get(model) || 0) >= quantity : (sent.get(model) || 0) > 0));
+
+export async function dispatchSheet(task) {
+  if (task.kind !== 'invoice_dispatch') fail('Only a Dispatch request is dispatched from the form');
+  const enquiryId = task.enquiry?._id || task.enquiry || null;
+  const { order, enquiry, ordered } = await orderedModelsOf({ task });
+  /* What went on every request of the job, not this one alone. */
+  const sent = sentByModel(await jobDispatchLoads({ task, current: task }));
   const readiness = enquiryId ? await modelReadiness(enquiryId) : { ready: [], waiting: [] };
   const waiting = new Set((readiness.waiting || []).map((row) => row.model));
   return {
@@ -1740,16 +1803,14 @@ export async function dispatchSheet(task) {
 /**
  * A load sent on a Dispatch request, from the dispatch form: the models ticked and the pieces of
  * each, how it travels, and the paper proving it, already stored [handoff.controller
- * `handoffDispatchLoad`]. The task moves to the status (Part Quantity Dispatched, Fully Dispatched
- * or Dispatched) with the models and pieces on the move; the load is kept on the task, the paper
- * among its documents. A transporter's LR copy goes on to Reception's LR Copy task, marked LR Copy
+ * `handoffDispatchLoad`]. The app picks the status, not Dispatch: Fully Dispatched once every model
+ * ordered has gone in full on the job's requests (this load and every earlier one, on any request),
+ * else Part Quantity Dispatched; the load is kept on the task, the paper among its documents. A transporter's LR copy goes on to Reception's LR Copy task, marked LR Copy
  * Received for Reception to send to the buyer; a load in the plant's own vehicle, or collected by
  * the party, raises no LR task — its proof of delivery is the record.
  */
-export async function recordDispatchLoad(task, user, { status, lines, mode, note, attachmentId }) {
+export async function recordDispatchLoad(task, user, { lines, mode, note, attachmentId }) {
   if (task.kind !== 'invoice_dispatch') fail('Only a Dispatch request is dispatched from the form');
-  const step = statusesOf(task).find((entry) => entry.key === status);
-  if (!step?.loads) fail('Pick Part Quantity Dispatched, Fully Dispatched or Dispatched');
   const modes = findHandoff(task.kind)?.form?.dispatchModes || [];
   const how = modes.find((entry) => entry.key === mode);
   if (!how) fail(`Say how it travels — ${modes.map((entry) => entry.label).join(', ')}`);
@@ -1765,7 +1826,17 @@ export async function recordDispatchLoad(task, user, { status, lines, mode, note
   const stranger = known.size && given.find((line) => !known.has(line.model.toLowerCase()));
   if (stranger) fail(`${stranger.model} is not on this order`);
   const pieces = given.reduce((sum, line) => sum + line.quantity, 0);
-  const said = `${given.map((line) => `${line.model} ${line.quantity.toLocaleString('en-IN')} pcs`).join(' · ')} — ${how.label}, ${how.proofLabel.toLowerCase()} attached`;
+  /* The names as the order spells them, so every load reads the same model the same way. */
+  const spelled = new Map(sheet.models.map((row) => [row.model.toLowerCase(), row.model]));
+  for (const line of given) line.model = spelled.get(line.model.toLowerCase()) || line.model;
+  const { ordered } = await orderedModelsOf({ task });
+  const before = await jobDispatchLoads({ task, current: task });
+  const after = sentByModel([...before, { lines: given }]);
+  const status = ordered.size && everythingSent(ordered, after) ? 'fully_dispatched' : 'part_dispatched';
+  const still = [...ordered].filter(([model, quantity]) => (quantity > 0 ? (after.get(model) || 0) < quantity : !(after.get(model) > 0)))
+    .map(([model, quantity]) => (quantity > 0 ? `${model} ${Math.max(0, quantity - (after.get(model) || 0)).toLocaleString('en-IN')} pcs` : model));
+  const said = `${given.map((line) => `${line.model} ${line.quantity.toLocaleString('en-IN')} pcs`).join(' · ')} — ${how.label}, ${how.proofLabel.toLowerCase()} attached`
+    + (status === 'part_dispatched' && still.length ? ` · still to go: ${still.join(', ')}` : '');
   const text = [String(note || '').trim(), said].filter(Boolean).join(' — ');
   task.loads = [...(task.loads || []), { status, lines: given, mode, attachment: attachmentId, note: String(note || '').trim() || undefined, by: user._id, at: new Date() }];
   const moved = await setTaskStatus(task, user, {
@@ -1775,6 +1846,8 @@ export async function recordDispatchLoad(task, user, { status, lines, mode, note
   });
   /* The transporter's LR copy is Reception's to send: on its LR Copy task, received and ready to go. */
   if (mode === 'transporter') await lrToReception(moved || task, user, attachmentId, said);
+  /* The last of it gone after a part load: the enquiry no longer reads Part sent — it reads LR Copy [holdsPartSent]. */
+  if (status === 'fully_dispatched') await reachEnquiry(moved || task, user, { marketing: 'lr_copy' }, `Fully Dispatched — ${said}`);
   return moved || task;
 }
 
@@ -1794,19 +1867,24 @@ async function lrToReception(task, user, attachmentId, said) {
 }
 
 /**
- * The advance is confirmed in the bank on an order its SO request sent with Production confirmed
- * [paymentGates.service `afterPayment`]: released to production — the same release as the Sales
- * orders screen's — and Production asked for it on the enquiry (or the job's next team task), as
- * the SO upload would have done had the money been in. Returns whether it was released.
+ * The advance is confirmed in the bank [paymentGates.service `afterPayment`]: the order is released
+ * to production — the same release as the Sales orders screen's — whether it was booked from the
+ * SO request or on the Sales orders screen, and Production gets its task on the enquiry (or the
+ * job's next team task). Only an SO request that held Production back waits for marketing (a
+ * Production Holded Order is kept back by the caller). Returns whether it was released.
  */
 export async function releaseOnAdvance(order, user) {
   const source = order.sourceTask ? await Todo.findById(order.sourceTask) : null;
-  /* Only an order booked from an SO request that said Production confirmed goes on by itself. */
-  if (!source || source.kind !== 'po_so' || heldBack(source)) return false;
+  if (source && (source.kind !== 'po_so' || heldBack(source))) return false;
   const { releaseFromTask, noteOrderOnTask } = await import('./soFromTask.service.js');
-  const why = `Released automatically — the advance on ${order.number} is confirmed in the bank`;
+  /* Checks marketing has not ticked yet are said on the release, not a reason to keep the plant waiting. */
+  const { VERIFICATION_CHECKS } = await import('../models/SalesOrder.js');
+  const open = (order.outstandingChecks || []).map((key) => (VERIFICATION_CHECKS.find((check) => check.key === key)?.label || key).toLowerCase());
+  const why = `Released automatically — the advance on ${order.number} is confirmed in the bank${open.length ? ` (checks still open: ${open.join(', ')})` : ''}`;
   const result = await releaseFromTask(order, user, why);
   if (!result.released) return false;
+  /* Booked on the Sales orders screen: the release itself sends the enquiry to Production [handoff.subscriber ORDER_RELEASED]. */
+  if (!source) return true;
   const brief = carriedBrief(source);
   if (order.enquiry) {
     const open = await Todo.exists({ enquiry: order.enquiry, kind: 'ask_edd', completed: false });
@@ -2542,7 +2620,12 @@ function statusDate(form, step, date) {
  * The moves that reach Admin's and marketing's "Needs your action", by task kind: Production's
  * Mould Issue and Raw Material Not Available, Dispatch's Dispatched. Nothing else.
  */
-export const ADMIN_MARKETING_NOTICES = Object.freeze({ ask_edd: ['mould_issue', 'raw_material'], invoice_dispatch: ['dispatched'] });
+export const ADMIN_MARKETING_NOTICES = Object.freeze({ ask_edd: ['mould_issue', 'raw_material'], invoice_dispatch: ['dispatched', 'part_dispatched', 'fully_dispatched'] });
+/*
+ * Dispatch's news — its request and Reception's LR copy — is the buyer's marketing person's, not
+ * every Admin's: an Admin hears it only as that marketing person [noticeStatus].
+ */
+const DISPATCH_NOTICE_KINDS = ['invoice_dispatch', 'lr_copy'];
 /* A real move to one of those statuses — not another notice ("EDD given") sent while the task sits at one. */
 function noticesAdminAndMarketing(task, step) {
   if (!(ADMIN_MARKETING_NOTICES[task.kind] || []).includes(step?.key)) return false;
@@ -2564,8 +2647,10 @@ export async function noticeStatus(task, user, { step, note, date, also = [], on
   ]);
   const enquiry = task.enquiry ? await Enquiry.findById(task.enquiry?._id || task.enquiry).select('assignedTo customer').lean() : null;
   const admins = await User.find({ ...MANAGEMENT_QUERY, isActive: { $ne: false } }).select('_id').lean();
-  /* The enquiry's marketing person — or, on a team task with no enquiry, whoever raised it. */
-  const asker = enquiry ? enquiry.assignedTo : task.createdBy;
+  /* The enquiry's marketing person — or, on a team task with no enquiry, the buyer's (else whoever raised it). */
+  const buyerOwner = !enquiry && DISPATCH_NOTICE_KINDS.includes(task.kind) && task.customer
+    ? (await mongoose.model('Customer').findById(task.customer?._id || task.customer).select('assignedTo').lean())?.assignedTo : null;
+  const asker = enquiry ? enquiry.assignedTo : buyerOwner || task.createdBy;
   /* The departments whose tasks asked for this one hear its moves too [Todo `askedFrom`]. */
   const askers = [];
   if (task.askedFrom?.length) {
@@ -2578,6 +2663,10 @@ export async function noticeStatus(task, user, { step, note, date, also = [], on
     for (const id of [asker, ...admins.map((person) => person._id)].filter(Boolean)) recipients.delete(String(id));
     const office = await User.find({ _id: { $in: [...recipients] }, $or: [{ department: 'marketing' }, { extraDepartments: 'marketing' }] }).select('_id').lean();
     for (const person of office) recipients.delete(String(person._id));
+  }
+  /* Dispatch's moves: the marketing person of the buyer, never Admin as Admin. */
+  if (DISPATCH_NOTICE_KINDS.includes(task.kind)) {
+    for (const admin of admins) if (String(admin._id) !== String(asker || '')) recipients.delete(String(admin._id));
   }
   if (user?._id) recipients.delete(String(user._id));
   if (!recipients.size) return;
@@ -3654,11 +3743,13 @@ export async function routingFor(task, user) {
   if (task.kind !== 'ask_edd') fail('Only Production decides printing and assembly');
   if (!mayWorkOnHandoff(user, task)) throw ApiError.forbidden(`This task is on the ${departmentName(task.department)} queue`);
   const enquiryId = task.enquiry?._id || task.enquiry;
+  /* The EDD marketing or Admin set — the job's and each model's — shown on the form and its date filled from it. */
+  const edd = await marketingEddFor(task);
   /* Raised from the customer with no enquiry: the models the task names. */
   if (!enquiryId) {
     const said = (task.routing?.models || []).map((row) => row.model);
     const models = [...new Set([...said, ...modelsOfTask(task)].filter(Boolean).map((model) => String(model).trim()))];
-    return { models: models.map((model) => ({ model })), routing: task.routing || null, mayDecide: isProductionInCharge(user) };
+    return { models: models.map((model) => ({ model })), routing: task.routing || null, mayDecide: isProductionInCharge(user), edd };
   }
   const prefill = await taskPrefill(enquiryId);
   const { default: SalesOrder } = await import('../models/SalesOrder.js');
@@ -3671,7 +3762,22 @@ export async function routingFor(task, user) {
     print: row.print || '', hook: row.hook || '', clip: row.clip || '',
   }]));
   /* Everyone in Production reads the decision; only the Production in charge (or Admin) makes it. */
-  return { models: models.map((model) => ({ model, ...(hints[model] || {}) })), routing: task.routing || null, mayDecide: isProductionInCharge(user) };
+  return { models: models.map((model) => ({ model, ...(hints[model] || {}) })), routing: task.routing || null, mayDecide: isProductionInCharge(user), edd };
+}
+
+/**
+ * The EDD marketing or Admin gave the job [Enquiry `edd`, `eddByModel`; Todo `jobEdd`]: the day,
+ * who set it, and any model with a day of its own. Null when none is given yet.
+ */
+async function marketingEddFor(task) {
+  const { eddOfJob } = await import('./eddAsk.service.js');
+  const enquiryId = task.enquiry?._id || task.enquiry;
+  const enquiry = enquiryId ? await Enquiry.findById(enquiryId).select('edd eddByModel').populate('edd.by', 'name').lean() : null;
+  const date = enquiry ? enquiry.edd?.date || null : await eddOfJob(task);
+  const models = (enquiry?.eddByModel || []).filter((row) => row.model && row.date && row.date !== date).map((row) => ({ model: row.model, date: row.date }));
+  if (!date && !models.length) return null;
+  const by = enquiry ? enquiry.edd?.by?.name || null : null;
+  return { date, by, models };
 }
 
 /**
@@ -3943,19 +4049,34 @@ export async function modelReadiness(enquiryId) {
     else waiting.push({ model, team: last });
   }
   /*
-   * Which of them have gone: a part load names its models [departmentTaskForms invoice_dispatch
-   * `part_dispatched` fields]; Dispatched or Fully Dispatched sends every model made by then.
+   * Which of them have gone, from the loads on every Dispatch request of the job [recordDispatchLoad]:
+   * a model is sent once its pieces ordered have all gone; some of it gone is `partSent`. Never
+   * "every model ready now" — a model made after the first load went is still to go.
    */
-  const requests = await Todo.find({ enquiry: id, kind: 'invoice_dispatch', createdAt: { $gte: start.createdAt } }).select('statusHistory updates').lean();
-  const sent = new Set();
   const key = (model) => String(model || '').trim().toLowerCase();
-  for (const request of requests) {
-    for (const line of request.updates || []) {
-      if (line.kind !== 'status') continue;
-      if (['dispatched', 'fully_dispatched'].includes(line.status)) ready.forEach((model) => sent.add(model));
-      if (line.status === 'part_dispatched') {
-        for (const named of String(line.fields?.modelsSent || '').split(',').map(key).filter(Boolean)) {
-          const match = routes.find((route) => key(route.model) === named);
+  const sent = new Set();
+  const partSent = [];
+  const loads = await jobDispatchLoads({ enquiryId: id });
+  if (loads.length) {
+    const { ordered } = await orderedModelsOf({ enquiryId: id });
+    const sentQty = new Map([...sentByModel(loads)].map(([model, quantity]) => [key(model), quantity]));
+    const orderedQty = new Map([...ordered].map(([model, quantity]) => [key(model), quantity]));
+    for (const route of routes) {
+      const gone = sentQty.get(key(route.model)) || 0;
+      const want = orderedQty.get(key(route.model)) || 0;
+      if (gone > 0 && (!want || gone >= want)) sent.add(route.model);
+      else if (gone > 0) partSent.push({ model: route.model, sent: gone, ordered: want });
+    }
+  } else {
+    /* Moves from before the dispatch form: the models a move named; a bare Dispatched, every model made by then. */
+    const requests = await Todo.find({ enquiry: id, kind: 'invoice_dispatch', createdAt: { $gte: start.createdAt } }).select('updates').lean();
+    for (const request of requests) {
+      for (const line of request.updates || []) {
+        if (line.kind !== 'status' || !['dispatched', 'fully_dispatched', 'part_dispatched'].includes(line.status)) continue;
+        const named = String(line.fields?.modelsSent || '').split(',').map(key).filter(Boolean);
+        if (!named.length && line.status !== 'part_dispatched') ready.forEach((model) => sent.add(model));
+        for (const name of named) {
+          const match = routes.find((route) => key(route.model) === name);
           if (match) sent.add(match.model);
         }
       }
@@ -3966,7 +4087,7 @@ export async function modelReadiness(enquiryId) {
   const qc = gate.required
     ? { required: true, passed: ready.filter((model) => qcPassedModels(gate, [model])), atQc: ready.filter((model) => !qcPassedModels(gate, [model])) }
     : { required: false };
-  return { ready, waiting, sent: routes.map((route) => route.model).filter((model) => sent.has(model)), qc };
+  return { ready, waiting, sent: routes.map((route) => route.model).filter((model) => sent.has(model)), partSent, qc };
 }
 
 /**

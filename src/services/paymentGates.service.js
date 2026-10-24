@@ -173,6 +173,21 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
 
 export const confirmTaskKey = (receivable) => `confirm-receipt:${receivable._id}`;
 
+/** The collection tasks a payment finishes read Paid as they close — on forms that have it. */
+const PAID_KINDS = ['team_payment_followup', 'my_payment_followup'];
+async function markPaidOpen(originKey, user, note) {
+  await Todo.updateMany(
+    { originKey, completed: false, kind: { $in: PAID_KINDS } },
+    { $set: { status: 'paid' }, $push: { statusHistory: { status: 'paid', note, by: user?._id, at: new Date() } } },
+  );
+}
+export function markPaid(task, user, note) {
+  if (!PAID_KINDS.includes(task.kind) || task.status === 'paid') return task;
+  task.status = 'paid';
+  task.statusHistory = [...(task.statusHistory || []), { status: 'paid', note, by: user?._id, at: new Date() }];
+  return task;
+}
+
 /**
  * Accounts' own list [web: components/PaymentsToConfirm.jsx]: every payment logged by Payment
  * Collection or PRT that Accounts has not yet seen in the bank — one line a payment, oldest
@@ -222,10 +237,11 @@ export async function closeLoggedTask(receivable, receipt, user, said) {
   const fromIt = receivable.receipts.filter((row) => String(row.loggedFrom?._id || row.loggedFrom || '') === String(taskId));
   if (fromIt.some((row) => !row.confirmed?.at)) return null;
   const { completeHandoff, noticeStatus, peopleOn } = await import('./handoff.service.js');
+  markPaid(task, user, `Accounts confirmed the payment: ${said}`);
   const closed = await completeHandoff(task, user, { note: `Accounts confirmed the payment: ${said}`, system: true, quiet: true });
   const logger = receipt.recordedBy?._id || receipt.recordedBy;
   await noticeStatus(task, user, {
-    step: { key: 'payment_confirmed', label: 'Payment confirmed by Accounts — task closed' },
+    step: { key: 'paid', label: 'Paid — confirmed by Accounts, task closed' },
     note: said,
     also: [logger, ...(await peopleOn(task))],
     onlyAlso: true,
@@ -409,8 +425,15 @@ export async function afterPayment(orderId, { by, justClosed = [] } = {}) {
       await refreshGateTask(order, stage, standing);
       continue;
     }
-    /* Closed now — or a moment ago, by Accounts' confirmation of the payment logged on it [closeLoggedTask]. */
+    /* Closed now — or a moment ago, by Accounts' confirmation of the payment logged on it [closeLoggedTask] — and it reads Paid. */
+    await markPaidOpen(gateKey(order, stage), by, `Paid — the money ${STAGE_WORDS[stage]} is confirmed in the bank`);
     const closed = (await resolveTasks(gateKey(order, stage))) || justClosed.includes(gateKey(order, stage));
+    /* The money before dispatch is in: a Dispatch request the gate refused when the goods were ready is raised now. */
+    let dispatchRaised = null;
+    if (closed && stage === 'dispatch' && order.enquiry) {
+      const { resumeDispatch } = await import('./journey.service.js');
+      dispatchRaised = await resumeDispatch(order.enquiry, by || { _id: null, name: 'The app' }, `Payment before dispatch confirmed on ${order.number}`);
+    }
     if (closed && order.assignedTo) {
       /* Still waiting at the gate: the marketing person releases it, from the order — unless it was released just now. */
       const toRelease = stage === 'production' && PRE_RELEASE_STATUSES.includes(order.status);
@@ -420,7 +443,8 @@ export async function afterPayment(orderId, { by, justClosed = [] } = {}) {
           ? held ? `Advance received on ${order.number} — a Production Holded Order: move it to Production on the enquiry`
             : autoReleased ? `Advance confirmed on ${order.number} — released to production, Production has its task`
               : toRelease ? `Advance received on ${order.number} — release it to production` : `Advance received on ${order.number} — production can start`
-          : `Payment received on ${order.number} — the goods can be dispatched`,
+          : dispatchRaised ? `Payment confirmed on ${order.number} — Dispatch has the request for the goods ready`
+            : `Payment received on ${order.number} — the goods can be dispatched`,
         link: held && order.enquiry ? `/enquiries/${order.enquiry}` : toRelease || !order.enquiry ? `/orders/${order._id}` : `/enquiries/${order.enquiry}`,
         originKey: `payment-met:${order._id}:${stage}`,
         priority: 'high',

@@ -668,7 +668,7 @@ export const handoffDispatchLoad = asyncHandler(async (req, res) => {
         key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
         uploadedBy: req.user._id, task: fresh._id, docType: how.proof, title: how.proofLabel,
       }]);
-      return recordDispatchLoad(fresh, req.user, { status: req.body?.status, lines, mode: how.key, note: req.body?.note, attachmentId: made._id });
+      return recordDispatchLoad(fresh, req.user, { lines, mode: how.key, note: req.body?.note, attachmentId: made._id });
     }, { label: 'dispatch load' });
     await answer(res, done);
   } catch (error) {
@@ -807,7 +807,7 @@ async function withReadiness(rows) {
      * compulsory and passed — the Dispatch table's "Goods ready / QC" column [web: DispatchTable].
      */
     row.goods = {
-      ready: readiness.ready, waiting: readiness.waiting, sent: readiness.sent || [],
+      ready: readiness.ready, waiting: readiness.waiting, sent: readiness.sent || [], partSent: readiness.partSent || [],
       qc: readiness.qc?.required ? { required: true, passed: readiness.qc.passed, atQc: readiness.qc.atQc } : { required: false },
     };
   }

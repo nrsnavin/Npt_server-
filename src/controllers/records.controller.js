@@ -157,7 +157,7 @@ export const dispatchRegisterHandler = asyncHandler(async (req, res) => {
 
 /** The SO, as its own screen would load it: someone else's order is not found, not forbidden. */
 const visibleOrder = async (req) => {
-  const order = mongoose.isValidObjectId(req.params.id) ? await SalesOrder.findById(req.params.id).select('number enquiry customer assignedTo lines._id lines.modelNumber') : null;
+  const order = mongoose.isValidObjectId(req.params.id) ? await SalesOrder.findById(req.params.id).select('number enquiry customer assignedTo lines._id lines.modelNumber lines.quantity') : null;
   if (!order || !ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
   return order;
 };

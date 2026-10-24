@@ -277,3 +277,21 @@ test('a load is sent from the dispatch form: models and pieces, how it travels, 
   assert.ok(Array.isArray(sent.json.sent), 'said per channel');
   assert.equal((await api(`/api/workspace/todos/${lr._id}/result/send`, { method: 'POST', as: 'ravi' })).status, 403, 'Reception sends it');
 });
+
+test('a load is news for the buyer’s marketing person only — an Admin hears it only when they are that person', async () => {
+  const adminId = (await api('/api/auth/me', { as: 'admin' })).json.data.id;
+  const theirs = await enquiryFor('Notice Knits', '9840030777');
+  const dispatch = await raise(theirs, 'invoice_dispatch', { quantity: '1000' });
+  assert.equal((await move('ravi', dispatch, 'fully_dispatched', 'All gone')).status, 200);
+  assert.ok(await TaskNotice.exists({ task: dispatch, recipient: ids.nandhini, status: 'fully_dispatched' }), 'the marketing person hears it');
+  assert.equal(await TaskNotice.exists({ task: dispatch, recipient: adminId }), null, 'not every Admin');
+
+  /* Admin is the marketing person on this one: Admin hears it. */
+  const own = await enquiryFor('Admin Own Knits', '9840030778');
+  await mongoose.connection.db.collection('enquiries').updateOne({ _id: new mongoose.Types.ObjectId(own._id) }, { $set: { assignedTo: new mongoose.Types.ObjectId(adminId) } });
+  const sent = await api(`/api/enquiries/${own._id}/handoffs`, { method: 'POST', as: 'admin', body: { kind: 'invoice_dispatch', note: 'Please', brief: { quantity: '1000' } } });
+  assert.equal(sent.status, 201, sent.json.message);
+  const second = sent.json.data.task._id;
+  assert.equal((await move('ravi', second, 'fully_dispatched', 'All gone')).status, 200);
+  assert.ok(await TaskNotice.exists({ task: second, recipient: adminId, status: 'fully_dispatched' }), 'Admin as the marketing person');
+});

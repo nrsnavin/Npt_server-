@@ -122,7 +122,9 @@ export async function settleCollectionTasks(orderId, { by } = {}) {
   await applyPaymentPositions(rows);
   if (rows.some((row) => row.balance > 0 || row.awaitingConfirmation > 0)) return [];
   const settled = [];
+  const { markPaid } = await import('./paymentGates.service.js');
   for (const task of open) {
+    markPaid(task, by, 'Paid in full — confirmed in the bank');
     settled.push(await completeHandoff(task, by || {}, { note: 'Paid in full — nothing left to chase', system: true, quiet: true }));
   }
   return settled;

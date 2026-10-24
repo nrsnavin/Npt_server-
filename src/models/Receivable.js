@@ -337,7 +337,8 @@ receivableSchema.virtual('daysToDue').get(function daysToDue() {
  * disagreement becomes a relationship one. Otherwise the balance decides, then the date.
  */
 receivableSchema.virtual('state').get(function state() {
-  if (this.balance <= 0) return 'paid';
+  /* Paid reads only on money Accounts has seen in the bank; logged and not yet confirmed, it says so. */
+  if (this.balance <= 0) return this.awaitingConfirmation > 0 ? 'awaiting_confirmation' : 'paid';
   if (this.judgement) return this.judgement;
   if (this.received > 0 || this.advanceApplied > 0) return 'part_paid';
 
