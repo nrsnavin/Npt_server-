@@ -99,6 +99,22 @@ test('the SO task starts at SO Waiting; the statuses come from the server', asyn
     ['Model', 'Material & colour', 'Hook', 'Clip', 'Print', 'Qty (pcs)', 'Price (₹ / pc)', 'EDD']);
 });
 
+test('the SO task is finished only by uploading the SO; beside its statuses it offers only Escalate to Admin', async () => {
+  const { buttons } = (await api('/api/handoffs', { as: 'priya' })).json.data;
+  assert.deepEqual(buttons.find((button) => button.key === 'po_so').form.taskActions, ['escalate']);
+  const done = await api(`/api/workspace/todos/${soTask._id}/done`, { method: 'POST', as: 'priya', body: { note: 'SO made' } });
+  assert.equal(done.status, 400);
+  assert.match(done.json.message, /Upload the sales order to finish this task/);
+  for (const [path, body] of [['update', { note: 'Working on it' }], ['send-back', { reason: 'Not ours to prepare' }], ['reschedule', { dueDate: new Date(Date.now() + 5 * 86400000).toISOString(), reason: 'Waiting on the buyer' }]]) {
+    const refused = await api(`/api/workspace/todos/${soTask._id}/${path}`, { method: 'POST', as: 'priya', body });
+    assert.equal(refused.status, 400, `${path} is not offered on the SO task`);
+    assert.match(refused.json.message, /through the task's own statuses here — or escalate it to Admin/);
+  }
+  const escalated = await api(`/api/workspace/todos/${soTask._id}/escalate-admin`, { method: 'POST', as: 'priya', body: { reason: 'The buyer’s GST number does not match' } });
+  assert.equal(escalated.status, 200, escalated.json.message);
+  assert.equal((await Todo.findById(soTask._id)).completed, false, 'still open — only the SO finishes it');
+});
+
 test('Preparing; Prepared only by uploading the PDF; another department cannot move it', async () => {
   assert.equal((await status('siva', 'preparing', 'Not mine to move')).status, 403);
   /* Every SO move says why — and the enquiry's marketing person hears it. */
@@ -172,7 +188,7 @@ test('the SO team corrects the contact details, and only those', async () => {
 test('uploading the sales order PDF without Production confirmed: Won, held with marketing, nothing raised', async () => {
   const ticked = await api(`/api/workspace/todos/${soTask._id}/done`, { method: 'POST', as: 'priya', body: { note: 'Sent the SO' } });
   assert.equal(ticked.status, 400, 'not ticked off without the sales order');
-  assert.match(ticked.json.message, /Upload the PDF to finish this task/);
+  assert.match(ticked.json.message, /Upload the sales order to finish this task/);
   const notPdf = await upload('priya', { bytes: 'hello', type: 'text/plain', name: 'so.txt' });
   assert.equal(notPdf.status, 400);
   assert.equal((await upload('siva')).status, 403, 'Production cannot finish Sales / SO’s task');

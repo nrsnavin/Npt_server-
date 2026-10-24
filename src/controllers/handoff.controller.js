@@ -28,11 +28,13 @@ import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, closeByAdmin, escalateToAdmin, resolveEscalation, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
   updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, registerLists, raiseAssemblyWith, routingFor, decideRouting, addToProductionQueue, addToWorkQueue,
+  dispatchSheet, recordDispatchLoad,
 } from '../services/handoff.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
 import { taskWithClosable, withClosable } from '../services/taskClosable.service.js';
 import { withDeskDetails } from '../services/deskDetails.service.js';
+import { DISPATCH_PLAN_FIELDS, dispatchModeOf, dispatchPlanOf } from '../utils/dispatchPlan.js';
 
 /**
  * Department tasks about an enquiry [config/handoffs.js, services/handoff.service.js]: the
@@ -56,7 +58,7 @@ export const TASK_POPULATE = [
   { path: 'adminEscalation.resolvedBy', select: 'name' },
   /* The enquiry's EDD travels with its tasks, so a card can show it or ask for it [web: components/TaskEdd.jsx];
      its dispatch plan too, so a model's own workflow can say whether it goes as soon as it is ready. */
-  { path: 'enquiry', select: 'number edd eddByModel dispatchPlan' },
+  { path: 'enquiry', select: 'number edd eddByModel dispatchPlan items.modelNumber items.mould' },
 ];
 
 /** The buttons, the twelve stages and the departments, so the screen draws what the server knows. */
@@ -179,6 +181,47 @@ export const enquiryTaskPrefill = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await taskPrefill(enquiry._id) });
 });
 
+/**
+ * What a finished task left behind, on the task as the enquiry lists it [web: TaskCard]:
+ *
+ *   Sample Request, Sample Collection   the sample: how it went (courier, AWB, pieces, when) or who
+ *                                       received it (name, phone, the hand-over photo), and the
+ *                                       courier copy uploaded on the task;
+ *   Create Quotation, Price Negotiation the quotation it answered, so its PDF opens from the row.
+ *
+ * A task is matched to its record by the number its outcome names ("Sample SMP-… sent", "NP/26-27/019
+ * sent to the buyer"), else to the enquiry's newest.
+ */
+const SAMPLE_TASK_KINDS = ['sample_request', 'sample_collect'];
+const QUOTE_TASK_KINDS = ['create_quotation', 'price_negotiation'];
+async function withRecords(rows, enquiryId) {
+  const wantsSample = rows.some((row) => SAMPLE_TASK_KINDS.includes(row.kind));
+  const wantsQuote = rows.some((row) => QUOTE_TASK_KINDS.includes(row.kind));
+  if (!wantsSample && !wantsQuote) return rows;
+  const samples = wantsSample ? await Sample.find({ enquiry: enquiryId })
+    .select('number status deliveryMethod handover courier awbNumber dispatchedAt dispatchedQuantity handedTo recipientPhone collection createdAt')
+    .populate('collection.photo', 'key filename mimeType').sort({ createdAt: -1 }).lean() : [];
+  const quotes = wantsQuote ? await Quotation.find({ enquiry: enquiryId }).select('number status sentAt createdAt').sort({ createdAt: -1 }).lean() : [];
+  const sampleTaskIds = rows.filter((row) => SAMPLE_TASK_KINDS.includes(row.kind)).map((row) => row._id);
+  const papers = sampleTaskIds.length
+    ? await Attachment.find({ task: { $in: sampleTaskIds }, docType: { $exists: true } }).select('key filename mimeType docType title task createdAt').sort({ createdAt: -1 }).lean()
+    : [];
+  const said = (row) => [row.outcome?.note, row.title, row.notes, ...Object.values(row.outcome?.fields || {})].filter(Boolean).join(' ');
+  const named = (list, row) => list.find((record) => record.number && said(row).includes(record.number));
+  for (const row of rows) {
+    if (SAMPLE_TASK_KINDS.includes(row.kind)) {
+      const sample = (row.brief?.sample && samples.find((entry) => String(entry._id) === String(row.brief.sample))) || named(samples, row) || samples[0];
+      if (sample) row.sample = sample;
+      row.documents = papers.filter((paper) => String(paper.task) === String(row._id));
+    }
+    if (QUOTE_TASK_KINDS.includes(row.kind)) {
+      const quote = named(quotes, row) || quotes[0];
+      if (quote) row.quotation = quote;
+    }
+  }
+  return rows;
+}
+
 /** Everything asked about this enquiry, newest first, with what came of each. */
 export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
   const enquiry = await enquiryFor(req);
@@ -191,8 +234,8 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
   const floor = await floorOf(enquiry._id);
   res.json({
     success: true,
-    /* Each open task says whether it may be closed now [taskClosable.service]. */
-    data: await withClosable(tasks),
+    /* Each open task says whether it may be closed now [taskClosable.service]; a sample or quote task, the record it made. */
+    data: await withRecords(await withClosable(tasks), enquiry._id),
     stage: enquiry.stage,
     stageHistory: enquiry.stageHistory,
     holder,
@@ -210,7 +253,7 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     /* QC is a step of the journey only where it is compulsory [qcGate.service]. */
     journey: journeyOf(tasks, { running: floor.running, qcRequired: (await qcGateFor({ enquiry: enquiry._id })).required }),
     /* How a several-model order goes out, and which models are ready [handoff.service `modelReadiness`]. */
-    dispatchPlan: enquiry.dispatchPlan?.mode ? enquiry.dispatchPlan : null,
+    dispatchPlan: dispatchPlanOf(enquiry),
     readiness: await modelReadiness(enquiry._id),
     /* The money on it: each RCV — the advance, each invoice — with what came in and who logged it. */
     payments: await paymentsOnEnquiry(enquiry._id),
@@ -425,7 +468,12 @@ export const handoffWorkQueue = asyncHandler(transactional(async (req, res) => {
 
 /** The department's own status on its task — SO Waiting, Preparing, Needs Clarification. */
 export const handoffStatus = asyncHandler(transactional(async (req, res) => {
-  const task = await setTaskStatus(await taskFor(req), req.user, req.body);
+  const found = await taskFor(req);
+  /* A load is sent from the dispatch form — models, pieces, how it travels, its LR copy or proof of delivery [handoffDispatchLoad]. */
+  const step = (findHandoff(found.kind)?.form?.statuses || []).find((entry) => entry.key === req.body?.status);
+  if (step?.loads) throw ApiError.badRequest(`${step.label} is given from the dispatch form — tick the models sent and their pieces, say how it travels, and upload the LR copy or proof of delivery`);
+  const { load: _load, ...body } = req.body || {};
+  const task = await setTaskStatus(found, req.user, body);
   await answer(res, task);
 }));
 
@@ -587,6 +635,70 @@ export const handoffResult = asyncHandler(async (req, res) => {
   }
 });
 
+/** What the dispatch form offers for a Dispatch request: its models, ordered and sent, ready or not, the plan and the modes. */
+export const handoffDispatchSheet = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  if (!mayWorkOnHandoff(req.user, task) && String(task.createdBy) !== String(req.user._id)) throw ApiError.notFound('Task not found');
+  res.json({ success: true, data: await dispatchSheet(task) });
+});
+
+/**
+ * A load sent from the dispatch form [handoff.service `recordDispatchLoad`]: the paper proving it —
+ * the LR copy, the proof of delivery or the signed receipt — is stored, kept among the task's
+ * documents, and the load and the status move commit with it, or nothing does.
+ */
+export const handoffDispatchLoad = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  const modes = findHandoff(task.kind)?.form?.dispatchModes || [];
+  const how = modes.find((entry) => entry.key === req.body?.mode);
+  if (!how) throw ApiError.badRequest(modes.length ? `Say how it travels — ${modes.map((entry) => entry.label).join(', ')}` : 'Only a Dispatch request is dispatched from the form');
+  if (!req.file) throw ApiError.badRequest(`Upload the ${how.proofLabel.toLowerCase()} with the load`);
+  if (!['application/pdf', 'image/jpeg', 'image/png'].includes(req.file.mimetype)) throw ApiError.badRequest('Attach a PDF, or a JPEG / PNG photo');
+  let lines;
+  try {
+    lines = typeof req.body?.lines === 'string' ? JSON.parse(req.body.lines) : req.body?.lines;
+  } catch {
+    throw ApiError.badRequest('The models in the load could not be read');
+  }
+  const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+  try {
+    const done = await inTransaction(async () => {
+      const fresh = await taskFor(req);
+      const [made] = await Attachment.create([{
+        key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
+        uploadedBy: req.user._id, task: fresh._id, docType: how.proof, title: how.proofLabel,
+      }]);
+      return recordDispatchLoad(fresh, req.user, { status: req.body?.status, lines, mode: how.key, note: req.body?.note, attachmentId: made._id });
+    }, { label: 'dispatch load' });
+    await answer(res, done);
+  } catch (error) {
+    await remove(key);
+    throw error;
+  }
+});
+
+/**
+ * The file already on the task sent to the buyer — Reception sending the LR copy Dispatch uploaded
+ * with the load [handoff.service `recordDispatchLoad`]. Said on the task as an upload would be.
+ */
+export const handoffSendResult = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  const form = findHandoff(task.kind)?.form || {};
+  if (!form.sendResult) throw ApiError.badRequest('This task sends nothing to the buyer');
+  if (!mayWorkOnHandoff(req.user, task)) throw ApiError.forbidden(`This task is on the ${DEPARTMENTS.find((entry) => entry.key === task.department)?.label || task.department} queue`);
+  if (task.completed) throw ApiError.conflict('That task is already finished');
+  if (!task.resultFile) throw ApiError.badRequest(`No ${(form.resultTitle || 'file').toLowerCase()} on the task yet — upload it first`);
+  const attachment = await Attachment.findById(task.resultFile);
+  if (!attachment) throw ApiError.badRequest('The file on the task is missing — upload it again');
+  const sent = await sendResultToCustomer({ task, attachment, user: req.user, baseUrl: publicApiBase(req) });
+  const done = await markResultSent(task, req.user, sent);
+  res.json({
+    success: true,
+    data: await taskWithClosable(await done.populate(TASK_POPULATE)),
+    sent: sent.map((entry) => ({ channel: entry.channel, status: entry.status, recipient: entry.recipient, reason: entry.skipReason || entry.error })),
+  });
+});
+
 /* The new date and the notice of it commit together. */
 export const handoffReschedule = asyncHandler(transactional(async (req, res) => {
   const task = await rescheduleHandoff(await taskFor(req), req.user, req.body);
@@ -677,8 +789,8 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
 async function withReadiness(rows) {
   const ids = [...new Set(rows.filter((row) => row.enquiry?._id && row.task.kind === 'invoice_dispatch').map((row) => String(row.enquiry._id)))];
   if (!ids.length) return rows;
-  const plans = await Enquiry.find({ _id: { $in: ids }, 'dispatchPlan.mode': 'by_model' }).select('_id').lean();
-  const byModel = new Set(plans.map((row) => String(row._id)));
+  const plans = await Enquiry.find({ _id: { $in: ids } }).select(DISPATCH_PLAN_FIELDS).lean();
+  const byModel = new Set(plans.filter((row) => dispatchModeOf(row) === 'by_model').map((row) => String(row._id)));
   const read = new Map();
   for (const row of rows) {
     if (!row.enquiry?._id || row.task.kind !== 'invoice_dispatch') continue;

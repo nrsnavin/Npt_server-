@@ -316,6 +316,20 @@ const paymentFollowUp = {
   ],
 };
 
+/**
+ * How a dispatch load travels, and the paper that proves it — uploaded with the load, never after
+ * [handoff.service `recordDispatchLoad`]: the transporter's LR copy (it goes on to Reception's LR
+ * Copy task, which sends it to the buyer), the proof of delivery from the plant's own vehicle, or
+ * the signed receipt (or a photo) when the party collects.
+ */
+export const DISPATCH_MODES = [
+  { key: 'transporter', label: 'Transporter', proof: 'lr_copy', proofLabel: 'LR copy' },
+  { key: 'own_vehicle', label: 'Own vehicle', proof: 'proof_of_delivery', proofLabel: 'Proof of delivery' },
+  { key: 'party_collects', label: 'Party collects', proof: 'collection_receipt', proofLabel: 'Signed receipt / photo' },
+];
+/* What a load says it carried — kept on the move, and read for which models have gone [handoff.service `modelReadiness`]. */
+const LOAD_FIELDS = [{ key: 'modelsSent', label: 'Models sent in this load', placeholder: 'CRF25, CRF30' }, { key: 'piecesSent', label: 'Pieces sent', type: 'number' }];
+
 /** How a sample reaches the buyer, as the request form asks it [models/Sample.js HANDOVER_MODES]. */
 export const HANDOVER_CHOICES = [
   { key: 'dispatch', label: 'Sent by the bench (courier or at the gate)' },
@@ -337,6 +351,8 @@ export const TASK_FORMS = {
       /* Sent by the bench, kept at reception for the buyer to collect, or carried by the marketing person [models/Sample.js HANDOVER_MODES]. */
       { key: 'handover', label: 'How it reaches the buyer', type: 'choice', options: HANDOVER_CHOICES.map((entry) => entry.label) },
     ],
+    /* The courier's receipt, kept on the task once the sample has gone — read from the enquiry's finished task. */
+    documents: [{ type: 'courier_copy', label: 'Courier copy' }],
   },
   /*
    * Reception's desk flow for a sample the buyer collects at reception. Such a sample is an
@@ -411,6 +427,12 @@ export const TASK_FORMS = {
     resultLabel: 'Upload Sales Order PDF',
     /* What the uploaded PDF is called where the enquiry shows it. */
     resultTitle: 'Sales order',
+    /*
+     * Beside its statuses and the SO upload, the task offers only Escalate to Admin — no Update,
+     * Send back or Change date, which made the SO team's workflow hard to read [handoff.service
+     * `assertTaskAction`]. Only the uploaded SO finishes it.
+     */
+    taskActions: ['escalate'],
     asks: [
       { key: 'contactPerson', label: 'Contact person', section: 'Company & contact details', from: 'customer.contactPerson', placeholder: 'Name of person to call for SO / GST', editable: true },
       { key: 'mobile', label: 'Mobile number', from: 'customer.mobile', editable: true },
@@ -590,13 +612,15 @@ export const TASK_FORMS = {
        * Which models went, so an order going out model by model reads which are sent and which
        * are still to come [handoff.service `modelReadiness`]; the enquiry reads Part sent.
        */
-      {
-        key: 'part_dispatched', label: 'Part Quantity Dispatched', next: 'lr_copy', marketing: 'part_sent',
-        fields: [{ key: 'modelsSent', label: 'Models sent in this load', placeholder: 'CRF25, CRF30' }, { key: 'piecesSent', label: 'Pieces sent', type: 'number' }],
-      },
+      /*
+       * `loads`: said from the dispatch form, never a bare status — the models ticked and the pieces
+       * of each, how it travels, and the LR copy or proof of delivery uploaded with it
+       * [handoff.service `recordDispatchLoad`]. A transporter's load gives Reception its LR copy task.
+       */
+      { key: 'part_dispatched', label: 'Part Quantity Dispatched', next: 'lr_copy', marketing: 'part_sent', loads: true, fields: LOAD_FIELDS },
       /* Gone: Reception gets the LR copy task, with the dispatch details. */
-      { key: 'fully_dispatched', label: 'Fully Dispatched', next: 'lr_copy' },
-      { key: 'dispatched', label: 'Dispatched', next: 'lr_copy' },
+      { key: 'fully_dispatched', label: 'Fully Dispatched', next: 'lr_copy', loads: true, fields: LOAD_FIELDS },
+      { key: 'dispatched', label: 'Dispatched', next: 'lr_copy', loads: true, fields: LOAD_FIELDS },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
     /* Asked from the dispatch task itself: each raises a readiness query of its own [readinessQuery], and
@@ -622,7 +646,10 @@ export const TASK_FORMS = {
     documents: [
       { type: 'invoice', label: 'Invoice' },
       { type: 'dispatch_details', label: 'Dispatch details' },
+      ...DISPATCH_MODES.map((mode) => ({ type: mode.proof, label: mode.proofLabel })),
     ],
+    /* How a load travels, offered on the dispatch form. */
+    dispatchModes: DISPATCH_MODES,
   },
   lr_copy: {
     team: 'Reception — LR Copy',

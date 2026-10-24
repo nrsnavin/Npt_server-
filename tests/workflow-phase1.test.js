@@ -16,6 +16,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { dispatchLoad } from './support/dispatchLoad.mjs';
 
 process.env.JWT_SECRET = 'workflow-phase1-test-secret';
 
@@ -410,7 +411,7 @@ test('Dispatched on the task with no consignment behind it asks Dispatch to reco
   const enquiry = await inProduction();
   const order = await orderOn(enquiry, { quantity: 1000 });
   const task = (await send(enquiry, 'invoice_dispatch')).json.data.task;
-  const moved = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'anita', body: { status: 'dispatched', note: 'Gone on VRL this evening' } });
+  const moved = await dispatchLoad({ baseUrl, token: token.anita, taskId: task._id, status: 'dispatched', note: 'Gone on VRL this evening' });
   assert.equal(moved.status, 200, moved.json.message);
   const reminder = await Todo.findOne({ originKey: `record-consignment:${order._id}` });
   assert.ok(reminder, 'Dispatch is asked to record the consignment');

@@ -9,6 +9,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { dispatchLoad } from './support/dispatchLoad.mjs';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
@@ -30,7 +31,10 @@ const api = async (path, { method = 'GET', body, as } = {}) => {
   });
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
-const move = (task, as, status, { models, note = 'Moving it on', ...rest } = {}) => api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, note, ...(models ? { models } : {}), ...rest } });
+/* A load goes through the dispatch form, with its LR copy [support/dispatchLoad.mjs]. */
+const move = (task, as, status, { models, note = 'Moving it on', ...rest } = {}) => (['part_dispatched', 'fully_dispatched', 'dispatched'].includes(status)
+  ? dispatchLoad({ baseUrl, token: token[as], taskId: task, status, note, models: rest.fields?.modelsSent, pieces: rest.fields?.piecesSent })
+  : api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, note, ...(models ? { models } : {}), ...rest } }));
 const settle = () => new Promise((resolve) => setTimeout(resolve, 200));
 const soon = () => new Date(Date.now() + 3 * 86400000).toISOString();
 
@@ -88,7 +92,7 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   /* Dispatch sends CRF25 on its own: the models sent are recorded on the move; the enquiry reads Part sent. */
   const part = await move(dispatch._id, 'ravi', 'part_dispatched', { note: 'VRL, LR 55021', fields: { modelsSent: 'crf25', piecesSent: 10000 } });
   assert.equal(part.status, 200, part.json.message);
-  assert.deepEqual(part.json.data.updates.at(-1).fields, { modelsSent: 'crf25', piecesSent: '10000' });
+  assert.deepEqual(part.json.data.updates.at(-1).fields, { modelsSent: 'CRF25', piecesSent: '10000' });
   const after = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data;
   assert.equal(after.marketingStatus, 'part_sent');
   const { readiness } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;

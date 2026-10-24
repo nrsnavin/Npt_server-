@@ -229,6 +229,23 @@ const todoSchema = new mongoose.Schema(
       next: { type: String, enum: HANDOFF_KEYS },
       _id: false,
     },
+    /**
+     * Each load Dispatch sent on the request [handoff.service `recordDispatchLoad`]: the models and
+     * pieces of each, how it travelled, and the paper that proves it — the LR copy, the proof of
+     * delivery or the signed receipt.
+     */
+    loads: {
+      type: [new mongoose.Schema({
+        status: { type: String, trim: true },
+        lines: [{ model: { type: String, trim: true }, quantity: { type: Number, min: 0 }, _id: false }],
+        mode: { type: String, enum: ['transporter', 'own_vehicle', 'party_collects'] },
+        attachment: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+        note: { type: String, trim: true, maxlength: 1000 },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        at: { type: Date, default: Date.now },
+      }, { _id: true })],
+      default: undefined,
+    },
     /** Progress said along the way without moving the enquiry — pending quantity, a call made. */
     updates: {
       type: [new mongoose.Schema({

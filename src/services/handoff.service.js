@@ -22,6 +22,7 @@ import { chainOf, jobFilter } from './journey.service.js';
 import { askForEdd, eddDayOf, eddGiven, setsEdd } from './eddAsk.service.js';
 import { assertQcCleared, qcGateFor, qcPassedModels, ticked as qcTicked } from './qcGate.service.js';
 import mongoose from 'mongoose';
+import { DISPATCH_PLAN_FIELDS, dispatchModeOf } from '../utils/dispatchPlan.js';
 
 /**
  * One department asking another for something about an enquiry — the buttons on the enquiry
@@ -1188,6 +1189,10 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
   if (system) {
     if (task.completed) return task;
   } else openHandoff(task, user);
+  /* A task its PDF finishes — the SO team's, by the sales order — is not finished by a word [departmentTaskForms `po_so`]. */
+  if (!system && !task.resultFile && finishedByUpload(task)) {
+    fail(`Upload the ${(findHandoff(task.kind)?.form?.resultTitle || 'PDF').toLowerCase()} to finish this task — that is what finishes it`);
+  }
   const text = String(note || '').trim();
   if (text.length < 2) fail('Say what was done');
 
@@ -1424,7 +1429,7 @@ async function answerParent(clarification, user, text) {
  * enquiry's marketing person, due today, with the comment. The status reached by uploading the
  * work (SO Prepared) is not chosen here — see `finishWithResult`.
  */
-export async function setTaskStatus(task, user, { status, note, date, fields, models }) {
+export async function setTaskStatus(task, user, { status, note, date, fields, models, load = null }) {
   openHandoff(task, user);
   const form = findHandoff(task.kind)?.form || {};
   const step = statusesOf(task).find((entry) => entry.key === status);
@@ -1494,8 +1499,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   task.statusHistory = [...(task.statusHistory || []), { status, note: text || undefined, date: readyDate || undefined, ...(partial ? { models: moving } : {}), by: user._id, at: new Date() }];
   /* A promise is when the money is due next, a visit is when PRT goes: the task falls due that day [collections.service]. */
   if ((step.promise || step.visit) && readyDate) task.dueDate = endOfIndiaDay(readyDate);
-  /* A team that hands on gives a hand-over date, not the EDD [decideRouting]. */
-  const handsOn = handsOnOf(task);
+  /* A team that hands on gives a hand-over date, not the EDD [decideRouting] — for a model that goes on from it. A move whose models all end here gives their completion date. */
+  const handsOn = readyDate && (await goOnFromHere(task, partial ? moving : modelsOfTask(task))) ? handsOnOf(task) : [];
   const dateText = handsOn.length ? dateLabelOf(task) : form.statusDate?.label || 'Ready date';
   const said = [label, readyDate && `${dateText} ${readyDate}`].filter(Boolean).join(' · ');
   /* A ready date is the enquiry's EDD (Production) or ERD (the mould) from here on [enquiryProgress]. */
@@ -1533,8 +1538,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* A status with a word for marketing — Part Quantity Dispatched reads Part sent on the enquiry [config/marketingStatuses.js]. */
   if (step.marketing && task.enquiry) await reachEnquiry(task, user, { marketing: step.marketing }, text ? `${said}: ${text}` : said);
-  /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
-  if (step.next && !step.pdf) {
+  /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once — a load with no transporter has no LR to send. */
+  if (step.next && !step.pdf && !(load && load.mode !== 'transporter')) {
     if (task.enquiry) await raiseNextFrom(task, user, step, text);
     /* A job with no enquiry goes on the same way: Dispatched gives Reception the LR copy. */
     else await raiseNextOnChain(task, user, step, text);
@@ -1566,7 +1571,7 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   if (step.sampleReady) await readyAtDesk(task, user);
   /* Money confirmed in: a stage now covered closes this task and tells marketing to release the order [paymentGates `afterPayment`]. */
   if (inward && !inward.again) {
-    await afterPayment(inward.order._id);
+    await afterPayment(inward.order._id, { by: user });
     return (await Todo.findById(task._id)) || task;
   }
   /* A status that tells the buyer something — "your sample is ready to collect" — sends it from here. */
@@ -1690,6 +1695,161 @@ const goesOnFrom = (task, row) => {
   if (task.kind === 'ask_printing') return Boolean(row.assembly);
   return false;
 };
+/**
+ * What the dispatch form offers for a Dispatch request [web: DispatchLoadDialog]: each model with
+ * the pieces ordered and already sent in earlier loads, whether it is ready, the dispatch plan
+ * (together, or each model as it is ready), and the modes of travel with the paper each needs.
+ * The models are the order's lines, else the enquiry's items, else the request's own.
+ */
+export async function dispatchSheet(task) {
+  if (task.kind !== 'invoice_dispatch') fail('Only a Dispatch request is dispatched from the form');
+  const { default: SalesOrder } = await import('../models/SalesOrder.js');
+  const enquiryId = task.enquiry?._id || task.enquiry || null;
+  const order = task.order
+    ? await SalesOrder.findById(task.order?._id || task.order).select('number lines.modelNumber lines.quantity').lean()
+    : enquiryId ? await SalesOrder.findOne({ enquiry: enquiryId, status: { $ne: 'cancelled' } }).sort({ createdAt: -1 }).select('number lines.modelNumber lines.quantity').lean() : null;
+  const enquiry = enquiryId ? await Enquiry.findById(enquiryId).select('items requirement dispatchPlan').lean() : null;
+  const ordered = new Map();
+  const add = (model, quantity) => {
+    const name = String(model || '').trim();
+    if (!name) return;
+    ordered.set(name, (ordered.get(name) || 0) + (Number(quantity) || 0));
+  };
+  if (order?.lines?.length) for (const line of order.lines) add(line.modelNumber, line.quantity);
+  else if (enquiry?.items?.length) for (const item of enquiry.items) add(item.modelNumber, item.quantity);
+  if (!ordered.size) {
+    const named = String(task.brief?.models || task.brief?.model || enquiry?.requirement?.modelNumber || '').split(',').map((entry) => entry.trim()).filter(Boolean);
+    for (const model of named) add(model, named.length === 1 ? briefQuantity(task.brief) : 0);
+  }
+  const sent = new Map();
+  for (const load of task.loads || []) for (const line of load.lines || []) sent.set(line.model, (sent.get(line.model) || 0) + (line.quantity || 0));
+  const readiness = enquiryId ? await modelReadiness(enquiryId) : { ready: [], waiting: [] };
+  const waiting = new Set((readiness.waiting || []).map((row) => row.model));
+  return {
+    plan: enquiry ? dispatchModeOf(enquiry) : 'together',
+    order: order ? { _id: order._id, number: order.number } : null,
+    models: [...ordered].map(([model, quantity]) => ({
+      model, ordered: quantity, sent: sent.get(model) || 0,
+      ready: !waiting.has(model),
+    })),
+    modes: findHandoff(task.kind)?.form?.dispatchModes || [],
+    loads: (task.loads || []).length,
+  };
+}
+
+/**
+ * A load sent on a Dispatch request, from the dispatch form: the models ticked and the pieces of
+ * each, how it travels, and the paper proving it, already stored [handoff.controller
+ * `handoffDispatchLoad`]. The task moves to the status (Part Quantity Dispatched, Fully Dispatched
+ * or Dispatched) with the models and pieces on the move; the load is kept on the task, the paper
+ * among its documents. A transporter's LR copy goes on to Reception's LR Copy task, marked LR Copy
+ * Received for Reception to send to the buyer; a load in the plant's own vehicle, or collected by
+ * the party, raises no LR task — its proof of delivery is the record.
+ */
+export async function recordDispatchLoad(task, user, { status, lines, mode, note, attachmentId }) {
+  if (task.kind !== 'invoice_dispatch') fail('Only a Dispatch request is dispatched from the form');
+  const step = statusesOf(task).find((entry) => entry.key === status);
+  if (!step?.loads) fail('Pick Part Quantity Dispatched, Fully Dispatched or Dispatched');
+  const modes = findHandoff(task.kind)?.form?.dispatchModes || [];
+  const how = modes.find((entry) => entry.key === mode);
+  if (!how) fail(`Say how it travels — ${modes.map((entry) => entry.label).join(', ')}`);
+  if (!attachmentId) fail(`Upload the ${how.proofLabel.toLowerCase()} with the load`);
+  const given = (Array.isArray(lines) ? lines : [])
+    .map((line) => ({ model: String(line?.model || '').trim(), quantity: Number(String(line?.quantity ?? '').replace(/,/g, '')) }))
+    .filter((line) => line.model);
+  if (!given.length) fail('Tick the models going in this load');
+  const bad = given.find((line) => !(line.quantity > 0));
+  if (bad) fail(`Give the pieces of ${bad.model} going in this load`);
+  const sheet = await dispatchSheet(task);
+  const known = new Set(sheet.models.map((row) => row.model.toLowerCase()));
+  const stranger = known.size && given.find((line) => !known.has(line.model.toLowerCase()));
+  if (stranger) fail(`${stranger.model} is not on this order`);
+  const pieces = given.reduce((sum, line) => sum + line.quantity, 0);
+  const said = `${given.map((line) => `${line.model} ${line.quantity.toLocaleString('en-IN')} pcs`).join(' · ')} — ${how.label}, ${how.proofLabel.toLowerCase()} attached`;
+  const text = [String(note || '').trim(), said].filter(Boolean).join(' — ');
+  task.loads = [...(task.loads || []), { status, lines: given, mode, attachment: attachmentId, note: String(note || '').trim() || undefined, by: user._id, at: new Date() }];
+  const moved = await setTaskStatus(task, user, {
+    status, note: text,
+    fields: { modelsSent: given.map((line) => line.model).join(', '), piecesSent: String(pieces) },
+    load: { mode },
+  });
+  /* The transporter's LR copy is Reception's to send: on its LR Copy task, received and ready to go. */
+  if (mode === 'transporter') await lrToReception(moved || task, user, attachmentId, said);
+  return moved || task;
+}
+
+/** The LR copy uploaded with a load, onto Reception's open LR Copy task: LR Copy Received, Reception sends it to the buyer. */
+async function lrToReception(task, user, attachmentId, said) {
+  const where = task.enquiry ? { enquiry: task.enquiry?._id || task.enquiry } : { chain: task.chain || task._id };
+  const lr = await Todo.findOne({ ...where, kind: 'lr_copy', completed: false });
+  if (!lr) return null;
+  const line = `LR copy uploaded by ${user.name} (Dispatch) with the load: ${said} — send it to the buyer`;
+  lr.resultFile = attachmentId;
+  lr.status = 'received';
+  lr.statusHistory = [...(lr.statusHistory || []), { status: 'received', note: line, by: user._id, at: new Date() }];
+  lr.updates = [...(lr.updates || []), { kind: 'uploaded', statusLabel: 'LR Copy Received', text: said, note: line, by: user._id, at: new Date() }];
+  await lr.save();
+  await publish(EVENTS.HANDOFF_UPDATED, { task: lr, by: user });
+  return lr;
+}
+
+/**
+ * The advance is confirmed in the bank on an order its SO request sent with Production confirmed
+ * [paymentGates.service `afterPayment`]: released to production — the same release as the Sales
+ * orders screen's — and Production asked for it on the enquiry (or the job's next team task), as
+ * the SO upload would have done had the money been in. Returns whether it was released.
+ */
+export async function releaseOnAdvance(order, user) {
+  const source = order.sourceTask ? await Todo.findById(order.sourceTask) : null;
+  /* Only an order booked from an SO request that said Production confirmed goes on by itself. */
+  if (!source || source.kind !== 'po_so' || heldBack(source)) return false;
+  const { releaseFromTask, noteOrderOnTask } = await import('./soFromTask.service.js');
+  const why = `Released automatically — the advance on ${order.number} is confirmed in the bank`;
+  const result = await releaseFromTask(order, user, why);
+  if (!result.released) return false;
+  const brief = carriedBrief(source);
+  if (order.enquiry) {
+    const open = await Todo.exists({ enquiry: order.enquiry, kind: 'ask_edd', completed: false });
+    if (!open) {
+      const enquiry = await Enquiry.findById(order.enquiry);
+      if (enquiry) await moveEnquiry({ enquiry, kind: 'ask_edd', note: why, user, system: true, order: order._id, brief });
+    }
+  } else {
+    const { raiseNextTeamTask } = await import('./journey.service.js');
+    await raiseNextTeamTask(source, 'ask_edd', user, why, { brief });
+  }
+  await noteOrderOnTask(source, user, `${order.number} released to production — advance confirmed; Production has its task`).catch(() => null);
+  return true;
+}
+
+/** A task whose workflow ends by uploading its PDF (the sales order). */
+const finishedByUpload = (task) => (findHandoff(task.kind)?.form?.statuses || []).some((step) => step.pdf && step.done);
+
+/**
+ * The plain task actions a form allows beside its own workflow [departmentTaskForms `taskActions`]:
+ * the SO team's task keeps only Escalate to Admin — its workflow and the SO upload are the rest.
+ */
+function assertTaskAction(task, action) {
+  const allowed = findHandoff(task.kind)?.form?.taskActions;
+  if (!allowed || allowed.includes(action)) return;
+  const words = { update: 'Updates are given', back: 'Sending it back is done', date: 'The date is moved' }[action] || 'That is done';
+  fail(`${words} through the task's own statuses here — or escalate it to Admin`);
+}
+
+/**
+ * Whether a date given for these models is a hand-over to the next team: some model among them
+ * goes on from here by Production's routing [goesOnFrom]. One with no routing yet, or a date for
+ * the whole task, goes by the task (it hands on if anything on it does). A printed model with no
+ * assembly after ends on Printing: its date is the completion date, never a hand-over to Assembly.
+ */
+async function goOnFromHere(task, models = []) {
+  if (!handsOnOf(task).length) return false;
+  const routes = await modelRoutes(task);
+  const named = models.filter((model) => model && model !== 'All models');
+  if (!routes.size || !named.length) return true;
+  return named.some((model) => !routes.has(model) || goesOnFrom(task, routes.get(model)));
+}
+
 /* Printing's and Assembly's goods come from the team before: who, in words. */
 const GOODS_FROM = { ask_printing: 'Production', ask_assembling_edd: 'Production or Printing' };
 const plural = (models, one, many) => (models.length > 1 ? many : one);
@@ -2346,7 +2506,7 @@ export async function tellDispatchReady(task, user, step, text, { partial = fals
   const said = `${asking}: ${step.label}${text ? ` — ${text}` : ''}${heldForQc ? ' — QC compulsory: waits for Quality’s pass before dispatch' : ''}`;
   const ready = statusesOf({ kind: 'invoice_dispatch' }).find((entry) => entry.key === 'waiting_vehicle');
   /* Some models ready: the request moves on only when the order goes out model by model. */
-  const goesByModel = partial && Boolean(task.enquiry) && (await Enquiry.findById(idOf(task.enquiry)).select('dispatchPlan').lean())?.dispatchPlan?.mode === 'by_model';
+  const goesByModel = partial && Boolean(task.enquiry) && dispatchModeOf(await Enquiry.findById(idOf(task.enquiry)).select(DISPATCH_PLAN_FIELDS).lean()) === 'by_model';
   for (const request of requests) {
     request.updates = [...(request.updates || []), { note: said, by: user._id, at: new Date() }];
     const moves = ready && WAITING_ON_GOODS.includes(request.status) && (!partial || goesByModel) && !heldForQc;
@@ -2733,6 +2893,7 @@ async function mayFillDetails(task, user) {
  */
 export async function updateHandoff(task, user, { note, fields = {} }) {
   openHandoff(task, user);
+  assertTaskAction(task, 'update');
   const text = String(note || '').trim();
   if (text.length < 2) fail('Say what the update is');
   const kept = keptFields(task.kind, fields);
@@ -2763,6 +2924,7 @@ export async function updateHandoff(task, user, { note, fields = {} }) {
  */
 export async function returnHandoff(task, user, { reason }) {
   openHandoff(task, user);
+  assertTaskAction(task, 'back');
   const why = String(reason || '').trim();
   if (why.length < 5) fail('Say why it is being sent back');
 
@@ -2905,6 +3067,7 @@ export async function syncOwnerDueDate(enquiry) {
 /** A new due date, with the reason on the record. */
 export async function rescheduleHandoff(task, user, { dueDate, reason }) {
   openHandoff(task, user);
+  assertTaskAction(task, 'date');
   const why = String(reason || '').trim();
   if (why.length < 5) fail('Say why the date is moving');
   const to = new Date(dueDate);
@@ -3174,8 +3337,8 @@ export async function writeEnquiryEdd(enquiryId, { day, user, department, note }
  * the enquiry, where every other screen reads it; marketing and Admin hear it as they hear a move.
  */
 export async function setTaskEdd(task, user, { date, note, models }) {
-  /* The Production in charge may give the EDD on Printing's or Assembly's task too, in place of confirming theirs. */
-  if (task.completed || !(EDD_TASK_KINDS.includes(task.kind) && task.kind !== 'ask_edd' && isProductionInCharge(user))) openHandoff(task, user);
+  /* Each team gives its own date — Printing's and Assembly's are theirs, not Production's to set. */
+  openHandoff(task, user);
   if (!EDD_TASK_KINDS.includes(task.kind)) fail('The EDD is given from the Production, Assembly or Printing task');
   assertPlansProduction(task, user, 'gives the EDD and the hand-over dates');
   assertRouted(task);
@@ -3187,23 +3350,27 @@ export async function setTaskEdd(task, user, { date, note, models }) {
     : '';
   recordModelDates(task, user, entries);
   const text = String(note || '').trim();
-  /* A team that hands on gives the next team its hand-over date; the last team gives the EDD. */
-  const handsOn = handsOnOf(task);
+  /* A team that hands on gives the next team its hand-over date; the last team — or a model that ends here — gives its completion date. */
+  const handsOn = (await goOnFromHere(task, entries.map((entry) => entry.model))) ? handsOnOf(task) : [];
   if (handsOn.length) {
-    const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(day)}${perModel}`;
+    /* The next team hears the date of the models that go on to it — a model that ends here is its completion date, not theirs. */
+    const onward = [];
+    for (const entry of entries) if (await goOnFromHere(task, [entry.model])) onward.push(entry);
+    const handOverDay = (onward.length ? onward : entries).reduce((latest, entry) => (entry.date > latest ? entry.date : latest), '');
+    const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(handOverDay)}${perModel}`;
     task.updates = [...(task.updates || []), {
       kind: 'note', text: text ? `${said}: ${text}` : said, note: text ? `${said}: ${text}` : said,
-      date: day, dateLabel: 'Hand-over', fields: { handover: day }, by: user._id, at: new Date(),
+      date: handOverDay, dateLabel: 'Hand-over', fields: { handover: handOverDay }, by: user._id, at: new Date(),
     }];
     task.attention = undefined;
     if (!task.user) task.user = user._id;
     await task.save();
-    await passHandover(task, user, day, text);
+    await passHandover(task, user, handOverDay, text);
     /* Its date counts towards each model's EDD — the latest of its teams' dates. */
     if (task.enquiry) await refreshModelEdds(task.enquiry, user, text);
     await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
     if (findHandoff(task.kind)?.form?.notifyStatus) {
-      await noticeStatus(task, user, { step: { key: task.status || 'handover', label: `Hand-over date to ${teamWords(handsOn)}` }, note: text, date: day });
+      await noticeStatus(task, user, { step: { key: task.status || 'handover', label: `Hand-over date to ${teamWords(handsOn)}` }, note: text, date: handOverDay });
     }
     await afterProductionDate(task, user, { day, edd: false });
     return task;
@@ -3229,29 +3396,16 @@ export async function setTaskEdd(task, user, { date, note, models }) {
 
 /**
  * After a date on a task of the Production chain [services/productionInCharge.service.js]:
- * Production's own closes the in charge's "Give the EDD"; the EDD Printing or Assembly gives —
- * last in the chain — goes to the in charge to confirm, unless they gave it themselves. Admin
- * dating Production's task in the in charge's place tells them.
+ * Production's own closes the in charge's "Give the EDD", and Admin dating Production's task in
+ * the in charge's place tells them. Printing's and Assembly's dates are their own — nobody is
+ * asked to confirm them; Production, Admin and marketing read them on the enquiry and the
+ * production workflow.
  */
 async function afterProductionDate(task, user, { day, edd }) {
+  if (task.kind !== 'ask_edd') return;
   const inCharge = await import('./productionInCharge.service.js');
-  if (task.kind === 'ask_edd') {
-    await inCharge.planned(task);
-    await toldOfAdminPlan(task, user, `gave the ${edd ? 'EDD' : 'hand-over date'} ${prettyDay(day)}`);
-    return;
-  }
-  if (!edd || !task.routing?.byProduction) return;
-  if (isProductionInCharge(user)) {
-    task.eddConfirmed = { date: day, by: user._id, at: new Date() };
-    await task.save();
-    await inCharge.confirmed(task);
-  } else {
-    if (task.eddConfirmed) {
-      task.eddConfirmed = undefined;
-      await task.save();
-    }
-    await inCharge.askToConfirm(task, user, prettyDay(day));
-  }
+  await inCharge.planned(task);
+  await toldOfAdminPlan(task, user, `gave the ${edd ? 'EDD' : 'hand-over date'} ${prettyDay(day)}`);
 }
 
 /** Admin planned Production's work in the in charge's place: everyone in charge hears what. */
@@ -3267,6 +3421,8 @@ async function toldOfAdminPlan(task, user, what) {
  * the buyer is promised. Said on the task; their "Confirm the EDD" to-do closes.
  */
 export async function confirmTaskEdd(task, user) {
+  /* Printing's and Assembly's dates are their own now: Production reads them, nobody confirms them. */
+  if (['ask_printing', 'ask_assembling_edd'].includes(task.kind)) fail('Printing’s and Assembly’s completion dates are their own — Production reads them on the workflow, nothing to confirm');
   if (!isProductionInCharge(user)) throw ApiError.forbidden('Only the Production in charge confirms the EDD');
   if (!['ask_printing', 'ask_assembling_edd'].includes(task.kind)) fail('Only the EDD Printing or Assembly gives is confirmed');
   if (task.completed) throw ApiError.conflict('That task is already finished');

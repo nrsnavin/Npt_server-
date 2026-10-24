@@ -27,7 +27,7 @@ export async function ensureCostingFor(enquiry, { rows } = {}) {
   }
 
   const { newQuotation } = await import('../controllers/quotation.controller.js');
-  const quotation = await newQuotation({ enquiry: enquiry._id, ...(lines.length ? { lines } : {}), ...targetOf(lines) }, null, { system: true });
+  const quotation = await newQuotation({ enquiry: enquiry._id, ...(lines.length ? { lines: lines.map(withoutSaid) } : {}), ...targetOf(lines) }, null, { system: true });
   return { quotation, created: true, added: lines.length };
 }
 
@@ -40,8 +40,11 @@ export async function costingForCustomer(customerId, rows) {
   const lines = await quoteLinesFromRows(rows);
   if (!customerId || !lines.length) return null;
   const { newQuotation } = await import('../controllers/quotation.controller.js');
-  return newQuotation({ customer: customerId, lines, ...targetOf(lines) }, null, { system: true });
+  return newQuotation({ customer: customerId, lines: lines.map(withoutSaid), ...targetOf(lines) }, null, { system: true });
 }
+
+/** A line as the quotation takes it, without the note of which details the row gave. */
+const withoutSaid = ({ said: _said, ...line }) => line;
 
 const escape = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const exactly = (text) => new RegExp(`^${escape(String(text).trim())}$`, 'i');
@@ -89,6 +92,12 @@ export async function quoteLinesFromRows(rows) {
       ...(Number.isFinite(quantity) && quantity > 0 ? { quantity } : {}),
       ...(remarks ? { remarks } : {}),
       ...(Number.isFinite(target) && target > 0 ? { targetPrice: target } : {}),
+      /* Which details the row gave at all — a detail named again replaces the one on a line already quoted [`respecLine`]. */
+      said: {
+        material: Boolean(materialText), hook: Boolean(String(row.hook || '').trim()), clip: Boolean(String(row.clip || '').trim()),
+        print: Boolean(String(row.print || '').trim()), packing: Boolean(String(row.packing || '').trim()),
+        quantity: Number.isFinite(quantity) && quantity > 0,
+      },
     });
   }
   return lines;
@@ -113,26 +122,111 @@ function targetOf(lines) {
 /**
  * The task's models onto a quotation already open on the enquiry, while it is still being priced:
  * the models it does not carry yet are added, and a line that only stood for the enquiry ("As per
- * ENQ-…", nothing priced) gives way to the models named. One the buyer already holds is left as it
- * was — a revision is the Quotation team's to make.
+ * ENQ-…", nothing priced) gives way to the models named. A model it already carries takes the
+ * details asked now — a request again with a three-colour print where the first said two changes
+ * the line's print [`respecLine`] — and the history says what changed, so the price is looked at
+ * again. One the buyer already holds is left as it was — a revision is the Quotation team's to make.
  */
 async function addTaskModels(quotation, lines) {
   if (!lines.length || !UNSENT_STATUSES.includes(quotation.status)) return 0;
   const { lineFrom } = await import('../controllers/quotation.controller.js');
-  const have = new Set(quotation.lines.map((line) => keyOf({ mould: line.mould?._id || line.mould, modelNumber: line.modelNumber })));
+  const keyOfLine = (line) => keyOf({ mould: line.mould?._id || line.mould, modelNumber: line.modelNumber });
+  const have = new Set(quotation.lines.map(keyOfLine));
   const missing = lines.filter((line) => !have.has(keyOf(line)));
-  if (!missing.length) return 0;
+
+  const changed = [];
+  for (const row of lines.filter((line) => have.has(keyOf(line)))) {
+    const line = quotation.lines.find((entry) => keyOfLine(entry) === keyOf(row));
+    const said = await respecLine(line, row, lineFrom);
+    if (said.length) changed.push(`${line.modelNumber || 'a model on the register'}: ${said.join(', ')}`);
+  }
+  if (!missing.length && !changed.length) return 0;
+
   const standIn = (line) => !line.mould && !line.tradedItem && /^As per /i.test(line.modelNumber || '') && line.unitPrice == null;
-  for (const line of [...quotation.lines]) if (standIn(line)) quotation.lines.pull(line._id);
+  if (missing.length) for (const line of [...quotation.lines]) if (standIn(line)) quotation.lines.pull(line._id);
   for (const row of missing) {
-    const { targetPrice: _target, ...input } = row;
+    const { targetPrice: _target, said: _said, ...input } = row;
     quotation.lines.push(await lineFrom(input));
   }
   if (!quotation.targetPrice && targetOf(lines).targetPrice) quotation.targetPrice = targetOf(lines).targetPrice;
-  quotation.statusHistory.push({ from: quotation.status, to: quotation.status, note: `Models added from the Create Quotation task: ${missing.map((line) => line.modelNumber || 'a model on the register').join(', ')}` });
+  if (missing.length) {
+    quotation.statusHistory.push({ from: quotation.status, to: quotation.status, note: `Models added from the Create Quotation task: ${missing.map((line) => line.modelNumber || 'a model on the register').join(', ')}` });
+  }
+  if (changed.length) {
+    quotation.statusHistory.push({ from: quotation.status, to: quotation.status, note: `Changed by the Create Quotation task asked again — check the price: ${changed.join('; ')}`.slice(0, 1000) });
+  }
   await quotation.save();
-  return missing.length;
+  return missing.length + changed.length;
 }
+
+/* The details a Create Quotation row can change on a line already quoted, the register each is read from, and its rate on the line. */
+const RESPEC = [
+  { said: 'material', ref: 'materialRef', rate: 'rawMaterialRate', label: 'material', register: 'Material' },
+  { said: 'hook', ref: 'hookRef', rate: 'hookCost', label: 'hook', register: 'Component' },
+  { said: 'clip', ref: 'clipRef', rate: 'metalClipsCost', label: 'clip', register: 'Component' },
+  { said: 'print', ref: 'printRef', rate: 'printingCost', label: 'print', register: 'Component' },
+];
+
+/**
+ * A line already on the quotation, brought to the details asked now. A detail the row names again
+ * replaces the line's — by the register where it is on one, else in the remarks the costing person
+ * reads ("Print: 3 colour") — and its rate on the line is re-read, or cleared for the costing person
+ * to give when the new one is not on a register. A detail the row leaves out stays as it was.
+ * Returns what changed, in words: "print 2 Colour → 3 Colour".
+ */
+async function respecLine(line, row, lineFrom) {
+  const { targetPrice: _target, said = {}, ...input } = row;
+  const fresh = await lineFrom(input);
+  const [{ default: Material }, { default: Component }] = await Promise.all([import('../models/Material.js'), import('../models/Component.js')]);
+  const registers = { Material, Component };
+  const nameOf = async (register, id) => {
+    if (!id) return null;
+    const found = await registers[register].findById(id).select('name colour').lean();
+    return found ? [found.name, register === 'Material' ? found.colour : null].filter(Boolean).join(' ') : null;
+  };
+  const words = [];
+  const cost = { ...(line.cost?.toObject?.() ?? line.cost ?? {}) };
+  for (const detail of RESPEC) {
+    if (!said[detail.said]) continue;
+    const before = line[detail.ref] ? String(line[detail.ref]) : '';
+    const after = fresh[detail.ref] ? String(fresh[detail.ref]) : '';
+    if (before === after) continue;
+    const from = await nameOf(detail.register, before);
+    const to = await nameOf(detail.register, after) || offRegister(fresh.remarks, detail.label);
+    line[detail.ref] = fresh[detail.ref] || undefined;
+    if (fresh.cost?.[detail.rate] !== undefined) cost[detail.rate] = fresh.cost[detail.rate];
+    else delete cost[detail.rate];
+    if (detail.said === 'material') line.material = fresh.material || line.material;
+    words.push(`${detail.label} ${from || 'none'} → ${to || 'as in the remarks'}`);
+  }
+  line.cost = cost;
+  if (said.packing && (fresh.packing || '') !== (line.packing || '')) {
+    words.push(`packing ${line.packing || 'none'} → ${fresh.packing}`);
+    line.packing = fresh.packing;
+  }
+  if (said.quantity && Number(fresh.quantity) !== Number(line.quantity)) {
+    words.push(`quantity ${line.quantity ?? '—'} → ${fresh.quantity}`);
+    line.quantity = fresh.quantity;
+  }
+  /* What is not on a register is said in the remarks; asked again, the remarks are the new request's. */
+  if ((fresh.remarks || '') !== (line.remarks || '') && (fresh.remarks || words.length)) {
+    const noted = offRegisterDetails(fresh.remarks).filter((entry) => !words.some((word) => word.startsWith(entry.label)));
+    for (const entry of noted) {
+      const before = offRegister(line.remarks, entry.label);
+      if (before !== entry.value) words.push(`${entry.label} ${before || 'none'} → ${entry.value}`);
+    }
+    line.remarks = fresh.remarks || undefined;
+  }
+  return words;
+}
+
+/* "Print: 3 colour" — a detail the register does not have, as the remarks carry it [`quoteLinesFromRows`]. */
+const REMARK_LABELS = { 'material & colour': 'material', hook: 'hook', clip: 'clip', print: 'print' };
+const offRegisterDetails = (remarks) => String(remarks || '').split(' · ')
+  .map((part) => part.match(/^([^:]+):\s*(.+)$/))
+  .filter((match) => match && REMARK_LABELS[match[1].trim().toLowerCase()])
+  .map((match) => ({ label: REMARK_LABELS[match[1].trim().toLowerCase()], value: match[2].trim() }));
+const offRegister = (remarks, label) => offRegisterDetails(remarks).find((entry) => entry.label === label)?.value || null;
 
 /** The newest answered or withdrawn quotation on the enquiry — what the next one is costed from. */
 export async function lastClosedQuotationFor(enquiryId) {

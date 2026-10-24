@@ -1,6 +1,7 @@
 import Todo from '../models/Todo.js';
 import Enquiry from '../models/Enquiry.js';
 import { findHandoff } from '../config/handoffs.js';
+import { DISPATCH_PLAN_FIELDS, dispatchModeOf } from '../utils/dispatchPlan.js';
 
 /**
  * The order's journey through the plant, as one chain of department tasks on the enquiry.
@@ -63,9 +64,10 @@ const isReady = (task) => {
 
 /** The enquiry's dispatch plan [Enquiry `dispatchPlan`], and which models are ready. */
 async function planOf(enquiryId) {
-  const enquiry = await Enquiry.findById(enquiryId).select('dispatchPlan qcRequired').lean();
+  const enquiry = await Enquiry.findById(enquiryId).select(`${DISPATCH_PLAN_FIELDS} qcRequired`).lean();
   const qcRequired = Boolean(enquiry?.qcRequired);
-  if (enquiry?.dispatchPlan?.mode !== 'by_model') return { byModel: false, qcRequired };
+  /* Several models go each on its own way unless marketing chose one consignment [utils/dispatchPlan.js]. */
+  if (dispatchModeOf(enquiry) !== 'by_model') return { byModel: false, qcRequired };
   const { modelReadiness } = await import('./handoff.service.js');
   return { byModel: true, qcRequired, ...(await modelReadiness(enquiryId)) };
 }

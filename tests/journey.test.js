@@ -8,6 +8,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { dispatchLoad } from './support/dispatchLoad.mjs';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
@@ -31,7 +32,10 @@ const api = async (path, { method = 'GET', body, as = 'nandhini' } = {}) => {
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
 const send = (enquiry, kind, extra = {}) => api(`/api/enquiries/${enquiry}/handoffs`, { method: 'POST', body: { kind, note: `${kind} please`, ...extra } });
-const move = (task, as, status, note = 'Moving it on') => api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, note } });
+/* A load goes through the dispatch form, with its LR copy [support/dispatchLoad.mjs]. */
+const move = (task, as, status, note = 'Moving it on') => (['part_dispatched', 'fully_dispatched', 'dispatched'].includes(status)
+  ? dispatchLoad({ baseUrl, token: token[as], taskId: task, status, note })
+  : api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, note } }));
 const open = (enquiry, kind) => Todo.findOne({ enquiry, kind, completed: false });
 
 async function freshEnquiry() {

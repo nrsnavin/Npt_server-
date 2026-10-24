@@ -278,6 +278,11 @@ test('sending closes the quotation task by default; Close the task unticked keep
   assert.equal(sent.status, 200, sent.json.message);
   const closed = await taskOn(enquiryId, (task) => task.completed);
   assert.equal(closed.completed, true, 'closed with the send');
+  /* The enquiry lists the finished task with the quotation it sent, so its PDF opens from the row. */
+  const listed = (await api(`/api/enquiries/${enquiryId}/handoffs`, { token: nandhini })).json.data.find((task) => task.kind === 'create_quotation');
+  assert.equal(listed.quotation?._id, made._id, 'the quotation that was sent, by the number its outcome names');
+  const pdf = await fetch(`${baseUrl}/api/quotations/${made._id}/pdf`, { headers: { Authorization: `Bearer ${nandhini}` } });
+  assert.equal(pdf.status, 200, 'its PDF opens');
 
   const { enquiryId: keptEnquiry, quotation: kept } = await quotedEnquiry();
   assert.ok(await taskOn(keptEnquiry));

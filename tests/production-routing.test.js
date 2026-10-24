@@ -315,6 +315,8 @@ test('dispatch plan: each model as it is ready — a ready model goes to Quality
   const items = [{ modelNumber: 'DP-1', quantity: 1000 }, { modelNumber: 'DP-2', quantity: 1000 }];
   const models = [{ model: 'DP-1' }, { model: 'DP-2', printing: true }];
   const together = await routedEnquiry('Together Knits', '9840011666', items, models);
+  /* One consignment, chosen by marketing — several models otherwise go each on its own way [utils/dispatchPlan.js]. */
+  assert.equal((await api(`/api/enquiries/${together.enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'together' } })).status, 200);
   /* QC compulsory on both, so the ready model goes to Quality rather than straight to Dispatch [qcGate.service]. */
   await Enquiry.updateOne({ _id: together.enquiry._id }, { $set: { qcRequired: true } });
   await api(`/api/workspace/todos/${together.production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'DP-1 ready' } });
@@ -332,4 +334,74 @@ test('dispatch plan: each model as it is ready — a ready model goes to Quality
   const view = (await api(`/api/enquiries/${split.enquiry._id}/handoffs`, { as: 'nandhini' })).json;
   assert.equal(view.dispatchPlan.mode, 'by_model');
   assert.deepEqual(view.readiness, { ready: ['DP-1'], waiting: [{ model: 'DP-2', team: 'printing' }], sent: [], qc: { required: true, passed: [], atQc: ['DP-1'] } }, 'made, and with Quality until it passes');
+});
+
+test('Printing’s date for a model with no assembly after is its completion date — never a hand-over to Assembly', async () => {
+  const { enquiry, production: asked } = await routedEnquiry('Print Only Knits', '9840013561',
+    [{ modelNumber: 'CRF-SET', quantity: 1000 }, { modelNumber: 'CRF-AS', quantity: 1000 }],
+    [{ model: 'CRF-SET', printing: true }, { model: 'CRF-AS', printing: true, assembly: true }]);
+  const handed = await api(`/api/workspace/todos/${asked._id}/status`, { method: 'POST', as: 'siva', body: { status: 'handed_printing', note: 'All moulded' } });
+  assert.equal(handed.status, 200, handed.json.message);
+  const printing = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_printing', completed: false });
+  const assembly = () => Todo.findOne({ enquiry: enquiry._id, kind: 'ask_assembling_edd' }).lean();
+  const before = (await assembly())?.routing?.incoming?.printing;
+  const move = (status, note, date, models) => api(`/api/workspace/todos/${printing._id}/status`, { method: 'POST', as: 'priya', body: { status, note, ...(date ? { date } : {}), models } });
+  for (const status of ['goods_received', 'in_queue', 'started']) {
+    const moved = await move(status, `${status} for CRF-SET`, null, ['CRF-SET']);
+    assert.equal(moved.status, 200, moved.json.message);
+  }
+  const ready = await move('ready_dispatch', 'Printed, ready to go', indiaDay(5), ['CRF-SET']);
+  assert.equal(ready.status, 200, ready.json.message);
+  const line = (await Todo.findById(printing._id).lean()).updates.at(-1);
+  assert.equal(line.dateLabel, 'Completion date', 'the date is Printing’s completion date');
+  assert.doesNotMatch(line.note, /Hand-over/);
+  assert.equal(line.fields.edd, indiaDay(5));
+  assert.equal((await assembly())?.routing?.incoming?.printing, before, 'Assembly is told nothing for a model that never comes to it');
+  const crf = (await Enquiry.findById(enquiry._id).select('eddByModel').lean()).eddByModel.find((row) => row.model === 'CRF-SET');
+  assert.deepEqual([crf.completion, crf.completionBy], [indiaDay(5), 'printing']);
+
+  /* The direct date for the model going on is still the hand-over to Assembly. */
+  const onward = await api(`/api/workspace/todos/${printing._id}/edd`, { method: 'POST', as: 'priya', body: { models: [{ model: 'CRF-AS', date: indiaDay(4) }] } });
+  assert.equal(onward.status, 200, onward.json.message);
+  assert.match((await Todo.findById(printing._id).lean()).updates.at(-1).note, /Hand-over to Assembly/);
+  const onlySet = await api(`/api/workspace/todos/${printing._id}/edd`, { method: 'POST', as: 'priya', body: { models: [{ model: 'CRF-SET', date: indiaDay(6) }] } });
+  assert.equal(onlySet.status, 200, onlySet.json.message);
+  assert.match((await Todo.findById(printing._id).lean()).updates.at(-1).note, /^Completion date/);
+  /* Both models at once: Assembly hears the date of the one that goes to it, not the later one that ends here. */
+  const mixed = await api(`/api/workspace/todos/${printing._id}/edd`, { method: 'POST', as: 'priya', body: { models: [{ model: 'CRF-SET', date: indiaDay(8) }, { model: 'CRF-AS', date: indiaDay(7) }] } });
+  assert.equal(mixed.status, 200, mixed.json.message);
+  assert.equal((await assembly())?.routing?.incoming?.printing, indiaDay(7));
+});
+
+test('no QC on the order: a ready model goes straight to Dispatch when it goes out model by model; together waits for the rest', async () => {
+  const items = [{ modelNumber: 'NQ-1', quantity: 1000 }, { modelNumber: 'NQ-2', quantity: 1000 }];
+  const models = [{ model: 'NQ-1' }, { model: 'NQ-2', printing: true }];
+  const together = await routedEnquiry('No QC Together', '9840013562', items, models);
+  assert.equal((await api(`/api/enquiries/${together.enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'together' } })).status, 200);
+  await api(`/api/workspace/todos/${together.production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'NQ-1 ready', models: ['NQ-1'] } });
+  assert.equal(await Todo.findOne({ enquiry: together.enquiry._id, kind: 'invoice_dispatch' }), null, 'together: waits for Printing’s model');
+  assert.equal(await Todo.findOne({ enquiry: together.enquiry._id, kind: 'quality_check' }), null, 'no QC asked for');
+
+  const split = await routedEnquiry('No QC By Model', '9840013563', items, models);
+  const plan = await api(`/api/enquiries/${split.enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'by_model' } });
+  assert.equal(plan.status, 200, plan.json.message);
+  await api(`/api/workspace/todos/${split.production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'NQ-1 ready', models: ['NQ-1'] } });
+  const dispatch = await Todo.findOne({ enquiry: split.enquiry._id, kind: 'invoice_dispatch', completed: false });
+  assert.ok(dispatch, 'the ready model is on Dispatch’s desk — and so in its delivery queue');
+  assert.equal(dispatch.department, 'despatch');
+  assert.equal(await Todo.findOne({ enquiry: split.enquiry._id, kind: 'quality_check' }), null, 'no Quality step without QC');
+});
+
+test('several models, no plan chosen: each goes its own way — a ready model reaches Dispatch while the other is still made', async () => {
+  const items = [{ modelNumber: 'IN-1', quantity: 1000 }, { modelNumber: 'IN-2', quantity: 1000 }];
+  const { enquiry, production } = await routedEnquiry('Own Way Knits', '9840013564', items, [{ model: 'IN-1' }, { model: 'IN-2', printing: true }]);
+  const view = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
+  assert.deepEqual([view.dispatchPlan.mode, view.dispatchPlan.chosen], ['by_model', false], 'model by model by default');
+  await api(`/api/workspace/todos/${production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'IN-1 ready', models: ['IN-1'] } });
+  assert.ok(await Todo.findOne({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false }), 'IN-1 is on Dispatch’s desk');
+  const printing = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_printing', completed: false });
+  assert.ok(printing, 'IN-2 is still with Printing');
+
+  const single = await routedEnquiry('One Model Knits', '9840013565', [{ modelNumber: 'ONE-1', quantity: 1000 }], [{ model: 'ONE-1' }]);
+  assert.equal((await api(`/api/enquiries/${single.enquiry._id}/handoffs`, { as: 'nandhini' })).json.dispatchPlan.mode, 'together', 'one model: nothing to split');
 });

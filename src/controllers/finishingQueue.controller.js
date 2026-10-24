@@ -9,6 +9,7 @@ import { bandOf, readsWholeQueue } from './productionQueue.controller.js';
 import { deliveryRiskFor } from '../services/deliveryRisk.service.js';
 import { RISK_LEVELS, riskOfFinishing } from '../services/eddRisk.service.js';
 import { ticked as qcTicked } from '../services/qcGate.service.js';
+import { dispatchPlanOf } from '../utils/dispatchPlan.js';
 
 /**
  * Printing's and Assembly's queues, in the order the goods are due [web: components/
@@ -143,7 +144,7 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
     .populate([
       {
         path: 'enquiry',
-        select: 'number stage status customer assignedTo edd eddByModel qcRequired dispatchPlan requirement.modelNumber requirement.colour requirement.quantity items.modelNumber',
+        select: 'number stage status customer assignedTo edd eddByModel qcRequired dispatchPlan requirement.modelNumber requirement.colour requirement.quantity items.modelNumber items.mould',
         populate: [{ path: 'customer', select: 'code name assignedTo' }, { path: 'assignedTo', select: 'name' }],
       },
       { path: 'user', select: 'name' },
@@ -216,7 +217,7 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
          */
         title: task.title, notes: task.notes || null, fromDepartment: task.fromDepartment || null, completed: Boolean(task.completed),
         /* Marketing's EDD and each model's dates travel with it, so the task panel reads them [web: components/TaskEdd.jsx]. */
-        enquiry: enquiry ? { _id: enquiry._id, number: enquiry.number, dispatchPlan: enquiry.dispatchPlan || null, edd: enquiry.edd || null, eddByModel: enquiry.eddByModel || [] } : null,
+        enquiry: enquiry ? { _id: enquiry._id, number: enquiry.number, dispatchPlan: dispatchPlanOf(enquiry), edd: enquiry.edd || null, eddByModel: enquiry.eddByModel || [] } : null,
         createdBy: person(task.createdBy), order: task.order ? { _id: task.order._id, number: task.order.number } : null,
         updates: task.updates || [], statusHistory: task.statusHistory || [],
       },
