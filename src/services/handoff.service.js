@@ -1108,7 +1108,7 @@ const enquiryOfTask = async (task) => {
  * goes next — the next department has it from here. A side request is simply done, and the
  * sender gets it back.
  */
-export async function completeHandoff(task, user, { note, fields = {}, next, system = false, quiet = false, handedOn = false }) {
+export async function completeHandoff(task, user, { note, fields = {}, next, system = false, quiet = false, handedOn = false, endsAt = null }) {
   /* `system`: the app closing it because the work is recorded elsewhere (the sample sent). */
   if (system) {
     if (task.completed) return task;
@@ -1151,7 +1151,8 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
    * the list — not "done" beside whatever status it last had.
    */
   /* `handedOn`: closed at Handed to Printing / Assembly [setTaskStatus] — it ends there, not at Task Closed. */
-  const closing = !system && !handedOn && statusesOf(task).find((entry) => entry.done && !entry.pdf);
+  /* `endsAt`: closed by its last model leaving the team (Ready for Dispatch) — it reads that status, not Task Closed. */
+  const closing = !system && !handedOn && !endsAt && statusesOf(task).find((entry) => entry.done && !entry.pdf);
   /* Done on Quality's check is its pass: a failed check goes back for rework, it is not closed. */
   if (closing?.result) {
     if (/fail|reject/i.test(String(kept.result || ''))) fail('A failed check is not closed — mark it QC Failed — Rework, and pass it once the reworked goods are checked again');
@@ -1389,7 +1390,11 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
     if (off.length) fail(`${off.join(', ')} ${off.length > 1 ? 'do' : 'does'} not go to ${ROUTE_LABEL[step.handsTo] || step.handsTo} — Production routed ${off.length > 1 ? 'them' : 'it'} elsewhere`);
   }
   /* "Part 1 Ready · CRF25" — the move said with the models it was for. */
-  const label = partial ? `${step.label} · ${moving.join(', ')}` : step.label;
+  /* A model leaving this team is closed here — said on the move, and in the alert that goes with it. */
+  const closingModels = byModel && !step.done && closesModel(task, step.key) ? moving : [];
+  const label = partial
+    ? `${step.label} · ${moving.join(', ')}${closingModels.length && !finishes ? ` — closed here for ${closingModels.join(', ')}` : ''}`
+    : step.label;
 
   if (step.raises) await raiseFromStatus(task, user, step, text);
   /* The sample handed at the desk: written onto the sample first, so a refusal leaves the task where it was. */
@@ -1439,6 +1444,10 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
     await writeEnquiryEdd(task.enquiry, { day: readyDate, user, department: task.department, note: text });
   }
   if (form.notifyStatus) await noticeStatus(task, user, { step: partial ? { ...step, label } : step, note: text, date: readyDate });
+  /* The alert for a model closed on a task still open for others: marketing and Admin, and the team on the task. */
+  if (closingModels.length && !finishes) {
+    await noticeStatus(task, user, { step: { key: 'model_closed', label: `${closingModels.join(', ')} closed on ${departmentName(task.department)} — ${step.label}` }, note: text, also: await peopleOn(task), toAdminAndMarketing: true });
+  }
   /* EDD Accepted / Planning moved by Admin in the in charge's place (a dated move told them above). */
   if (step.plans && !readyDate) await toldOfAdminPlan(task, user, `moved it to ${step.label}`);
   /* Production's task ended: nobody is still asked for its EDD. */
@@ -1488,7 +1497,10 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   if (finishes) {
     return completeHandoff(task, user, {
       /* A pass records its result, which is what lets the goods go [qcGate.service `qcPassed`]. */
-      note: text || step.label, fields: { ...asked, ...(step.result ? { result: step.result } : {}), ...(readyDate ? { [dateField]: readyDate } : {}) }, handedOn: Boolean(step.handsTo),
+      note: text || step.label, fields: { ...asked, ...(step.result ? { result: step.result } : {}), ...(readyDate ? { [dateField]: readyDate } : {}) },
+      /* Some of its models went on to another team: the goods are not all ready for Dispatch, so the enquiry stays where it is. */
+      handedOn: Boolean(step.handsTo) || (byModel && after.some((row) => statusesOf(task).find((entry) => entry.key === row.status)?.handsTo)),
+      endsAt: !step.done && closesModel(task, step.key) ? step.key : null,
     });
   }
   return task;
@@ -1546,17 +1558,35 @@ export function slowestStatus(task, rows) {
 /** What a move does to a task's models: which move, each model's status after, and the task's. */
 function modelMove(task, step, models) {
   const own = modelStatusesOf(task);
-  if (!own.length) return { byModel: false, moving: [], partial: false, after: [], overall: step.key, finishes: Boolean(step.done) };
+  if (!own.length) return { byModel: false, moving: [], partial: false, after: [], overall: step.key, finishes: Boolean(step.done) || closesModel(task, step.key) };
   const names = own.map((row) => row.model);
   const named = [...new Set((Array.isArray(models) ? models : []).map((model) => String(model || '').trim()).filter(Boolean))];
   const stray = named.filter((model) => !names.includes(model));
   if (stray.length) fail(`${stray.join(', ')} is not one of this task’s models (${names.join(', ')})`);
-  const moving = named.length ? named : names;
+  /* A model closed here (handed on, or ready for dispatch from the last team) moves no more; Task Closed closes the rest. */
+  const closedRows = own.filter((row) => closesModel(task, row.status));
+  const shut = named.filter((model) => closedRows.some((row) => row.model === model));
+  if (shut.length && !step.done) fail(`${shut.join(', ')} ${shut.length > 1 ? 'are' : 'is'} already closed on this task — ${shut.length > 1 ? 'they have' : 'it has'} gone on from this team`);
+  const open = own.filter((row) => !closedRows.includes(row)).map((row) => row.model);
+  const moving = named.length ? named : step.done ? names : open;
+  if (!moving.length) fail('Every model on this task is already closed');
   const partial = moving.length < names.length;
   const after = own.map((row) => (moving.includes(row.model) ? { ...row, status: step.key } : row));
-  const isDone = (key) => Boolean(statusesOf(task).find((entry) => entry.key === key)?.done);
-  const finishes = Boolean(step.done) && after.every((row) => isDone(row.status));
+  const finishes = (Boolean(step.done) || closesModel(task, step.key)) && after.every((row) => closesModel(task, row.status));
   return { byModel: true, moving, partial, after, overall: finishes ? step.key : slowestStatus(task, after), finishes };
+}
+
+/**
+ * Whether a status closes a model on its team's task: Task Closed; and on Production, Printing
+ * and Assembly, the model leaving the team — handed to the next team, or Ready for Dispatch from
+ * the last team on its route [movesFor refuses either where it does not fit the model's route].
+ * The task finishes once every model on it is closed [setTaskStatus].
+ */
+export function closesModel(task, key) {
+  const step = statusesOf(task).find((entry) => entry.key === key);
+  if (!step) return false;
+  if (step.done) return true;
+  return EDD_TASK_KINDS.includes(task.kind) && Boolean(step.handsTo || step.readyForDispatch);
 }
 
 /** Production's routing rows by model — on its own task, or the enquiry's latest Production task. */
@@ -1602,7 +1632,10 @@ async function movesFor(task, step, models) {
   const own = modelsOfTask(task);
   const perModel = modelStatusesOf(task).length > 0;
   const named = [...new Set((Array.isArray(models) ? models : []).map((model) => String(model || '').trim()).filter(Boolean))];
-  let pool = named.length ? named : own;
+  /* A whole-task move is for the models still open here; those already closed have gone on. */
+  const rows = modelStatusesOf(task);
+  const openOwn = rows.length && !step.done ? own.filter((model) => !closesModel(task, rows.find((row) => row.model === model)?.status)) : own;
+  let pool = named.length ? named : openOwn;
   let narrowed = false;
 
   const routes = await modelRoutes(task);
@@ -2199,14 +2232,15 @@ function noticesAdminAndMarketing(task, step) {
   return Boolean(status && String(step.label || '').startsWith(status.label));
 }
 
-export async function noticeStatus(task, user, { step, note, date, also = [], onlyAlso = false }) {
+export async function noticeStatus(task, user, { step, note, date, also = [], onlyAlso = false, toAdminAndMarketing = false }) {
   /*
    * Admin and marketing hear only what they must act on [ADMIN_MARKETING_NOTICES]: Production's
    * Mould Issue or Raw Material Not Available, and Dispatch's Dispatched. Every other move stays
    * on its task and the workflow page; the teams the move is for — a department that asked (Dispatch
    * asking Production), the people named — still hear it.
    */
-  const forThem = onlyAlso || noticesAdminAndMarketing(task, step);
+  /* `toAdminAndMarketing`: an alert they asked for by name (a model closed on its team's task). */
+  const forThem = onlyAlso || toAdminAndMarketing || noticesAdminAndMarketing(task, step);
   const [{ default: TaskNotice }, { default: User }] = await Promise.all([
     import('../models/TaskNotice.js'), import('../models/User.js'),
   ]);
