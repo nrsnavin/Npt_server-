@@ -349,8 +349,9 @@ async function openWorkRecord(kind, enquiry, brief = {}) {
     await createSampleForEnquiry(enquiry, sampleFromBrief(brief), { autoCreated: true });
   }
   if (kind === 'create_quotation') {
+    /* The models named on the task are the sheet's lines; with none named, the enquiry's [costingRequest.service]. */
     const { ensureCostingFor } = await import('./costingRequest.service.js');
-    await ensureCostingFor(enquiry);
+    await ensureCostingFor(enquiry, { rows: brief?.items });
   }
 }
 
@@ -575,7 +576,12 @@ async function moveEnquiryChecked({
   const picked = await pickedMember(kind, brief);
   const asked = keptBrief(kind, picked.brief, { strict: !system });
   if (!system) assertNote(kind, asked, note);
-  if (already) return addToOpenTask(already, { handoff, note, asked, priority, requiredDate, user });
+  if (already) {
+    const added = await addToOpenTask(already, { handoff, note, asked, priority, requiredDate, user });
+    /* Asked again with more models: they go onto the quotation being priced too. */
+    if (kind === 'create_quotation' && openRecords) await openWorkRecord(kind, enquiry, asked);
+    return added;
+  }
   /* The buyer collects it at reception: an internal sample — Reception's task, never the sampling queue. */
   if (kind === 'sample_request' && asked.handover === COLLECT_LABEL) {
     return raiseInternalSample({ enquiry, asked, note, priority, requiredDate, user });
@@ -715,6 +721,20 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
     priority: PRIORITIES.includes(priority) ? priority : 'normal',
     link: '/departments/mine',
   });
+  /*
+   * Create Quotation for a buyer with no enquiry: the quotation is raised for the buyer with the
+   * models the form named, and the task points at it — the Quotation desk opens it from the card,
+   * and sending it closes the task [finishQuotationTasks].
+   */
+  if (kind === 'create_quotation' && buyer) {
+    const { costingForCustomer } = await import('./costingRequest.service.js');
+    const quotation = await costingForCustomer(buyer._id, asked.items);
+    if (quotation) {
+      task.link = `/quotations/${quotation._id}`;
+      task.updates = [...(task.updates || []), { kind: 'note', note: `Quotation ${quotation.number} raised with ${quotation.lines.length} model${quotation.lines.length === 1 ? '' : 's'}`, by: user._id, at: new Date() }];
+      await task.save();
+    }
+  }
   await publish(EVENTS.HANDOFF_SENT, { task, enquiry: null, by: user });
   return task;
 }
@@ -1244,16 +1264,24 @@ async function finishAll(tasks, by, { note, fields }) {
  * already gets "Follow up on …" from the quotation itself.
  */
 export async function finishQuotationTasks(quotation, by) {
-  const enquiryId = quotation?.enquiry?._id || quotation?.enquiry;
-  if (!enquiryId) return [];
-  const tasks = await Todo.find({
-    enquiry: enquiryId, kind: { $in: ['create_quotation', 'price_negotiation'] }, completed: false, holds: { $ne: true },
-  });
+  const tasks = await pricingTasksOf(quotation);
   if (!tasks.length) return [];
   const price = quotation.soleLine?.unitPrice;
   const fields = { quotationNumber: quotation.number, ...(price != null ? { price: String(price) } : {}) };
   const note = `${quotation.number}${quotation.revision ? ` rev ${quotation.revision}` : ''} sent to the buyer${price != null ? ` at ₹${price}` : ''}`;
   return finishAll(tasks, by, { note, fields });
+}
+
+/**
+ * The open pricing tasks a quotation answers: the enquiry's Create Quotation and Price Negotiation
+ * tasks, or — for a quotation raised from a customer's team task with no enquiry — the task that
+ * points at it [raiseTeamTask].
+ */
+async function pricingTasksOf(quotation) {
+  if (!quotation?._id) return [];
+  const enquiryId = quotation.enquiry?._id || quotation.enquiry;
+  const kinds = { kind: { $in: ['create_quotation', 'price_negotiation'] }, completed: false, holds: { $ne: true } };
+  return Todo.find(enquiryId ? { ...kinds, enquiry: enquiryId } : { ...kinds, link: `/quotations/${quotation._id}` });
 }
 
 /**
@@ -1263,11 +1291,7 @@ export async function finishQuotationTasks(quotation, by) {
  * still being talked over.
  */
 export async function markQuotationTasksSent(quotation, by) {
-  const enquiryId = quotation?.enquiry?._id || quotation?.enquiry;
-  if (!enquiryId) return [];
-  const tasks = await Todo.find({
-    enquiry: enquiryId, kind: { $in: ['create_quotation', 'price_negotiation'] }, completed: false, holds: { $ne: true },
-  });
+  const tasks = await pricingTasksOf(quotation);
   const said = `${quotation.number}${quotation.revision ? ` rev ${quotation.revision}` : ''} sent to the buyer — task kept open`;
   const now = new Date();
   const moved = [];
@@ -3825,15 +3849,23 @@ export async function enquiriesHeldBy(department, user, { now = new Date(), limi
   const [samples, quotations, orders] = ids.length
     ? await Promise.all([newest(Sample, ''), newest(Quotation, ''), newest(SalesOrder, '')])
     : [new Map(), new Map(), new Map()];
+  /* The quotation a customer's Create Quotation task raised points from the task's link [raiseTeamTask]. */
+  const quoteIdOf = (task) => (!task.enquiry && /^\/quotations\/[0-9a-f]{24}$/i.test(task.link || '') ? task.link.split('/')[2] : null);
+  const teamQuoteIds = tasks.map(quoteIdOf).filter(Boolean);
+  const teamQuoteRows = teamQuoteIds.length ? await Quotation.find({ _id: { $in: teamQuoteIds } }).select('number status').lean() : [];
+  const teamQuotes = new Map(tasks.filter(quoteIdOf).map((task) => {
+    const row = teamQuoteRows.find((entry) => String(entry._id) === quoteIdOf(task));
+    return [String(task._id), row ? { _id: row._id, number: row.number, status: row.status } : null];
+  }));
 
   return tasks.map((task) => {
-    /* A team task raised without an enquiry [raiseTeamTask]: on the desk with the rest. */
+    /* A team task raised without an enquiry [raiseTeamTask]: on the desk with the rest — with the quotation it raised, when it raised one. */
     if (!task.enquiry) {
       return {
         task, enquiry: null, since: task.createdAt,
         late: Boolean(task.dueDate && task.dueDate < now),
         dueToday: Boolean(task.dueDate && task.dueDate >= now && task.dueDate <= endOfDayIST(now)),
-        records: { sample: null, quotation: null, order: null },
+        records: { sample: null, quotation: teamQuotes.get(String(task._id)) || null, order: null },
       };
     }
     const key = String(task.enquiry._id);

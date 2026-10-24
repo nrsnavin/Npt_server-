@@ -200,6 +200,8 @@ async function lineFrom(input = {}, { fallbackModel, mayCost = false } = {}) {
     quantity: input.quantity,
     moq: input.moq ?? mould?.moq ?? traded?.moq ?? 0,
     colour: input.colour ?? traded?.colour,
+    /* How it is packed, as the enquiry or the Create Quotation task said it. */
+    packing: String(input.packing || '').trim() || undefined,
     remarks: input.remarks,
     unitPrice: input.unitPrice ?? undefined,
     status: 'requested',
