@@ -3,7 +3,8 @@
  * Manufacture rows become moulds (30 s cycle by default), Trade rows bought-in items with their
  * build-up and an estimated inward price; photos come from the links — a folder link's zip
  * gives the picture named for the code — and a second run neither doubles a record nor fetches
- * a photo again.
+ * a photo again. Rows of one code are one record; a code already on a register, however it is
+ * spelt, is updated; a row with only its name goes in prefilled; earlier "(2)" copies are listed.
  *
  *   node --test tests/mould-sheet-import.test.js
  */
@@ -98,6 +99,13 @@ test.before(async () => {
     `TP-224\t\t\tManufacture\t22\t2\t0.70\t0.15\t\t\t\t\t`,
     'TP-224\t\t\tManufacture\t22\t1\t0.70\t0.15\t\t\t\t\t',
     '"RWP-330\n"\t\t\t\t\t\t\t\t\t\t\t\t',
+    'MKT-30\t\t\tManufacture\t19\t2\t0.75\t0.15\t\t\t\t\t',
+    'mkt 30\t\t\t\t\t\t\t\t\t\t\t\t',
+    'FW-07\t\t\tManufacture\t\t\t\t\t\t\t\t\t',
+    'FW-07\t\t\t\t13\t\t1\t\t\t\t\t\t',
+    'PL-46\t\t\tTrade\t\t2\t1\t0.25\t\t0.9\t\t\t',
+    'PL-46\t\t\t\t\t\t\t\t\t\t\t\t',
+    'CRF-25\t\t\tManufacture\t30\t2\t0.8\t0.2\t\t\t\t\t',
   ].join('\n');
 });
 
@@ -107,11 +115,13 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-test('the bundled sheet reads: 402 rows, the scratch column and the IP note kept as notes', async () => {
+test('the bundled sheet reads whole: 728 rows past the blank row, the scratch column and the IP note kept as notes', async () => {
   const { parseSheet, readSheet } = await import('../src/services/mouldSheet.service.js');
   const read = readSheet(parseSheet(readFileSync(new URL('../data/mould-sheet-ip-14-02-26.tsv', import.meta.url), 'utf8')));
-  assert.equal(read.entries.length, 402);
-  assert.equal(read.entries.filter((entry) => entry.supply === 'trade').length, 113);
+  assert.equal(read.entries.length, 728);
+  assert.equal(read.entries.filter((entry) => entry.supply === 'trade').length, 155);
+  assert.ok(read.entries.some((entry) => entry.code === 'HTB-322'), 'the last row, below the blank row');
+  assert.ok(read.entries.some((entry) => entry.code === 'PC-8'), 'the first row after the blank row');
   const d30 = read.entries.find((entry) => entry.code === 'D-30');
   assert.deepEqual(d30.notes, ['IP-14/2/26: Bhavni mould']);
   assert.equal(d30.numbers.partWeightGrams, 14.5);
@@ -119,25 +129,40 @@ test('the bundled sheet reads: 402 rows, the scratch column and the IP note kept
 });
 
 test('Manufacture → moulds at 30 s, Trade → the trading master with its build-up and an estimated price; photos from the links', async () => {
-  const { applySheet, parseSheet, planSheet, readSheet } = await import('../src/services/mouldSheet.service.js');
+  const { applySheet, codeKey, parseSheet, planSheet, readSheet } = await import('../src/services/mouldSheet.service.js');
   const { photoFetcher } = await import('../src/services/recordPhoto.service.js');
   const by = await User.create({ name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', role: 'admin', department: 'management' });
+
+  /* Made by hand before the sheet, spelt without the dash; and a copy an earlier import made. */
+  await Mould.create({ mouldCode: 'CRF25', name: 'CRF25', partWeightGrams: 29, cycleTimeSeconds: 26, cavities: 2 });
+  await Mould.create({ mouldCode: 'TP-224 (2)', name: 'TP-224 (2)', partWeightGrams: 22, cycleTimeSeconds: 30, cavities: 1 });
+  const { earlierCopies } = await import('../src/services/mouldSheet.service.js');
+  assert.deepEqual(await earlierCopies(), [], 'not a copy while the code it copies is not there');
 
   const plan = await planSheet(readSheet(parseSheet(sheet)).entries);
   const action = (code, register) => plan.find((entry) => entry.code === code && (!register || entry.register === register));
   assert.equal(action('MAU-30', 'traded').action, 'create');
   assert.equal(action('MAU-30', 'mould').action, 'create', 'the same code as Trade and Manufacture is on both registers');
   assert.match(action('MAU-30', 'mould').warnings.join(), /both Trade and Manufacture/);
-  const second = plan.find((entry) => entry.sheetCode === 'TP-224' && entry.code !== 'TP-224');
-  assert.equal(second.code, 'TP-224 (2)', 'a second row for a code is added under its own code, to rename');
-  assert.match(second.warnings.join(), /added as TP-224 \(2\), to rename/);
+  assert.equal(plan.filter((entry) => entry.code === 'TP-224').length, 1, 'two rows of one code: one record, no "(2)"');
+  assert.deepEqual(action('TP-224').lines, [7, 8]);
+  assert.match(action('TP-224').warnings.join(), /Line 8 merged in — it differs: Runner grammage 1 \(kept 2\)/);
+  assert.equal(action('TP-224').action, 'create', 'the "(2)" copy is not taken for the code');
+  assert.equal(plan.filter((entry) => codeKey(entry.code) === 'MKT30').length, 1, '"mkt 30" with nothing on it is MKT-30');
+  assert.equal(action('FW-07').numbers.partWeightGrams, 13, 'a later row fills what the first left blank');
+  assert.equal(action('FW-07').register, 'mould', 'a blank Trade / Manufacture follows the code’s other row');
+  assert.equal(action('PL-46').register, 'traded');
+  assert.equal(plan.filter((entry) => entry.code === 'PL-46').length, 1);
+  assert.equal(action('CRF-25').action, 'update', 'CRF-25 is the register’s CRF25');
+  assert.match(action('CRF-25').warnings.join(), /On the mould register as CRF25 — updated that one/);
   assert.equal(action('RWP-330').action, 'create', 'nothing but a code: added, to fill in');
+  assert.match(action('RWP-330').warnings.join(), /Nothing but the name on the sheet — added with prefilled values/);
   assert.ok(plan.every((entry) => entry.action !== 'skip'), 'no row is dropped');
   assert.match(action('B-31').warnings.join(), /"\.\.2" read as 0\.2/);
 
   const result = await applySheet(plan, { by, ppRate: 100, fetchPhoto: photoFetcher() });
-  assert.deepEqual(result.moulds, { created: 6, updated: 0 });
-  assert.deepEqual(result.traded, { created: 2, updated: 0 });
+  assert.deepEqual(result.moulds, { created: 7, updated: 1 });
+  assert.deepEqual(result.traded, { created: 3, updated: 0 });
   assert.equal(result.photos.added, 4);
   assert.deepEqual(result.photos.failed.map((miss) => [miss.code, miss.reason]), [['B-31', 'the link is not a picture']]);
 
@@ -151,12 +176,21 @@ test('Manufacture → moulds at 30 s, Trade → the trading master with its buil
   assert.equal(String(d30.photo.mould), String(d30._id));
   assert.equal((await Mould.findOne({ mouldCode: 'B-31' })).packingCost, 0.2);
   assert.equal((await Mould.findOne({ mouldCode: 'TP-224' })).runnerWeightGrams, 2, 'the first row keeps the code');
+  assert.match((await Mould.findOne({ mouldCode: 'TP-224' })).notes, /Sheet line 8 also gives Runner grammage 1 \(kept 2\) — check which is right/);
+  assert.deepEqual((await earlierCopies()).map((entry) => [entry.code, entry.of]), [['TP-224 (2)', 'TP-224']], 'listed once TP-224 is there');
   const copy = await Mould.findOne({ mouldCode: 'TP-224 (2)' });
-  assert.equal(copy.runnerWeightGrams, 1);
-  assert.match(copy.notes, /A second row for TP-224 on the sheet \(line 8\) — rename this one/);
+  assert.equal(copy.updatedAt.getTime(), copy.createdAt.getTime(), 'the earlier copy is left alone');
   const blank = await Mould.findOne({ mouldCode: 'RWP-330' });
   assert.equal(blank.partWeightGrams, 0);
   assert.equal(blank.cycleTimeSeconds, 30);
+  assert.equal(blank.cavities, 1);
+  assert.match(blank.notes, /Prefilled: weight 0 g, 1 cavity, 30 s cycle, PP — fill in grammage, runner grammage, job work cost, packing cost, cavities, cycle time/);
+  const crf = await Mould.findOne({ mouldCode: 'CRF25' });
+  assert.equal(crf.partWeightGrams, 30, 'the sheet’s figure on the existing record');
+  assert.equal(crf.cycleTimeSeconds, 26, 'its cycle time stands');
+  assert.equal(await Mould.countDocuments({ mouldCode: 'CRF-25' }), 0);
+  const pl46 = await TradedItem.findOne({ modelNumber: 'PL-46' });
+  assert.match(pl46.notes, /Not on the sheet: grammage — fill in/);
 
   const traded = await TradedItem.findOne({ modelNumber: 'MAU-30' }).populate('photo');
   assert.equal(traded.buildUp.partWeightGrams, 14);
@@ -181,12 +215,12 @@ test('running it again updates in place and fetches no photo twice', async () =>
 
   const plan = await planSheet(readSheet(parseSheet(sheet)).entries);
   const result = await applySheet(plan, { by: await User.findOne(), ppRate: 100, fetchPhoto: photoFetcher() });
-  assert.deepEqual(result.moulds, { created: 0, updated: 6 });
-  assert.deepEqual(result.traded, { created: 0, updated: 2 });
+  assert.deepEqual(result.moulds, { created: 0, updated: 8 });
+  assert.deepEqual(result.traded, { created: 0, updated: 3 });
   assert.equal(result.photos.kept, 4);
   assert.equal(fetched - before, 1, 'only the link that failed is tried again');
   assert.equal(await Attachment.countDocuments(), attachments);
   assert.equal((await Mould.findOne({ mouldCode: 'D-30' })).cycleTimeSeconds, 24, 'the tool room’s cycle time stands');
   assert.equal((await TradedItem.findOne({ modelNumber: 'MAU-30' })).inwardPrice, 2.9, 'a price already set stands');
-  assert.equal((await Mould.countDocuments()), 6);
+  assert.equal((await Mould.countDocuments()), 9, 'the 8 the sheet names and the earlier copy — nothing doubled');
 });

@@ -139,61 +139,171 @@ export async function ppRateFor(given) {
 }
 
 /**
- * Each entry's action: create or update on the mould register or the trading master. Nothing is
- * dropped: a second row for a code already on the sheet goes in under "CODE (2)", and a row with
- * nothing but its code goes in as a mould to fill in — each named in the warnings, for the
- * person to rename or complete.
+ * A code with case, spaces and punctuation gone, so "CRF-25", "crf 25" and "CRF25 " are one model
+ * and the sheet's own spellings never make a second record. A code of nothing but punctuation
+ * keeps itself.
  */
-export async function planSheet(entries) {
+export const codeKey = (code) => {
+  const text = String(code || '').toUpperCase().replace(/\s+/g, ' ').trim();
+  return text.replace(/[^A-Z0-9]+/g, '') || text;
+};
+
+/**
+ * "TP-224 (2)": the copy an earlier import made of a code repeated on the sheet — a small number,
+ * so "PCB-807 (9508)" is a model of its own; and only where the code it copies is there too.
+ */
+const COPY = /^(.*\S)\s+\(([2-9]|\d{2})\)$/;
+const copyOf = (value, present) => {
+  const base = String(value || '').match(COPY)?.[1];
+  return base && present.has(codeKey(base)) ? base : null;
+};
+
+const REGISTER_NAME = { mould: 'the mould register', traded: 'the trading master' };
+const SUPPLY_REGISTER = { trade: 'traded', manufacture: 'mould' };
+
+/**
+ * Each row's register. A blank Trade / Manufacture follows the same code's other rows when they
+ * agree on one, and is Manufacture otherwise — said in the warnings either way.
+ */
+function placeRows(entries) {
   const supplies = new Map();
   for (const entry of entries) {
-    const key = entry.code.toUpperCase();
-    if (entry.supply) supplies.set(key, new Set([...(supplies.get(key) || []), entry.supply]));
+    if (!entry.supply) continue;
+    const key = codeKey(entry.code);
+    supplies.set(key, new Set([...(supplies.get(key) || []), entry.supply]));
   }
-
-  /* First the register and the code each row lands on, so the lookups below find the "(2)"s too. */
-  const taken = { mould: new Set(), traded: new Set() };
-  const placed = entries.map((entry) => {
+  return entries.map((entry) => {
     const warnings = [...entry.warnings];
-    const register = entry.supply === 'trade' ? 'traded' : 'mould';
-    const hasData = Object.keys(entry.numbers).length || entry.photoUrl;
-    if (!entry.supply && !hasData) warnings.push('Nothing but the code on the sheet — added to fill in');
-    else if (!entry.supply) warnings.push('Trade / Manufacture is blank — taken as Manufacture');
-    let code = entry.code;
-    for (let copy = 2; taken[register].has(code.toUpperCase()); copy += 1) code = `${entry.code} (${copy})`;
-    taken[register].add(code.toUpperCase());
-    const notes = [...entry.notes];
-    if (code !== entry.code) {
-      warnings.push(`${entry.code} is already higher up the sheet — added as ${code}, to rename`);
-      notes.push(`A second row for ${entry.code} on the sheet (line ${entry.line}) — rename this one`);
+    const known = [...(supplies.get(codeKey(entry.code)) || [])];
+    let supply = entry.supply;
+    if (!supply && known.length === 1) {
+      supply = known[0];
+      warnings.push(`Trade / Manufacture is blank — taken as ${supply === 'trade' ? 'Trade' : 'Manufacture'}, as on its other row`);
+    } else if (!supply) {
+      const hasData = Object.keys(entry.numbers).length || entry.photoUrl;
+      warnings.push(hasData ? 'Trade / Manufacture is blank — taken as Manufacture' : 'Nothing but the name on the sheet — added with prefilled values, to fill in');
     }
-    if (supplies.get(entry.code.toUpperCase())?.size > 1) warnings.push(`${entry.code} is on the sheet as both Trade and Manufacture — on both registers`);
-    return { ...entry, sheetCode: entry.code, code, notes, warnings, register };
-  });
-
-  const codes = placed.map((entry) => entry.code.toUpperCase());
-  const [moulds, items] = await Promise.all([
-    Mould.find({ mouldCode: { $in: codes } }).select('mouldCode'),
-    TradedItem.find({ $or: [{ code: { $in: codes } }, { modelKey: { $in: placed.map((entry) => modelKeyOf(entry.code)) } }] }).select('code modelKey modelNumber'),
-  ]);
-  const mouldByCode = new Map(moulds.map((mould) => [mould.mouldCode, mould]));
-  const itemByKey = new Map(items.map((item) => [item.modelKey, item]));
-  const itemByCode = new Map(items.filter((item) => item.code).map((item) => [item.code, item]));
-
-  return placed.map((entry) => {
-    const key = entry.code.toUpperCase();
-    if (entry.register === 'mould') {
-      if (entry.numbers.partWeightGrams === undefined) entry.warnings.push('No grammage — weight 0 until measured');
-      const existing = mouldByCode.get(key);
-      return { ...entry, action: existing ? 'update' : 'create', id: existing?._id };
-    }
-    const existing = itemByCode.get(key) || itemByKey.get(modelKeyOf(entry.code));
-    if (!existing && entry.numbers.partWeightGrams === undefined) entry.warnings.push('No grammage — the estimate has no resin');
-    return { ...entry, action: existing ? 'update' : 'create', id: existing?._id };
+    if (known.length > 1) warnings.push(`${entry.code} is on the sheet as both Trade and Manufacture — on both registers`);
+    return { ...entry, warnings, register: SUPPLY_REGISTER[supply] || 'mould', lines: [entry.line] };
   });
 }
 
+/**
+ * Rows of one code on one register made one record: the first row's figures and photo stand, a
+ * later row fills only what the first left blank, and a figure the rows disagree on is noted on
+ * the record and in the warnings — for the person to settle, rather than a second record.
+ */
+function mergeRows(placed) {
+  const merged = new Map();
+  for (const entry of placed) {
+    const key = `${entry.register}:${codeKey(entry.code)}`;
+    const first = merged.get(key);
+    if (!first) {
+      merged.set(key, { ...entry, numbers: { ...entry.numbers }, notes: [...entry.notes] });
+      continue;
+    }
+    const differences = [];
+    for (const [field, value] of Object.entries(entry.numbers)) {
+      if (first.numbers[field] === undefined) first.numbers[field] = value;
+      else if (first.numbers[field] !== value) differences.push(`${LABELS[field]} ${value} (kept ${first.numbers[field]})`);
+    }
+    if (entry.photoUrl && !first.photoUrl) first.photoUrl = entry.photoUrl;
+    else if (entry.photoUrl && entry.photoUrl !== first.photoUrl) differences.push('another photo');
+    for (const note of entry.notes) if (!first.notes.includes(note)) first.notes.push(note);
+    for (const warning of entry.warnings) if (!first.warnings.includes(warning)) first.warnings.push(warning);
+    first.lines.push(entry.line);
+    const said = entry.code === first.code ? '' : ` as "${entry.code}"`;
+    first.warnings.push(differences.length
+      ? `Line ${entry.line}${said} merged in — it differs: ${differences.join(', ')}`
+      : `Line ${entry.line}${said} merged in`);
+    if (differences.length) first.notes.push(`Sheet line ${entry.line} also gives ${differences.join(', ')} — check which is right`);
+  }
+  return [...merged.values()];
+}
+
+/** A register's records by `codeKey`, the "(2)" copies left out — they are reported, not matched. */
+function byKey(records, keysOf) {
+  const present = new Set(records.flatMap(keysOf).filter(Boolean).map(codeKey));
+  const map = new Map();
+  for (const record of records) {
+    for (const value of keysOf(record)) {
+      if (!value || copyOf(value, present)) continue;
+      const key = codeKey(value);
+      const list = map.get(key) || [];
+      if (!list.includes(record)) map.set(key, [...list, record]);
+    }
+  }
+  return map;
+}
+
+/**
+ * Each entry's action: create or update on the mould register or the trading master. Nothing is
+ * dropped and nothing is doubled: the rows of one code are one record [mergeRows], a code already
+ * on the register — however it is spelt there — is updated, and a row with nothing but its name
+ * goes in with prefilled values to fill in [applySheet]. Each of these is named in the warnings.
+ */
+export async function planSheet(entries) {
+  const plan = mergeRows(placeRows(entries));
+  const [moulds, items] = await Promise.all([
+    Mould.find().select('mouldCode name'),
+    TradedItem.find().select('code modelKey modelNumber'),
+  ]);
+  const register = {
+    mould: { byKey: byKey(moulds, (mould) => [mould.mouldCode]), byName: byKey(moulds, (mould) => [mould.name]), codeOf: (mould) => mould.mouldCode },
+    traded: { byKey: byKey(items, (item) => [item.code, item.modelNumber]), byName: new Map(), codeOf: (item) => item.code || item.modelNumber },
+  };
+
+  return plan.map((entry) => {
+    const key = codeKey(entry.code);
+    const here = register[entry.register];
+    const matches = here.byKey.get(key) || here.byName.get(key) || [];
+    const upper = entry.code.toUpperCase();
+    const existing = matches.find((record) => here.codeOf(record).toUpperCase() === upper) || matches[0];
+    if (existing && here.codeOf(existing).toUpperCase() !== upper) entry.warnings.push(`On ${REGISTER_NAME[entry.register]} as ${here.codeOf(existing)} — updated that one`);
+    if (matches.length > 1) entry.warnings.push(`${REGISTER_NAME[entry.register]} already has ${matches.map(here.codeOf).join(' and ')} — one model? Merge them by hand`);
+    const other = entry.register === 'mould' ? 'traded' : 'mould';
+    const elsewhere = (register[other].byKey.get(key) || [])[0];
+    if (elsewhere && !plan.some((row) => row.register === other && codeKey(row.code) === key)) {
+      entry.warnings.push(`Also on ${REGISTER_NAME[other]} as ${register[other].codeOf(elsewhere)} — the sheet says ${entry.register === 'mould' ? 'Manufacture' : 'Trade'}`);
+    }
+    if (!existing && entry.numbers.partWeightGrams === undefined) {
+      entry.warnings.push(entry.register === 'mould' ? 'No grammage — weight 0 until measured' : 'No grammage — the estimate has no resin');
+    }
+    return { ...entry, sheetCode: entry.code, action: existing ? 'update' : 'create', id: existing?._id };
+  });
+}
+
+/**
+ * The "CODE (2)" records an earlier import made for a code repeated on the sheet, on either
+ * register — listed for the person to merge or delete; this never removes anything itself.
+ */
+export async function earlierCopies() {
+  const [moulds, items] = await Promise.all([
+    Mould.find().select('mouldCode'),
+    TradedItem.find().select('modelNumber'),
+  ]);
+  const found = (register, records, codeOf) => {
+    const present = new Set(records.map((record) => codeKey(codeOf(record))));
+    return records
+      .map((record) => ({ register, code: codeOf(record), of: copyOf(codeOf(record), present), id: record._id }))
+      .filter((copy) => copy.of);
+  };
+  return [...found('mould', moulds, (mould) => mould.mouldCode), ...found('traded', items, (item) => item.modelNumber)];
+}
+
 const noteText = (entry) => entry.notes.join(' · ');
+
+/** What a new record was given because the sheet did not say, for the person to replace. */
+function prefilledNote(entry) {
+  const missing = ['partWeightGrams', 'runnerWeightGrams', 'jobWorkCost', 'packingCost']
+    .filter((field) => entry.numbers[field] === undefined)
+    .map((field) => LABELS[field].toLowerCase());
+  if (entry.register === 'mould') {
+    const weight = entry.numbers.partWeightGrams === undefined ? 'weight 0 g, ' : '';
+    return `Prefilled: ${weight}1 cavity, ${DEFAULT_CYCLE_SECONDS} s cycle, PP — fill in ${[...missing, 'cavities', 'cycle time'].join(', ')}.`;
+  }
+  return missing.length ? `Not on the sheet: ${missing.join(', ')} — fill in.` : '';
+}
 const withNote = (current, add) => {
   if (!add) return current;
   return current && current.includes(add) ? current : [current, add].filter(Boolean).join('\n');
@@ -220,7 +330,7 @@ export async function applySheet(plan, { by, ppRate = 0, sheetName = 'the price 
           partWeightGrams: entry.numbers.partWeightGrams ?? 0,
           cycleTimeSeconds: DEFAULT_CYCLE_SECONDS,
           ...entry.numbers,
-          notes: withNote(`From ${sheetName}.`, noteText(entry)),
+          notes: withNote(withNote(`From ${sheetName}.`, prefilledNote(entry)), noteText(entry)),
         });
         result.moulds.created += 1;
       } else {
@@ -246,7 +356,7 @@ export async function applySheet(plan, { by, ppRate = 0, sheetName = 'the price 
           inwardPrice: price,
           priceUpdatedAt: now,
           priceHistory: [{ price, at: now, by: by?._id, source: 'upload', note: how }],
-          notes: withNote(`${how}. Replace with the supplier's price.`, noteText(entry)),
+          notes: withNote(withNote(`${how}. Replace with the supplier's price.`, prefilledNote(entry)), noteText(entry)),
         });
         result.traded.created += 1;
       } else {
