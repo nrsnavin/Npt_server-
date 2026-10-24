@@ -158,3 +158,46 @@ test('a customer’s Create Quotation task with no enquiry raises the buyer’s 
   assert.equal(none.status, 201, none.json.message);
   assert.equal((await Todo.findById(none.json.data.task?._id || none.json.data._id).lean()).link, '/departments/mine', 'no model named: no quotation is made');
 });
+
+test('asked again with a model already on the quotation: its details change to the new request — a three-colour print where the first said two', async () => {
+  const { default: Component } = await import('../src/models/Component.js');
+  const two = await Component.create({ kind: 'print', name: '2 Colour print', ratePerPiece: 0.4 });
+  const three = await Component.create({ kind: 'print', name: '3 Colour print', ratePerPiece: 0.6 });
+  const enquiry = (await api('/api/enquiries', { method: 'POST', as: 'nandhini', body: { customer: customerId, items: [{ modelNumber: 'M-101', quantity: 1000 }], nextAction: 'Call', nextFollowUpDate: soon() } })).json.data;
+  const raised = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', as: 'nandhini', body: { kind: 'create_quotation', note: 'Two-colour logo', brief: { items: [{ model: 'M-101', material: 'PP Black', print: '2 Colour print', quantity: '4000' }] } },
+  });
+  assert.equal(raised.status, 201, raised.json.message);
+  const quotationId = raised.json.data.quotation._id;
+  let [line] = await linesOf(quotationId);
+  assert.equal(String(line.printRef), String(two._id));
+  assert.equal(line.cost.printingCost, 0.4);
+
+  const again = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', as: 'nandhini', body: { kind: 'create_quotation', note: 'Buyer wants three colours now', addToOpen: true, brief: { items: [{ model: 'M-101', material: 'PP Black', print: '3 Colour print', quantity: '6000' }] } },
+  });
+  assert.equal(again.status, 201, again.json.message);
+  assert.equal(again.json.data.addedTo, true);
+  const lines = await linesOf(quotationId);
+  assert.equal(lines.length, 1, 'the same model, not a second line');
+  [line] = lines;
+  assert.equal(String(line.printRef), String(three._id), 'the print is the one asked now');
+  assert.equal(line.cost.printingCost, 0.6, 'at its rate');
+  assert.equal(line.quantity, 6000);
+  assert.equal(String(line.materialRef), String(material._id), 'what did not change stays');
+  const history = (await Quotation.findById(quotationId).lean()).statusHistory.at(-1).note;
+  assert.match(history, /Changed by the Create Quotation task asked again — check the price/);
+  assert.match(history, /print 2 Colour print → 3 Colour print/);
+  assert.match(history, /quantity 4000 → 6000/);
+
+  /* A print not on the register: the line's print is cleared for the costing person, and the remarks say what was asked. */
+  await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', as: 'nandhini', body: { kind: 'create_quotation', note: 'Foil now', addToOpen: true, brief: { items: [{ model: 'M-101', print: '4 colour foil' }] } },
+  });
+  [line] = await linesOf(quotationId);
+  assert.equal(line.printRef, undefined);
+  assert.ok(!line.cost.printingCost, 'no rate for a print the register does not have — the costing person gives it');
+  assert.match(line.remarks, /Print: 4 colour foil/);
+  assert.equal(line.quantity, 6000, 'a detail left out stays as it was');
+  assert.match((await Quotation.findById(quotationId).lean()).statusHistory.at(-1).note, /print 3 Colour print → 4 colour foil/);
+});
