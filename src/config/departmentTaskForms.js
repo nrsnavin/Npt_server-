@@ -337,6 +337,8 @@ export const TASK_FORMS = {
       /* Sent by the bench, kept at reception for the buyer to collect, or carried by the marketing person [models/Sample.js HANDOVER_MODES]. */
       { key: 'handover', label: 'How it reaches the buyer', type: 'choice', options: HANDOVER_CHOICES.map((entry) => entry.label) },
     ],
+    /* The courier's receipt, kept on the task once the sample has gone — read from the enquiry's finished task. */
+    documents: [{ type: 'courier_copy', label: 'Courier copy' }],
   },
   /*
    * Reception's desk flow for a sample the buyer collects at reception. Such a sample is an

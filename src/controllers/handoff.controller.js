@@ -179,6 +179,47 @@ export const enquiryTaskPrefill = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await taskPrefill(enquiry._id) });
 });
 
+/**
+ * What a finished task left behind, on the task as the enquiry lists it [web: TaskCard]:
+ *
+ *   Sample Request, Sample Collection   the sample: how it went (courier, AWB, pieces, when) or who
+ *                                       received it (name, phone, the hand-over photo), and the
+ *                                       courier copy uploaded on the task;
+ *   Create Quotation, Price Negotiation the quotation it answered, so its PDF opens from the row.
+ *
+ * A task is matched to its record by the number its outcome names ("Sample SMP-… sent", "NP/26-27/019
+ * sent to the buyer"), else to the enquiry's newest.
+ */
+const SAMPLE_TASK_KINDS = ['sample_request', 'sample_collect'];
+const QUOTE_TASK_KINDS = ['create_quotation', 'price_negotiation'];
+async function withRecords(rows, enquiryId) {
+  const wantsSample = rows.some((row) => SAMPLE_TASK_KINDS.includes(row.kind));
+  const wantsQuote = rows.some((row) => QUOTE_TASK_KINDS.includes(row.kind));
+  if (!wantsSample && !wantsQuote) return rows;
+  const samples = wantsSample ? await Sample.find({ enquiry: enquiryId })
+    .select('number status deliveryMethod handover courier awbNumber dispatchedAt dispatchedQuantity handedTo recipientPhone collection createdAt')
+    .populate('collection.photo', 'key filename mimeType').sort({ createdAt: -1 }).lean() : [];
+  const quotes = wantsQuote ? await Quotation.find({ enquiry: enquiryId }).select('number status sentAt createdAt').sort({ createdAt: -1 }).lean() : [];
+  const sampleTaskIds = rows.filter((row) => SAMPLE_TASK_KINDS.includes(row.kind)).map((row) => row._id);
+  const papers = sampleTaskIds.length
+    ? await Attachment.find({ task: { $in: sampleTaskIds }, docType: { $exists: true } }).select('key filename mimeType docType title task createdAt').sort({ createdAt: -1 }).lean()
+    : [];
+  const said = (row) => [row.outcome?.note, row.title, row.notes, ...Object.values(row.outcome?.fields || {})].filter(Boolean).join(' ');
+  const named = (list, row) => list.find((record) => record.number && said(row).includes(record.number));
+  for (const row of rows) {
+    if (SAMPLE_TASK_KINDS.includes(row.kind)) {
+      const sample = (row.brief?.sample && samples.find((entry) => String(entry._id) === String(row.brief.sample))) || named(samples, row) || samples[0];
+      if (sample) row.sample = sample;
+      row.documents = papers.filter((paper) => String(paper.task) === String(row._id));
+    }
+    if (QUOTE_TASK_KINDS.includes(row.kind)) {
+      const quote = named(quotes, row) || quotes[0];
+      if (quote) row.quotation = quote;
+    }
+  }
+  return rows;
+}
+
 /** Everything asked about this enquiry, newest first, with what came of each. */
 export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
   const enquiry = await enquiryFor(req);
@@ -191,8 +232,8 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
   const floor = await floorOf(enquiry._id);
   res.json({
     success: true,
-    /* Each open task says whether it may be closed now [taskClosable.service]. */
-    data: await withClosable(tasks),
+    /* Each open task says whether it may be closed now [taskClosable.service]; a sample or quote task, the record it made. */
+    data: await withRecords(await withClosable(tasks), enquiry._id),
     stage: enquiry.stage,
     stageHistory: enquiry.stageHistory,
     holder,

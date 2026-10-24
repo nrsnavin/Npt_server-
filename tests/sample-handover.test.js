@@ -323,3 +323,37 @@ test('the Reception desk reads as a table: the sample, the buyer’s phone, who 
   assert.equal(row.sample.collection.collectorName, 'Kumar');
   assert.equal(row.documents[0].docType, 'handover_photo');
 });
+
+test('the enquiry’s finished Sample Request shows how the sample went — courier, AWB, pieces — and keeps the courier copy', async () => {
+  const enquiry = await raiseEnquiry('NPT-470C');
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', as: 'nandhini',
+    body: { kind: 'sample_request', note: 'Courier it', brief: { items: [{ model: 'NPT-470C', quantity: '2' }], handover: 'Sent by the bench (courier or at the gate)' } },
+  });
+  assert.equal(sent.status, 201, sent.json.message);
+  await settle();
+  const [sample] = (await api(`/api/samples?enquiry=${enquiry._id}`, { as: 'meera' })).json.data;
+  for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
+    const moved = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) } });
+    assert.equal(moved.status, 200, moved.json.message);
+  }
+  const gone = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'dispatched', courier: 'DTDC', awbNumber: 'D12324354', dispatchedQuantity: 2, dispatchedColour: 'White' } });
+  assert.equal(gone.status, 200, gone.json.message);
+  await settle();
+  const listed = async () => (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json.data.find((task) => task.kind === 'sample_request');
+  let task = await listed();
+  assert.equal(task.completed, true);
+  assert.equal(task.sample.number, sample.number);
+  assert.equal(task.sample.courier, 'DTDC');
+  assert.equal(task.sample.awbNumber, 'D12324354');
+  assert.equal(task.sample.dispatchedQuantity, 2);
+  assert.deepEqual(task.documents, []);
+
+  const form = new FormData();
+  form.append('docType', 'courier_copy');
+  form.append('file', new Blob([Buffer.from('89504e470d0a1a0a', 'hex')], { type: 'image/png' }), 'dtdc-receipt.png');
+  const copy = await api(`/api/workspace/todos/${task._id}/documents`, { method: 'POST', as: 'meera', form });
+  assert.equal(copy.status, 201, copy.json.message);
+  task = await listed();
+  assert.equal(task.documents[0].docType, 'courier_copy', 'the courier copy on the finished task');
+});
