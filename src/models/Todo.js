@@ -170,6 +170,11 @@ const todoSchema = new mongoose.Schema(
      */
     chain: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo', index: true, sparse: true },
     /**
+     * A job raised from the customer (no enquiry): its EDD, marketing's, on every task of the
+     * chain — what the queues order it by, as an enquiry's EDD orders one [services/eddAsk.service.js].
+     */
+    jobEdd: { type: mongoose.Schema.Types.Mixed, default: undefined },
+    /**
      * The other departments' tasks that asked for this one (Dispatch's "Ask Production") — their
      * people hear each move on it, as the enquiry's marketing person and Admin do [handoff.service
      * `noticeStatus`]. Not the enquiry's owner: the department that asked.

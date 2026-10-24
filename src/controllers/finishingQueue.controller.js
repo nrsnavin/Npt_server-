@@ -6,6 +6,7 @@ import { findHandoff } from '../config/handoffs.js';
 import { canRead } from '../services/access.service.js';
 import { ownsRecord } from '../services/ownership.service.js';
 import { bandOf, readsWholeQueue } from './productionQueue.controller.js';
+import { deliveryRiskFor } from '../services/deliveryRisk.service.js';
 import { RISK_LEVELS, riskOfFinishing } from '../services/eddRisk.service.js';
 import { ticked as qcTicked } from '../services/qcGate.service.js';
 
@@ -97,11 +98,11 @@ function modelRowsFor(team, task, production, printing, enquiry) {
       queued: Boolean(came) && queued, queuedOn,
       goods: !came ? 'to_come' : queued ? 'in_queue' : 'received',
       status: own,
-      /* The date this team gave: its hand-over day where the model goes on, its EDD where it is last. */
-      given: givenFor(task, model), givenLabel: next ? 'Hand-over' : 'EDD', next,
+      /* The date this team gave: its hand-over day where the model goes on, its completion date where it is last. */
+      given: givenFor(task, model), givenLabel: next ? 'Hand-over' : 'Completion', next,
       handed: Boolean(next) && Boolean(own?.handed),
-      /* The enquiry's EDD for the model, marketing's final one first. */
-      edd: eddOf.get(model)?.final?.date || eddOf.get(model)?.date || null,
+      /* Marketing's EDD for the model: set for it, else the enquiry's. */
+      edd: eddOf.get(model)?.final?.date || enquiry?.edd?.date || null,
     };
   });
 }
@@ -127,7 +128,7 @@ function summariseRow(team, row) {
   }
   const onward = row.models.filter((entry) => entry.next && !entry.handed);
   if (onward.length) parts.push(`${onward.map((entry) => entry.model).join(', ')} go${onward.length > 1 ? '' : 'es'} on to Assembly`);
-  if (!row.edd?.own) parts.push(team === 'printing' && onward.length ? 'No hand-over date yet' : 'No EDD yet');
+  if (!row.edd?.own) parts.push(team === 'printing' && onward.length ? 'No hand-over date yet' : 'No completion date yet');
   return capWords(parts.filter(Boolean).join('. '), 30);
 }
 
@@ -189,10 +190,11 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
     const production = slot.ask_edd || null;
     const models = modelRowsFor(req.params.team, task, production, slot.ask_printing || null, enquiry);
     const own = (task.modelDates || []).map((entry) => entry.date).filter(Boolean).sort().at(-1) || null;
-    const enquiryEdd = enquiry?.edd?.date || null;
+    /* Marketing's EDD: the enquiry's, or on a job raised from the customer, the job's [eddAsk.service]. */
+    const enquiryEdd = enquiry?.edd?.date || task.jobEdd?.date || null;
     const handsOn = models.some((entry) => entry.next);
-    /* The date the team works to: its own once given, the enquiry's until then. */
-    const date = own || enquiryEdd;
+    /* The queue runs by marketing's EDD, as Production's does; a team task with none goes by the team's own date. */
+    const date = enquiryEdd || own;
     const expected = models.filter((entry) => !entry.received).map((entry) => entry.expected).filter(Boolean).sort()[0] || null;
     const received = models.filter((entry) => entry.received).length;
     const toQueue = models.filter((entry) => entry.goods === 'received').map((entry) => entry.model);
@@ -213,7 +215,8 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
          * panel read a task on an enquiry as a team task with no history.
          */
         title: task.title, notes: task.notes || null, fromDepartment: task.fromDepartment || null, completed: Boolean(task.completed),
-        enquiry: enquiry ? { _id: enquiry._id, number: enquiry.number, dispatchPlan: enquiry.dispatchPlan || null } : null,
+        /* Marketing's EDD and each model's dates travel with it, so the task panel reads them [web: components/TaskEdd.jsx]. */
+        enquiry: enquiry ? { _id: enquiry._id, number: enquiry.number, dispatchPlan: enquiry.dispatchPlan || null, edd: enquiry.edd || null, eddByModel: enquiry.eddByModel || [] } : null,
         createdBy: person(task.createdBy), order: task.order ? { _id: task.order._id, number: task.order.number } : null,
         updates: task.updates || [], statusHistory: task.statusHistory || [],
       },
@@ -233,7 +236,11 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
       order: task.order ? { _id: task.order._id, number: task.order.number, status: task.order.status } : null,
       models,
       /* The date the row is queued by, and where it came from. */
-      edd: date ? { date, source: own ? 'team' : 'enquiry', label: own && handsOn ? 'Hand-over' : 'EDD', own, enquiry: enquiryEdd } : null,
+      /* `own`: the team's own date — its hand-over day where models go on, else its completion date — shown beside the EDD. */
+      edd: date ? {
+        date, source: enquiryEdd ? 'enquiry' : 'team', label: enquiryEdd ? 'EDD' : handsOn ? 'Hand-over' : 'Completion',
+        own, ownLabel: own ? (handsOn ? 'Hand-over' : 'Completion') : null, enquiry: enquiryEdd,
+      } : null,
       band: bandOf(date, now),
       /* Red, orange, yellow, green against the date the team works to [eddRisk.service `riskOfFinishing`]. */
       risk: riskOfFinishing({ edd: date, waiting: models.length - received, expected, ready: Boolean(step?.readyForDispatch || step?.done || step?.handsTo), now }),
@@ -253,6 +260,9 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
     row.summary = summariseRow(req.params.team, row);
     return row;
   });
+  /* Will each order make marketing's EDD, all its models and teams counted [deliveryRisk.service]. */
+  const deliveries = await deliveryRiskFor(rows.map((row) => row.enquiry?._id));
+  for (const row of rows) row.delivery = (row.enquiry?._id && deliveries.get(String(row.enquiry._id))) || null;
   rows.sort((a, b) => (BAND_RANK[a.band] - BAND_RANK[b.band])
     || String(a.edd?.date || '').localeCompare(String(b.edd?.date || ''))
     || (new Date(a.task.dueDate || 0) - new Date(b.task.dueDate || 0)));

@@ -126,7 +126,7 @@ export async function deliveryQueue({ now = new Date(), user = null } = {}) {
     .populate([
       { path: 'order', select: 'number' },
       { path: 'updates.by', select: 'name' },
-      { path: 'enquiry', select: 'number customer assignedTo', populate: [{ path: 'customer', select: 'name code city' }, { path: 'assignedTo', select: 'name' }] },
+      { path: 'enquiry', select: 'number customer assignedTo edd', populate: [{ path: 'customer', select: 'name code city' }, { path: 'assignedTo', select: 'name' }] },
       { path: 'customer', select: 'name code city' },
       { path: 'user', select: 'name' },
       { path: 'createdBy', select: 'name' },
@@ -153,7 +153,7 @@ export async function deliveryQueue({ now = new Date(), user = null } = {}) {
         ...task,
         statusLabel: statuses.find((entry) => entry.key === task.status)?.label || null,
         with: task.user ? { _id: task.user._id, name: task.user.name } : null,
-        enquiry: task.enquiry ? { _id: task.enquiry._id, number: task.enquiry.number } : null,
+        enquiry: task.enquiry ? { _id: task.enquiry._id, number: task.enquiry.number, edd: task.enquiry.edd || null } : null,
         customer: customer ? { _id: customer._id, name: customer.name } : null,
       },
       /* Only Admin or the request's marketing person gives the urgency — Dispatch reads it. */

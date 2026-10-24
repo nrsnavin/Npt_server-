@@ -103,6 +103,19 @@ const BUTTONS = [
     hint: 'When will printing finish?',
     records: [{ key: 'edd', label: 'Expected date', type: 'date' }, { key: 'pending', label: 'Pending quantity' }],
   },
+  /*
+   * Readiness queries: another team asking Production or Assembly when the goods will be ready —
+   * Printing and Assembly asking Production, Dispatch asking either [config/departmentTaskForms.js
+   * `readinessQuery`]. Raised from the asking team's task only, never a tile; the enquiry stays where it is.
+   */
+  {
+    key: 'production_query', label: 'Readiness query', department: 'production', stage: null, hidden: true,
+    hint: 'Another team asks when the goods will be ready',
+  },
+  {
+    key: 'assembling_query', label: 'Assembly readiness query', department: 'assembling', stage: null, hidden: true,
+    hint: 'Dispatch asks when the assembled goods will be ready',
+  },
   {
     key: 'mould_issue', label: 'Mould Issue', department: 'mould', stage: 'mould',
     hint: 'The Mould department looks at the tool',
@@ -237,6 +250,8 @@ export const HANDOFFS = BUTTONS.map((button) => (button.department
   : button));
 
 export const HANDOFF_KEYS = HANDOFFS.map((handoff) => handoff.key);
+/** The readiness queries — another team asking when the goods will be ready, on its own desk tab. */
+export const QUERY_KINDS = HANDOFFS.filter((handoff) => handoff.form?.query).map((handoff) => handoff.key);
 export const findHandoff = (key) => HANDOFFS.find((handoff) => handoff.key === key);
 
 /**

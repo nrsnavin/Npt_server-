@@ -4,6 +4,7 @@ import MouldRun from '../models/MouldRun.js';
 import WorkOrder from '../models/WorkOrder.js';
 import { modelRows, productionTaken, summarise } from '../services/productionSummary.service.js';
 import { CAPACITY_FIELDS, estimate } from '../services/capacity.service.js';
+import { deliveryRiskFor } from '../services/deliveryRisk.service.js';
 import { RISK_LEVELS, riskOf } from '../services/eddRisk.service.js';
 import { plantCalendar } from '../services/settings.service.js';
 import ApiError from '../utils/ApiError.js';
@@ -68,13 +69,15 @@ const ticked = (value) => value === true || value === 'true' || value === 'Yes';
 const chainKey = (task) => `chain:${String(task.chain || task._id)}`;
 const jobKey = (task) => (task.enquiry?._team ? chainKey(task) : String(task.enquiry?._id || ''));
 function teamJob(task, chainTasks = []) {
+  /* The job's EDD — marketing's, on its tasks [eddAsk.service] — else the latest date its teams gave. */
+  const jobEdd = [task, ...chainTasks].map((entry) => entry.jobEdd).find((entry) => entry?.date) || null;
   const dates = [task, ...chainTasks].flatMap((entry) => (entry.modelDates || []).map((row) => row.date)).filter(Boolean).sort();
-  const latest = dates.at(-1) || null;
+  const latest = jobEdd?.date || dates.at(-1) || null;
   return {
     _id: null, _team: true, number: null, stage: null,
     customer: task.customer && typeof task.customer === 'object' ? task.customer : null,
     assignedTo: task.createdBy && typeof task.createdBy === 'object' ? task.createdBy : null,
-    edd: latest ? { date: latest, department: null, at: null } : null,
+    edd: latest ? { date: latest, department: jobEdd ? 'marketing' : null, at: jobEdd?.at || null } : null,
     eddByModel: [], items: [],
     requirement: { modelNumber: task.brief?.model || null, quantity: task.brief?.quantity || null, colour: task.brief?.material || null },
   };
@@ -114,7 +117,7 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
   const chainIds = teamTasks.map((task) => task.chain || task._id);
   const chainTasks = chainIds.length
     ? await Todo.find({ chain: { $in: chainIds }, kind: { $in: [...SIBLING_KINDS, 'ask_edd'] } })
-      .select('chain kind status completed completedAt user dueDate updatedAt createdAt modelStatuses modelDates routing').populate('user', 'name').lean()
+      .select('chain kind status completed completedAt user dueDate updatedAt createdAt modelStatuses modelDates routing jobEdd').populate('user', 'name').lean()
     : [];
   for (const task of teamTasks) {
     task.enquiry = teamJob(task, chainTasks.filter((entry) => String(entry.chain) === String(task.chain || task._id)));
@@ -256,6 +259,9 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
       },
     };
   });
+  /* Will each order make marketing's EDD, all its models and teams counted [deliveryRisk.service]. */
+  const deliveries = await deliveryRiskFor(rows.map((row) => row.enquiry?._id));
+  for (const row of rows) row.delivery = (row.enquiry?._id && deliveries.get(String(row.enquiry._id))) || null;
   rows.sort((a, b) => (BAND_RANK[a.band] - BAND_RANK[b.band])
     || String(a.edd?.date || '').localeCompare(String(b.edd?.date || ''))
     || (new Date(a.task.dueDate || 0) - new Date(b.task.dueDate || 0)));
@@ -354,6 +360,8 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
         owner: person(enquiry.assignedTo), edd: enquiry.edd || null, dispatchPlan: enquiry.dispatchPlan?.mode || null,
       },
       band: bandOf(edd),
+      /* Will the order make marketing's EDD, every model and team counted [deliveryRisk.service]. */
+      delivery: team ? null : (await deliveryRiskFor([enquiry._id])).get(String(enquiry._id)) || null,
       summary: summarise({ task, enquiry, teams, floor: { ...floor, running: floor.running.map((run) => ({ ...run, machine: run.machine?.code, mould: run.mould?.mouldCode })) }, workOrders, edd }),
       models: modelRows({ task, enquiry, teams, workOrders }),
       teams: teamsWithClosable,
@@ -362,4 +370,20 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
       floor: { running: floor.running, made: floor.made },
     },
   });
+});
+
+/**
+ * Every open order in danger of missing marketing's EDD, worst first [deliveryRisk.service
+ * `ordersAtRisk`]: late, will miss (a team's own date is after it), at risk, and those in the
+ * warning window — an order of several models enters it well before one of one model. Read by
+ * whoever reads the queue; a marketing person sees their own buyers' only.
+ */
+export const listOrdersAtRisk = asyncHandler(async (req, res) => {
+  if (!READERS.some((moduleKey) => canRead(req.user, moduleKey))) throw ApiError.forbidden('The orders at risk are read by the plant’s departments and marketing');
+  const { ordersAtRisk } = await import('../services/deliveryRisk.service.js');
+  const { ownershipFilter } = await import('../services/ownership.service.js');
+  const scope = readsWholeQueue(req.user) ? {} : ownershipFilter(req.user);
+  const rows = await ordersAtRisk({ scope });
+  const count = (level) => rows.filter((row) => row.risk.level === level).length;
+  res.json({ success: true, data: rows, meta: { late: count('late'), willMiss: count('will_miss'), atRisk: count('at_risk'), watch: count('watch') } });
 });

@@ -90,6 +90,31 @@ const GOODS_IN = [
   { key: 'in_queue', label: 'In Work Queue', queues: true },
 ];
 
+/**
+ * A readiness query — Printing, Assembly or Dispatch asking Production (or Dispatch asking
+ * Assembly) when the goods will be ready [handoff.service `raiseQuery`]. Its own task beside the
+ * order's, not a second run of the team's workflow: Query Received → Planning → Will Be Ready On
+ * (with the date) → Ready Now, which answers it and closes it. The date answers the team that
+ * asked; it is not the enquiry's EDD (`field: 'readyOn'`). On its own tab of the desk.
+ */
+const readinessQuery = (team, placeholder) => ({
+  team,
+  query: true,
+  priority: true,
+  requiredDate: true,
+  asks: modelAndQuantity,
+  remarkRequired: true,
+  notifyStatus: true,
+  statusDate: { label: 'Ready on', field: 'readyOn' },
+  remark: { label: 'Remarks', placeholder },
+  statuses: [
+    { key: 'received', label: 'Query Received' },
+    { key: 'planning', label: 'Planning' },
+    { key: 'ready_on_date', label: 'Will Be Ready On', date: 'required' },
+    { key: 'ready_now', label: 'Ready Now', done: true, answers: true },
+  ],
+});
+
 /** The rows of a sample request: each model with its parts, the colour rule and how many. */
 const SAMPLE_COLUMNS = [
   { key: 'model', label: 'Mould / model', required: true, register: 'moulds' },
@@ -417,8 +442,8 @@ export const TASK_FORMS = {
     /* Every move says why, and the enquiry's marketing person and Admin are told of it. */
     remarkRequired: true,
     notifyStatus: true,
-    /* Production's ready date — the enquiry's EDD [handoff.service `productionDates`]. */
-    statusDate: { label: 'ERD / Ready date', field: 'edd' },
+    /* Production's completion date (or hand-over date, where a model goes on) — never the EDD, which is marketing's [handoff.service `refreshModelEdds`]. */
+    statusDate: { label: 'Completion date', field: 'edd' },
     remark: { label: 'Remarks', placeholder: 'Add production / assembling remark' },
     /*
      * Handed on from the Production desk: each raises that team's task on the enquiry, told back
@@ -463,8 +488,8 @@ export const TASK_FORMS = {
     asks: [...modelAndQuantity, { key: 'models', label: 'Models to assemble' }],
     remarkRequired: true,
     notifyStatus: true,
-    /* Assembly's ready date is the enquiry's EDD, as Production's is. */
-    statusDate: { label: 'ERD / Ready date', field: 'edd' },
+    /* Assembly's completion date, shown on the enquiry beside marketing's EDD. */
+    statusDate: { label: 'Completion date', field: 'edd' },
     remark: { label: 'Remarks', placeholder: 'Add assembling / printing remark' },
     statuses: [
       { key: 'asked', label: 'Asked Assembling Readiness' },
@@ -476,6 +501,8 @@ export const TASK_FORMS = {
       { key: 'ready_dispatch', label: 'Ready for Dispatch', readyForDispatch: true },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
+    /* Asking Production when its goods will come: a query of its own on Production's desk [readinessQuery]. */
+    actions: [{ kind: 'production_query', label: 'Ask Production' }],
   },
   /* Printing sits with Quality and Assembly on one desk [config/modules.js DESK_GROUPS]; its task runs
      the same way as Assembly's, with its own header on that desk. */
@@ -484,7 +511,7 @@ export const TASK_FORMS = {
     asks: [...modelAndQuantity, { key: 'models', label: 'Models to print' }],
     remarkRequired: true,
     notifyStatus: true,
-    statusDate: { label: 'Ready date', field: 'edd' },
+    statusDate: { label: 'Completion date', field: 'edd' },
     remark: { label: 'Remarks', placeholder: 'Add printing remark — artwork, colours, pieces done' },
     statuses: [
       { key: 'asked', label: 'Asked Printing Readiness' },
@@ -497,7 +524,11 @@ export const TASK_FORMS = {
       { key: 'ready_dispatch', label: 'Ready for Dispatch', readyForDispatch: true },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
+    actions: [{ kind: 'production_query', label: 'Ask Production' }],
   },
+  /* The readiness queries other teams send Production and Assembly — short, on their own desk tab [readinessQuery]. */
+  production_query: readinessQuery('Production Team', 'What is planned, and when the goods will be ready'),
+  assembling_query: readinessQuery('Assembly Team', 'What is planned, and when the assembled goods will be ready'),
   mould_issue: {
     team: 'Mould Team',
     remarkRequired: true,
@@ -568,11 +599,12 @@ export const TASK_FORMS = {
       { key: 'dispatched', label: 'Dispatched', next: 'lr_copy' },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
-    /* Asked from the dispatch task itself: each raises that department's task on the enquiry, and
-       the request waits on it — nothing goes until the goods are ready [handoff.service `assertNotWaiting`]. */
+    /* Asked from the dispatch task itself: each raises a readiness query of its own [readinessQuery], and
+       the request waits on it — nothing goes until the goods are ready [handoff.service `assertNotWaiting`].
+       `was`: the kind the same ask raised before queries had their own task, still waited on while open. */
     actions: [
-      { kind: 'ask_edd', label: 'Ask Production', status: 'asked_production', waits: true },
-      { kind: 'ask_assembling_edd', label: 'Ask Assembling Readiness', status: 'asked_assembling', waits: true },
+      { kind: 'production_query', label: 'Ask Production', status: 'asked_production', waits: true, was: 'ask_edd' },
+      { kind: 'assembling_query', label: 'Ask Assembling Readiness', status: 'asked_assembling', waits: true, was: 'ask_assembling_edd' },
     ],
     asks: [
       ...modelAndQuantity,

@@ -125,9 +125,10 @@ test('the list and the enquiry page read the enquiry’s EDD, whoever gave it', 
   assert.equal(history.production.edd.note, 'Store opening');
 });
 
-test('Production gives the EDD from its task, without a status move; it becomes the enquiry’s', async () => {
+test('Production gives its completion date from its task, without a status move; the EDD stays marketing’s', async () => {
   const day = indiaDay(7);
-  /* Nothing follows moulding on this order, so Production's date is the EDD. */
+  const marketing = await eddOf();
+  /* Nothing follows moulding on this order, so Production's date is the completion date. */
   const early = await api(`/api/workspace/todos/${production._id}/edd`, { method: 'POST', as: 'siva', body: { date: day } });
   assert.equal(early.status, 400);
   assert.match(early.json.message, /Decide first which models need printing or assembly/);
@@ -140,29 +141,40 @@ test('Production gives the EDD from its task, without a status move; it becomes 
   assert.equal(given.status, 200, given.json.message);
   const last = given.json.data.updates.at(-1);
   assert.equal(last.fields.edd, day);
-  assert.equal(last.dateLabel, 'EDD');
+  assert.equal(last.dateLabel, 'Completion');
+  assert.match(last.note, /^Completion date /);
   assert.equal(given.json.data.user.name, 'Sivakumar', 'the first to write on it has taken it');
 
+  /* The EDD is marketing's: Production's date does not touch it. */
   const edd = await eddOf();
-  assert.equal(edd.date, day);
-  assert.equal(edd.department, 'production');
-  assert.equal(edd.note, 'Two presses on it');
+  assert.equal(edd.date, marketing.date);
+  assert.equal(edd.department, 'marketing');
+  /* The completion date shows with the enquiry, model by model, beside the EDD. */
+  const history = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
+  assert.equal(history.production.edd.date ?? history.production.edd.edd, marketing.date);
+  const row = history.production.byModel.find((entry) => entry.model === 'UTJRSH-0');
+  assert.equal(row.completion, day);
+  assert.equal(row.completionBy, 'production');
+  assert.deepEqual(row.teams.map((team) => [team.department, team.date, team.kind]), [['production', day, 'completion']]);
+  assert.equal(history.production.completion.date, day);
 
-  /* Marketing and Admin hear it under "Needs your action", as they hear a move. */
   const notices = (await api('/api/workspace/notices', { as: 'nandhini' })).json.data;
-  assert.ok(!notices.some((notice) => notice.statusLabel === 'EDD given'), 'on the enquiry and the task — not in Needs your action');
+  assert.ok(!notices.some((notice) => notice.statusLabel === 'Completion date given'), 'on the enquiry and the task — not in Needs your action');
 });
 
-test('a ready date given with a status move is the EDD too', async () => {
+test('a ready date given with a status move is Production’s completion date too — never the EDD', async () => {
   const day = indiaDay(9);
+  const marketing = await eddOf();
   const moved = await api(`/api/workspace/todos/${production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_on_date', date: day, note: 'Material came late' } });
   assert.equal(moved.status, 200, moved.json.message);
   const edd = await eddOf();
-  assert.equal(edd.date, day);
-  assert.equal(edd.department, 'production');
+  assert.equal(edd.date, marketing.date);
+  assert.equal(edd.department, 'marketing');
+  const history = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
+  assert.equal(history.production.byModel.find((entry) => entry.model === 'UTJRSH-0').completion, day);
   const row = (await api('/api/enquiries', { as: 'nandhini' })).json.data.find((entry) => entry._id === enquiry._id);
-  assert.equal(row.progress.edd.date, day);
-  assert.equal(row.progress.edd.department, 'production');
+  assert.equal(row.progress.edd.date, marketing.date);
+  assert.equal(row.progress.edd.department, 'marketing');
 });
 
 test('only the task’s department gives the EDD from it, and only from a task that carries one', async () => {

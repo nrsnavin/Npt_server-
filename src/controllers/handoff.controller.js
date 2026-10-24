@@ -21,7 +21,8 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { inTransaction, transactional } from '../utils/transaction.js';
 import { retryOnConflict } from '../utils/concurrency.js';
 import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
-import { HANDOFFS, TILE_KIND, findHandoff } from '../config/handoffs.js';
+import { HANDOFFS, QUERY_KINDS, TILE_KIND, findHandoff } from '../config/handoffs.js';
+import { deliveryRiskFor } from '../services/deliveryRisk.service.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
@@ -90,6 +91,7 @@ export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) =>
   const task = await sendHandoff({
     enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, brief: req.body.brief,
     priority: req.body.priority, requiredDate: req.body.requiredDate || undefined, addToOpen: req.body.addToOpen === true, order: req.body.order, user: req.user,
+    edd: req.body.edd || undefined,
   });
   /* A hanger that needs assembly: Assembly is tasked beside Production, on the same enquiry. */
   const assembly = req.body.kind === 'ask_edd' ? await raiseAssemblyWith(task, req.user) : null;
@@ -198,6 +200,8 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     lrUploaded: tasks.some((task) => task.kind === 'lr_copy' && task.resultFile),
     /* When the goods will be ready — Production's EDD and the order lines' own dates. */
     production: await productionDates(enquiry._id),
+    /* Will it make marketing's EDD — from the work still to do and the plant's own pace [deliveryRisk.service]. */
+    risk: (await deliveryRiskFor([enquiry._id])).get(String(enquiry._id)) || null,
     /* Its sales orders and whether each has gone to the plant — released here or on the Sales orders screen. */
     orders: await ordersOnEnquiry(enquiry, req.user),
     /* What the floor is doing for it now, and the journey from SO to LR as steps [journey.service]. */
@@ -495,7 +499,7 @@ export const handoffAsk = asyncHandler(transactional(async (req, res) => {
   res.json({
     success: true,
     data: await task.populate(TASK_POPULATE),
-    raised: { _id: raised._id, title: raised.title, department: raised.department },
+    raised: { _id: raised._id, title: raised.title, department: raised.department, kind: raised.kind },
     addedTo,
   });
 }));
@@ -637,17 +641,23 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
   const dashboard = mergeDashboards(perDepartment.map((row) => row.dashboard), { key, label: desk?.label });
   const atStages = perDepartment.flatMap((row) => row.atStages);
   /* A person's own payment follow-up is on every member's desk list — once on the merged desk. */
-  const merged = uniqueTasks(perDepartment.flatMap((row) => row.held), (row) => row.task._id);
+  const every = uniqueTasks(perDepartment.flatMap((row) => row.held), (row) => row.task._id);
+  /* Readiness queries from other teams are a tab of their own, apart from the order's work [config/departmentTaskForms.js `readinessQuery`]. */
+  const queries = every.filter((row) => QUERY_KINDS.includes(row.task.kind));
+  const merged = every.filter((row) => !QUERY_KINDS.includes(row.task.kind));
   /* Printing, Assembly and Quality read their desk as lines: enquiry, buyer, EDD, the state in 20–30 words, the workflow page. */
   const held = members.every((member) => FINISHING_DEPARTMENTS.includes(member)) ? await withDeskSummaries(merged) : merged;
   /* Dispatch's desk: for an order going out model by model, which models are ready to go, sent, or still being made [handoff.service `modelReadiness`]. */
   if (key === 'despatch') await withReadiness(held);
+  /* Each task on an enquiry: will the order make its EDD [deliveryRisk.service] — read on the desk's cards. */
+  const risks = await deliveryRiskFor([...held, ...queries].map((row) => row.enquiry?._id));
+  for (const row of [...held, ...queries]) if (row.enquiry?._id) row.delivery = risks.get(String(row.enquiry._id)) || null;
   /* The queue less the enquiries themselves: side requests, like a PRT visit or photos sent. */
-  const heldIds = new Set(held.map((row) => String(row.task._id)));
+  const heldIds = new Set(every.map((row) => String(row.task._id)));
   const requests = dashboard.queue.filter((task) => !heldIds.has(String(task._id)));
   /* Dispatch plans vehicles by place: the open requests in baskets of the same landmark / PIN. */
   const baskets = key === 'despatch' ? await dispatchBaskets() : undefined;
-  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, attention, baskets, ...(desk ? { desk } : {}) } });
+  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, queries, attention, baskets, ...(desk ? { desk } : {}) } });
 });
 
 /**
@@ -702,3 +712,10 @@ function mergeDashboards(dashboards, { key, label }) {
     cameBack: uniqueTasks(dashboards.flatMap((row) => row.cameBack), (task) => task._id).sort(byDone),
   };
 }
+
+/** A job raised from the customer: marketing or Admin set its EDD from any of its tasks [eddAsk.service `setJobEdd`]. */
+export const setTaskJobEdd = asyncHandler(transactional(async (req, res) => {
+  const { setJobEdd } = await import('../services/eddAsk.service.js');
+  const task = await setJobEdd(await taskFor(req), req.user, req.body);
+  res.json({ success: true, data: await task.populate(TASK_POPULATE) });
+}));
