@@ -1494,8 +1494,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   task.statusHistory = [...(task.statusHistory || []), { status, note: text || undefined, date: readyDate || undefined, ...(partial ? { models: moving } : {}), by: user._id, at: new Date() }];
   /* A promise is when the money is due next, a visit is when PRT goes: the task falls due that day [collections.service]. */
   if ((step.promise || step.visit) && readyDate) task.dueDate = endOfIndiaDay(readyDate);
-  /* A team that hands on gives a hand-over date, not the EDD [decideRouting]. */
-  const handsOn = handsOnOf(task);
+  /* A team that hands on gives a hand-over date, not the EDD [decideRouting] — for a model that goes on from it. A move whose models all end here gives their completion date. */
+  const handsOn = readyDate && (await goOnFromHere(task, partial ? moving : modelsOfTask(task))) ? handsOnOf(task) : [];
   const dateText = handsOn.length ? dateLabelOf(task) : form.statusDate?.label || 'Ready date';
   const said = [label, readyDate && `${dateText} ${readyDate}`].filter(Boolean).join(' · ');
   /* A ready date is the enquiry's EDD (Production) or ERD (the mould) from here on [enquiryProgress]. */
@@ -1690,6 +1690,20 @@ const goesOnFrom = (task, row) => {
   if (task.kind === 'ask_printing') return Boolean(row.assembly);
   return false;
 };
+/**
+ * Whether a date given for these models is a hand-over to the next team: some model among them
+ * goes on from here by Production's routing [goesOnFrom]. One with no routing yet, or a date for
+ * the whole task, goes by the task (it hands on if anything on it does). A printed model with no
+ * assembly after ends on Printing: its date is the completion date, never a hand-over to Assembly.
+ */
+async function goOnFromHere(task, models = []) {
+  if (!handsOnOf(task).length) return false;
+  const routes = await modelRoutes(task);
+  const named = models.filter((model) => model && model !== 'All models');
+  if (!routes.size || !named.length) return true;
+  return named.some((model) => !routes.has(model) || goesOnFrom(task, routes.get(model)));
+}
+
 /* Printing's and Assembly's goods come from the team before: who, in words. */
 const GOODS_FROM = { ask_printing: 'Production', ask_assembling_edd: 'Production or Printing' };
 const plural = (models, one, many) => (models.length > 1 ? many : one);
@@ -3187,8 +3201,8 @@ export async function setTaskEdd(task, user, { date, note, models }) {
     : '';
   recordModelDates(task, user, entries);
   const text = String(note || '').trim();
-  /* A team that hands on gives the next team its hand-over date; the last team gives the EDD. */
-  const handsOn = handsOnOf(task);
+  /* A team that hands on gives the next team its hand-over date; the last team — or a model that ends here — gives its completion date. */
+  const handsOn = (await goOnFromHere(task, entries.map((entry) => entry.model))) ? handsOnOf(task) : [];
   if (handsOn.length) {
     const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(day)}${perModel}`;
     task.updates = [...(task.updates || []), {
