@@ -4240,8 +4240,10 @@ export async function departmentDashboard(department, { now = new Date() } = {})
   const { openFilter, ...numbers } = figures;
   const week = new Date(now.getTime() - 7 * DAY_MS);
 
-  const [queue, recentlyDone, waitingOnOthers, cameBack] = (await Promise.all([
+  const [queue, jobs, recentlyDone, waitingOnOthers, cameBack] = (await Promise.all([
     Todo.find(openFilter).sort({ dueDate: 1, createdAt: 1 }).limit(100).populate(LIST_POPULATE).lean(),
+    /* The jobs the app raises for the department with no task form behind them — "Confirm the payment in the bank", "Cost SO-…", "Maintenance due" [task.service `raiseDepartmentTask`]. */
+    Todo.find({ department, completed: false, kind: { $exists: false } }).sort({ dueDate: 1, createdAt: 1 }).limit(100).populate(LIST_POPULATE).lean(),
     Todo.find({ kind: { $exists: true }, department, completed: true, completedAt: { $gte: week } })
       .sort({ completedAt: -1 }).limit(20).populate(LIST_POPULATE).lean(),
     Todo.find({ kind: { $exists: true }, fromDepartment: department, department: { $ne: department }, completed: false })
@@ -4252,7 +4254,7 @@ export async function departmentDashboard(department, { now = new Date() } = {})
     }).sort({ completedAt: -1 }).limit(20).populate(LIST_POPULATE).lean(),
   ])).map(plainTasks);
 
-  return { figures: numbers, queue, recentlyDone, waitingOnOthers, cameBack };
+  return { figures: numbers, queue, jobs, recentlyDone, waitingOnOthers, cameBack };
 }
 
 /**

@@ -418,3 +418,14 @@ test('the Payment Collection, PRT and Accounts desks read as tables: what is due
   assert.equal(visit.money.due, 12000);
   assert.equal(visit.money.collected, 0);
 });
+
+test('a job the app raises for a department with no task form — "Confirm the payment in the bank" — is on that desk’s To do', async () => {
+  const { raiseDepartmentTask } = await import('../src/services/task.service.js');
+  const job = await raiseDepartmentTask({ department: 'accounts', title: 'Confirm the payment in the bank — RCV-TEST-1', notes: '₹5,000 · UPI', dueDate: new Date(), originKey: 'confirm-receipt:test-1' });
+  const desk = (await api('/api/departments/accounts/dashboard', { as: 'kiran' })).json.data;
+  assert.ok(desk.requests.some((task) => String(task._id) === String(job._id)), 'on the Accounts desk');
+  assert.ok(!desk.enquiries.some((row) => String(row.task._id) === String(job._id)), 'not counted twice');
+  const other = (await api('/api/departments/payment_collection/dashboard', { as: 'vijay' })).json.data;
+  assert.ok(!other.requests.some((task) => String(task._id) === String(job._id)), 'only on its own desk');
+  await Todo.updateOne({ _id: job._id }, { $set: { completed: true, completedAt: new Date() } });
+});

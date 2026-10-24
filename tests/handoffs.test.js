@@ -575,7 +575,10 @@ test('a department’s dashboard lists its open department tasks, late first, wi
   }
   const lates = enquiries.map((row) => row.late);
   assert.deepEqual(lates, [...lates].sort((a, b) => Number(b) - Number(a)), 'late first');
-  assert.equal(enquiries.length + requests.length, queue.length, 'the rest of the queue is requests');
+  /* Requests: whatever the queue has beyond the desk's list, and the jobs the app raised for the department with no task form. */
+  const jobs = requests.filter((task) => !task.kind);
+  assert.equal(enquiries.length + requests.length - jobs.length, queue.length, 'the rest of the queue is requests');
+  assert.ok(jobs.every((task) => task.department === 'production' && !task.completed), 'its own open jobs');
 
   /* A marketing person's desk is their own enquiries, not a colleague's. */
   const marketing = await api('/api/departments/mine/dashboard', { token: nandhini });

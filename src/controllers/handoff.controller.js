@@ -658,9 +658,13 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
   /* Each task on an enquiry: will the order make its EDD [deliveryRisk.service] — read on the desk's cards. */
   const risks = await deliveryRiskFor([...held, ...queries].map((row) => row.enquiry?._id));
   for (const row of [...held, ...queries]) if (row.enquiry?._id) row.delivery = risks.get(String(row.enquiry._id)) || null;
-  /* The queue less the enquiries themselves: side requests, like a PRT visit or photos sent. */
+  /*
+   * The department's other work, beside its enquiry tasks: the jobs the app raises for it with no
+   * task form behind them ("Confirm the payment in the bank", "Cost SO-…") and anything on its
+   * queue the desk list did not take. Read under "To do" with the rest [web: DepartmentDashboard].
+   */
   const heldIds = new Set(every.map((row) => String(row.task._id)));
-  const requests = dashboard.queue.filter((task) => !heldIds.has(String(task._id)));
+  const requests = uniqueTasks([...dashboard.queue.filter((task) => !heldIds.has(String(task._id))), ...(dashboard.jobs || [])], (task) => task._id).sort(byDue);
   /* Dispatch plans vehicles by place: the open requests in baskets of the same landmark / PIN. */
   const baskets = key === 'despatch' ? await dispatchBaskets() : undefined;
   res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, queries, attention, baskets, ...(desk ? { desk } : {}) } });
@@ -704,6 +708,9 @@ const uniqueTasks = (rows, idOf) => {
   });
 };
 
+/** Soonest due first; undated last. */
+const byDue = (a, b) => new Date(a.dueDate || 8640000000000000) - new Date(b.dueDate || 8640000000000000);
+
 /** Several departments' dashboards as one desk's: counts added, lists joined in their own order. */
 function mergeDashboards(dashboards, { key, label }) {
   if (dashboards.length === 1) return dashboards[0];
@@ -712,7 +719,6 @@ function mergeDashboards(dashboards, { key, label }) {
     const values = dashboards.map((row) => row.figures[field]).filter((value) => value !== null && value !== undefined);
     return values.length ? Math.round((values.reduce((total, value) => total + value, 0) / values.length) * 10) / 10 : null;
   };
-  const byDue = (a, b) => new Date(a.dueDate || 8640000000000000) - new Date(b.dueDate || 8640000000000000);
   const byDone = (a, b) => new Date(b.completedAt || 0) - new Date(a.completedAt || 0);
   return {
     figures: {
@@ -724,6 +730,7 @@ function mergeDashboards(dashboards, { key, label }) {
       onTimePercent: mean('onTimePercent') === null ? null : Math.round(mean('onTimePercent')),
     },
     queue: uniqueTasks(dashboards.flatMap((row) => row.queue), (task) => task._id).sort(byDue),
+    jobs: uniqueTasks(dashboards.flatMap((row) => row.jobs || []), (task) => task._id).sort(byDue),
     recentlyDone: dashboards.flatMap((row) => row.recentlyDone).sort(byDone),
     waitingOnOthers: uniqueTasks(dashboards.flatMap((row) => row.waitingOnOthers), (task) => task._id).sort(byDue),
     cameBack: uniqueTasks(dashboards.flatMap((row) => row.cameBack), (task) => task._id).sort(byDone),
