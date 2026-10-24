@@ -16,6 +16,7 @@ import { sendResultToCustomer } from '../services/taskResultMessage.service.js';
 import { publicApiBase, signatureValid } from '../utils/signedLink.js';
 import ApiError from '../utils/ApiError.js';
 import { inDepartment, isManagement } from '../utils/departments.js';
+import { qcGateFor } from '../services/qcGate.service.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { inTransaction, transactional } from '../utils/transaction.js';
 import { retryOnConflict } from '../utils/concurrency.js';
@@ -25,7 +26,7 @@ import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, closeByAdmin, escalateToAdmin, resolveEscalation, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
-  updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, registerLists, raiseAssemblyWith, routingFor, decideRouting, addToProductionQueue,
+  updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, registerLists, raiseAssemblyWith, routingFor, decideRouting, addToProductionQueue, addToWorkQueue,
 } from '../services/handoff.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -201,7 +202,8 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     orders: await ordersOnEnquiry(enquiry, req.user),
     /* What the floor is doing for it now, and the journey from SO to LR as steps [journey.service]. */
     floor,
-    journey: journeyOf(tasks, { running: floor.running }),
+    /* QC is a step of the journey only where it is compulsory [qcGate.service]. */
+    journey: journeyOf(tasks, { running: floor.running, qcRequired: (await qcGateFor({ enquiry: enquiry._id })).required }),
     /* How a several-model order goes out, and which models are ready [handoff.service `modelReadiness`]. */
     dispatchPlan: enquiry.dispatchPlan?.mode ? enquiry.dispatchPlan : null,
     readiness: await modelReadiness(enquiry._id),
@@ -407,6 +409,12 @@ export const handoffRoute = asyncHandler(transactional(async (req, res) => {
 /** Production adds its task to the production queue — routed, planned, dated [handoff.service `addToProductionQueue`]. */
 export const handoffQueue = asyncHandler(transactional(async (req, res) => {
   const task = await addToProductionQueue(await taskFor(req), req.user, req.body);
+  await answer(res, task);
+}));
+
+/** Printing or Assembly takes the goods that came into its work queue [handoff.service `addToWorkQueue`]. */
+export const handoffWorkQueue = asyncHandler(transactional(async (req, res) => {
+  const task = await addToWorkQueue(await taskFor(req), req.user, req.body);
   await answer(res, task);
 }));
 

@@ -79,6 +79,17 @@ const modelAndQuantity = [
  */
 const QC_ASK = { key: 'qcRequired', label: 'QC compulsory before dispatch', type: 'check', from: 'qcRequired', hint: 'Ticked: Quality checks the goods after Production, Printing and Assembly, and Dispatch waits for its pass' };
 
+/**
+ * Printing's and Assembly's goods coming in [handoff.service `handOn`, `addToWorkQueue`]: Goods
+ * Received is set when the team before hands them over — or by this team, when the goods came
+ * without it — and In Work Queue when the team takes them on. A model routed here by Production
+ * moves no further until its goods have come.
+ */
+const GOODS_IN = [
+  { key: 'goods_received', label: 'Goods Received', receives: true },
+  { key: 'in_queue', label: 'In Work Queue', queues: true },
+];
+
 /** The rows of a sample request: each model with its parts, the colour rule and how many. */
 const SAMPLE_COLUMNS = [
   { key: 'model', label: 'Mould / model', required: true, register: 'moulds' },
@@ -149,6 +160,28 @@ function qualityWorkflow({ complaint }) {
 }
 
 /**
+ * Quality's check before dispatch [config/handoffs.js quality_check]: Goods Received for QC →
+ * Under Checking → QC Passed (or Passed with Deviation), which finishes the task and lets the
+ * goods go to Dispatch; QC Failed sends them back for rework — Admin, marketing and the teams that
+ * made them are told — and Re-checking after Rework takes them through the check again. There is
+ * no way to finish it but a pass: `result` is what the pass records [handoff.service
+ * `setTaskStatus`; qcGate.service].
+ */
+const qcCheckWorkflow = {
+  remarkRequired: true,
+  notifyStatus: true,
+  remark: { label: 'Remarks', placeholder: 'Pieces checked, what was found, the lot' },
+  statuses: [
+    { key: 'received', label: 'Goods Received for QC' },
+    { key: 'checking', label: 'Under Checking' },
+    { key: 'failed', label: 'QC Failed — Rework', issue: true, qcFailed: true },
+    { key: 'rechecking', label: 'Re-checking after Rework' },
+    { key: 'passed', label: 'QC Passed', done: true, result: 'Passed' },
+    { key: 'passed_deviation', label: 'Passed with Deviation', done: true, result: 'Passed with deviation' },
+  ],
+};
+
+/**
  * What a Quality task is about: one row per model with its material, the pieces concerned and
  * the complaint or check on that model, then the complaint received as a whole (required on a
  * Quality Issue) — beside the task's instruction. Filled from the enquiry's models; any number of
@@ -161,7 +194,7 @@ const QUALITY_COLUMNS = [
   { key: 'complaint', label: 'Complaint / what to check on this model' },
 ];
 const qualityAsks = ({ complaintRequired }) => [
-  { key: 'items', label: 'Models for Quality', type: 'items', from: 'items', add: '+ Add Model', columns: QUALITY_COLUMNS },
+  { key: 'items', label: 'Models for Quality', type: 'items', from: 'qualityItems', add: '+ Add Model', columns: QUALITY_COLUMNS },
   { key: 'problem', label: complaintRequired ? 'Complaint received' : 'Complaint received, if any', required: complaintRequired, placeholder: 'What the buyer reported, or what was found' },
 ];
 
@@ -435,6 +468,7 @@ export const TASK_FORMS = {
     remark: { label: 'Remarks', placeholder: 'Add assembling / printing remark' },
     statuses: [
       { key: 'asked', label: 'Asked Assembling Readiness' },
+      ...GOODS_IN,
       { key: 'started', label: 'Started' },
       { key: 'spares_ready', label: 'Spares Ready' },
       { key: 'part_ready', label: 'Part Quantity Ready' },
@@ -454,6 +488,7 @@ export const TASK_FORMS = {
     remark: { label: 'Remarks', placeholder: 'Add printing remark — artwork, colours, pieces done' },
     statuses: [
       { key: 'asked', label: 'Asked Printing Readiness' },
+      ...GOODS_IN,
       { key: 'started', label: 'Started' },
       { key: 'part_ready', label: 'Part Quantity Ready' },
       { key: 'full_ready', label: 'Full Quantity Ready' },
@@ -485,12 +520,16 @@ export const TASK_FORMS = {
       { key: 'problem', label: 'What is wrong with the tool', required: true },
     ],
   },
-  /* Every Quality team task runs the same workflow [qualityWorkflow]; only a complaint flags the enquiry. */
+  /*
+   * The check before dispatch: the goods come to Quality, are checked, and pass — or fail and go
+   * back for rework, to be checked again. Only a pass lets them go to Dispatch [qcGate.service]; a
+   * complaint from the buyer is a Quality Issue, with its own workflow below.
+   */
   quality_check: {
     team: 'Quality Team',
     note: { label: 'Additional instruction to Quality', placeholder: 'What to check, which lot, what the buyer said' },
     asks: qualityAsks({ complaintRequired: false }),
-    ...qualityWorkflow({ complaint: false }),
+    ...qcCheckWorkflow,
   },
   quality_issue: {
     team: 'Quality Team',

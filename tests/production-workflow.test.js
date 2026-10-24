@@ -328,7 +328,7 @@ test('while Production or Assembly has the readiness ask open, the dispatch task
 test('Assembly’s task moves Asked Assembling Readiness → … → Task Closed, each with a remark, on the task', async () => {
   const { buttons } = (await api('/api/handoffs', { as: 'anand' })).json.data;
   assert.deepEqual(buttons.find((button) => button.key === 'ask_assembling_edd').form.statuses.map((entry) => entry.label), [
-    'Asked Assembling Readiness', 'Started', 'Spares Ready', 'Part Quantity Ready', 'Full Quantity Ready', 'Ready for Dispatch', 'Task Closed',
+    'Asked Assembling Readiness', 'Goods Received', 'In Work Queue', 'Started', 'Spares Ready', 'Part Quantity Ready', 'Full Quantity Ready', 'Ready for Dispatch', 'Task Closed',
   ]);
   const task = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_assembling_edd', completed: false });
   assert.equal(task.status, 'asked', 'raised by Dispatch’s Ask Assembling Readiness');
@@ -489,10 +489,10 @@ test('a Quality complaint moves Complaint Received → … → Task Closed with 
   assert.equal((await Todo.findById(task._id)).completed, true);
 });
 
-test('a Quality Check runs the same Quality workflow, with remarks — but is not a complaint on the enquiry', async () => {
+test('a Quality Check is the check before dispatch — received, checked, passed or failed for rework — with remarks, and not a complaint on the enquiry', async () => {
   const { buttons } = (await api('/api/handoffs', { as: 'kavi' })).json.data;
   assert.deepEqual(buttons.find((button) => button.key === 'quality_check').form.statuses.map((entry) => entry.label), [
-    'Complaint Received', 'Under Checking', 'Attended', 'Corrective Action', 'Replacement In Progress', 'Replaced', 'Resolved', 'Task Closed',
+    'Goods Received for QC', 'Under Checking', 'QC Failed — Rework', 'Re-checking after Rework', 'QC Passed', 'Passed with Deviation',
   ]);
   const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'quality_check', note: 'Check the lot before it goes' } });
   assert.equal(sent.status, 201, sent.json.message);
@@ -505,8 +505,11 @@ test('a Quality Check runs the same Quality workflow, with remarks — but is no
   assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Under Checking'));
   const issues = (await listed()).progress.issues.filter((issue) => issue.department === 'quality' && issue.label.startsWith('Quality Check'));
   assert.deepEqual(issues, [], 'a routine check is not an issue');
-  assert.equal((await move('closed', 'Lot passed')).status, 200);
-  assert.equal((await Todo.findById(task._id)).completed, true);
+  assert.equal((await move('closed', 'Lot passed')).status, 400, 'a check finishes only on a pass');
+  assert.equal((await move('passed', 'Lot passed')).status, 200);
+  const done = await Todo.findById(task._id);
+  assert.equal(done.completed, true);
+  assert.equal(done.outcome.fields.get('result'), 'Passed', 'the pass is recorded — it is what lets the goods go');
 });
 
 /* ------------------------------ Accounts ------------------------------ */

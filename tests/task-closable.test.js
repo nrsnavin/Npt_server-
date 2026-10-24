@@ -144,7 +144,7 @@ test('Quality: offered as soon as the QC record is entered — on the record’s
   const listed = (await api('/api/workspace/todos?scope=department&status=open', { as: 'kavi' })).json.data.find((row) => row._id === check._id);
   assert.match(listed.closable.why, /entered — passed/);
   assert.match(listed.closable.record.number, /^QCR/);
-  const closed = await move(check._id, 'kavi', 'closed', { note: listed.closable.why });
+  const closed = await move(check._id, 'kavi', 'passed', { note: listed.closable.why });
   assert.equal(closed.status, 200, closed.json.message);
   assert.equal(closed.json.data.completed, true);
 });

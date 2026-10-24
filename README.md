@@ -601,9 +601,18 @@ it holds (`src/services/handoff.service.js`; the database refuses a second open 
 - **Request PRT Visit** asks Admin and **Team Payment Follow-up** asks Accounts, both without
   moving it — Accounts chases the money while Production or Dispatch keeps the job. **Photos
   Sent** only records; **Task Closed** ends the enquiry and every task still open on it.
-- **Quality before Dispatch:** Invoice & Dispatch is refused until Quality has passed the job —
-  a *Quality Check* moved on with Result = Passed, or a passed final / pre-dispatch inspection in
-  the Quality module — and passed again after any rework (`src/services/enquiryGates.service.js`).
+- **Printing and Assembly take goods in:** Production's *Handed to Printing / Assembly* moves
+  only the models routed there, and reaches the next team as **Goods Received** (that team can
+  also record it when goods come without the hand-over). The team puts them in its work queue
+  (**In Work Queue**, `POST /api/workspace/todos/:id/work-queue`), and does no work on a model
+  before its goods have come. Ready for Dispatch is refused for a model that goes on to another team.
+- **Quality only when QC is compulsory:** ticked on the SO or Production request, the goods go
+  from the last finishing team to a *Quality Check* — Goods Received for QC → Under Checking →
+  QC Passed / Passed with Deviation, or QC Failed — Rework → Re-checking. A fail goes back to the
+  teams that made the goods, never to Dispatch; only a pass sends them on, model by model when
+  the order goes out each model as it is ready, and Dispatch can send only the models Quality
+  passed (`src/services/qcGate.service.js`, `journey.service.js`). Not compulsory: straight from
+  the finishing teams to Dispatch, and the journey shows no QC step.
 - **Dispatch keeps the balance:** Dispatch cannot move the enquiry to another department while a
   sales order on it still has pieces to send; each lot is posted as an Update. Quality can still
   be called in, and a short-closed order no longer counts.

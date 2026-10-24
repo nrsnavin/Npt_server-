@@ -38,10 +38,10 @@ import {
 import { notificationStatus, pushKey, renewPush, sendTestNotification, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments,
+  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffWorkQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments,
 } from '../controllers/handoff.controller.js';
 import {
-  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, handoffAdminCloseSchema, handoffEscalateSchema, handoffEscalationResolveSchema, deliveryUrgencySchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, taskRoutingSchema, taskStatusSchema, productionQueueAddSchema,
+  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, handoffAdminCloseSchema, handoffEscalateSchema, handoffEscalationResolveSchema, deliveryUrgencySchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, taskRoutingSchema, taskStatusSchema, productionQueueAddSchema, workQueueAddSchema,
 } from '../validators/handoff.schemas.js';
 import { singlePdf, singleTaskResult } from '../middleware/upload.js';
 
@@ -99,6 +99,8 @@ router.get('/production-in-charge', productionInChargeList);
 router.get('/todos/:id/routing', handoffRouting);
 router.post('/todos/:id/routing', validate(taskRoutingSchema), handoffRoute);
 router.post('/todos/:id/production-queue', validate(productionQueueAddSchema), handoffQueue);
+/* Printing and Assembly take the goods that came into their work queue. */
+router.post('/todos/:id/work-queue', validate(workQueueAddSchema), handoffWorkQueue);
 router.post('/todos/:id/brief', validate(taskBriefSchema), handoffBrief);
 router.post('/todos/:id/seen', handoffSeen);
 router.post('/todos/:id/ask', validate(taskAskSchema), handoffAsk);
