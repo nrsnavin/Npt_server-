@@ -34,6 +34,7 @@ import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
 import { taskWithClosable, withClosable } from '../services/taskClosable.service.js';
 import { withDeskDetails } from '../services/deskDetails.service.js';
+import { DISPATCH_PLAN_FIELDS, dispatchModeOf, dispatchPlanOf } from '../utils/dispatchPlan.js';
 
 /**
  * Department tasks about an enquiry [config/handoffs.js, services/handoff.service.js]: the
@@ -57,7 +58,7 @@ export const TASK_POPULATE = [
   { path: 'adminEscalation.resolvedBy', select: 'name' },
   /* The enquiry's EDD travels with its tasks, so a card can show it or ask for it [web: components/TaskEdd.jsx];
      its dispatch plan too, so a model's own workflow can say whether it goes as soon as it is ready. */
-  { path: 'enquiry', select: 'number edd eddByModel dispatchPlan' },
+  { path: 'enquiry', select: 'number edd eddByModel dispatchPlan items.modelNumber items.mould' },
 ];
 
 /** The buttons, the twelve stages and the departments, so the screen draws what the server knows. */
@@ -252,7 +253,7 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     /* QC is a step of the journey only where it is compulsory [qcGate.service]. */
     journey: journeyOf(tasks, { running: floor.running, qcRequired: (await qcGateFor({ enquiry: enquiry._id })).required }),
     /* How a several-model order goes out, and which models are ready [handoff.service `modelReadiness`]. */
-    dispatchPlan: enquiry.dispatchPlan?.mode ? enquiry.dispatchPlan : null,
+    dispatchPlan: dispatchPlanOf(enquiry),
     readiness: await modelReadiness(enquiry._id),
     /* The money on it: each RCV — the advance, each invoice — with what came in and who logged it. */
     payments: await paymentsOnEnquiry(enquiry._id),
@@ -788,8 +789,8 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
 async function withReadiness(rows) {
   const ids = [...new Set(rows.filter((row) => row.enquiry?._id && row.task.kind === 'invoice_dispatch').map((row) => String(row.enquiry._id)))];
   if (!ids.length) return rows;
-  const plans = await Enquiry.find({ _id: { $in: ids }, 'dispatchPlan.mode': 'by_model' }).select('_id').lean();
-  const byModel = new Set(plans.map((row) => String(row._id)));
+  const plans = await Enquiry.find({ _id: { $in: ids } }).select(DISPATCH_PLAN_FIELDS).lean();
+  const byModel = new Set(plans.filter((row) => dispatchModeOf(row) === 'by_model').map((row) => String(row._id)));
   const read = new Map();
   for (const row of rows) {
     if (!row.enquiry?._id || row.task.kind !== 'invoice_dispatch') continue;

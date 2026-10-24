@@ -315,6 +315,8 @@ test('dispatch plan: each model as it is ready — a ready model goes to Quality
   const items = [{ modelNumber: 'DP-1', quantity: 1000 }, { modelNumber: 'DP-2', quantity: 1000 }];
   const models = [{ model: 'DP-1' }, { model: 'DP-2', printing: true }];
   const together = await routedEnquiry('Together Knits', '9840011666', items, models);
+  /* One consignment, chosen by marketing — several models otherwise go each on its own way [utils/dispatchPlan.js]. */
+  assert.equal((await api(`/api/enquiries/${together.enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'together' } })).status, 200);
   /* QC compulsory on both, so the ready model goes to Quality rather than straight to Dispatch [qcGate.service]. */
   await Enquiry.updateOne({ _id: together.enquiry._id }, { $set: { qcRequired: true } });
   await api(`/api/workspace/todos/${together.production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'DP-1 ready' } });
@@ -375,6 +377,7 @@ test('no QC on the order: a ready model goes straight to Dispatch when it goes o
   const items = [{ modelNumber: 'NQ-1', quantity: 1000 }, { modelNumber: 'NQ-2', quantity: 1000 }];
   const models = [{ model: 'NQ-1' }, { model: 'NQ-2', printing: true }];
   const together = await routedEnquiry('No QC Together', '9840013562', items, models);
+  assert.equal((await api(`/api/enquiries/${together.enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'together' } })).status, 200);
   await api(`/api/workspace/todos/${together.production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'NQ-1 ready', models: ['NQ-1'] } });
   assert.equal(await Todo.findOne({ enquiry: together.enquiry._id, kind: 'invoice_dispatch' }), null, 'together: waits for Printing’s model');
   assert.equal(await Todo.findOne({ enquiry: together.enquiry._id, kind: 'quality_check' }), null, 'no QC asked for');
@@ -387,4 +390,18 @@ test('no QC on the order: a ready model goes straight to Dispatch when it goes o
   assert.ok(dispatch, 'the ready model is on Dispatch’s desk — and so in its delivery queue');
   assert.equal(dispatch.department, 'despatch');
   assert.equal(await Todo.findOne({ enquiry: split.enquiry._id, kind: 'quality_check' }), null, 'no Quality step without QC');
+});
+
+test('several models, no plan chosen: each goes its own way — a ready model reaches Dispatch while the other is still made', async () => {
+  const items = [{ modelNumber: 'IN-1', quantity: 1000 }, { modelNumber: 'IN-2', quantity: 1000 }];
+  const { enquiry, production } = await routedEnquiry('Own Way Knits', '9840013564', items, [{ model: 'IN-1' }, { model: 'IN-2', printing: true }]);
+  const view = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
+  assert.deepEqual([view.dispatchPlan.mode, view.dispatchPlan.chosen], ['by_model', false], 'model by model by default');
+  await api(`/api/workspace/todos/${production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'IN-1 ready', models: ['IN-1'] } });
+  assert.ok(await Todo.findOne({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false }), 'IN-1 is on Dispatch’s desk');
+  const printing = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_printing', completed: false });
+  assert.ok(printing, 'IN-2 is still with Printing');
+
+  const single = await routedEnquiry('One Model Knits', '9840013565', [{ modelNumber: 'ONE-1', quantity: 1000 }], [{ model: 'ONE-1' }]);
+  assert.equal((await api(`/api/enquiries/${single.enquiry._id}/handoffs`, { as: 'nandhini' })).json.dispatchPlan.mode, 'together', 'one model: nothing to split');
 });

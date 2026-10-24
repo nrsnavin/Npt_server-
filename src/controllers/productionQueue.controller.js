@@ -13,6 +13,7 @@ import { findHandoff } from '../config/handoffs.js';
 import { canRead } from '../services/access.service.js';
 import { isOwnershipScoped, ownsRecord } from '../services/ownership.service.js';
 import { departmentsOf, isProductionInCharge } from '../utils/departments.js';
+import { dispatchModeOf } from '../utils/dispatchPlan.js';
 
 /**
  * The production queue, as every department reads it [web: pages/ProductionQueue.jsx].
@@ -357,7 +358,7 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
       enquiry: {
         _id: enquiry._id, number: enquiry.number, stage: enquiry.stage, team,
         customer: enquiry.customer ? { _id: enquiry.customer._id, name: enquiry.customer.name, code: enquiry.customer.code } : null,
-        owner: person(enquiry.assignedTo), edd: enquiry.edd || null, dispatchPlan: enquiry.dispatchPlan?.mode || null,
+        owner: person(enquiry.assignedTo), edd: enquiry.edd || null, dispatchPlan: dispatchModeOf(enquiry),
       },
       band: bandOf(edd),
       /* Will the order make marketing's EDD, every model and team counted [deliveryRisk.service]. */

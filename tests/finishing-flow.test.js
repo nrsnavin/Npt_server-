@@ -88,6 +88,8 @@ test.after(async () => {
 
 test('goods handed over arrive as Goods Received, only for the models routed there; the team adds them to its work queue', async () => {
   const { enquiry, production } = await order(['A-1', 'B-2', 'C-3']);
+  /* One consignment, chosen: several models otherwise go each on its own way [utils/dispatchPlan.js]. */
+  assert.equal((await api(`/api/enquiries/${enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'together' } })).status, 200);
   assert.equal((await route(production, [{ model: 'A-1', printing: true, assembly: true }, { model: 'B-2', assembly: true }, { model: 'C-3' }])).status, 200);
   const printing = await taskOf(enquiry, 'ask_printing');
   const assembly = await taskOf(enquiry, 'ask_assembling_edd');

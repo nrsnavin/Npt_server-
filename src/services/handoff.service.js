@@ -22,6 +22,7 @@ import { chainOf, jobFilter } from './journey.service.js';
 import { askForEdd, eddDayOf, eddGiven, setsEdd } from './eddAsk.service.js';
 import { assertQcCleared, qcGateFor, qcPassedModels, ticked as qcTicked } from './qcGate.service.js';
 import mongoose from 'mongoose';
+import { DISPATCH_PLAN_FIELDS, dispatchModeOf } from '../utils/dispatchPlan.js';
 
 /**
  * One department asking another for something about an enquiry — the buttons on the enquiry
@@ -1725,7 +1726,7 @@ export async function dispatchSheet(task) {
   const readiness = enquiryId ? await modelReadiness(enquiryId) : { ready: [], waiting: [] };
   const waiting = new Set((readiness.waiting || []).map((row) => row.model));
   return {
-    plan: enquiry?.dispatchPlan?.mode === 'by_model' ? 'by_model' : 'together',
+    plan: enquiry ? dispatchModeOf(enquiry) : 'together',
     order: order ? { _id: order._id, number: order.number } : null,
     models: [...ordered].map(([model, quantity]) => ({
       model, ordered: quantity, sent: sent.get(model) || 0,
@@ -2505,7 +2506,7 @@ export async function tellDispatchReady(task, user, step, text, { partial = fals
   const said = `${asking}: ${step.label}${text ? ` — ${text}` : ''}${heldForQc ? ' — QC compulsory: waits for Quality’s pass before dispatch' : ''}`;
   const ready = statusesOf({ kind: 'invoice_dispatch' }).find((entry) => entry.key === 'waiting_vehicle');
   /* Some models ready: the request moves on only when the order goes out model by model. */
-  const goesByModel = partial && Boolean(task.enquiry) && (await Enquiry.findById(idOf(task.enquiry)).select('dispatchPlan').lean())?.dispatchPlan?.mode === 'by_model';
+  const goesByModel = partial && Boolean(task.enquiry) && dispatchModeOf(await Enquiry.findById(idOf(task.enquiry)).select(DISPATCH_PLAN_FIELDS).lean()) === 'by_model';
   for (const request of requests) {
     request.updates = [...(request.updates || []), { note: said, by: user._id, at: new Date() }];
     const moves = ready && WAITING_ON_GOODS.includes(request.status) && (!partial || goesByModel) && !heldForQc;

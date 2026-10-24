@@ -34,11 +34,13 @@ const api = async (path, { method = 'GET', body, as } = {}) => {
 const move = (task, as, status, models, note = 'Moving it on') => api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, note, ...(models ? { models } : {}) } });
 const statusOf = async (task, model) => (await Todo.findById(task).lean()).modelStatuses?.find((row) => row.model === model)?.status;
 
-async function routedOrder({ qcRequired } = {}) {
+async function routedOrder({ qcRequired, plan = 'together' } = {}) {
   const enquiry = (await api('/api/enquiries', {
     method: 'POST', as: 'nandhini',
     body: { customer: customerId, items: [{ modelNumber: 'CRF25', quantity: 10000 }, { modelNumber: 'CRF30', quantity: 4000 }, { modelNumber: 'CRF40', quantity: 2000 }], nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
   })).json.data;
+  /* One consignment unless a test says otherwise — several models otherwise go each on its own way [utils/dispatchPlan.js]. */
+  if (plan) assert.equal((await api(`/api/enquiries/${enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: plan } })).status, 200);
   const production = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Make these', brief: { model: 'CRF25', ...(qcRequired ? { qcRequired: true } : {}) } } })).json.data.task;
   const routed = await api(`/api/workspace/todos/${production._id}/routing`, {
     method: 'POST', as: 'siva', body: { models: [{ model: 'CRF25', printing: true }, { model: 'CRF30', assembly: true }, { model: 'CRF40' }] },
