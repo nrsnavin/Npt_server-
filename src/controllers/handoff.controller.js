@@ -21,7 +21,7 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { inTransaction, transactional } from '../utils/transaction.js';
 import { retryOnConflict } from '../utils/concurrency.js';
 import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
-import { HANDOFFS, TILE_KIND, findHandoff } from '../config/handoffs.js';
+import { HANDOFFS, QUERY_KINDS, TILE_KIND, findHandoff } from '../config/handoffs.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
@@ -495,7 +495,7 @@ export const handoffAsk = asyncHandler(transactional(async (req, res) => {
   res.json({
     success: true,
     data: await task.populate(TASK_POPULATE),
-    raised: { _id: raised._id, title: raised.title, department: raised.department },
+    raised: { _id: raised._id, title: raised.title, department: raised.department, kind: raised.kind },
     addedTo,
   });
 }));
@@ -637,17 +637,20 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
   const dashboard = mergeDashboards(perDepartment.map((row) => row.dashboard), { key, label: desk?.label });
   const atStages = perDepartment.flatMap((row) => row.atStages);
   /* A person's own payment follow-up is on every member's desk list — once on the merged desk. */
-  const merged = uniqueTasks(perDepartment.flatMap((row) => row.held), (row) => row.task._id);
+  const every = uniqueTasks(perDepartment.flatMap((row) => row.held), (row) => row.task._id);
+  /* Readiness queries from other teams are a tab of their own, apart from the order's work [config/departmentTaskForms.js `readinessQuery`]. */
+  const queries = every.filter((row) => QUERY_KINDS.includes(row.task.kind));
+  const merged = every.filter((row) => !QUERY_KINDS.includes(row.task.kind));
   /* Printing, Assembly and Quality read their desk as lines: enquiry, buyer, EDD, the state in 20–30 words, the workflow page. */
   const held = members.every((member) => FINISHING_DEPARTMENTS.includes(member)) ? await withDeskSummaries(merged) : merged;
   /* Dispatch's desk: for an order going out model by model, which models are ready to go, sent, or still being made [handoff.service `modelReadiness`]. */
   if (key === 'despatch') await withReadiness(held);
   /* The queue less the enquiries themselves: side requests, like a PRT visit or photos sent. */
-  const heldIds = new Set(held.map((row) => String(row.task._id)));
+  const heldIds = new Set(every.map((row) => String(row.task._id)));
   const requests = dashboard.queue.filter((task) => !heldIds.has(String(task._id)));
   /* Dispatch plans vehicles by place: the open requests in baskets of the same landmark / PIN. */
   const baskets = key === 'despatch' ? await dispatchBaskets() : undefined;
-  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, attention, baskets, ...(desk ? { desk } : {}) } });
+  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, queries, attention, baskets, ...(desk ? { desk } : {}) } });
 });
 
 /**

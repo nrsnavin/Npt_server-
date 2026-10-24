@@ -114,6 +114,7 @@ test('per model: printed models go to Printing, assembled ones to Assembly; prin
   const printing = await openTask('ask_printing');
   assert.equal(printing.brief.models, 'NPT-410V', 'Printing has only the printed model');
   assert.deepEqual(printing.routing.handsTo, ['assembling'], 'and hands it on to Assembly');
+  assert.deepEqual(printing.routing.goesOn, ['NPT-410V'], 'which models go on — their Printing workflow ends at Handed to Assembly');
   assert.ok(printing.askedFrom.some((id) => String(id) === String(production._id)), 'told back to Production');
 
   const assembly = await openTask('ask_assembling_edd');

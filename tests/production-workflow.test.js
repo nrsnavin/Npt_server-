@@ -272,33 +272,44 @@ test('a Dispatch move needs a remark; only Dispatched reaches marketing and Admi
   assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Top Most Urgent Dispatch'));
 });
 
-test('Ask Production raises a Production task from the dispatch task, and the task says so', async () => {
+test('Ask Production raises a readiness query of its own from the dispatch task, and the task says so', async () => {
   const stage = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data.stage;
-  assert.equal((await ask('ravi', { kind: 'ask_edd' })).status, 400, 'what is needed has to be said');
+  assert.equal((await ask('ravi', { kind: 'production_query' })).status, 400, 'what is needed has to be said');
+  assert.equal((await ask('ravi', { kind: 'ask_edd', note: 'Ready?' })).status, 400, 'a query, not Production’s own task');
   assert.equal((await ask('ravi', { kind: 'quality_check', note: 'Check again' })).status, 400, 'not one of Dispatch’s asks');
-  assert.equal((await ask('nandhini', { kind: 'ask_edd', note: 'Is it ready?' })).status, 403, 'Dispatch asks from Dispatch’s task');
+  assert.equal((await ask('nandhini', { kind: 'production_query', note: 'Is it ready?' })).status, 403, 'Dispatch asks from Dispatch’s task');
 
-  const asked = await ask('ravi', { kind: 'ask_edd', note: 'Is the 10,000 packed? Vehicle booked for 5 PM', brief: { quantity: '10000' } });
+  const asked = await ask('ravi', { kind: 'production_query', note: 'Is the 10,000 packed? Vehicle booked for 5 PM', brief: { quantity: '10000' } });
   assert.equal(asked.status, 200, asked.json.message);
   assert.equal(asked.json.raised.department, 'production');
   assert.equal(asked.json.data.status, 'asked_production');
   const raised = await Todo.findById(asked.json.raised._id);
-  assert.equal(raised.kind, 'ask_edd');
+  assert.equal(raised.kind, 'production_query');
+  assert.equal(raised.status, 'received');
   assert.match(raised.notes, /Is the 10,000 packed/);
+  assert.equal(raised.brief.quantity, '10000');
+  const { buttons } = (await api('/api/handoffs', { as: 'siva' })).json.data;
+  assert.deepEqual(buttons.find((button) => button.key === 'production_query').form.statuses.map((entry) => entry.label), ['Query Received', 'Planning', 'Will Be Ready On', 'Ready Now'], 'the short workflow');
+  /* On Production's desk under its own tab, not in the order's queue. */
+  const desk = (await api('/api/departments/production/dashboard', { as: 'siva' })).json.data;
+  assert.ok(desk.queries.some((row) => String(row.task._id) === String(raised._id)));
+  assert.ok(!desk.enquiries.some((row) => String(row.task._id) === String(raised._id)));
+  assert.ok(!desk.requests.some((task) => String(task._id) === String(raised._id)));
   assert.equal((await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data.stage, stage, 'the enquiry stays at its stage');
   assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Asked Production Readiness'), 'the ask is on the dispatch task');
   assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Asked Production Readiness'));
 
-  const again = await ask('ravi', { kind: 'ask_edd', note: 'Still waiting — truck is here' });
+  const again = await ask('ravi', { kind: 'production_query', note: 'Still waiting — truck is here' });
   assert.equal(again.status, 200, again.json.message);
-  assert.equal(again.json.addedTo, true, 'Production already has it — the ask goes onto that task');
-  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'ask_edd', completed: false }), 1);
+  assert.equal(again.json.addedTo, true, 'the query is open — the ask goes onto it');
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'production_query', completed: false }), 1);
 });
 
-test('Ask Assembling Readiness raises an Assembly task', async () => {
-  const asked = await ask('ravi', { kind: 'ask_assembling_edd', note: 'Are the clips fitted on the trouser lot?' });
+test('Ask Assembling Readiness raises an Assembly readiness query', async () => {
+  const asked = await ask('ravi', { kind: 'assembling_query', note: 'Are the clips fitted on the trouser lot?' });
   assert.equal(asked.status, 200, asked.json.message);
   assert.equal(asked.json.raised.department, 'assembling');
+  assert.equal(asked.json.raised.kind, 'assembling_query');
   assert.equal(asked.json.data.status, 'asked_assembling');
   assert.match(asked.json.data.updates.at(-1).note, /Ask Assembling Readiness: Are the clips fitted/);
 });
@@ -315,9 +326,10 @@ test('while Production or Assembly has the readiness ask open, the dispatch task
   const done = await api(`/api/workspace/todos/${dispatchTask._id}/done`, { method: 'POST', as: 'ravi', body: { note: 'Gone' } });
   assert.equal(done.status, 400, 'Done waits too');
 
-  /* Production closes its task: Assembly's is still open, so it still waits. */
-  const production = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_edd', completed: false });
-  await Todo.updateOne({ _id: production._id }, { $set: { completed: true, completedAt: new Date(), status: 'closed' } });
+  /* Production answers Ready Now: Assembly's query is still open, so it still waits. */
+  const production = await Todo.findOne({ enquiry: enquiry._id, kind: 'production_query', completed: false });
+  const now = await api(`/api/workspace/todos/${production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_now', note: 'Moulded and packed' } });
+  assert.equal(now.status, 200, now.json.message);
   const still = await dispatchMove('ravi', 'dispatched', { note: 'Loaded' });
   assert.equal(still.status, 400);
   assert.match(still.json.message, /Assembl/);
@@ -329,8 +341,11 @@ test('Assembly’s task moves Asked Assembling Readiness → … → Task Closed
   assert.deepEqual(buttons.find((button) => button.key === 'ask_assembling_edd').form.statuses.map((entry) => entry.label), [
     'Asked Assembling Readiness', 'Goods Received', 'In Work Queue', 'Started', 'Spares Ready', 'Part Quantity Ready', 'Full Quantity Ready', 'Ready for Dispatch', 'Task Closed',
   ]);
-  const task = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_assembling_edd', completed: false });
-  assert.equal(task.status, 'asked', 'raised by Dispatch’s Ask Assembling Readiness');
+  /* The order's own Assembly task — the readiness query beside it is answered below. */
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_assembling_edd', note: 'Clips on the trouser lot', brief: { quantity: '10000' } } });
+  assert.equal(sent.status, 201, sent.json.message);
+  const task = await Todo.findById(sent.json.data.task._id);
+  assert.equal(task.status, 'asked');
   const moveAssembly = (status, extra = {}) => api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'anand', body: { status, ...extra } });
 
   assert.equal((await moveAssembly('part_ready')).status, 400, 'no remark');
@@ -338,11 +353,15 @@ test('Assembly’s task moves Asked Assembling Readiness → … → Task Closed
   assert.equal(moved.status, 200, moved.json.message);
   assert.ok(!(await noticesOf('nandhini')).some((notice) => notice.statusLabel === 'Part Quantity Ready'), 'not in Needs your action');
   assert.ok(!(await noticesOf('admin')).some((notice) => notice.statusLabel === 'Part Quantity Ready'));
-  const { production } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
-  assert.equal(production.edd.edd, indiaDay(2), 'Assembly’s ready date is the EDD');
+  /* Production routed this order with no assembly, so the date is Assembly's own, kept on its task — not the order's EDD. */
+  assert.ok((await Todo.findById(task._id)).updates.some((line) => line.status === 'part_ready' && line.date === indiaDay(2)), 'the date is on the move');
 
   assert.equal((await moveAssembly('closed', { note: 'All 10,000 assembled' })).status, 200);
   assert.equal((await Todo.findById(task._id)).completed, true);
+  /* And Assembly answers Dispatch's query. */
+  const query = await Todo.findOne({ enquiry: enquiry._id, kind: 'assembling_query', completed: false });
+  const answered = await api(`/api/workspace/todos/${query._id}/status`, { method: 'POST', as: 'anand', body: { status: 'ready_now', note: 'All assembled' } });
+  assert.equal(answered.status, 200, answered.json.message);
 });
 
 test('Task Closed on a dispatch task is not held back by a consignment balance the team never records', async () => {
@@ -692,9 +711,12 @@ test('a team task’s enquiry-only steps say so; the rest finish normally', asyn
   const dispatch = await teamTask('admin', { kind: 'invoice_dispatch', note: 'Send the trade samples to the fair', brief: { schedule: 'Today Dispatch' } });
   assert.equal(dispatch.status, 201, dispatch.json.message);
   const id = dispatch.json.data.task._id;
-  const asked = await api(`/api/workspace/todos/${id}/ask`, { method: 'POST', as: 'ravi', body: { kind: 'ask_edd', note: 'Ready?' } });
-  assert.equal(asked.status, 400);
-  assert.match(asked.json.message, /has no enquiry/);
+  /* A readiness query needs no enquiry: it goes to Production on the job's chain, and Ready Now answers it. */
+  const asked = await api(`/api/workspace/todos/${id}/ask`, { method: 'POST', as: 'ravi', body: { kind: 'production_query', note: 'Ready?' } });
+  assert.equal(asked.status, 200, asked.json.message);
+  assert.equal(asked.json.raised.kind, 'production_query');
+  const answered = await api(`/api/workspace/todos/${asked.json.raised._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_now', note: 'Samples packed' } });
+  assert.equal(answered.status, 200, answered.json.message);
 
   const so = await teamTask('nandhini', { kind: 'po_so', note: 'Sales order for the walk-in buyer', brief: { productionConfirmed: true } });
   const clarify = await api(`/api/workspace/todos/${so.json.data.task._id}/status`, { method: 'POST', as: 'admin', body: { status: 'clarification', note: 'Which GSTIN?' } });

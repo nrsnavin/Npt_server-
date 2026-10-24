@@ -1179,12 +1179,15 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
   /* Goods handed to Printing or Assembly are not ready for Dispatch: the enquiry stays where it is. */
   if (!handedOn) await reachEnquiry(task, user, heldBack(task) ? handoff.whenHeld : handoff?.whenDone, text);
   if (closesNow && handoff?.form?.notifyStatus) await noticeStatus(task, user, { step: closing, note: text });
+  /* A readiness query closed with Done reads Ready Now — the team that asked is answered as from the workflow. */
+  if (closesNow && handoff?.form?.query) await answerAskers(task, user, closing, text, null);
   const details = (handoff?.records || []).filter((field) => kept[field.key]).map((field) => `${field.label}: ${kept[field.key]}`);
   /* A clarification's answer goes back onto the task that asked; anything else, to its sender. */
   if (task.parentTask) await answerParent(task, user, text);
   /* `quiet`: whoever asked is already told another way (the sample's own feedback task). */
   /* Handed on: the sender heard the hand-over with the status, and the job goes on with the next team. */
-  else if (!quiet && !handedOn) {
+  /* A readiness query answered: the team that asked read each move on its own task [answerAskers]. */
+  else if (!quiet && !handedOn && !handoff?.form?.query) {
     await backToSender(task, {
       user,
       title: `Done: ${task.title} — next step?`,
@@ -1213,9 +1216,9 @@ async function assertNotWaiting(task) {
   /* Only an ask the task waits on (Dispatch's readiness asks) holds its status; Production's asks do not. */
   const actions = (findHandoff(task.kind)?.form?.actions || []).filter((action) => action.waits);
   if (!actions.length) return;
-  const waiting = await Todo.findOne({ askedFrom: task._id, completed: false, kind: { $in: actions.map((action) => action.kind) } }).select('kind department');
+  const waiting = await Todo.findOne({ askedFrom: task._id, completed: false, kind: { $in: actions.flatMap((action) => [action.kind, action.was].filter(Boolean)) } }).select('kind department');
   if (!waiting) return;
-  const action = actions.find((entry) => entry.kind === waiting.kind);
+  const action = actions.find((entry) => entry.kind === waiting.kind || entry.was === waiting.kind);
   fail(`Waiting on ${departmentName(waiting.department)} — ${action?.label || 'the task asked'} is still open. The status changes once that task is closed.`);
 }
 
@@ -1444,6 +1447,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
     await writeEnquiryEdd(task.enquiry, { day: readyDate, user, department: task.department, note: text });
   }
   if (form.notifyStatus) await noticeStatus(task, user, { step: partial ? { ...step, label } : step, note: text, date: readyDate });
+  /* A readiness query's move is the asking team's answer: on its own task, and Ready Now lets it go on [answerAskers]. */
+  if (form.query) await answerAskers(task, user, step, text, readyDate);
   /* The alert for a model closed on a task still open for others: marketing and Admin, and the team on the task. */
   if (closingModels.length && !finishes) {
     await noticeStatus(task, user, { step: { key: 'model_closed', label: `${closingModels.join(', ')} closed on ${departmentName(task.department)} — ${step.label}` }, note: text, also: await peopleOn(task), toAdminAndMarketing: true });
@@ -1980,15 +1985,18 @@ export async function askFromTask(task, user, { kind, note, brief, priority, req
   if (!action) fail('This task does not ask that department');
   const text = String(note || '').trim();
   if (text.length < 3) fail(`Say what you need — ${action.label}`);
-  if (!task.enquiry) fail(`${action.label} raises a task on the enquiry — this task has no enquiry. Raise a team task instead.`);
-  const enquiry = await enquiryOfTask(task);
   const asking = departmentName(task.department);
-  const raised = await moveEnquiry({
-    enquiry, kind, note: `${asking} asks (${user.name}): ${text}`, user, system: true, openRecords: false,
-    brief, priority, requiredDate, addToOpen: true, keepStage: true, order: task.order,
-  });
+  /* A readiness query is a task of its own, with its own short workflow — never a second run of the team's [raiseQuery]. */
+  const isQuery = Boolean(findHandoff(kind)?.form?.query);
+  if (!isQuery && !task.enquiry) fail(`${action.label} raises a task on the enquiry — this task has no enquiry. Raise a team task instead.`);
+  const raised = isQuery
+    ? await raiseQuery(task, user, { kind, text, brief, priority, requiredDate })
+    : await moveEnquiry({
+      enquiry: await enquiryOfTask(task), kind, note: `${asking} asks (${user.name}): ${text}`, user, system: true, openRecords: false,
+      brief, priority, requiredDate, addToOpen: true, keepStage: true, order: task.order,
+    });
   /* The task asked remembers who asked, so its moves are told back here [noticeStatus]. */
-  if (raised?._id) await Todo.updateOne({ _id: raised._id }, { $addToSet: { askedFrom: task._id } }, { keepVersion: true });
+  if (raised?._id && !isQuery) await Todo.updateOne({ _id: raised._id }, { $addToSet: { askedFrom: task._id } }, { keepVersion: true });
   const step = action.status && statusesOf(task).find((entry) => entry.key === action.status);
   const said = `${action.label}: ${text}`;
   task.updates = [...(task.updates || []), { kind: 'asked', statusLabel: action.label, text, note: said, by: user._id, at: new Date() }];
@@ -2001,6 +2009,83 @@ export async function askFromTask(task, user, { kind, note, brief, priority, req
   if (step && form.notifyStatus) await noticeStatus(task, user, { step, note: said });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   return { task, raised, addedTo: Boolean(raised.$locals?.addedTo) };
+}
+
+/**
+ * A readiness query from another team's task — Printing or Assembly asking Production when its
+ * goods will come, Dispatch asking Production or Assembly [config/departmentTaskForms.js
+ * `readinessQuery`]. Raised on its own, beside the order's own task of that team, and on its own
+ * tab of that team's desk: the order's flow (routing, hand-overs, Quality, Dispatch) never reads
+ * it. The enquiry stays where it is. Asked again from the same task while it is open, the open
+ * one hears it instead of a second being raised.
+ */
+async function raiseQuery(task, user, { kind, text, brief, priority, requiredDate }) {
+  const handoff = findHandoff(kind);
+  const asking = departmentName(task.department);
+  const said = `${asking} asks (${user.name}): ${text}`;
+  const given = keptBrief(kind, brief || {}, { strict: false });
+  /* What the asking task is about, unless the form said otherwise: its model and quantity. */
+  const carried = Object.fromEntries(['model', 'models', 'material', 'quantity'].map((key) => [key, task.brief?.[key]]).filter(([, value]) => value));
+  const asked = { ...carried, ...given };
+  const open = await Todo.findOne({ kind, askedFrom: task._id, completed: false });
+  if (open) return addToOpenTask(open, { handoff, note: said, asked: given, priority, requiredDate, user });
+  const enquiry = task.enquiry ? await enquiryOfTask(task) : null;
+  const buyer = !enquiry && task.customer
+    ? (task.customer.name ? task.customer : await (await import('../models/Customer.js')).default.findById(idOf(task.customer)).select('name').lean())
+    : null;
+  const about = enquiry ? await aboutWithName(enquiry) : buyer?.name || task.title;
+  const first = handoff.form.statuses[0];
+  const query = await Todo.create({
+    ...(enquiry ? { enquiry: enquiry._id } : {}),
+    customer: idOf(task.customer) || idOf(enquiry?.customer) || undefined,
+    ...(task.order ? { order: idOf(task.order) } : {}),
+    ...(!enquiry ? { chain: chainOf(task) } : {}),
+    kind,
+    department: handoff.department,
+    fromDepartment: task.department,
+    createdBy: user._id,
+    askedFrom: [task._id],
+    title: `${asking} asks: when ready? — ${about}`,
+    notes: said,
+    ...(Object.keys(asked).length ? { brief: asked } : {}),
+    status: first.key,
+    statusHistory: [{ status: first.key, by: user._id, at: new Date() }],
+    dueDate: requiredDue(requiredDate) || endOfDayIST(new Date()),
+    priority: PRIORITIES.includes(priority) ? priority : task.priority || 'normal',
+    link: enquiry ? `/enquiries/${enquiry._id}` : '/departments/mine',
+  });
+  await publish(EVENTS.HANDOFF_SENT, { task: query, enquiry, by: user });
+  return query;
+}
+
+/**
+ * A readiness query moved: the task that asked reads it on its own timeline. Ready Now answers
+ * it — a Dispatch request still at "Asked …" reads Goods Ready, unless QC is compulsory and not
+ * yet passed [qcGate.service], when it hears the goods are made and waits for Quality.
+ */
+async function answerAskers(task, user, step, text, readyDate) {
+  const asking = departmentName(task.department);
+  const askers = await Todo.find({ _id: { $in: task.askedFrom || [] }, completed: false });
+  for (const asker of askers) {
+    const action = (findHandoff(asker.kind)?.form?.actions || []).find((entry) => entry.kind === task.kind);
+    const said = `${asking}: ${step.label}${readyDate ? ` ${readyDate}` : ''}${text ? ` — ${text}` : ''} (${user.name})`;
+    const line = { kind: 'notice', statusLabel: `${asking} — ${step.label}`, text: said, note: said, by: user._id, at: new Date(), ...(readyDate ? { date: readyDate, dateLabel: 'Ready on' } : {}) };
+    asker.updates = [...(asker.updates || []), line];
+    const ready = step.answers && asker.kind === 'invoice_dispatch' && action?.status && asker.status === action.status
+      ? statusesOf(asker).find((entry) => entry.key === 'waiting_vehicle')
+      : null;
+    const gate = ready ? await qcGateFor(asker) : null;
+    const moves = Boolean(ready) && !(gate.required && !gate.cleared);
+    if (moves) {
+      asker.status = ready.key;
+      asker.statusHistory = [...(asker.statusHistory || []), { status: ready.key, note: said, by: user._id, at: new Date() }];
+    } else if (ready) {
+      asker.updates = [...asker.updates, { kind: 'notice', statusLabel: 'QC compulsory', text: 'QC compulsory — the goods wait for Quality’s pass before dispatch', note: 'QC compulsory — the goods wait for Quality’s pass before dispatch', by: user._id, at: new Date() }];
+    }
+    await asker.save();
+    if (moves) await noticeStatus(asker, user, { step: ready, note: said, also: await peopleOn(asker), onlyAlso: true });
+    await publish(EVENTS.HANDOFF_UPDATED, { task: asker, by: user });
+  }
 }
 
 /**
@@ -3404,6 +3489,8 @@ export async function decideRouting(task, user, { models }) {
       models: printed.map((row) => row.model),
       from: ['production'],
       handsTo: printed.some((row) => row.assembly) ? ['assembling'] : [],
+      /* The printed models that are assembled after: their Printing workflow ends at Handed to Assembly, the rest at Ready for Dispatch. */
+      goesOn: printed.filter((row) => row.assembly).map((row) => row.model),
     } : null,
     assembling: assembled.length ? {
       models: assembled.map((row) => row.model),
