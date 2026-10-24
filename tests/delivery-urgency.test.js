@@ -105,11 +105,17 @@ test('a request raised with a schedule takes its urgency from it; nobody is aske
   assert.equal(await Todo.countDocuments({ originKey: `delivery-urgency:${task._id}` }), 0);
 });
 
-test('without one, the marketing person is asked with a To-do; only they or Admin may answer; Dispatch hears it', async () => {
+test('without one, it starts at Today — the day it reached Dispatch — and the marketing person is asked to confirm; only they or Admin may answer; Dispatch hears it', async () => {
   const { task } = await dispatchRequest();
   const ask = await eventually(() => Todo.findOne({ originKey: `delivery-urgency:${task._id}`, completed: false }).lean());
   assert.ok(ask, 'a To-do for the marketing person');
-  assert.match(ask.title, /^Set delivery urgency — ENQ-/);
+  assert.match(ask.title, /^Confirm delivery urgency — ENQ-/);
+  const fallback = (await Todo.findById(task._id).lean()).delivery;
+  assert.equal(fallback.urgency, 'today', 'the default: Today');
+  assert.equal(fallback.default, true);
+  const arrived = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(task.createdAt));
+  assert.equal(new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(fallback.dueBy)), arrived, 'due the day it reached Dispatch');
+  assert.ok(new Date(fallback.dueBy) > new Date(task.createdAt), 'never late the moment it lands');
   assert.equal(ask.priority, 'high');
   const set = (as, body) => api(`/api/workspace/todos/${task._id}/delivery`, { method: 'POST', as, body });
 
@@ -117,12 +123,14 @@ test('without one, the marketing person is asked with a To-do; only they or Admi
   assert.equal((await set('arun', { urgency: 'today' })).status, 403, 'not another marketing person');
   assert.equal((await set('nandhini', { urgency: 'next_week' })).status, 400, 'one of the five');
 
+  /* The default is changed without a reason — it was the app's, not a person's. */
   const given = await set('nandhini', { urgency: 'tomorrow' });
   assert.equal(given.status, 200, given.json.message);
   assert.equal(given.json.data.delivery.urgency, 'tomorrow');
+  assert.equal(given.json.data.delivery.default, undefined, 'no longer the default');
   assert.equal((await Todo.findById(ask._id)).completed, true, 'the To-do is done');
   const notices = (await api('/api/workspace/notices', { as: 'ravi' })).json.data;
-  assert.ok(notices.some((notice) => notice.statusLabel === 'Delivery urgency: Tomorrow'), 'Dispatch hears it');
+  assert.ok(notices.some((notice) => notice.statusLabel === 'Delivery urgency set: Today → Tomorrow'), 'Dispatch hears it');
 
   assert.equal((await set('nandhini', { urgency: 'today_evening' })).status, 400, 'a change says why');
   const changed = await set('admin', { urgency: 'top_urgent', note: 'Buyer’s truck is at the gate' });
@@ -132,7 +140,19 @@ test('without one, the marketing person is asked with a To-do; only they or Admi
   assert.match(after.updates.at(-1).note, /Delivery urgency changed: Tomorrow → Top Most Urgent — Buyer’s truck is at the gate/);
 });
 
-test('the delivery queue: late first, then Top Most Urgent, then by cut-off; no urgency yet at the foot', async () => {
+test('confirming the default keeps Today and its due time, and answers the To-do', async () => {
+  const { task } = await dispatchRequest();
+  const ask = await eventually(() => Todo.findOne({ originKey: `delivery-urgency:${task._id}`, completed: false }).lean());
+  const before = (await Todo.findById(task._id).lean()).delivery;
+  const confirmed = await api(`/api/workspace/todos/${task._id}/delivery`, { method: 'POST', as: 'nandhini', body: { urgency: 'today' } });
+  assert.equal(confirmed.status, 200, confirmed.json.message);
+  assert.equal(confirmed.json.data.delivery.default, undefined);
+  assert.equal(new Date(confirmed.json.data.delivery.dueBy).getTime(), new Date(before.dueBy).getTime(), 'the due time stands');
+  assert.match(confirmed.json.data.updates.at(-1).note, /Delivery urgency confirmed: Today/);
+  assert.equal((await Todo.findById(ask._id)).completed, true);
+});
+
+test('the delivery queue: late first, then Top Most Urgent, then by cut-off; the default sorts by its own cut-off, marked', async () => {
   await Todo.updateMany({ kind: 'invoice_dispatch' }, { $set: { completed: true } });
   const make = async (urgency) => {
     const { task } = await dispatchRequest();
@@ -151,15 +171,25 @@ test('the delivery queue: late first, then Top Most Urgent, then by cut-off; no 
   /* Cut-offs fixed against now, so the order does not depend on the hour the test runs. */
   await Todo.updateOne({ _id: evening }, { $set: { 'delivery.dueBy': new Date(Date.now() + 2 * 3600000) } });
   await Todo.updateOne({ _id: tomorrow }, { $set: { 'delivery.dueBy': new Date(Date.now() + 26 * 3600000) } });
+  await Todo.updateOne({ _id: unset }, { $set: { 'delivery.dueBy': new Date(Date.now() + 3 * 3600000) } });
 
   const reply = await api('/api/dispatch-planning/queue', { as: 'ravi' });
   assert.equal(reply.status, 200, reply.json.message);
   const order = reply.json.data.map((row) => String(row.task._id));
-  assert.deepEqual(order, [late, top, morning, evening, tomorrow, unset].filter((id) => order.includes(id)));
+  assert.deepEqual(order, [late, top, morning, evening, unset, tomorrow].filter((id) => order.includes(id)));
   assert.equal(order.length, 6);
   const first = reply.json.data[0];
   assert.equal(first.delivery.late, true);
   assert.equal(first.delivery.label, 'Today Morning');
   assert.equal(first.delivery.by, 'Nandhini S');
-  assert.equal(reply.json.data.at(-1).delivery, null, 'still to be given');
+  /* The row carries the request whole, so Dispatch moves its status from the queue; only marketing or Admin is offered the urgency. */
+  assert.equal(first.task.kind, 'invoice_dispatch');
+  assert.ok(Array.isArray(first.task.updates) && first.task.department === 'despatch');
+  assert.ok(reply.json.data.every((row) => row.maySetUrgency === false), 'Dispatch reads the urgency, never sets it');
+  const asMarketing = (await api('/api/dispatch-planning/queue', { as: 'nandhini' })).json.data;
+  assert.ok(asMarketing.every((row) => row.maySetUrgency === true), 'her own buyers');
+  const fallback = reply.json.data.find((row) => String(row.task._id) === unset).delivery;
+  assert.equal(fallback.label, 'Today');
+  assert.equal(fallback.default, true, 'marked as the default');
+  assert.equal(fallback.by, null);
 });
