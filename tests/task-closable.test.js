@@ -9,6 +9,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { dispatchLoad } from './support/dispatchLoad.mjs';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
@@ -30,7 +31,10 @@ const api = async (path, { method = 'GET', body, as } = {}) => {
   });
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
-const move = (task, as, status, { models, note = 'Moving it on', ...rest } = {}) => api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, note, ...(models ? { models } : {}), ...rest } });
+/* A load goes through the dispatch form, with its LR copy [support/dispatchLoad.mjs]. */
+const move = (task, as, status, { models, note = 'Moving it on', ...rest } = {}) => (['part_dispatched', 'fully_dispatched', 'dispatched'].includes(status)
+  ? dispatchLoad({ baseUrl, token: token[as], taskId: task, status, note })
+  : api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, note, ...(models ? { models } : {}), ...rest } }));
 const soon = () => new Date(Date.now() + 3 * 86400000).toISOString();
 
 async function enquiryWith(items) {

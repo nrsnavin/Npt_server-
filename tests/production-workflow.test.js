@@ -10,6 +10,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { dispatchLoad } from './support/dispatchLoad.mjs';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
@@ -223,7 +224,10 @@ test('marketing’s enquiry list shows the stage, the mould’s ERD, Production�
 /* ------------------------------ The Dispatch team ------------------------------ */
 
 let dispatchTask;
-const dispatchMove = (as, status, extra = {}) => api(`/api/workspace/todos/${dispatchTask._id}/status`, { method: 'POST', as, body: { status, ...extra } });
+/* A load goes through the dispatch form, with its LR copy [support/dispatchLoad.mjs]. */
+const dispatchMove = (as, status, extra = {}) => (['part_dispatched', 'fully_dispatched', 'dispatched'].includes(status)
+  ? dispatchLoad({ baseUrl, token: token[as], taskId: dispatchTask._id, status, note: extra.note })
+  : api(`/api/workspace/todos/${dispatchTask._id}/status`, { method: 'POST', as, body: { status, ...extra } }));
 const ask = (as, body) => api(`/api/workspace/todos/${dispatchTask._id}/ask`, { method: 'POST', as, body });
 
 test('the dispatch request offers the plant’s schedules and bookings; the task starts at Dispatch Request Received', async () => {
@@ -822,7 +826,9 @@ test('Dispatch marking it Dispatched hands Reception the LR copy, with the dispa
   const sent = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Send the lot', brief: { quantity: '4000', schedule: 'Today Dispatch' } } });
   assert.equal(sent.status, 201, sent.json.message);
   const dispatchId = sent.json.data.task._id;
-  const move = (status, note) => api(`/api/workspace/todos/${dispatchId}/status`, { method: 'POST', as: 'ravi', body: { status, note } });
+  const move = (status, note) => (['part_dispatched', 'fully_dispatched', 'dispatched'].includes(status)
+    ? dispatchLoad({ baseUrl, token: token.ravi, taskId: dispatchId, status, note })
+    : api(`/api/workspace/todos/${dispatchId}/status`, { method: 'POST', as: 'ravi', body: { status, note } }));
 
   assert.equal((await move('dispatched', 'Left with VRL, vehicle TN39 AB 1234')).status, 200);
   /* Dispatched is one marketing and Admin hear [handoff.service `ADMIN_MARKETING_NOTICES`]. */

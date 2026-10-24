@@ -13,6 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
+import { dispatchLoad } from './support/dispatchLoad.mjs';
 
 process.env.RATE_LIMIT_MAX = '100000';
 process.env.JWT_SECRET = 'records-test-secret';
@@ -567,7 +568,7 @@ test('a rejected lot warns Dispatch on the open request — and the request stil
   assert.deepEqual(stop.qc.failed, ['Breaking strength']);
   const details = (await api(`/api/orders/${order._id}/dispatch-details`, { as: 'nandhini' })).json.data;
   assert.equal(details.requests[0].qc.number, rejected.json.data.number);
-  const moved = await api(`/api/workspace/todos/${request._id}/status`, { method: 'POST', as: 'ravi', body: { status: 'dispatched', note: 'Buyer accepted it as is' } });
+  const moved = await dispatchLoad({ baseUrl, token: token.ravi, taskId: request._id, status: 'dispatched', note: 'Buyer accepted it as is' });
   assert.equal(moved.status, 200, moved.json.message);
 
   /* An incoming-material check is not about the goods going out: no warning. */
@@ -741,7 +742,7 @@ test('a task names which SO it is for when the enquiry has several', async () =>
   const second = first._id;
   const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Send SO 1', brief: {}, order: String(second) } });
   assert.equal(sent.status, 201, sent.json.message);
-  const moved = await api(`/api/workspace/todos/${sent.json.data.task._id}/status`, { method: 'POST', as: 'ravi', body: { status: 'dispatched', note: 'Gone' } });
+  const moved = await dispatchLoad({ baseUrl, token: token.ravi, taskId: sent.json.data.task._id, status: 'dispatched', note: 'Gone' });
   assert.equal(moved.status, 200, moved.json.message);
   const lr = await Todo.findOne({ enquiry: enquiry._id, kind: 'lr_copy', completed: false }).lean();
   assert.equal(String(lr.order), String(second), 'the LR copy is for the SO that went');

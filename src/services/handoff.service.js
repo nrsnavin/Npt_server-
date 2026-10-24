@@ -1428,7 +1428,7 @@ async function answerParent(clarification, user, text) {
  * enquiry's marketing person, due today, with the comment. The status reached by uploading the
  * work (SO Prepared) is not chosen here — see `finishWithResult`.
  */
-export async function setTaskStatus(task, user, { status, note, date, fields, models }) {
+export async function setTaskStatus(task, user, { status, note, date, fields, models, load = null }) {
   openHandoff(task, user);
   const form = findHandoff(task.kind)?.form || {};
   const step = statusesOf(task).find((entry) => entry.key === status);
@@ -1537,8 +1537,8 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   /* A status with a word for marketing — Part Quantity Dispatched reads Part sent on the enquiry [config/marketingStatuses.js]. */
   if (step.marketing && task.enquiry) await reachEnquiry(task, user, { marketing: step.marketing }, text ? `${said}: ${text}` : said);
-  /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once. */
-  if (step.next && !step.pdf) {
+  /* A status that hands on (Dispatched → Reception's LR copy) raises the next task, once — a load with no transporter has no LR to send. */
+  if (step.next && !step.pdf && !(load && load.mode !== 'transporter')) {
     if (task.enquiry) await raiseNextFrom(task, user, step, text);
     /* A job with no enquiry goes on the same way: Dispatched gives Reception the LR copy. */
     else await raiseNextOnChain(task, user, step, text);
@@ -1694,6 +1694,104 @@ const goesOnFrom = (task, row) => {
   if (task.kind === 'ask_printing') return Boolean(row.assembly);
   return false;
 };
+/**
+ * What the dispatch form offers for a Dispatch request [web: DispatchLoadDialog]: each model with
+ * the pieces ordered and already sent in earlier loads, whether it is ready, the dispatch plan
+ * (together, or each model as it is ready), and the modes of travel with the paper each needs.
+ * The models are the order's lines, else the enquiry's items, else the request's own.
+ */
+export async function dispatchSheet(task) {
+  if (task.kind !== 'invoice_dispatch') fail('Only a Dispatch request is dispatched from the form');
+  const { default: SalesOrder } = await import('../models/SalesOrder.js');
+  const enquiryId = task.enquiry?._id || task.enquiry || null;
+  const order = task.order
+    ? await SalesOrder.findById(task.order?._id || task.order).select('number lines.modelNumber lines.quantity').lean()
+    : enquiryId ? await SalesOrder.findOne({ enquiry: enquiryId, status: { $ne: 'cancelled' } }).sort({ createdAt: -1 }).select('number lines.modelNumber lines.quantity').lean() : null;
+  const enquiry = enquiryId ? await Enquiry.findById(enquiryId).select('items requirement dispatchPlan').lean() : null;
+  const ordered = new Map();
+  const add = (model, quantity) => {
+    const name = String(model || '').trim();
+    if (!name) return;
+    ordered.set(name, (ordered.get(name) || 0) + (Number(quantity) || 0));
+  };
+  if (order?.lines?.length) for (const line of order.lines) add(line.modelNumber, line.quantity);
+  else if (enquiry?.items?.length) for (const item of enquiry.items) add(item.modelNumber, item.quantity);
+  if (!ordered.size) {
+    const named = String(task.brief?.models || task.brief?.model || enquiry?.requirement?.modelNumber || '').split(',').map((entry) => entry.trim()).filter(Boolean);
+    for (const model of named) add(model, named.length === 1 ? briefQuantity(task.brief) : 0);
+  }
+  const sent = new Map();
+  for (const load of task.loads || []) for (const line of load.lines || []) sent.set(line.model, (sent.get(line.model) || 0) + (line.quantity || 0));
+  const readiness = enquiryId ? await modelReadiness(enquiryId) : { ready: [], waiting: [] };
+  const waiting = new Set((readiness.waiting || []).map((row) => row.model));
+  return {
+    plan: enquiry?.dispatchPlan?.mode === 'by_model' ? 'by_model' : 'together',
+    order: order ? { _id: order._id, number: order.number } : null,
+    models: [...ordered].map(([model, quantity]) => ({
+      model, ordered: quantity, sent: sent.get(model) || 0,
+      ready: !waiting.has(model),
+    })),
+    modes: findHandoff(task.kind)?.form?.dispatchModes || [],
+    loads: (task.loads || []).length,
+  };
+}
+
+/**
+ * A load sent on a Dispatch request, from the dispatch form: the models ticked and the pieces of
+ * each, how it travels, and the paper proving it, already stored [handoff.controller
+ * `handoffDispatchLoad`]. The task moves to the status (Part Quantity Dispatched, Fully Dispatched
+ * or Dispatched) with the models and pieces on the move; the load is kept on the task, the paper
+ * among its documents. A transporter's LR copy goes on to Reception's LR Copy task, marked LR Copy
+ * Received for Reception to send to the buyer; a load in the plant's own vehicle, or collected by
+ * the party, raises no LR task — its proof of delivery is the record.
+ */
+export async function recordDispatchLoad(task, user, { status, lines, mode, note, attachmentId }) {
+  if (task.kind !== 'invoice_dispatch') fail('Only a Dispatch request is dispatched from the form');
+  const step = statusesOf(task).find((entry) => entry.key === status);
+  if (!step?.loads) fail('Pick Part Quantity Dispatched, Fully Dispatched or Dispatched');
+  const modes = findHandoff(task.kind)?.form?.dispatchModes || [];
+  const how = modes.find((entry) => entry.key === mode);
+  if (!how) fail(`Say how it travels — ${modes.map((entry) => entry.label).join(', ')}`);
+  if (!attachmentId) fail(`Upload the ${how.proofLabel.toLowerCase()} with the load`);
+  const given = (Array.isArray(lines) ? lines : [])
+    .map((line) => ({ model: String(line?.model || '').trim(), quantity: Number(String(line?.quantity ?? '').replace(/,/g, '')) }))
+    .filter((line) => line.model);
+  if (!given.length) fail('Tick the models going in this load');
+  const bad = given.find((line) => !(line.quantity > 0));
+  if (bad) fail(`Give the pieces of ${bad.model} going in this load`);
+  const sheet = await dispatchSheet(task);
+  const known = new Set(sheet.models.map((row) => row.model.toLowerCase()));
+  const stranger = known.size && given.find((line) => !known.has(line.model.toLowerCase()));
+  if (stranger) fail(`${stranger.model} is not on this order`);
+  const pieces = given.reduce((sum, line) => sum + line.quantity, 0);
+  const said = `${given.map((line) => `${line.model} ${line.quantity.toLocaleString('en-IN')} pcs`).join(' · ')} — ${how.label}, ${how.proofLabel.toLowerCase()} attached`;
+  const text = [String(note || '').trim(), said].filter(Boolean).join(' — ');
+  task.loads = [...(task.loads || []), { status, lines: given, mode, attachment: attachmentId, note: String(note || '').trim() || undefined, by: user._id, at: new Date() }];
+  const moved = await setTaskStatus(task, user, {
+    status, note: text,
+    fields: { modelsSent: given.map((line) => line.model).join(', '), piecesSent: String(pieces) },
+    load: { mode },
+  });
+  /* The transporter's LR copy is Reception's to send: on its LR Copy task, received and ready to go. */
+  if (mode === 'transporter') await lrToReception(moved || task, user, attachmentId, said);
+  return moved || task;
+}
+
+/** The LR copy uploaded with a load, onto Reception's open LR Copy task: LR Copy Received, Reception sends it to the buyer. */
+async function lrToReception(task, user, attachmentId, said) {
+  const where = task.enquiry ? { enquiry: task.enquiry?._id || task.enquiry } : { chain: task.chain || task._id };
+  const lr = await Todo.findOne({ ...where, kind: 'lr_copy', completed: false });
+  if (!lr) return null;
+  const line = `LR copy uploaded by ${user.name} (Dispatch) with the load: ${said} — send it to the buyer`;
+  lr.resultFile = attachmentId;
+  lr.status = 'received';
+  lr.statusHistory = [...(lr.statusHistory || []), { status: 'received', note: line, by: user._id, at: new Date() }];
+  lr.updates = [...(lr.updates || []), { kind: 'uploaded', statusLabel: 'LR Copy Received', text: said, note: line, by: user._id, at: new Date() }];
+  await lr.save();
+  await publish(EVENTS.HANDOFF_UPDATED, { task: lr, by: user });
+  return lr;
+}
+
 /** A task whose workflow ends by uploading its PDF (the sales order). */
 const finishedByUpload = (task) => (findHandoff(task.kind)?.form?.statuses || []).some((step) => step.pdf && step.done);
 

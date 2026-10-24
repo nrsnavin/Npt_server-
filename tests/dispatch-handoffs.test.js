@@ -8,6 +8,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { dispatchLoad } from './support/dispatchLoad.mjs';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
@@ -39,7 +40,10 @@ const raise = async (enquiry, kind, brief = {}) => {
   assert.equal(sent.status, 201, sent.json.message);
   return sent.json.data.task._id;
 };
-const move = (as, task, status, note = 'Moved on') => api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, note } });
+/* A load (Part Quantity Dispatched, Fully Dispatched, Dispatched) goes through the dispatch form, with its LR copy [support/dispatchLoad.mjs]. */
+const move = (as, task, status, note = 'Moved on') => (['part_dispatched', 'fully_dispatched', 'dispatched'].includes(status)
+  ? dispatchLoad({ baseUrl, token: token[as], taskId: task, status, note })
+  : api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, note } }));
 
 test.before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -148,7 +152,9 @@ test('a part load raises Reception’s LR copy; the next load tells that LR task
   assert.equal(rest.status, 200, rest.json.message);
   const after = await Todo.find({ enquiry: enquiry._id, kind: 'lr_copy', completed: false }).lean();
   assert.equal(after.length, 1, 'still one LR task');
-  assert.match(after[0].updates.at(-1).note, /Fully Dispatched by Ravi Despatch.*Remaining 12,000 by KPN/);
+  assert.ok(after[0].updates.some((entry) => /Fully Dispatched by Ravi Despatch.*Remaining 12,000 by KPN/.test(entry.note)), 'told of the further load');
+  assert.match(after[0].updates.at(-1).note, /LR copy uploaded by Ravi Despatch \(Dispatch\) with the load/, 'with its LR copy, for Reception to send');
+  assert.equal(after[0].status, 'received');
 });
 
 test('the department that asked hears every move on the task it asked for', async () => {
@@ -223,4 +229,51 @@ test('Done on a readiness query reads Ready Now and answers the team that asked'
   const query = await Todo.findById(asked.json.raised._id).lean();
   assert.equal(query.status, 'ready_now');
   assert.equal((await Todo.findById(dispatch).lean()).status, 'waiting_vehicle');
+});
+
+test('a load is sent from the dispatch form: models and pieces, how it travels, and its LR copy or proof of delivery', async () => {
+  const enquiry = await enquiryFor('Form Knits', '9840030091');
+  const dispatch = await raise(enquiry, 'invoice_dispatch', { quantity: '5000' });
+  /* A bare status is refused: the form is the only way a load is said. */
+  const bare = await api(`/api/workspace/todos/${dispatch}/status`, { method: 'POST', as: 'ravi', body: { status: 'dispatched', note: 'Gone' } });
+  assert.equal(bare.status, 400);
+  assert.match(bare.json.message, /given from the dispatch form/);
+  const sheet = (await api(`/api/workspace/todos/${dispatch}/dispatch`, { as: 'ravi' })).json.data;
+  assert.deepEqual(sheet.modes.map((mode) => [mode.key, mode.proofLabel]), [['transporter', 'LR copy'], ['own_vehicle', 'Proof of delivery'], ['party_collects', 'Signed receipt / photo']]);
+  assert.equal(sheet.plan, 'together');
+  assert.deepEqual(sheet.models.map((row) => row.model), ['NH-400']);
+
+  const send = (fields, file = true) => {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) form.append(key, typeof value === 'string' ? value : JSON.stringify(value));
+    if (file) form.append('file', new Blob(['%PDF-1.4 pod'], { type: 'application/pdf' }), 'pod.pdf');
+    return fetch(`${baseUrl}/api/workspace/todos/${dispatch}/dispatch`, { method: 'POST', headers: { Authorization: `Bearer ${token.ravi}` }, body: form })
+      .then(async (response) => ({ status: response.status, json: await response.json() }));
+  };
+  assert.equal((await send({ status: 'part_dispatched', mode: 'own_vehicle', lines: [{ model: 'NH-400', quantity: 2000 }] }, false)).status, 400, 'no proof of delivery, no load');
+  assert.equal((await send({ status: 'part_dispatched', mode: 'by_air', lines: [{ model: 'NH-400', quantity: 2000 }] })).status, 400, 'a mode the plant uses');
+  assert.equal((await send({ status: 'part_dispatched', mode: 'own_vehicle', lines: [] })).status, 400, 'tick the models');
+  assert.equal((await send({ status: 'part_dispatched', mode: 'own_vehicle', lines: [{ model: 'NOPE-1', quantity: 10 }] })).status, 400, 'only the order’s models');
+
+  /* Our own vehicle: the proof of delivery is the record — no LR task for Reception. */
+  const own = await send({ status: 'part_dispatched', mode: 'own_vehicle', lines: [{ model: 'NH-400', quantity: 2000 }], note: 'TN 39 AB 4521' });
+  assert.equal(own.status, 200, own.json.message);
+  assert.equal(own.json.data.status, 'part_dispatched');
+  assert.equal(own.json.data.loads.length, 1);
+  assert.deepEqual([own.json.data.loads[0].mode, own.json.data.loads[0].lines[0].quantity], ['own_vehicle', 2000]);
+  assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'lr_copy' }), 0, 'no LR to send for our own delivery');
+  const papers = (await api(`/api/workspace/todos/${dispatch}/documents`, { as: 'ravi' })).json.data;
+  assert.equal(papers[0].docType, 'proof_of_delivery');
+  assert.equal((await api(`/api/workspace/todos/${dispatch}/dispatch`, { as: 'ravi' })).json.data.models[0].sent, 2000, 'the sheet counts what has gone');
+
+  /* By transporter: the LR copy goes to Reception's LR Copy task, received, for Reception to send. */
+  const rest = await send({ status: 'fully_dispatched', mode: 'transporter', lines: [{ model: 'NH-400', quantity: 3000 }] });
+  assert.equal(rest.status, 200, rest.json.message);
+  const lr = await Todo.findOne({ enquiry: enquiry._id, kind: 'lr_copy', completed: false });
+  assert.ok(lr?.resultFile, 'the LR copy is on Reception’s task');
+  assert.equal(lr.status, 'received');
+  const sent = await api(`/api/workspace/todos/${lr._id}/result/send`, { method: 'POST', as: 'rekha' });
+  assert.equal(sent.status, 200, sent.json.message);
+  assert.ok(Array.isArray(sent.json.sent), 'said per channel');
+  assert.equal((await api(`/api/workspace/todos/${lr._id}/result/send`, { method: 'POST', as: 'ravi' })).status, 403, 'Reception sends it');
 });

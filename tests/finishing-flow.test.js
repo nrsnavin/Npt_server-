@@ -14,6 +14,7 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { dispatchLoad } from './support/dispatchLoad.mjs';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
@@ -35,9 +36,12 @@ const api = async (path, { method = 'GET', body, as } = {}) => {
   });
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
-const move = (task, as, status, { models, note = 'Moving it on', fields } = {}) => api(`/api/workspace/todos/${task._id || task}/status`, {
-  method: 'POST', as, body: { status, note, ...(models ? { models } : {}), ...(fields ? { fields } : {}) },
-});
+/* A load goes through the dispatch form, with its LR copy [support/dispatchLoad.mjs]. */
+const move = (task, as, status, { models, note = 'Moving it on', fields } = {}) => (['part_dispatched', 'fully_dispatched', 'dispatched'].includes(status)
+  ? dispatchLoad({ baseUrl, token: token[as], taskId: task._id || task, status, note, models: fields?.modelsSent, pieces: fields?.piecesSent })
+  : api(`/api/workspace/todos/${task._id || task}/status`, {
+    method: 'POST', as, body: { status, note, ...(models ? { models } : {}), ...(fields ? { fields } : {}) },
+  }));
 const taskOf = (enquiry, kind, extra = {}) => Todo.findOne({ enquiry: enquiry._id, kind, ...extra }).sort({ createdAt: -1 }).lean();
 const statusOf = (task, model) => task.modelStatuses?.find((row) => row.model === model)?.status || task.status;
 const route = (production, models) => api(`/api/workspace/todos/${production._id}/routing`, { method: 'POST', as: 'siva', body: { models } });
