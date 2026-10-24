@@ -776,10 +776,14 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
    * queue the desk list did not take. Read under "To do" with the rest [web: DepartmentDashboard].
    */
   const heldIds = new Set(every.map((row) => String(row.task._id)));
-  const requests = uniqueTasks([...dashboard.queue.filter((task) => !heldIds.has(String(task._id))), ...(dashboard.jobs || [])], (task) => task._id).sort(byDue);
+  /* Accounts confirms logged payments from a list of its own, one line a payment — not as tasks among the rest [paymentGates `paymentsToConfirm`]. */
+  const paymentsToConfirm = members.includes('accounts') ? await (await import('../services/paymentGates.service.js')).paymentsToConfirm() : undefined;
+  const confirmTask = (task) => paymentsToConfirm && String(task.originKey || '').startsWith('confirm-receipt:');
+  const requests = uniqueTasks([...dashboard.queue.filter((task) => !heldIds.has(String(task._id))), ...(dashboard.jobs || [])], (task) => task._id)
+    .filter((task) => !confirmTask(task)).sort(byDue);
   /* Dispatch plans vehicles by place: the open requests in baskets of the same landmark / PIN. */
   const baskets = key === 'despatch' ? await dispatchBaskets() : undefined;
-  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, queries, attention, baskets, ...(desk ? { desk } : {}) } });
+  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, queries, attention, baskets, paymentsToConfirm, ...(desk ? { desk } : {}) } });
 });
 
 /**

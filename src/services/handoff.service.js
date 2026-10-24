@@ -1570,7 +1570,7 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   /* The sample is at the desk: it reads ready before the buyer is told so. */
   if (step.sampleReady) await readyAtDesk(task, user);
   /* Money confirmed in: a stage now covered closes this task and tells marketing to release the order [paymentGates `afterPayment`]. */
-  if (inward && !inward.again) {
+  if (inward && !inward.again && inward.order) {
     await afterPayment(inward.order._id, { by: user });
     return (await Todo.findById(task._id)) || task;
   }

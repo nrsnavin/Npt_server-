@@ -92,8 +92,21 @@ const receiptSchema = new mongoose.Schema(
     confirmed: {
       by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
       at: Date,
+      /*
+       * What Accounts read on the bank line when confirming [payment.controller `confirmReceipt`]:
+       * the UTR (or cheque / voucher number), the amount credited, the day it was credited, the
+       * account it came into, and a remark. The amount as logged is kept when the bank says otherwise.
+       */
+      reference: { type: String, trim: true, maxlength: 120 },
+      amount: Number,
+      creditedOn: Date,
+      bankAccount: { type: String, trim: true, maxlength: 120 },
+      note: { type: String, trim: true, maxlength: 500 },
+      loggedAmount: Number,
       _id: false,
     },
+    /** The Payment Collection task it was logged from — closed once Accounts confirms it [paymentGates `confirmInwardFromTask`]. */
+    loggedFrom: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
   },
   { timestamps: true }
 );

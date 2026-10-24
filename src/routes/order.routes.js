@@ -35,7 +35,7 @@ import {
 } from '../controllers/payment.controller.js';
 import { inspectionSchema } from '../validators/quality.schemas.js';
 import {
-  advanceSchema, followUpSchema, paymentContactSchema, receiptSchema, judgementSchema, rejectReceiptSchema,
+  advanceSchema, followUpSchema, paymentContactSchema, receiptSchema, judgementSchema, rejectReceiptSchema, confirmReceiptSchema,
 } from '../validators/payment.schemas.js';
 import { authenticate, requireModule } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
@@ -278,7 +278,7 @@ router.put('/payments/:id/contact', requireModule('payments', 'write'), validate
 router.post('/payments/:id/follow-ups', requireModule('payments'), validate(followUpSchema), logFollowUp);
 router.post('/payments/:id/receipts', requireModule('payments', 'write'), validate(receiptSchema), recordReceipt);
 /* Accounts has seen a collector's receipt in the bank — only then does it count at the payment gate. */
-router.post('/payments/:id/receipts/:receiptId/confirm', requireModule('payments', 'write'), confirmReceipt);
+router.post('/payments/:id/receipts/:receiptId/confirm', requireModule('payments', 'write'), validate(confirmReceiptSchema), confirmReceipt);
 router.post('/payments/:id/receipts/:receiptId/reject', requireModule('payments', 'write'), validate(rejectReceiptSchema), rejectReceipt);
 router.post('/payments/:id/judgement', requireModule('payments', 'write'), validate(judgementSchema), setJudgement);
 

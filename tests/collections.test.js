@@ -43,6 +43,10 @@ const api = async (path, { method = 'GET', body, as } = {}) => {
   });
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
+
+/* What Accounts reads on the bank line when confirming a logged payment [validators `confirmReceiptSchema`]. */
+/* Today in India — what the date box offers just after midnight there, while it is still yesterday in UTC. */
+const bankLine = (amount, reference = undefined) => ({ amount, creditedOn: new Date(Date.now() + 330 * 60 * 1000).toISOString().slice(0, 10), ...(reference ? { reference } : {}) });
 const move = (as, task, status, note, date) =>
   api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, ...(note ? { note } : {}), ...(date ? { date } : {}) } });
 const noticesOf = async (as) => (await api('/api/workspace/notices', { as })).json.data;
@@ -287,13 +291,13 @@ test('PRT works the case in the field; what it collects waits for Accounts befor
 
   /* PRT cannot confirm its own receipt; Accounts can, once. */
   const receiptId = recorded.json.data.receipts[0]._id;
-  assert.equal((await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'senthil' })).status, 403);
-  assert.equal((await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'vijay' })).status, 403);
-  const confirmed = await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'kiran' });
+  assert.equal((await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'senthil', body: bankLine(20000) })).status, 403);
+  assert.equal((await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'vijay', body: bankLine(20000) })).status, 403);
+  const confirmed = await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(20000) });
   assert.equal(confirmed.status, 200, confirmed.json.message);
   assert.equal(confirmed.json.data.receipts[0].confirmed.by.name, 'Kiran Accounts');
   assert.equal(confirmed.json.data.awaitingConfirmation, 0);
-  const again = await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'kiran' });
+  const again = await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(20000) });
   assert.equal(again.json.replayed, true);
   standing = await paymentStanding(await SalesOrder.findById(order._id));
   assert.equal(standing.dispatch.met, true, 'confirmed money opens the gate');
@@ -419,9 +423,10 @@ test('the Payment Collection, PRT and Accounts desks read as tables: what is due
   assert.equal(visit.money.collected, 0);
 });
 
-test('a job the app raises for a department with no task form — "Confirm the payment in the bank" — is on that desk’s To do', async () => {
+test('a job the app raises for a department with no task form — "Check the GST on SO-…" — is on that desk’s To do', async () => {
+  /* Not a payment to confirm: those are Accounts' own list [payment-gates.test.js]. */
   const { raiseDepartmentTask } = await import('../src/services/task.service.js');
-  const job = await raiseDepartmentTask({ department: 'accounts', title: 'Confirm the payment in the bank — RCV-TEST-1', notes: '₹5,000 · UPI', dueDate: new Date(), originKey: 'confirm-receipt:test-1' });
+  const job = await raiseDepartmentTask({ department: 'accounts', title: 'Check the GST on SO-TEST-1', notes: 'Buyer moved state', dueDate: new Date(), originKey: 'gst-check:test-1' });
   const desk = (await api('/api/departments/accounts/dashboard', { as: 'kiran' })).json.data;
   assert.ok(desk.requests.some((task) => String(task._id) === String(job._id)), 'on the Accounts desk');
   assert.ok(!desk.enquiries.some((row) => String(row.task._id) === String(job._id)), 'not counted twice');

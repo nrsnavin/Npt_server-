@@ -42,6 +42,10 @@ const api = async (path, { method = 'GET', body, as = 'nandhini' } = {}) => {
   });
   return { status: response.status, json: await response.json().catch(() => ({})) };
 };
+
+/* What Accounts reads on the bank line when confirming a logged payment [validators `confirmReceiptSchema`]. */
+/* Today in India — what the date box offers just after midnight there, while it is still yesterday in UTC. */
+const bankLine = (amount, reference = undefined) => ({ amount, creditedOn: new Date(Date.now() + 330 * 60 * 1000).toISOString().slice(0, 10), ...(reference ? { reference } : {}) });
 const send = (enquiry, kind, as = 'nandhini', extra = {}) =>
   api(`/api/enquiries/${enquiry}/handoffs`, { method: 'POST', as, body: { kind, note: `${kind} please`, ...extra } });
 const done = (task, as, body) => api(`/api/workspace/todos/${task._id}/done`, { method: 'POST', as, body });
@@ -201,8 +205,8 @@ test('production waits for the advance; when Payment Collection records it, the 
   let rcv = (await api(`/api/enquiries/${enquiry}/handoffs`, { as: 'nandhini' })).json.payments.find((row) => row.number === advance.number);
   assert.deepEqual([rcv.kind, rcv.value, rcv.received, rcv.confirmed], ['advance', 3750, 3750, 0]);
   assert.deepEqual(rcv.receipts.map((row) => [row.amount, row.mode, row.reference, row.by, row.confirmed]), [[3750, 'neft', 'UTR123', 'Vijay Collections', false]]);
-  assert.equal((await api(`/api/payments/${advance._id}/receipts/${paid.json.data.receipts[0]._id}/confirm`, { method: 'POST', as: 'vijay' })).status, 403, 'Payment Collection logs; Accounts confirms');
-  const confirmed = await api(`/api/payments/${advance._id}/receipts/${paid.json.data.receipts[0]._id}/confirm`, { method: 'POST', as: 'kiran' });
+  assert.equal((await api(`/api/payments/${advance._id}/receipts/${paid.json.data.receipts[0]._id}/confirm`, { method: 'POST', as: 'vijay', body: bankLine(3750, 'UTR123') })).status, 403, 'Payment Collection logs; Accounts confirms');
+  const confirmed = await api(`/api/payments/${advance._id}/receipts/${paid.json.data.receipts[0]._id}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(3750, 'UTR123') });
   assert.equal(confirmed.status, 200, confirmed.json.message);
   assert.equal(await Todo.exists({ department: 'accounts', originKey: `confirm-receipt:${advance._id}`, completed: false }), null, 'Accounts’ task is done');
   rcv = (await api(`/api/enquiries/${enquiry}/handoffs`, { as: 'nandhini' })).json.payments.find((row) => row.number === advance.number);
@@ -316,12 +320,13 @@ test('release refused for the advance: Payment Collection logs the payment on it
 
   /* Accounts confirms both: the collection task closes; the SO team and marketing are told to release it. */
   for (const receipt of advance.receipts) {
-    const confirmed = await api(`/api/payments/${advance._id}/receipts/${receipt._id}/confirm`, { method: 'POST', as: 'kiran' });
+    const confirmed = await api(`/api/payments/${advance._id}/receipts/${receipt._id}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(receipt.amount, receipt.reference) });
     assert.equal(confirmed.status, 200, confirmed.json.message);
   }
   assert.equal(await Todo.exists({ department: 'accounts', originKey: `confirm-receipt:${advance._id}`, completed: false }), null);
   advance = await Receivable.findOne({ order: order._id, kind: 'advance' }).lean();
-  assert.deepEqual(advance.followUps.slice(-2).map((row) => [row.note.split(' — ')[0], row.status]), [['Payment logged: ₹1,000 · UPI · ref UPI-77', 'part_paid'], ['Payment logged: ₹2,750 · NEFT · ref UTR-991', undefined]]);
+  assert.deepEqual(advance.followUps.slice(-4, -2).map((row) => [row.note.split(' — ')[0], row.status]), [['Payment logged: ₹1,000 · UPI · ref UPI-77', 'part_paid'], ['Payment logged: ₹2,750 · NEFT · ref UTR-991', undefined]]);
+  assert.deepEqual(advance.followUps.slice(-2).map((row) => row.note.replace(/ · credited \d{4}-\d{2}-\d{2}$/, '')), ['Confirmed in the bank: ₹1,000 · UTR UPI-77', 'Confirmed in the bank: ₹2,750 · UTR UTR-991'], 'and what Accounts saw');
   assert.ok(await until(async () => (await Todo.findById(task._id)).completed), 'the chase closes');
   assert.ok(await until(async () => Todo.exists({ user: id.admin, title: new RegExp(`Advance received on ${order.number} — release it to production`), link: `/orders/${order._id}` })));
   assert.ok(await until(async () => Todo.exists({ department: 'order_confirmation', title: `Advance confirmed on ${order.number} — release it to production`, completed: false })), 'the SO team hears it');
@@ -420,9 +425,84 @@ test('an SO with an advance in its terms: Payment Collection gets the task on up
   assert.equal(logged.status, 200, logged.json.message);
   assert.equal((await SalesOrder.findById(order._id)).status === 'approved_for_production', false, 'logged is not confirmed — still waits');
   const advance = await Receivable.findOne({ order: order._id, kind: 'advance' }).lean();
-  const confirmed = await api(`/api/payments/${advance._id}/receipts/${advance.receipts[0]._id}/confirm`, { method: 'POST', as: 'kiran' });
+  const confirmed = await api(`/api/payments/${advance._id}/receipts/${advance.receipts[0]._id}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(2500, 'UTR-ADV-1') });
   assert.equal(confirmed.status, 200, confirmed.json.message);
   assert.ok(await until(async () => (await SalesOrder.findById(order._id)).status === 'approved_for_production'), 'released to production by itself');
   assert.ok(await until(async () => Todo.exists({ enquiry, kind: 'ask_edd', completed: false })), 'Production has its task');
   assert.ok(await until(async () => Todo.exists({ title: new RegExp(`Advance confirmed on ${order.number} — released to production`) })), 'marketing is told it went, not asked to release it');
+});
+
+test('Accounts confirms a logged payment from its own list, with the bank line; the Payment Collection task closes and its team is told', async () => {
+  const { default: TaskNotice } = await import('../src/models/TaskNotice.js');
+  const enquiry = await freshEnquiry('NH-420');
+  const order = await book(enquiry, { advancePercent: 50, beforeDispatchPercent: 50 });
+  const [task] = (await collectionTasks(order)).filter((entry) => !entry.completed);
+  const logged = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'payment_inward', note: 'NEFT in', fields: { amount: 3750, mode: 'NEFT', reference: 'UTR-A1' } } });
+  assert.equal(logged.status, 200, logged.json.message);
+
+  /* Accounts' desk: the payment on a list of its own, and its confirm task not among the other jobs. */
+  const desk = (await api('/api/departments/accounts/dashboard', { as: 'kiran' })).json.data;
+  const line = desk.paymentsToConfirm.find((row) => row.order?.number === order.number);
+  assert.ok(line, 'listed for Accounts to confirm');
+  assert.deepEqual([line.receipt.amount, line.receipt.mode, line.receipt.reference, line.receipt.by, line.receipt.fromTask], [3750, 'neft', 'UTR-A1', 'Vijay Collections', true]);
+  assert.equal(desk.requests.some((row) => String(row.originKey || '').startsWith('confirm-receipt:')), false, 'not twice');
+  assert.equal((await api('/api/departments/payment_collection/dashboard', { as: 'vijay' })).json.data.paymentsToConfirm, undefined, 'Accounts’ list only');
+
+  const confirmAt = (body) => api(`/api/payments/${line.receivable._id}/receipts/${line.receipt._id}/confirm`, { method: 'POST', as: 'kiran', body });
+  /* The bank line: UTR, amount and the day are asked for. */
+  assert.equal((await confirmAt({ amount: 3750 })).status, 400, 'the day credited is asked');
+  const noUtr = await confirmAt({ amount: 3750, creditedOn: '2026-10-20' });
+  assert.equal(noUtr.status, 400);
+  assert.match(noUtr.json.message, /UTR/);
+  const later = await confirmAt({ amount: 3750, creditedOn: new Date(Date.now() + 2 * 24 * 3600 * 1000).toISOString().slice(0, 10), reference: 'UTR-A1' });
+  assert.equal(later.status, 400);
+  assert.match(later.json.message, /cannot be in the future/);
+  assert.equal((await Todo.findById(task._id)).completed, false, 'nothing moved');
+
+  /* The bank shows ₹3,500: that is what counts, the logged ₹3,750 kept beside it. */
+  const confirmed = await confirmAt({ amount: 3500, creditedOn: '2026-10-20', reference: 'UTR-A1', bankAccount: 'HDFC 1234', note: 'Bank charges deducted' });
+  assert.equal(confirmed.status, 200, confirmed.json.message);
+  const receipt = confirmed.json.data.receipts.find((row) => String(row._id) === String(line.receipt._id));
+  assert.equal(receipt.amount, 3500);
+  assert.deepEqual([receipt.confirmed.reference, receipt.confirmed.amount, receipt.confirmed.bankAccount, receipt.confirmed.loggedAmount], ['UTR-A1', 3500, 'HDFC 1234', 3750]);
+  assert.equal(new Date(receipt.receivedAt).toISOString().slice(0, 10), '2026-10-20', 'the day the bank credited it');
+
+  /* The task it was logged from is closed, with what Accounts saw; whoever logged it hears so. */
+  const closed = await Todo.findById(task._id).lean();
+  assert.equal(closed.completed, true, 'Payment Collection’s task closes on the confirmation');
+  assert.ok(JSON.stringify(closed).includes('Accounts confirmed the payment: ₹3,500 · UTR UTR-A1 · credited 2026-10-20 · into HDFC 1234 · logged as ₹3,750'));
+  const notice = await TaskNotice.findOne({ task: task._id, recipient: id.vijay }).lean();
+  assert.ok(notice, 'Payment Collection is told');
+  assert.match(notice.statusLabel, /^Payment confirmed by Accounts — task closed/);
+  assert.equal(await TaskNotice.exists({ task: task._id, recipient: id.kiran }), null, 'not the one who confirmed');
+
+  /* ₹250 is still short before production: a fresh task for what is left. */
+  assert.ok(await until(async () => (await collectionTasks(order)).some((entry) => !entry.completed && /^Collect ₹250 before production/.test(entry.title))), 'the rest goes back on the desk');
+  const after = (await api('/api/departments/accounts/dashboard', { as: 'kiran' })).json.data;
+  assert.equal(after.paymentsToConfirm.some((row) => String(row.receipt._id) === String(line.receipt._id)), false, 'off the list');
+});
+
+test('an invoice chase with no advance on the order: Payment Collection logs the payment against the oldest invoice owed, and Accounts’ confirmation closes the task', async () => {
+  const enquiry = await freshEnquiry('NH-430');
+  const order = await book(enquiry, { advancePercent: 0, beforeDispatchPercent: 0 });
+  const invoice = await Receivable.create({
+    number: `RCV-INV-${Date.now()}`, kind: 'invoice', customer: order.customer?._id || order.customer, order: order._id,
+    invoice: { number: 'NPT/INV/77', value: 9000, date: new Date() }, dueBy: new Date(), assignedTo: id.admin,
+  });
+  const task = await Todo.create({
+    department: 'payment_collection', kind: 'team_payment_followup', title: 'Team Payment Follow-up — NPT/INV/77',
+    order: order._id, customer: order.customer?._id || order.customer, createdBy: id.admin,
+  });
+  const move = (fields) => api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'payment_inward', note: 'Paid by NEFT', fields } });
+  const tooMuch = await move({ amount: 9500, mode: 'NEFT', reference: 'UTR-I1' });
+  assert.equal(tooMuch.status, 400);
+  assert.match(tooMuch.json.message, /more than the ₹9,000 still owed on NPT\/INV\/77/);
+  const logged = await move({ amount: 9000, mode: 'NEFT', reference: 'UTR-I1' });
+  assert.equal(logged.status, 200, logged.json.message);
+  const receipt = (await Receivable.findById(invoice._id).lean()).receipts[0];
+  assert.deepEqual([receipt.amount, receipt.reference, String(receipt.loggedFrom)], [9000, 'UTR-I1', String(task._id)], 'on the invoice, from the task');
+  assert.equal((await Todo.findById(task._id)).completed, false, 'open until Accounts confirms');
+  const confirmed = await api(`/api/payments/${invoice._id}/receipts/${receipt._id}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(9000, 'UTR-I1') });
+  assert.equal(confirmed.status, 200, confirmed.json.message);
+  assert.equal((await Todo.findById(task._id)).completed, true, 'closed on the confirmation');
 });

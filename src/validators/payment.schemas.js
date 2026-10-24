@@ -55,6 +55,19 @@ export const receiptSchema = z.strictObject({
   note: z.string().max(500).optional(),
 });
 
+/**
+ * Accounts confirms a logged payment from the bank line [payment.controller `confirmReceipt`]:
+ * the amount credited and the day, the UTR (not needed for cash — the controller asks), the
+ * account it came into and a remark.
+ */
+export const confirmReceiptSchema = z.strictObject({
+  reference: z.string().trim().max(120).optional(),
+  amount: money,
+  creditedOn: z.coerce.date(),
+  bankAccount: z.string().trim().max(120).optional(),
+  note: z.string().trim().max(500).optional(),
+});
+
 /** Admin's word on a buyer's credit. Absent clears it, and the rule's own reading shows again. */
 /** Accounts did not find a logged payment in the bank [payment.controller `rejectReceipt`]. */
 export const rejectReceiptSchema = z.strictObject({

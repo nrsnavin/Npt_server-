@@ -6,7 +6,7 @@ import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
 import { raiseDepartmentTask, raiseTask, resolveTasks } from './task.service.js';
 import { whenTransactionEnds } from '../utils/transaction.js';
-import { settleCollectionTasks } from './collections.service.js';
+import { receivablesOf, settleCollectionTasks } from './collections.service.js';
 
 /**
  * Money before work, on the order's payment terms.
@@ -125,28 +125,35 @@ const refusal = (order, stage, needed) =>
 const MODE_KEYS = { NEFT: 'neft', RTGS: 'rtgs', UPI: 'upi', CHEQUE: 'cheque', CASH: 'cash' };
 
 /**
- * Payment Collection logs the money in, from its task on the order [departmentTaskForms
- * `payment_inward`]: written as a receipt on the order's advance, and Accounts gets a task to
- * confirm it in the bank — the gate opens on what Accounts confirms. More than is owed is
- * refused, and nothing moves; a second log with the same reference is the same money, not more.
+ * Payment Collection logs the money in, from its task [departmentTaskForms `payment_inward`]:
+ * written as a receipt on the order's advance — or, where the order asks for none (an invoice
+ * chase), on the oldest invoice still owed on the task's order or buyer — and Accounts gets it
+ * on its list to confirm in the bank; the gate opens on what Accounts confirms. More than is
+ * owed is refused, and nothing moves; a second log with the same reference is the same money.
  */
 export async function confirmInwardFromTask(task, user, { amount, mode, reference, note }) {
   const orderId = task.order?._id || task.order;
-  if (!orderId) throw ApiError.badRequest('This task is not about a sales order — record the receipt in Payments instead');
-  const order = await SalesOrder.findById(orderId);
-  if (!order) throw ApiError.badRequest('The sales order on this task no longer exists');
+  const order = orderId ? await SalesOrder.findById(orderId) : null;
+  if (orderId && !order) throw ApiError.badRequest('The sales order on this task no longer exists');
   const value = round2(Number(amount));
   if (!(value > 0)) throw ApiError.badRequest('Give the amount received');
-  let receivable = await Receivable.findOne({ order: order._id, kind: 'advance' });
-  if (!receivable) {
+  let receivable = order ? await Receivable.findOne({ order: order._id, kind: 'advance' }) : null;
+  if (order && !receivable) {
     await planCollection(order, { by: user });
     receivable = await Receivable.findOne({ order: order._id, kind: 'advance' });
   }
-  if (!receivable) throw ApiError.badRequest(`${order.number} asks for no money before production or dispatch — nothing to confirm`);
+  /* No advance on the terms: the money is against the invoices this task chases. */
+  if (!receivable) {
+    [receivable] = await receivablesOf(task);
+  }
+  if (!receivable) throw ApiError.badRequest(order ? `Nothing is owed on ${order.number} — nothing to log` : 'Nothing is owed by this buyer — nothing to log');
   const ref = String(reference || '').trim();
   if (ref && receivable.receipts.some((row) => row.reference === ref && row.amount === value)) return { order, receivable, again: true };
   const owed = round2(Math.max(0, (receivable.invoice?.value || 0) - (receivable.received || 0)));
-  if (value > owed + 0.5) throw ApiError.badRequest(`That is more than the ${rupees(owed)} still owed on ${order.number}'s advance`);
+  if (value > owed + 0.5) {
+    throw ApiError.badRequest(receivable.kind === 'advance' ? `That is more than the ${rupees(owed)} still owed on ${order.number}'s advance`
+      : `That is more than the ${rupees(owed)} still owed on ${receivable.invoice?.number || receivable.number} — record the rest against the next invoice in Payments`);
+  }
   const at = new Date();
   receivable.receipts.push({
     amount: value,
@@ -155,6 +162,7 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
     reference: ref || undefined,
     note: [`Logged by Payment Collection on the task`, note].filter(Boolean).join(' — ').slice(0, 500),
     recordedBy: user._id,
+    loggedFrom: task._id,
   });
   /* Logged on the receivable beside the calls: who took it, how much, how, the UTR. */
   receivable.followUps.push(paymentLogEntry(user, { amount: value, mode, reference: ref, note }, { partial: value + 0.5 < owed }));
@@ -164,6 +172,66 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
 }
 
 export const confirmTaskKey = (receivable) => `confirm-receipt:${receivable._id}`;
+
+/**
+ * Accounts' own list [web: components/PaymentsToConfirm.jsx]: every payment logged by Payment
+ * Collection or PRT that Accounts has not yet seen in the bank — one line a payment, oldest
+ * first, with what was logged (amount, mode, UTR, day, by whom) and where it belongs (the RCV,
+ * the order, the buyer), so each is confirmed with the bank line or marked not in the bank.
+ */
+export async function paymentsToConfirm({ limit = 200 } = {}) {
+  const rows = await Receivable.find({ receipts: { $elemMatch: { 'confirmed.at': { $exists: false } } } })
+    .select('number kind customer order enquiry invoice receipts')
+    .populate([
+      { path: 'customer', select: 'name code' },
+      { path: 'order', select: 'number enquiry' },
+      { path: 'receipts.recordedBy', select: 'name' },
+    ])
+    .lean();
+  const lines = [];
+  for (const receivable of rows) {
+    for (const receipt of receivable.receipts || []) {
+      if (receipt.confirmed?.at) continue;
+      lines.push({
+        receivable: { _id: receivable._id, number: receivable.number, kind: receivable.kind },
+        order: receivable.order ? { _id: receivable.order._id, number: receivable.order.number } : null,
+        customer: receivable.customer ? { _id: receivable.customer._id, name: receivable.customer.name } : null,
+        receipt: {
+          _id: receipt._id, amount: receipt.amount, mode: receipt.mode, reference: receipt.reference || null,
+          receivedAt: receipt.receivedAt, note: receipt.note || null, loggedAt: receipt.createdAt || receipt.receivedAt,
+          by: receipt.recordedBy?.name || null, fromTask: Boolean(receipt.loggedFrom),
+        },
+      });
+    }
+  }
+  return lines.sort((a, b) => new Date(a.receipt.loggedAt) - new Date(b.receipt.loggedAt)).slice(0, limit);
+}
+
+/**
+ * Accounts confirmed a payment Payment Collection logged from its task [payment.controller
+ * `confirmReceipt`]: once every payment logged from that task is confirmed, the task closes
+ * with what Accounts saw, and whoever logged it and the task's person (or its team) are told
+ * under "Needs your action" and on their phones. Money still short on the order goes back on
+ * the desk as a fresh task for what is left [afterPayment → askForNext].
+ */
+export async function closeLoggedTask(receivable, receipt, user, said) {
+  const taskId = receipt.loggedFrom?._id || receipt.loggedFrom;
+  if (!taskId) return null;
+  const task = await Todo.findById(taskId);
+  if (!task || task.completed) return null;
+  const fromIt = receivable.receipts.filter((row) => String(row.loggedFrom?._id || row.loggedFrom || '') === String(taskId));
+  if (fromIt.some((row) => !row.confirmed?.at)) return null;
+  const { completeHandoff, noticeStatus, peopleOn } = await import('./handoff.service.js');
+  const closed = await completeHandoff(task, user, { note: `Accounts confirmed the payment: ${said}`, system: true, quiet: true });
+  const logger = receipt.recordedBy?._id || receipt.recordedBy;
+  await noticeStatus(task, user, {
+    step: { key: 'payment_confirmed', label: 'Payment confirmed by Accounts — task closed' },
+    note: said,
+    also: [logger, ...(await peopleOn(task))],
+    onlyAlso: true,
+  }).catch((error) => console.error(`[payments] confirmation notice not sent: ${error.message}`));
+  return closed;
+}
 
 /**
  * A payment logged by Payment Collection or PRT: Accounts gets a task to see it in the bank and
@@ -310,9 +378,10 @@ async function refreshGateTask(order, stage, standing) {
 /**
  * After money comes in (or a logged payment is found not to be in the bank): a stage that is now
  * paid closes its collection task and tells the marketing person and the SO team, who release the
- * order; a stage still short keeps its task saying what is still to come.
+ * order; a stage still short keeps its task saying what is still to come. `justClosed`: the
+ * collection tasks Accounts' confirmation closed already, by origin — told as closed here too.
  */
-export async function afterPayment(orderId, { by } = {}) {
+export async function afterPayment(orderId, { by, justClosed = [] } = {}) {
   let order = await SalesOrder.findById(orderId);
   if (!order) return null;
   const standing = await paymentStanding(order);
@@ -340,7 +409,8 @@ export async function afterPayment(orderId, { by } = {}) {
       await refreshGateTask(order, stage, standing);
       continue;
     }
-    const closed = await resolveTasks(gateKey(order, stage));
+    /* Closed now — or a moment ago, by Accounts' confirmation of the payment logged on it [closeLoggedTask]. */
+    const closed = (await resolveTasks(gateKey(order, stage))) || justClosed.includes(gateKey(order, stage));
     if (closed && order.assignedTo) {
       /* Still waiting at the gate: the marketing person releases it, from the order — unless it was released just now. */
       const toRelease = stage === 'production' && PRE_RELEASE_STATUSES.includes(order.status);
