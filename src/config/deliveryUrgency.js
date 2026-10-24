@@ -47,3 +47,18 @@ export function dueByFor(key, at = new Date()) {
   const cutoff = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + urgency.day, urgency.hour, 0, 0);
   return new Date(cutoff - IST_OFFSET_MS);
 }
+
+/**
+ * The urgency a Dispatch request carries until marketing or Admin gives one: Today, the day it
+ * reached Dispatch [services/deliveryUrgency.service `askForUrgency`]. Due by 7 PM that day, or by
+ * the end of that day when it came after 7 PM — a request that arrives in the evening is not late
+ * the moment it lands.
+ */
+export const DEFAULT_URGENCY = 'today';
+export function defaultDueBy(arrived = new Date()) {
+  const at = new Date(arrived);
+  const evening = dueByFor(DEFAULT_URGENCY, at);
+  if (evening && evening > at) return evening;
+  const local = new Date(at.getTime() + IST_OFFSET_MS);
+  return new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate(), 23, 59, 59) - IST_OFFSET_MS);
+}

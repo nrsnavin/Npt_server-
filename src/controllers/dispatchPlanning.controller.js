@@ -22,7 +22,7 @@ import {
 /** The delivery queue: open Dispatch requests by delivery urgency [deliveryUrgency.service]. */
 export const getDeliveryQueue = asyncHandler(async (req, res) => {
   const { deliveryQueue } = await import('../services/deliveryUrgency.service.js');
-  res.json({ success: true, data: await deliveryQueue() });
+  res.json({ success: true, data: await deliveryQueue({ user: req.user }) });
 });
 
 export const getDispatchPlan = asyncHandler(async (req, res) => {
