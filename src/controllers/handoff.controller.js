@@ -767,6 +767,16 @@ export const handoffReceipts = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await receiptsOfTask(task) });
 });
 
+/** What money taken on a Payment Collection or PRT task can go against: the buyer's dues, or on account [duesOfTask]. */
+export const handoffDues = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  if (!['team_payment_followup', 'prt_recovery'].includes(task.kind)) throw ApiError.badRequest('Only a Payment Collection or PRT task takes money in');
+  const { inDepartment, isManagement } = await import('../utils/departments.js');
+  if (!(mayWorkOnHandoff(req.user, task) || isManagement(req.user) || inDepartment(req.user, 'accounts'))) throw ApiError.forbidden('The buyer’s dues are for Payment Collection, PRT and Accounts');
+  const { duesOfTask } = await import('../services/paymentGates.service.js');
+  res.json({ success: true, data: await duesOfTask(task) });
+});
+
 /**
  * The file already on the task sent to the buyer — Reception sending the LR copy Dispatch uploaded
  * with the load [handoff.service `recordDispatchLoad`]. Said on the task as an upload would be.

@@ -672,3 +672,52 @@ test('a bounced cheque goes to PRT recovery to collect a fresh one; A/C Clarify 
   assert.equal(pc.status, 'not_in_bank');
   assert.ok(pc.updates.some((row) => /sent to PRT recovery to collect a fresh cheque/.test(row.note || '')));
 });
+
+test('a Payment Collection task with no sales order: the money goes against a due the team picks, or on account — Accounts confirms it; PRT does the same', async () => {
+  const buyer = (await api('/api/customers', { method: 'POST', body: { name: 'Team Task Traders', mobile: '9876512377', assignedTo: id.nandhini } })).json.data._id;
+  /* Marketing asks Payment Collection to collect from the buyer — no enquiry, no order. */
+  const task = await Todo.create({ department: 'payment_collection', kind: 'team_payment_followup', title: 'Collect from Team Task Traders', customer: buyer, createdBy: id.nandhini });
+  let dues = (await api(`/api/workspace/todos/${task._id}/dues`, { as: 'vijay' })).json.data;
+  assert.deepEqual([dues.dues.length, dues.onAccount], [0, true], 'nothing owed on record; on account is offered');
+
+  /* Logged with nothing picked: a receipt on account for what came in. */
+  const logged = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'payment_inward', note: 'NEFT in', fields: { amount: 12000, mode: 'NEFT', reference: 'UTR-OA1' } } });
+  assert.equal(logged.status, 200, logged.json.message);
+  const onAccount = await Receivable.findOne({ customer: buyer, kind: 'on_account' }).lean();
+  assert.ok(onAccount, 'a receipt on account');
+  assert.deepEqual([onAccount.invoice.value, onAccount.receipts[0].reference, String(onAccount.receipts[0].loggedFrom), onAccount.order], [12000, 'UTR-OA1', String(task._id), undefined]);
+  assert.ok(await Todo.exists({ department: 'accounts', originKey: `confirm-receipt:${onAccount._id}`, completed: false }), 'Accounts is asked to confirm it');
+  assert.match(JSON.stringify((await Todo.findById(task._id).lean()).updates), new RegExp(`${onAccount.number} \\(on account\\)|${onAccount.number}`));
+  /* Accounts sees it in the bank: the task closes Paid. */
+  const confirmed = await api(`/api/payments/${onAccount._id}/receipts/${onAccount.receipts[0]._id}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(12000, 'UTR-OA1') });
+  assert.equal(confirmed.status, 200, confirmed.json.message);
+  assert.ok(await until(async () => (await Todo.findById(task._id)).completed), 'closed on the confirmation');
+  assert.equal((await Todo.findById(task._id)).status, 'paid');
+  assert.equal((await api(`/api/payments/${onAccount._id}`, { as: 'kiran' })).status, 200, 'the RCV page opens without an order');
+
+  /* The buyer has an invoice owed: the team picks it on the next task. */
+  const enquiry = (await api('/api/enquiries', { method: 'POST', body: { customer: buyer, requirement: { modelNumber: 'NH-490' } } })).json.data._id;
+  const order = await book(enquiry, { advancePercent: 0, beforeDispatchPercent: 0 });
+  const invoice = await Receivable.create({ number: `RCV-TT-${Date.now()}`, kind: 'invoice', customer: buyer, order: order._id, invoice: { number: 'NPT/INV/90', value: 5000, date: new Date() }, dueBy: new Date(), assignedTo: id.nandhini });
+  const second = await Todo.create({ department: 'payment_collection', kind: 'team_payment_followup', title: 'Collect again', customer: buyer, createdBy: id.nandhini });
+  dues = (await api(`/api/workspace/todos/${second._id}/dues`, { as: 'vijay' })).json.data;
+  assert.deepEqual(dues.dues.map((row) => [row.number, row.invoiceNumber, row.balance]), [[invoice.number, 'NPT/INV/90', 5000]]);
+  const foreign = await api(`/api/workspace/todos/${second._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'payment_inward', note: 'x', fields: { amount: 100, mode: 'UPI', against: String(onAccount._id) } } });
+  assert.equal(foreign.status, 400, 'a receipt already paid is not a due');
+  const against = await api(`/api/workspace/todos/${second._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'payment_inward', note: 'Part', fields: { amount: 2000, mode: 'UPI', reference: 'UPI-TT', against: String(invoice._id) } } });
+  assert.equal(against.status, 200, against.json.message);
+  assert.equal((await Receivable.findById(invoice._id).lean()).receipts[0].amount, 2000);
+
+  /* Payment Collection cannot collect: PRT gets the case, and puts what it collects on account. */
+  const third = await Todo.create({ department: 'payment_collection', kind: 'team_payment_followup', title: 'Collect a third time', customer: buyer, createdBy: id.nandhini });
+  const escalated = await api(`/api/workspace/todos/${third._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'escalate_prt', note: 'Not answering', fields: { prtMode: 'Collect cheque' } } });
+  assert.equal(escalated.status, 200, escalated.json.message);
+  const prt = await Todo.findOne({ kind: 'prt_recovery', customer: buyer }).sort({ createdAt: -1 }).lean();
+  assert.ok(prt, 'PRT has the case');
+  assert.equal(String(prt.customer), String(buyer), 'for the same buyer');
+  const cheque = await api(`/api/workspace/todos/${prt._id}/status`, { method: 'POST', as: 'admin', body: { status: 'cheque_collected', note: 'Collected at the shop', fields: { amount: 7000, reference: 'CHQ-77', against: 'on_account' } } });
+  assert.equal(cheque.status, 200, cheque.json.message);
+  const prtReceipt = await Receivable.findOne({ customer: buyer, kind: 'on_account', task: prt._id }).lean();
+  assert.ok(prtReceipt, 'PRT’s cheque on account');
+  assert.deepEqual([prtReceipt.receipts[0].amount, prtReceipt.receipts[0].mode], [7000, 'cheque']);
+});

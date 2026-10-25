@@ -38,7 +38,7 @@ import {
 import { notificationStatus, pushKey, renewPush, sendTestNotification, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffWorkQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, setTaskJobEdd, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments, listTaskPdfs, handoffDispatchSheet, handoffDispatchLoad, handoffLoadProof, handoffReceipts, handoffSendResult, handoffShipments,
+  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffWorkQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, setTaskJobEdd, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments, listTaskPdfs, handoffDispatchSheet, handoffDispatchLoad, handoffLoadProof, handoffReceipts, handoffSendResult, handoffShipments, handoffDues,
 } from '../controllers/handoff.controller.js';
 import {
   handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, handoffAdminCloseSchema, handoffEscalateSchema, handoffEscalationResolveSchema, deliveryUrgencySchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, jobEddSchema, taskRoutingSchema, taskStatusSchema, productionQueueAddSchema, workQueueAddSchema,
@@ -124,6 +124,8 @@ router.get('/todos/:id/dispatch', handoffDispatchSheet);
 router.get('/todos/:id/shipments', handoffShipments);
 /* The payments behind a Payment Collection, PRT or A/C Clarify task, by RCV number, for Accounts to confirm. */
 router.get('/todos/:id/receipts', handoffReceipts);
+/* The buyer's dues a payment on the task can go against, or on account [paymentGates `duesOfTask`]. */
+router.get('/todos/:id/dues', handoffDues);
 router.post('/todos/:id/dispatch', singleTaskResult('file'), handoffDispatchLoad);
 /* The LR copy / proof and details added to a load already gone — the paper often comes after the goods. */
 router.post('/todos/:id/loads/:loadId', singleTaskResult('file'), handoffLoadProof);

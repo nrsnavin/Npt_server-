@@ -185,7 +185,7 @@ export const getReceivable = asyncHandler(async (req, res) => {
     data: receivable,
     /* The order's whole position beside this one invoice, with advances netted — the number the
        buyer will quote back on the phone is what they owe on the order, not on one document. */
-    order: await orderPosition(receivable.order._id || receivable.order),
+    order: receivable.order ? await orderPosition(receivable.order._id || receivable.order) : null,
   });
 });
 

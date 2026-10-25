@@ -153,11 +153,17 @@ const receivableSchema = new mongoose.Schema(
   {
     number: { type: String, required: true, unique: true },
 
-    /** `invoice` from a dispatched consignment; `advance` from the order's own terms. */
-    kind: { type: String, enum: ['invoice', 'advance'], default: 'invoice', index: true },
+    /**
+     * `invoice` from a dispatched consignment; `advance` from the order's own terms; `on_account`
+     * a payment Payment Collection or PRT took on a task with no sales order behind it — a receipt
+     * of its own for the buyer, sized to what was received [paymentGates `confirmInwardFromTask`].
+     */
+    kind: { type: String, enum: ['invoice', 'advance', 'on_account'], default: 'invoice', index: true },
 
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', required: true, index: true },
-    order: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder', required: true, index: true },
+    order: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder', required: function orderNeeded() { return this.kind !== 'on_account'; }, index: true },
+    /** The task an on-account receipt was taken on. */
+    task: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
     /** The enquiry the order came from — so the money shows on the enquiry beside the order [pre-validate below]. */
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
     /** The consignment this invoice went out on. Absent on an advance — there is no lorry yet. */

@@ -50,12 +50,14 @@ export function allocatePayments(rows) {
 /** Resolve whole orders even when the visible list is filtered or paginated. */
 export async function applyPaymentPositions(rows) {
   if (!rows.length) return rows;
-  const all = await Receivable.find({ order: { $in: [...new Set(rows.map(row => id(row.order)))] } });
+  const orders = [...new Set(rows.filter(row => row.order).map(row => id(row.order)))];
+  const all = orders.length ? await Receivable.find({ order: { $in: orders } }) : [];
   const byId = new Map(all.map(row => [id(row), row]));
   for (const row of rows) byId.set(id(row), row);
   const groups = new Map();
   for (const row of byId.values()) {
-    const key = id(row.order);
+    /* A receipt on account has no order: it stands alone, never netted with another buyer's. */
+    const key = row.order ? id(row.order) : `own:${id(row)}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(row);
   }

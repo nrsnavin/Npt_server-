@@ -268,6 +268,8 @@ const MONEY_FIELDS = [
   { key: 'amount', label: 'Amount received (₹)', type: 'number', required: true },
   { key: 'mode', label: 'Mode', options: ['NEFT', 'RTGS', 'UPI', 'Cheque', 'Cash', 'Other'], required: true },
   { key: 'reference', label: 'UTR / cheque number' },
+  /* What the money is against: one of the buyer's dues, or — a task with no sales order — a new receipt on account [paymentGates `confirmInwardFromTask`]. */
+  { key: 'against', label: 'Against', type: 'dues' },
 ];
 /* Set when Accounts confirms: part of the money, or all of it. */
 /*
@@ -783,6 +785,7 @@ export const TASK_FORMS = {
           { key: 'amount', label: 'Cheque amount (₹)', type: 'number', required: true },
           { key: 'reference', label: 'Cheque number', required: true },
           { key: 'bank', label: 'Bank and cheque date' },
+          { key: 'against', label: 'Against', type: 'dues' },
         ],
       },
       { key: 'collected', label: 'Payment Received — Send to Accounts', mode: 'visit', confirmsInward: true, fields: MONEY_FIELDS },

@@ -171,7 +171,7 @@ const MODE_KEYS = { NEFT: 'neft', RTGS: 'rtgs', UPI: 'upi', CHEQUE: 'cheque', CA
  * on its list to confirm in the bank; the gate opens on what Accounts confirms. More than is
  * owed is refused, and nothing moves; a second log with the same reference is the same money.
  */
-export async function confirmInwardFromTask(task, user, { amount, mode, reference, note }) {
+export async function confirmInwardFromTask(task, user, { amount, mode, reference, note, against = null }) {
   const orderId = task.order?._id || task.order;
   const order = orderId ? await SalesOrder.findById(orderId) : null;
   if (orderId && !order) throw ApiError.badRequest('The sales order on this task no longer exists');
@@ -183,7 +183,18 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
    */
   const chasesAdvance = String(task.originKey || '').startsWith('payment-gate:');
   let receivable = null;
-  if (!chasesAdvance) [receivable] = await receivablesOf(task);
+  /* Picked on the form: one of the buyer's dues [duesOfTask], or a receipt on account. */
+  if (against && against !== 'on_account') {
+    receivable = (await duesOfTask(task, { rows: true })).find((row) => String(row._id) === String(against)) || null;
+    if (!receivable) throw ApiError.badRequest('That receipt is not one this buyer still owes on — pick again');
+  }
+  if (!receivable && against !== 'on_account' && !chasesAdvance) [receivable] = await receivablesOf(task);
+  /*
+   * A task with no sales order behind it — marketing or Admin asked Payment Collection to collect
+   * from a buyer: nothing owed is on record, or the team says it is on account. The money gets a
+   * receipt of its own for the buyer, sized to what came in, for Accounts to confirm.
+   */
+  if (!order && (against === 'on_account' || !receivable)) receivable = await onAccountReceipt(task, user, value);
   if (!receivable && order) {
     receivable = await Receivable.findOne({ order: order._id, kind: 'advance' });
     if (!receivable) {
@@ -227,6 +238,49 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
 }
 
 export const confirmTaskKey = (receivable) => `confirm-receipt:${receivable._id}`;
+
+/**
+ * What the buyer still owes that money taken on this task can go against [web: the Payment
+ * Received form's "Against"]: the task's order's receivables, else every one of its buyer's —
+ * oldest due first — with what is left on each. `onAccount`: a task with no sales order may also
+ * take the money as a new receipt on account.
+ */
+export async function duesOfTask(task, { rows = false } = {}) {
+  const customer = task.customer?._id || task.customer;
+  const filter = task.order ? { order: task.order?._id || task.order } : customer ? { customer } : null;
+  if (!filter) return rows ? [] : { dues: [], onAccount: false };
+  const { applyPaymentPositions } = await import('./paymentPosition.service.js');
+  const found = await Receivable.find(filter).sort({ dueBy: 1 }).populate('order', 'number');
+  await applyPaymentPositions(found);
+  const open = found.filter((row) => (row.balance ?? round2((row.invoice?.value || 0) - (row.received || 0))) > 0.005);
+  if (rows) return open;
+  return {
+    dues: open.map((row) => ({
+      _id: row._id, number: row.number, kind: row.kind, invoiceNumber: row.invoice?.number || null,
+      order: row.order?.number ? { _id: row.order._id, number: row.order.number } : null,
+      value: row.invoice?.value || 0, balance: round2(row.balance ?? ((row.invoice?.value || 0) - (row.received || 0))), dueBy: row.dueBy,
+    })),
+    onAccount: !task.order && Boolean(customer),
+  };
+}
+
+/** A new receipt on account for the task's buyer, for exactly what was received. */
+async function onAccountReceipt(task, user, value) {
+  const customerId = task.customer?._id || task.customer;
+  if (!customerId) throw ApiError.badRequest('This task names no buyer — the payment cannot be put on account. Ask whoever raised it to name the customer.');
+  const { default: Customer } = await import('../models/Customer.js');
+  const customer = await Customer.findById(customerId).select('assignedTo name').lean();
+  if (!customer) throw ApiError.badRequest('The buyer on this task no longer exists');
+  return Receivable.create({
+    number: await nextNumber('RCV'),
+    kind: 'on_account',
+    customer: customerId,
+    task: task._id,
+    assignedTo: customer.assignedTo || task.createdBy || user._id,
+    invoice: { value, date: new Date(), number: 'On account' },
+    dueBy: new Date(),
+  });
+}
 
 /** The collection tasks a payment finishes read Paid as they close — on forms that have it. */
 const PAID_KINDS = ['team_payment_followup', 'my_payment_followup', 'prt_recovery'];

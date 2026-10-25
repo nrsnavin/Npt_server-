@@ -1592,6 +1592,8 @@ export async function setTaskStatus(task, user, { status, note, date, dates, fie
       note: [text, asked.bank && `Bank / cheque date: ${asked.bank}`].filter(Boolean).join(' — '),
     })
     : null;
+  /* The task's record names the receipt by its number, not the id the form sent. */
+  if (inward?.receivable && step.fields?.some((field) => field.key === 'against')) asked.against = `${inward.receivable.number}${inward.receivable.kind === 'on_account' ? ' (on account)' : ''}`;
   task.status = overall;
   /* Each model's own status is kept once one has moved on its own; the task reads its slowest. */
   if (byModel && (partial || task.modelStatuses?.length)) {
