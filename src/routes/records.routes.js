@@ -8,7 +8,7 @@ import ApiError from '../utils/ApiError.js';
 import { accessLevel } from '../services/access.service.js';
 import { levelSatisfies } from '../config/modules.js';
 import {
-  approveQc, askLocationHandler, setupChecklistHandler, enquiryRecordsHandler, qcPrefillHandler, qcReportHandler, moveStockHandler, stockBookHandler, createMachine, createMaintenance, createQc, dispatchRegisterHandler, finishRunHandler, getQc, listMachines,
+  approveQc, askLocationHandler, runModelsHandler, setupChecklistHandler, enquiryRecordsHandler, qcPrefillHandler, qcReportHandler, moveStockHandler, stockBookHandler, createMachine, createMaintenance, createQc, dispatchRegisterHandler, finishRunHandler, getQc, listMachines,
   listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine, logRunHandler, runReasonsHandler,
 } from '../controllers/records.controller.js';
 import {
@@ -53,6 +53,7 @@ router.post('/maintenance', anyModule([['production', 'write'], ['moulds', 'writ
 
 router.get('/mould-runs', anyModule([['production', 'read'], ['moulds', 'read']]), listRunsHandler);
 router.post('/mould-runs', requireModule('production', 'write'), validate(runStartSchema), startRunHandler);
+router.get('/mould-runs/models', requireModule('production'), runModelsHandler);
 /* Work orders: one per released order line, planned onto a press and fed by the runs. */
 router.get('/work-orders', anyModule([['production', 'read'], ['orders', 'read']]), listWorkOrdersHandler);
 router.get('/work-orders/:id', anyModule([['production', 'read'], ['orders', 'read']]), getWorkOrderHandler);
