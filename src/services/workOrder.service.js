@@ -46,6 +46,18 @@ export async function ensureWorkOrders({ orderIds, user } = {}) {
   if (!orders.length) return { created: 0 };
   const existing = await WorkOrder.find({ order: { $in: orders.map((order) => order._id) } });
   const byLine = new Map(existing.map((wo) => [`${wo.order}:${wo.orderLine}`, wo]));
+  /*
+   * Floor planning's checkpoint: a line for a traded model (no mould of ours, on the trading
+   * master) is bought in, not moulded — no work order; it is tracked on the Trading page.
+   */
+  const { floorPlanningOn } = await import('./settings.service.js');
+  const tradedKeys = new Set();
+  if (await floorPlanningOn()) {
+    const { tradedModelsOf } = await import('./trading.service.js');
+    const loose = orders.flatMap((order) => (order.lines || []).filter((line) => !line.mould && line.modelNumber).map((line) => line.modelNumber));
+    for (const modelKey of (await tradedModelsOf(loose)).keys()) tradedKeys.add(modelKey);
+  }
+  const { modelKeyOf } = await import('../models/TradedItem.js');
   let created = 0;
   for (const order of orders) {
     const live = !PRE_RELEASE_STATUSES.includes(order.status) && !CLOSED_ORDER_STATUSES.includes(order.status);
@@ -55,6 +67,7 @@ export async function ensureWorkOrders({ orderIds, user } = {}) {
       const wo = byLine.get(key);
       if (!wo) {
         if (!live) continue;
+        if (!line.mould && tradedKeys.has(modelKeyOf(line.modelNumber))) continue;
         await withCreateLocks([`work-order:${key}`], async () => {
           if (await WorkOrder.exists({ order: order._id, orderLine: line._id })) return;
           /*

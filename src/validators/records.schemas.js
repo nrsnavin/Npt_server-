@@ -124,6 +124,14 @@ export const workOrderPlanSchema = z.object({
 export const taskPlaceSchema = z.object({ model: z.string().trim().min(1).max(120), machine: objectId });
 /** The auto-planner's proposals confirmed — every model's, or these [floorPlanning.service `confirmTaskPlan`]. */
 export const taskConfirmSchema = z.object({ models: z.array(z.string().trim().min(1).max(120)).max(50).optional() });
+/** A traded model moved on the Trading page [trading.service `updateTradeOrder`]. */
+export const tradeOrderUpdateSchema = z.object({
+  status: z.enum(['ordered', 'part_received', 'received', 'cancelled']).optional(),
+  supplier: text(120), supplierRef: text(120),
+  expectedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'A date').nullable().optional(),
+  receivedQty: num(1e9), receivedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'A date').optional(),
+  note: text(500),
+});
 /** A tap on the mould change checklist [floorPlanning.service `setupStep`]. */
 export const setupStepSchema = z.object({ step: z.enum(['mouldOff', 'mouldOn', 'heated', 'firstPiece']), undo: z.boolean().optional() });
 

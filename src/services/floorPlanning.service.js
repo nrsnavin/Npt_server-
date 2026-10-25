@@ -4,6 +4,7 @@ import WorkOrder, { OPEN_WORK_ORDER_STATUSES } from '../models/WorkOrder.js';
 import Enquiry from '../models/Enquiry.js';
 import Mould from '../models/Mould.js';
 import Machine from '../models/Machine.js';
+import { modelKeyOf } from '../models/TradedItem.js';
 import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
 import { withCreateLocks } from './operationLock.service.js';
@@ -71,9 +72,17 @@ export async function linkTaskWorkOrders(task, user) {
   const result = [];
   /* Work orders raised now, or whose due day moved: their press is proposed (again). */
   const changed = new Set();
+  /* The checkpoint: only what the plant makes goes to the presses; a traded model goes to the Trading page [trading.service]. */
+  const { tradedModelsOf, ensureTradeOrder } = await import('./trading.service.js');
+  const traded = await tradedModelsOf(routes.map((route) => route.model), enquiry);
   for (const route of routes) {
     const due = dueDayOf(task, route, { edd: eddOf(route.model) ? String(eddOf(route.model)).slice(0, 10) : null, lead: plant.handoverLeadDays || 5 });
     let wo = linked.find((entry) => key(entry.model) === key(route.model));
+    const item = traded.get(modelKeyOf(route.model));
+    if (item && !wo) {
+      await ensureTradeOrder({ task, model: route.model, item, enquiry: enquiry ? { ...enquiry, _id: enquiryId } : null, quantity: piecesOf(route.model), due, user });
+      continue;
+    }
     if (!wo && enquiryId) {
       /* An SO line's work order for the same model on the enquiry: this task's from now on. */
       wo = await WorkOrder.findOne({ enquiry: enquiryId, task: { $exists: false }, status: { $in: OPEN_WORK_ORDER_STATUSES }, modelNumber: new RegExp(`^${route.model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
@@ -226,10 +235,16 @@ export async function taskPlan(task, user) {
   const unplanned = orders.filter((wo) => !wo.machine && !wo.proposal?.machine && OPEN_WORK_ORDER_STATUSES.includes(wo.status)).map((wo) => wo._id);
   const { bestPresses } = await import('./pressScore.service.js');
   const best = unplanned.length ? await bestPresses(unplanned) : new Map();
+  /* Traded models: bought in, on the Trading page — the press step only says where they stand. */
+  const { default: TradeOrder } = await import('../models/TradeOrder.js');
+  const { tradeView } = await import('./trading.service.js');
+  const tradeLines = await TradeOrder.find({ task: task._id }).lean();
   return {
     on: true, routed: true,
     models: routes.map((route) => {
       const wo = orders.find((entry) => key(entry.model) === key(route.model));
+      const line = !wo && tradeLines.find((entry) => entry.modelKey === modelKeyOf(route.model));
+      if (line) return { model: route.model, route, workOrder: null, traded: tradeView(line) };
       if (!wo) return { model: route.model, route, workOrder: null };
       const plan = planOf(wo, machineOf(wo.machine), wo.dueDate ? indiaDay(wo.dueDate) : null, machineOf(wo.proposal?.machine));
       return { model: route.model, route, workOrder: plan, best: best.get(String(wo._id)) || null };
@@ -263,6 +278,10 @@ const FORWARD_FROM = {
  * Moves one model of a work order's task forward — never back — as a person would, with the
  * reason said; a refusal (the task's own rules) leaves the task as it is and is only logged.
  */
+export async function moveTaskModel(wo, status, user, note) {
+  return moveModel(wo, status, user, note);
+}
+
 async function moveModel(wo, status, user, note) {
   if (!wo?.task || !wo.model || !(await floorPlanningOn())) return false;
   const task = await Todo.findById(wo.task);

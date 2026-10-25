@@ -4278,7 +4278,16 @@ export async function modelJourneys(enquiryId, { task: onTask = null } = {}) {
     : modelsOfTask(start).map((model) => ({ model, printing: false, assembly: false, decided: false }));
   /* Floor planning: the model's work order says where it is on the floor — planned on a press, running, how far [floorPlanning.service]. */
   const floorOrders = await (await import('../models/WorkOrder.js')).default.find({ task: start._id }).select('model status machine plannedEnd goodQty quantity').populate('machine', 'code').lean();
+  /* A traded model: where its supply stands on the Trading page [trading.service]. */
+  const tradeLines = await (await import('../models/TradeOrder.js')).default.find({ task: start._id }).select('model status supplier expectedOn receivedQty quantity').lean();
   const floorWords = (model) => {
+    const line = tradeLines.find((entry) => key(entry.model) === key(model));
+    if (line) {
+      if (line.status === 'to_order') return 'Traded · to be ordered';
+      if (line.status === 'ordered') return `Traded · ordered${line.supplier ? ` from ${line.supplier}` : ''}${line.expectedOn ? ` · expected ${prettyDay(indiaDay(line.expectedOn))}` : ''}`;
+      if (line.status === 'part_received') return `Traded · ${(line.receivedQty || 0).toLocaleString('en-IN')} of ${(line.quantity || 0).toLocaleString('en-IN')} received`;
+      return null;
+    }
     const wo = floorOrders.find((entry) => key(entry.model) === key(model));
     if (!wo?.machine) return null;
     const share = wo.quantity ? Math.min(100, Math.round(((wo.goodQty || 0) / wo.quantity) * 100)) : null;

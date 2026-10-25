@@ -175,6 +175,19 @@ export const plannerStatsHandler = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await plannerStats({ days: Math.min(Math.max(Number(req.query.days) || 30, 7), 365) }) });
 });
 
+/** The Trading page: traded models on Production tasks, the most pressing first [trading.service]. */
+export const listTradeOrdersHandler = asyncHandler(async (req, res) => {
+  const { listTradeOrders } = await import('../services/trading.service.js');
+  res.json({ success: true, data: await listTradeOrders({ status: req.query.status }) });
+});
+
+/** The Production team moves a traded model: ordered, received, cancelled. */
+export const updateTradeOrderHandler = asyncHandler(transactional(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw ApiError.notFound('Trading line not found');
+  const { updateTradeOrder } = await import('../services/trading.service.js');
+  res.json({ success: true, data: await updateTradeOrder(req.params.id, req.user, req.body) });
+}));
+
 /** A tap on the floor tablet's mould change checklist [floorPlanning.service `setupStep`]. */
 export const setupStepHandler = asyncHandler(transactional(async (req, res) => {
   const wo = await byId(req.params.id);
