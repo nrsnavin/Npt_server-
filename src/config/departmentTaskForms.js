@@ -268,8 +268,16 @@ const MONEY_FIELDS = [
   { key: 'amount', label: 'Amount received (₹)', type: 'number', required: true },
   { key: 'mode', label: 'Mode', options: ['NEFT', 'RTGS', 'UPI', 'Cheque', 'Cash', 'Other'], required: true },
   { key: 'reference', label: 'UTR / cheque number' },
+  /* What the money is against: one of the buyer's dues, or — a task with no sales order — a new receipt on account [paymentGates `confirmInwardFromTask`]. */
+  { key: 'against', label: 'Against', type: 'dues' },
 ];
 /* Set when Accounts confirms: part of the money, or all of it. */
+/*
+ * Accounts did not find the money logged from this task in the bank [paymentGates.service
+ * `afterNotInBank`]: the task reopens here, with the reason, for the team to recheck with the buyer
+ * and log it again. Set by the app, never by hand.
+ */
+const NOT_IN_BANK = { key: 'not_in_bank', label: 'Not in Bank — Recheck with Buyer', issue: true, byApp: true, byAppSays: 'Not in Bank is set when Accounts does not find the payment in the bank' };
 const PAID_BY_ACCOUNTS = [
   { key: 'part_paid', label: 'Part Paid — Confirmed by Accounts', followUp: 'part_paid', byApp: true },
   { key: 'paid', label: 'Paid — Confirmed by Accounts', followUp: 'payment_sent', byApp: true, done: true },
@@ -312,6 +320,7 @@ const paymentFollowUp = {
      * confirmation marks this task Paid (or Part Paid, open for the rest), and the gates open on it.
      */
     { key: 'payment_inward', label: 'Payment Received — Send to Accounts', confirmsInward: true, fields: MONEY_FIELDS },
+    NOT_IN_BANK,
     ...PAID_BY_ACCOUNTS,
   ],
   asks: [
@@ -709,7 +718,7 @@ export const TASK_FORMS = {
   /* A marketing person's own reminder: money in is theirs to note here, as before — Accounts confirms what Payment Collection logs. */
   my_payment_followup: {
     ...paymentFollowUp,
-    statuses: paymentFollowUp.statuses.filter((step) => !step.confirmsInward)
+    statuses: paymentFollowUp.statuses.filter((step) => !step.confirmsInward && step.key !== 'not_in_bank')
       .map((step) => (step.byApp ? { ...step, label: step.key === 'paid' ? 'Paid' : 'Part Paid', byApp: undefined, recordsReceipt: true } : step)),
   },
   /* Suggested steps, kept until the plant sends its own. A correction needed shows as an issue on the enquiry. */
@@ -776,6 +785,7 @@ export const TASK_FORMS = {
           { key: 'amount', label: 'Cheque amount (₹)', type: 'number', required: true },
           { key: 'reference', label: 'Cheque number', required: true },
           { key: 'bank', label: 'Bank and cheque date' },
+          { key: 'against', label: 'Against', type: 'dues' },
         ],
       },
       { key: 'collected', label: 'Payment Received — Send to Accounts', mode: 'visit', confirmsInward: true, fields: MONEY_FIELDS },
@@ -783,6 +793,7 @@ export const TASK_FORMS = {
       { key: 'promise_broken', label: 'Promise Broken', issue: true },
       /* PRT's recommendation: Admin decides — legal notice, write-off or a credit hold — on the customer. */
       { key: 'cannot_recover', label: 'Cannot Recover', comment: true, issue: true },
+      NOT_IN_BANK,
       ...PAID_BY_ACCOUNTS,
       { key: 'closed', label: 'Task Closed', done: true },
     ],

@@ -71,7 +71,9 @@ export const confirmReceiptSchema = z.strictObject({
 /** Admin's word on a buyer's credit. Absent clears it, and the rule's own reading shows again. */
 /** Accounts did not find a logged payment in the bank [payment.controller `rejectReceipt`]. */
 export const rejectReceiptSchema = z.strictObject({
-  reason: z.string().trim().min(3, 'Say why — what the bank shows').max(500),
+  /* Not received yet · UTR / amount mismatch · cheque bounced [models/Receivable.js RECEIPT_REJECT_REASONS]. */
+  reasonKey: z.enum(['not_received', 'mismatch', 'bounced'], { message: 'Pick why it is not in the bank' }),
+  reason: z.string().trim().max(500).optional(),
 });
 
 export const creditSchema = z

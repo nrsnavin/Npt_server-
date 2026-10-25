@@ -370,19 +370,20 @@ test('Assembly’s task moves Asked Assembling Readiness → … → Task Closed
   assert.equal(answered.status, 200, answered.json.message);
 });
 
-test('Task Closed on a dispatch task is not held back by a consignment balance the team never records', async () => {
+test('Task Closed on a dispatch task is refused while the order still has pieces to send', async () => {
   /* Assembly has answered [the test above]: nothing is asked any more. */
   assert.equal(await Todo.countDocuments({ askedFrom: dispatchTask._id, completed: false }), 0);
-  /* An open order with 1,000 pcs that no consignment covers — written straight in. */
+  /* An open order with 1,000 pcs that no load has sent — written straight in. */
   const orders = mongoose.connection.collection('salesorders');
   const { insertedId } = await orders.insertOne({
     enquiry: new mongoose.Types.ObjectId(enquiry._id), number: 'SO-2026-0099', status: 'released',
     lines: [{ _id: new mongoose.Types.ObjectId(), modelNumber: 'UTJRSH-0', quantity: 1000 }],
   });
   try {
-    const closed = await dispatchMove('ravi', 'closed', { note: 'All gone — sent from the dispatch task' });
-    assert.equal(closed.status, 200, closed.json.message);
-    assert.equal((await Todo.findById(dispatchTask._id)).completed, true);
+    const closed = await dispatchMove('ravi', 'closed', { note: 'Closing it' });
+    assert.equal(closed.status, 400);
+    assert.match(closed.json.message, /Not everything has gone yet — UTJRSH-0: 1,000 pcs to go/);
+    assert.equal((await Todo.findById(dispatchTask._id)).completed, false);
   } finally {
     await orders.deleteOne({ _id: insertedId });
   }

@@ -1123,7 +1123,8 @@ export const setLinePromisedDate = asyncHandler(withOrderLock(req => req.params.
 export const orderPaymentStanding = asyncHandler(async (req, res) => {
   const order = await SalesOrder.findById(req.params.id);
   if (!order || !ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
-  res.json({ success: true, data: await paymentStanding(order), meta: { presets: PAYMENT_PRESETS } });
+  const { notInBankOn } = await import('../services/paymentGates.service.js');
+  res.json({ success: true, data: { ...(await paymentStanding(order)), notInBank: await notInBankOn({ orderIds: [order._id] }) }, meta: { presets: PAYMENT_PRESETS } });
 });
 
 /**

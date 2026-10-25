@@ -28,7 +28,7 @@ import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, closeByAdmin, escalateToAdmin, resolveEscalation, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
   updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, registerLists, raiseAssemblyWith, routingFor, decideRouting, addToProductionQueue, addToWorkQueue,
-  dispatchSheet, recordDispatchLoad, addLoadProof,
+  dispatchSheet, recordDispatchLoad, addLoadProof, shipmentsOf, shipmentForLr, attachShipmentLr, markShipmentSent,
 } from '../services/handoff.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -276,6 +276,8 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     dispatchHolds,
     /* The money on it: each RCV — the advance, each invoice — with what came in and who logged it. */
     payments: await paymentsOnEnquiry(enquiry._id),
+    /* Payments logged that Accounts did not find in the bank — until confirmed late or logged again [paymentGates `notInBankOn`]. */
+    notInBank: await (await import('../services/paymentGates.service.js')).notInBankOn({ enquiryId: enquiry._id }),
   });
 });
 
@@ -632,6 +634,8 @@ export const handoffResult = asyncHandler(async (req, res) => {
   const read = findHandoff(task.kind)?.booksOrder && task.enquiry
     ? await readSalesOrder({ buffer: req.file.buffer, mimeType: req.file.mimetype })
     : { reading: null, problem: null };
+  /* An LR on Reception's task is for one shipment — named, or the only one waiting [shipmentForLr]; refused before the file is stored. */
+  const shipment = task.kind === 'lr_copy' ? await shipmentForLr(task, req.body?.loadId || null) : null;
   const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
   let attachment;
   try {
@@ -642,7 +646,8 @@ export const handoffResult = asyncHandler(async (req, res) => {
       [attachment] = await Attachment.create([{
         key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size, uploadedBy: req.user._id, task: fresh._id,
       }]);
-      return finishWithResult(fresh, req.user, { attachmentId: attachment._id, note: req.body?.note, reading: read.reading, readProblem: read.problem });
+      const forShipment = shipment ? await attachShipmentLr(fresh, req.user, shipment, attachment._id) : null;
+      return finishWithResult(fresh, req.user, { attachmentId: attachment._id, note: [forShipment, req.body?.note].filter(Boolean).join(' — ') || undefined, reading: read.reading, readProblem: read.problem });
     }, { label: 'task result' });
     /* The LR copy goes on to the buyer, by email and WhatsApp, and the task says it went. */
     let sent = null;
@@ -650,6 +655,7 @@ export const handoffResult = asyncHandler(async (req, res) => {
       const baseUrl = publicApiBase(req);
       sent = await sendResultToCustomer({ task: done, attachment, user: req.user, baseUrl });
       done = await markResultSent(done, req.user, sent);
+      if (shipment && sent.some((entry) => entry.status === 'sent')) await markShipmentSent(shipment, req.user);
     }
     res.json({
       success: true,
@@ -668,6 +674,41 @@ export const handoffResult = asyncHandler(async (req, res) => {
     throw error;
   }
 });
+
+/** The job's shipments, each with its LR or proof — on Reception's LR Copy task and the Dispatch request [shipmentsOf]. */
+export const handoffShipments = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  if (!['lr_copy', 'invoice_dispatch'].includes(task.kind)) throw ApiError.badRequest('Only an LR Copy or Dispatch task has shipments');
+  if (!mayWorkOnHandoff(req.user, task) && String(task.createdBy) !== String(req.user._id) && !canRead(req.user, 'enquiries')) throw ApiError.notFound('Task not found');
+  res.json({ success: true, data: await shipmentsOf(task) });
+});
+
+/* ---- A Production task with no enquiry: link it, start it from where the goods are [teamProduction.service] ---- */
+
+/** The buyer's open enquiries the task could join, and the start points offered. */
+export const handoffLinkOptions = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  if (!mayWorkOnHandoff(req.user, task)) throw ApiError.forbidden('This task is Production’s');
+  const { linkOptions, START_POINTS } = await import('../services/teamProduction.service.js');
+  res.json({ success: true, data: { ...(await linkOptions(task)), startPoints: START_POINTS } });
+});
+
+/** The task joins the buyer's enquiry — or is closed onto the Production task that enquiry already has. */
+export const handoffLinkEnquiry = asyncHandler(transactional(async (req, res) => {
+  const task = await taskFor(req);
+  if (!mayWorkOnHandoff(req.user, task)) throw ApiError.forbidden('This task is Production’s');
+  const { linkToEnquiry } = await import('../services/teamProduction.service.js');
+  const result = await linkToEnquiry(task, req.user, req.body?.enquiry);
+  res.json({ success: true, data: await result.task.populate(TASK_POPULATE), mergedInto: result.mergedInto, enquiry: result.enquiry });
+}));
+
+/** Each model started from where it is now: not started, started, with Printing or Assembly, with Dispatch, or gone. */
+export const handoffStartFrom = asyncHandler(transactional(async (req, res) => {
+  const task = await taskFor(req);
+  const { startFrom } = await import('../services/teamProduction.service.js');
+  const done = await startFrom(task, req.user, req.body || {});
+  await answer(res, done);
+}));
 
 /** What the dispatch form offers for a Dispatch request: its models, ordered and sent, ready or not, the plan and the modes. */
 export const handoffDispatchSheet = asyncHandler(async (req, res) => {
@@ -742,6 +783,27 @@ export const handoffLoadProof = asyncHandler(async (req, res) => {
   }
 });
 
+/** The payments behind a Payment Collection, PRT or A/C Clarify task, by RCV number [paymentGates.service `receiptsOfTask`]. */
+export const handoffReceipts = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  const { inDepartment, isManagement } = await import('../utils/departments.js');
+  const allowed = mayWorkOnHandoff(req.user, task) || isManagement(req.user)
+    || ['accounts', 'payment_collection', 'payment_recovery', 'marketing'].some((department) => inDepartment(req.user, department));
+  if (!allowed) throw ApiError.forbidden('The payments on this task are for Accounts, Payment Collection, PRT and marketing');
+  const { receiptsOfTask } = await import('../services/paymentGates.service.js');
+  res.json({ success: true, data: await receiptsOfTask(task) });
+});
+
+/** What money taken on a Payment Collection or PRT task can go against: the buyer's dues, or on account [duesOfTask]. */
+export const handoffDues = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  if (!['team_payment_followup', 'prt_recovery'].includes(task.kind)) throw ApiError.badRequest('Only a Payment Collection or PRT task takes money in');
+  const { inDepartment, isManagement } = await import('../utils/departments.js');
+  if (!(mayWorkOnHandoff(req.user, task) || isManagement(req.user) || inDepartment(req.user, 'accounts'))) throw ApiError.forbidden('The buyer’s dues are for Payment Collection, PRT and Accounts');
+  const { duesOfTask } = await import('../services/paymentGates.service.js');
+  res.json({ success: true, data: await duesOfTask(task) });
+});
+
 /**
  * The file already on the task sent to the buyer — Reception sending the LR copy Dispatch uploaded
  * with the load [handoff.service `recordDispatchLoad`]. Said on the task as an upload would be.
@@ -752,11 +814,20 @@ export const handoffSendResult = asyncHandler(async (req, res) => {
   if (!form.sendResult) throw ApiError.badRequest('This task sends nothing to the buyer');
   if (!mayWorkOnHandoff(req.user, task)) throw ApiError.forbidden(`This task is on the ${DEPARTMENTS.find((entry) => entry.key === task.department)?.label || task.department} queue`);
   if (task.completed) throw ApiError.conflict('That task is already finished');
-  if (!task.resultFile) throw ApiError.badRequest(`No ${(form.resultTitle || 'file').toLowerCase()} on the task yet — upload it first`);
-  const attachment = await Attachment.findById(task.resultFile);
+  /* One shipment's LR, named — else the file on the task (the latest uploaded). */
+  const shipments = task.kind === 'lr_copy' ? await shipmentsOf(task) : [];
+  const shipment = req.body?.loadId
+    ? shipments.find((row) => String(row._id) === String(req.body.loadId))
+    : shipments.find((row) => row.paper && String(row.paper._id) === String(task.resultFile || ''));
+  if (req.body?.loadId && !shipment) throw ApiError.notFound('That shipment is not on this job');
+  if (req.body?.loadId && !shipment.paper) throw ApiError.badRequest('That shipment has no LR yet — upload it first');
+  const fileId = shipment?.paper?._id || task.resultFile;
+  if (!fileId) throw ApiError.badRequest(`No ${(form.resultTitle || 'file').toLowerCase()} on the task yet — upload it first`);
+  const attachment = await Attachment.findById(fileId);
   if (!attachment) throw ApiError.badRequest('The file on the task is missing — upload it again');
   const sent = await sendResultToCustomer({ task, attachment, user: req.user, baseUrl: publicApiBase(req) });
   const done = await markResultSent(task, req.user, sent);
+  if (shipment && sent.some((entry) => entry.status === 'sent')) await markShipmentSent(shipment, req.user);
   res.json({
     success: true,
     data: await taskWithClosable(await done.populate(TASK_POPULATE)),
@@ -856,6 +927,12 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
  * `readiness` — `{ ready, sent, waiting }` by model — so the Dispatch desk shows what may go now.
  */
 async function withReadiness(rows) {
+  /* Each model of every request where it stands on its own — in the plant, ready, part sent, sent [dispatchStateOf]. */
+  for (const row of rows) {
+    if (row.task?.kind !== 'invoice_dispatch') continue;
+    const sheet = await dispatchSheet(row.task).catch(() => null);
+    if (sheet?.models?.length) row.dispatchModels = sheet.models.map(({ model, ordered, sent, left, state, words }) => ({ model, ordered, sent, left, state, words }));
+  }
   const ids = [...new Set(rows.filter((row) => row.enquiry?._id && row.task.kind === 'invoice_dispatch').map((row) => String(row.enquiry._id)))];
   if (!ids.length) return rows;
   const plans = await Enquiry.find({ _id: { $in: ids } }).select(DISPATCH_PLAN_FIELDS).lean();

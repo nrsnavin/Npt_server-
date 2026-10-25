@@ -127,13 +127,13 @@ test('Payment Recovery is a department of its own, with the PRT Recovery task; t
   assert.ok(buttons.find((button) => button.key === 'request_prt_visit').hidden, 'replaced, kept readable');
   const labels = (key) => buttons.find((button) => button.key === key).form.statuses.map((entry) => entry.label);
   /* Money received goes to Accounts; Paid and Part Paid are set only by Accounts' confirmation. */
-  assert.deepEqual(labels('team_payment_followup'), ['Assigned', 'Contacted', 'Promised', 'Promise Broken', 'Not Reachable', 'Disputed', 'Escalated to PRT', 'Payment Received — Send to Accounts', 'Part Paid — Confirmed by Accounts', 'Paid — Confirmed by Accounts']);
+  assert.deepEqual(labels('team_payment_followup'), ['Assigned', 'Contacted', 'Promised', 'Promise Broken', 'Not Reachable', 'Disputed', 'Escalated to PRT', 'Payment Received — Send to Accounts', 'Not in Bank — Recheck with Buyer', 'Part Paid — Confirmed by Accounts', 'Paid — Confirmed by Accounts']);
   const byApp = (key) => buttons.find((button) => button.key === key).form.statuses.filter((entry) => entry.byApp).map((entry) => entry.key);
-  assert.deepEqual(byApp('team_payment_followup'), ['part_paid', 'paid']);
+  assert.deepEqual(byApp('team_payment_followup'), ['not_in_bank', 'part_paid', 'paid']);
   assert.deepEqual(buttons.find((button) => button.key === 'team_payment_followup').form.statuses.find((entry) => entry.key === 'escalate_prt').fields[0].options, ['Collect cheque', 'Follow up on its own']);
   assert.deepEqual(labels('my_payment_followup'), ['Assigned', 'Contacted', 'Promised', 'Promise Broken', 'Not Reachable', 'Disputed', 'Escalated to PRT', 'Part Paid', 'Paid'], 'the raiser’s own reminder notes the money itself');
-  assert.deepEqual(labels('prt_recovery'), ['Assigned', 'Visit Planned', 'Visited', 'Cheque Collected — Send to Accounts', 'Payment Received — Send to Accounts', 'Promised', 'Promise Broken', 'Cannot Recover', 'Part Paid — Confirmed by Accounts', 'Paid — Confirmed by Accounts', 'Task Closed']);
-  assert.deepEqual(byApp('prt_recovery'), ['part_paid', 'paid']);
+  assert.deepEqual(labels('prt_recovery'), ['Assigned', 'Visit Planned', 'Visited', 'Cheque Collected — Send to Accounts', 'Payment Received — Send to Accounts', 'Promised', 'Promise Broken', 'Cannot Recover', 'Not in Bank — Recheck with Buyer', 'Part Paid — Confirmed by Accounts', 'Paid — Confirmed by Accounts', 'Task Closed']);
+  assert.deepEqual(byApp('prt_recovery'), ['not_in_bank', 'part_paid', 'paid']);
   assert.equal(prt.asks.find((field) => field.type === 'member').department, 'payment_recovery');
   assert.ok(!prt.asks.find((field) => field.type === 'member').required, 'the automation raises it with nobody named');
 });

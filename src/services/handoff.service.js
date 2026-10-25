@@ -1245,7 +1245,7 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
 
   /* The app closing it (the consignment left) is not held back; a person's Done is. */
   if (!system) await assertNotWaiting(task);
-  await assertMayFinish(task);
+  await assertMayFinish(task, { system });
 
   const handoff = findHandoff(task.kind);
   const kept = keptFields(task.kind, fields);
@@ -1333,7 +1333,7 @@ async function assertNotWaiting(task) {
   fail(`Waiting on ${departmentName(waiting.department)} — ${action?.label || 'the task asked'} is still open. The status changes once that task is closed.`);
 }
 
-async function assertMayFinish(task) {
+async function assertMayFinish(task, { system = false } = {}) {
   /* A task finished by uploading the work (the sales order) is not ticked off without it. */
   const byUpload = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.pdf && entry.done);
   if (byUpload && !task.resultFile) fail(`Upload the PDF to finish this task — it is marked ${byUpload.label} then`);
@@ -1347,12 +1347,21 @@ async function assertMayFinish(task) {
    * nothing would raise a request for them again — their readiness was already said — and they
    * would sit at the plant unsent.
    */
-  /* Only once the job runs its dispatch through loads — a request moved on before the dispatch form closes as it always did. */
-  if (task.kind === 'invoice_dispatch' && (await jobDispatchLoads({ task, current: task })).length) {
+  /*
+   * A person closing it: not until every model ordered has gone in full, on this request and the
+   * job's earlier ones — a model still in Production is still owed to the buyer, and nothing else
+   * would send it. The app closing it (a consignment left with nothing more owed) is not held back.
+   */
+  /* Reception's LR Copy task: not closed while a transporter shipment of the job still has no LR uploaded [shipmentsOf]. */
+  if (task.kind === 'lr_copy' && !system) {
+    const waiting = (await shipmentsOf(task)).filter((row) => row.needsLr && !row.paper);
+    if (waiting.length) fail(`Upload the LR for every shipment first — still waiting: ${waiting.map((row) => shipmentWords(row)).join('; ')}`);
+  }
+  if (task.kind === 'invoice_dispatch' && !system) {
     const sheet = await dispatchSheet(task).catch(() => null);
-    const stranded = (sheet?.models || []).filter((row) => row.ready && row.ordered > 0 && row.sent < row.ordered);
-    if (stranded.length) {
-      fail(`${stranded.map((row) => `${row.model} ${(row.ordered - row.sent).toLocaleString('en-IN')} pcs`).join(', ')} ${stranded.length > 1 ? 'are' : 'is'} ready and still to go — dispatch ${stranded.length > 1 ? 'them' : 'it'} before closing. If the buyer does not want the rest, change the pieces on the sales order first.`);
+    const owed = (sheet?.models || []).filter((row) => row.state !== 'sent');
+    if (owed.length) {
+      fail(`Not everything has gone yet — ${owed.map((row) => `${row.model}: ${row.left != null ? `${row.left.toLocaleString('en-IN')} pcs to go` : 'nothing sent'} (${row.words})`).join('; ')}. The task closes once the full quantity of every model is dispatched. If the buyer does not want the rest, change the pieces on the sales order first.`);
     }
   }
 }
@@ -1497,6 +1506,7 @@ export async function setTaskStatus(task, user, { status, note, date, dates, fie
   const step = statusesOf(task).find((entry) => entry.key === status);
   if (!step) fail('That is not one of this task’s statuses');
   /* Paid and Part Paid are Accounts' word, set when it confirms the money [paymentGates `closeLoggedTask`]. */
+  if (step.byApp && step.byAppSays) fail(step.byAppSays);
   if (step.byApp) {
     const send = statusesOf(task).filter((entry) => entry.confirmsInward).map((entry) => `“${entry.label}”`).join(' or ');
     fail(`${step.label} is set when Accounts confirms the payment${send ? ` — log the money with ${send}` : ''}`);
@@ -1582,6 +1592,8 @@ export async function setTaskStatus(task, user, { status, note, date, dates, fie
       note: [text, asked.bank && `Bank / cheque date: ${asked.bank}`].filter(Boolean).join(' — '),
     })
     : null;
+  /* The task's record names the receipt by its number, not the id the form sent. */
+  if (inward?.receivable && step.fields?.some((field) => field.key === 'against')) asked.against = `${inward.receivable.number}${inward.receivable.kind === 'on_account' ? ' (on account)' : ''}`;
   task.status = overall;
   /* Each model's own status is kept once one has moved on its own; the task reads its slowest. */
   if (byModel && (partial || task.modelStatuses?.length)) {
@@ -1939,21 +1951,58 @@ export async function dispatchSheet(task) {
   const key = (model) => String(model || '').trim().toLowerCase();
   const waiting = new Map((readiness.waiting || []).map((row) => [key(row.model), row.team]));
   const waitingStatus = new Map((readiness.waiting || []).map((row) => [key(row.model), row.status]));
+  const atQc = new Set((readiness.qc?.atQc || []).map(key));
   return {
     plan: enquiry ? dispatchModeOf(enquiry) : 'together',
     order: order ? { _id: order._id, number: order.number } : null,
     /*
      * Ready: the last team on the model's route — Assembly, else Printing, else Production — has
      * marked it Ready for Dispatch (or finished) [modelReadiness]. A model not ready names that team.
+     * Each with where it stands on its own [dispatchStateOf] — one model part sent never makes
+     * another, still in Production, read part sent.
      */
-    models: [...ordered].map(([model, quantity]) => ({
-      model, ordered: quantity, sent: sent.get(model) || 0,
-      ready: !waiting.has(key(model)),
-      ...(waiting.has(key(model)) ? { waitingOn: waiting.get(key(model)), waitingStatus: waitingStatus.get(key(model)) } : {}),
-    })),
+    models: [...ordered].map(([model, quantity]) => {
+      const row = {
+        model, ordered: quantity, sent: sent.get(model) || 0,
+        ready: !waiting.has(key(model)),
+        ...(waiting.has(key(model)) ? { waitingOn: waiting.get(key(model)), waitingStatus: waitingStatus.get(key(model)) } : {}),
+        ...(atQc.has(key(model)) ? { atQc: true } : {}),
+      };
+      return { ...row, ...dispatchStateOf(row) };
+    }),
     modes: findHandoff(task.kind)?.form?.dispatchModes || [],
     loads: (task.loads || []).length,
   };
+}
+
+/**
+ * Where one model of a Dispatch job stands, on its own [web: DispatchModels, DispatchTable]:
+ *
+ *   sent        every piece ordered has gone (a model with no pieces known, once any went)
+ *   part_sent   some gone, the rest still to go — ready, or back with its team
+ *   qc          made, waiting for Quality's pass where QC is compulsory
+ *   ready       marked Ready for Dispatch by its last team, nothing sent yet
+ *   in_plant    still with Production, Printing or Assembly — "Not produced yet" before Production starts it
+ *
+ * `left`: pieces still to send, where the pieces ordered are known.
+ */
+export function dispatchStateOf({ ordered = 0, sent = 0, ready, waitingOn, waitingStatus, atQc }) {
+  const pcs = (count) => `${Number(count || 0).toLocaleString('en-IN')} pcs`;
+  const left = ordered > 0 ? Math.max(0, ordered - sent) : null;
+  const team = TEAM_WORDS_OF[waitingOn] || 'the plant';
+  /* Production has not started moulding it: asked, accepted, planning, a date given, or held for a machine or material. */
+  const unstarted = waitingOn === 'production' && (!waitingStatus || /^(not tasked yet|asked|edd request received|edd accepted|planning|ready tomorrow|ready on selected date|machine not allotted|raw material not available)/i.test(waitingStatus));
+  const where = unstarted
+    ? `Not produced yet${waitingStatus && !/^(not tasked yet|asked)$/i.test(waitingStatus) ? ` · Production: ${waitingStatus}` : ''}`
+    : `${waitingOn === 'production' ? 'In' : 'With'} ${team}${waitingStatus ? ` · ${waitingStatus}` : ''}`;
+  if (ordered > 0 ? sent >= ordered : sent > 0) return { state: 'sent', left: 0, words: `Fully sent · ${pcs(sent)}` };
+  if (sent > 0) {
+    const rest = !ready ? where : atQc ? 'rest with Quality' : 'rest ready to send';
+    return { state: 'part_sent', left, words: `Part sent ${sent.toLocaleString('en-IN')}${ordered ? ` of ${pcs(ordered)}` : ' pcs'} · ${left != null ? `${pcs(left)} to go` : 'more to go'} · ${rest}` };
+  }
+  if (!ready) return { state: 'in_plant', left, words: where };
+  if (atQc) return { state: 'qc', left, words: 'Made · waiting for QC pass' };
+  return { state: 'ready', left, words: `Ready to send${ordered ? ` · ${pcs(ordered)}` : ''}` };
 }
 
 /**
@@ -2051,6 +2100,8 @@ export async function recordDispatchLoad(task, user, { lines, mode, note, attach
   if (mode === 'transporter' && attachmentId) await lrToReception(moved || task, user, attachmentId, said);
   /* No paper yet: the Dispatch team is reminded to add it to the load when it comes [addLoadProof]. */
   if (!attachmentId) await remindLoadProof(moved || task, user, how, said);
+  /* A transporter's shipment with no LR yet: Reception's LR task reads Awaiting again, whatever an earlier shipment left it at. */
+  if (mode === 'transporter' && !attachmentId) await lrAwaitedAgain(moved || task, user, said);
   /* The last of it gone after a part load: the enquiry no longer reads Part sent — it reads LR Copy [holdsPartSent]. */
   if (status === 'fully_dispatched') await reachEnquiry(moved || task, user, { marketing: 'lr_copy' }, `Fully Dispatched — ${said}`);
   return moved || task;
@@ -2105,12 +2156,99 @@ export async function addLoadProof(task, user, loadId, { attachmentId = null, de
   return task;
 }
 
+/**
+ * The job's shipments [web: LrShipments, EnquiryShipments] — every load sent on its Dispatch
+ * requests, oldest first: the day, the models and pieces, how it went, and its paper. A
+ * transporter's load needs its LR copy (`needsLr`): Reception's LR Copy task holds one upload a
+ * shipment, so three loads gone before Reception looks are three LRs to upload, never one.
+ */
+export async function shipmentsOf(task) {
+  const loads = await jobDispatchLoads({ task, current: task.kind === 'invoice_dispatch' ? task : null });
+  const { default: Attachment } = await import('../models/Attachment.js');
+  const papers = new Map((await Attachment.find({ _id: { $in: loads.map((load) => load.attachment).filter(Boolean) } }).select('key filename mimeType').lean()).map((file) => [String(file._id), file]));
+  const modes = findHandoff('invoice_dispatch')?.form?.dispatchModes || [];
+  return loads.map((load) => {
+    const how = modes.find((entry) => entry.key === load.mode);
+    return {
+      _id: load._id, task: load.task, at: load.at,
+      lines: (load.lines || []).map((line) => ({ model: line.model, quantity: line.quantity || 0 })),
+      pieces: (load.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0),
+      mode: load.mode || null, modeLabel: how?.label || load.mode || '', paperLabel: how?.proofLabel || 'Paper',
+      needsLr: load.mode === 'transporter',
+      paper: load.attachment ? papers.get(String(load.attachment)) || null : null,
+      lrNumber: load.lrNumber || null, transporter: load.transporter || null, vehicleNumber: load.vehicleNumber || null,
+      lrSentAt: load.lrSent?.at || null,
+    };
+  });
+}
+
+/* One shipment in words: "the shipment of 25 Oct (CRF25 5,000 pcs)". */
+const shipmentWords = (load) => `the shipment of ${prettyDay(indiaDay(load.at))} (${(load.lines || []).map((line) => `${line.model} ${Number(line.quantity || 0).toLocaleString('en-IN')} pcs`).join(' · ')})`;
+
+/**
+ * Which shipment an LR uploaded on Reception's LR Copy task is for: the one named, else the only
+ * transporter shipment still without its LR. Two or more waiting and none named is refused —
+ * the LR would land on the wrong consignment. No shipment on the job (an LR task raised by hand)
+ * links to nothing, as before.
+ */
+export async function shipmentForLr(lrTask, loadId = null) {
+  if (lrTask.kind !== 'lr_copy') return null;
+  const shipments = await shipmentsOf(lrTask);
+  if (loadId) {
+    const named = shipments.find((row) => String(row._id) === String(loadId));
+    if (!named) throw ApiError.notFound('That shipment is not on this job');
+    if (!named.needsLr) fail(`That shipment went by ${named.modeLabel.toLowerCase()} — it has no LR`);
+    return named;
+  }
+  const waiting = shipments.filter((row) => row.needsLr && !row.paper);
+  if (waiting.length > 1) fail(`${waiting.length} shipments are waiting for their LR — upload each against its own shipment: ${waiting.map((row) => shipmentWords(row)).join('; ')}`);
+  return waiting[0] || null;
+}
+
+/** The LR Reception uploaded, onto its shipment's load on the Dispatch request — said on both tasks. */
+export async function attachShipmentLr(lrTask, user, shipment, attachmentId) {
+  const request = await Todo.findById(shipment.task);
+  const load = request?.loads?.id(shipment._id);
+  if (!load) throw ApiError.notFound('That shipment is not on this job');
+  load.attachment = attachmentId;
+  load.paperBy = user._id;
+  request.markModified('loads');
+  const said = `LR copy for ${shipmentWords(load)} uploaded by ${user.name} (Reception)`;
+  request.updates = [...(request.updates || []), { kind: 'uploaded', statusLabel: 'LR copy', text: said, note: said, by: user._id, at: new Date() }];
+  await request.save();
+  return said;
+}
+
+/** A shipment's LR copy went to the buyer: the load says so, and it leaves Reception's "to send" list. */
+export async function markShipmentSent(shipment, user) {
+  if (!shipment?._id) return;
+  await Todo.updateOne({ _id: shipment.task, 'loads._id': shipment._id }, { $set: { 'loads.$.lrSent': { at: new Date(), by: user._id } } }, { keepVersion: true });
+}
+
+/**
+ * A new shipment's LR is awaited: Reception's open LR Copy task — sent, in transit or delivered for
+ * an earlier shipment — goes back to LR Copy Awaiting, so it never reads finished while an LR is
+ * still to upload. A task already awaiting is only told.
+ */
+async function lrAwaitedAgain(task, user, said) {
+  const where = task.enquiry ? { enquiry: task.enquiry?._id || task.enquiry } : { chain: task.chain || task._id };
+  const lr = await Todo.findOne({ ...where, kind: 'lr_copy', completed: false });
+  if (!lr || !lr.status || lr.status === 'awaiting') return null;
+  const line = `New shipment — LR to upload: ${said}`;
+  lr.status = 'awaiting';
+  lr.statusHistory = [...(lr.statusHistory || []), { status: 'awaiting', note: line, by: user._id, at: new Date() }];
+  lr.updates = [...(lr.updates || []), { kind: 'status', status: 'awaiting', statusLabel: 'LR Copy Awaiting', text: line, note: line, by: user._id, at: new Date() }];
+  await lr.save();
+  await publish(EVENTS.HANDOFF_UPDATED, { task: lr, by: user });
+  return lr;
+}
+
 /** The LR copy uploaded with a load, onto Reception's open LR Copy task: LR Copy Received, Reception sends it to the buyer. */
 async function lrToReception(task, user, attachmentId, said) {
   const where = task.enquiry ? { enquiry: task.enquiry?._id || task.enquiry } : { chain: task.chain || task._id };
   const lr = await Todo.findOne({ ...where, kind: 'lr_copy', completed: false });
   if (!lr) return null;
-  const line = `LR copy uploaded by ${user.name} (Dispatch) with the load: ${said} — send it to the buyer`;
+  const line = `LR copy uploaded by ${user.name} (Dispatch) with the load: ${said} — send it to the buyer from this shipment`;
   lr.resultFile = attachmentId;
   lr.status = 'received';
   lr.statusHistory = [...(lr.statusHistory || []), { status: 'received', note: line, by: user._id, at: new Date() }];
@@ -2499,6 +2637,9 @@ async function remindConsignment(task, user, step) {
  * customer and order. A status that also finishes this task (Escalated to PRT) hands the case
  * on rather than asking a question, so the new task is not a child of a closed one.
  */
+/** A status's raise, from outside a status move — a bounced cheque sending PRT to collect [paymentGates `afterNotInBank`]. */
+export const raiseOnTaskStatus = (task, user, step, text, fields = {}) => raiseFromStatus(task, user, step, text, fields);
+
 async function raiseFromStatus(task, user, step, text, fields = {}) {
   const target = findHandoff(step.raises);
   const brief = {};
