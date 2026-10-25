@@ -72,7 +72,7 @@ test('routing: the made model gets a work order, the traded one a line on the Tr
   const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'Trade Knits', mobile: '9840055101', assignedTo: me } })).json.data._id;
   enquiry = (await api('/api/enquiries', { method: 'POST', as: 'nandhini', body: { customer, items: [{ modelNumber: 'CRF-35', colour: 'Black' }, { modelNumber: 'PH-17', colour: 'Black' }], nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 864e5).toISOString() } })).json.data;
   assert.equal((await api(`/api/enquiries/${enquiry._id}/edd`, { method: 'POST', as: 'nandhini', body: { date: day(30) } })).status, 200);
-  await Todo.create({ department: 'order_confirmation', title: 'SO request', kind: 'po_so', enquiry: enquiry._id, completed: true, brief: { items: [{ model: 'CRF-35', quantity: '6000' }, { model: 'PH-17', quantity: '3000' }] } });
+  await Todo.create({ department: 'order_confirmation', title: 'SO request', kind: 'po_so', enquiry: enquiry._id, completed: true, brief: { paymentTerms: 'Credit — nothing before dispatch', items: [{ model: 'CRF-35', quantity: '6000' }, { model: 'PH-17', quantity: '3000' }] } });
   production = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Make these', brief: { model: 'CRF-35' } } })).json.data.task;
   const routed = await api(`/api/workspace/todos/${production._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'CRF-35' }, { model: 'PH-17', printing: true, assembly: true }] } });
   assert.equal(routed.status, 200, routed.json.message);
@@ -151,7 +151,7 @@ test('a traded model with nothing after it is ready for dispatch once all of it 
   const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'Wood Knits', mobile: '9840055102', assignedTo: me } })).json.data._id;
   const job = (await api('/api/enquiries', { method: 'POST', as: 'nandhini', body: { customer, items: [{ modelNumber: 'WD-40', colour: 'Brown' }], nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 864e5).toISOString() } })).json.data;
   assert.equal((await api(`/api/enquiries/${job._id}/edd`, { method: 'POST', as: 'nandhini', body: { date: day(30) } })).status, 200);
-  await Todo.create({ department: 'order_confirmation', title: 'SO request', kind: 'po_so', enquiry: job._id, completed: true, brief: { items: [{ model: 'WD-40', quantity: '500' }] } });
+  await Todo.create({ department: 'order_confirmation', title: 'SO request', kind: 'po_so', enquiry: job._id, completed: true, brief: { paymentTerms: 'Credit — nothing before dispatch', items: [{ model: 'WD-40', quantity: '500' }] } });
   const task = (await api(`/api/enquiries/${job._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Buy these', brief: { model: 'WD-40' } } })).json.data.task;
   assert.equal((await api(`/api/workspace/todos/${task._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'WD-40' }] } })).status, 200);
   const line = await TradeOrder.findOne({ task: task._id }).lean();

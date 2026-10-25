@@ -398,6 +398,25 @@ const enquirySchema = new mongoose.Schema(
 
     status: { type: String, enum: ENQUIRY_STATUSES, default: 'new', index: true },
     statusHistory: [statusChangeSchema],
+    /*
+     * What a department asked marketing about this enquiry and what marketing answered — the SO
+     * team's Needs Clarification, first [handoff.service `answerParent`]. Kept on the enquiry, so
+     * the answer stands with the enquiry's own details for whoever reads it next.
+     */
+    clarifications: {
+      type: [new mongoose.Schema({
+        kind: { type: String, trim: true },
+        department: { type: String, trim: true },
+        task: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
+        question: { type: String, trim: true, maxlength: 2000 },
+        answer: { type: String, trim: true, maxlength: 2000 },
+        askedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        askedAt: Date,
+        answeredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        answeredAt: Date,
+      }, { _id: false })],
+      default: undefined,
+    },
 
     /**
      * Where the conversation with the buyer stands, in marketing's words — see

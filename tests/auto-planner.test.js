@@ -76,7 +76,7 @@ async function routedJob(phone, rows) {
   const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: `Planner ${phone}`, mobile: phone, assignedTo: me } })).json.data._id;
   const enquiry = (await api('/api/enquiries', { method: 'POST', as: 'nandhini', body: { customer, items, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 864e5).toISOString() } })).json.data;
   assert.equal((await api(`/api/enquiries/${enquiry._id}/edd`, { method: 'POST', as: 'nandhini', body: { date: day(30) } })).status, 200);
-  await Todo.create({ department: 'order_confirmation', title: 'SO request', kind: 'po_so', enquiry: enquiry._id, completed: true, brief: { items: models.map((model) => ({ model, quantity: '6000' })) } });
+  await Todo.create({ department: 'order_confirmation', title: 'SO request', kind: 'po_so', enquiry: enquiry._id, completed: true, brief: { paymentTerms: 'Credit — nothing before dispatch', items: models.map((model) => ({ model, quantity: '6000' })) } });
   const production = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Make these', brief: { model: models[0] } } })).json.data.task;
   const routed = await api(`/api/workspace/todos/${production._id}/routing`, { method: 'POST', as: 'siva', body: { models: models.map((model) => ({ model })) } });
   assert.equal(routed.status, 200, routed.json.message);

@@ -213,7 +213,7 @@ test('no SO and no pieces on the enquiry: each model takes its pieces from the S
   const { orderedModelsOf } = await import('../src/services/handoff.service.js');
   assert.deepEqual([...(await orderedModelsOf({ enquiryId: enquiry._id })).ordered], [['CRF-35', 0], ['CRF-44', 0]]);
   /* The SO request names the pieces of each model, before any SO is uploaded. */
-  await Todo.create({ department: 'order_confirmation', title: 'SO request', kind: 'po_so', enquiry: enquiry._id, brief: { items: [{ model: 'CRF-35', quantity: '10,000' }, { model: 'crf-44', quantity: '6000' }] } });
+  await Todo.create({ department: 'order_confirmation', title: 'SO request', kind: 'po_so', enquiry: enquiry._id, brief: { paymentTerms: 'Credit — nothing before dispatch', items: [{ model: 'CRF-35', quantity: '10,000' }, { model: 'crf-44', quantity: '6000' }] } });
   assert.deepEqual([...(await orderedModelsOf({ enquiryId: enquiry._id })).ordered], [['CRF-35', 10000], ['CRF-44', 6000]]);
   /* The enquiry page's chart reads the same. */
   const records = await api(`/api/enquiries/${enquiry._id}/records`, { as: 'nandhini' });

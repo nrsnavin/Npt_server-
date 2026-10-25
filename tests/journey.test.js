@@ -121,6 +121,32 @@ test('with Printing asked, Quality waits until Printing has its share ready too'
   assert.equal(await Todo.countDocuments({ enquiry, kind: 'quality_check' }), 1);
 });
 
+test('a run for an enquiry makes one of its models, and plans at most 10% over the pieces ordered', async () => {
+  const mine = (await api('/api/moulds', { method: 'POST', as: 'siva', body: { mouldCode: 'M-Q1', name: 'Quota hanger', cavities: 4, partWeightGrams: 30, runnerWeightGrams: 12, cycleTimeSeconds: 30 } })).json.data;
+  const other = (await api('/api/moulds', { method: 'POST', as: 'siva', body: { mouldCode: 'M-Q2', name: 'Other hanger', cavities: 4, partWeightGrams: 30, runnerWeightGrams: 12, cycleTimeSeconds: 30 } })).json.data;
+  const machine = (await api('/api/machines', { method: 'POST', as: 'siva', body: { code: 'IM-Q1', name: 'Toshiba 150T', tonnage: 150 } })).json.data;
+  const made = await api('/api/enquiries', {
+    method: 'POST',
+    body: { customer: customerId, items: [{ mould: mine._id, modelNumber: 'M-Q1', colour: 'Black' }], nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  });
+  assert.equal(made.status, 201, made.json.message);
+  const enquiry = made.json.data._id;
+  /* The pieces ordered, as an SO request's rows would give them (the enquiry form takes none). */
+  await mongoose.connection.collection('enquiries').updateOne({ _id: new mongoose.Types.ObjectId(enquiry) }, { $set: { 'items.0.quantity': 1000 } });
+  /* The form's list: only the enquiry's models, with the most a run may plan. */
+  const models = (await api(`/api/mould-runs/models?enquiry=${enquiry}`, { as: 'siva' })).json.data;
+  assert.deepEqual(models.map((row) => [row.mould?.mouldCode, row.quantity, row.most]), [['M-Q1', 1000, 1100]]);
+  const wrong = await api('/api/mould-runs', { method: 'POST', as: 'siva', body: { mould: other._id, machine: machine._id, enquiry, plannedQuantity: 500 } });
+  assert.equal(wrong.status, 400);
+  assert.match(wrong.json.message, /M-Q2 is not one of this enquiry’s models — pick M-Q1/);
+  const over = await api('/api/mould-runs', { method: 'POST', as: 'siva', body: { mould: mine._id, machine: machine._id, enquiry, plannedQuantity: 1101 } });
+  assert.equal(over.status, 400);
+  assert.match(over.json.message, /more than 10% over the 1,000 ordered of M-Q1 — plan 1,100 at most/);
+  const fits = await api('/api/mould-runs', { method: 'POST', as: 'siva', body: { mould: mine._id, machine: machine._id, enquiry, plannedQuantity: 1100 } });
+  assert.equal(fits.status, 201, fits.json.message);
+  await api(`/api/mould-runs/${fits.json.data._id}/finish`, { method: 'POST', as: 'siva', body: { counterEnd: 300, goodPieces: 1100, rejectedPieces: 0 } });
+});
+
 test('a mould running for an enquiry shows on its Production task, the enquiry, the production queue and the machine', async () => {
   const enquiry = await freshEnquiry();
   const production = (await send(enquiry, 'ask_edd')).json.data.task;

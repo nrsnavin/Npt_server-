@@ -1067,11 +1067,33 @@ async function reachEnquiry(task, user, reach, note) {
   await moveStage(enquiry, reach.stage || null, { user, task, note: note || task.title, marketing: reach.marketing, won: Boolean(reach.won) });
 }
 
+/** The tasks on an enquiry that work from its order — told when production stops for a revision. */
+const ORDER_WORK_KINDS = ['ask_edd', 'ask_printing', 'ask_assembling_edd', 'quality_check', 'invoice_dispatch'];
+
+/**
+ * A new SO request sent on an enquiry already in production [sendHandoff]: the order stops, the
+ * teams working from it are told on their tasks, and the enquiry's marketing person and every Admin
+ * — and the people on Production's task — hear it.
+ */
+async function stopProductionForNewRequest(order, raised, user) {
+  const { stopForRevision } = await import('./soFromTask.service.js');
+  if (!(await stopForRevision(order, user, { task: raised }))) return;
+  const said = `${order.number} production stopped — a new SO request revises it (sent by ${user.name}). The plant follows the revised SO once the SO team prepares it.`;
+  const working = await Todo.find({ enquiry: raised.enquiry, kind: { $in: ORDER_WORK_KINDS }, completed: false });
+  const people = [];
+  for (const task of working) {
+    await Todo.updateOne({ _id: task._id }, { $push: { updates: { kind: 'notice', statusLabel: 'Production stopped', text: said, note: said, by: user._id, at: new Date() } } }, { keepVersion: true });
+    if (task.kind === 'ask_edd') people.push(...(await peopleOn(task)));
+  }
+  await Todo.updateOne({ _id: raised._id }, { $push: { updates: { kind: 'notice', statusLabel: 'Production stopped', text: said, note: said, by: user._id, at: new Date() } } }, { keepVersion: true });
+  await noticeStatus(raised, user, { step: { key: 'production_stopped', label: 'Production stopped — SO being revised' }, note: said, toAdminAndMarketing: true, also: people });
+}
+
 /**
  * One button pressed on the enquiry screen. Returns the task (or the record, for the buttons
  * that only record). `enquiry` must be a document with `customer` populated or an id.
  */
-export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, addToOpen, order, user, edd }) {
+export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, addToOpen, order, user, edd, revise = false }) {
   const handoff = findHandoff(kind);
   if (!handoff || handoff.hidden) fail('That is not one of the buttons');
 
@@ -1093,7 +1115,18 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
       enquiry.edd = { date: day, department: 'marketing' };
     }
     const wasHeld = enquiry.stage === 'production_hold';
+    /*
+     * A new SO request on an enquiry whose order is already in production: said first, and sent
+     * only once the person says so (`revise`) — then that production stops and the order is revised
+     * from this request when the SO team prepares it [soFromTask `stopForRevision`, `reviseOrder`].
+     */
+    const running = kind === 'po_so' ? await (await import('./soFromTask.service.js')).orderInProductionFor(enquiry._id) : null;
+    if (running && !revise) {
+      const { inProductionWords } = await import('./soFromTask.service.js');
+      throw ApiError.conflict(inProductionWords(running), { code: 'SO_IN_PRODUCTION', order: { _id: running._id, number: running.number, status: running.status } });
+    }
     const raised = await moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, order, user });
+    if (running) await stopProductionForNewRequest(running, raised, user);
     /* The EDD marketing gave on the SO request's rows is the enquiry's [eddsFromOrderRows]. */
     if (kind === 'po_so' && Array.isArray(brief?.items)) await eddsFromOrderRows(enquiry, user, brief.items);
     /* QC compulsory before dispatch, as marketing or Admin ticked it when the job went to Production [qcGate.service]. */
@@ -1410,6 +1443,22 @@ async function answerParent(clarification, user, text) {
   if (!parent || parent.completed) return;
   const asking = statusesOf(parent).find((entry) => entry.raises === clarification.kind);
   parent.updates = [...(parent.updates || []), { note: `Clarified by ${user.name}: ${text}`, by: user._id, at: new Date() }];
+  /*
+   * The question and its answer kept for good: on the task that asked (the SO team reads them
+   * after the reply is acknowledged) and on the enquiry, beside its own details.
+   */
+  const asked = [...(parent.statusHistory || [])].reverse().find((entry) => asking && entry.status === asking.key);
+  const pair = {
+    question: asked?.note || clarification.notes || '', answer: text,
+    askedBy: asked?.by || clarification.createdBy, askedAt: asked?.at || clarification.createdAt,
+    answeredBy: user._id, answeredAt: new Date(),
+  };
+  parent.clarifications = [...(parent.clarifications || []), pair];
+  if (parent.enquiry) {
+    await Enquiry.updateOne({ _id: parent.enquiry._id || parent.enquiry }, {
+      $push: { clarifications: { ...pair, kind: clarification.kind, department: parent.department, task: parent._id } },
+    });
+  }
   /* At the top of the asking department's dashboard until somebody there acts on it. */
   parent.attention = { kind: 'reply', note: text, by: user._id, at: new Date() };
   if (asking && parent.status === asking.key) {
@@ -1518,10 +1567,10 @@ export async function setTaskStatus(task, user, { status, note, date, dates, fie
   const dateText = handsOn.length ? dateLabelOf(task) : form.statusDate?.label || 'Ready date';
   const movedModels = partial ? moving : modelsOfTask(task);
   const dated = perModel ? perModel.filter((entry) => !movedModels.length || movedModels.includes(entry.model)) : null;
-  /* A hand-over is never on or after the EDD: the next team needs the days in between [assertHandoverBeforeEdd]. */
-  if (handsOn.length) await assertHandoverBeforeEdd(task, dated || movedModels.map((model) => ({ model, date: readyDate })));
+  /* A hand-over on or after the EDD is said with the move, never refused [lateHandovers]. */
+  const lateNote = handsOn.length ? await lateHandovers(task, dated || movedModels.map((model) => ({ model, date: readyDate }))) : '';
   const eachDate = dated && new Set(dated.map((entry) => entry.date)).size > 1 ? ` (${dated.map((entry) => `${entry.model} ${prettyDay(entry.date)}`).join(' · ')})` : '';
-  const said = [label, readyDate && `${dateText} ${readyDate}${eachDate}`].filter(Boolean).join(' · ');
+  const said = [label, readyDate && `${dateText} ${readyDate}${eachDate}`, lateNote].filter(Boolean).join(' · ');
   /* A ready date is the enquiry's EDD (Production) or ERD (the mould) from here on [enquiryProgress]. */
   const dateField = handsOn.length ? 'handover' : form.statusDate?.field || 'edd';
   /* What the move recorded — the models and pieces in a part load, who collected a sample — kept on the line with its date. */
@@ -2924,9 +2973,12 @@ async function bookOrderFor(task, user, { held, reading, readProblem }) {
   const drafted = booked.drafted || {};
   const differences = drafted.differences || [];
   const source = drafted.from === 'so_pdf' ? `read from the SO PDF${drafted.soNumber ? ` (${drafted.soNumber})` : ''}` : 'drafted from the request';
-  let said = booked.linked
-    ? `linked to ${order.number}, already on the Sales orders screen`
-    : `${order.number} ${source} — ${order.lines.length} line${order.lines.length === 1 ? '' : 's'}, ${pieces.toLocaleString('en-IN')} pcs`;
+  /* A second or third request on the enquiry revises its open order [soFromTask `reviseOrder`]. */
+  let said = booked.revised
+    ? `${order.number} revised from this request${booked.changes?.length ? ` — ${booked.changes.join('; ')}` : ' — nothing changed'}; now ${order.lines.length} line${order.lines.length === 1 ? '' : 's'}, ${pieces.toLocaleString('en-IN')} pcs`
+    : booked.linked
+      ? `linked to ${order.number}, already on the Sales orders screen${booked.problem ? ` (${booked.problem})` : ''}`
+      : `${order.number} ${source} — ${order.lines.length} line${order.lines.length === 1 ? '' : 's'}, ${pieces.toLocaleString('en-IN')} pcs`;
   if (!booked.linked && drafted.readProblem) said += ` (SO PDF not used: ${drafted.readProblem})`;
   if (differences.length) said += `. The SO differs from the request: ${differences.join('; ')}`;
   let released = false;
@@ -2943,7 +2995,7 @@ async function bookOrderFor(task, user, { held, reading, readProblem }) {
     said += released ? ' and released to production' : result.problem ? ` — not released yet: ${result.problem}` : '';
   }
   await noteOrderOnTask(task, user, said);
-  return { _id: order._id, number: order.number, booked: Boolean(booked.booked), linked: Boolean(booked.linked), released, said, from: drafted.from || null, differences };
+  return { _id: order._id, number: order.number, booked: Boolean(booked.booked), linked: Boolean(booked.linked), revised: Boolean(booked.revised), changes: booked.changes || [], released, said, from: drafted.from || null, differences };
 }
 
 /**
@@ -3538,9 +3590,9 @@ export async function setTaskEdd(task, user, { date, note, models }) {
     /* The next team hears the date of the models that go on to it — a model that ends here is its completion date, not theirs. */
     const onward = [];
     for (const entry of entries) if (await goOnFromHere(task, [entry.model])) onward.push(entry);
-    await assertHandoverBeforeEdd(task, onward.length ? onward : entries);
+    const lateNote = await lateHandovers(task, onward.length ? onward : entries);
     const handOverDay = (onward.length ? onward : entries).reduce((latest, entry) => (entry.date > latest ? entry.date : latest), '');
-    const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(handOverDay)}${perModel}`;
+    const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(handOverDay)}${perModel}${lateNote ? ` · ${lateNote}` : ''}`;
     task.updates = [...(task.updates || []), {
       kind: 'note', text: text ? `${said}: ${text}` : said, note: text ? `${said}: ${text}` : said,
       date: handOverDay, dateLabel: 'Hand-over', fields: { handover: handOverDay }, by: user._id, at: new Date(),
@@ -3884,19 +3936,19 @@ async function marketingEddFor(task) {
 export const HANDOVER_LEAD_DAYS = 5;
 
 /**
- * A hand-over to Printing or Assembly is never on or after the EDD — the next team needs the
- * days in between; by default it is HANDOVER_LEAD_DAYS before. A model's own EDD wins over the job's.
+ * A hand-over to Printing or Assembly on or after the EDD: said with the move, for reference only —
+ * it never stops the move [the plant's call: the dates are a guide, and the default is
+ * HANDOVER_LEAD_DAYS a team before the EDD]. A model's own EDD wins over the job's. '' when none is late.
  */
-async function assertHandoverBeforeEdd(task, entries) {
+async function lateHandovers(task, entries) {
   const edd = await marketingEddFor(task);
-  if (!edd) return;
+  if (!edd) return '';
+  const late = [];
   for (const entry of entries) {
     const due = (edd.models || []).find((row) => row.model === entry.model)?.date || edd.date;
-    if (due && entry.date && entry.date >= due) {
-      const lead = (await (await import('./settings.service.js')).plantCalendar()).handoverLeadDays || HANDOVER_LEAD_DAYS;
-      fail(`The hand-over${entry.model && entry.model !== 'All models' ? ` for ${entry.model}` : ''} (${prettyDay(entry.date)}) is on or after the EDD (${prettyDay(due)}) — hand over before it, ${lead} days a team by default, so the next team has time`);
-    }
+    if (due && entry.date && entry.date >= due) late.push(`${entry.model && entry.model !== 'All models' ? `${entry.model} ` : ''}${prettyDay(entry.date)}, EDD ${prettyDay(due)}`);
   }
+  return late.length ? `Hand-over on or after the EDD (${late.join(' · ')}) — for reference` : '';
 }
 
 /**

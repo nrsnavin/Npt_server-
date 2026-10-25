@@ -219,3 +219,31 @@ export const setupChecklistHandler = asyncHandler(async (req, res) => {
   if (!isManagement(req.user)) throw ApiError.forbidden('Only Admin sees the setup checklist');
   res.json({ success: true, data: await setupChecklist() });
 });
+
+/**
+ * The models a run for this enquiry (and SO) may make, for the Start a run form's model list: the
+ * mould of each, the pieces ordered and the most a run may plan [records.service `runModelsOf`].
+ */
+export const runModelsHandler = asyncHandler(async (req, res) => {
+  const { runModelsOf, RUN_OVER_LIMIT } = await import('../services/records.service.js');
+  const { default: SalesOrder } = await import('../models/SalesOrder.js');
+  const { default: Mould } = await import('../models/Mould.js');
+  const enquiry = mongoose.isValidObjectId(req.query.enquiry) ? req.query.enquiry : null;
+  if (!enquiry) return res.json({ success: true, data: [] });
+  const order = mongoose.isValidObjectId(req.query.order) ? await SalesOrder.findById(req.query.order).select('lines._id lines.mould lines.modelNumber lines.quantity').lean() : null;
+  const models = await runModelsOf(enquiry, order);
+  const moulds = await Mould.find({ _id: { $in: models.map((model) => model.mould).filter(Boolean) } }).select('mouldCode name').lean();
+  const lines = order?.lines || [];
+  res.json({
+    success: true,
+    data: models.map((model, at) => {
+      const found = moulds.find((entry) => String(entry._id) === model.mould);
+      return {
+        mould: found ? { _id: found._id, mouldCode: found.mouldCode, name: found.name } : null,
+        modelNumber: model.modelNumber, quantity: model.quantity,
+        most: model.quantity ? Math.floor(model.quantity * (1 + RUN_OVER_LIMIT)) : null,
+        orderLine: lines[at]?._id || null,
+      };
+    }),
+  });
+});

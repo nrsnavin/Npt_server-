@@ -405,6 +405,50 @@ export const MAINTENANCE_LABELS = Object.fromEntries(MAINTENANCE_TYPES.map((type
 
 /* ------------------------------------------------------------- mould runs --- */
 
+const sameCode = (a, b) => String(a || '').replace(/[^a-z0-9]/gi, '').toLowerCase() === String(b || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+
+/** How far over the pieces ordered a run may plan: 10%. */
+export const RUN_OVER_LIMIT = 0.1;
+
+/**
+ * The models a run for this enquiry may make, with the pieces ordered of each: the SO's lines when
+ * it has one, else the enquiry's items. `[{ mould, modelNumber, quantity }]`.
+ */
+export async function runModelsOf(enquiryId, order = null) {
+  if (order?.lines?.length) return order.lines.map((line) => ({ mould: line.mould ? String(line.mould) : null, modelNumber: line.modelNumber || '', quantity: line.quantity || 0 }));
+  const enquiry = await Enquiry.findById(enquiryId).select('items.mould items.modelNumber mould requirement.modelNumber').lean();
+  if (!enquiry) return [];
+  /* No SO yet: the pieces the job's requests give each model [handoff.service `orderedModelsOf`]. */
+  const { orderedModelsOf } = await import('./handoff.service.js');
+  const { ordered } = await orderedModelsOf({ enquiryId });
+  const piecesOf = (model) => [...ordered].find(([name]) => sameCode(name, model))?.[1] || 0;
+  const rows = enquiry.items?.length
+    ? enquiry.items.map((item) => ({ mould: item.mould ? String(item.mould) : null, modelNumber: item.modelNumber || '' }))
+    : enquiry.mould ? [{ mould: String(enquiry.mould), modelNumber: enquiry.requirement?.modelNumber || '' }] : [];
+  return rows.map((row) => ({ ...row, quantity: piecesOf(row.modelNumber) }));
+}
+
+/**
+ * A run's mould must be one of the enquiry's models (where they name their moulds); its pieces
+ * planned at most 10% over what was ordered of it.
+ */
+function assertRunFits(models, { mould, line, planned, fromWorkOrder }) {
+  if (!models.length) return;
+  const model = line
+    ? { quantity: line.quantity || 0, modelNumber: line.modelNumber || mould.mouldCode }
+    : models.find((entry) => (entry.mould && entry.mould === String(mould._id)) || sameCode(entry.modelNumber, mould.mouldCode));
+  /* Only where the enquiry names its moulds: a model typed as text alone cannot be checked against one. */
+  if (!model && !fromWorkOrder && models.some((entry) => entry.mould)) {
+    const names = [...new Set(models.map((entry) => entry.modelNumber).filter(Boolean))].join(', ');
+    throw ApiError.badRequest(`${mould.mouldCode} is not one of this enquiry’s models${names ? ` — pick ${names}` : ''}`);
+  }
+  if (!model?.quantity || planned == null || planned === '') return;
+  const most = Math.floor(model.quantity * (1 + RUN_OVER_LIMIT));
+  if (Number(planned) > most) {
+    throw ApiError.badRequest(`${Number(planned).toLocaleString('en-IN')} pcs is more than 10% over the ${model.quantity.toLocaleString('en-IN')} ordered of ${model.modelNumber || mould.mouldCode} — plan ${most.toLocaleString('en-IN')} at most`);
+  }
+}
+
 /**
  * A run started: one mould on one machine. One run at a time on a machine, and on a mould — the
  * second is refused with the run already going, under a lock so two people starting at once
@@ -435,7 +479,7 @@ export async function startRun(input, user) {
     /* The SO line it makes: picked, or the enquiry's SO line on this mould (or its only line). */
     let order = null;
     let orderLine = body.orderLine;
-    const ORDER_SELECT = 'number enquiry customer status lines._id lines.mould lines.modelNumber';
+    const ORDER_SELECT = 'number enquiry customer status lines._id lines.mould lines.modelNumber lines.quantity';
     if (body.order) {
       order = await SalesOrder.findById(body.order).select(ORDER_SELECT).lean();
       if (!order) throw ApiError.badRequest('That sales order was not found');
@@ -457,6 +501,8 @@ export async function startRun(input, user) {
       }
     } else if (orderLine) throw ApiError.badRequest('Pick the sales order the line is on');
     const enquiryId = body.enquiry || order?.enquiry;
+    /* For an enquiry: one of its models, and not more than 10% over the pieces ordered of it [runModelsOf]. */
+    if (enquiryId) assertRunFits(await runModelsOf(enquiryId, order), { mould, line, planned: body.plannedQuantity, fromWorkOrder: Boolean(named) });
     const customer = enquiryId ? (await Enquiry.findById(enquiryId).select('customer').lean())?.customer || order?.customer : order?.customer;
     const [run] = await MouldRun.create([{
       ...body,
@@ -868,14 +914,14 @@ export async function dispatchDetailsForOrder(order) {
  */
 export async function enquiryRecords(enquiry, { withQc }) {
   const [orders, requests, lrTasks, qc] = await Promise.all([
-    SalesOrder.find({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('number status customerPo.number lines.modelNumber lines.quantity createdAt').lean(),
+    SalesOrder.find({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('number status customerPo.number paymentTerms lines.modelNumber lines.quantity createdAt').lean(),
     Todo.find({ enquiry: enquiry._id, kind: 'invoice_dispatch' }).sort({ createdAt: 1 }).populate(REQUEST_POPULATE).lean(),
     Todo.find({ enquiry: enquiry._id, kind: 'lr_copy' }).sort({ createdAt: 1 }).select(LR_SELECT).populate([{ path: 'resultFile', select: 'key filename' }, { path: 'order', select: 'number' }]).lean(),
     withQc ? populateQc(QcRecord.find({ enquiry: enquiry._id }).sort({ inspectedAt: -1 }).limit(100)) : null,
   ]);
   return {
     orders: orders.map((row) => ({
-      _id: row._id, number: row.number, status: row.status, buyerPo: row.customerPo?.number || '',
+      _id: row._id, number: row.number, status: row.status, buyerPo: row.customerPo?.number || '', paymentTerms: row.paymentTerms || '',
       models: (row.lines || []).map((line) => line.modelNumber).filter(Boolean).join(', '),
       quantity: (row.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0),
     })),

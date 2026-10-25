@@ -206,6 +206,22 @@ const todoSchema = new mongoose.Schema(
       at: Date,
       _id: false,
     },
+    /*
+     * Every question this task asked through a clarification and the answer it got, kept for
+     * good [handoff.service `answerParent`] — the SO team reads them on the request after the
+     * reply has been acknowledged; the enquiry keeps the same ones.
+     */
+    clarifications: {
+      type: [new mongoose.Schema({
+        question: { type: String, trim: true, maxlength: 2000 },
+        answer: { type: String, trim: true, maxlength: 2000 },
+        askedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        askedAt: Date,
+        answeredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        answeredAt: Date,
+      }, { _id: false })],
+      default: undefined,
+    },
     /**
      * What the app proposes the department do next, with its reason — "Escalate to PRT" on a
      * collection case that has gone 30 days overdue, or had two promises broken, or could not be

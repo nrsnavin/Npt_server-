@@ -116,6 +116,8 @@ export const workOrderPlanSchema = z.object({
   sequence: z.number().int().min(0).max(100000).nullable().optional(),
   move: z.enum(['release', 'pause', 'resume', 'complete', 'cancel', 'replan']).optional(),
   step: z.union([z.literal(-1), z.literal(1)]).optional(),
+  /** The Production in charge's weightage, 1–10 (null clears it back to the order's priority). */
+  weightage: z.number().int().min(1).max(10).nullable().optional(),
   note: text(500),
   updatedAt: z.string().optional(),
 });

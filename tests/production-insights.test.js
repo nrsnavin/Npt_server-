@@ -80,16 +80,40 @@ test('the suggestion spreads late work across presses that can hold the mould, k
   assert.equal(onBig[0].why, 'Running now — stays first');
   const onSmall = result.plan.find((press) => press.machine.code === 'IM-3').jobs;
   assert.equal(onSmall.length, 0, 'IM-3 cannot hold a 120 T mould');
-  assert.equal(result.summary.lateAfter, 0);
   const all = result.plan.flatMap((press) => press.jobs.map((job) => ({ ...job, press: press.machine.code })));
+  /* The priority queue: the urgent job (weightage 9) is served first, on the press free soonest. */
   const urgent = all.find((job) => job.number === 'WO-3');
-  assert.equal(urgent.press, 'IM-1', 'the urgent white job stays behind the white run — no purge, still on time');
-  assert.match(urgent.why, /^IM-1: .*Already on White — no purge/);
+  assert.equal(urgent.press, 'IM-2', 'the urgent job takes the press free now');
+  assert.match(urgent.why, /^IM-2: free soonest for it \(from 2026-10-19\) · weightage 9/);
+  assert.equal(urgent.start, '2026-10-19');
+  /* Then the normal one, on the press free soonest after that — behind the urgent job, not the running one. */
   const moved = all.find((job) => job.number === 'WO-2');
-  assert.deepEqual([moved.press, moved.from], ['IM-2', 'IM-1'], 'the black job moves to the free press to make its date');
+  assert.deepEqual([moved.press, moved.from, moved.start], ['IM-2', 'IM-1', '2026-10-21']);
   assert.ok(result.moves.every((move) => move.workOrder !== 'run'), 'the running job is never moved');
   assert.equal(result.cannotPlace[0].number, 'WO-4');
   assert.match(result.cannotPlace[0].why, /no cycle time/);
+});
+
+test('weightage the in charge gives outranks the order’s priority: the heavier job is served first', () => {
+  const jobs = [
+    { _id: 'x', number: 'WO-7', status: 'planned', machine: null, mould: tool, colour: 'White', toMake: 9600, dueDay: '2026-10-30', priority: 'urgent' },
+    { _id: 'y', number: 'WO-8', status: 'planned', machine: null, mould: tool, colour: 'White', toMake: 9600, dueDay: '2026-10-30', weightage: 10 },
+  ];
+  const result = suggestSchedule({ presses: [big], jobs, plant, today });
+  assert.deepEqual(result.plan[0].jobs.map((job) => job.number), ['WO-8', 'WO-7'], 'weightage 10 ahead of urgent (9)');
+});
+
+test('the priority queue pops in order, whatever order things went in', async () => {
+  const { PriorityQueue, weightOf, byWeight } = await import('../src/services/priorityQueue.js');
+  const queue = new PriorityQueue((a, b) => a - b, [5, 1, 9, 3, 7, 2, 8]);
+  const out = [];
+  while (queue.size) out.push(queue.pop());
+  assert.deepEqual(out, [1, 2, 3, 5, 7, 8, 9]);
+  assert.equal(weightOf({ priority: 'urgent' }), 9);
+  assert.equal(weightOf({ priority: 'low', weightage: 8 }), 8);
+  assert.equal(weightOf({}), 5);
+  const jobs = new PriorityQueue(byWeight, [{ number: 'A', priority: 'normal', dueDay: '2026-10-20' }, { number: 'B', weightage: 9, dueDay: '2026-10-30' }, { number: 'C', priority: 'normal', dueDay: '2026-10-19' }]);
+  assert.deepEqual([jobs.pop().number, jobs.pop().number, jobs.pop().number], ['B', 'C', 'A'], 'heaviest, then the earliest due');
 });
 
 test('a press’s risk climbs with breakdowns, rising stops and an overdue service', () => {

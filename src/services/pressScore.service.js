@@ -212,7 +212,7 @@ export function rankPresses({ job, presses, queues, plant, slipOf = () => 1, tod
 /** A work order as the scoring reads it. */
 export const planJob = (job) => ({
   _id: job._id, number: job.number, status: job.status, machine: job.machine?._id || job.machine || null, sequence: job.sequence ?? null,
-  mould: job.mould, colour: job.colour, priority: job.order?.priority || job.priority || 'normal',
+  mould: job.mould, colour: job.colour, priority: job.order?.priority || job.priority || 'normal', weightage: job.weightage ?? null,
   modelNumber: job.modelNumber, customer: job.customer?.name || null,
   dueDay: job.dueDate ? indiaDay(job.dueDate) : null,
   toMake: Math.max(0, (job.quantity || 0) - (job.goodQty || 0)), updatedAt: job.updatedAt,

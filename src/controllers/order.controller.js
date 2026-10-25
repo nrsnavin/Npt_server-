@@ -809,6 +809,8 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
   if (action === 'release') {
     order.releasedBy = req.user._id;
     order.releasedAt = new Date();
+    order.revisionStop = undefined;
+    order.paymentHold = undefined;
     /*
      * Every line joins the plant's queue at once. The alternative — releasing lines
      * individually — is a real requirement one day and not this one: §13 gates *the order*,
@@ -1199,3 +1201,33 @@ export const setLinePrintReference = asyncHandler(withOrderLock(req => req.param
   await order.populate(POPULATE);
   res.json({ success: true, data: await orderOut(order, req.user) });
 }));
+
+/* ------------------------- Corrections after the SO is prepared ------------------------- */
+
+/** What new payment terms would do to the order, before they are saved [orderEdits.service]. */
+export const orderTermsPreview = asyncHandler(async (req, res) => {
+  const order = await SalesOrder.findById(req.params.id);
+  if (!order || !ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+  const { termsPreview } = await import('../services/orderEdits.service.js');
+  res.json({ success: true, data: await termsPreview(order, String(req.query.terms || '')) });
+});
+
+/** The payment terms changed by Admin or the buyer's marketing person; production held or kept as chosen. */
+export const changeOrderTerms = asyncHandler(withOrderLock(req => req.params.id, transactional(async (req, res) => {
+  const order = await SalesOrder.findById(req.params.id);
+  if (!order || !ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+  const { changePaymentTerms } = await import('../services/orderEdits.service.js');
+  const result = await changePaymentTerms(order, req.user, { terms: req.body.terms, decision: req.body.decision });
+  await result.order.populate(POPULATE);
+  res.json({ success: true, data: await orderOut(result.order, req.user), said: result.said, held: result.held, released: result.released });
+})));
+
+/** The pieces on the order changed — the work orders and every team's task follow. */
+export const changeOrderQuantitiesHandler = asyncHandler(withOrderLock(req => req.params.id, transactional(async (req, res) => {
+  const order = await SalesOrder.findById(req.params.id);
+  if (!order || !ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+  const { changeOrderQuantities } = await import('../services/orderEdits.service.js');
+  const result = await changeOrderQuantities(order, req.user, { lines: req.body.lines, note: req.body.note });
+  await result.order.populate(POPULATE);
+  res.json({ success: true, data: await orderOut(result.order, req.user), said: result.said, changes: result.changes });
+})));

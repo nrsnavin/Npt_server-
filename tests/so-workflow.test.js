@@ -82,7 +82,7 @@ test('the SO task starts at SO Waiting; the statuses come from the server', asyn
     method: 'POST', as: 'nandhini', body: {
       kind: 'po_so', note: 'Prepare and send SO',
       /* Production not confirmed: the SO prepared waits with marketing [handoffs po_so `holdUnless`]. */
-      brief: { contactPerson: 'sas', mobile: '917087520007', items: [{ model: 'UTJRSH-0', material: 'PP Black', quantity: '5,000', price: '2.40', edd: '2026-11-10' }] },
+      brief: { contactPerson: 'sas', mobile: '917087520007', paymentTerms: 'Credit — nothing before dispatch', items: [{ model: 'UTJRSH-0', material: 'PP Black', quantity: '5,000', price: '2.40', edd: '2026-11-10' }] },
     },
   });
   assert.equal(sent.status, 201, sent.json.message);
@@ -250,7 +250,7 @@ test('ticked Production confirmed, the SO prepared goes straight to Production',
     body: { customer: customer._id, requirement: { modelNumber: 'UTJRSH-0' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
   })).json.data;
   const sent = await api(`/api/enquiries/${second._id}/handoffs`, {
-    method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'Prepare SO', brief: { items: [{ model: 'UTJRSH-0', quantity: '2000', price: '3' }], productionConfirmed: true } },
+    method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'Prepare SO', brief: { paymentTerms: 'Credit — nothing before dispatch', items: [{ model: 'UTJRSH-0', quantity: '2000', price: '3' }], productionConfirmed: true } },
   });
   assert.equal(sent.status, 201, sent.json.message);
   assert.equal(sent.json.data.task.brief.productionConfirmed, 'Yes');
@@ -365,7 +365,7 @@ test('an SO PDF that differs from the request is booked from the PDF but not rel
     body: { customer: customer._id, requirement: { modelNumber: 'UTJRSH-0' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
   })).json.data;
   const sent = await api(`/api/enquiries/${third._id}/handoffs`, {
-    method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'Prepare SO', brief: { items: [{ model: 'UTJRSH-0', quantity: '2000', price: '3' }], productionConfirmed: true } },
+    method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'Prepare SO', brief: { paymentTerms: 'Credit — nothing before dispatch', items: [{ model: 'UTJRSH-0', quantity: '2000', price: '3' }], productionConfirmed: true } },
   });
   assert.equal(sent.status, 201, sent.json.message);
   const { finishWithResult } = await import('../src/services/handoff.service.js');

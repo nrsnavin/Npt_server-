@@ -4,6 +4,7 @@ import {
   createOrder, orderFromQuotation, updateOrder,
   setOrderCheck, applyOrderAction, listOrderActions, setOrderPo, setLinePrintReference, setOrderPriority,
   setLinePromisedDate, orderPaymentStanding, orderReleaseCheck, waiveOrderPayment,
+  orderTermsPreview, changeOrderTerms, changeOrderQuantitiesHandler,
 } from '../controllers/order.controller.js';
 import {
   listOrderQueries, listQueryQueue, raiseOrderQuery, answerOrderQuery, closeOrderQuery,
@@ -31,7 +32,7 @@ import {
 } from '../controllers/quality.controller.js';
 import {
   listReceivables, getReceivable, paymentDay,
-  raiseAdvance, logFollowUp, setPaymentContact, followUpOptions, recordReceipt, confirmReceipt, rejectReceipt, setJudgement,
+  raiseAdvance, logFollowUp, setPaymentContact, followUpOptions, recordReceipt, ownerMayLogReceipt, confirmReceipt, rejectReceipt, setJudgement,
 } from '../controllers/payment.controller.js';
 import { inspectionSchema } from '../validators/quality.schemas.js';
 import {
@@ -42,7 +43,7 @@ import { validate } from '../middleware/validate.js';
 import { singleDocument } from '../middleware/upload.js';
 import {
   orderSchema, orderUpdateSchema, orderFromQuotationSchema,
-  orderCheckSchema, orderActionSchema, orderPaymentWaiverSchema,
+  orderCheckSchema, orderActionSchema, orderPaymentWaiverSchema, orderTermsSchema, orderQuantitiesSchema,
   orderQuerySchema, orderAnswerSchema, orderQueryCloseSchema,
   orderEscalationSchema, escalationUpdateSchema, escalationResolveSchema,
   productionLineSchema, orderPrioritySchema, linePromiseSchema,
@@ -165,6 +166,10 @@ router.get('/orders/:id/payment', requireModule('orders'), orderPaymentStanding)
 /* What stands between the order and the plant: checks, the advance, a Production Holded Order. */
 router.get('/orders/:id/release-check', requireModule('orders'), orderReleaseCheck);
 router.post('/orders/:id/payment-waiver', requireModule('orders'), validate(orderPaymentWaiverSchema), waiveOrderPayment);
+/* Corrections to a prepared SO by Admin or the buyer's marketing person — checked inside [orderEdits.service]. */
+router.get('/orders/:id/payment-terms', requireModule('orders'), orderTermsPreview);
+router.post('/orders/:id/payment-terms', requireModule('orders'), validate(orderTermsSchema), changeOrderTerms);
+router.post('/orders/:id/quantities', requireModule('orders'), validate(orderQuantitiesSchema), changeOrderQuantitiesHandler);
 
 /*
  * Questions about an order [§25 for the clock].
@@ -268,7 +273,8 @@ router.post(
  *
  * **A receipt needs write**, and that is not a status distinction — it is a claim about a bank
  * account, and the person who can check the bank account should be the one making it. Marketing
- * hearing "we paid Tuesday" logs a follow-up, which is what it is: something they were told.
+ * hearing "we paid Tuesday" logs a follow-up, which is what it is: something they were told — or,
+ * on their own buyer's order, enters it as a payment awaiting Accounts' confirmation (below).
  */
 router.get('/payments/day', requireModule('payments'), paymentDay);
 router.get('/payments', requireModule('payments'), listReceivables);
@@ -277,6 +283,12 @@ router.get('/payments/:id', requireModule('payments'), getReceivable);
 router.put('/payments/:id/contact', requireModule('payments', 'write'), validate(paymentContactSchema), setPaymentContact);
 router.post('/payments/:id/follow-ups', requireModule('payments'), validate(followUpSchema), logFollowUp);
 router.post('/payments/:id/receipts', requireModule('payments', 'write'), validate(receiptSchema), recordReceipt);
+/*
+ * The one door marketing has to a receipt: the buyer's own marketing person entering a payment the
+ * buyer made, from the enquiry where the goods wait for it. It is logged, never confirmed — Accounts
+ * sees it in the bank before it opens anything [payment.controller `ownerMayLogReceipt`].
+ */
+router.post('/payments/:id/owner-receipts', requireModule('payments'), ownerMayLogReceipt, validate(receiptSchema), recordReceipt);
 /* Accounts has seen a collector's receipt in the bank — only then does it count at the payment gate. */
 router.post('/payments/:id/receipts/:receiptId/confirm', requireModule('payments', 'write'), validate(confirmReceiptSchema), confirmReceipt);
 router.post('/payments/:id/receipts/:receiptId/reject', requireModule('payments', 'write'), validate(rejectReceiptSchema), rejectReceipt);

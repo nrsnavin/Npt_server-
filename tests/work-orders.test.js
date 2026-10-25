@@ -282,6 +282,11 @@ test('the board chains a press back to back, refuses a mould the press cannot ho
   assert.deepEqual(row.queue.map((job) => job.colour), ['Black', 'White']);
   assert.equal(row.changeovers, 1);
   assert.ok(board.json.data.days.length >= 14);
+  /* The board runs on to the last day a press is booked, and says it per press. */
+  assert.ok(row.bookedUntil, 'the press says how far it is booked');
+  const bookedDay = new Date(row.bookedUntil).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+  assert.ok(board.json.data.days.at(-1).day >= bookedDay, 'the days reach the last booked day');
+  assert.ok(row.queue.every((job) => !job.plannedEnd || board.json.data.days.some((entry) => entry.day === new Date(job.plannedEnd).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }))), 'every job ends inside the board');
   assert.ok(Array.isArray(board.json.data.unplanned));
 
   const sorted = await api(`/api/production/plan/${big._id}/sequence-by-colour`, { method: 'POST', token: ramesh });
@@ -295,6 +300,20 @@ test('the board chains a press back to back, refuses a mould the press cannot ho
   const swapped = (await api('/api/production/plan', { token: ramesh })).json.data.presses.find((entry) => entry.machine.code === 'IM-BIG');
   assert.deepEqual(swapped.queue.map((job) => job.colour), ['Black', 'White'], 'one place later swaps with the next job');
   assert.equal((await api(`/api/work-orders/${swapped.queue[1]._id}`, { method: 'PATCH', token: ramesh, body: { step: 1 } })).status, 400, 'the last job cannot go later');
+
+  /* Weightage: the in charge weighs the last job heavier, and it goes to the front of the press's queue. */
+  const heavy = await api(`/api/work-orders/${swapped.queue[1]._id}`, { method: 'PATCH', token: ramesh, body: { weightage: 9, note: 'Buyer’s launch' } });
+  assert.equal(heavy.status, 200, heavy.json.message);
+  assert.equal(heavy.json.data.sequence, 1);
+  assert.match(heavy.json.data.history.at(-1).note, /Weightage 5 → 9 — Buyer’s launch/);
+  const weighed = (await api('/api/production/plan', { token: ramesh })).json.data.presses.find((entry) => entry.machine.code === 'IM-BIG');
+  assert.deepEqual(weighed.queue.map((job) => [job.colour, job.weight]), [['White', 9], ['Black', 5]], 'heaviest first');
+  assert.ok(new Date(weighed.queue[1].plannedStart) > new Date(weighed.queue[0].plannedEnd), 'and the chain follows');
+  assert.equal((await api(`/api/work-orders/${swapped.queue[1]._id}`, { method: 'PATCH', token: ramesh, body: { weightage: 11 } })).status, 400, 'one to ten');
+  /* Cleared, it runs by its order's priority again. */
+  const cleared = await api(`/api/work-orders/${swapped.queue[1]._id}`, { method: 'PATCH', token: ramesh, body: { weightage: null } });
+  assert.equal(cleared.status, 200, cleared.json.message);
+  assert.equal(cleared.json.data.weightage, undefined);
 
   const fit = await api(`/api/production/fit?mould=${mould}&machine=${small._id}`, { token: ramesh });
   assert.equal(fit.json.data.ok, false);
