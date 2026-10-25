@@ -47,8 +47,9 @@ const api = async (path, { method = 'GET', body, as } = {}) => {
 /* What Accounts reads on the bank line when confirming a logged payment [validators `confirmReceiptSchema`]. */
 /* Today in India — what the date box offers just after midnight there, while it is still yesterday in UTC. */
 const bankLine = (amount, reference = undefined) => ({ amount, creditedOn: new Date(Date.now() + 330 * 60 * 1000).toISOString().slice(0, 10), ...(reference ? { reference } : {}) });
-const move = (as, task, status, note, date) =>
-  api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, ...(note ? { note } : {}), ...(date ? { date } : {}) } });
+/* Escalated to PRT says what PRT is to do [departmentTaskForms `prtMode`]: follow it up, unless a test says collect a cheque. */
+const move = (as, task, status, note, date, fields = status === 'escalate_prt' ? { prtMode: 'Follow up on its own' } : undefined) =>
+  api(`/api/workspace/todos/${task}/status`, { method: 'POST', as, body: { status, ...(note ? { note } : {}), ...(date ? { date } : {}), ...(fields ? { fields } : {}) } });
 const noticesOf = async (as) => (await api('/api/workspace/notices', { as })).json.data;
 const indiaDay = (offset = 0) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(Date.now() + offset * 86400000));
 const daysAgo = (days) => new Date(Date.now() - days * 86400000);
@@ -125,9 +126,14 @@ test('Payment Recovery is a department of its own, with the PRT Recovery task; t
   assert.ok(!prt.hidden);
   assert.ok(buttons.find((button) => button.key === 'request_prt_visit').hidden, 'replaced, kept readable');
   const labels = (key) => buttons.find((button) => button.key === key).form.statuses.map((entry) => entry.label);
-  assert.deepEqual(labels('team_payment_followup'), ['Assigned', 'Contacted', 'Promised', 'Part Paid', 'Promise Broken', 'Not Reachable', 'Disputed', 'Escalated to PRT', 'Paid', 'Payment Logged — Accounts to Confirm']);
-  assert.deepEqual(labels('my_payment_followup'), labels('team_payment_followup').slice(0, -1), 'the same tracker on the raiser’s own list — money in is logged by Payment Collection');
-  assert.deepEqual(labels('prt_recovery'), ['Assigned', 'Visit Planned', 'Visited', 'Collected', 'Part Collected', 'Promised', 'Promise Broken', 'Cannot Recover', 'Task Closed']);
+  /* Money received goes to Accounts; Paid and Part Paid are set only by Accounts' confirmation. */
+  assert.deepEqual(labels('team_payment_followup'), ['Assigned', 'Contacted', 'Promised', 'Promise Broken', 'Not Reachable', 'Disputed', 'Escalated to PRT', 'Payment Received — Send to Accounts', 'Part Paid — Confirmed by Accounts', 'Paid — Confirmed by Accounts']);
+  const byApp = (key) => buttons.find((button) => button.key === key).form.statuses.filter((entry) => entry.byApp).map((entry) => entry.key);
+  assert.deepEqual(byApp('team_payment_followup'), ['part_paid', 'paid']);
+  assert.deepEqual(buttons.find((button) => button.key === 'team_payment_followup').form.statuses.find((entry) => entry.key === 'escalate_prt').fields[0].options, ['Collect cheque', 'Follow up on its own']);
+  assert.deepEqual(labels('my_payment_followup'), ['Assigned', 'Contacted', 'Promised', 'Promise Broken', 'Not Reachable', 'Disputed', 'Escalated to PRT', 'Part Paid', 'Paid'], 'the raiser’s own reminder notes the money itself');
+  assert.deepEqual(labels('prt_recovery'), ['Assigned', 'Visit Planned', 'Visited', 'Cheque Collected — Send to Accounts', 'Payment Received — Send to Accounts', 'Promised', 'Promise Broken', 'Cannot Recover', 'Part Paid — Confirmed by Accounts', 'Paid — Confirmed by Accounts', 'Task Closed']);
+  assert.deepEqual(byApp('prt_recovery'), ['part_paid', 'paid']);
   assert.equal(prt.asks.find((field) => field.type === 'member').department, 'payment_recovery');
   assert.ok(!prt.asks.find((field) => field.type === 'member').required, 'the automation raises it with nobody named');
 });
@@ -260,8 +266,13 @@ test('PRT works the case in the field; what it collects waits for Accounts befor
   const { task, receivable, order } = await caseOn({ overdueDays: 40, value: 20000 });
   order.paymentPlan = { advancePercent: 0, beforeDispatchPercent: 100 };
   await order.save();
-  await move('vijay', task._id, 'escalate_prt', 'Field it');
+  /* Sent to collect a cheque: PRT's case says so. */
+  assert.equal((await move('vijay', task._id, 'escalate_prt', 'Field it', null, {})).status, 400, 'says what PRT is to do');
+  assert.equal((await move('vijay', task._id, 'escalate_prt', 'Field it', null, { prtMode: 'Collect cheque' })).status, 200);
   const prt = await Todo.findOne({ kind: 'prt_recovery', order: order._id });
+  assert.equal(prt.brief.prtMode, 'Collect cheque');
+  assert.match(prt.title, /\(collect cheque\)/);
+  assert.match(prt.notes, /PRT to: Collect cheque/);
 
   /* The team takes it, plans the visit, visits. Each is a call on the receivable, mode visit. */
   assert.equal((await move('senthil', prt._id, 'visit_planned', 'Thursday morning')).status, 400, 'a visit has a date');
@@ -273,34 +284,42 @@ test('PRT works the case in the field; what it collects waits for Accounts befor
   let row = await Receivable.findById(receivable._id);
   assert.equal(row.followUps.at(-1).mode, 'visit');
 
-  /* Collected on the spot: PRT is asked to record the receipt, and may — it has the payments grant. */
-  const collected = await move('senthil', prt._id, 'collected', 'Cash ₹20,000 in hand, receipt book 44');
+  /* PRT never marks it Paid — that is Accounts' word. */
+  const selfPaid = await move('senthil', prt._id, 'paid', 'Paid');
+  assert.equal(selfPaid.status, 400);
+  assert.match(selfPaid.json.message, /set when Accounts confirms the payment/);
+  /* The cheque collected: logged on the RCV from the task, on Accounts' list to confirm. */
+  assert.equal((await move('senthil', prt._id, 'cheque_collected', 'Cheque from the owner', null, { amount: 20000 })).status, 400, 'the cheque number is asked');
+  const collected = await move('senthil', prt._id, 'cheque_collected', 'Cheque from the owner', null, { amount: 20000, reference: 'CHQ-4471', bank: 'HDFC, dated 30 Oct' });
   assert.equal(collected.status, 200, collected.json.message);
-  const askedToRecord = await Todo.findOne({ user: ids.senthil, originKey: `record-receipt:${prt._id}:collected` });
-  assert.ok(askedToRecord, 'asked to record the receipt');
-  assert.equal(askedToRecord.link, `/payments/${receivable._id}`);
-  const recorded = await api(`/api/payments/${receivable._id}/receipts`, { method: 'POST', as: 'senthil', body: { amount: 20000, mode: 'cash', reference: 'RB-44' } });
-  assert.equal(recorded.status, 201, recorded.json.message);
+  assert.equal(collected.json.data.completed, false, 'open until Accounts confirms');
+  const recorded = { json: { data: (await api(`/api/payments/${receivable._id}`, { as: 'kiran' })).json.data } };
+  const logged = recorded.json.data.receipts.find((entry) => entry.reference === 'CHQ-4471');
+  assert.deepEqual([logged.amount, logged.mode, String(logged.loggedFrom)], [20000, 'cheque', String(prt._id)]);
+  assert.match(logged.note, /Bank \/ cheque date: HDFC, dated 30 Oct/);
   assert.equal(recorded.json.data.balance, 0, 'the chase stops');
   assert.equal(recorded.json.data.state, 'awaiting_confirmation', 'Paid reads only once Accounts has seen it');
   assert.equal(recorded.json.data.awaitingConfirmation, 20000, 'but Accounts has not seen it');
-  assert.equal(recorded.json.data.receipts[0].confirmed?.at, undefined);
+  const onList = (await api('/api/departments/accounts/dashboard', { as: 'kiran' })).json.data.paymentsToConfirm;
+  assert.ok(onList.some((entry) => entry.receipt.reference === 'CHQ-4471'), 'on Accounts’ Payments to confirm');
 
   /* The gate does not open on money Accounts has not seen. */
   let standing = await paymentStanding(await SalesOrder.findById(order._id));
   assert.equal(standing.dispatch.met, false);
   assert.equal(standing.received, 0);
 
-  /* PRT cannot confirm its own receipt; Accounts can, once. */
-  const receiptId = recorded.json.data.receipts[0]._id;
-  assert.equal((await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'senthil', body: bankLine(20000) })).status, 403);
-  assert.equal((await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'vijay', body: bankLine(20000) })).status, 403);
-  const confirmed = await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(20000) });
+  /* PRT cannot confirm its own receipt; Accounts can, once — with the cheque number. */
+  const receiptId = logged._id;
+  assert.equal((await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'senthil', body: bankLine(20000, 'CHQ-4471') })).status, 403);
+  assert.equal((await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'vijay', body: bankLine(20000, 'CHQ-4471') })).status, 403);
+  const confirmed = await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(20000, 'CHQ-4471') });
   assert.equal(confirmed.status, 200, confirmed.json.message);
-  assert.equal(confirmed.json.data.receipts[0].confirmed.by.name, 'Kiran Accounts');
+  assert.equal(confirmed.json.data.receipts.find((entry) => String(entry._id) === String(receiptId)).confirmed.by.name, 'Kiran Accounts');
   assert.equal(confirmed.json.data.awaitingConfirmation, 0);
   assert.equal(confirmed.json.data.state, 'paid', 'confirmed in the bank: Paid');
-  const again = await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(20000) });
+  const prtDone = await Todo.findById(prt._id);
+  assert.deepEqual([prtDone.completed, prtDone.status], [true, 'paid'], 'PRT’s case closes as Paid on Accounts’ confirmation');
+  const again = await api(`/api/payments/${receivable._id}/receipts/${receiptId}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(20000, 'CHQ-4471') });
   assert.equal(again.json.replayed, true);
   standing = await paymentStanding(await SalesOrder.findById(order._id));
   assert.equal(standing.dispatch.met, true, 'confirmed money opens the gate');
@@ -319,7 +338,7 @@ test('PRT works the case in the field; what it collects waits for Accounts befor
   assert.ok(day.data.recovery.every((card) => card.kind === 'prt_recovery'));
   const ended = await Todo.findById(prt._id);
   assert.equal(ended.completed, true, 'paid in full, confirmed, closes the PRT case');
-  assert.match(ended.outcome?.note || '', /Paid in full/);
+  assert.match(ended.outcome?.note || '', /Accounts confirmed the payment: ₹20,000 · UTR CHQ-4471/, 'closed by Accounts’ confirmation, with what the bank showed');
   assert.equal((await move('senthil', prt._id, 'closed', 'Collected in full')).status, 409, 'nothing left to close');
 });
 
@@ -343,7 +362,7 @@ test('a dispute sends A/C Clarify to Accounts and flags the enquiry; a case rais
   const prt = await Todo.findOne({ kind: 'prt_recovery', enquiry: null, customer: customerId, completed: false });
   assert.ok(prt, 'the PRT case, with no enquiry');
   assert.equal(prt.department, 'payment_recovery');
-  assert.match(prt.title, /PRT Recovery — RR Jain/);
+  assert.match(prt.title, /PRT Recovery \(follow up on its own\) — RR Jain/);
 });
 
 test('every buyer carries a credit status: the rule derives it, Admin overrides it, and nothing is blocked by it', async () => {

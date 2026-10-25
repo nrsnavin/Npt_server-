@@ -464,18 +464,25 @@ test('Accounts confirms a logged payment from its own list, with the bank line; 
   assert.deepEqual([receipt.confirmed.reference, receipt.confirmed.amount, receipt.confirmed.bankAccount, receipt.confirmed.loggedAmount], ['UTR-A1', 3500, 'HDFC 1234', 3750]);
   assert.equal(new Date(receipt.receivedAt).toISOString().slice(0, 10), '2026-10-20', 'the day the bank credited it');
 
-  /* The task it was logged from is closed, with what Accounts saw; whoever logged it hears so. */
-  const closed = await Todo.findById(task._id).lean();
-  assert.equal(closed.completed, true, 'Payment Collection’s task closes on the confirmation');
-  assert.ok(JSON.stringify(closed).includes('Accounts confirmed the payment: ₹3,500 · UTR UTR-A1 · credited 2026-10-20 · into HDFC 1234 · logged as ₹3,750'));
+  /* ₹250 still short before production: the task stays open, Part Paid, its title saying what is left; whoever logged it hears so. */
+  const part = await Todo.findById(task._id).lean();
+  assert.equal(part.completed, false, 'open for the rest');
+  assert.equal(part.status, 'part_paid');
+  assert.ok(JSON.stringify(part).includes('Accounts confirmed ₹3,500 · UTR UTR-A1 · credited 2026-10-20 · into HDFC 1234 · logged as ₹3,750'));
+  assert.ok(await until(async () => /^Collect ₹250 before production/.test((await Todo.findById(task._id)).title)), 'the title says what is still short');
   const notice = await TaskNotice.findOne({ task: task._id, recipient: id.vijay }).lean();
   assert.ok(notice, 'Payment Collection is told');
-  assert.match(notice.statusLabel, /^Paid — confirmed by Accounts, task closed/);
-  assert.equal(closed.status, 'paid', 'the task reads Paid');
+  assert.match(notice.statusLabel, /^Part paid — confirmed by Accounts/);
   assert.equal(await TaskNotice.exists({ task: task._id, recipient: id.kiran }), null, 'not the one who confirmed');
+  assert.equal((await collectionTasks(order)).filter((entry) => !entry.completed).length, 1, 'no second task for the same money');
 
-  /* ₹250 is still short before production: a fresh task for what is left. */
-  assert.ok(await until(async () => (await collectionTasks(order)).some((entry) => !entry.completed && /^Collect ₹250 before production/.test(entry.title))), 'the rest goes back on the desk');
+  /* The ₹250 comes: logged, confirmed — the task closes as Paid, and Payment Collection hears it. */
+  const rest = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'payment_inward', note: 'Balance in', fields: { amount: 250, mode: 'UPI', reference: 'UPI-A2' } } });
+  assert.equal(rest.status, 200, rest.json.message);
+  const second = (await Receivable.findById(line.receivable._id).lean()).receipts.find((row) => row.reference === 'UPI-A2');
+  assert.equal((await api(`/api/payments/${line.receivable._id}/receipts/${second._id}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(250, 'UPI-A2') })).status, 200);
+  assert.ok(await until(async () => (await Todo.findById(task._id)).completed), 'closed once the stage is met');
+  assert.equal((await Todo.findById(task._id)).status, 'paid', 'reads Paid');
   const after = (await api('/api/departments/accounts/dashboard', { as: 'kiran' })).json.data;
   assert.equal(after.paymentsToConfirm.some((row) => String(row.receipt._id) === String(line.receipt._id)), false, 'off the list');
 });

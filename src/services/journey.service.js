@@ -62,6 +62,19 @@ const isReady = (task) => {
   return Boolean(step?.readyForDispatch || step?.handsTo);
 };
 
+/**
+ * Every model ready — each by the last team on its route (Assembly, else Printing, else Production)
+ * saying Ready for Dispatch [handoff.service `modelReadiness`] — before an order going out all
+ * together is sent on. A team's task reading "Handed to Printing" is not its models ready. With no
+ * models known (an old request), each finishing team's own reading stands.
+ */
+async function everyModelReady({ enquiryId = null, task = null }, finishing) {
+  const { modelReadiness } = await import('./handoff.service.js');
+  const readiness = await modelReadiness(enquiryId, { task });
+  if ((readiness.ready || []).length + (readiness.waiting || []).length) return !(readiness.waiting || []).length;
+  return finishing.every((entry) => isReady(entry));
+}
+
 /** The enquiry's dispatch plan [Enquiry `dispatchPlan`], and which models are ready. */
 async function planOf(enquiryId) {
   const enquiry = await Enquiry.findById(enquiryId).select(`${DISPATCH_PLAN_FIELDS} qcRequired`).lean();
@@ -166,7 +179,7 @@ async function advanceOnEnquiry(task, user, why) {
      * Printing or Assembly still making its share: Quality waits for the last of them — unless the
      * order goes out model by model, when a model ready is enough [Enquiry `dispatchPlan`].
      */
-    if (plan.byModel ? !plan.ready.length : finishing.some((entry) => !isReady(entry))) return null;
+    if (plan.byModel ? !plan.ready.length : !(await everyModelReady({ enquiryId }, finishing))) return null;
     if (!qcRequired) {
       if (await raisedSince('invoice_dispatch')) return null;
       const said = plan.byModel ? `${readyWords(plan)} — dispatch plan: each model as it is ready` : why || 'Goods ready';
@@ -197,7 +210,7 @@ async function advanceOnEnquiry(task, user, why) {
   /* Quality done on an order on its way: Dispatch has it next. An in-process check while the goods are still being made does not send them — model by model, one ready model is enough. */
   const finishing = await Todo.find({ ...since, kind: { $in: FINISHING_KINDS } }).select('kind status completed').lean();
   const plan = await planOf(enquiryId);
-  if (plan.byModel ? !plan.ready.length : finishing.some((entry) => !isReady(entry))) return null;
+  if (plan.byModel ? !plan.ready.length : !(await everyModelReady({ enquiryId }, finishing))) return null;
   if (plan.byModel) {
     if (!unsentOf(plan).length) return null;
     return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, `Quality passed${passedWords} — ${readyWords(plan)}. Dispatch plan: each model as it is ready${sentWords(plan)}`);
@@ -281,7 +294,7 @@ const TEAM_NEXT = { po_so: 'ask_edd', quality_check: 'invoice_dispatch' };
 async function advanceTeamTask(task, user, why) {
   if (FINISHING_KINDS.includes(task.kind)) {
     const finishing = await Todo.find({ ...jobFilter(task), kind: { $in: FINISHING_KINDS } }).select('kind status completed brief').lean();
-    if (finishing.some((entry) => !isReady(entry))) return null;
+    if (!(await everyModelReady({ task }, finishing))) return null;
     /* QC compulsory, ticked on the Production task (or the one team asked): Quality first, Dispatch on its pass. */
     const production = finishing.find((entry) => entry.kind === 'ask_edd') || finishing[0];
     if (tickedQc(production?.brief?.qcRequired) || tickedQc(task.brief?.qcRequired)) {

@@ -252,7 +252,27 @@ const quotationWorkflow = {
  *              next follow-up date, and the task's due date. Broken by the sweep when it passes
  *              with no money in [collections.service `runCollectionSweep`]
  *   recordsReceipt  money was taken: whoever moved it is asked to record the receipt in Payments
+ *   confirmsInward  money came in: logged on the RCV from the task (amount, mode, UTR / cheque
+ *              number) and put on Accounts' Payments to confirm list [paymentGates `confirmInwardFromTask`]
+ *   byApp      set by the app, never picked: Paid and Part Paid read only once Accounts has confirmed
+ *              the money in the bank [paymentGates `closeLoggedTask`]
+ *
+ * The chase: Payment Collection collects, and money received goes to Accounts to confirm. When it
+ * cannot be collected by phone, it is escalated to PRT — to collect a cheque, or to follow it up on
+ * its own — and PRT's money goes to Accounts the same way. Only Accounts' confirmation completes it.
  */
+/* What PRT is sent to do [prt_recovery `prtMode`]. */
+export const PRT_MODES = ['Collect cheque', 'Follow up on its own'];
+const MONEY_FIELDS = [
+  { key: 'amount', label: 'Amount received (₹)', type: 'number', required: true },
+  { key: 'mode', label: 'Mode', options: ['NEFT', 'RTGS', 'UPI', 'Cheque', 'Cash', 'Other'], required: true },
+  { key: 'reference', label: 'UTR / cheque number' },
+];
+/* Set when Accounts confirms: part of the money, or all of it. */
+const PAID_BY_ACCOUNTS = [
+  { key: 'part_paid', label: 'Part Paid — Confirmed by Accounts', followUp: 'part_paid', byApp: true },
+  { key: 'paid', label: 'Paid — Confirmed by Accounts', followUp: 'payment_sent', byApp: true, done: true },
+];
 const paymentFollowUp = {
   title: 'Payment Follow-up Tracker',
   submit: 'Save Follow-up',
@@ -272,29 +292,26 @@ const paymentFollowUp = {
     { key: 'assigned', label: 'Assigned' },
     { key: 'contacted', label: 'Contacted', followUp: 'other' },
     { key: 'promised', label: 'Promised', date: 'required', promise: true, followUp: 'promised' },
-    { key: 'part_paid', label: 'Part Paid', followUp: 'part_paid', recordsReceipt: true },
     /* Set by the sweep the morning after a promised date passes with nothing in; a person may set it too. */
     { key: 'promise_broken', label: 'Promise Broken', issue: true },
     { key: 'not_reachable', label: 'Not Reachable', followUp: 'no_answer' },
     /* The buyer argues the invoice: Accounts gets A/C Clarify, and marketing's list shows the issue. */
     { key: 'disputed', label: 'Disputed', comment: true, raises: 'ac_clarify', followUp: 'disputed', issue: true },
-    /* Hand-over to the field: the PRT case is raised and this task closes with the reason. */
-    { key: 'escalate_prt', label: 'Escalated to PRT', comment: true, raises: 'prt_recovery', done: true },
-    { key: 'paid', label: 'Paid', followUp: 'payment_sent', recordsReceipt: true, done: true },
     /*
-     * The money a sales order waits for before production (or dispatch) has come in: Payment
-     * Collection logs it here — a receipt on the order's RCV — and Accounts gets a task to confirm
-     * it in the bank. Once Accounts confirms and the stage is covered, this task closes and the SO
-     * team and marketing are told to release the order [paymentGates.service `confirmInwardFromTask`].
+     * Not collectable by phone: the PRT case is raised — to collect a cheque, or to follow it up on
+     * its own — and this task closes with the reason. PRT's money goes to Accounts the same way.
      */
     {
-      key: 'payment_inward', label: 'Payment Logged — Accounts to Confirm', confirmsInward: true,
-      fields: [
-        { key: 'amount', label: 'Amount received (₹)', type: 'number', required: true },
-        { key: 'mode', label: 'Mode', options: ['NEFT', 'RTGS', 'UPI', 'Cheque', 'Cash', 'Other'], required: true },
-        { key: 'reference', label: 'UTR / cheque number' },
-      ],
+      key: 'escalate_prt', label: 'Escalated to PRT', comment: true, raises: 'prt_recovery', done: true,
+      fields: [{ key: 'prtMode', label: 'PRT to', options: PRT_MODES, required: true }],
     },
+    /*
+     * Money received: Payment Collection logs it here — a receipt on the RCV (the order's advance,
+     * else the oldest invoice owed) — and it goes on Accounts' Payments to confirm list. Accounts'
+     * confirmation marks this task Paid (or Part Paid, open for the rest), and the gates open on it.
+     */
+    { key: 'payment_inward', label: 'Payment Received — Send to Accounts', confirmsInward: true, fields: MONEY_FIELDS },
+    ...PAID_BY_ACCOUNTS,
   ],
   asks: [
     { key: 'contact', label: 'Contact person / WhatsApp', from: 'customer.whatsapp' },
@@ -687,7 +704,12 @@ export const TASK_FORMS = {
 
   team_payment_followup: paymentFollowUp,
   /* The raiser's own tracker: the same, but money in is confirmed by Payment Collection, not here. */
-  my_payment_followup: { ...paymentFollowUp, statuses: paymentFollowUp.statuses.filter((step) => !step.confirmsInward) },
+  /* A marketing person's own reminder: money in is theirs to note here, as before — Accounts confirms what Payment Collection logs. */
+  my_payment_followup: {
+    ...paymentFollowUp,
+    statuses: paymentFollowUp.statuses.filter((step) => !step.confirmsInward)
+      .map((step) => (step.byApp ? { ...step, label: step.key === 'paid' ? 'Paid' : 'Part Paid', byApp: undefined, recordsReceipt: true } : step)),
+  },
   /* Suggested steps, kept until the plant sends its own. A correction needed shows as an issue on the enquiry. */
   gst_invoice_audit: {
     team: 'Audit Team',
@@ -737,19 +759,33 @@ export const TASK_FORMS = {
     notifyStatus: true,
     statusDate: { label: 'Visit / promised date', field: 'visitDate' },
     remark: { label: 'Remarks', placeholder: 'Who was met, what was paid or promised, the next date' },
+    /*
+     * Sent by Payment Collection to collect a cheque or follow up on its own [`prtMode`]. What PRT
+     * collects goes to Accounts to confirm [confirmsInward]; Accounts' confirmation marks it Paid
+     * (or Part Paid, open for the rest) — PRT never closes the money itself.
+     */
     statuses: [
       { key: 'assigned', label: 'Assigned' },
       { key: 'visit_planned', label: 'Visit Planned', date: 'required', visit: true },
       { key: 'visited', label: 'Visited', followUp: 'other', mode: 'visit' },
-      { key: 'collected', label: 'Collected', followUp: 'payment_sent', mode: 'visit', recordsReceipt: true },
-      { key: 'part_collected', label: 'Part Collected', followUp: 'part_paid', mode: 'visit', recordsReceipt: true },
+      {
+        key: 'cheque_collected', label: 'Cheque Collected — Send to Accounts', mode: 'visit', confirmsInward: true, paymentMode: 'Cheque',
+        fields: [
+          { key: 'amount', label: 'Cheque amount (₹)', type: 'number', required: true },
+          { key: 'reference', label: 'Cheque number', required: true },
+          { key: 'bank', label: 'Bank and cheque date' },
+        ],
+      },
+      { key: 'collected', label: 'Payment Received — Send to Accounts', mode: 'visit', confirmsInward: true, fields: MONEY_FIELDS },
       { key: 'promised', label: 'Promised', date: 'required', promise: true, followUp: 'promised', mode: 'visit' },
       { key: 'promise_broken', label: 'Promise Broken', issue: true },
       /* PRT's recommendation: Admin decides — legal notice, write-off or a credit hold — on the customer. */
       { key: 'cannot_recover', label: 'Cannot Recover', comment: true, issue: true },
+      ...PAID_BY_ACCOUNTS,
       { key: 'closed', label: 'Task Closed', done: true },
     ],
     asks: [
+      { key: 'prtMode', label: 'PRT to', type: 'choice', options: PRT_MODES },
       /* Picked by whoever assigns it; the automation leaves it for the team to take. */
       { key: 'visitor', label: 'PRT member to visit', type: 'member', department: 'payment_recovery' },
       { key: 'visitDate', label: 'Visit date', type: 'date' },

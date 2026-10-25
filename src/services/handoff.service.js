@@ -1434,6 +1434,11 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   const form = findHandoff(task.kind)?.form || {};
   const step = statusesOf(task).find((entry) => entry.key === status);
   if (!step) fail('That is not one of this task’s statuses');
+  /* Paid and Part Paid are Accounts' word, set when it confirms the money [paymentGates `closeLoggedTask`]. */
+  if (step.byApp) {
+    const send = statusesOf(task).filter((entry) => entry.confirmsInward).map((entry) => `“${entry.label}”`).join(' or ');
+    fail(`${step.label} is set when Accounts confirms the payment${send ? ` — log the money with ${send}` : ''}`);
+  }
   if (step.pdf) fail(`Upload the PDF to mark it ${step.label}`);
   /* The goods leave only on Quality's pass where QC is compulsory [qcGate.service] — model by model for a part load. */
   if (task.kind === 'invoice_dispatch' && DISPATCH_GOES.includes(step.key)) await assertDispatchQc(task, step, fields);
@@ -1479,12 +1484,18 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
     ? `${step.label} · ${moving.join(', ')}${closingModels.length && !finishes ? ` — closed here for ${closingModels.join(', ')}` : ''}`
     : step.label;
 
-  if (step.raises) await raiseFromStatus(task, user, step, text);
+  if (step.raises) await raiseFromStatus(task, user, step, text, asked);
   /* The sample handed at the desk: written onto the sample first, so a refusal leaves the task where it was. */
   if (step.handsOver) await handedAtDesk(task, user, asked);
   /* Payment Collection confirms the money in: the receipt first, so a refusal (more than owed) leaves the task where it was. */
-  if (step.confirmsInward && task.kind !== 'team_payment_followup') fail('Payment Collection confirms the payment inward, on its own task');
-  const inward = step.confirmsInward ? await confirmInwardFromTask(task, user, { ...asked, note: text }) : null;
+  if (step.confirmsInward && !['team_payment_followup', 'prt_recovery'].includes(task.kind)) fail('Payment Collection or PRT sends the money received to Accounts, on its own task');
+  const inward = step.confirmsInward
+    ? await confirmInwardFromTask(task, user, {
+      ...asked,
+      mode: asked.mode || step.paymentMode,
+      note: [text, asked.bank && `Bank / cheque date: ${asked.bank}`].filter(Boolean).join(' — '),
+    })
+    : null;
   task.status = overall;
   /* Each model's own status is kept once one has moved on its own; the task reads its slowest. */
   if (byModel && (partial || task.modelStatuses?.length)) {
@@ -1770,6 +1781,9 @@ export async function jobDispatchLoads({ enquiryId = null, task = null, current 
   return rows.sort((a, b) => new Date(a.at) - new Date(b.at));
 }
 
+/* The team a model not yet ready is with, in words. */
+const TEAM_WORDS_OF = { production: 'Production', printing: 'Printing', assembling: 'Assembly' };
+
 /** Pieces sent of each model across the loads. */
 const sentByModel = (loads) => {
   const sent = new Map();
@@ -1786,14 +1800,20 @@ export async function dispatchSheet(task) {
   const { order, enquiry, ordered } = await orderedModelsOf({ task });
   /* What went on every request of the job, not this one alone. */
   const sent = sentByModel(await jobDispatchLoads({ task, current: task }));
-  const readiness = enquiryId ? await modelReadiness(enquiryId) : { ready: [], waiting: [] };
-  const waiting = new Set((readiness.waiting || []).map((row) => row.model));
+  const readiness = enquiryId ? await modelReadiness(enquiryId) : await modelReadiness(null, { task });
+  const key = (model) => String(model || '').trim().toLowerCase();
+  const waiting = new Map((readiness.waiting || []).map((row) => [key(row.model), row.team]));
   return {
     plan: enquiry ? dispatchModeOf(enquiry) : 'together',
     order: order ? { _id: order._id, number: order.number } : null,
+    /*
+     * Ready: the last team on the model's route — Assembly, else Printing, else Production — has
+     * marked it Ready for Dispatch (or finished) [modelReadiness]. A model not ready names that team.
+     */
     models: [...ordered].map(([model, quantity]) => ({
       model, ordered: quantity, sent: sent.get(model) || 0,
-      ready: !waiting.has(model),
+      ready: !waiting.has(key(model)),
+      ...(waiting.has(key(model)) ? { waitingOn: waiting.get(key(model)) } : {}),
     })),
     modes: findHandoff(task.kind)?.form?.dispatchModes || [],
     loads: (task.loads || []).length,
@@ -1825,6 +1845,21 @@ export async function recordDispatchLoad(task, user, { lines, mode, note, attach
   const known = new Set(sheet.models.map((row) => row.model.toLowerCase()));
   const stranger = known.size && given.find((line) => !known.has(line.model.toLowerCase()));
   if (stranger) fail(`${stranger.model} is not on this order`);
+  /*
+   * The dispatch plan marketing chose [Enquiry `dispatchPlan`]: all together, nothing goes until
+   * every model is ready; each model as it is ready, the ready ones may go on their own.
+   */
+  if (sheet.plan !== 'by_model') {
+    const waitingFor = sheet.models.filter((row) => !row.ready);
+    if (waitingFor.length) {
+      fail(`This order goes all together — nothing is dispatched until every model is ready (${waitingFor.map((row) => `${row.model} still with ${TEAM_WORDS_OF[row.waitingOn] || 'the plant'}`).join('; ')}). Marketing can change it to send each model as it is ready.`);
+    }
+  }
+  /* Only goods ready go: the last team on the model's route has marked it Ready for Dispatch [dispatchSheet `ready`]. */
+  const unready = given.map((line) => sheet.models.find((row) => row.model.toLowerCase() === line.model.toLowerCase())).filter((row) => row && !row.ready);
+  if (unready.length) {
+    fail(`${unready.map((row) => `${row.model} is still with ${TEAM_WORDS_OF[row.waitingOn] || 'the plant'}`).join('; ')} — only models marked Ready for Dispatch by their last team (Assembly, else Printing, else Production) can be dispatched`);
+  }
   const pieces = given.reduce((sum, line) => sum + line.quantity, 0);
   /* The names as the order spells them, so every load reads the same model the same way. */
   const spelled = new Map(sheet.models.map((row) => [row.model.toLowerCase(), row.model]));
@@ -2245,19 +2280,29 @@ async function remindConsignment(task, user, step) {
  * customer and order. A status that also finishes this task (Escalated to PRT) hands the case
  * on rather than asking a question, so the new task is not a child of a closed one.
  */
-async function raiseFromStatus(task, user, step, text) {
+async function raiseFromStatus(task, user, step, text, fields = {}) {
   const target = findHandoff(step.raises);
   const brief = {};
-  /* What this task knew that the next asks for too — the payment contact onto the PRT case. */
+  /* What this task knew that the next asks for too — the payment contact onto the PRT case — and what the move said (PRT to collect a cheque, or follow up). */
   for (const field of target?.asks || []) {
-    if (task.brief?.[field.key] && !['member', 'info', 'kind', 'items'].includes(field.type)) brief[field.key] = task.brief[field.key];
+    if (['member', 'info', 'kind', 'items'].includes(field.type)) continue;
+    const said = fields?.[field.key] ?? task.brief?.[field.key];
+    if (said) brief[field.key] = said;
   }
+  const why = `${user.name}: ${text}${fields?.prtMode ? ` — PRT to: ${fields.prtMode}` : ''}`;
   if (task.enquiry) {
     const enquiry = await enquiryOfTask(task);
-    return moveEnquiry({
-      enquiry, kind: step.raises, note: `${user.name}: ${text}`, user, system: true, openRecords: false,
+    const raised = await moveEnquiry({
+      enquiry, kind: step.raises, note: why, user, system: true, openRecords: false,
       requiredDate: new Date(), parentTask: step.done ? undefined : task._id, order: task.order, brief,
     });
+    /* PRT's case says on its face what it was sent to do. */
+    const made = raised?.task || raised;
+    if (fields?.prtMode && made?._id && made.title && !made.title.includes('(')) {
+      const title = made.title.replace(target.label, `${target.label} (${fields.prtMode.toLowerCase()})`);
+      await Todo.updateOne({ _id: made._id }, { $set: { title } }, { keepVersion: true });
+    }
+    return raised;
   }
   if (!target?.department || target.department === 'owner') {
     fail(`${step.label} asks the enquiry's marketing person — this task has no enquiry. Ask whoever raised it instead.`);
@@ -2272,8 +2317,8 @@ async function raiseFromStatus(task, user, step, text) {
     department: target.department,
     fromDepartment: actingFor(user, task) || undefined,
     createdBy: user._id,
-    title: `${target.label} — ${buyer?.name || 'team task'}`,
-    notes: `${user.name}: ${text}`,
+    title: `${target.label}${fields?.prtMode ? ` (${fields.prtMode.toLowerCase()})` : ''} — ${buyer?.name || 'team task'}`,
+    notes: why,
     ...(Object.keys(brief).length ? { brief } : {}),
     ...(form.statuses?.length ? { status: form.statuses[0].key, statusHistory: [{ status: form.statuses[0].key, by: user._id, at: new Date() }] } : {}),
     ...(step.done ? {} : { parentTask: task._id }),
@@ -4024,11 +4069,14 @@ export async function setModelEdds(enquiry, user, { models, note }) {
  * (Assembly, else Printing, else Production) says Ready for Dispatch or has finished. The rest are
  * waiting on that team.
  */
-export async function modelReadiness(enquiryId) {
-  const id = enquiryId?._id || enquiryId;
-  const start = await Todo.findOne({ enquiry: id, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt routing brief').lean();
+export async function modelReadiness(enquiryId, { task: onTask = null } = {}) {
+  const id = enquiryId?._id || enquiryId || null;
+  /* An enquiry's job, or — raised from the customer — the team job's chain [journey.service `jobFilter`]. */
+  const where = id ? { enquiry: id } : onTask ? jobFilter(onTask) : null;
+  if (!where) return { ready: [], waiting: [] };
+  const start = await Todo.findOne({ ...where, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt routing brief').lean();
   if (!start) return { ready: [], waiting: [] };
-  const tasks = await Todo.find({ enquiry: id, kind: { $in: EDD_TASK_KINDS }, createdAt: { $gte: start.createdAt } }).select('kind status completed modelStatuses').lean();
+  const tasks = await Todo.find({ ...where, kind: { $in: EDD_TASK_KINDS }, createdAt: { $gte: start.createdAt } }).select('kind status completed modelStatuses').lean();
   const KIND_OF_TEAM = { production: 'ask_edd', printing: 'ask_printing', assembling: 'ask_assembling_edd' };
   /* The model's own status on that team's task, where it moved on its own; else the task's. */
   const isDone = (task, model) => {
@@ -4056,9 +4104,9 @@ export async function modelReadiness(enquiryId) {
   const key = (model) => String(model || '').trim().toLowerCase();
   const sent = new Set();
   const partSent = [];
-  const loads = await jobDispatchLoads({ enquiryId: id });
+  const loads = await jobDispatchLoads(id ? { enquiryId: id } : { task: onTask });
   if (loads.length) {
-    const { ordered } = await orderedModelsOf({ enquiryId: id });
+    const { ordered } = await orderedModelsOf(id ? { enquiryId: id } : { task: onTask });
     const sentQty = new Map([...sentByModel(loads)].map(([model, quantity]) => [key(model), quantity]));
     const orderedQty = new Map([...ordered].map(([model, quantity]) => [key(model), quantity]));
     for (const route of routes) {
@@ -4069,7 +4117,7 @@ export async function modelReadiness(enquiryId) {
     }
   } else {
     /* Moves from before the dispatch form: the models a move named; a bare Dispatched, every model made by then. */
-    const requests = await Todo.find({ enquiry: id, kind: 'invoice_dispatch', createdAt: { $gte: start.createdAt } }).select('updates').lean();
+    const requests = await Todo.find({ ...where, kind: 'invoice_dispatch', createdAt: { $gte: start.createdAt } }).select('updates').lean();
     for (const request of requests) {
       for (const line of request.updates || []) {
         if (line.kind !== 'status' || !['dispatched', 'fully_dispatched', 'part_dispatched'].includes(line.status)) continue;
@@ -4083,7 +4131,7 @@ export async function modelReadiness(enquiryId) {
     }
   }
   /* QC compulsory: of the models made, which Quality has passed — only those may go — and which are with Quality. */
-  const gate = await qcGateFor({ enquiry: id });
+  const gate = await qcGateFor(id ? { enquiry: id } : onTask);
   const qc = gate.required
     ? { required: true, passed: ready.filter((model) => qcPassedModels(gate, [model])), atQc: ready.filter((model) => !qcPassedModels(gate, [model])) }
     : { required: false };
