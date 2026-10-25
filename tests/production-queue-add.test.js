@@ -111,3 +111,14 @@ test('a task already routed is added with no models named; one already moulded i
   assert.equal(refused.status, 400);
   assert.match(refused.json.message, /already moulded/);
 });
+
+test('the Add to production queue form carries the EDD marketing set, for the date to follow it', async () => {
+  const { enquiry, task } = await productionTask('NH-PQ-EDD');
+  let form = (await api(`/api/workspace/todos/${task._id}/routing`, { as: 'siva' })).json.data;
+  assert.equal(form.edd, null, 'no EDD given yet');
+  const day = indiaDay(9);
+  const set = await api(`/api/enquiries/${enquiry._id}/edd`, { method: 'POST', as: 'nandhini', body: { date: day, note: 'Buyer’s date' } });
+  assert.equal(set.status, 200, set.json.message);
+  form = (await api(`/api/workspace/todos/${task._id}/routing`, { as: 'siva' })).json.data;
+  assert.deepEqual([form.edd.date, form.edd.by, form.edd.models], [day, 'Nandhini S', []]);
+});

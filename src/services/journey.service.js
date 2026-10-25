@@ -72,7 +72,13 @@ async function planOf(enquiryId) {
   return { byModel: true, qcRequired, ...(await modelReadiness(enquiryId)) };
 }
 const tickedQc = (value) => value === true || value === 'true' || value === 'Yes' || value === 'on';
-const readyWords = ({ ready = [], waiting = [] }) => `Ready: ${ready.join(', ') || 'none'}${waiting.length ? ` · still to come: ${waiting.map((row) => row.model).join(', ')}` : ''}`;
+/* The models made and not yet gone in full [handoff.service `modelReadiness`]. */
+const unsentOf = ({ ready = [], sent = [] }) => ready.filter((model) => !sent.includes(model));
+const sentWords = ({ sent = [], partSent = [] }) => {
+  const parts = [...sent, ...partSent.map((row) => `${row.model} (${row.sent} of ${row.ordered || '?'} pcs)`)];
+  return parts.length ? ` · already sent: ${parts.join(', ')}` : '';
+};
+const readyWords = ({ ready = [], waiting = [], sent = [] }) => `Ready: ${ready.filter((model) => !sent.includes(model)).join(', ') || 'none'}${waiting.length ? ` · still to come: ${waiting.map((row) => row.model).join(', ')}` : ''}`;
 
 /**
  * A finishing team said the goods are ready, or finished; or Quality finished. Raises what comes
@@ -84,6 +90,31 @@ export async function advanceJourney(task, user, why) {
     return task.enquiry ? await advanceOnEnquiry(task, user, why) : await advanceTeamTask(task, user, why);
   } catch (error) {
     console.error(`[journey] next step after ${task.kind} not raised: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * The money due before dispatch is confirmed [paymentGates.service `afterPayment`]: the Dispatch
+ * request the payment gate refused when the goods were ready is raised now, by the same rules as
+ * then — the goods ready (each model as it is ready, or all of them), QC passed where it is
+ * compulsory. Nothing when a request is already open or the goods are not ready yet; their own
+ * readiness raises it then. Returns the request raised, or null.
+ */
+export async function resumeDispatch(enquiryId, user, why = 'Payment confirmed') {
+  try {
+    const start = await Todo.findOne({ enquiry: enquiryId, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt').lean();
+    if (!start) return null;
+    if (await Todo.exists({ enquiry: enquiryId, kind: 'invoice_dispatch', completed: false })) return null;
+    const since = { enquiry: enquiryId, createdAt: { $gte: start.createdAt } };
+    /* Quality's pass is what sends it when QC is compulsory; else the finishing team that last moved. */
+    const { qcPassed } = await import('./qcGate.service.js');
+    const passed = (await Todo.find({ ...since, kind: 'quality_check', completed: true }).sort({ completedAt: -1 })).find((check) => qcPassed(check));
+    if (passed) return await advanceOnEnquiry(passed, user, why);
+    const finishing = await Todo.findOne({ ...since, kind: { $in: FINISHING_KINDS } }).sort({ updatedAt: -1 });
+    return finishing ? await advanceOnEnquiry(finishing, user, why) : null;
+  } catch (error) {
+    console.error(`[journey] dispatch not resumed after the payment: ${error.message}`);
     return null;
   }
 }
@@ -104,6 +135,19 @@ async function advanceOnEnquiry(task, user, why) {
     const plan = await planOf(enquiryId);
     const production = await Todo.findOne({ enquiry: enquiryId, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('brief').lean();
     const qcRequired = plan.qcRequired || tickedQc(production?.brief?.qcRequired);
+    /*
+     * Model by model: each model ready and not yet gone goes on, whatever went before it — an
+     * earlier model's load (and the LR stage it moved the enquiry to) does not hold a model made
+     * later. An open Dispatch request hears it [handoff.service `tellDispatchReady`] and its desk
+     * reads which models are ready; with the request closed, a fresh one is raised for them.
+     */
+    if (plan.byModel) {
+      const unsent = unsentOf(plan);
+      if (!unsent.length) return null;
+      if (qcRequired) return askQuality(enquiryId, since, plan, user, why);
+      if (await Todo.exists({ enquiry: enquiryId, kind: 'invoice_dispatch', completed: false })) return null;
+      return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, `${readyWords(plan)} — dispatch plan: each model as it is ready${sentWords(plan)}`);
+    }
     /*
      * Already further on — Dispatch asked (by a person, or Dispatch asked Production itself) or the
      * LR in: a finishing team closing its task late does not send the order back through Quality.
@@ -136,8 +180,13 @@ async function advanceOnEnquiry(task, user, why) {
   if (!qcPassed(task)) return null;
   const passed = qcModelsOf(task);
   const passedWords = passed.length ? ` ${passed.join(', ')}` : '';
-  /* Quality passed with the Dispatch request already open (QC compulsory): the request reads Goods Ready now. */
-  if (await raisedSince('invoice_dispatch')) {
+  /*
+   * Quality passed with the Dispatch request already open (QC compulsory): the request reads Goods
+   * Ready now. Model by model with the request closed (the earlier models gone), a fresh one is
+   * raised below for the models passed and not yet sent.
+   */
+  const openRequest = await Todo.exists({ enquiry: enquiryId, kind: 'invoice_dispatch', completed: false });
+  if (await raisedSince('invoice_dispatch') && (openRequest || !(await planOf(enquiryId)).byModel)) {
     const { tellDispatchReady } = await import('./handoff.service.js');
     /* Part of the order passed, more still to pass: the request moves on only when it goes out model by model. */
     const { qcGateFor } = await import('./qcGate.service.js');
@@ -149,7 +198,10 @@ async function advanceOnEnquiry(task, user, why) {
   const finishing = await Todo.find({ ...since, kind: { $in: FINISHING_KINDS } }).select('kind status completed').lean();
   const plan = await planOf(enquiryId);
   if (plan.byModel ? !plan.ready.length : finishing.some((entry) => !isReady(entry))) return null;
-  if (plan.byModel) return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, `Quality passed${passedWords} — ${readyWords(plan)}. Dispatch plan: each model as it is ready`);
+  if (plan.byModel) {
+    if (!unsentOf(plan).length) return null;
+    return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, `Quality passed${passedWords} — ${readyWords(plan)}. Dispatch plan: each model as it is ready${sentWords(plan)}`);
+  }
   return raiseOnEnquiry(enquiryId, 'invoice_dispatch', user, `Quality passed${passedWords}${why ? ` — ${why}` : ''}`);
 }
 

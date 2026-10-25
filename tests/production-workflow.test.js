@@ -830,22 +830,22 @@ test('Dispatch marking it Dispatched hands Reception the LR copy, with the dispa
     ? dispatchLoad({ baseUrl, token: token.ravi, taskId: dispatchId, status, note })
     : api(`/api/workspace/todos/${dispatchId}/status`, { method: 'POST', as: 'ravi', body: { status, note } }));
 
-  assert.equal((await move('dispatched', 'Left with VRL, vehicle TN39 AB 1234')).status, 200);
-  /* Dispatched is one marketing and Admin hear [handoff.service `ADMIN_MARKETING_NOTICES`]. */
-  for (const who of ['nandhini', 'admin']) {
-    const notice = (await noticesOf(who)).find((entry) => String(entry.task?._id || entry.task) === String(dispatchId));
-    assert.equal(notice?.statusLabel, 'Dispatched', who);
-    assert.equal(notice.department, 'despatch');
-  }
+  assert.equal((await move('part_dispatched', 'Left with VRL, vehicle TN39 AB 1234')).status, 200);
+  /* A load is news for the buyer's marketing person — not for every Admin [handoff.service `DISPATCH_NOTICE_KINDS`]. */
+  const notice = (await noticesOf('nandhini')).find((entry) => String(entry.task?._id || entry.task) === String(dispatchId));
+  assert.equal(notice?.statusLabel, 'Part Quantity Dispatched');
+  assert.equal(notice.department, 'despatch');
+  assert.equal((await noticesOf('admin')).some((entry) => String(entry.task?._id || entry.task) === String(dispatchId)), false, 'Admin is not the marketing person here');
   const lr = await Todo.findOne({ enquiry: fresh._id, kind: 'lr_copy', completed: false });
   assert.ok(lr, 'Reception has the LR copy task');
   assert.equal(lr.department, 'reception');
   assert.equal(lr.brief.quantity, '4000', 'the quantity sent, from the dispatch');
   assert.equal(lr.brief.dispatchedOn, indiaDay(0), 'dispatched today');
-  assert.match(lr.notes, /Dispatched by Ravi Despatch — Left with VRL/);
-  assert.equal((await api(`/api/enquiries/${fresh._id}`, { as: 'nandhini' })).json.data.marketingStatus, 'lr_copy', 'marketing reads LR Copy');
+  assert.match(lr.notes, /Part Quantity Dispatched by Ravi Despatch — Left with VRL/);
+  assert.equal((await api(`/api/enquiries/${fresh._id}`, { as: 'nandhini' })).json.data.marketingStatus, 'part_sent', 'marketing reads Part sent');
 
   assert.equal((await move('fully_dispatched', 'Balance gone too')).status, 200);
+  assert.equal((await api(`/api/enquiries/${fresh._id}`, { as: 'nandhini' })).json.data.marketingStatus, 'lr_copy', 'all gone: marketing reads LR Copy');
   assert.equal(await Todo.countDocuments({ enquiry: fresh._id, kind: 'lr_copy' }), 1, 'one LR task, however many times it is marked dispatched');
 
   /* Reception keeps the details after fulfilment: LR, transporter, vehicle — and the delivery. */

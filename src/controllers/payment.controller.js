@@ -13,7 +13,7 @@ import { customerScope, isOwnershipScoped, ownershipFilter, ownsRecord } from '.
 import { raiseTask, resolveTasks } from '../services/task.service.js';
 import { dueDateFor, orderPosition } from '../services/receivable.service.js';
 import { afterCommit, transactional } from '../utils/transaction.js';
-import { afterPayment, askAccountsToConfirm, confirmTaskKey } from '../services/paymentGates.service.js';
+import { afterPayment, askAccountsToConfirm, closeLoggedTask, confirmTaskKey } from '../services/paymentGates.service.js';
 import { FOLLOW_UP_MODES, FOLLOW_UP_STATUSES } from '../config/paymentFollowUp.js';
 import { endOfDayIST } from '../services/handoff.service.js';
 import Todo from '../models/Todo.js';
@@ -624,8 +624,12 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
 })));
 
 /**
- * Accounts confirms a receipt a collector or PRT member recorded: they have seen it in the bank.
- * Only then does it count at the payment gate, which is why the gate is re-checked after it.
+ * Accounts confirms a receipt a collector or PRT member recorded: they have seen it in the bank,
+ * and say what the bank line says — the UTR (not for cash), the amount credited, the day, the
+ * account and a remark [validators `confirmReceiptSchema`]. The bank's amount and day are the
+ * ones kept. Only then does it count at the payment gate, which is why the gate is re-checked
+ * after it; and the Payment Collection task it was logged from closes, its team told
+ * [paymentGates `closeLoggedTask`].
  */
 export const confirmReceipt = asyncHandler(withOrderLock(async req => (await Receivable.findById(req.params.id).select('order'))?.order || req.params.id, transactional(async (req, res) => {
   if (!seesTheBank(req.user)) throw ApiError.forbidden('Only Accounts or Admin confirm a receipt — they are the ones who can see the bank.');
@@ -636,16 +640,39 @@ export const confirmReceipt = asyncHandler(withOrderLock(async req => (await Rec
     await receivable.populate(POPULATE);
     return res.json({ success: true, data: receivable, replayed: true });
   }
+  const { reference, amount, creditedOn, bankAccount, note } = req.body;
+  const utr = String(reference || '').trim();
+  if (!utr && receipt.mode !== 'cash') throw ApiError.badRequest('Give the UTR (or cheque number) from the bank line');
+  /* A day, as the date box sends it (midnight UTC): no later than today in India, which runs 5½ hours ahead. */
+  if (creditedOn.getTime() > Date.now() + 330 * 60 * 1000) throw ApiError.badRequest('The day it was credited cannot be in the future');
   const before = snapshot(receivable);
-  receipt.confirmed = { by: req.user._id, at: new Date() };
+  const logged = receipt.amount;
+  const differs = Math.abs(amount - logged) > 0.005;
+  receipt.amount = amount;
+  receipt.receivedAt = creditedOn;
+  if (utr) receipt.reference = utr;
+  receipt.confirmed = {
+    by: req.user._id, at: new Date(), reference: utr || undefined, amount, creditedOn,
+    bankAccount: bankAccount || undefined, note: note || undefined, loggedAmount: differs ? logged : undefined,
+  };
+  await applyPaymentPositions([receivable]);
+  if (differs && (receivable.invoice?.value || 0) + 0.5 < receivable.received) {
+    throw ApiError.badRequest(`₹${Math.round(amount).toLocaleString('en-IN')} is more than is owed on ${receivable.number} — check the amount on the bank line`);
+  }
+  const said = [`₹${Math.round(amount).toLocaleString('en-IN')}`, utr && `UTR ${utr}`, `credited ${creditedOn.toISOString().slice(0, 10)}`, bankAccount && `into ${bankAccount}`,
+    differs && `logged as ₹${Math.round(logged).toLocaleString('en-IN')}`, note].filter(Boolean).join(' · ');
+  receivable.followUps.push({ by: req.user._id, at: new Date(), note: `Confirmed in the bank: ${said}`.slice(0, 1000), status: 'other' });
   await receivable.save();
   await recordChange({
     model: 'Receivable', doc: receivable, before,
-    by: req.user, note: `Confirmed ₹${Math.round(receipt.amount).toLocaleString('en-IN')} received`,
+    by: req.user, note: `Confirmed ${said}`,
   });
   /* Every payment on it seen in the bank: Accounts' task to confirm them is done. */
   if (receivable.receipts.every((row) => row.confirmed?.at)) await resolveTasks(confirmTaskKey(receivable));
-  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order, { by: req.user }));
+  /* The Payment Collection task it was logged from is done: closed, and its team told. */
+  const closedTask = await closeLoggedTask(receivable, receipt, req.user, said);
+  const justClosed = closedTask?.originKey ? [closedTask.originKey] : [];
+  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order, { by: req.user, justClosed }));
   await receivable.populate(POPULATE);
   return res.json({ success: true, data: receivable });
 })));

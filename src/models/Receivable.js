@@ -92,8 +92,21 @@ const receiptSchema = new mongoose.Schema(
     confirmed: {
       by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
       at: Date,
+      /*
+       * What Accounts read on the bank line when confirming [payment.controller `confirmReceipt`]:
+       * the UTR (or cheque / voucher number), the amount credited, the day it was credited, the
+       * account it came into, and a remark. The amount as logged is kept when the bank says otherwise.
+       */
+      reference: { type: String, trim: true, maxlength: 120 },
+      amount: Number,
+      creditedOn: Date,
+      bankAccount: { type: String, trim: true, maxlength: 120 },
+      note: { type: String, trim: true, maxlength: 500 },
+      loggedAmount: Number,
       _id: false,
     },
+    /** The Payment Collection task it was logged from — closed once Accounts confirms it [paymentGates `confirmInwardFromTask`]. */
+    loggedFrom: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
   },
   { timestamps: true }
 );
@@ -324,7 +337,8 @@ receivableSchema.virtual('daysToDue').get(function daysToDue() {
  * disagreement becomes a relationship one. Otherwise the balance decides, then the date.
  */
 receivableSchema.virtual('state').get(function state() {
-  if (this.balance <= 0) return 'paid';
+  /* Paid reads only on money Accounts has seen in the bank; logged and not yet confirmed, it says so. */
+  if (this.balance <= 0) return this.awaitingConfirmation > 0 ? 'awaiting_confirmation' : 'paid';
   if (this.judgement) return this.judgement;
   if (this.received > 0 || this.advanceApplied > 0) return 'part_paid';
 

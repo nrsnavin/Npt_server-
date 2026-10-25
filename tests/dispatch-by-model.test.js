@@ -85,9 +85,9 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   const desk = await api('/api/departments/despatch/dashboard', { as: 'ravi' });
   assert.equal(desk.status, 200, desk.json.message);
   const row = desk.json.data.enquiries.find((entry) => String(entry.task._id) === String(dispatch._id));
-  assert.deepEqual(row.readiness, { plan: 'by_model', ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: [], qc: { required: false } });
+  assert.deepEqual(row.readiness, { plan: 'by_model', ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: [], partSent: [], qc: { required: false } });
   /* Every Dispatch row carries the goods state for the desk's table, whatever the plan. */
-  assert.deepEqual(row.goods, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: [], qc: { required: false } });
+  assert.deepEqual(row.goods, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: [], partSent: [], qc: { required: false } });
 
   /* Dispatch sends CRF25 on its own: the models sent are recorded on the move; the enquiry reads Part sent. */
   const part = await move(dispatch._id, 'ravi', 'part_dispatched', { note: 'VRL, LR 55021', fields: { modelsSent: 'crf25', piecesSent: 10000 } });
@@ -96,7 +96,7 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   const after = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data;
   assert.equal(after.marketingStatus, 'part_sent');
   const { readiness } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
-  assert.deepEqual(readiness, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: ['CRF25'], qc: { required: false } }, 'matched to the model however it was typed');
+  assert.deepEqual(readiness, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: ['CRF25'], partSent: [], qc: { required: false } }, 'matched to the model however it was typed');
   assert.ok(await Todo.exists({ enquiry: enquiry._id, kind: 'lr_copy' }), 'the part load has its LR task');
 
   /* CRF30 assembled and ready: the same request hears it, and Dispatched sends what is left. */
@@ -109,7 +109,7 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   assert.equal((await move(assembly._id, 'anand', 'ready_dispatch', { note: 'CRF30 clipped and packed' })).status, 200);
   await settle();
   const again = (await api('/api/departments/despatch/dashboard', { as: 'ravi' })).json.data.enquiries.find((entry) => String(entry.task._id) === String(dispatch._id));
-  assert.deepEqual(again.readiness, { plan: 'by_model', ready: ['CRF25', 'CRF30'], waiting: [], sent: ['CRF25'], qc: { required: false } });
+  assert.deepEqual(again.readiness, { plan: 'by_model', ready: ['CRF25', 'CRF30'], waiting: [], sent: ['CRF25'], partSent: [], qc: { required: false } });
   const gone = await move(dispatch._id, 'ravi', 'dispatched', { note: 'Rest gone' });
   assert.equal(gone.status, 200, gone.json.message);
   assert.deepEqual((await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json.readiness.sent, ['CRF25', 'CRF30']);
@@ -132,4 +132,59 @@ test('a card reading fills the WhatsApp number from the mobile when none was rea
   assert.equal(tidyReading({ company: 'Lakshmi Apparels', mobile: '98400 22013' }).whatsapp, '+919840022013');
   assert.equal(tidyReading({ company: 'Lakshmi Apparels', mobile: '98400 22013', whatsapp: '98400 22014' }).whatsapp, '+919840022014', 'a WhatsApp number read stays');
   assert.equal(tidyReading({ company: 'Lakshmi Apparels', whatsapp: '98400 22014' }).mobile, '+919840022014');
+});
+
+test('models ready at different times: the first goes, its request is closed; the second gets its own request, which knows what the first sent — and the enquiry shows each load', async () => {
+  const enquiry = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customerId, items: [{ modelNumber: 'TM-1', quantity: 6000 }, { modelNumber: 'TM-2', quantity: 3000 }], nextAction: 'Call', nextFollowUpDate: soon() },
+  })).json.data;
+  const production = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Make these', brief: { model: 'TM-1' } } })).json.data.task;
+  assert.equal((await api(`/api/workspace/todos/${production._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'TM-1' }, { model: 'TM-2', assembly: true }] } })).status, 200);
+  /* The pieces of each model, as an SO request carries them onto Production's task [carriedBrief]. */
+  await Todo.updateOne({ _id: production._id }, { $set: { 'brief.items': [{ model: 'TM-1', quantity: '6,000' }, { model: 'TM-2', quantity: 3000 }] } });
+
+  /* TM-1 ready: Dispatch is asked for it alone. */
+  assert.equal((await move(production._id, 'siva', 'ready_dispatch', { models: ['TM-1'], note: 'TM-1 packed' })).status, 200);
+  await settle();
+  const first = await Todo.findOne({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false }).lean();
+  assert.ok(first, 'Dispatch has a request for TM-1');
+
+  /* Dispatch sends all of TM-1 and even picks "Dispatched": the app reads Part — TM-2 is still to come. */
+  const gone = await dispatchLoad({ baseUrl, token: token.ravi, taskId: first._id, status: 'dispatched', models: 'TM-1', pieces: 6000, mode: 'own_vehicle' });
+  assert.equal(gone.status, 200, gone.json.message);
+  assert.equal(gone.json.data.status, 'part_dispatched', 'TM-2 is still to go');
+  assert.match(gone.json.data.updates.at(-1).note, /TM-1 6,000 pcs — Own vehicle, proof of delivery attached · still to go: TM-2 3,000 pcs/);
+  let readiness = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json.readiness;
+  assert.deepEqual([readiness.ready, readiness.sent], [['TM-1'], ['TM-1']]);
+
+  /* Somebody closes that request anyway. */
+  const closed = await api(`/api/workspace/todos/${first._id}/status`, { method: 'POST', as: 'ravi', body: { status: 'closed', note: 'TM-1 delivered' } });
+  assert.equal(closed.status, 200, closed.json.message);
+
+  /* TM-2 made later: handed to Assembly, assembled — it is not taken as gone with TM-1. */
+  assert.equal((await move(production._id, 'siva', 'handed_assembly', { models: ['TM-2'], note: 'TM-2 moulded' })).status, 200);
+  const assembly = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_assembling_edd', completed: false }).lean();
+  assert.equal((await move(assembly._id, 'anand', 'ready_dispatch', { note: 'TM-2 assembled' })).status, 200);
+  await settle();
+  readiness = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json.readiness;
+  assert.deepEqual([readiness.ready, readiness.sent], [['TM-1', 'TM-2'], ['TM-1']], 'TM-2 made, not sent');
+
+  /* A fresh request for TM-2; its sheet knows TM-1 went in full. */
+  const second = await Todo.findOne({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false }).lean();
+  assert.ok(second && String(second._id) !== String(first._id), 'TM-2 gets its own Dispatch request');
+  assert.match(second.notes || second.updates?.[0]?.note || '', /Ready: TM-2 — dispatch plan: each model as it is ready · already sent: TM-1/);
+  const sheet = (await api(`/api/workspace/todos/${second._id}/dispatch`, { as: 'ravi' })).json.data;
+  assert.deepEqual(sheet.models.map((row) => [row.model, row.ordered, row.sent]), [['TM-1', 6000, 6000], ['TM-2', 3000, 0]]);
+  const rest = await dispatchLoad({ baseUrl, token: token.ravi, taskId: second._id, status: 'part_dispatched', models: 'TM-2', pieces: 3000 });
+  assert.equal(rest.status, 200, rest.json.message);
+  assert.equal(rest.json.data.status, 'fully_dispatched', 'everything ordered has gone, across both requests');
+
+  /* The enquiry page: each request with its loads, and each model ordered against sent. */
+  const records = (await api(`/api/enquiries/${enquiry._id}/records`, { as: 'nandhini' })).json.data;
+  assert.deepEqual(records.dispatch.models.map((row) => [row.model, row.ordered, row.sent, row.left]), [['TM-1', 6000, 6000, 0], ['TM-2', 3000, 3000, 0]]);
+  assert.deepEqual(records.dispatch.requests.map((request) => request.loads.map((load) => [load.lines.map((line) => `${line.model} ${line.quantity}`).join(', '), load.mode, load.statusLabel])),
+    [[['TM-1 6000', 'Own vehicle', 'Part Quantity Dispatched']], [['TM-2 3000', 'Transporter', 'Fully Dispatched']]]);
+  assert.ok(records.dispatch.requests[0].loads[0].proof?.key, 'with its proof');
+  assert.equal(records.dispatch.requests[0].loads[0].by, 'Ravi Despatch');
 });

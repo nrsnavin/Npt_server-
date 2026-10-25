@@ -668,7 +668,7 @@ export const handoffDispatchLoad = asyncHandler(async (req, res) => {
         key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
         uploadedBy: req.user._id, task: fresh._id, docType: how.proof, title: how.proofLabel,
       }]);
-      return recordDispatchLoad(fresh, req.user, { status: req.body?.status, lines, mode: how.key, note: req.body?.note, attachmentId: made._id });
+      return recordDispatchLoad(fresh, req.user, { lines, mode: how.key, note: req.body?.note, attachmentId: made._id });
     }, { label: 'dispatch load' });
     await answer(res, done);
   } catch (error) {
@@ -776,10 +776,14 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
    * queue the desk list did not take. Read under "To do" with the rest [web: DepartmentDashboard].
    */
   const heldIds = new Set(every.map((row) => String(row.task._id)));
-  const requests = uniqueTasks([...dashboard.queue.filter((task) => !heldIds.has(String(task._id))), ...(dashboard.jobs || [])], (task) => task._id).sort(byDue);
+  /* Accounts confirms logged payments from a list of its own, one line a payment — not as tasks among the rest [paymentGates `paymentsToConfirm`]. */
+  const paymentsToConfirm = members.includes('accounts') ? await (await import('../services/paymentGates.service.js')).paymentsToConfirm() : undefined;
+  const confirmTask = (task) => paymentsToConfirm && String(task.originKey || '').startsWith('confirm-receipt:');
+  const requests = uniqueTasks([...dashboard.queue.filter((task) => !heldIds.has(String(task._id))), ...(dashboard.jobs || [])], (task) => task._id)
+    .filter((task) => !confirmTask(task)).sort(byDue);
   /* Dispatch plans vehicles by place: the open requests in baskets of the same landmark / PIN. */
   const baskets = key === 'despatch' ? await dispatchBaskets() : undefined;
-  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, queries, attention, baskets, ...(desk ? { desk } : {}) } });
+  res.json({ success: true, data: { ...dashboard, requests, atStages, enquiries: held, queries, attention, baskets, paymentsToConfirm, ...(desk ? { desk } : {}) } });
 });
 
 /**
@@ -803,7 +807,7 @@ async function withReadiness(rows) {
      * compulsory and passed — the Dispatch table's "Goods ready / QC" column [web: DispatchTable].
      */
     row.goods = {
-      ready: readiness.ready, waiting: readiness.waiting, sent: readiness.sent || [],
+      ready: readiness.ready, waiting: readiness.waiting, sent: readiness.sent || [], partSent: readiness.partSent || [],
       qc: readiness.qc?.required ? { required: true, passed: readiness.qc.passed, atQc: readiness.qc.atQc } : { required: false },
     };
   }

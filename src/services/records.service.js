@@ -12,7 +12,7 @@ import Material from '../models/Material.js';
 import StockMovement from '../models/StockMovement.js';
 import { recordChange, snapshot } from './audit.service.js';
 import { findHandoff } from '../config/handoffs.js';
-import { warnDispatchOfQc } from './handoff.service.js';
+import { orderedModelsOf, warnDispatchOfQc } from './handoff.service.js';
 import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
 import { finishedOn, startedOn, workOrderForRun } from './workOrder.service.js';
@@ -748,7 +748,31 @@ async function requestsOfOrder(order) {
   return Todo.find({
     kind: 'invoice_dispatch',
     $or: [{ order: order._id }, ...(sameEnquiry ? [{ enquiry: order.enquiry, order: { $exists: false } }] : [])],
-  }).sort({ createdAt: 1 }).populate('order', 'number').lean();
+  }).sort({ createdAt: 1 }).populate(REQUEST_POPULATE).lean();
+}
+
+/* A Dispatch request with its SO, and each load's proof and who sent it. */
+const REQUEST_POPULATE = [{ path: 'order', select: 'number' }, { path: 'loads.attachment', select: 'key filename mimeType' }, { path: 'loads.by', select: 'name' }];
+const LOAD_MODES_SAID = { transporter: 'Transporter', own_vehicle: 'Own vehicle', party_collects: 'Party collects' };
+
+/**
+ * The models ordered and how much of each has gone, across every load on the requests [handoff.service
+ * `recordDispatchLoad`] — what the enquiry and SO pages chart. `ordered` is the SO's lines (else the enquiry's items).
+ */
+function modelsSent(requests, ordered) {
+  const rows = new Map([...ordered].map(([model, quantity]) => [model.toLowerCase(), { model, ordered: quantity, sent: 0, loads: [] }]));
+  for (const request of requests) {
+    for (const load of request.loads || []) {
+      for (const line of load.lines || []) {
+        const key = String(line.model || '').toLowerCase();
+        if (!rows.has(key)) rows.set(key, { model: line.model, ordered: 0, sent: 0, loads: [] });
+        const row = rows.get(key);
+        row.sent += line.quantity || 0;
+        row.loads.push({ at: load.at, quantity: line.quantity || 0 });
+      }
+    }
+  }
+  return [...rows.values()].map((row) => ({ ...row, left: Math.max(0, (row.ordered || 0) - row.sent) }));
 }
 
 const statusLabel = (kind, key) => findHandoff(kind)?.form?.statuses?.find((entry) => entry.key === key)?.label || (key || '').replace(/_/g, ' ');
@@ -756,13 +780,14 @@ const statusLabel = (kind, key) => findHandoff(kind)?.form?.statuses?.find((entr
 const TRIP_MODES_SAID = { own_vehicle: 'Own vehicle', transport: 'Transport', party_collects: 'Party collected', courier: 'Courier' };
 
 /** Dispatch requests and LR tasks, with the trips each request went on, in the words a screen shows. */
-async function describeDispatch(requests, lrTasks) {
+async function describeDispatch(requests, lrTasks, { ordered = null } = {}) {
   const ids = requests.map((task) => task._id);
   const qc = await latestQcByEnquiry(requests.map((task) => task.enquiry?._id || task.enquiry));
   const trips = ids.length
     ? await Trip.find({ 'stops.task': { $in: ids } }).sort({ date: 1 }).populate([{ path: 'vehicle', select: 'number kind' }, { path: 'transporter', select: 'name phone' }]).lean()
     : [];
   return {
+    ...(ordered ? { models: modelsSent(requests, ordered) } : {}),
     requests: requests.map((task) => ({
       _id: task._id,
       order: task.order?.number ? { _id: task.order._id, number: task.order.number } : null,
@@ -773,6 +798,18 @@ async function describeDispatch(requests, lrTasks) {
       quantity: task.brief?.quantity || '',
       qc: qc.get(String(task.enquiry?._id || task.enquiry)) || null,
       remark: (task.statusHistory || []).filter((entry) => entry.note).at(-1)?.note || task.notes || '',
+      /* Each load sent from the dispatch form: when, the models and pieces, how, the proof, who. */
+      loads: (task.loads || []).map((load) => ({
+        _id: load._id,
+        at: load.at,
+        status: load.status,
+        statusLabel: statusLabel('invoice_dispatch', load.status),
+        lines: (load.lines || []).map((line) => ({ model: line.model, quantity: line.quantity || 0 })),
+        mode: LOAD_MODES_SAID[load.mode] || load.mode || '',
+        proof: load.attachment?.key ? load.attachment : null,
+        by: load.by?.name || '',
+        note: load.note || '',
+      })),
       trips: trips.flatMap((trip) => trip.stops.filter((stop) => String(stop.task) === String(task._id)).map((stop) => ({
         trip: trip.number,
         tripId: trip._id,
@@ -816,7 +853,9 @@ export async function dispatchDetailsForOrder(order) {
     kind: 'lr_copy',
     $or: [{ order: order._id }, ...(requests.some((task) => !task.order) ? [{ enquiry: order.enquiry, order: { $exists: false } }] : [])],
   }).sort({ createdAt: 1 }).select(LR_SELECT).populate('resultFile', 'key filename').lean();
-  return { order: { _id: order._id, number: order.number }, ...(await describeDispatch(requests, lrTasks)) };
+  const ordered = new Map();
+  for (const line of order.lines || []) if (line.modelNumber) ordered.set(line.modelNumber, (ordered.get(line.modelNumber) || 0) + (line.quantity || 0));
+  return { order: { _id: order._id, number: order.number }, ...(await describeDispatch(requests, lrTasks, { ordered })) };
 }
 
 /**
@@ -826,7 +865,7 @@ export async function dispatchDetailsForOrder(order) {
 export async function enquiryRecords(enquiry, { withQc }) {
   const [orders, requests, lrTasks, qc] = await Promise.all([
     SalesOrder.find({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('number status customerPo.number lines.modelNumber lines.quantity createdAt').lean(),
-    Todo.find({ enquiry: enquiry._id, kind: 'invoice_dispatch' }).sort({ createdAt: 1 }).populate('order', 'number').lean(),
+    Todo.find({ enquiry: enquiry._id, kind: 'invoice_dispatch' }).sort({ createdAt: 1 }).populate(REQUEST_POPULATE).lean(),
     Todo.find({ enquiry: enquiry._id, kind: 'lr_copy' }).sort({ createdAt: 1 }).select(LR_SELECT).populate([{ path: 'resultFile', select: 'key filename' }, { path: 'order', select: 'number' }]).lean(),
     withQc ? populateQc(QcRecord.find({ enquiry: enquiry._id }).sort({ inspectedAt: -1 }).limit(100)) : null,
   ]);
@@ -837,7 +876,7 @@ export async function enquiryRecords(enquiry, { withQc }) {
       quantity: (row.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0),
     })),
     qc,
-    dispatch: await describeDispatch(requests, lrTasks),
+    dispatch: await describeDispatch(requests, lrTasks, { ordered: (await orderedModelsOf({ enquiryId: enquiry._id })).ordered }),
   };
 }
 

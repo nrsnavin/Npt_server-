@@ -153,14 +153,14 @@ test('Quality: offered as soon as the QC record is entered — on the record’s
   assert.equal(closed.json.data.completed, true);
 });
 
-test('Dispatch: offered the moment the goods are marked Dispatched, when the LR copy task reaches Reception; Reception once the LR went to the buyer', async () => {
+test('Dispatch: offered the moment everything is dispatched (Fully Dispatched, as the app reads it), when the LR copy task reaches Reception; Reception once the LR went to the buyer', async () => {
   const enquiry = await enquiryWith([{ modelNumber: 'NH-400', quantity: 5000 }]);
   const dispatch = await raise(enquiry, 'invoice_dispatch', { schedule: 'Today Dispatch', booking: 'Normal Booking' }, 'Send it');
   assert.equal((await move(dispatch._id, 'ravi', 'waiting_vehicle', { note: 'Packed' })).json.data.closable, null);
   const gone = await move(dispatch._id, 'ravi', 'dispatched', { note: 'VRL, LR 55021' });
   assert.equal(gone.status, 200, gone.json.message);
   assert.equal(gone.json.data.completed, false);
-  assert.equal(gone.json.data.closable.why, 'Dispatched — Reception has the LR copy task');
+  assert.equal(gone.json.data.closable.why, 'Fully Dispatched — Reception has the LR copy task');
   const lr = await Todo.findOne({ enquiry: enquiry._id, kind: 'lr_copy', completed: false }).lean();
   assert.ok(lr, 'Reception has the LR copy task');
   assert.equal((await api('/api/workspace/todos?scope=department&status=open', { as: 'rekha' })).json.data.find((row) => row._id === String(lr._id)).closable, null);
