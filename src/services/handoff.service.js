@@ -1434,6 +1434,11 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   const form = findHandoff(task.kind)?.form || {};
   const step = statusesOf(task).find((entry) => entry.key === status);
   if (!step) fail('That is not one of this task’s statuses');
+  /* Paid and Part Paid are Accounts' word, set when it confirms the money [paymentGates `closeLoggedTask`]. */
+  if (step.byApp) {
+    const send = statusesOf(task).filter((entry) => entry.confirmsInward).map((entry) => `“${entry.label}”`).join(' or ');
+    fail(`${step.label} is set when Accounts confirms the payment${send ? ` — log the money with ${send}` : ''}`);
+  }
   if (step.pdf) fail(`Upload the PDF to mark it ${step.label}`);
   /* The goods leave only on Quality's pass where QC is compulsory [qcGate.service] — model by model for a part load. */
   if (task.kind === 'invoice_dispatch' && DISPATCH_GOES.includes(step.key)) await assertDispatchQc(task, step, fields);
@@ -1479,12 +1484,18 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
     ? `${step.label} · ${moving.join(', ')}${closingModels.length && !finishes ? ` — closed here for ${closingModels.join(', ')}` : ''}`
     : step.label;
 
-  if (step.raises) await raiseFromStatus(task, user, step, text);
+  if (step.raises) await raiseFromStatus(task, user, step, text, asked);
   /* The sample handed at the desk: written onto the sample first, so a refusal leaves the task where it was. */
   if (step.handsOver) await handedAtDesk(task, user, asked);
   /* Payment Collection confirms the money in: the receipt first, so a refusal (more than owed) leaves the task where it was. */
-  if (step.confirmsInward && task.kind !== 'team_payment_followup') fail('Payment Collection confirms the payment inward, on its own task');
-  const inward = step.confirmsInward ? await confirmInwardFromTask(task, user, { ...asked, note: text }) : null;
+  if (step.confirmsInward && !['team_payment_followup', 'prt_recovery'].includes(task.kind)) fail('Payment Collection or PRT sends the money received to Accounts, on its own task');
+  const inward = step.confirmsInward
+    ? await confirmInwardFromTask(task, user, {
+      ...asked,
+      mode: asked.mode || step.paymentMode,
+      note: [text, asked.bank && `Bank / cheque date: ${asked.bank}`].filter(Boolean).join(' — '),
+    })
+    : null;
   task.status = overall;
   /* Each model's own status is kept once one has moved on its own; the task reads its slowest. */
   if (byModel && (partial || task.modelStatuses?.length)) {
@@ -1834,6 +1845,16 @@ export async function recordDispatchLoad(task, user, { lines, mode, note, attach
   const known = new Set(sheet.models.map((row) => row.model.toLowerCase()));
   const stranger = known.size && given.find((line) => !known.has(line.model.toLowerCase()));
   if (stranger) fail(`${stranger.model} is not on this order`);
+  /*
+   * The dispatch plan marketing chose [Enquiry `dispatchPlan`]: all together, nothing goes until
+   * every model is ready; each model as it is ready, the ready ones may go on their own.
+   */
+  if (sheet.plan !== 'by_model') {
+    const waitingFor = sheet.models.filter((row) => !row.ready);
+    if (waitingFor.length) {
+      fail(`This order goes all together — nothing is dispatched until every model is ready (${waitingFor.map((row) => `${row.model} still with ${TEAM_WORDS_OF[row.waitingOn] || 'the plant'}`).join('; ')}). Marketing can change it to send each model as it is ready.`);
+    }
+  }
   /* Only goods ready go: the last team on the model's route has marked it Ready for Dispatch [dispatchSheet `ready`]. */
   const unready = given.map((line) => sheet.models.find((row) => row.model.toLowerCase() === line.model.toLowerCase())).filter((row) => row && !row.ready);
   if (unready.length) {
@@ -2259,19 +2280,29 @@ async function remindConsignment(task, user, step) {
  * customer and order. A status that also finishes this task (Escalated to PRT) hands the case
  * on rather than asking a question, so the new task is not a child of a closed one.
  */
-async function raiseFromStatus(task, user, step, text) {
+async function raiseFromStatus(task, user, step, text, fields = {}) {
   const target = findHandoff(step.raises);
   const brief = {};
-  /* What this task knew that the next asks for too — the payment contact onto the PRT case. */
+  /* What this task knew that the next asks for too — the payment contact onto the PRT case — and what the move said (PRT to collect a cheque, or follow up). */
   for (const field of target?.asks || []) {
-    if (task.brief?.[field.key] && !['member', 'info', 'kind', 'items'].includes(field.type)) brief[field.key] = task.brief[field.key];
+    if (['member', 'info', 'kind', 'items'].includes(field.type)) continue;
+    const said = fields?.[field.key] ?? task.brief?.[field.key];
+    if (said) brief[field.key] = said;
   }
+  const why = `${user.name}: ${text}${fields?.prtMode ? ` — PRT to: ${fields.prtMode}` : ''}`;
   if (task.enquiry) {
     const enquiry = await enquiryOfTask(task);
-    return moveEnquiry({
-      enquiry, kind: step.raises, note: `${user.name}: ${text}`, user, system: true, openRecords: false,
+    const raised = await moveEnquiry({
+      enquiry, kind: step.raises, note: why, user, system: true, openRecords: false,
       requiredDate: new Date(), parentTask: step.done ? undefined : task._id, order: task.order, brief,
     });
+    /* PRT's case says on its face what it was sent to do. */
+    const made = raised?.task || raised;
+    if (fields?.prtMode && made?._id && made.title && !made.title.includes('(')) {
+      const title = made.title.replace(target.label, `${target.label} (${fields.prtMode.toLowerCase()})`);
+      await Todo.updateOne({ _id: made._id }, { $set: { title } }, { keepVersion: true });
+    }
+    return raised;
   }
   if (!target?.department || target.department === 'owner') {
     fail(`${step.label} asks the enquiry's marketing person — this task has no enquiry. Ask whoever raised it instead.`);
@@ -2286,8 +2317,8 @@ async function raiseFromStatus(task, user, step, text) {
     department: target.department,
     fromDepartment: actingFor(user, task) || undefined,
     createdBy: user._id,
-    title: `${target.label} — ${buyer?.name || 'team task'}`,
-    notes: `${user.name}: ${text}`,
+    title: `${target.label}${fields?.prtMode ? ` (${fields.prtMode.toLowerCase()})` : ''} — ${buyer?.name || 'team task'}`,
+    notes: why,
     ...(Object.keys(brief).length ? { brief } : {}),
     ...(form.statuses?.length ? { status: form.statuses[0].key, statusHistory: [{ status: form.statuses[0].key, by: user._id, at: new Date() }] } : {}),
     ...(step.done ? {} : { parentTask: task._id }),

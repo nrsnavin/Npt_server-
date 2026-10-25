@@ -466,3 +466,26 @@ test('all together: Dispatch is asked only once every model is ready from its la
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.ok(await Todo.exists({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false }), 'every model ready: Dispatch is asked');
 });
+
+test('all together: even with the request raised early, Dispatch can send nothing until every model is ready; each model as it is ready: the ready one goes', async () => {
+  const { dispatchLoad } = await import('./support/dispatchLoad.mjs');
+  const { enquiry, production } = await routedEnquiry('Plan Rules Knits', '9840013779',
+    [{ modelNumber: 'PR-1', quantity: 400 }, { modelNumber: 'PR-2', quantity: 400 }],
+    [{ model: 'PR-1' }, { model: 'PR-2', printing: true }]);
+  await Todo.updateOne({ _id: production._id }, { $set: { 'brief.items': [{ model: 'PR-1', quantity: 400 }, { model: 'PR-2', quantity: 400 }] } });
+  assert.equal((await api(`/api/enquiries/${enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'together' } })).status, 200);
+  assert.equal((await api(`/api/workspace/todos/${production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'PR-1 packed', models: ['PR-1'] } })).status, 200);
+  /* Marketing sends the request before PR-2 is printed. */
+  const raised = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'invoice_dispatch', note: 'Send what is ready', brief: { schedule: 'Today Dispatch' } } });
+  assert.equal(raised.status, 201, raised.json.message);
+  const dispatchId = raised.json.data.task._id;
+  const early = await dispatchLoad({ baseUrl, token: token.admin, taskId: dispatchId, status: 'part_dispatched', models: 'PR-1', pieces: 400 });
+  assert.equal(early.status, 400);
+  assert.match(early.json.message, /This order goes all together — nothing is dispatched until every model is ready \(PR-2 still with Printing\)/);
+
+  /* Marketing changes it to each model as it is ready: PR-1 may go now. */
+  assert.equal((await api(`/api/enquiries/${enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'by_model' } })).status, 200);
+  const now = await dispatchLoad({ baseUrl, token: token.admin, taskId: dispatchId, status: 'part_dispatched', models: 'PR-1', pieces: 400 });
+  assert.equal(now.status, 200, now.json.message);
+  assert.equal(now.json.data.status, 'part_dispatched', 'PR-2 still to go');
+});

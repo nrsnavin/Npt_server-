@@ -137,14 +137,19 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
   if (orderId && !order) throw ApiError.badRequest('The sales order on this task no longer exists');
   const value = round2(Number(amount));
   if (!(value > 0)) throw ApiError.badRequest('Give the amount received');
-  let receivable = order ? await Receivable.findOne({ order: order._id, kind: 'advance' }) : null;
-  if (order && !receivable) {
-    await planCollection(order, { by: user });
+  /*
+   * Which money it is: a stage's collection task chases the order's advance; any other — an
+   * invoice chase, PRT's case — the oldest still owed on its order (or buyer), the advance among them.
+   */
+  const chasesAdvance = String(task.originKey || '').startsWith('payment-gate:');
+  let receivable = null;
+  if (!chasesAdvance) [receivable] = await receivablesOf(task);
+  if (!receivable && order) {
     receivable = await Receivable.findOne({ order: order._id, kind: 'advance' });
-  }
-  /* No advance on the terms: the money is against the invoices this task chases. */
-  if (!receivable) {
-    [receivable] = await receivablesOf(task);
+    if (!receivable) {
+      await planCollection(order, { by: user });
+      receivable = await Receivable.findOne({ order: order._id, kind: 'advance' });
+    }
   }
   if (!receivable) throw ApiError.badRequest(order ? `Nothing is owed on ${order.number} — nothing to log` : 'Nothing is owed by this buyer — nothing to log');
   const ref = String(reference || '').trim();
@@ -174,7 +179,7 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
 export const confirmTaskKey = (receivable) => `confirm-receipt:${receivable._id}`;
 
 /** The collection tasks a payment finishes read Paid as they close — on forms that have it. */
-const PAID_KINDS = ['team_payment_followup', 'my_payment_followup'];
+const PAID_KINDS = ['team_payment_followup', 'my_payment_followup', 'prt_recovery'];
 async function markPaidOpen(originKey, user, note) {
   await Todo.updateMany(
     { originKey, completed: false, kind: { $in: PAID_KINDS } },
@@ -237,15 +242,33 @@ export async function closeLoggedTask(receivable, receipt, user, said) {
   const fromIt = receivable.receipts.filter((row) => String(row.loggedFrom?._id || row.loggedFrom || '') === String(taskId));
   if (fromIt.some((row) => !row.confirmed?.at)) return null;
   const { completeHandoff, noticeStatus, peopleOn } = await import('./handoff.service.js');
+  const logger = receipt.recordedBy?._id || receipt.recordedBy;
+  const told = [logger, ...(await peopleOn(task))];
+  const tell = (label) => noticeStatus(task, user, { step: { key: task.status, label }, note: said, also: told, onlyAlso: true })
+    .catch((error) => console.error(`[payments] confirmation notice not sent: ${error.message}`));
+  /*
+   * Part of it: the task stays open, reading Part Paid, for the rest — a stage's collection task
+   * closes as Paid all the same once its stage is met [afterPayment].
+   */
+  const { applyPaymentPositions } = await import('./paymentPosition.service.js');
+  await applyPaymentPositions([receivable]);
+  if (receivable.balance > 0.5) {
+    const now = new Date();
+    /* A stage's collection task says what is short for its stage on its own title [refreshGateTask]; any other, what is still owed. */
+    const left = task.originKey?.startsWith('payment-gate:') ? 'the rest' : rupees(receivable.balance);
+    task.status = 'part_paid';
+    task.statusHistory = [...(task.statusHistory || []), { status: 'part_paid', note: `Accounts confirmed ${said} — ${left} still to collect`, by: user._id, at: now }];
+    task.updates = [...(task.updates || []), {
+      kind: 'status', status: 'part_paid', statusLabel: 'Part Paid — Confirmed by Accounts',
+      text: `${said} — ${left} still to collect`, note: `Part Paid — Confirmed by Accounts: ${said} — ${left} still to collect`, by: user._id, at: now,
+    }];
+    await task.save();
+    await tell(`Part paid — confirmed by Accounts, ${left} still to collect`);
+    return null;
+  }
   markPaid(task, user, `Accounts confirmed the payment: ${said}`);
   const closed = await completeHandoff(task, user, { note: `Accounts confirmed the payment: ${said}`, system: true, quiet: true });
-  const logger = receipt.recordedBy?._id || receipt.recordedBy;
-  await noticeStatus(task, user, {
-    step: { key: 'paid', label: 'Paid — confirmed by Accounts, task closed' },
-    note: said,
-    also: [logger, ...(await peopleOn(task))],
-    onlyAlso: true,
-  }).catch((error) => console.error(`[payments] confirmation notice not sent: ${error.message}`));
+  await tell('Paid — confirmed by Accounts, task closed');
   return closed;
 }
 

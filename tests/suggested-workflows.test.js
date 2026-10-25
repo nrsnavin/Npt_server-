@@ -68,7 +68,8 @@ test('the three workflows come from the server, in order', async () => {
   assert.deepEqual(labels('create_quotation'), ['Request Received', 'Costing', 'Waiting for Admin Approval', 'Quote Sent', 'Task Closed']);
   assert.deepEqual(labels('price_negotiation'), labels('create_quotation'));
   assert.deepEqual(labels('gst_invoice_audit'), ['Received', 'Checking', 'Correction Needed', 'Corrected', 'Task Closed']);
-  assert.deepEqual(labels('prt_recovery'), ['Assigned', 'Visit Planned', 'Visited', 'Collected', 'Part Collected', 'Promised', 'Promise Broken', 'Cannot Recover', 'Task Closed']);
+  /* PRT's money goes to Accounts; Paid / Part Paid are Accounts' confirmation [collections.test.js]. */
+  assert.deepEqual(labels('prt_recovery'), ['Assigned', 'Visit Planned', 'Visited', 'Cheque Collected — Send to Accounts', 'Payment Received — Send to Accounts', 'Promised', 'Promise Broken', 'Cannot Recover', 'Part Paid — Confirmed by Accounts', 'Paid — Confirmed by Accounts', 'Task Closed']);
 });
 
 test('a costing moves with a remark and Task Closed finishes it', async () => {
