@@ -158,6 +158,35 @@ export const listEnquiryDocuments = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await documentsFor(enquiry), meta: { mayAttach: true } });
 });
 
+/**
+ * The enquiry's Documents section [web: EnquiryDocuments]: every paper on it, by section, for
+ * whoever may open the enquiry — marketing and Admin, not a department working one task of it
+ * (a quotation's price and the buyer's PO are not the plant's to read). `mayEmail`: its marketing
+ * person may send any of them to the buyer from here [sendEnquiryMessage].
+ */
+export const listEnquiryPapers = asyncHandler(async (req, res) => {
+  const enquiry = await readable(req);
+  if (!canRead(req.user, 'enquiries')) throw ApiError.forbidden('The enquiry’s documents are read by marketing and Admin');
+  const { DOCUMENT_GROUPS } = await import('../services/enquiryDocuments.service.js');
+  const customer = enquiry.customer ? await Customer.findById(enquiry.customer).select('name email').lean() : enquiry.prospect;
+  res.json({
+    success: true,
+    data: await documentsFor(enquiry),
+    meta: { groups: DOCUMENT_GROUPS, mayEmail: isOwner(req.user, enquiry), buyer: { name: customer?.name || null, email: customer?.email || null } },
+  });
+});
+
+/** One paper of the enquiry, to open or save — checked against its list first [documentFile]. */
+export const enquiryPaperFile = asyncHandler(async (req, res) => {
+  const enquiry = await readable(req);
+  if (!canRead(req.user, 'enquiries')) throw ApiError.forbidden('The enquiry’s documents are read by marketing and Admin');
+  const paper = await documentFile(enquiry, { type: req.params.type, id: req.params.docId });
+  res.setHeader('Content-Type', paper.mimeType || 'application/octet-stream');
+  res.setHeader('Content-Length', paper.buffer.length);
+  res.setHeader('Content-Disposition', `${req.query.download ? 'attachment' : 'inline'}; filename="${safeFilename(paper.filename)}"`);
+  res.send(paper.buffer);
+});
+
 /** A paper behind a signed link — what WhatsApp fetches to deliver it. No session: the signature is the permission. */
 export const publicEnquiryDocument = asyncHandler(async (req, res) => {
   const paper = await documentFromLink(req.params);

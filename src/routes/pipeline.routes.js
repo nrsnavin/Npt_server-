@@ -2,7 +2,7 @@ import { dashboardFollowUps, dashboardOverview, dashboardParties, dashboardTasks
 import { customerFollowUp, customerFollowUpHistory } from '../controllers/customerFollowUp.controller.js';
 import { customerPanel, delegateCustomerTo } from '../controllers/customerPanel.controller.js';
 import { Router } from 'express';
-import { enquiryTimeline, listEnquiryMessages, sendEnquiryMessage, listEnquiryDocuments } from '../controllers/enquiryMessage.controller.js';
+import { enquiryTimeline, listEnquiryMessages, sendEnquiryMessage, listEnquiryDocuments, listEnquiryPapers, enquiryPaperFile } from '../controllers/enquiryMessage.controller.js';
 import {
   listBuyerCards, draftModels, draftSuggestions, getBuyerCard, buyerCardImage, enquirySource, enquirySourceImage, uploadBuyerCard, confirmBuyerCard, discardBuyerCard,
 } from '../controllers/buyerCard.controller.js';
@@ -263,6 +263,9 @@ router.post('/enquiries/:id/actions', requireModule('enquiries', 'write'), valid
 router.post('/enquiries/:id/activities', requireModule('enquiries', 'write'), validate(enquiryActivitySchema), logEnquiryActivity);
 /* Writing to the buyer from the company number and mail; the conversation is the owner's. */
 router.get('/enquiries/:id/messages', listEnquiryMessages);
+/* Every paper on the enquiry — the Documents section — and one of them to open [enquiryDocuments.service]. */
+router.get('/enquiries/:id/papers', listEnquiryPapers);
+router.get('/enquiries/:id/papers/:type/:docId', enquiryPaperFile);
 /* The papers to attach to a message: quote, enquiry and sample details, SO, invoice, dispatch details, LR. */
 router.get('/enquiries/:id/attachables', listEnquiryDocuments);
 router.post('/enquiries/:id/messages', requireModule('enquiries', 'write'), validate(enquiryMessageSchema), sendEnquiryMessage);
