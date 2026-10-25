@@ -257,6 +257,8 @@ export const plantCalendarSchema = z.object({
 
 /** The days each finishing team gets before the EDD [settings.service `setHandoverLead`]. */
 export const handoverLeadSchema = z.object({ days: z.number().int().min(1).max(30) });
+/** Production floor planning on or off [settings.service `setFloorPlanning`]. */
+export const floorPlanningSchema = z.object({ on: z.boolean() });
 
 export const securityPolicySchema = z.object({
   pinRequired: z.boolean().optional(),

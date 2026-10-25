@@ -24,6 +24,9 @@ import { firstWorkingDay, indiaDay, nextWorkingDay } from '../utils/indiaDays.js
  *   move           3 for taking a planned job off the press it is on
  *   risk          50 a press broken down or in maintenance now; 10 for each other warning
  *   usual press  −15 when the mould's own record names this press
+ *   learned      what the Production in charge did before with this mould or model — up to 30
+ *                off for the press they keep choosing, up to 24 on for one they keep turning
+ *                down [planLearning.service]
  *
  * One mould runs on one press at a time: where the same tool is booked on another press, the job
  * starts only after that booking ends, so its wait and lateness carry the cost.
@@ -33,7 +36,7 @@ import { firstWorkingDay, indiaDay, nextWorkingDay } from '../utils/indiaDays.js
  */
 export const SCORE_WEIGHTS = Object.freeze({
   lateDay: 100, mouldChangeHour: 10, colourStep: 5, wrongSize: 20, waitDay: 2, move: 3,
-  breakdown: 50, warning: 10, usualPress: -15,
+  breakdown: 50, warning: 10, usualPress: -15, learnedMost: -30,
 });
 
 const DAY = 86400000;
@@ -88,7 +91,7 @@ export function colourSteps(from, to) {
  * `press.lastMould` / `press.lastColour` say what is in it when the queue is empty. `mouldSlots`
  * are the days the same tool is booked on any press.
  */
-export function scorePress({ job, press, queue = [], plant, slipOf = () => 1, today = indiaDay(), mouldSlots = [] }) {
+export function scorePress({ job, press, queue = [], plant, slipOf = () => 1, today = indiaDay(), mouldSlots = [], learned = null }) {
   const fit = fitOf(job.mould, press);
   const machine = { _id: press._id, code: press.code, tonnage: press.tonnage ?? null, location: press.location || null, status: press.status || null };
   if (!fit.ok) return { ok: false, machine, blocks: fit.blocks, why: fit.blocks[0] };
@@ -134,6 +137,7 @@ export function scorePress({ job, press, queue = [], plant, slipOf = () => 1, to
     move: moves ? W.move : 0,
     risk: (down ? W.breakdown : 0) + otherWarnings.length * W.warning,
     usualPress: usual ? W.usualPress : 0,
+    learned: learned?.points || 0,
   };
   const score = Object.values(parts).reduce((sum, value) => sum + value, 0);
 
@@ -150,6 +154,7 @@ export function scorePress({ job, press, queue = [], plant, slipOf = () => 1, to
   if (before?.colour && sameText(before.colour, job.colour)) reasons.push({ good: true, text: `Already on ${job.colour} — no purge` });
   else if (steps) reasons.push({ good: false, text: `Colour change ${before.colour} → ${job.colour}${colourRank(job.colour) < colourRank(before.colour) ? ' (dark to light — a long purge)' : ''}` });
   if (usual) reasons.push({ good: true, text: 'The mould’s usual press' });
+  for (const reason of learned?.reasons || []) reasons.push({ ...reason, learned: true });
   if (oversize) reasons.push({ good: false, text: needs && press.tonnage >= needs * 2 ? `Big press for this mould (${press.tonnage} T, it needs ${needs} T)` : 'Big press for this mould — the shot is small for it' });
   if (down) reasons.push({ good: false, text: `${press.code} is ${press.status === 'breakdown' ? 'broken down' : 'in maintenance'} now` });
   for (const line of otherWarnings) reasons.push({ good: false, text: line });
@@ -163,6 +168,7 @@ export function scorePress({ job, press, queue = [], plant, slipOf = () => 1, to
     ok: true, machine, score, parts,
     start: mine.start, end: mine.end, days: mine.days, late: lateDays > 0, lateDays, waitDays,
     sameMould, queued: queue.length, warnings: fit.warnings, reasons,
+    learned: (learned?.reasons || []).map((reason) => reason.text),
     summary: reasons.slice(0, 3).map((reason) => reason.text).join(' · '),
   };
 }
@@ -183,14 +189,14 @@ export function mouldSlotsOf(queues, presses, options) {
  * presses that cannot hold the mould and why. `sized` is false when the mould has no cycle time
  * or cavities, so no press can be costed.
  */
-export function rankPresses({ job, presses, queues, plant, slipOf = () => 1, today = indiaDay(), mouldSlots }) {
+export function rankPresses({ job, presses, queues, plant, slipOf = () => 1, today = indiaDay(), mouldSlots, learnedOf = null }) {
   if (!piecesPerDay(job.mould, plant)) {
     return { sized: false, why: `${job.mould?.mouldCode || 'Its mould'} has no cycle time or cavities on record — it cannot be sized`, choices: [], cannot: [] };
   }
   const options = { plant, slipOf, today };
   const slots = (mouldSlots || mouldSlotsOf(queues, presses, options)).filter((slot) => slot.mould === String(job.mould?._id || ''));
   const scored = presses.map((press) => scorePress({
-    job, press, plant, slipOf, today, mouldSlots: slots,
+    job, press, plant, slipOf, today, mouldSlots: slots, learned: learnedOf ? learnedOf(job, press) : null,
     queue: (queues.get(String(press._id)) || []).filter((other) => String(other._id) !== String(job._id)),
   }));
   const choices = scored.filter((entry) => entry.ok)
@@ -210,6 +216,7 @@ export const planJob = (job) => ({
   modelNumber: job.modelNumber, customer: job.customer?.name || null,
   dueDay: job.dueDate ? indiaDay(job.dueDate) : null,
   toMake: Math.max(0, (job.quantity || 0) - (job.goodQty || 0)), updatedAt: job.updatedAt,
+  task: job.task || null, proposed: job.proposal?.machine || null,
 });
 
 /** Each press's queue in run order: the running job first, then by sequence. */
@@ -250,7 +257,10 @@ export async function planInputs() {
     return { ...machine, lastMould: row ? toolById.get(String(row.mould)) || { _id: row.mould } : null, lastColour: row?.colour || null };
   });
   const slipOf = (job, press) => factorFor(factors, { mould: job.mould?._id, machine: press?._id });
-  return { plant, presses, jobs: open.map(planJob), slipOf };
+  const jobs = open.map(planJob);
+  /* The in charge's own way of planning, learned from their decisions [planLearning.service]. */
+  const { learnedPreferences } = await import('./planLearning.service.js');
+  return { plant, presses, jobs, slipOf, learnedOf: await learnedPreferences(jobs) };
 }
 
 /** Every press ranked for one open work order, with the job as the board shows it. */
@@ -263,7 +273,7 @@ export async function pressChoices(workOrderId) {
     throw ApiError.conflict(`${exists.number} is ${exists.status} — there is nothing to plan`);
   }
   if (job.status === 'running') throw ApiError.conflict(`${job.number} is running — it stays on its press until the run ends`);
-  const ranked = rankPresses({ job, presses: inputs.presses, queues: queuesOf(inputs.presses, inputs.jobs), plant: inputs.plant, slipOf: inputs.slipOf });
+  const ranked = rankPresses({ job, presses: inputs.presses, queues: queuesOf(inputs.presses, inputs.jobs), plant: inputs.plant, slipOf: inputs.slipOf, learnedOf: inputs.learnedOf });
   return {
     job: { _id: job._id, number: job.number, mouldCode: job.mould?.mouldCode || null, modelNumber: job.modelNumber, colour: job.colour || null, toMake: job.toMake, dueDay: job.dueDay, machine: job.machine },
     ...ranked,
@@ -281,10 +291,10 @@ export async function bestPresses(ids) {
   const wanted = new Set(ids.map(String));
   const best = new Map();
   for (const job of inputs.jobs.filter((entry) => wanted.has(String(entry._id)))) {
-    const ranked = rankPresses({ job, presses: inputs.presses, queues, ...options, mouldSlots: slots });
+    const ranked = rankPresses({ job, presses: inputs.presses, queues, ...options, mouldSlots: slots, learnedOf: inputs.learnedOf });
     const top = ranked.choices[0];
     best.set(String(job._id), top
-      ? { machine: top.machine, score: top.score, end: top.end, late: top.late, summary: top.summary }
+      ? { machine: top.machine, score: top.score, end: top.end, late: top.late, summary: top.summary, learned: top.learned }
       : { machine: null, why: ranked.why || ranked.cannot[0]?.why || 'No press on the register yet' });
   }
   return best;

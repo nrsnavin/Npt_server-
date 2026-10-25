@@ -11,8 +11,8 @@ import whatsappRoutes from './whatsapp.routes.js';
 import queryRoutes from './query.routes.js';
 import dispatchPlanningRoutes from './dispatchPlanning.routes.js';
 import recordsRoutes from './records.routes.js';
-import { getPlant, getSecurity, putHandoverLead, putPlant, putSecurity } from '../controllers/settings.controller.js';
-import { handoverLeadSchema, plantCalendarSchema, securityPolicySchema } from '../validators/schemas.js';
+import { getPlant, getSecurity, putFloorPlanning, putHandoverLead, putPlant, putSecurity } from '../controllers/settings.controller.js';
+import { floorPlanningSchema, handoverLeadSchema, plantCalendarSchema, securityPolicySchema } from '../validators/schemas.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
 import { globalSearch } from '../controllers/search.controller.js';
 import { inbox } from '../controllers/inbox.controller.js';
@@ -57,6 +57,8 @@ router.get('/settings/plant', authenticate, getPlant);
 router.put('/settings/plant', authenticate, requireModule('production', 'write'), validate(plantCalendarSchema), putPlant);
 /* The days each finishing team gets before the EDD: the Production in charge, Admin or marketing. */
 router.put('/settings/handover-lead', authenticate, validate(handoverLeadSchema), putHandoverLead);
+/* Production floor planning: Admin's switch — on, Production tasks link to work orders, presses and the board. */
+router.put('/settings/floor-planning', authenticate, validate(floorPlanningSchema), putFloorPlanning);
 /* Everything waiting on me — the bell in the header. */
 router.get('/inbox', authenticate, inbox);
 /*

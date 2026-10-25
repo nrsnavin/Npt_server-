@@ -204,12 +204,16 @@ export async function floorView() {
     Machine.find({ active: { $ne: false }, status: { $ne: 'retired' } }).select('code name tonnage status andon').sort({ code: 1 }).collation({ locale: 'en', numericOrdering: true }).lean(),
     MouldRun.find({ status: 'running' }).populate([{ path: 'mould', select: 'mouldCode cavities activeCavities cycleTimeSeconds' }, { path: 'customer', select: 'name' }, { path: 'workOrder', select: 'number quantity goodQty colour' }]).lean({ virtuals: true }),
     WorkOrder.find({ status: { $in: ['planned', 'released', 'paused'] }, machine: { $exists: true } })
-      .select('number machine sequence status colour quantity goodQty mould dueDate').populate('mould', 'mouldCode').sort({ sequence: 1 }).lean(),
+      .select('number machine sequence status colour quantity goodQty mould dueDate task model setup firstRunAt').populate('mould', 'mouldCode').sort({ sequence: 1 }).lean(),
   ]);
   return machines.map((machine) => ({
     machine,
     run: running.find((run) => String(run.machine) === String(machine._id)) || null,
     next: queued.filter((wo) => String(wo.machine) === String(machine._id)).slice(0, 3)
-      .map((wo) => ({ _id: wo._id, number: wo.number, status: wo.status, mould: wo.mould?.mouldCode || null, colour: wo.colour, left: Math.max(0, (wo.quantity || 0) - (wo.goodQty || 0)), dueDate: wo.dueDate })),
+      .map((wo) => ({
+        _id: wo._id, number: wo.number, status: wo.status, mould: wo.mould?.mouldCode || null, colour: wo.colour, left: Math.max(0, (wo.quantity || 0) - (wo.goodQty || 0)), dueDate: wo.dueDate,
+        /* Planned from a Production task: the mould change checklist before its first run [floorPlanning.service `setupStep`]. */
+        ...(wo.task ? { forTask: true, model: wo.model || null, setup: wo.setup || {}, started: Boolean(wo.firstRunAt) } : {}),
+      })),
   }));
 }

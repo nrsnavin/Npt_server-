@@ -1,4 +1,4 @@
-import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, pressChoicesHandler, sequenceByColourHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
+import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, placeTaskModelHandler, confirmTaskPlanHandler, proposeTaskPlanHandler, plannerStatsHandler, listTradeOrdersHandler, updateTradeOrderHandler, pressChoicesHandler, sequenceByColourHandler, setupStepHandler, taskPlanHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
 import { componentStockSchema } from '../validators/component.schemas.js';
 import { applyPlanHandler, askProductionHandler, floorMessagesHandler, maintenanceRiskHandler, purchaseForecastHandler, suggestPlanHandler } from '../controllers/productionInsights.controller.js';
 import { Router } from 'express';
@@ -12,7 +12,7 @@ import {
   listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine, logRunHandler, runReasonsHandler,
 } from '../controllers/records.controller.js';
 import {
-  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema, andonSchema, andonClearSchema, planApplySchema, productionAskSchema,
+  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema, taskPlaceSchema, taskConfirmSchema, tradeOrderUpdateSchema, setupStepSchema, andonSchema, andonClearSchema, planApplySchema, productionAskSchema,
 } from '../validators/records.schemas.js';
 
 /**
@@ -63,6 +63,17 @@ router.get('/production/plan', anyModule([['production', 'read'], ['orders', 're
 router.get('/production/fit', requireModule('production'), fitHandler);
 /* Which press should make a work order: every press scored, with the reasons. */
 router.get('/production/plan/choices/:id', requireModule('production'), pressChoicesHandler);
+/* Floor planning: a Production task's press step, a model put on a press from the task, the mould change checklist. */
+router.get('/production/task-plan/:taskId', anyModule([['production', 'read'], ['orders', 'read']]), taskPlanHandler);
+router.post('/production/task-plan/:taskId/place', requireModule('production', 'write'), requireProductionInCharge(), validate(taskPlaceSchema), placeTaskModelHandler);
+/* The auto-planner: its proposals confirmed (or proposed again) by the in charge; how often they agreed. */
+router.post('/production/task-plan/:taskId/confirm', requireModule('production', 'write'), requireProductionInCharge(), validate(taskConfirmSchema), confirmTaskPlanHandler);
+router.post('/production/task-plan/:taskId/propose', requireModule('production', 'write'), requireProductionInCharge(), proposeTaskPlanHandler);
+router.get('/production/planner-stats', anyModule([['production', 'read'], ['orders', 'read']]), plannerStatsHandler);
+/* Floor planning's checkpoint: traded models are bought in, tracked on the Trading page by the Production team. */
+router.get('/production/trading', anyModule([['production', 'read'], ['orders', 'read']]), listTradeOrdersHandler);
+router.patch('/production/trading/:id', requireModule('production', 'write'), validate(tradeOrderUpdateSchema), updateTradeOrderHandler);
+router.post('/work-orders/:id/setup', requireModule('production', 'write'), validate(setupStepSchema), setupStepHandler);
 /* The shop floor: the job card with its QR code, the tablet's view, the andon call, the shift handover. */
 router.get('/work-orders/:id/job-card', anyModule([['production', 'read'], ['orders', 'read']]), jobCardHandler);
 router.get('/production/floor', requireModule('production'), floorHandler);

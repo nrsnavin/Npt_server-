@@ -30,7 +30,7 @@ export async function setSecurityPolicy(changes, by) {
  * [services/capacity.service.js]. Hours a press actually runs in a day (two twelve-hour shifts,
  * less changeovers and breaks), the shifts worked, and the weekly day off.
  */
-export const PLANT_DEFAULTS = Object.freeze({ hoursPerDay: 22, shifts: ['A', 'B'], weeklyOff: 0, mouldChangeHours: 2, handoverLeadDays: 5 });
+export const PLANT_DEFAULTS = Object.freeze({ hoursPerDay: 22, shifts: ['A', 'B'], weeklyOff: 0, mouldChangeHours: 2, handoverLeadDays: 5, floorPlanning: false });
 /** The days each finishing team gets before the EDD, the least and most it may be set to. */
 export const HANDOVER_LEAD_RANGE = Object.freeze({ min: 1, max: 30 });
 export const PLANT_SHIFTS = ['A', 'B', 'C', 'General'];
@@ -50,6 +50,8 @@ export async function setPlantCalendar(changes, by) {
     mouldChangeHours: changes.mouldChangeHours === undefined ? current.mouldChangeHours : Math.min(24, Math.max(0, Number(changes.mouldChangeHours))),
     /* Kept as it is: Production, Admin or marketing set it on its own [setHandoverLead]. */
     handoverLeadDays: current.handoverLeadDays,
+    /* Admin's switch, set on its own [setFloorPlanning]. */
+    floorPlanning: current.floorPlanning,
   };
   if (!next.shifts.length) next.shifts = [...PLANT_DEFAULTS.shifts];
   await Setting.updateOne({ key: 'plant' }, { $set: { value: next, updatedBy: by?._id } }, { upsert: true });
@@ -68,3 +70,19 @@ export async function setHandoverLead(days, by) {
   await Setting.updateOne({ key: 'plant' }, { $set: { value: next, updatedBy: by?._id } }, { upsert: true });
   return next;
 }
+
+/**
+ * Production floor planning, Admin's switch [floorPlanning.service]. On: every model routed on a
+ * Production task gets a work order, is planned on a press from the task, and the plan and the
+ * runs move its Production status. Off: the tasks run as they always have — routed to Printing
+ * and Assembly, statuses moved by hand — and nothing is linked.
+ */
+export async function setFloorPlanning(on, by) {
+  const current = await plantCalendar();
+  const next = { ...current, floorPlanning: Boolean(on) };
+  await Setting.updateOne({ key: 'plant' }, { $set: { value: next, updatedBy: by?._id } }, { upsert: true });
+  return next;
+}
+
+/** Whether production floor planning is on. */
+export const floorPlanningOn = async () => Boolean((await plantCalendar()).floorPlanning);

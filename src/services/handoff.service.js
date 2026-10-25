@@ -3574,6 +3574,8 @@ export async function setTaskEdd(task, user, { date, note, models }) {
     await noticeStatus(task, user, { step: { key: task.status || 'edd', label: 'Completion date given' }, note: text, date: day });
   }
   await afterProductionDate(task, user, { day, edd: true });
+  /* Floor planning: the work orders measure their plan against the new dates [floorPlanning.service]. */
+  if (task.kind === 'ask_edd') await (await import('./floorPlanning.service.js')).linkTaskWorkOrders(task, user);
   return task;
 }
 
@@ -3991,6 +3993,8 @@ export async function decideRouting(task, user, { models }) {
   if (findHandoff(task.kind)?.form?.notifyStatus) {
     await noticeStatus(task, user, { step: { key: task.status || 'routing', label: wasDecided ? 'Routing changed' : 'Printing / assembly decided' }, note: plan });
   }
+  /* Floor planning on: each routed model gets its work order, ready to put on a press [floorPlanning.service]. */
+  await (await import('./floorPlanning.service.js')).linkTaskWorkOrders(task, user);
   return { task, raised };
 }
 
@@ -4272,6 +4276,26 @@ export async function modelJourneys(enquiryId, { task: onTask = null } = {}) {
   const routes = (start.routing?.models || []).length
     ? start.routing.models.map((row) => ({ model: row.model, printing: Boolean(row.printing), assembly: Boolean(row.assembly), decided: true }))
     : modelsOfTask(start).map((model) => ({ model, printing: false, assembly: false, decided: false }));
+  /* Floor planning: the model's work order says where it is on the floor — planned on a press, running, how far [floorPlanning.service]. */
+  const floorOrders = await (await import('../models/WorkOrder.js')).default.find({ task: start._id }).select('model status machine plannedEnd goodQty quantity').populate('machine', 'code').lean();
+  /* A traded model: where its supply stands on the Trading page [trading.service]. */
+  const tradeLines = await (await import('../models/TradeOrder.js')).default.find({ task: start._id }).select('model status supplier expectedOn receivedQty quantity').lean();
+  const floorWords = (model) => {
+    const line = tradeLines.find((entry) => key(entry.model) === key(model));
+    if (line) {
+      if (line.status === 'to_order') return 'Traded · to be ordered';
+      if (line.status === 'ordered') return `Traded · ordered${line.supplier ? ` from ${line.supplier}` : ''}${line.expectedOn ? ` · expected ${prettyDay(indiaDay(line.expectedOn))}` : ''}`;
+      if (line.status === 'part_received') return `Traded · ${(line.receivedQty || 0).toLocaleString('en-IN')} of ${(line.quantity || 0).toLocaleString('en-IN')} received`;
+      return null;
+    }
+    const wo = floorOrders.find((entry) => key(entry.model) === key(model));
+    if (!wo?.machine) return null;
+    const share = wo.quantity ? Math.min(100, Math.round(((wo.goodQty || 0) / wo.quantity) * 100)) : null;
+    if (wo.status === 'running') return `Running on ${wo.machine.code}${share != null ? ` · ${share}%` : ''}`;
+    if (wo.status === 'paused') return `Paused on ${wo.machine.code}${share != null ? ` · ${share}%` : ''}`;
+    if (['planned', 'released'].includes(wo.status)) return `Planned on ${wo.machine.code}${wo.plannedEnd ? ` · done ${prettyDay(indiaDay(wo.plannedEnd))}` : ''}`;
+    return null;
+  };
   return routes.map(({ model, printing, assembly, decided }) => {
     const steps = [];
     let before = 'done';
@@ -4279,6 +4303,10 @@ export async function modelJourneys(enquiryId, { task: onTask = null } = {}) {
     const route = ['production', ...(printing ? ['printing'] : []), ...(assembly ? ['assembling'] : [])];
     for (const team of route) {
       const step = teamStep(team, model, before, prior);
+      if (team === 'production' && step.state !== 'done' && step.state !== 'issue') {
+        const words = floorWords(model);
+        if (words) Object.assign(step, { status: words, state: 'now' });
+      }
       /*
        * Its date: the day it hands the model on to the next team where it goes on, else the day
        * it completes it — the model's estimated completion [refreshModelEdds].

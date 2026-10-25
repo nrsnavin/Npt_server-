@@ -413,14 +413,18 @@ export const MAINTENANCE_LABELS = Object.fromEntries(MAINTENANCE_TYPES.map((type
 export async function startRun(input, user) {
   /* Started from a work order: the mould, the order and the line come from it [workOrder.service]. */
   const named = input.workOrder ? await workOrderForRun({ workOrder: input.workOrder }) : null;
+  const { setupSkipReason: _skip, ...given } = input;
   const body = {
-    ...input,
+    ...given,
     mould: input.mould || named?.mould,
     order: input.order || named?.order,
-    orderLine: input.orderLine || named?.orderLine,
+    /* A work order made for a Production task before its SO has a line key of its own, not an SO line [floorPlanning.service]. */
+    orderLine: input.orderLine || (named?.order ? named.orderLine : undefined),
     plannedQuantity: input.plannedQuantity ?? (named ? named.toMakeQty : undefined),
   };
   if (!body.mould) throw ApiError.badRequest('Pick the mould');
+  /* Floor planning: a task's work order starts once its first piece is approved, or with a reason [floorPlanning.service]. */
+  if (named?.task) await (await import('./floorPlanning.service.js')).assertSetupDone(named, user, { skipReason: input.setupSkipReason });
   return withCreateLocks([`run-machine:${body.machine || 'none'}`, `run-mould:${body.mould}`], async () => {
     const mould = await Mould.findById(body.mould);
     if (!mould) throw ApiError.badRequest('That mould is not on the register');
