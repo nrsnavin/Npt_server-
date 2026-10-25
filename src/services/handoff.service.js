@@ -1770,6 +1770,9 @@ export async function jobDispatchLoads({ enquiryId = null, task = null, current 
   return rows.sort((a, b) => new Date(a.at) - new Date(b.at));
 }
 
+/* The team a model not yet ready is with, in words. */
+const TEAM_WORDS_OF = { production: 'Production', printing: 'Printing', assembling: 'Assembly' };
+
 /** Pieces sent of each model across the loads. */
 const sentByModel = (loads) => {
   const sent = new Map();
@@ -1786,14 +1789,20 @@ export async function dispatchSheet(task) {
   const { order, enquiry, ordered } = await orderedModelsOf({ task });
   /* What went on every request of the job, not this one alone. */
   const sent = sentByModel(await jobDispatchLoads({ task, current: task }));
-  const readiness = enquiryId ? await modelReadiness(enquiryId) : { ready: [], waiting: [] };
-  const waiting = new Set((readiness.waiting || []).map((row) => row.model));
+  const readiness = enquiryId ? await modelReadiness(enquiryId) : await modelReadiness(null, { task });
+  const key = (model) => String(model || '').trim().toLowerCase();
+  const waiting = new Map((readiness.waiting || []).map((row) => [key(row.model), row.team]));
   return {
     plan: enquiry ? dispatchModeOf(enquiry) : 'together',
     order: order ? { _id: order._id, number: order.number } : null,
+    /*
+     * Ready: the last team on the model's route — Assembly, else Printing, else Production — has
+     * marked it Ready for Dispatch (or finished) [modelReadiness]. A model not ready names that team.
+     */
     models: [...ordered].map(([model, quantity]) => ({
       model, ordered: quantity, sent: sent.get(model) || 0,
-      ready: !waiting.has(model),
+      ready: !waiting.has(key(model)),
+      ...(waiting.has(key(model)) ? { waitingOn: waiting.get(key(model)) } : {}),
     })),
     modes: findHandoff(task.kind)?.form?.dispatchModes || [],
     loads: (task.loads || []).length,
@@ -1825,6 +1834,11 @@ export async function recordDispatchLoad(task, user, { lines, mode, note, attach
   const known = new Set(sheet.models.map((row) => row.model.toLowerCase()));
   const stranger = known.size && given.find((line) => !known.has(line.model.toLowerCase()));
   if (stranger) fail(`${stranger.model} is not on this order`);
+  /* Only goods ready go: the last team on the model's route has marked it Ready for Dispatch [dispatchSheet `ready`]. */
+  const unready = given.map((line) => sheet.models.find((row) => row.model.toLowerCase() === line.model.toLowerCase())).filter((row) => row && !row.ready);
+  if (unready.length) {
+    fail(`${unready.map((row) => `${row.model} is still with ${TEAM_WORDS_OF[row.waitingOn] || 'the plant'}`).join('; ')} — only models marked Ready for Dispatch by their last team (Assembly, else Printing, else Production) can be dispatched`);
+  }
   const pieces = given.reduce((sum, line) => sum + line.quantity, 0);
   /* The names as the order spells them, so every load reads the same model the same way. */
   const spelled = new Map(sheet.models.map((row) => [row.model.toLowerCase(), row.model]));
@@ -4024,11 +4038,14 @@ export async function setModelEdds(enquiry, user, { models, note }) {
  * (Assembly, else Printing, else Production) says Ready for Dispatch or has finished. The rest are
  * waiting on that team.
  */
-export async function modelReadiness(enquiryId) {
-  const id = enquiryId?._id || enquiryId;
-  const start = await Todo.findOne({ enquiry: id, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt routing brief').lean();
+export async function modelReadiness(enquiryId, { task: onTask = null } = {}) {
+  const id = enquiryId?._id || enquiryId || null;
+  /* An enquiry's job, or — raised from the customer — the team job's chain [journey.service `jobFilter`]. */
+  const where = id ? { enquiry: id } : onTask ? jobFilter(onTask) : null;
+  if (!where) return { ready: [], waiting: [] };
+  const start = await Todo.findOne({ ...where, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt routing brief').lean();
   if (!start) return { ready: [], waiting: [] };
-  const tasks = await Todo.find({ enquiry: id, kind: { $in: EDD_TASK_KINDS }, createdAt: { $gte: start.createdAt } }).select('kind status completed modelStatuses').lean();
+  const tasks = await Todo.find({ ...where, kind: { $in: EDD_TASK_KINDS }, createdAt: { $gte: start.createdAt } }).select('kind status completed modelStatuses').lean();
   const KIND_OF_TEAM = { production: 'ask_edd', printing: 'ask_printing', assembling: 'ask_assembling_edd' };
   /* The model's own status on that team's task, where it moved on its own; else the task's. */
   const isDone = (task, model) => {
@@ -4056,9 +4073,9 @@ export async function modelReadiness(enquiryId) {
   const key = (model) => String(model || '').trim().toLowerCase();
   const sent = new Set();
   const partSent = [];
-  const loads = await jobDispatchLoads({ enquiryId: id });
+  const loads = await jobDispatchLoads(id ? { enquiryId: id } : { task: onTask });
   if (loads.length) {
-    const { ordered } = await orderedModelsOf({ enquiryId: id });
+    const { ordered } = await orderedModelsOf(id ? { enquiryId: id } : { task: onTask });
     const sentQty = new Map([...sentByModel(loads)].map(([model, quantity]) => [key(model), quantity]));
     const orderedQty = new Map([...ordered].map(([model, quantity]) => [key(model), quantity]));
     for (const route of routes) {
@@ -4069,7 +4086,7 @@ export async function modelReadiness(enquiryId) {
     }
   } else {
     /* Moves from before the dispatch form: the models a move named; a bare Dispatched, every model made by then. */
-    const requests = await Todo.find({ enquiry: id, kind: 'invoice_dispatch', createdAt: { $gte: start.createdAt } }).select('updates').lean();
+    const requests = await Todo.find({ ...where, kind: 'invoice_dispatch', createdAt: { $gte: start.createdAt } }).select('updates').lean();
     for (const request of requests) {
       for (const line of request.updates || []) {
         if (line.kind !== 'status' || !['dispatched', 'fully_dispatched', 'part_dispatched'].includes(line.status)) continue;
@@ -4083,7 +4100,7 @@ export async function modelReadiness(enquiryId) {
     }
   }
   /* QC compulsory: of the models made, which Quality has passed — only those may go — and which are with Quality. */
-  const gate = await qcGateFor({ enquiry: id });
+  const gate = await qcGateFor(id ? { enquiry: id } : onTask);
   const qc = gate.required
     ? { required: true, passed: ready.filter((model) => qcPassedModels(gate, [model])), atQc: ready.filter((model) => !qcPassedModels(gate, [model])) }
     : { required: false };

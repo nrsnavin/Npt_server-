@@ -405,3 +405,64 @@ test('several models, no plan chosen: each goes its own way — a ready model re
   const single = await routedEnquiry('One Model Knits', '9840013565', [{ modelNumber: 'ONE-1', quantity: 1000 }], [{ model: 'ONE-1' }]);
   assert.equal((await api(`/api/enquiries/${single.enquiry._id}/handoffs`, { as: 'nandhini' })).json.dispatchPlan.mode, 'together', 'one model: nothing to split');
 });
+
+test('only goods ready can be dispatched: no finishing → after Production; printed → after Printing; printed and assembled → after Assembly', async () => {
+  const { dispatchLoad } = await import('./support/dispatchLoad.mjs');
+  const { enquiry, production } = await routedEnquiry('Ready Rules Knits', '9840013777',
+    [{ modelNumber: 'RD-1', quantity: 1000 }, { modelNumber: 'RD-2', quantity: 1000 }, { modelNumber: 'RD-3', quantity: 1000 }],
+    [{ model: 'RD-1' }, { model: 'RD-2', printing: true }, { model: 'RD-3', printing: true, assembly: true }]);
+  await Todo.updateOne({ _id: production._id }, { $set: { 'brief.items': [{ model: 'RD-1', quantity: 1000 }, { model: 'RD-2', quantity: 1000 }, { model: 'RD-3', quantity: 1000 }] } });
+  const status = (id, as, body) => api(`/api/workspace/todos/${id}/status`, { method: 'POST', as, body });
+  const sheetOf = async (id) => Object.fromEntries((await api(`/api/workspace/todos/${id}/dispatch`, { as: 'admin' })).json.data.models.map((row) => [row.model, row.ready ? 'ready' : row.waitingOn]));
+
+  /* RD-1 has no printing or assembly: Production's Ready for Dispatch makes it ready. RD-2 and RD-3 go to Printing. */
+  assert.equal((await status(production._id, 'siva', { status: 'ready_dispatch', note: 'RD-1 packed', models: ['RD-1'] })).status, 200);
+  assert.equal((await status(production._id, 'siva', { status: 'handed_printing', note: 'Moulded', models: ['RD-2', 'RD-3'] })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const dispatch = await Todo.findOne({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false }).lean();
+  assert.ok(dispatch, 'RD-1 ready: Dispatch is asked');
+  assert.deepEqual(await sheetOf(dispatch._id), { 'RD-1': 'ready', 'RD-2': 'printing', 'RD-3': 'assembling' });
+  const tooSoon = await dispatchLoad({ baseUrl, token: token.admin, taskId: dispatch._id, status: 'part_dispatched', models: 'RD-1, RD-2', pieces: 2000 });
+  assert.equal(tooSoon.status, 400);
+  assert.match(tooSoon.json.message, /RD-2 is still with Printing — only models marked Ready for Dispatch by their last team/);
+
+  /* RD-2 printed and ready: it may go. RD-3 printed and handed to Assembly: still not. */
+  const printing = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_printing', completed: false });
+  for (const step of ['in_queue', 'started']) assert.equal((await status(printing._id, 'priya', { status: step, note: step, models: ['RD-2', 'RD-3'] })).status, 200);
+  assert.equal((await status(printing._id, 'priya', { status: 'ready_dispatch', note: 'RD-2 printed', models: ['RD-2'], date: indiaDay(1) })).status, 200);
+  assert.equal((await status(printing._id, 'priya', { status: 'handed_assembly', note: 'RD-3 printed', models: ['RD-3'] })).status, 200);
+  assert.deepEqual(await sheetOf(dispatch._id), { 'RD-1': 'ready', 'RD-2': 'ready', 'RD-3': 'assembling' }, 'printed is not enough for an assembled model');
+  const assemblyFirst = await dispatchLoad({ baseUrl, token: token.admin, taskId: dispatch._id, status: 'part_dispatched', models: 'RD-3', pieces: 1000 });
+  assert.equal(assemblyFirst.status, 400);
+  assert.match(assemblyFirst.json.message, /RD-3 is still with Assembly/);
+  const firstTwo = await dispatchLoad({ baseUrl, token: token.admin, taskId: dispatch._id, status: 'part_dispatched', models: 'RD-1, RD-2', pieces: 2000 });
+  assert.equal(firstTwo.status, 200, firstTwo.json.message);
+  assert.equal(firstTwo.json.data.status, 'part_dispatched');
+
+  /* RD-3 assembled and ready: now it goes, and everything ordered has gone. */
+  const assembly = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_assembling_edd', completed: false });
+  assert.equal((await status(assembly._id, 'anand', { status: 'ready_dispatch', note: 'RD-3 assembled', date: indiaDay(1) })).status, 200);
+  assert.deepEqual(await sheetOf(dispatch._id), { 'RD-1': 'ready', 'RD-2': 'ready', 'RD-3': 'ready' });
+  const last = await dispatchLoad({ baseUrl, token: token.admin, taskId: dispatch._id, status: 'part_dispatched', models: 'RD-3', pieces: 1000 });
+  assert.equal(last.status, 200, last.json.message);
+  assert.equal(last.json.data.status, 'fully_dispatched');
+});
+
+test('all together: Dispatch is asked only once every model is ready from its last team — Production handing one to Printing is not its models ready', async () => {
+  const { enquiry, production } = await routedEnquiry('Together Ready Knits', '9840013778',
+    [{ modelNumber: 'TG-1', quantity: 500 }, { modelNumber: 'TG-2', quantity: 500 }],
+    [{ model: 'TG-1' }, { model: 'TG-2', printing: true }]);
+  assert.equal((await api(`/api/enquiries/${enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'together' } })).status, 200);
+  const status = (id, as, body) => api(`/api/workspace/todos/${id}/status`, { method: 'POST', as, body });
+  /* Production hands TG-2 to Printing and Printing finishes it — but TG-1 is still on the press. */
+  assert.equal((await status(production._id, 'siva', { status: 'handed_printing', note: 'TG-2 moulded', models: ['TG-2'] })).status, 200);
+  const printing = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_printing', completed: false });
+  for (const step of ['in_queue', 'started']) await status(printing._id, 'priya', { status: step, note: step, models: ['TG-2'] });
+  assert.equal((await status(printing._id, 'priya', { status: 'ready_dispatch', note: 'TG-2 printed', models: ['TG-2'], date: indiaDay(1) })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(await Todo.exists({ enquiry: enquiry._id, kind: 'invoice_dispatch' }), null, 'TG-1 is not ready: nothing goes');
+  /* TG-1 ready from Production: now the whole order goes. */
+  assert.equal((await status(production._id, 'siva', { status: 'ready_dispatch', note: 'TG-1 packed', models: ['TG-1'] })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.ok(await Todo.exists({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false }), 'every model ready: Dispatch is asked');
+});
