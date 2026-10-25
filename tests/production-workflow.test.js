@@ -477,7 +477,7 @@ test('the LR behind its signed link opens without a session, and a forged link d
 });
 
 test('the sales order is still a PDF only', async () => {
-  const so = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'PO in', brief: { productionConfirmed: true } } });
+  const so = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'PO in', brief: { paymentTerms: 'Credit — nothing before dispatch', productionConfirmed: true } } });
   assert.equal(so.status, 201, so.json.message);
   const photo = await uploadResult('admin', so.json.data.task._id);
   assert.equal(photo.status, 400);
@@ -724,7 +724,7 @@ test('a team task’s enquiry-only steps say so; the rest finish normally', asyn
   const answered = await api(`/api/workspace/todos/${asked.json.raised._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_now', note: 'Samples packed' } });
   assert.equal(answered.status, 200, answered.json.message);
 
-  const so = await teamTask('nandhini', { kind: 'po_so', note: 'Sales order for the walk-in buyer', brief: { productionConfirmed: true } });
+  const so = await teamTask('nandhini', { kind: 'po_so', note: 'Sales order for the walk-in buyer', brief: { paymentTerms: 'Credit — nothing before dispatch', productionConfirmed: true } });
   const clarify = await api(`/api/workspace/todos/${so.json.data.task._id}/status`, { method: 'POST', as: 'admin', body: { status: 'clarification', note: 'Which GSTIN?' } });
   assert.equal(clarify.status, 400);
   assert.match(clarify.json.message, /no enquiry/);

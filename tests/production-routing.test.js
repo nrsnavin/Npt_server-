@@ -538,29 +538,30 @@ test('each model’s own journey: printed and assembled, assembled only, or neit
   assert.deepEqual(shape(printingRow.journeys), shape(page.journeys));
 });
 
-test('Printing gives each model its own date on a status move; a hand-over is never on or after the EDD', async () => {
+test('Printing gives each model its own date on a status move; a hand-over on or after the EDD is noted, never refused', async () => {
   const { enquiry: job, production: asked } = await routedEnquiry('Hand Over Knits', '9840011733',
     [{ modelNumber: 'HO-1', quantity: 1000 }, { modelNumber: 'HO-2', quantity: 1000 }],
     [{ model: 'HO-1', printing: true, assembly: true }, { model: 'HO-2', printing: true, assembly: true }]);
   assert.equal((await api(`/api/enquiries/${job._id}/edd`, { method: 'POST', as: 'nandhini', body: { date: indiaDay(20) } })).status, 200);
-  /* Production's hand-over on the EDD itself is refused; five days before it is taken. */
+  /* Production's hand-over on the EDD itself is taken — the dates are for reference — and the note says so. */
   const onEdd = await api(`/api/workspace/todos/${asked._id}/edd`, { method: 'POST', as: 'siva', body: { date: indiaDay(20) } });
-  assert.equal(onEdd.status, 400);
-  assert.match(onEdd.json.message, /on or after the EDD .* 5 days a team by default/);
+  assert.equal(onEdd.status, 200, onEdd.json.message);
+  assert.match((await Todo.findById(asked._id).lean()).updates.at(-1).note, /Hand-over on or after the EDD .* for reference/);
   assert.equal((await api(`/api/workspace/todos/${asked._id}/edd`, { method: 'POST', as: 'siva', body: { date: indiaDay(15) } })).status, 200);
+  assert.doesNotMatch((await Todo.findById(asked._id).lean()).updates.at(-1).note, /on or after the EDD/);
 
-  /* Printing hands over to Assembly: a date for each model on the move. */
+  /* Printing hands over to Assembly: a date for each model on the move, one of them after the EDD. */
   const printing = await Todo.findOne({ enquiry: job._id, kind: 'ask_printing', completed: false });
   const handed = await api(`/api/workspace/todos/${asked._id}/status`, { method: 'POST', as: 'siva', body: { status: 'handed_printing', note: 'Moulded' } });
   assert.equal(handed.status, 200, handed.json.message);
-  const late = await api(`/api/workspace/todos/${printing._id}/status`, { method: 'POST', as: 'priya', body: { status: 'handed_assembly', note: 'Printed', dates: [{ model: 'HO-1', date: indiaDay(17) }, { model: 'HO-2', date: indiaDay(21) }] } });
-  assert.equal(late.status, 400, 'HO-2 after the EDD');
-  assert.match(late.json.message, /for HO-2/);
-  const moved = await api(`/api/workspace/todos/${printing._id}/status`, { method: 'POST', as: 'priya', body: { status: 'handed_assembly', note: 'Printed', dates: [{ model: 'HO-1', date: indiaDay(16) }, { model: 'HO-2', date: indiaDay(18) }] } });
+  const moved = await api(`/api/workspace/todos/${printing._id}/status`, { method: 'POST', as: 'priya', body: { status: 'handed_assembly', note: 'Printed', dates: [{ model: 'HO-1', date: indiaDay(16) }, { model: 'HO-2', date: indiaDay(21) }] } });
   assert.equal(moved.status, 200, moved.json.message);
   const saved = await Todo.findById(printing._id).lean();
-  assert.deepEqual(Object.fromEntries(saved.modelDates.map((row) => [row.model, row.date])), { 'HO-1': indiaDay(16), 'HO-2': indiaDay(18) });
-  assert.match(saved.updates.at(-1).note, /HO-1 .* · HO-2 /, 'the move says each model’s date');
+  assert.deepEqual(Object.fromEntries(saved.modelDates.map((row) => [row.model, row.date])), { 'HO-1': indiaDay(16), 'HO-2': indiaDay(21) });
+  const said = saved.updates.findLast((entry) => /HO-1 .* · HO-2 /.test(entry.note || ''));
+  assert.ok(said, 'the move says each model’s date');
+  assert.match(said.note, /on or after the EDD \(HO-2 /);
+  assert.doesNotMatch(said.note, /on or after the EDD \(HO-1/);
 });
 
 test('the hand-over days are the Production in charge’s, Admin’s or marketing’s to change — not Printing’s', async () => {

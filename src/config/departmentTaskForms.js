@@ -134,7 +134,8 @@ const SO_COLUMNS = [
   { key: 'hook', label: 'Hook', register: 'hooks' },
   { key: 'clip', label: 'Clip', register: 'clips' },
   { key: 'print', label: 'Print', register: 'prints' },
-  { key: 'quantity', label: 'Qty (pcs)', type: 'number' },
+  /* Compulsory on every line: the SO is booked for these pieces. */
+  { key: 'quantity', label: 'Qty (pcs)', type: 'number', required: true },
   { key: 'price', label: 'Price (₹ / pc)', type: 'number' },
   { key: 'edd', label: 'EDD', type: 'date' },
 ];
@@ -457,7 +458,8 @@ export const TASK_FORMS = {
         key: 'items', label: 'Sales order details', section: 'Sales order details', type: 'items',
         from: 'orderItems', add: '+ Add Model', columns: SO_COLUMNS,
       },
-      { key: 'paymentTerms', label: 'Payment terms', type: 'choice', options: PAYMENT_TERMS, from: 'order.paymentTerms', placeholder: 'Select payment terms' },
+      /* Compulsory: the SO is made on these terms, and advance terms hold the order for the payment [paymentGates]. */
+      { key: 'paymentTerms', label: 'Payment terms', type: 'choice', options: PAYMENT_TERMS, from: 'order.paymentTerms', placeholder: 'Select payment terms', required: true },
       { key: 'poNumber', label: 'Customer PO number', from: 'order.poNumber', placeholder: 'The buyer’s PO number, if there is one' },
       /*
        * Ticked: the SO prepared sends the order straight to Production. Unticked: it comes back

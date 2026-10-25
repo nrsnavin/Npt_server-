@@ -75,7 +75,7 @@ test.before(async () => {
   ready = first.json.data.task;
   const second = await api('/api/workspace/team-tasks', {
     method: 'POST', as: 'nandhini',
-    body: { kind: 'po_so', note: 'PO on WhatsApp', customer: customer._id, brief: { items: [{ model: 'NPT-400S', quantity: '3000', edd: indiaDay(3) }, { model: 'NPT-300K', price: '1.9' }] } },
+    body: { kind: 'po_so', note: 'PO on WhatsApp', customer: customer._id, brief: { paymentTerms: 'Credit — nothing before dispatch', items: [{ model: 'NPT-400S', quantity: '3000', edd: indiaDay(3) }, { model: 'NPT-300K', quantity: '1000' }] } },
   });
   assert.equal(second.status, 201, second.json.message);
   gappy = second.json.data.task || second.json.data;
@@ -100,15 +100,15 @@ test('the desk sizes each request, says whether it is ready, and puts ready ones
   assert.equal(a.so.terms, '100% advance');
   assert.equal(a.so.poNumber, 'PO-4471');
   assert.equal(b.so.readiness.ready, false);
-  assert.deepEqual(b.so.readiness.missing, ['price for NPT-400S', 'pieces for NPT-300K', 'payment terms']);
+  assert.deepEqual(b.so.readiness.missing, ['price for NPT-400S', 'price for NPT-300K']);
   assert.deepEqual(b.so.readiness.soft, ['PO number', 'contact person']);
-  assert.equal(b.so.size.pieces, 3000);
+  assert.equal(b.so.size.pieces, 4000);
   assert.equal(b.so.size.value, 0, 'nothing priced with pieces');
   assert.equal(data.summary.requests, 2);
   assert.equal(data.summary.ready, 1);
   assert.equal(data.summary.missing, 1);
   assert.equal(data.summary.value, 24000);
-  assert.equal(data.summary.pieces, 13000);
+  assert.equal(data.summary.pieces, 14000);
   assert.deepEqual(data.summary.lanes, { waiting: 2, preparing: 0, clarification: 0, prepared: 0 });
 });
 
@@ -166,6 +166,21 @@ test('a Needs Clarification shows its question, then marketing’s answer', asyn
   assert.match(row.so.question.answer.text, /Jet black/);
   assert.equal(row.task.attention?.kind, 'reply');
   assert.deepEqual(row.so.readiness.missing, [], 'still ready to prepare once answered');
+  /* Kept for good: on the request for the SO team, and on the enquiry for marketing and Admin. */
+  assert.equal(row.so.answered.length, 1);
+  assert.match(row.so.answered[0].question, /black or jet black/);
+  assert.equal(row.so.answered[0].answer, 'Jet black, as sampled');
+  assert.equal(row.so.answered[0].answeredBy, 'Nandhini S');
+  const enquiry = (await api(`/api/enquiries/${row.enquiry._id}`, { as: 'nandhini' })).json.data;
+  assert.equal(enquiry.clarifications.length, 1);
+  assert.equal(enquiry.clarifications[0].answer, 'Jet black, as sampled');
+  assert.equal(enquiry.clarifications[0].answeredBy.name, 'Nandhini S');
+  assert.equal(enquiry.clarifications[0].kind, 'so_clarification');
+  /* After Got it the question folds away from the card, and the answer stays in the list. */
+  await api(`/api/workspace/todos/${ready._id}/seen`, { method: 'POST', as: 'priya' });
+  row = (await desk()).rows.find((entry) => String(entry.task._id) === String(ready._id));
+  assert.equal(row.so.question, null);
+  assert.equal(row.so.answered.length, 1);
 });
 
 test('prepared orders not yet in production are listed with why; the week’s bookings say where each went', async () => {

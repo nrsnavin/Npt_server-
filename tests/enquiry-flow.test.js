@@ -77,7 +77,7 @@ const inOpenList = async () =>
   (await api('/api/enquiries?open=true&limit=100', { as: 'nandhini' })).json.data.some((row) => String(row._id) === String(enquiry._id));
 
 test('the sales order uploaded: the enquiry reads Production, and Production has its task', async () => {
-  const raised = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'PO 4471 received', brief: { items: [{ model: 'NPT-400S', quantity: 10000 }], productionConfirmed: true, qcRequired: true } } });
+  const raised = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'PO 4471 received', brief: { paymentTerms: 'Credit — nothing before dispatch', items: [{ model: 'NPT-400S', quantity: 10000 }], productionConfirmed: true, qcRequired: true } } });
   assert.equal(raised.status, 201, raised.json.message);
   assert.deepEqual([(await state()).stage, (await state()).marketingStatus], ['po_so', 'po_received']);
   assert.equal((await Enquiry.findById(enquiry._id).select('qcRequired').lean()).qcRequired, true, 'QC compulsory, as ticked on the SO request');
@@ -209,7 +209,7 @@ const rowOf = (id) => Enquiry.findById(id).select('stage status marketingStatus'
 
 test('the SO uploaded after Production was already asked still books the order as Won', async () => {
   const fresh = await freshEnquiry();
-  const po = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'PO in', brief: { items: [{ model: 'NPT-410', quantity: 5000 }], productionConfirmed: true } } });
+  const po = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'po_so', note: 'PO in', brief: { paymentTerms: 'Credit — nothing before dispatch', items: [{ model: 'NPT-410', quantity: 5000 }], productionConfirmed: true } } });
   assert.equal(po.status, 201, po.json.message);
   const edd = await api(`/api/enquiries/${fresh._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'When can you make it?', brief: { model: 'NPT-410', quantity: 5000 } } });
   assert.equal(edd.status, 201, edd.json.message);

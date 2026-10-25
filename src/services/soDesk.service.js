@@ -3,6 +3,7 @@ import Enquiry from '../models/Enquiry.js';
 import SalesOrder, { OPEN_ORDER_STATUSES, PRE_RELEASE_STATUSES } from '../models/SalesOrder.js';
 import Receivable from '../models/Receivable.js';
 import Customer from '../models/Customer.js';
+import User from '../models/User.js';
 import { enquiriesHeldBy } from './handoff.service.js';
 import { creditStatusOf } from './collections.service.js';
 import { paymentStanding } from './paymentGates.service.js';
@@ -18,6 +19,8 @@ import { paymentStanding } from './paymentGates.service.js';
  *   buyer       the last order's number, date and terms, the credit status and what is overdue
  *   duplicate   an order already open on the enquiry, or another SO request for it
  *   question    a Needs Clarification: what was asked, and the answer if it came
+ *   answered    every question marketing has answered on the request, kept for good — the same
+ *               pairs are saved on the enquiry [handoff.service `answerParent`]
  *
  * and, beside the queue, what the week booked and where it went (Production, held, awaiting the
  * advance), and every prepared order still not in production.
@@ -132,6 +135,19 @@ async function questionOf(task) {
   };
 }
 
+/** The questions asked on the request and marketing's answers, oldest first, with who answered. */
+async function answeredOf(task) {
+  const pairs = (task.clarifications || []).filter((pair) => pair.answer);
+  if (!pairs.length) return [];
+  const people = await User.find({ _id: { $in: [...new Set(pairs.flatMap((pair) => [pair.askedBy, pair.answeredBy]).filter(Boolean).map(String))] } }).select('name').lean();
+  const nameOf = (id) => (id ? people.find((person) => String(person._id) === String(id))?.name || null : null);
+  return pairs.map((pair) => ({
+    question: pair.question || '', answer: pair.answer,
+    askedBy: nameOf(pair.askedBy), askedAt: pair.askedAt || null,
+    answeredBy: nameOf(pair.answeredBy), answeredAt: pair.answeredAt || null,
+  }));
+}
+
 export async function soDesk(user, { now = new Date() } = {}) {
   const held = await enquiriesHeldBy('order_confirmation', user, { now });
   const requests = held.filter((row) => row.task.kind === 'po_so');
@@ -167,6 +183,7 @@ export async function soDesk(user, { now = new Date() } = {}) {
           ? { order: openOrder ? { _id: openOrder._id, number: openOrder.number, status: openOrder.status } : null, requests: others.length }
           : null,
         question: await questionOf(row.task),
+        answered: await answeredOf(row.task),
         terms: brief.paymentTerms || null,
         poNumber: brief.poNumber || null,
       },

@@ -1410,6 +1410,22 @@ async function answerParent(clarification, user, text) {
   if (!parent || parent.completed) return;
   const asking = statusesOf(parent).find((entry) => entry.raises === clarification.kind);
   parent.updates = [...(parent.updates || []), { note: `Clarified by ${user.name}: ${text}`, by: user._id, at: new Date() }];
+  /*
+   * The question and its answer kept for good: on the task that asked (the SO team reads them
+   * after the reply is acknowledged) and on the enquiry, beside its own details.
+   */
+  const asked = [...(parent.statusHistory || [])].reverse().find((entry) => asking && entry.status === asking.key);
+  const pair = {
+    question: asked?.note || clarification.notes || '', answer: text,
+    askedBy: asked?.by || clarification.createdBy, askedAt: asked?.at || clarification.createdAt,
+    answeredBy: user._id, answeredAt: new Date(),
+  };
+  parent.clarifications = [...(parent.clarifications || []), pair];
+  if (parent.enquiry) {
+    await Enquiry.updateOne({ _id: parent.enquiry._id || parent.enquiry }, {
+      $push: { clarifications: { ...pair, kind: clarification.kind, department: parent.department, task: parent._id } },
+    });
+  }
   /* At the top of the asking department's dashboard until somebody there acts on it. */
   parent.attention = { kind: 'reply', note: text, by: user._id, at: new Date() };
   if (asking && parent.status === asking.key) {
@@ -1518,10 +1534,10 @@ export async function setTaskStatus(task, user, { status, note, date, dates, fie
   const dateText = handsOn.length ? dateLabelOf(task) : form.statusDate?.label || 'Ready date';
   const movedModels = partial ? moving : modelsOfTask(task);
   const dated = perModel ? perModel.filter((entry) => !movedModels.length || movedModels.includes(entry.model)) : null;
-  /* A hand-over is never on or after the EDD: the next team needs the days in between [assertHandoverBeforeEdd]. */
-  if (handsOn.length) await assertHandoverBeforeEdd(task, dated || movedModels.map((model) => ({ model, date: readyDate })));
+  /* A hand-over on or after the EDD is said with the move, never refused [lateHandovers]. */
+  const lateNote = handsOn.length ? await lateHandovers(task, dated || movedModels.map((model) => ({ model, date: readyDate }))) : '';
   const eachDate = dated && new Set(dated.map((entry) => entry.date)).size > 1 ? ` (${dated.map((entry) => `${entry.model} ${prettyDay(entry.date)}`).join(' · ')})` : '';
-  const said = [label, readyDate && `${dateText} ${readyDate}${eachDate}`].filter(Boolean).join(' · ');
+  const said = [label, readyDate && `${dateText} ${readyDate}${eachDate}`, lateNote].filter(Boolean).join(' · ');
   /* A ready date is the enquiry's EDD (Production) or ERD (the mould) from here on [enquiryProgress]. */
   const dateField = handsOn.length ? 'handover' : form.statusDate?.field || 'edd';
   /* What the move recorded — the models and pieces in a part load, who collected a sample — kept on the line with its date. */
@@ -3538,9 +3554,9 @@ export async function setTaskEdd(task, user, { date, note, models }) {
     /* The next team hears the date of the models that go on to it — a model that ends here is its completion date, not theirs. */
     const onward = [];
     for (const entry of entries) if (await goOnFromHere(task, [entry.model])) onward.push(entry);
-    await assertHandoverBeforeEdd(task, onward.length ? onward : entries);
+    const lateNote = await lateHandovers(task, onward.length ? onward : entries);
     const handOverDay = (onward.length ? onward : entries).reduce((latest, entry) => (entry.date > latest ? entry.date : latest), '');
-    const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(handOverDay)}${perModel}`;
+    const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(handOverDay)}${perModel}${lateNote ? ` · ${lateNote}` : ''}`;
     task.updates = [...(task.updates || []), {
       kind: 'note', text: text ? `${said}: ${text}` : said, note: text ? `${said}: ${text}` : said,
       date: handOverDay, dateLabel: 'Hand-over', fields: { handover: handOverDay }, by: user._id, at: new Date(),
@@ -3884,19 +3900,19 @@ async function marketingEddFor(task) {
 export const HANDOVER_LEAD_DAYS = 5;
 
 /**
- * A hand-over to Printing or Assembly is never on or after the EDD — the next team needs the
- * days in between; by default it is HANDOVER_LEAD_DAYS before. A model's own EDD wins over the job's.
+ * A hand-over to Printing or Assembly on or after the EDD: said with the move, for reference only —
+ * it never stops the move [the plant's call: the dates are a guide, and the default is
+ * HANDOVER_LEAD_DAYS a team before the EDD]. A model's own EDD wins over the job's. '' when none is late.
  */
-async function assertHandoverBeforeEdd(task, entries) {
+async function lateHandovers(task, entries) {
   const edd = await marketingEddFor(task);
-  if (!edd) return;
+  if (!edd) return '';
+  const late = [];
   for (const entry of entries) {
     const due = (edd.models || []).find((row) => row.model === entry.model)?.date || edd.date;
-    if (due && entry.date && entry.date >= due) {
-      const lead = (await (await import('./settings.service.js')).plantCalendar()).handoverLeadDays || HANDOVER_LEAD_DAYS;
-      fail(`The hand-over${entry.model && entry.model !== 'All models' ? ` for ${entry.model}` : ''} (${prettyDay(entry.date)}) is on or after the EDD (${prettyDay(due)}) — hand over before it, ${lead} days a team by default, so the next team has time`);
-    }
+    if (due && entry.date && entry.date >= due) late.push(`${entry.model && entry.model !== 'All models' ? `${entry.model} ` : ''}${prettyDay(entry.date)}, EDD ${prettyDay(due)}`);
   }
+  return late.length ? `Hand-over on or after the EDD (${late.join(' · ')}) — for reference` : '';
 }
 
 /**

@@ -59,7 +59,7 @@ export async function setPlantCalendar(changes, by) {
 }
 
 /**
- * The days each finishing team gets before the EDD [handoff.service `assertHandoverBeforeEdd`;
+ * The days each finishing team gets before the EDD [handoff.service `lateHandovers`;
  * web: utils/edd.js `handOverDefault`]: a printed and assembled model goes to Printing twice this
  * before the EDD and to Assembly once; printed or assembled only, once. Production, Admin or
  * marketing set it.

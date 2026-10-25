@@ -1086,6 +1086,8 @@ export const getEnquiry = asyncHandler(async (req, res) => {
     .populate('requirement.printRef', 'name code kind')
     .populate('activities.by', 'name')
     .populate('handovers.from handovers.to handovers.by', 'name')
+    /* The SO team's questions and marketing's answers [handoff.service `answerParent`]. */
+    .populate('clarifications.askedBy clarifications.answeredBy', 'name')
     .populate('checkedBy', 'name');
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   /*

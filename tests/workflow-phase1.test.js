@@ -215,7 +215,7 @@ test('Dispatch closes its task when it says the goods have gone, whatever the co
 
 test('releasing the sales order finishes Sales / SO’s task and gives Production its task', async () => {
   const enquiry = await freshEnquiry();
-  assert.equal((await send(enquiry, 'po_so')).status, 201);
+  assert.equal((await send(enquiry, 'po_so', 'nandhini', { brief: { paymentTerms: 'Credit — nothing before dispatch' } })).status, 201);
 
   const made = await api('/api/orders', {
     method: 'POST', as: 'priya',
