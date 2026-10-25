@@ -90,6 +90,44 @@ export async function paymentStanding(order) {
 const gateKey = (order, stage) => `payment-gate:${order._id}:${stage}`;
 
 /**
+ * Goods ready and the dispatch held for the money due before it [assertPaidFor 'dispatch']: for the
+ * enquiry page [web: DispatchPaymentHold], each open order on it whose money before dispatch is
+ * not confirmed while some of its goods are ready to go — what is due, what is in, what is logged
+ * and waiting for Accounts, and the receivable the payment is entered on. `ready` are the models
+ * ready and not yet sent [handoff.service `modelReadiness`].
+ */
+export async function dispatchHoldsOn(enquiryId, { ready = [] } = {}) {
+  /* No models named on the job: the goods are ready when a finishing team says Ready for Dispatch, or is done. */
+  if (!ready.length) {
+    const start = await Todo.findOne({ enquiry: enquiryId, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt').lean();
+    const done = start && await Todo.exists({
+      enquiry: enquiryId, kind: { $in: ['ask_edd', 'ask_printing', 'ask_assembling_edd'] }, createdAt: { $gte: start.createdAt },
+      $or: [{ status: 'ready_dispatch' }, { completed: true }],
+    });
+    if (!done) return [];
+  }
+  const orders = await SalesOrder.find({ enquiry: enquiryId, status: { $nin: ['closed', 'cancelled', 'fully_dispatched'] } });
+  const holds = [];
+  for (const order of orders) {
+    const standing = await paymentStanding(order);
+    const due = standing.dispatch;
+    if (due.required <= 0 || due.met || due.waived) continue;
+    const receivable = await Receivable.findOne({ order: order._id, kind: 'advance' }).sort({ createdAt: -1 });
+    const chase = await Todo.findOne({ originKey: gateKey(order, 'dispatch'), completed: false }).select('_id title user').populate('user', 'name').lean();
+    holds.push({
+      order: { _id: order._id, number: order.number, paymentTerms: order.paymentTerms || null },
+      models: ready,
+      required: due.required, received: due.received, short: due.short, awaiting: standing.awaiting,
+      receivable: receivable ? { _id: receivable._id, number: receivable.number, balance: receivable.balance } : null,
+      chase: chase ? { _id: chase._id, with: chase.user?.name || 'Payment Collection' } : null,
+    });
+  }
+  return holds;
+}
+
+
+
+/**
  * Puts the collection on Payment Collection's desk, once per order and stage, linked to the
  * enquiry so it is the same job everyone else is looking at.
  */

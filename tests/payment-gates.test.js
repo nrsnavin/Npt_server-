@@ -534,3 +534,36 @@ test('payment before dispatch: the goods were ready and Dispatch was refused; on
   assert.ok(await until(async () => Todo.exists({ enquiry, kind: 'invoice_dispatch', completed: false })), 'Dispatch has the request');
   assert.ok(await until(async () => Todo.exists({ originKey: `payment-met:${order._id}:dispatch`, title: new RegExp(`Payment confirmed on ${order.number} — Dispatch has the request`) })), 'marketing hears it went on');
 });
+
+test('goods ready, dispatch held for the payment: the enquiry says so, its marketing person enters the payment, Accounts confirms it and Dispatch has the request', async () => {
+  const enquiry = await freshEnquiry('NH-450');
+  const order = await book(enquiry, { advancePercent: 0, beforeDispatchPercent: 100 });
+  const asked = await send(enquiry, 'ask_edd');
+  assert.equal(asked.status, 201, asked.json.message);
+  assert.equal((await api(`/api/workspace/todos/${asked.json.data.task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'Packed' } })).status, 200);
+  await settle();
+  /* The enquiry page reads it: the goods ready, what is due before dispatch, and where to enter it. */
+  let page = (await api(`/api/enquiries/${enquiry}/handoffs`)).json;
+  assert.equal(page.dispatchHolds.length, 1);
+  const [hold] = page.dispatchHolds;
+  assert.equal(hold.order.number, order.number);
+  assert.deepEqual([hold.required, hold.received, hold.short], [7500, 0, 7500]);
+  assert.ok(Array.isArray(hold.models), 'the models ready to go, where the job names them');
+  assert.ok(hold.receivable?._id, 'the receivable the payment is entered on');
+  /* Only the buyer's marketing person (or Admin, Accounts, Payment Collection) enters it. */
+  const body = { amount: 7500, mode: 'neft', reference: 'UTR-MK1', note: 'Buyer sent the UTR on WhatsApp' };
+  assert.equal((await api(`/api/payments/${hold.receivable._id}/owner-receipts`, { method: 'POST', as: 'priya', body })).status, 403);
+  const entered = await api(`/api/payments/${hold.receivable._id}/owner-receipts`, { method: 'POST', as: 'nandhini', body });
+  assert.equal(entered.status, 201, entered.json.message);
+  const receipt = entered.json.data.receipts.at(-1);
+  assert.equal(receipt.confirmed?.at, undefined, 'entered by marketing it waits for Accounts');
+  assert.ok(await Todo.exists({ originKey: `confirm-receipt:${hold.receivable._id}`, completed: false }), 'Accounts is asked to confirm it');
+  page = (await api(`/api/enquiries/${enquiry}/handoffs`)).json;
+  assert.equal(page.dispatchHolds[0].awaiting, 7500, 'logged, waiting for Accounts');
+  assert.equal(await Todo.exists({ enquiry, kind: 'invoice_dispatch' }), null, 'not sent on a logged payment');
+  /* Accounts sees it in the bank: the dispatch goes on, and the enquiry no longer reads held. */
+  const confirmed = await api(`/api/payments/${hold.receivable._id}/receipts/${receipt._id}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(7500, 'UTR-MK1') });
+  assert.equal(confirmed.status, 200, confirmed.json.message);
+  assert.ok(await until(async () => Todo.exists({ enquiry, kind: 'invoice_dispatch', completed: false })), 'Dispatch has the request');
+  assert.equal((await api(`/api/enquiries/${enquiry}/handoffs`)).json.dispatchHolds.length, 0);
+});

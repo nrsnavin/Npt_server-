@@ -246,6 +246,10 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
   /* Who has it now, and whether this person may move it on — the screen offers the buttons only then. */
   const holder = tasks.find((task) => task.holds && !task.completed) || null;
   const floor = await floorOf(enquiry._id);
+  const readiness = await modelReadiness(enquiry._id);
+  /* Goods ready, the dispatch held for the money due before it [paymentGates.service `dispatchHoldsOn`]. */
+  const { dispatchHoldsOn } = await import('../services/paymentGates.service.js');
+  const dispatchHolds = await dispatchHoldsOn(enquiry._id, { ready: (readiness.ready || []).filter((model) => !(readiness.sent || []).includes(model)) });
   res.json({
     success: true,
     /* Each open task says whether it may be closed now [taskClosable.service]; a sample or quote task, the record it made. */
@@ -268,7 +272,8 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     journey: journeyOf(tasks, { running: floor.running, qcRequired: (await qcGateFor({ enquiry: enquiry._id })).required }),
     /* How a several-model order goes out, and which models are ready [handoff.service `modelReadiness`]. */
     dispatchPlan: dispatchPlanOf(enquiry),
-    readiness: await modelReadiness(enquiry._id),
+    readiness,
+    dispatchHolds,
     /* The money on it: each RCV — the advance, each invoice — with what came in and who logged it. */
     payments: await paymentsOnEnquiry(enquiry._id),
   });

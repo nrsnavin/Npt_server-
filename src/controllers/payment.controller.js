@@ -54,10 +54,11 @@ const POPULATE = [
 const seesTheBank = (user) => isManagement(user) || inDepartment(user, 'accounts');
 
 /** Refuses a receivable the caller may not see, in the shape reading it would take. */
-async function readable(id, user) {
+async function readable(id, user, { owned = false } = {}) {
   const receivable = await Receivable.findById(id).populate(POPULATE);
   if (!receivable) throw ApiError.notFound('Nothing owed under that reference');
-  if (!ownsRecord(user, receivable)) throw ApiError.notFound('Nothing owed under that reference');
+  /* `owned`: the buyer's marketing person, checked by `ownerMayLogReceipt` against the order and customer too. */
+  if (!owned && !ownsRecord(user, receivable)) throw ApiError.notFound('Nothing owed under that reference');
   await applyPaymentPositions([receivable]);
   return receivable;
 }
@@ -540,8 +541,27 @@ export const followUpOptions = (req, res) => {
  * that as a *follow-up*, which is what it is: something they were told, not something anybody
  * has seen.
  */
+/**
+ * The buyer's marketing person (or Admin) may enter a payment the buyer says they made — from the
+ * enquiry, where the goods wait for it [web: DispatchPaymentHold]. Entered by marketing it is
+ * logged, not confirmed: Accounts gets the task to see it in the bank, and only that confirmation
+ * opens the dispatch [recordReceipt, paymentGates.service `afterPayment`].
+ */
+export const ownerMayLogReceipt = asyncHandler(async (req, res, next) => {
+  const receivable = await Receivable.findById(req.params.id).select('assignedTo customer order').lean();
+  if (!receivable) throw ApiError.notFound('Nothing owed under that reference');
+  if (isManagement(req.user)) return next();
+  const me = String(req.user._id);
+  const owners = [receivable.assignedTo];
+  if (receivable.customer) owners.push((await Customer.findById(receivable.customer).select('assignedTo').lean())?.assignedTo);
+  if (receivable.order) owners.push((await SalesOrder.findById(receivable.order).select('assignedTo').lean())?.assignedTo);
+  if (!owners.some((id) => id && String(id) === me)) throw ApiError.forbidden('Only the buyer’s marketing person, Accounts or Payment Collection can enter a payment on this');
+  req.receivableOwner = true;
+  return next();
+});
+
 export const recordReceipt = asyncHandler(withOrderLock(async req => (await Receivable.findById(req.params.id).select('order'))?.order || req.params.id, transactional(async (req, res) => {
-  const receivable = await readable(req.params.id, req.user);
+  const receivable = await readable(req.params.id, req.user, { owned: req.receivableOwner === true });
 
   const key = req.body.idempotencyKey;
   const reference = req.body.reference?.trim();
