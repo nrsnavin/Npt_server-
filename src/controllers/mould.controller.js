@@ -1,3 +1,4 @@
+import { correctedBy } from '../config/mouldDefaults.js';
 import Mould from '../models/Mould.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
@@ -178,6 +179,11 @@ export const updateMould = asyncHandler(transactional(async (req, res) => {
   }
 
   Object.assign(mould, patch);
+  /* A plant default corrected by hand is a measured value from now on [config/mouldDefaults.js]. */
+  if (mould.defaulted?.length) {
+    const corrected = correctedBy(patch);
+    if (corrected.length) mould.defaulted = mould.defaulted.filter((field) => !corrected.includes(field));
+  }
   /*
    * Checked over the merged record rather than over the patch. Sending `activeCavities` on its
    * own has nothing to compare against, which is exactly the request that would otherwise slip

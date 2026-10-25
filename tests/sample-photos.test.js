@@ -58,12 +58,12 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
 const soon = (days = 3) => new Date(Date.now() + days * 86400000).toISOString();
 
 /** An enquiry for two models, moved to Sampling, and the request it raised. */
-async function requested() {
+async function requested(items = [{ mould: mouldId, modelNumber: 'NPT-400S', colour: 'White', quantity: 5000 }, { modelNumber: 'NPT-380T', colour: 'Black', quantity: 3000 }]) {
   const enquiry = (await api('/api/enquiries', {
     method: 'POST', as: 'nandhini',
     body: {
       customer: customerId, mould: mouldId,
-      items: [{ mould: mouldId, modelNumber: 'NPT-400S', colour: 'White', quantity: 5000 }, { modelNumber: 'NPT-380T', colour: 'Black', quantity: 3000 }],
+      items,
       nextAction: 'Call', nextFollowUpDate: soon(),
     },
   })).json.data;
@@ -71,7 +71,7 @@ async function requested() {
   await settle();
   const sample = (await api(`/api/samples?enquiry=${enquiry._id}`, { as: 'meera' })).json.data[0];
   assert.ok(sample, 'the enquiry raised a sample');
-  assert.equal(sample.items.length, 2, 'both models are in the bag');
+  assert.equal(sample.items.length, items.length, 'every model is in the bag');
   for (const status of ['checking_stock', 'sample_available']) {
     const moved = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status } });
     assert.equal(moved.status, 200, moved.json.message);
@@ -295,4 +295,14 @@ test('several models in the bag: the pieces sent of each, and the sample’s qua
   assert.equal(gone.status, 200, gone.json.message);
   assert.deepEqual(gone.json.data.items.map((row) => row.dispatchedQuantity), [3, 2]);
   assert.equal(gone.json.data.dispatchedQuantity, 5);
+});
+
+test('one model in the bag: its pieces sent are kept against the model too', async () => {
+  const { sample } = await requested([{ mould: mouldId, modelNumber: 'NPT-400S', colour: 'White', quantity: 5000 }]);
+  await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noPhoto: true, noPhotoReason: 'Photos taken on the phone' } });
+  const gone = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'dispatched', courier: 'Blue Dart', awbNumber: '77213904120', itemQuantities: [{ item: sample.items[0]._id, quantity: 4 }] } });
+  assert.equal(gone.status, 200, gone.json.message);
+  assert.deepEqual([gone.json.data.items[0].dispatchedQuantity, gone.json.data.dispatchedQuantity], [4, 4]);
+  const listed = (await api(`/api/samples?enquiry=${sample.enquiry?._id || sample.enquiry}`, { as: 'nandhini' })).json.data[0];
+  assert.equal(listed.items[0].dispatchedQuantity, 4, 'the enquiry’s sample list carries it, model by model');
 });

@@ -837,12 +837,16 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
 
   if (status === 'dispatched') {
     /*
-     * Several models in the bag: the pieces of each, model by model [web: SampleDetail's dispatch
-     * step], and the sample's quantity is their sum. Every model is answered — none sent is a 0.
-     * A total alone (an older caller) is still taken.
+     * The pieces of each model in the bag, model by model [web: SampleDetail's dispatch step, the
+     * bench's handover], and the sample's quantity is their sum. Every model is answered — none
+     * sent is a 0. A total alone (an older caller) is still taken; with one model it is that model's.
      */
     const rows = sample.items || [];
-    if (rows.length > 1 && Array.isArray(itemQuantities) && itemQuantities.length) {
+    if (rows.length === 1 && dispatchedQuantity && !itemQuantities?.length) {
+      rows[0].dispatchedQuantity = dispatchedQuantity;
+      sample.markModified('items');
+    }
+    if (rows.length >= 1 && Array.isArray(itemQuantities) && itemQuantities.length) {
       const said = (row) => itemQuantities.find((entry) => (entry.item && String(entry.item) === String(row._id))
         || (entry.model && String(entry.model).trim().toLowerCase() === String(row.modelNumber || '').trim().toLowerCase()));
       const unanswered = rows.filter((row) => !said(row));

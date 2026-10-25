@@ -539,6 +539,16 @@ export const handoffDocument = asyncHandler(async (req, res) => {
 });
 
 /** The papers on a task, newest first — for whoever may see the task. */
+/**
+ * The PDFs on department tasks for the records a page shows — a sample's, a quotation's, a sales
+ * order's, a production job's [taskPdfs.service]: `?enquiries=…&tasks=…&kinds=sample_request,…`.
+ */
+export const listTaskPdfs = asyncHandler(async (req, res) => {
+  const split = (value) => String(value || '').split(',').map((entry) => entry.trim()).filter(Boolean);
+  const { taskPdfs } = await import('../services/taskPdfs.service.js');
+  res.json({ success: true, data: await taskPdfs(req.user, { enquiries: split(req.query.enquiries), tasks: split(req.query.tasks), kinds: split(req.query.kinds) }) });
+});
+
 export const handoffDocuments = asyncHandler(async (req, res) => {
   const task = await taskFor(req);
   if (!mayWorkOnHandoff(req.user, task) && String(task.createdBy) !== String(req.user._id)) throw ApiError.notFound('Task not found');

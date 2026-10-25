@@ -62,7 +62,7 @@ export async function linkTaskWorkOrders(task, user) {
   const enquiryId = task.enquiry?._id || task.enquiry || null;
   const [plant, enquiry, { ordered }, linked] = await Promise.all([
     plantCalendar(),
-    enquiryId ? Enquiry.findById(enquiryId).select('items.modelNumber items.mould items.colour customer edd eddByModel').lean() : null,
+    enquiryId ? Enquiry.findById(enquiryId).select('items.modelNumber items.mould items.colour items.isNewDevelopment customer edd eddByModel').lean() : null,
     orderedModelsOf(enquiryId ? { enquiryId } : { task }),
     WorkOrder.find({ task: task._id }),
   ]);
@@ -92,16 +92,17 @@ export async function linkTaskWorkOrders(task, user) {
         wo.history = [...(wo.history || []), { status: wo.status, note: `Linked to the Production task for ${route.model}`, by: user?._id, at: new Date() }];
       }
     }
+    const enquiryItem = (enquiry?.items || []).find((row) => key(row.modelNumber) === key(route.model));
     if (!wo) {
-      const item = (enquiry?.items || []).find((row) => key(row.modelNumber) === key(route.model));
-      const mould = item?.mould ? await Mould.findById(item.mould).select('_id').lean() : await Mould.findOne({ mouldCode: route.model.toUpperCase() }).select('_id').lean();
+      const mould = (enquiryItem?.mould ? await Mould.findById(enquiryItem.mould).select('_id').lean() : await Mould.findOne({ mouldCode: route.model.toUpperCase() }).select('_id').lean())
+        || await defaultMouldFor(route.model, enquiryItem, user);
       wo = await withCreateLocks([`task-work-order:${task._id}:${key(route.model)}`], async () => {
         const again = await WorkOrder.findOne({ task: task._id, model: route.model });
         if (again) return again;
         const [made] = await WorkOrder.create([{
           number: await nextNumber('WO'), orderLine: new mongoose.Types.ObjectId(), task: task._id, model: route.model,
           enquiry: enquiryId || undefined, customer: enquiry?.customer || task.customer || undefined,
-          mould: mould?._id, modelNumber: route.model, colour: item?.colour || undefined,
+          mould: mould?._id, modelNumber: route.model, colour: enquiryItem?.colour || undefined,
           quantity: piecesOf(route.model), dueDate: due ? new Date(`${due}T00:00:00+05:30`) : undefined, priority: task.priority || 'normal',
           status: 'planned', history: [{ status: 'planned', note: `Raised for ${route.model} on the Production task`, by: user?._id, at: new Date() }],
         }]);
@@ -109,7 +110,14 @@ export async function linkTaskWorkOrders(task, user) {
       });
       changed.add(String(wo._id));
     } else {
-      /* Kept in step: the pieces once known, and the day moulding must be done by. */
+      /* Kept in step: the pieces once known, the day moulding must be done by — and a mould, once there is one. */
+      if (!wo.mould && !wo.order) {
+        const mould = await Mould.findOne({ mouldCode: route.model.toUpperCase() }).select('_id').lean() || await defaultMouldFor(route.model, enquiryItem, user);
+        if (mould) {
+          wo.mould = mould._id;
+          changed.add(String(wo._id));
+        }
+      }
       const pieces = piecesOf(route.model);
       if (pieces && !wo.order && wo.quantity !== pieces) wo.quantity = pieces;
       if (due && (!wo.dueDate || indiaDay(wo.dueDate) !== due)) {
@@ -124,6 +132,31 @@ export async function linkTaskWorkOrders(task, user) {
   const unproposed = result.filter((wo) => !wo.machine && OPEN_WORK_ORDER_STATUSES.includes(wo.status) && (changed.has(String(wo._id)) || !wo.proposal?.at));
   if (unproposed.length) await proposeTaskPlan(task, unproposed);
   return result;
+}
+
+/**
+ * A mould for a model the plant makes but has none of on the register: set up from the plant's
+ * defaults [config/mouldDefaults.js] under the model's own code, so the job can be sized, scored
+ * and proposed on a press. Every value used is listed in `defaulted` until it is measured. A new
+ * development is left without one — its tool is not cut yet.
+ */
+export async function defaultMouldFor(model, item = null, user = null) {
+  if (!model || item?.isNewDevelopment) return null;
+  const code = String(model).trim().toUpperCase();
+  const { MOULD_DEFAULTS, DEFAULTED_FIELDS } = await import('../config/mouldDefaults.js');
+  return withCreateLocks([`default-mould:${code}`], async () => {
+    const there = await Mould.findOne({ mouldCode: code }).select('_id').lean();
+    if (there) return there;
+    const [made] = await Mould.create([{
+      mouldCode: code, name: String(model).trim(), status: 'active',
+      cavities: MOULD_DEFAULTS.cavities, cycleTimeSeconds: MOULD_DEFAULTS.cycleTimeSeconds,
+      partWeightGrams: MOULD_DEFAULTS.partWeightGrams, runnerWeightGrams: MOULD_DEFAULTS.runnerWeightGrams,
+      machine: { tonnage: MOULD_DEFAULTS.tonnage }, changeoverMinutes: MOULD_DEFAULTS.changeoverMinutes,
+      efficiencyPercent: MOULD_DEFAULTS.efficiencyPercent, defaulted: [...DEFAULTED_FIELDS],
+      notes: `Set up with the plant's default values by floor planning${user?.name ? ` (routed by ${user.name})` : ''} — measure the cycle time, cavities and weights and correct them.`,
+    }]);
+    return { _id: made._id };
+  });
 }
 
 /**
@@ -208,6 +241,7 @@ const planOf = (wo, machine, dueDay, proposedPress = null) => {
     plannedStart: wo.plannedStart ? indiaDay(wo.plannedStart) : null, plannedEnd: end,
     dueDay, late: Boolean(end && dueDay && end > dueDay),
     mouldMissing: !wo.mould,
+    mould: wo.mould ? String(wo.mould._id || wo.mould) : null,
     setup: wo.setup || null,
     /* The auto-planner's proposal, waiting for the in charge [proposeTaskPlan]. */
     proposal: !machine && wo.proposal?.at ? {
@@ -231,6 +265,8 @@ export async function taskPlan(task, user) {
   const orders = await linkTaskWorkOrders(task, user);
   const machines = await Machine.find({ _id: { $in: orders.flatMap((wo) => [wo.machine, wo.proposal?.machine]).filter(Boolean) } }).select('code tonnage').lean();
   const machineOf = (id) => machines.find((machine) => String(machine._id) === String(id)) || null;
+  /* Moulds still on the plant's default values: said beside the model, so somebody measures them. */
+  const defaultedMoulds = new Set((await Mould.find({ _id: { $in: orders.map((wo) => wo.mould).filter(Boolean) }, 'defaulted.0': { $exists: true } }).select('_id').lean()).map((mould) => String(mould._id)));
   /* Its best press now, for a model with no proposal standing. */
   const unplanned = orders.filter((wo) => !wo.machine && !wo.proposal?.machine && OPEN_WORK_ORDER_STATUSES.includes(wo.status)).map((wo) => wo._id);
   const { bestPresses } = await import('./pressScore.service.js');
@@ -246,7 +282,7 @@ export async function taskPlan(task, user) {
       const line = !wo && tradeLines.find((entry) => entry.modelKey === modelKeyOf(route.model));
       if (line) return { model: route.model, route, workOrder: null, traded: tradeView(line) };
       if (!wo) return { model: route.model, route, workOrder: null };
-      const plan = planOf(wo, machineOf(wo.machine), wo.dueDate ? indiaDay(wo.dueDate) : null, machineOf(wo.proposal?.machine));
+      const plan = { ...planOf(wo, machineOf(wo.machine), wo.dueDate ? indiaDay(wo.dueDate) : null, machineOf(wo.proposal?.machine)), mouldDefaults: Boolean(wo.mould && defaultedMoulds.has(String(wo.mould))) };
       return { model: route.model, route, workOrder: plan, best: best.get(String(wo._id)) || null };
     }),
   };
