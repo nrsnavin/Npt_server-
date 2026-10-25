@@ -120,6 +120,8 @@ export async function dispatchHoldsOn(enquiryId, { ready = [] } = {}) {
       required: due.required, received: due.received, short: due.short, awaiting: standing.awaiting,
       receivable: receivable ? { _id: receivable._id, number: receivable.number, balance: receivable.balance } : null,
       chase: chase ? { _id: chase._id, with: chase.user?.name || 'Payment Collection' } : null,
+      /* A payment logged for it that Accounts did not find in the bank. */
+      notInBank: await notInBankOn({ orderIds: [order._id] }),
     });
   }
   return holds;
@@ -198,19 +200,29 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
       : `That is more than the ${rupees(owed)} still owed on ${receivable.invoice?.number || receivable.number} — record the rest against the next invoice in Payments`);
   }
   const at = new Date();
+  /*
+   * The team's reply to Not in bank: logged again from the same task. The earlier entry reads
+   * Logged again, and Accounts sees which payment it answers [askAccountsToConfirm `again`].
+   */
+  const earlier = (receivable.rejectedReceipts || []).filter((row) => row.state === 'not_in_bank' && String(row.loggedFrom || '') === String(task._id));
+  for (const row of earlier) { row.state = 'logged_again'; row.settled = { by: user._id, at }; }
+  const { RECEIPT_REJECT_REASONS } = await import('../models/Receivable.js');
+  const again = earlier.length
+    ? earlier.map((row) => `${rupees(row.amount)}${row.reference ? ` ref ${row.reference}` : ''} — ${RECEIPT_REJECT_REASONS.find((reason) => reason.key === row.rejected?.reasonKey)?.label || 'not in the bank'}`).join('; ')
+    : null;
   receivable.receipts.push({
     amount: value,
     receivedAt: at,
     mode: MODE_KEYS[String(mode || '').toUpperCase()] || 'other',
     reference: ref || undefined,
-    note: [`Logged by Payment Collection on the task`, note].filter(Boolean).join(' — ').slice(0, 500),
+    note: [`Logged by Payment Collection on the task`, again && `again after Not in bank (${again})`, note].filter(Boolean).join(' — ').slice(0, 500),
     recordedBy: user._id,
     loggedFrom: task._id,
   });
   /* Logged on the receivable beside the calls: who took it, how much, how, the UTR. */
   receivable.followUps.push(paymentLogEntry(user, { amount: value, mode, reference: ref, note }, { partial: value + 0.5 < owed }));
   await receivable.save();
-  await askAccountsToConfirm(receivable, receivable.receipts.at(-1), user, order);
+  await askAccountsToConfirm(receivable, receivable.receipts.at(-1), user, order, { again });
   return { order, receivable, again: false };
 }
 
@@ -266,6 +278,162 @@ export async function paymentsToConfirm({ limit = 200 } = {}) {
 }
 
 /**
+ * Payments Accounts did not find in the bank and nobody has settled yet — still Not in bank, not
+ * confirmed late nor logged again — for the enquiry, the order, the RCV page and the dispatch hold:
+ * each with its RCV number, amount, UTR, why, who logged it and who said so.
+ */
+export async function notInBankOn({ enquiryId = null, orderIds = [], receivableIds = [] } = {}) {
+  const or = [];
+  if (enquiryId) {
+    const orders = await SalesOrder.find({ enquiry: enquiryId }).distinct('_id');
+    or.push({ enquiry: enquiryId }, { order: { $in: orders } });
+  }
+  if (orderIds.length) or.push({ order: { $in: orderIds } });
+  if (receivableIds.length) or.push({ _id: { $in: receivableIds } });
+  if (!or.length) return [];
+  const rows = await Receivable.find({ $or: or, rejectedReceipts: { $elemMatch: { state: { $in: ['not_in_bank', null] } } } })
+    .select('number order rejectedReceipts')
+    .populate([{ path: 'order', select: 'number' }, { path: 'rejectedReceipts.recordedBy', select: 'name' }, { path: 'rejectedReceipts.rejected.by', select: 'name' }])
+    .lean();
+  const { RECEIPT_REJECT_REASONS } = await import('../models/Receivable.js');
+  return rows.flatMap((rcv) => (rcv.rejectedReceipts || []).filter((entry) => !entry.state || entry.state === 'not_in_bank').map((entry) => ({
+    receivable: { _id: rcv._id, number: rcv.number }, order: rcv.order ? { _id: rcv.order._id, number: rcv.order.number } : null,
+    _id: entry._id, amount: entry.amount, mode: entry.mode || null, reference: entry.reference || null,
+    reason: RECEIPT_REJECT_REASONS.find((row) => row.key === entry.rejected?.reasonKey)?.label || 'Not in the bank', reasonNote: entry.rejected?.reason || null,
+    loggedBy: entry.recordedBy?.name || null, rejectedBy: entry.rejected?.by?.name || null, rejectedAt: entry.rejected?.at || null,
+  })));
+}
+
+/**
+ * The payments behind a task [web: TaskReceipts]: those logged from it — or, on Accounts' A/C
+ * Clarify, from the Payment Collection or PRT task that asked — each by its RCV number with its
+ * amount, mode, UTR or cheque number, who logged it and where it stands: awaiting Accounts,
+ * confirmed, or Not in bank (with why). So a question to Accounts, or the team's reply after Not in
+ * bank, carries the receipt Accounts is to confirm.
+ */
+export async function receiptsOfTask(task) {
+  const ids = [task._id, task.parentTask, ...(task.askedFrom || [])].filter(Boolean).map((id) => new mongoose.Types.ObjectId(String(id?._id || id)));
+  const rows = await Receivable.find({ $or: [{ 'receipts.loggedFrom': { $in: ids } }, { 'rejectedReceipts.loggedFrom': { $in: ids } }] })
+    .select('number kind order customer receipts rejectedReceipts')
+    .populate([{ path: 'order', select: 'number' }, { path: 'customer', select: 'name' }, { path: 'receipts.recordedBy', select: 'name' }, { path: 'rejectedReceipts.recordedBy', select: 'name' }, { path: 'rejectedReceipts.rejected.by', select: 'name' }])
+    .lean();
+  const { RECEIPT_REJECT_REASONS } = await import('../models/Receivable.js');
+  const mine = (row) => ids.some((id) => String(id) === String(row.loggedFrom || ''));
+  const out = [];
+  for (const rcv of rows) {
+    const head = { receivable: { _id: rcv._id, number: rcv.number, kind: rcv.kind }, order: rcv.order ? { _id: rcv.order._id, number: rcv.order.number } : null, customer: rcv.customer?.name || null };
+    for (const receipt of (rcv.receipts || []).filter(mine)) {
+      out.push({
+        ...head, _id: receipt._id, amount: receipt.amount, mode: receipt.mode, reference: receipt.reference || null,
+        receivedAt: receipt.receivedAt, by: receipt.recordedBy?.name || null, state: receipt.confirmed?.at ? 'confirmed' : 'awaiting',
+        confirmedAt: receipt.confirmed?.at || null,
+      });
+    }
+    for (const entry of (rcv.rejectedReceipts || []).filter(mine)) {
+      out.push({
+        ...head, _id: entry._id, amount: entry.amount, mode: entry.mode, reference: entry.reference || null,
+        receivedAt: entry.receivedAt, by: entry.recordedBy?.name || null, state: entry.state === 'not_in_bank' ? 'not_in_bank' : entry.state,
+        reason: RECEIPT_REJECT_REASONS.find((row) => row.key === entry.rejected?.reasonKey)?.label || null, reasonNote: entry.rejected?.reason || null,
+        rejectedBy: entry.rejected?.by?.name || null, rejectedAt: entry.rejected?.at || null,
+      });
+    }
+  }
+  return out.sort((a, b) => new Date(b.receivedAt || 0) - new Date(a.receivedAt || 0));
+}
+
+/**
+ * Accounts did not find a logged payment in the bank [payment.controller `rejectReceipt`]. The
+ * payment stays on the RCV marked Not in bank (`rejectedReceipts`), and:
+ *
+ *   the sender's task   the Payment Collection or PRT task it was logged from reopens at Not in
+ *                       Bank — Recheck with Buyer, with the reason on its timeline; a bounced cheque
+ *                       goes to a PRT recovery case to collect a fresh one (a PRT task itself stays
+ *                       PRT's, reopened)
+ *   told                the person who logged it, the people on that task, and the buyer's
+ *                       marketing person — a notice and a push
+ *   a second time       on the same RCV: Admin is told too, and the buyer goes on credit watch
+ *
+ * Logged without a task (from the Payments page, or by marketing on the enquiry): whoever logged it
+ * and the marketing person get a task to check with the buyer.
+ */
+export async function afterNotInBank(receivable, entry, user) {
+  const { RECEIPT_REJECT_REASONS } = await import('../models/Receivable.js');
+  const reasonLabel = RECEIPT_REJECT_REASONS.find((row) => row.key === entry.rejected?.reasonKey)?.label || 'Not in the bank';
+  const text = entry.rejected?.reason ? `${reasonLabel} — ${entry.rejected.reason}` : reasonLabel;
+  const said = [rupees(entry.amount), entry.mode && String(entry.mode).toUpperCase(), entry.reference && `ref ${entry.reference}`].filter(Boolean).join(' · ');
+  const note = `Not in bank: ${said} on ${receivable.number} — ${text} (${user.name}, Accounts)`;
+  const { noticeStatus, peopleOn, raiseOnTaskStatus } = await import('./handoff.service.js');
+  /* The buyer's marketing person: the enquiry's, else the order's, else the RCV's owner. */
+  const orderOf = receivable.order ? await SalesOrder.findById(receivable.order?._id || receivable.order).select('enquiry assignedTo').lean() : null;
+  const enquiryId = receivable.enquiry?._id || receivable.enquiry || orderOf?.enquiry || null;
+  const enquiryOwner = enquiryId ? (await mongoose.model('Enquiry').findById(enquiryId).select('assignedTo').lean())?.assignedTo : null;
+  const marketing = enquiryOwner || orderOf?.assignedTo || receivable.assignedTo?._id || receivable.assignedTo || null;
+  const logger = entry.recordedBy?._id || entry.recordedBy || null;
+  const sender = entry.loggedFrom ? await Todo.findById(entry.loggedFrom) : null;
+  if (sender) {
+    const now = new Date();
+    if (sender.completed) Object.assign(sender, { completed: false, completedAt: undefined, completedBy: undefined, outcome: undefined });
+    sender.status = 'not_in_bank';
+    sender.statusHistory = [...(sender.statusHistory || []), { status: 'not_in_bank', note, by: user._id, at: now }];
+    sender.updates = [...(sender.updates || []), { kind: 'status', status: 'not_in_bank', statusLabel: `Not in Bank — ${reasonLabel}`, text, note, by: user._id, at: now }];
+    await sender.save();
+    /* A bounced cheque is a visit: PRT is asked to collect a fresh cheque — unless the case is PRT's already. */
+    if (entry.rejected?.reasonKey === 'bounced' && sender.kind !== 'prt_recovery') {
+      const case_ = await raiseOnTaskStatus(sender, user, { raises: 'prt_recovery', label: 'Cheque bounced', done: false }, `Cheque bounced — ${said} on ${receivable.number}: collect a fresh cheque or payment`, { prtMode: 'Collect cheque' }).catch((error) => {
+        console.error(`[payments] PRT case not raised for the bounced cheque: ${error.message}`);
+        return null;
+      });
+      const made = case_?.task || case_;
+      if (made?._id) {
+        const line = `Cheque bounced — sent to PRT recovery to collect a fresh cheque (${made.title || 'PRT case'})`;
+        await Todo.updateOne({ _id: sender._id }, { $push: { updates: { kind: 'note', text: line, note: line, by: user._id, at: new Date() } } }, { keepVersion: true });
+      }
+    }
+    await noticeStatus(sender, user, {
+      step: { key: 'not_in_bank', label: `Payment not in bank — ${reasonLabel}` }, note,
+      also: [logger, ...(await peopleOn(sender)), marketing].filter(Boolean), onlyAlso: true,
+    }).catch((error) => console.error(`[payments] not-in-bank notice not sent: ${error.message}`));
+  } else {
+    for (const person of [...new Set([logger, marketing].filter(Boolean).map(String))]) {
+      await raiseTask({
+        user: person,
+        title: `Payment not found in the bank — ${said} on ${receivable.number}`,
+        notes: `${user.name} (Accounts): ${text}. Check with ${receivable.customer?.name || 'the buyer'} and log it again once it is really in.`,
+        priority: 'high', dueDate: new Date(), link: `/payments/${receivable._id}`,
+        originKey: `receipt-rejected:${entry._id}:${person}`,
+      }).catch(() => null);
+    }
+  }
+  /* The second time on this RCV: Admin hears it, and the buyer goes on credit watch. */
+  const times = (receivable.rejectedReceipts || []).length;
+  if (times >= 2) {
+    const { default: User } = await import('../models/User.js');
+    const { MANAGEMENT_QUERY } = await import('../utils/departments.js');
+    const admins = await User.find({ ...MANAGEMENT_QUERY, isActive: { $ne: false } }).select('_id').lean();
+    for (const admin of admins) {
+      await raiseTask({
+        user: admin._id,
+        title: `Payment not in bank again — ${receivable.customer?.name || 'a buyer'}, ${receivable.number}`,
+        notes: `${times} payments logged on ${receivable.number} were not found in the bank. Latest: ${said} — ${text}. The buyer is on credit watch.`,
+        priority: 'high', dueDate: new Date(), link: `/payments/${receivable._id}`,
+        originKey: `receipt-rejected-again:${receivable._id}:${times}`,
+      }).catch(() => null);
+    }
+    const { default: Customer } = await import('../models/Customer.js');
+    const { creditStatusOf } = await import('./collections.service.js');
+    const customer = await Customer.findById(receivable.customer?._id || receivable.customer);
+    if (customer && !customer.credit?.override?.status) {
+      customer.credit = {
+        ...(customer.credit?.toObject?.() || customer.credit || {}),
+        override: { status: 'watch', reason: `${times} payments on ${receivable.number} not found in the bank`, by: user._id, at: new Date() },
+      };
+      customer.credit.status = creditStatusOf(customer.credit);
+      await customer.save();
+    }
+  }
+}
+
+/**
  * Accounts confirmed a payment Payment Collection logged from its task [payment.controller
  * `confirmReceipt`]: once every payment logged from that task is confirmed, the task closes
  * with what Accounts saw, and whoever logged it and the task's person (or its team) are told
@@ -315,9 +483,10 @@ export async function closeLoggedTask(receivable, receipt, user, said) {
  * confirm it, on the RCV — one task per RCV, each further payment added to it. Confirming every
  * payment on the RCV closes it [payment.controller `confirmReceipt`].
  */
-export async function askAccountsToConfirm(receivable, receipt, by, order = null) {
+export async function askAccountsToConfirm(receivable, receipt, by, order = null, { again = null } = {}) {
   const so = order || (receivable.order?.number ? receivable.order : await SalesOrder.findById(receivable.order?._id || receivable.order).select('number enquiry customer'));
-  const said = [`${rupees(receipt.amount)}`, receipt.mode && String(receipt.mode).toUpperCase(), receipt.reference && `ref ${receipt.reference}`, by?.name && `logged by ${by.name}`]
+  /* The receipt by its RCV number, so Accounts confirms the right one — and, logged again after Not in bank, what it answers. */
+  const said = [`${receivable.number}: ${rupees(receipt.amount)}`, receipt.mode && String(receipt.mode).toUpperCase(), receipt.reference && `ref ${receipt.reference}`, by?.name && `logged by ${by.name}`, again && `logged again after Not in bank (${again})`]
     .filter(Boolean).join(' · ');
   const originKey = confirmTaskKey(receivable);
   const open = await Todo.findOne({ department: 'accounts', originKey, completed: false });

@@ -1245,7 +1245,7 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
 
   /* The app closing it (the consignment left) is not held back; a person's Done is. */
   if (!system) await assertNotWaiting(task);
-  await assertMayFinish(task);
+  await assertMayFinish(task, { system });
 
   const handoff = findHandoff(task.kind);
   const kept = keptFields(task.kind, fields);
@@ -1333,7 +1333,7 @@ async function assertNotWaiting(task) {
   fail(`Waiting on ${departmentName(waiting.department)} — ${action?.label || 'the task asked'} is still open. The status changes once that task is closed.`);
 }
 
-async function assertMayFinish(task) {
+async function assertMayFinish(task, { system = false } = {}) {
   /* A task finished by uploading the work (the sales order) is not ticked off without it. */
   const byUpload = (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.pdf && entry.done);
   if (byUpload && !task.resultFile) fail(`Upload the PDF to finish this task — it is marked ${byUpload.label} then`);
@@ -1347,12 +1347,16 @@ async function assertMayFinish(task) {
    * nothing would raise a request for them again — their readiness was already said — and they
    * would sit at the plant unsent.
    */
-  /* Only once the job runs its dispatch through loads — a request moved on before the dispatch form closes as it always did. */
-  if (task.kind === 'invoice_dispatch' && (await jobDispatchLoads({ task, current: task })).length) {
+  /*
+   * A person closing it: not until every model ordered has gone in full, on this request and the
+   * job's earlier ones — a model still in Production is still owed to the buyer, and nothing else
+   * would send it. The app closing it (a consignment left with nothing more owed) is not held back.
+   */
+  if (task.kind === 'invoice_dispatch' && !system) {
     const sheet = await dispatchSheet(task).catch(() => null);
-    const stranded = (sheet?.models || []).filter((row) => row.ready && row.ordered > 0 && row.sent < row.ordered);
-    if (stranded.length) {
-      fail(`${stranded.map((row) => `${row.model} ${(row.ordered - row.sent).toLocaleString('en-IN')} pcs`).join(', ')} ${stranded.length > 1 ? 'are' : 'is'} ready and still to go — dispatch ${stranded.length > 1 ? 'them' : 'it'} before closing. If the buyer does not want the rest, change the pieces on the sales order first.`);
+    const owed = (sheet?.models || []).filter((row) => row.state !== 'sent');
+    if (owed.length) {
+      fail(`Not everything has gone yet — ${owed.map((row) => `${row.model}: ${row.left != null ? `${row.left.toLocaleString('en-IN')} pcs to go` : 'nothing sent'} (${row.words})`).join('; ')}. The task closes once the full quantity of every model is dispatched. If the buyer does not want the rest, change the pieces on the sales order first.`);
     }
   }
 }
@@ -1497,6 +1501,7 @@ export async function setTaskStatus(task, user, { status, note, date, dates, fie
   const step = statusesOf(task).find((entry) => entry.key === status);
   if (!step) fail('That is not one of this task’s statuses');
   /* Paid and Part Paid are Accounts' word, set when it confirms the money [paymentGates `closeLoggedTask`]. */
+  if (step.byApp && step.byAppSays) fail(step.byAppSays);
   if (step.byApp) {
     const send = statusesOf(task).filter((entry) => entry.confirmsInward).map((entry) => `“${entry.label}”`).join(' or ');
     fail(`${step.label} is set when Accounts confirms the payment${send ? ` — log the money with ${send}` : ''}`);
@@ -1939,21 +1944,58 @@ export async function dispatchSheet(task) {
   const key = (model) => String(model || '').trim().toLowerCase();
   const waiting = new Map((readiness.waiting || []).map((row) => [key(row.model), row.team]));
   const waitingStatus = new Map((readiness.waiting || []).map((row) => [key(row.model), row.status]));
+  const atQc = new Set((readiness.qc?.atQc || []).map(key));
   return {
     plan: enquiry ? dispatchModeOf(enquiry) : 'together',
     order: order ? { _id: order._id, number: order.number } : null,
     /*
      * Ready: the last team on the model's route — Assembly, else Printing, else Production — has
      * marked it Ready for Dispatch (or finished) [modelReadiness]. A model not ready names that team.
+     * Each with where it stands on its own [dispatchStateOf] — one model part sent never makes
+     * another, still in Production, read part sent.
      */
-    models: [...ordered].map(([model, quantity]) => ({
-      model, ordered: quantity, sent: sent.get(model) || 0,
-      ready: !waiting.has(key(model)),
-      ...(waiting.has(key(model)) ? { waitingOn: waiting.get(key(model)), waitingStatus: waitingStatus.get(key(model)) } : {}),
-    })),
+    models: [...ordered].map(([model, quantity]) => {
+      const row = {
+        model, ordered: quantity, sent: sent.get(model) || 0,
+        ready: !waiting.has(key(model)),
+        ...(waiting.has(key(model)) ? { waitingOn: waiting.get(key(model)), waitingStatus: waitingStatus.get(key(model)) } : {}),
+        ...(atQc.has(key(model)) ? { atQc: true } : {}),
+      };
+      return { ...row, ...dispatchStateOf(row) };
+    }),
     modes: findHandoff(task.kind)?.form?.dispatchModes || [],
     loads: (task.loads || []).length,
   };
+}
+
+/**
+ * Where one model of a Dispatch job stands, on its own [web: DispatchModels, DispatchTable]:
+ *
+ *   sent        every piece ordered has gone (a model with no pieces known, once any went)
+ *   part_sent   some gone, the rest still to go — ready, or back with its team
+ *   qc          made, waiting for Quality's pass where QC is compulsory
+ *   ready       marked Ready for Dispatch by its last team, nothing sent yet
+ *   in_plant    still with Production, Printing or Assembly — "Not produced yet" before Production starts it
+ *
+ * `left`: pieces still to send, where the pieces ordered are known.
+ */
+export function dispatchStateOf({ ordered = 0, sent = 0, ready, waitingOn, waitingStatus, atQc }) {
+  const pcs = (count) => `${Number(count || 0).toLocaleString('en-IN')} pcs`;
+  const left = ordered > 0 ? Math.max(0, ordered - sent) : null;
+  const team = TEAM_WORDS_OF[waitingOn] || 'the plant';
+  /* Production has not started moulding it: asked, accepted, planning, a date given, or held for a machine or material. */
+  const unstarted = waitingOn === 'production' && (!waitingStatus || /^(not tasked yet|asked|edd request received|edd accepted|planning|ready tomorrow|ready on selected date|machine not allotted|raw material not available)/i.test(waitingStatus));
+  const where = unstarted
+    ? `Not produced yet${waitingStatus && !/^(not tasked yet|asked)$/i.test(waitingStatus) ? ` · Production: ${waitingStatus}` : ''}`
+    : `${waitingOn === 'production' ? 'In' : 'With'} ${team}${waitingStatus ? ` · ${waitingStatus}` : ''}`;
+  if (ordered > 0 ? sent >= ordered : sent > 0) return { state: 'sent', left: 0, words: `Fully sent · ${pcs(sent)}` };
+  if (sent > 0) {
+    const rest = !ready ? where : atQc ? 'rest with Quality' : 'rest ready to send';
+    return { state: 'part_sent', left, words: `Part sent ${sent.toLocaleString('en-IN')}${ordered ? ` of ${pcs(ordered)}` : ' pcs'} · ${left != null ? `${pcs(left)} to go` : 'more to go'} · ${rest}` };
+  }
+  if (!ready) return { state: 'in_plant', left, words: where };
+  if (atQc) return { state: 'qc', left, words: 'Made · waiting for QC pass' };
+  return { state: 'ready', left, words: `Ready to send${ordered ? ` · ${pcs(ordered)}` : ''}` };
 }
 
 /**
@@ -2499,6 +2541,9 @@ async function remindConsignment(task, user, step) {
  * customer and order. A status that also finishes this task (Escalated to PRT) hands the case
  * on rather than asking a question, so the new task is not a child of a closed one.
  */
+/** A status's raise, from outside a status move — a bounced cheque sending PRT to collect [paymentGates `afterNotInBank`]. */
+export const raiseOnTaskStatus = (task, user, step, text, fields = {}) => raiseFromStatus(task, user, step, text, fields);
+
 async function raiseFromStatus(task, user, step, text, fields = {}) {
   const target = findHandoff(step.raises);
   const brief = {};

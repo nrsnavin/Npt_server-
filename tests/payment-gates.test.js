@@ -363,13 +363,13 @@ test('the order page knows what stands between it and the plant: checks, the adv
 
   /* Accounts does not find it in the bank: off the figures, kept apart with the reason; whoever logged it is told. */
   const receiptId = logged.json.data.receipts[0]._id;
-  assert.equal((await api(`/api/payments/${advance._id}/receipts/${receiptId}/reject`, { method: 'POST', as: 'vijay', body: { reason: 'Not in the statement' } })).status, 403, 'Accounts’ call');
-  assert.equal((await api(`/api/payments/${advance._id}/receipts/${receiptId}/reject`, { method: 'POST', as: 'kiran', body: { reason: '' } })).status, 400, 'a reason is needed');
-  const rejected = await api(`/api/payments/${advance._id}/receipts/${receiptId}/reject`, { method: 'POST', as: 'kiran', body: { reason: 'No UTR-NOPE in the HDFC statement' } });
+  assert.equal((await api(`/api/payments/${advance._id}/receipts/${receiptId}/reject`, { method: 'POST', as: 'vijay', body: { reasonKey: 'not_received', reason: 'Not in the statement' } })).status, 403, 'Accounts’ call');
+  assert.equal((await api(`/api/payments/${advance._id}/receipts/${receiptId}/reject`, { method: 'POST', as: 'kiran', body: { reason: 'Not there' } })).status, 400, 'which of the reasons is needed');
+  const rejected = await api(`/api/payments/${advance._id}/receipts/${receiptId}/reject`, { method: 'POST', as: 'kiran', body: { reasonKey: 'mismatch', reason: 'No UTR-NOPE in the HDFC statement' } });
   assert.equal(rejected.status, 200, rejected.json.message);
   assert.equal(rejected.json.data.receipts.length, 0);
   assert.equal(rejected.json.data.rejectedReceipts[0].rejected.reason, 'No UTR-NOPE in the HDFC statement');
-  assert.match(rejected.json.data.followUps.at(-1).note, /^Payment not found in the bank: ₹2,000 · NEFT · ref UTR-NOPE — No UTR-NOPE/);
+  assert.match(rejected.json.data.followUps.at(-1).note, /^Payment not found in the bank: ₹2,000 · NEFT · ref UTR-NOPE — UTR \/ amount mismatch: No UTR-NOPE/);
   assert.ok(await Todo.exists({ user: id.vijay, title: /^Payment not found in the bank — ₹2,000/ }), 'whoever logged it checks with the buyer');
   assert.equal(await Todo.exists({ department: 'accounts', originKey: `confirm-receipt:${advance._id}`, completed: false }), null, 'nothing left for Accounts to check');
   state = await check();
@@ -566,4 +566,109 @@ test('goods ready, dispatch held for the payment: the enquiry says so, its marke
   assert.equal(confirmed.status, 200, confirmed.json.message);
   assert.ok(await until(async () => Todo.exists({ enquiry, kind: 'invoice_dispatch', completed: false })), 'Dispatch has the request');
   assert.equal((await api(`/api/enquiries/${enquiry}/handoffs`)).json.dispatchHolds.length, 0);
+});
+
+test('not in the bank: the Payment Collection task reopens at Not in Bank, its team and the marketing person are told, and the enquiry, order and task read it', async () => {
+  const { default: TaskNotice } = await import('../src/models/TaskNotice.js');
+  const enquiry = await freshEnquiry('NH-460');
+  const order = await book(enquiry, { advancePercent: 50, beforeDispatchPercent: 50 });
+  const [task] = (await collectionTasks(order)).filter((entry) => !entry.completed);
+  const logged = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'payment_inward', note: 'NEFT in', fields: { amount: 3750, mode: 'NEFT', reference: 'UTR-NB1' } } });
+  assert.equal(logged.status, 200, logged.json.message);
+  const advance = await Receivable.findOne({ order: order._id, kind: 'advance' });
+  const receipt = advance.receipts.find((row) => row.reference === 'UTR-NB1');
+
+  /* The task carries the receipt Accounts is to confirm, by its RCV number. */
+  let receipts = (await api(`/api/workspace/todos/${task._id}/receipts`, { as: 'kiran' })).json.data;
+  assert.deepEqual(receipts.map((row) => [row.receivable.number, row.amount, row.reference, row.state]), [[advance.number, 3750, 'UTR-NB1', 'awaiting']]);
+  assert.equal((await api(`/api/workspace/todos/${task._id}/receipts`, { as: 'siva' })).status, 403, 'not the plant’s to read');
+
+  /* Payment Collection cannot pick Not in Bank by hand. */
+  const byHand = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'not_in_bank', note: 'x' } });
+  assert.equal(byHand.status, 400);
+  assert.match(byHand.json.message, /Accounts does not find the payment/);
+
+  const rejected = await api(`/api/payments/${advance._id}/receipts/${receipt._id}/reject`, { method: 'POST', as: 'kiran', body: { reasonKey: 'not_received', reason: 'Nothing in HDFC yet' } });
+  assert.equal(rejected.status, 200, rejected.json.message);
+  const reopened = await Todo.findById(task._id).lean();
+  assert.deepEqual([reopened.completed, reopened.status], [false, 'not_in_bank']);
+  assert.match(reopened.updates.at(-1).note, new RegExp(`Not in bank: ₹3,750 · NEFT · ref UTR-NB1 on ${advance.number} — Not received yet — Nothing in HDFC yet`));
+  assert.ok(await TaskNotice.exists({ task: task._id, recipient: id.vijay, status: 'not_in_bank' }), 'whoever logged it is told');
+  assert.ok(await TaskNotice.exists({ task: task._id, recipient: id.nandhini, status: 'not_in_bank' }), 'the buyer’s marketing person is told');
+  assert.equal(await TaskNotice.exists({ task: task._id, recipient: id.kiran, status: 'not_in_bank' }), null, 'not Accounts who said it');
+
+  /* The enquiry, the order and the task read it, red. */
+  const page = (await api(`/api/enquiries/${enquiry}/handoffs`)).json;
+  assert.deepEqual(page.notInBank.map((row) => [row.receivable.number, row.amount, row.reason, row.reasonNote, row.loggedBy]), [[advance.number, 3750, 'Not received yet', 'Nothing in HDFC yet', 'Vijay Collections']]);
+  const standing = (await api(`/api/orders/${order._id}/payment`, { as: 'priya' })).json.data;
+  assert.equal(standing.notInBank.length, 1);
+  receipts = (await api(`/api/workspace/todos/${task._id}/receipts`, { as: 'vijay' })).json.data;
+  assert.deepEqual(receipts.map((row) => [row.state, row.reason]), [['not_in_bank', 'Not received yet']]);
+
+  /* The money comes after all: Accounts confirms that same entry — the task closes, the red line goes. */
+  const late = await api(`/api/payments/${advance._id}/rejected/${receipt._id}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(3750, 'UTR-NB1') });
+  assert.equal(late.status, 200, late.json.message);
+  assert.equal(late.json.data.receipts.find((row) => String(row._id) === String(receipt._id)).confirmed.amount, 3750);
+  assert.equal(late.json.data.rejectedReceipts[0].state, 'confirmed_late');
+  assert.ok(await until(async () => (await Todo.findById(task._id)).completed), 'closed on the late confirmation');
+  assert.equal((await Todo.findById(task._id)).status, 'paid');
+  assert.equal((await api(`/api/enquiries/${enquiry}/handoffs`)).json.notInBank.length, 0);
+  assert.equal((await api(`/api/payments/${advance._id}/rejected/${receipt._id}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(3750, 'UTR-NB1') })).status, 409, 'once');
+});
+
+test('logged again after Not in bank: the old entry is settled, Accounts’ task names the receipt and the RCV; a second rejection tells Admin and puts the buyer on watch', async () => {
+  const { default: Customer } = await import('../src/models/Customer.js');
+  const buyer = (await api('/api/customers', { method: 'POST', body: { name: 'Watch Knits', mobile: '9876512399', assignedTo: id.nandhini } })).json.data._id;
+  const enquiry = (await api('/api/enquiries', { method: 'POST', body: { customer: buyer, requirement: { modelNumber: 'NH-470' } } })).json.data._id;
+  const order = await book(enquiry, { advancePercent: 50, beforeDispatchPercent: 50 });
+  const [task] = (await collectionTasks(order)).filter((entry) => !entry.completed);
+  const log = (reference) => api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'payment_inward', note: 'Paid', fields: { amount: 3750, mode: 'NEFT', reference } } });
+  assert.equal((await log('UTR-W1')).status, 200);
+  const advance = await Receivable.findOne({ order: order._id, kind: 'advance' });
+  const first = advance.receipts.find((row) => row.reference === 'UTR-W1');
+  assert.equal((await api(`/api/payments/${advance._id}/receipts/${first._id}/reject`, { method: 'POST', as: 'kiran', body: { reasonKey: 'mismatch' } })).status, 200);
+
+  /* Payment Collection replies by logging it again: the receipt goes to Accounts with the RCV and that it is a second go. */
+  const again = await log('UTR-W2');
+  assert.equal(again.status, 200, again.json.message);
+  let rcv = await Receivable.findById(advance._id).lean();
+  assert.equal(rcv.rejectedReceipts[0].state, 'logged_again');
+  const ask = await Todo.findOne({ department: 'accounts', originKey: `confirm-receipt:${advance._id}`, completed: false }).lean();
+  assert.ok(ask, 'Accounts is asked again');
+  assert.ok(JSON.stringify(ask).includes(advance.number), 'naming the RCV');
+  assert.match(JSON.stringify(ask), /logged again after Not in bank/);
+  assert.match(JSON.stringify(ask), /UTR-W2/);
+  assert.equal((await api(`/api/enquiries/${enquiry}/handoffs`)).json.notInBank.length, 0, 'settled by the new entry');
+
+  /* Not in the bank a second time on the same RCV: Admin hears it, the buyer goes on credit watch. */
+  const second = rcv.receipts.find((row) => row.reference === 'UTR-W2');
+  assert.equal((await api(`/api/payments/${advance._id}/receipts/${second._id}/reject`, { method: 'POST', as: 'kiran', body: { reasonKey: 'not_received' } })).status, 200);
+  assert.ok(await Todo.exists({ user: id.admin, originKey: `receipt-rejected-again:${advance._id}:2` }), 'Admin is told');
+  const customer = await Customer.findById(buyer).lean();
+  assert.equal(customer.credit.override.status, 'watch');
+  assert.match(customer.credit.override.reason, /2 payments on .* not found in the bank/);
+});
+
+test('a bounced cheque goes to PRT recovery to collect a fresh one; A/C Clarify on the task shows Accounts the receipt', async () => {
+  const enquiry = await freshEnquiry('NH-480');
+  const order = await book(enquiry, { advancePercent: 50, beforeDispatchPercent: 50 });
+  const [task] = (await collectionTasks(order)).filter((entry) => !entry.completed);
+  assert.equal((await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'payment_inward', note: 'Cheque given', fields: { amount: 3750, mode: 'Cheque', reference: 'CHQ-0091' } } })).status, 200);
+  /* Payment Collection asks Accounts: A/C Clarify carries the receipt. */
+  const asked = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'disputed', note: 'Buyer says cheque cleared — please check' } });
+  assert.equal(asked.status, 200, asked.json.message);
+  const clarify = await Todo.findOne({ kind: 'ac_clarify', parentTask: task._id }).lean();
+  assert.ok(clarify, 'A/C Clarify raised');
+  const advance = await Receivable.findOne({ order: order._id, kind: 'advance' });
+  const shown = (await api(`/api/workspace/todos/${clarify._id}/receipts`, { as: 'kiran' })).json.data;
+  assert.deepEqual(shown.map((row) => [row.receivable.number, row.reference, row.state]), [[advance.number, 'CHQ-0091', 'awaiting']]);
+
+  const receipt = advance.receipts.find((row) => row.reference === 'CHQ-0091');
+  assert.equal((await api(`/api/payments/${advance._id}/receipts/${receipt._id}/reject`, { method: 'POST', as: 'kiran', body: { reasonKey: 'bounced', reason: 'Returned — insufficient funds' } })).status, 200);
+  assert.ok(await until(async () => Todo.exists({ kind: 'prt_recovery', completed: false, order: order._id })), 'PRT has a case');
+  const prt = await Todo.findOne({ kind: 'prt_recovery', order: order._id }).lean();
+  assert.match(JSON.stringify(prt), /Collect cheque/);
+  const pc = await Todo.findById(task._id).lean();
+  assert.equal(pc.status, 'not_in_bank');
+  assert.ok(pc.updates.some((row) => /sent to PRT recovery to collect a fresh cheque/.test(row.note || '')));
 });

@@ -199,16 +199,16 @@ test('a Quality Check records Passed, Passed with deviation or Failed — and a 
 
 /* ---------------------------- 4. Dispatch closes its own task ---------------------------- */
 
-test('Dispatch closes its task when it says the goods have gone, whatever the consignments show', async () => {
+test('Dispatch cannot close its task by saying the goods have gone — the full quantity goes through its loads first', async () => {
   const enquiry = await inProduction();
   const dispatchTask = (await send(enquiry, 'invoice_dispatch')).json.data.task;
   const order = await orderOn(enquiry, { quantity: 1000 });
   await consignment(order, 400);
 
-  /* 600 pcs have no consignment — the team dispatched them from the task, not the Dispatch screen. */
   const gone = await done(dispatchTask, 'anita', { note: 'All 1,000 sent — two vehicles' });
-  assert.equal(gone.status, 200, gone.json.message);
-  assert.equal((await holder(enquiry)).department, 'marketing');
+  assert.equal(gone.status, 400);
+  assert.match(gone.json.message, /Not everything has gone yet — NH-400: 1,000 pcs to go/);
+  assert.equal((await Todo.findById(dispatchTask._id).lean()).completed, false, 'still open with Dispatch');
 });
 
 /* ------------------------------ 5. Records finish the work ------------------------------ */

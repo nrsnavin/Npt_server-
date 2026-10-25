@@ -32,7 +32,7 @@ import {
 } from '../controllers/quality.controller.js';
 import {
   listReceivables, getReceivable, paymentDay,
-  raiseAdvance, logFollowUp, setPaymentContact, followUpOptions, recordReceipt, ownerMayLogReceipt, confirmReceipt, rejectReceipt, setJudgement,
+  raiseAdvance, logFollowUp, setPaymentContact, followUpOptions, recordReceipt, ownerMayLogReceipt, confirmReceipt, confirmLateReceipt, rejectReceipt, setJudgement,
 } from '../controllers/payment.controller.js';
 import { inspectionSchema } from '../validators/quality.schemas.js';
 import {
@@ -292,6 +292,8 @@ router.post('/payments/:id/owner-receipts', requireModule('payments'), ownerMayL
 /* Accounts has seen a collector's receipt in the bank — only then does it count at the payment gate. */
 router.post('/payments/:id/receipts/:receiptId/confirm', requireModule('payments', 'write'), validate(confirmReceiptSchema), confirmReceipt);
 router.post('/payments/:id/receipts/:receiptId/reject', requireModule('payments', 'write'), validate(rejectReceiptSchema), rejectReceipt);
+/* The money came after all: confirmed late on the entry marked not in the bank — no re-logging. */
+router.post('/payments/:id/rejected/:receiptId/confirm', requireModule('payments', 'write'), validate(confirmReceiptSchema), confirmLateReceipt);
 router.post('/payments/:id/judgement', requireModule('payments', 'write'), validate(judgementSchema), setJudgement);
 
 /* The advance a buyer owes before anything is made — raised against the order it belongs to. */

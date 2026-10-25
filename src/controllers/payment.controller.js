@@ -13,7 +13,7 @@ import { customerScope, isOwnershipScoped, ownershipFilter, ownsRecord } from '.
 import { raiseTask, resolveTasks } from '../services/task.service.js';
 import { dueDateFor, orderPosition } from '../services/receivable.service.js';
 import { afterCommit, transactional } from '../utils/transaction.js';
-import { afterPayment, askAccountsToConfirm, closeLoggedTask, confirmTaskKey } from '../services/paymentGates.service.js';
+import { afterNotInBank, afterPayment, askAccountsToConfirm, closeLoggedTask, confirmTaskKey } from '../services/paymentGates.service.js';
 import { FOLLOW_UP_MODES, FOLLOW_UP_STATUSES } from '../config/paymentFollowUp.js';
 import { endOfDayIST } from '../services/handoff.service.js';
 import Todo from '../models/Todo.js';
@@ -710,35 +710,70 @@ export const rejectReceipt = asyncHandler(withOrderLock(async req => (await Rece
   if (!receipt) throw ApiError.notFound('No such payment on this one — it may already have been marked not in the bank');
   if (receipt.confirmed?.at) throw ApiError.conflict('This payment is already confirmed in the bank');
   const before = snapshot(receivable);
-  const reason = req.body.reason.trim();
+  const { RECEIPT_REJECT_REASONS } = await import('../models/Receivable.js');
+  const reasonKey = req.body.reasonKey;
+  const label = RECEIPT_REJECT_REASONS.find((row) => row.key === reasonKey)?.label || 'Not in the bank';
+  const reason = String(req.body.reason || '').trim();
   const amount = `₹${Math.round(receipt.amount).toLocaleString('en-IN')}`;
   const said = [amount, receipt.mode && String(receipt.mode).toUpperCase(), receipt.reference && `ref ${receipt.reference}`].filter(Boolean).join(' · ');
+  /* Kept, marked Not in bank — the same id, so the money can still be confirmed late on this entry [confirmLateReceipt]. */
   receivable.rejectedReceipts = [...(receivable.rejectedReceipts || []), {
+    _id: receipt._id,
     amount: receipt.amount, receivedAt: receipt.receivedAt, mode: receipt.mode, reference: receipt.reference, note: receipt.note,
     recordedBy: receipt.recordedBy?._id || receipt.recordedBy,
-    rejected: { by: req.user._id, at: new Date(), reason },
+    loggedFrom: receipt.loggedFrom?._id || receipt.loggedFrom || undefined,
+    rejected: { by: req.user._id, at: new Date(), reasonKey, reason: reason || undefined },
+    state: 'not_in_bank',
   }];
-  const logger = receipt.recordedBy?._id || receipt.recordedBy;
   receipt.deleteOne();
-  receivable.followUps.push({ by: req.user._id, at: new Date(), note: `Payment not found in the bank: ${said} — ${reason}`.slice(0, 1000), status: 'other' });
+  receivable.followUps.push({ by: req.user._id, at: new Date(), note: `Payment not found in the bank: ${said} — ${label}${reason ? `: ${reason}` : ''}`.slice(0, 1000), status: 'other' });
   await applyPaymentPositions([receivable]);
   await receivable.save();
-  await recordChange({ model: 'Receivable', doc: receivable, before, by: req.user, note: `Not in the bank: ${said} — ${reason}` });
-  /* Whoever logged it checks with the buyer. */
-  if (logger) {
-    await raiseTask({
-      user: logger,
-      title: `Payment not found in the bank — ${said} on ${receivable.number}`,
-      notes: `${req.user.name} (Accounts): ${reason}. Check with ${receivable.customer?.name || 'the buyer'} and log it again once it is really in.`,
-      priority: 'high',
-      dueDate: new Date(),
-      link: `/payments/${receivable._id}`,
-      originKey: `receipt-rejected:${req.params.receiptId}`,
-    }).catch(() => null);
-  }
+  await recordChange({ model: 'Receivable', doc: receivable, before, by: req.user, note: `Not in the bank: ${said} — ${label}${reason ? `: ${reason}` : ''}` });
+  /* The sender's task reopens, a bounced cheque goes to PRT, the sender and marketing are told; a second time, Admin too. */
+  await afterNotInBank(receivable, receivable.rejectedReceipts.at(-1), req.user);
   /* Nothing left for Accounts to check on this RCV: their task is done. */
   if (receivable.receipts.every((row) => row.confirmed?.at)) await resolveTasks(confirmTaskKey(receivable));
   if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order, { by: req.user }));
+  await receivable.populate(POPULATE);
+  return res.json({ success: true, data: receivable });
+})));
+
+/**
+ * The money came after all: Accounts confirms a payment it marked Not in bank on that same entry,
+ * with the bank line — no re-logging. It goes back on the RCV confirmed, and the task it was logged
+ * from closes as Paid, as any confirmation does [confirmReceipt].
+ */
+export const confirmLateReceipt = asyncHandler(withOrderLock(async req => (await Receivable.findById(req.params.id).select('order'))?.order || req.params.id, transactional(async (req, res) => {
+  if (!seesTheBank(req.user)) throw ApiError.forbidden('Only Accounts or Admin confirm a receipt — they are the ones who can see the bank.');
+  const receivable = await readable(req.params.id, req.user);
+  const entry = (receivable.rejectedReceipts || []).find((row) => String(row._id) === String(req.params.receiptId));
+  if (!entry) throw ApiError.notFound('No payment marked not in the bank under that reference');
+  if (entry.state !== 'not_in_bank') throw ApiError.conflict(entry.state === 'confirmed_late' ? 'That payment is already confirmed' : 'That payment was logged again — confirm the new entry');
+  const { reference, amount, creditedOn, bankAccount, note } = req.body;
+  const utr = String(reference || '').trim();
+  if (!utr && entry.mode !== 'cash') throw ApiError.badRequest('Give the UTR (or cheque number) from the bank line');
+  if (creditedOn.getTime() > Date.now() + 330 * 60 * 1000) throw ApiError.badRequest('The day it was credited cannot be in the future');
+  const before = snapshot(receivable);
+  receivable.receipts.push({
+    _id: entry._id, amount, receivedAt: creditedOn, mode: entry.mode, reference: utr || entry.reference, note: entry.note,
+    recordedBy: entry.recordedBy, loggedFrom: entry.loggedFrom,
+    confirmed: { by: req.user._id, at: new Date(), reference: utr || undefined, amount, creditedOn, bankAccount: bankAccount || undefined, note: note || undefined, loggedAmount: Math.abs(amount - entry.amount) > 0.005 ? entry.amount : undefined },
+  });
+  entry.state = 'confirmed_late';
+  entry.settled = { by: req.user._id, at: new Date() };
+  await applyPaymentPositions([receivable]);
+  if ((receivable.invoice?.value || 0) + 0.5 < receivable.received) {
+    throw ApiError.badRequest(`₹${Math.round(amount).toLocaleString('en-IN')} is more than is owed on ${receivable.number} — check the amount on the bank line`);
+  }
+  const said = [`₹${Math.round(amount).toLocaleString('en-IN')}`, utr && `UTR ${utr}`, `credited ${creditedOn.toISOString().slice(0, 10)}`, bankAccount && `into ${bankAccount}`, 'found after it was marked not in the bank', note].filter(Boolean).join(' · ');
+  receivable.followUps.push({ by: req.user._id, at: new Date(), note: `Confirmed in the bank: ${said}`.slice(0, 1000), status: 'other' });
+  await receivable.save();
+  await recordChange({ model: 'Receivable', doc: receivable, before, by: req.user, note: `Confirmed late ${said}` });
+  const receipt = receivable.receipts.id(entry._id);
+  const closedTask = await closeLoggedTask(receivable, receipt, req.user, said);
+  const justClosed = closedTask?.originKey ? [closedTask.originKey] : [];
+  if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order, { by: req.user, justClosed }));
   await receivable.populate(POPULATE);
   return res.json({ success: true, data: receivable });
 })));

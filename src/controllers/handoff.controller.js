@@ -276,6 +276,8 @@ export const listEnquiryHandoffs = asyncHandler(async (req, res) => {
     dispatchHolds,
     /* The money on it: each RCV — the advance, each invoice — with what came in and who logged it. */
     payments: await paymentsOnEnquiry(enquiry._id),
+    /* Payments logged that Accounts did not find in the bank — until confirmed late or logged again [paymentGates `notInBankOn`]. */
+    notInBank: await (await import('../services/paymentGates.service.js')).notInBankOn({ enquiryId: enquiry._id }),
   });
 });
 
@@ -742,6 +744,17 @@ export const handoffLoadProof = asyncHandler(async (req, res) => {
   }
 });
 
+/** The payments behind a Payment Collection, PRT or A/C Clarify task, by RCV number [paymentGates.service `receiptsOfTask`]. */
+export const handoffReceipts = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  const { inDepartment, isManagement } = await import('../utils/departments.js');
+  const allowed = mayWorkOnHandoff(req.user, task) || isManagement(req.user)
+    || ['accounts', 'payment_collection', 'payment_recovery', 'marketing'].some((department) => inDepartment(req.user, department));
+  if (!allowed) throw ApiError.forbidden('The payments on this task are for Accounts, Payment Collection, PRT and marketing');
+  const { receiptsOfTask } = await import('../services/paymentGates.service.js');
+  res.json({ success: true, data: await receiptsOfTask(task) });
+});
+
 /**
  * The file already on the task sent to the buyer — Reception sending the LR copy Dispatch uploaded
  * with the load [handoff.service `recordDispatchLoad`]. Said on the task as an upload would be.
@@ -856,6 +869,12 @@ export const departmentDashboardFor = asyncHandler(async (req, res) => {
  * `readiness` — `{ ready, sent, waiting }` by model — so the Dispatch desk shows what may go now.
  */
 async function withReadiness(rows) {
+  /* Each model of every request where it stands on its own — in the plant, ready, part sent, sent [dispatchStateOf]. */
+  for (const row of rows) {
+    if (row.task?.kind !== 'invoice_dispatch') continue;
+    const sheet = await dispatchSheet(row.task).catch(() => null);
+    if (sheet?.models?.length) row.dispatchModels = sheet.models.map(({ model, ordered, sent, left, state, words }) => ({ model, ordered, sent, left, state, words }));
+  }
   const ids = [...new Set(rows.filter((row) => row.enquiry?._id && row.task.kind === 'invoice_dispatch').map((row) => String(row.enquiry._id)))];
   if (!ids.length) return rows;
   const plans = await Enquiry.find({ _id: { $in: ids } }).select(DISPATCH_PLAN_FIELDS).lean();

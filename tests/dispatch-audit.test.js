@@ -158,7 +158,7 @@ test('G: the request closed with ready goods still to go — Dispatch is not lef
   assert.equal((await load(request._id, 'DG-1', 2000)).status, 200);
   const closed = await move(request._id, 'ravi', 'closed', { note: 'Closing for now' });
   assert.equal(closed.status, 400, 'refused: the goods would be stranded');
-  assert.match(closed.json.message, /DG-1 4,000 pcs is ready and still to go — dispatch it before closing/);
+  assert.match(closed.json.message, /Not everything has gone yet — DG-1: 4,000 pcs to go \(Part sent 2,000 of 6,000 pcs · 4,000 pcs to go · rest ready to send\)/);
   assert.equal((await Todo.findById(request._id).lean()).completed, false);
   /* The rest gone: it closes. */
   assert.equal((await load(request._id, 'DG-1', 4000)).status, 200);
@@ -242,4 +242,47 @@ test('I: a load goes without its LR copy — Reception has the LR to chase, and 
   /* Only the Dispatch team (or Admin) adds to a load. */
   const other = await fetch(`${baseUrl}/api/workspace/todos/${request._id}/loads/${gone._id}`, { method: 'POST', headers: { Authorization: `Bearer ${token.siva}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ lrNumber: 'X' }) });
   assert.equal(other.status, 403);
+});
+
+test('P: two models, one part sent and one not produced yet — each reads its own state, and the request stays open until both have gone in full', async () => {
+  const enquiry = (await api('/api/enquiries', {
+    method: 'POST',
+    body: { customer: customerId, items: [{ modelNumber: 'DP-25' }, { modelNumber: 'DP-30' }], nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 864e5).toISOString() },
+  })).json.data._id;
+  assert.ok((await api(`/api/enquiries/${enquiry}/dispatch-plan`, { method: 'POST', body: { mode: 'by_model' } })).status < 300);
+  const production = (await api(`/api/enquiries/${enquiry}/handoffs`, { method: 'POST', body: { kind: 'ask_edd', note: 'Make it', brief: { model: 'DP-25' } } })).json.data.task;
+  await Todo.updateOne({ _id: production._id }, { $set: { 'brief.items': [{ model: 'DP-25', quantity: '10000' }, { model: 'DP-30', quantity: '4000' }] } });
+  assert.equal((await api(`/api/workspace/todos/${production._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'DP-25' }, { model: 'DP-30' }] } })).status, 200);
+  assert.equal((await move(production._id, 'siva', 'ready_dispatch', { models: ['DP-25'], note: 'DP-25 packed' })).status, 200);
+  await settle();
+  const request = await Todo.findOne({ enquiry, kind: 'invoice_dispatch', completed: false }).lean();
+  assert.ok(request, 'Dispatch has the request for the ready model');
+  assert.equal((await load(request._id, 'DP-25', 5000)).status, 200);
+
+  /* The form and the desk: DP-25 part sent, DP-30 still in Production — not "part dispatched" for both. */
+  const sheet = (await api(`/api/workspace/todos/${request._id}/dispatch`, { as: 'ravi' })).json.data;
+  const of = (model) => sheet.models.find((row) => row.model === model);
+  assert.deepEqual([of('DP-25').state, of('DP-25').left], ['part_sent', 5000]);
+  assert.match(of('DP-25').words, /^Part sent 5,000 of 10,000 pcs · 5,000 pcs to go/);
+  assert.equal(of('DP-30').state, 'in_plant');
+  assert.match(of('DP-30').words, /^Not produced yet/);
+  const desk = (await api('/api/departments/despatch/dashboard', { as: 'ravi' })).json.data;
+  const row = desk.enquiries.find((entry) => String(entry.task._id) === String(request._id));
+  assert.ok(row, 'on the desk');
+  assert.deepEqual(row.dispatchModels.map((entry) => [entry.model, entry.state]), [['DP-25', 'part_sent'], ['DP-30', 'in_plant']]);
+
+  /* DP-25's rest goes: still not closable — DP-30 has not been made. */
+  assert.equal((await load(request._id, 'DP-25', 5000)).status, 200);
+  const early = await move(request._id, 'ravi', 'closed', { note: 'DP-25 done' });
+  assert.equal(early.status, 400);
+  assert.match(early.json.message, /DP-30: 4,000 pcs to go/);
+  assert.equal((await Todo.findById(request._id).lean()).status, 'part_dispatched', 'part — DP-30 still owed');
+
+  /* DP-30 made and sent in full: Fully Dispatched, and it may close. */
+  assert.equal((await move(production._id, 'siva', 'ready_dispatch', { models: ['DP-30'], note: 'DP-30 packed' })).status, 200);
+  await settle();
+  assert.equal((await load(request._id, 'DP-30', 4000)).status, 200);
+  const done = await Todo.findById(request._id).lean();
+  assert.equal(done.status, 'fully_dispatched');
+  if (!done.completed) assert.equal((await move(request._id, 'ravi', 'closed', { note: 'All gone' })).status, 200);
 });

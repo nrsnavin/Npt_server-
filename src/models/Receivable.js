@@ -56,6 +56,13 @@ export const CLOSED_RECEIVABLE_STATUSES = ['paid'];
 /** How the money arrived. Recorded for the reference, not for accounting. */
 export const RECEIPT_MODES = ['neft', 'rtgs', 'upi', 'cheque', 'cash', 'adjustment', 'other'];
 
+/** Why Accounts did not find a logged payment in the bank [payment.controller `rejectReceipt`]. */
+export const RECEIPT_REJECT_REASONS = [
+  { key: 'not_received', label: 'Not received yet' },
+  { key: 'mismatch', label: 'UTR / amount mismatch' },
+  { key: 'bounced', label: 'Cheque bounced' },
+];
+
 /**
  * §25's four tiers, in order, as the sweep walks them.
  *
@@ -195,12 +202,22 @@ const receivableSchema = new mongoose.Schema(
         reference: String,
         note: String,
         recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        /* The Payment Collection or PRT task it was logged from — reopened at Not in Bank [paymentGates `afterNotInBank`]. */
+        loggedFrom: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
         rejected: {
           by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
           at: Date,
+          /* not_received · mismatch (UTR / amount) · bounced (cheque) — RECEIPT_REJECT_REASONS. */
+          reasonKey: { type: String, enum: ['not_received', 'mismatch', 'bounced'] },
           reason: { type: String, trim: true, maxlength: 500 },
           _id: false,
         },
+        /*
+         * Where it stands since: still not in the bank, confirmed late by Accounts (the money came after
+         * all — the same entry, no re-logging), or logged again by the team.
+         */
+        state: { type: String, enum: ['not_in_bank', 'confirmed_late', 'logged_again'], default: 'not_in_bank' },
+        settled: { by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, at: Date, _id: false },
       }, { _id: true })],
       default: undefined,
     },
