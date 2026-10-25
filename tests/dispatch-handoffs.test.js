@@ -250,7 +250,7 @@ test('a load is sent from the dispatch form: models and pieces, how it travels, 
     return fetch(`${baseUrl}/api/workspace/todos/${dispatch}/dispatch`, { method: 'POST', headers: { Authorization: `Bearer ${token.ravi}` }, body: form })
       .then(async (response) => ({ status: response.status, json: await response.json() }));
   };
-  assert.equal((await send({ status: 'part_dispatched', mode: 'own_vehicle', lines: [{ model: 'NH-400', quantity: 2000 }] }, false)).status, 400, 'no proof of delivery, no load');
+  /* No proof of delivery is no reason to hold the load: it is added later [dispatch-audit.test.js I]. */
   assert.equal((await send({ status: 'part_dispatched', mode: 'by_air', lines: [{ model: 'NH-400', quantity: 2000 }] })).status, 400, 'a mode the plant uses');
   assert.equal((await send({ status: 'part_dispatched', mode: 'own_vehicle', lines: [] })).status, 400, 'tick the models');
   assert.equal((await send({ status: 'part_dispatched', mode: 'own_vehicle', lines: [{ model: 'NOPE-1', quantity: 10 }] })).status, 400, 'only the order’s models');

@@ -199,3 +199,47 @@ test('O: a fresh Production request on the same order keeps counting what its lo
   assert.equal(over.status, 400);
   assert.match(over.json.message, /only 2,000 pcs left/);
 });
+
+test('I: a load goes without its LR copy — Reception has the LR to chase, and Dispatch adds the paper and details later', async () => {
+  const { enquiry, request } = await readyToGo([['DI-1', 5000]]);
+  /* No file: the load still goes, with what Dispatch knows of it. */
+  const form = new FormData();
+  form.append('mode', 'transporter');
+  form.append('lines', JSON.stringify([{ model: 'DI-1', quantity: 5000 }]));
+  form.append('transporter', 'VRL Logistics');
+  const sent = await fetch(`${baseUrl}/api/workspace/todos/${request._id}/dispatch`, { method: 'POST', headers: { Authorization: `Bearer ${token.ravi}` }, body: form });
+  const json = await sent.json();
+  assert.equal(sent.status, 200, json.message);
+  assert.equal(json.data.status, 'fully_dispatched');
+  assert.match(json.data.updates.at(-1).note, /Transporter \(VRL Logistics\), lr copy to follow/);
+  const saved = await Todo.findById(request._id).lean();
+  const [gone] = saved.loads;
+  assert.equal(gone.attachment, undefined);
+  assert.equal(gone.transporter, 'VRL Logistics');
+  /* Reception's LR Copy task is raised, waiting for the LR. */
+  const lr = await Todo.findOne({ enquiry, kind: 'lr_copy', completed: false }).lean();
+  assert.ok(lr, 'Reception has the LR copy task');
+  assert.equal(lr.resultFile, undefined);
+  /* The enquiry shows the load with its paper still to come. */
+  let shown = (await records(enquiry)).dispatch.requests[0].loads[0];
+  assert.deepEqual([shown.proofPending, shown.transporter], [true, 'VRL Logistics']);
+
+  /* The LR comes: Dispatch adds it, with the LR number — Reception's task gets the LR copy to send. */
+  const add = new FormData();
+  add.append('lrNumber', 'LR 55021');
+  add.append('file', new Blob(['%PDF-1.4 lr'], { type: 'application/pdf' }), 'lr.pdf');
+  const added = await fetch(`${baseUrl}/api/workspace/todos/${request._id}/loads/${gone._id}`, { method: 'POST', headers: { Authorization: `Bearer ${token.ravi}` }, body: add });
+  const addedJson = await added.json();
+  assert.equal(added.status, 200, addedJson.message);
+  assert.match(addedJson.data.updates.at(-1).note, /Added to the load of .* \(DI-1 5,000 pcs\): LR copy, LR LR 55021/);
+  const after = await Todo.findById(request._id).lean();
+  assert.ok(after.loads[0].attachment, 'the load has its LR copy');
+  assert.equal(after.loads[0].lrNumber, 'LR 55021');
+  const lrNow = await Todo.findById(lr._id).lean();
+  assert.ok(lrNow.resultFile, 'Reception has the LR copy to send');
+  shown = (await records(enquiry)).dispatch.requests[0].loads[0];
+  assert.equal(shown.proofPending, false);
+  /* Only the Dispatch team (or Admin) adds to a load. */
+  const other = await fetch(`${baseUrl}/api/workspace/todos/${request._id}/loads/${gone._id}`, { method: 'POST', headers: { Authorization: `Bearer ${token.siva}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ lrNumber: 'X' }) });
+  assert.equal(other.status, 403);
+});

@@ -1965,12 +1965,12 @@ export async function dispatchSheet(task) {
  * Received for Reception to send to the buyer; a load in the plant's own vehicle, or collected by
  * the party, raises no LR task — its proof of delivery is the record.
  */
-export async function recordDispatchLoad(task, user, { lines, mode, note, attachmentId }) {
+export async function recordDispatchLoad(task, user, { lines, mode, note, attachmentId, details = {} }) {
   if (task.kind !== 'invoice_dispatch') fail('Only a Dispatch request is dispatched from the form');
   const modes = findHandoff(task.kind)?.form?.dispatchModes || [];
   const how = modes.find((entry) => entry.key === mode);
   if (!how) fail(`Say how it travels — ${modes.map((entry) => entry.label).join(', ')}`);
-  if (!attachmentId) fail(`Upload the ${how.proofLabel.toLowerCase()} with the load`);
+  /* The paper is not needed for the load to go: Reception has the LR copy to chase, and Dispatch is reminded to add it [addLoadProof]. */
   const given = (Array.isArray(lines) ? lines : [])
     .map((line) => ({ model: String(line?.model || '').trim(), quantity: Number(String(line?.quantity ?? '').replace(/,/g, '')) }))
     .filter((line) => line.model);
@@ -2036,20 +2036,73 @@ export async function recordDispatchLoad(task, user, { lines, mode, note, attach
   const status = ordered.size && everythingSent(ordered, after) ? 'fully_dispatched' : 'part_dispatched';
   const still = [...ordered].filter(([model, quantity]) => (quantity > 0 ? (after.get(model) || 0) < quantity : !(after.get(model) > 0)))
     .map(([model, quantity]) => (quantity > 0 ? `${model} ${Math.max(0, quantity - (after.get(model) || 0)).toLocaleString('en-IN')} pcs` : model));
-  const said = `${given.map((line) => `${line.model} ${line.quantity.toLocaleString('en-IN')} pcs`).join(' · ')} — ${how.label}, ${how.proofLabel.toLowerCase()} attached`
+  const carried = loadDetails(details);
+  const detailWords = [carried.lrNumber && `LR ${carried.lrNumber}`, carried.transporter, carried.vehicleNumber && `vehicle ${carried.vehicleNumber}`].filter(Boolean).join(', ');
+  const said = `${given.map((line) => `${line.model} ${line.quantity.toLocaleString('en-IN')} pcs`).join(' · ')} — ${how.label}${detailWords ? ` (${detailWords})` : ''}, ${how.proofLabel.toLowerCase()} ${attachmentId ? 'attached' : 'to follow'}`
     + (status === 'part_dispatched' && still.length ? ` · still to go: ${still.join(', ')}` : '');
   const text = [String(note || '').trim(), said].filter(Boolean).join(' — ');
-  task.loads = [...(task.loads || []), { status, lines: given, mode, attachment: attachmentId, note: String(note || '').trim() || undefined, by: user._id, at: new Date() }];
+  task.loads = [...(task.loads || []), { status, lines: given, mode, ...(attachmentId ? { attachment: attachmentId } : {}), ...carried, note: String(note || '').trim() || undefined, by: user._id, at: new Date() }];
   const moved = await setTaskStatus(task, user, {
     status, note: text,
     fields: { modelsSent: given.map((line) => line.model).join(', '), piecesSent: String(pieces) },
     load: { mode },
   });
   /* The transporter's LR copy is Reception's to send: on its LR Copy task, received and ready to go. */
-  if (mode === 'transporter') await lrToReception(moved || task, user, attachmentId, said);
+  if (mode === 'transporter' && attachmentId) await lrToReception(moved || task, user, attachmentId, said);
+  /* No paper yet: the Dispatch team is reminded to add it to the load when it comes [addLoadProof]. */
+  if (!attachmentId) await remindLoadProof(moved || task, user, how, said);
   /* The last of it gone after a part load: the enquiry no longer reads Part sent — it reads LR Copy [holdsPartSent]. */
   if (status === 'fully_dispatched') await reachEnquiry(moved || task, user, { marketing: 'lr_copy' }, `Fully Dispatched — ${said}`);
   return moved || task;
+}
+
+/** The details a load may carry, trimmed — what was not said is left out. */
+function loadDetails(details = {}) {
+  const out = {};
+  for (const [key, max] of [['lrNumber', 80], ['transporter', 120], ['vehicleNumber', 40]]) {
+    const value = String(details?.[key] ?? '').trim().slice(0, max);
+    if (value) out[key] = value;
+  }
+  return out;
+}
+
+/** The loads on a Dispatch request still without their paper. */
+export const loadsWithoutProof = (task) => (task.loads || []).filter((load) => !load.attachment);
+
+/**
+ * A load gone without its LR copy, proof of delivery or signed receipt: the people on the Dispatch
+ * task hear it, and the task lists the loads still without their paper [loadsWithoutProof] — the
+ * paper is added to the load when it comes.
+ */
+async function remindLoadProof(task, user, how, said) {
+  const missing = loadsWithoutProof(task).length;
+  const note = `${how.proofLabel} to add for ${missing > 1 ? `${missing} loads` : 'this load'} — ${said}`;
+  await noticeStatus(task, user, { step: { key: 'proof_pending', label: `${how.proofLabel} to add` }, note, also: await peopleOn(task), onlyAlso: true });
+}
+
+/**
+ * The paper and details for a load already gone [web: TaskWorkflow "Add LR copy / details"]: the LR
+ * copy (or proof of delivery, or signed receipt), the LR / docket number, transporter and vehicle.
+ * A transporter's LR copy goes on to Reception to send. The load leaves the "paper to add" list once it has it.
+ */
+export async function addLoadProof(task, user, loadId, { attachmentId = null, details = {} } = {}) {
+  if (task.kind !== 'invoice_dispatch') fail('Only a Dispatch request has loads');
+  const load = (task.loads || []).find((entry) => String(entry._id) === String(loadId));
+  if (!load) throw ApiError.notFound('That load is not on this task');
+  const known = loadDetails(details);
+  if (!attachmentId && !Object.keys(known).length) fail('Upload the paper or enter a detail of the load');
+  const how = (findHandoff(task.kind)?.form?.dispatchModes || []).find((entry) => entry.key === load.mode);
+  if (attachmentId) load.attachment = attachmentId;
+  Object.assign(load, known);
+  task.markModified('loads');
+  const lines = (load.lines || []).map((line) => `${line.model} ${Number(line.quantity || 0).toLocaleString('en-IN')} pcs`).join(' · ');
+  const added = [attachmentId && (how?.proofLabel || 'Paper'), known.lrNumber && `LR ${known.lrNumber}`, known.transporter, known.vehicleNumber && `vehicle ${known.vehicleNumber}`].filter(Boolean).join(', ');
+  const said = `Added to the load of ${prettyDay(indiaDay(load.at))} (${lines}): ${added}`;
+  task.updates = [...(task.updates || []), { kind: attachmentId ? 'uploaded' : 'note', statusLabel: 'Load details', text: said, note: said, by: user._id, at: new Date() }];
+  await task.save();
+  if (attachmentId && load.mode === 'transporter') await lrToReception(task, user, attachmentId, said);
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+  return task;
 }
 
 /** The LR copy uploaded with a load, onto Reception's open LR Copy task: LR Copy Received, Reception sends it to the buyer. */
