@@ -96,6 +96,10 @@ export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) =>
     priority: req.body.priority, requiredDate: req.body.requiredDate || undefined, addToOpen: req.body.addToOpen === true, order: req.body.order, user: req.user,
     edd: req.body.edd || undefined,
   });
+  /* Details changed on the form, and the person asked: the enquiry follows [itemDetails.service]. */
+  const enquiryChanges = req.body.updateEnquiry && Array.isArray(req.body.brief?.items)
+    ? await (await import('../services/itemDetails.service.js')).applyItemsToEnquiry(enquiry._id, req.body.brief.items, req.user)
+    : [];
   /* A hanger that needs assembly: Assembly is tasked beside Production, on the same enquiry. */
   const assembly = req.body.kind === 'ask_edd' ? await raiseAssemblyWith(task, req.user) : null;
   /*
@@ -111,6 +115,7 @@ export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) =>
     data: {
       task: await task.populate(TASK_POPULATE), stage: enquiry.stage, addedTo: Boolean(task.$locals?.addedTo),
       ...(quotation ? { quotation } : {}),
+      ...(enquiryChanges.length ? { enquiryChanges } : {}),
       ...(assembly ? { assembly: { _id: assembly._id, department: assembly.department, addedTo: Boolean(assembly.$locals?.addedTo) } } : {}),
     },
   });
@@ -545,6 +550,11 @@ export const handoffDocuments = asyncHandler(async (req, res) => {
 /* Dispatch's "Ask Production": that department's task, raised from this one. */
 export const handoffAsk = asyncHandler(transactional(async (req, res) => {
   const { task, raised, addedTo } = await askFromTask(await taskFor(req), req.user, req.body);
+  /* Asked from a task with changed details, and the enquiry to follow them [itemDetails.service]. */
+  const enquiryId = task.enquiry?._id || task.enquiry;
+  if (req.body.updateEnquiry && enquiryId && Array.isArray(req.body.brief?.items)) {
+    await (await import('../services/itemDetails.service.js')).applyItemsToEnquiry(enquiryId, req.body.brief.items, req.user);
+  }
   res.json({
     success: true,
     data: await task.populate(TASK_POPULATE),

@@ -14,6 +14,8 @@ export const handoffSchema = z.object({
   priority: z.enum(['low', 'normal', 'high']).optional(),
   /** Add to the department's open task of this kind instead of refusing the second one. */
   addToOpen: z.boolean().optional(),
+  /** The models' details changed on the form are written onto the enquiry too [itemDetails.service]. */
+  updateEnquiry: z.boolean().optional(),
   /** The task's due date, when the person raising it names one. */
   requiredDate: z.string().trim().max(40).optional().or(z.literal('')),
   /** Which of the enquiry's sales orders the task is for, when it has several; else its newest. */
@@ -59,6 +61,8 @@ export const taskStatusSchema = z.object({
   status: z.string().trim().min(1).max(40),
   note: z.string().trim().max(2000).optional(),
   date: z.string().trim().max(10).optional(),
+  /* …or a date for each model moving [Todo `modelDates`]. */
+  dates: z.array(z.object({ model: z.string().trim().min(1).max(120), date: z.string().trim().min(10).max(10) })).max(60).optional(),
   /* What a status asks for beside the remark [departmentTaskForms `statuses[].fields`] — who collected a sample, how many pieces. */
   fields: z.record(z.string().max(40), z.union([z.string().max(500), z.number(), z.boolean()])).optional(),
   /* Only these of the task's models move [Todo `modelStatuses`]; none named, every model does. */
@@ -102,6 +106,7 @@ export const workQueueAddSchema = z.object({
 /** Another department asked from this task — Dispatch's "Ask Production"; checked by the service. */
 export const taskAskSchema = z.object({
   kind: z.string().trim().min(1).max(40),
+  updateEnquiry: z.boolean().optional(),
   note: z.string().trim().max(2000).optional(),
   brief: z.record(z.string(), z.unknown()).optional(),
   priority: z.enum(['low', 'normal', 'high']).optional(),
