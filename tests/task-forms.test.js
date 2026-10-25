@@ -255,6 +255,20 @@ test('a PDF of 1 MB at most travels with the task, readable by the department it
   assert.equal(listed.json.data.find((row) => row._id === sampleTask._id).attachment.filename, 'po.pdf');
 });
 
+test('the PDF sent with the Sample Request shows with the sample — to whoever may open it', async () => {
+  const pdfs = (token) => api(`/api/workspace/task-pdfs?enquiries=${enquiry._id}&kinds=sample_request`, { token });
+  const sampling = await pdfs(arun);
+  assert.equal(sampling.status, 200, sampling.json.message);
+  const [file] = sampling.json.data.byEnquiry[enquiry._id];
+  assert.deepEqual([file.filename, file.role, file.kind, file.title], ['po.pdf', 'sent', 'sample_request', 'Sample Request — attached']);
+  assert.ok(file.key, 'the key opens it through /files');
+  assert.equal((await pdfs(nandhini)).json.data.byEnquiry[enquiry._id].length, 1, 'the marketing person who sent it');
+  assert.deepEqual((await pdfs(siva)).json.data.byEnquiry, {}, 'Production was not asked: nothing listed');
+  assert.deepEqual((await api(`/api/workspace/task-pdfs?enquiries=${enquiry._id}&kinds=create_quotation`, { token: arun })).json.data.byEnquiry, {}, 'only the kinds asked for');
+  const byTask = await api(`/api/workspace/task-pdfs?tasks=${sampleTask._id}`, { token: admin });
+  assert.equal(byTask.json.data.byTask[sampleTask._id][0].filename, 'po.pdf');
+});
+
 test('payment follow-up: due on the day the buyer asked to be called; a choice is checked', async () => {
   const wrong = await send({ kind: 'team_payment_followup', brief: { status: 'Maybe' } });
   assert.equal(wrong.status, 400);
