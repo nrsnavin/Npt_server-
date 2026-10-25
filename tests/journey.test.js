@@ -317,10 +317,16 @@ test('a Production task raised from the customer, with no enquiry, runs Printing
   assert.equal(line.edd, assemblyEdd);
 });
 
-test('a Production, Printing or Assembly task raised from the customer names its model', async () => {
+test('a Production task raised from the customer without its model goes; Production adds the details before it plans', async () => {
   const bare = await api('/api/workspace/team-tasks', { method: 'POST', body: { kind: 'ask_edd', note: 'Status of the order', customer: customerId, brief: { quantity: '5000' } } });
-  assert.equal(bare.status, 400);
-  assert.match(bare.json.message, /Name the model/);
+  assert.equal(bare.status, 201, bare.json.message);
+  const task = bare.json.data.task;
+  /* No model yet: the routing form has none to offer — the hanger details come first. */
+  const early = await api(`/api/workspace/todos/${task._id}/routing`, { as: 'siva' });
+  assert.deepEqual(early.json.data.models, []);
+  assert.equal((await api(`/api/workspace/todos/${task._id}/brief`, { method: 'POST', as: 'siva', body: { brief: { model: 'NH-480' } } })).status, 200);
+  const routed = await api(`/api/workspace/todos/${task._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'NH-480' }] } });
+  assert.equal(routed.status, 200, routed.json.message);
 });
 
 test('Assembly asked alone goes Assembly → Dispatch; Printing asked alone goes Printing → Dispatch', async () => {
