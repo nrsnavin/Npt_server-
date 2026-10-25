@@ -297,6 +297,10 @@ async function advanceTeamTask(task, user, why) {
     if (!(await everyModelReady({ task }, finishing))) return null;
     /* QC compulsory, ticked on the Production task (or the one team asked): Quality first, Dispatch on its pass. */
     const production = finishing.find((entry) => entry.kind === 'ask_edd') || finishing[0];
+    /* Everything made has already gone — recorded as dispatched before the task [teamProduction.service]: nothing to send. */
+    const { modelReadiness } = await import('./handoff.service.js');
+    const readiness = await modelReadiness(null, { task });
+    if (readiness.ready.length && !readiness.waiting.length && readiness.ready.every((model) => (readiness.sent || []).includes(model))) return null;
     if (tickedQc(production?.brief?.qcRequired) || tickedQc(task.brief?.qcRequired)) {
       return raiseNextTeamTask(task, 'quality_check', user, why || 'Goods ready — QC compulsory: check them before dispatch');
     }

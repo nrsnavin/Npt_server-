@@ -38,7 +38,7 @@ import {
 import { notificationStatus, pushKey, renewPush, sendTestNotification, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffWorkQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, setTaskJobEdd, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments, listTaskPdfs, handoffDispatchSheet, handoffDispatchLoad, handoffLoadProof, handoffReceipts, handoffSendResult, handoffShipments, handoffDues,
+  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffWorkQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, setTaskJobEdd, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments, listTaskPdfs, handoffDispatchSheet, handoffDispatchLoad, handoffLoadProof, handoffReceipts, handoffSendResult, handoffShipments, handoffDues, handoffLinkOptions, handoffLinkEnquiry, handoffStartFrom,
 } from '../controllers/handoff.controller.js';
 import {
   handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, handoffAdminCloseSchema, handoffEscalateSchema, handoffEscalationResolveSchema, deliveryUrgencySchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, jobEddSchema, taskRoutingSchema, taskStatusSchema, productionQueueAddSchema, workQueueAddSchema,
@@ -102,6 +102,10 @@ router.get('/production-in-charge', productionInChargeList);
 /* Production decides, model by model, what follows moulding: printing, assembly, both or neither. */
 router.get('/todos/:id/routing', handoffRouting);
 router.post('/todos/:id/routing', validate(taskRoutingSchema), handoffRoute);
+/* A Production task with no enquiry: join the buyer's enquiry, or start each model from where it is [teamProduction.service]. */
+router.get('/todos/:id/link-options', handoffLinkOptions);
+router.post('/todos/:id/link-enquiry', handoffLinkEnquiry);
+router.post('/todos/:id/start-from', handoffStartFrom);
 router.post('/todos/:id/production-queue', validate(productionQueueAddSchema), handoffQueue);
 /* Printing and Assembly take the goods that came into their work queue. */
 router.post('/todos/:id/work-queue', validate(workQueueAddSchema), handoffWorkQueue);

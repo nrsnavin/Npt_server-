@@ -683,6 +683,33 @@ export const handoffShipments = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await shipmentsOf(task) });
 });
 
+/* ---- A Production task with no enquiry: link it, start it from where the goods are [teamProduction.service] ---- */
+
+/** The buyer's open enquiries the task could join, and the start points offered. */
+export const handoffLinkOptions = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  if (!mayWorkOnHandoff(req.user, task)) throw ApiError.forbidden('This task is Production’s');
+  const { linkOptions, START_POINTS } = await import('../services/teamProduction.service.js');
+  res.json({ success: true, data: { ...(await linkOptions(task)), startPoints: START_POINTS } });
+});
+
+/** The task joins the buyer's enquiry — or is closed onto the Production task that enquiry already has. */
+export const handoffLinkEnquiry = asyncHandler(transactional(async (req, res) => {
+  const task = await taskFor(req);
+  if (!mayWorkOnHandoff(req.user, task)) throw ApiError.forbidden('This task is Production’s');
+  const { linkToEnquiry } = await import('../services/teamProduction.service.js');
+  const result = await linkToEnquiry(task, req.user, req.body?.enquiry);
+  res.json({ success: true, data: await result.task.populate(TASK_POPULATE), mergedInto: result.mergedInto, enquiry: result.enquiry });
+}));
+
+/** Each model started from where it is now: not started, started, with Printing or Assembly, with Dispatch, or gone. */
+export const handoffStartFrom = asyncHandler(transactional(async (req, res) => {
+  const task = await taskFor(req);
+  const { startFrom } = await import('../services/teamProduction.service.js');
+  const done = await startFrom(task, req.user, req.body || {});
+  await answer(res, done);
+}));
+
 /** What the dispatch form offers for a Dispatch request: its models, ordered and sent, ready or not, the plan and the modes. */
 export const handoffDispatchSheet = asyncHandler(async (req, res) => {
   const task = await taskFor(req);
