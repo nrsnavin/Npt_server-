@@ -98,6 +98,32 @@ export async function askToConfirm(task, by, day) {
 
 export const confirmed = (task) => resolveTasks(confirmKey(task));
 
+export const pressKey = (task) => `production-presses:${task._id}`;
+
+/**
+ * The auto-planner proposed a press for models of a Production task [floorPlanning.service
+ * `proposeTaskPlan`]: the in charge confirms the plan, or changes it. One open to-do a task.
+ */
+export async function askToConfirmPresses(task, models = []) {
+  const { people } = await planners();
+  const what = await about(task);
+  const link = await workflowLink(task);
+  for (const person of people) {
+    await raiseTask({
+      user: person._id,
+      title: `Confirm the press plan — ${what}`,
+      notes: `The planner proposed a press for ${models.join(', ') || 'the routed models'}. Confirm it, or change the press.`,
+      priority: 'high',
+      dueDate: new Date(),
+      link,
+      originKey: pressKey(task),
+    });
+  }
+}
+
+/** Nothing of the task waits on a proposal any more: its "Confirm the press plan" to-dos close. */
+export const pressesConfirmed = (task) => resolveTasks(pressKey(task));
+
 /** Who is told when Admin plans in the in charge's place: everyone in charge. */
 export async function inChargeIds() {
   return (await productionInCharge()).map((person) => person._id);

@@ -69,6 +69,8 @@ export async function linkTaskWorkOrders(task, user) {
   const eddOf = (model) => (enquiry?.eddByModel || []).find((row) => key(row.model) === key(model))?.final?.date || jobEdd;
   const piecesOf = (model) => [...ordered].find(([name]) => key(name) === key(model))?.[1] || 0;
   const result = [];
+  /* Work orders raised now, or whose due day moved: their press is proposed (again). */
+  const changed = new Set();
   for (const route of routes) {
     const due = dueDayOf(task, route, { edd: eddOf(route.model) ? String(eddOf(route.model)).slice(0, 10) : null, lead: plant.handoverLeadDays || 5 });
     let wo = linked.find((entry) => key(entry.model) === key(route.model));
@@ -96,20 +98,98 @@ export async function linkTaskWorkOrders(task, user) {
         }]);
         return made;
       });
+      changed.add(String(wo._id));
     } else {
       /* Kept in step: the pieces once known, and the day moulding must be done by. */
       const pieces = piecesOf(route.model);
       if (pieces && !wo.order && wo.quantity !== pieces) wo.quantity = pieces;
-      if (due && (!wo.dueDate || indiaDay(wo.dueDate) !== due)) wo.dueDate = new Date(`${due}T00:00:00+05:30`);
+      if (due && (!wo.dueDate || indiaDay(wo.dueDate) !== due)) {
+        wo.dueDate = new Date(`${due}T00:00:00+05:30`);
+        changed.add(String(wo._id));
+      }
       if (wo.isModified()) await wo.save();
     }
     result.push(wo);
   }
+  /* The auto-planner proposes a press for each model not on one yet — the in charge confirms. */
+  const unproposed = result.filter((wo) => !wo.machine && OPEN_WORK_ORDER_STATUSES.includes(wo.status) && (changed.has(String(wo._id)) || !wo.proposal?.at));
+  if (unproposed.length) await proposeTaskPlan(task, unproposed);
   return result;
 }
 
+/**
+ * The auto-planner [Planning in the Production Workflow]: each work order given is scored on
+ * every press as the plant stands — with what the in charge's own decisions taught it
+ * [planLearning.service] — and the best press is written on it as a proposal, earliest due day
+ * first. Each proposal holds its press for the next, as do other tasks' proposals still waiting,
+ * so two models are not both proposed into the same free day. Nothing is placed: the in charge
+ * is asked to confirm. A model no press can take carries why.
+ */
+export async function proposeTaskPlan(task, orders = null) {
+  const list = (orders || await WorkOrder.find({ task: task._id })).filter((wo) => !wo.machine && OPEN_WORK_ORDER_STATUSES.includes(wo.status));
+  if (!list.length) return [];
+  const { planInputs, queuesOf, rankPresses } = await import('./pressScore.service.js');
+  const inputs = await planInputs();
+  const queues = queuesOf(inputs.presses, inputs.jobs);
+  const mine = new Map(list.map((wo) => [String(wo._id), wo]));
+  for (const job of inputs.jobs) {
+    if (!job.machine && job.proposed && !mine.has(String(job._id))) queues.get(String(job.proposed))?.push({ ...job, machine: job.proposed });
+  }
+  const options = { plant: inputs.plant, slipOf: inputs.slipOf, learnedOf: inputs.learnedOf };
+  const jobs = inputs.jobs.filter((job) => mine.has(String(job._id))).sort((a, b) => String(a.dueDay || '9').localeCompare(String(b.dueDay || '9')));
+  const proposed = [];
+  for (const job of jobs) {
+    const wo = mine.get(String(job._id));
+    const ranked = job.mould ? rankPresses({ job, presses: inputs.presses, queues, ...options }) : { choices: [], why: `No mould on record for ${wo.model || wo.modelNumber}` };
+    const top = ranked.choices?.[0];
+    wo.proposal = top
+      ? {
+        machine: top.machine._id, start: top.start, end: top.end, late: top.late, lateDays: top.lateDays, score: top.score,
+        summary: top.summary, reasons: top.reasons.slice(0, 5).map(({ good, text }) => ({ good, text })), learned: top.learned, at: new Date(),
+      }
+      : { why: ranked.why || ranked.cannot?.[0]?.why || 'No press on the register yet', at: new Date() };
+    if (top) {
+      queues.get(String(top.machine._id))?.push({ ...job, machine: top.machine._id });
+      proposed.push(wo.model || wo.modelNumber);
+    }
+    await wo.save();
+  }
+  if (proposed.length) {
+    try {
+      await (await import('./productionInCharge.service.js')).askToConfirmPresses(task, proposed);
+    } catch (failure) {
+      console.warn(`[floor-planning] ${task._id}: the in charge not asked to confirm — ${failure.message}`);
+    }
+  }
+  return list;
+}
+
+/**
+ * The in charge confirms the planner's proposals — every model's, or the ones named — each put
+ * on its proposed press as a placement of theirs. A proposal that no longer fits is said, not
+ * forced; the rest still go.
+ */
+export async function confirmTaskPlan(task, user, { models = null } = {}) {
+  if (!(await floorPlanningOn())) throw ApiError.conflict('Production floor planning is off — Admin turns it on');
+  const wanted = models?.length ? new Set(models.map(key)) : null;
+  const orders = await WorkOrder.find({ task: task._id, status: { $in: OPEN_WORK_ORDER_STATUSES }, machine: { $exists: false }, 'proposal.machine': { $exists: true } });
+  const { planWorkOrder } = await import('./workOrder.service.js');
+  const failed = [];
+  let confirmed = 0;
+  for (const wo of orders.filter((entry) => !wanted || wanted.has(key(entry.model)))) {
+    try {
+      await planWorkOrder(wo, user, { machine: String(wo.proposal.machine) });
+      confirmed += 1;
+    } catch (failure) {
+      failed.push({ model: wo.model, why: failure.message });
+    }
+  }
+  if (!confirmed && !failed.length) throw ApiError.badRequest('Nothing is waiting to be confirmed');
+  return { ...(await taskPlan(await Todo.findById(task._id), user)), confirmed, failed };
+}
+
 /** A work order as the task's press step shows it. */
-const planOf = (wo, machine, dueDay) => {
+const planOf = (wo, machine, dueDay, proposedPress = null) => {
   const end = wo.plannedEnd ? indiaDay(wo.plannedEnd) : null;
   return {
     _id: wo._id, number: wo.number, status: wo.status, updatedAt: wo.updatedAt,
@@ -120,6 +200,12 @@ const planOf = (wo, machine, dueDay) => {
     dueDay, late: Boolean(end && dueDay && end > dueDay),
     mouldMissing: !wo.mould,
     setup: wo.setup || null,
+    /* The auto-planner's proposal, waiting for the in charge [proposeTaskPlan]. */
+    proposal: !machine && wo.proposal?.at ? {
+      machine: proposedPress ? { _id: proposedPress._id, code: proposedPress.code, tonnage: proposedPress.tonnage ?? null } : null,
+      start: wo.proposal.start || null, end: wo.proposal.end || null, late: Boolean(wo.proposal.late), lateDays: wo.proposal.lateDays || 0,
+      summary: wo.proposal.summary || null, reasons: wo.proposal.reasons || [], learned: wo.proposal.learned || [], why: wo.proposal.why || null,
+    } : null,
   };
 };
 
@@ -134,9 +220,10 @@ export async function taskPlan(task, user) {
   const routes = routedModels(task);
   if (!routes.length) return { on: true, routed: false, models: [] };
   const orders = await linkTaskWorkOrders(task, user);
-  const machines = await Machine.find({ _id: { $in: orders.map((wo) => wo.machine).filter(Boolean) } }).select('code tonnage').lean();
+  const machines = await Machine.find({ _id: { $in: orders.flatMap((wo) => [wo.machine, wo.proposal?.machine]).filter(Boolean) } }).select('code tonnage').lean();
   const machineOf = (id) => machines.find((machine) => String(machine._id) === String(id)) || null;
-  const unplanned = orders.filter((wo) => !wo.machine && OPEN_WORK_ORDER_STATUSES.includes(wo.status)).map((wo) => wo._id);
+  /* Its best press now, for a model with no proposal standing. */
+  const unplanned = orders.filter((wo) => !wo.machine && !wo.proposal?.machine && OPEN_WORK_ORDER_STATUSES.includes(wo.status)).map((wo) => wo._id);
   const { bestPresses } = await import('./pressScore.service.js');
   const best = unplanned.length ? await bestPresses(unplanned) : new Map();
   return {
@@ -144,7 +231,7 @@ export async function taskPlan(task, user) {
     models: routes.map((route) => {
       const wo = orders.find((entry) => key(entry.model) === key(route.model));
       if (!wo) return { model: route.model, route, workOrder: null };
-      const plan = planOf(wo, machineOf(wo.machine), wo.dueDate ? indiaDay(wo.dueDate) : null);
+      const plan = planOf(wo, machineOf(wo.machine), wo.dueDate ? indiaDay(wo.dueDate) : null, machineOf(wo.proposal?.machine));
       return { model: route.model, route, workOrder: plan, best: best.get(String(wo._id)) || null };
     }),
   };
@@ -197,7 +284,11 @@ export async function afterPlanned(wo, user) {
   if (!wo?.task || !wo.machine) return false;
   const machine = await Machine.findById(wo.machine).select('code').lean();
   const when = wo.plannedStart ? ` — ${pretty(indiaDay(wo.plannedStart))} to ${pretty(indiaDay(wo.plannedEnd || wo.plannedStart))}` : '';
-  return moveModel(wo, 'planning', user, `Planned on ${machine?.code || 'a press'}${when} (${wo.number})`);
+  const moved = await moveModel(wo, 'planning', user, `Planned on ${machine?.code || 'a press'}${when} (${wo.number})`);
+  /* Nothing of the task waits on a proposal now: the in charge's "Confirm the press plan" closes. */
+  const waiting = await WorkOrder.exists({ task: wo.task, status: { $in: OPEN_WORK_ORDER_STATUSES }, machine: { $exists: false }, 'proposal.machine': { $exists: true } });
+  if (!waiting) await (await import('./productionInCharge.service.js')).pressesConfirmed({ _id: wo.task });
+  return moved;
 }
 
 /** Its first run: Production Started. */

@@ -180,6 +180,8 @@ export const WORK_ORDER_MOVES = {
 export async function planWorkOrder(wo, user, { machine, plannedStart, sequence, move, note, step }) {
   const text = String(note || '').trim();
   const pressBefore = wo.machine ? String(wo.machine) : null;
+  /* The auto-planner's proposal, if one was waiting: a placement confirms or changes it [planLearning.service]. */
+  const proposed = wo.proposal?.machine ? String(wo.proposal.machine) : null;
   let warnings = [];
   if (move) {
     const recipe = WORK_ORDER_MOVES[move];
@@ -203,6 +205,7 @@ export async function planWorkOrder(wo, user, { machine, plannedStart, sequence,
         wo.sequence = (last?.sequence || 0) + 1;
       }
       wo.machine = press._id;
+      wo.proposal = undefined;
     }
   }
   if (plannedStart !== undefined) wo.plannedStart = plannedStart ? new Date(plannedStart) : undefined;
@@ -248,8 +251,12 @@ export async function planWorkOrder(wo, user, { machine, plannedStart, sequence,
     for (const item of short) warnings.push(`Short of ${item.name}: ${item.short.toLocaleString('en-IN')} ${item.unit} more needed`);
   }
   wo.$locals.warnings = warnings;
-  /* Put on a press for a Production task: its model reads Planning, with the press and the dates [floorPlanning.service]. */
-  if (machine && wo.task && String(wo.machine || '') !== String(pressBefore || '')) await (await import('./floorPlanning.service.js')).afterPlanned(wo, user);
+  if (machine && String(wo.machine || '') !== String(pressBefore || '')) {
+    /* A press decision by the in charge: kept, so the auto-planner learns it. */
+    await (await import('./planLearning.service.js')).recordDecision(wo, user, { pressBefore, proposed });
+    /* Put on a press for a Production task: its model reads Planning, with the press and the dates [floorPlanning.service]. */
+    if (wo.task) await (await import('./floorPlanning.service.js')).afterPlanned(wo, user);
+  }
   return wo;
 }
 

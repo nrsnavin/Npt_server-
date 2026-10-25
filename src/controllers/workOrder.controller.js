@@ -146,6 +146,35 @@ export const placeTaskModelHandler = asyncHandler(transactional(async (req, res)
   res.json({ success: true, data: await placeTaskModel(task, req.user, req.body) });
 }));
 
+/** The in charge confirms the auto-planner's proposals for a task — all, or the models named. */
+export const confirmTaskPlanHandler = asyncHandler(transactional(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.taskId)) throw ApiError.notFound('Task not found');
+  const { default: Todo } = await import('../models/Todo.js');
+  const task = await Todo.findById(req.params.taskId);
+  if (!task) throw ApiError.notFound('Task not found');
+  const { confirmTaskPlan } = await import('../services/floorPlanning.service.js');
+  res.json({ success: true, data: await confirmTaskPlan(task, req.user, req.body) });
+}));
+
+/** The planner proposes again for a task's models not on a press — after the plant has moved on. */
+export const proposeTaskPlanHandler = asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.taskId)) throw ApiError.notFound('Task not found');
+  const { default: Todo } = await import('../models/Todo.js');
+  const task = await Todo.findById(req.params.taskId);
+  if (!task) throw ApiError.notFound('Task not found');
+  const { proposeTaskPlan, taskPlan } = await import('../services/floorPlanning.service.js');
+  const { floorPlanningOn } = await import('../services/settings.service.js');
+  if (!(await floorPlanningOn())) throw ApiError.conflict('Production floor planning is off — Admin turns it on');
+  await proposeTaskPlan(task);
+  res.json({ success: true, data: await taskPlan(await Todo.findById(task._id), req.user) });
+});
+
+/** How often the in charge confirmed the planner as proposed [planLearning.service `plannerStats`]. */
+export const plannerStatsHandler = asyncHandler(async (req, res) => {
+  const { plannerStats } = await import('../services/planLearning.service.js');
+  res.json({ success: true, data: await plannerStats({ days: Math.min(Math.max(Number(req.query.days) || 30, 7), 365) }) });
+});
+
 /** A tap on the floor tablet's mould change checklist [floorPlanning.service `setupStep`]. */
 export const setupStepHandler = asyncHandler(transactional(async (req, res) => {
   const wo = await byId(req.params.id);

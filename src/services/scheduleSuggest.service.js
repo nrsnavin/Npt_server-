@@ -40,7 +40,7 @@ const urgencyOrder = (a, b) => (PRIORITY[a.priority] ?? 2) - (PRIORITY[b.priorit
  * The suggestion, without a database. `jobs` carry `_id`, `number`, `status`, `machine`,
  * `sequence`, `mould` (fit and capacity fields), `colour`, `dueDay`, `priority`, `toMake`.
  */
-export function suggestSchedule({ presses, jobs, plant, slipOf = () => 1, today = indiaDay() }) {
+export function suggestSchedule({ presses, jobs, plant, slipOf = () => 1, today = indiaDay(), learnedOf = null }) {
   const options = { plant, slipOf, today };
   const pressById = new Map(presses.map((press) => [String(press._id), press]));
 
@@ -65,7 +65,7 @@ export function suggestSchedule({ presses, jobs, plant, slipOf = () => 1, today 
 
   for (const job of waiting) {
     /* Every press scored for it as the plan now stands [pressScore.service] — the lowest wins. */
-    const ranked = rankPresses({ job, presses, queues, plant, slipOf, today, mouldSlots: mouldSlotsOf(queues, presses, options) });
+    const ranked = rankPresses({ job, presses, queues, plant, slipOf, today, mouldSlots: mouldSlotsOf(queues, presses, options), learnedOf });
     if (!ranked.sized) {
       cannot.push({ _id: job._id, number: job.number, why: ranked.why });
       continue;
@@ -171,8 +171,8 @@ async function narrate(result) {
 
 /** The suggestion for the plant's open work orders now, with a narrative when one is available. */
 export async function suggestPlan({ explain = true } = {}) {
-  const { plant, presses, jobs, slipOf } = await planInputs();
-  const result = suggestSchedule({ presses, jobs, plant, slipOf });
+  const { plant, presses, jobs, slipOf, learnedOf } = await planInputs();
+  const result = suggestSchedule({ presses, jobs, plant, slipOf, learnedOf });
   const narrative = explain && result.moves.length ? await narrate(result) : null;
   return { ...result, narrative, generatedAt: new Date() };
 }

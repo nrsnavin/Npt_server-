@@ -71,6 +71,26 @@ const workOrderSchema = new mongoose.Schema(
       skipped: { reason: { type: String, trim: true, maxlength: 300 }, at: Date, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } },
       _id: false,
     },
+    /*
+     * The auto-planner's proposal for a work order not on a press yet [floorPlanning.service
+     * `proposeTaskPlan`]: the press it would go on, the days, the reasons — what it learned from
+     * the in charge's own choices among them. Nothing is placed until the in charge confirms; a
+     * placement clears it. No press can take it: `machine` empty and `why`.
+     */
+    proposal: {
+      machine: { type: mongoose.Schema.Types.ObjectId, ref: 'Machine' },
+      start: String,
+      end: String,
+      late: Boolean,
+      lateDays: Number,
+      score: Number,
+      summary: { type: String, trim: true, maxlength: 500 },
+      reasons: [{ good: Boolean, text: { type: String, trim: true, maxlength: 300 }, _id: false }],
+      learned: [{ type: String, trim: true, maxlength: 300 }],
+      why: { type: String, trim: true, maxlength: 300 },
+      at: Date,
+      _id: false,
+    },
 
     history: {
       type: [new mongoose.Schema({

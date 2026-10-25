@@ -105,7 +105,9 @@ test('on: each routed model gets a work order; planned from the task, the runs m
   assert.equal(plan.on, true);
   const crf35 = plan.models.find((row) => row.model === 'CRF-35');
   assert.equal(crf35.workOrder.machine, null);
-  assert.equal(crf35.best.machine.code, 'IM-1', 'its best press, scored');
+  /* The auto-planner proposed its best press on routing; the in charge places it. */
+  assert.equal(crf35.workOrder.proposal.machine.code, 'IM-1', 'its best press, scored and proposed');
+  crf35.best = crf35.workOrder.proposal;
 
   /* The floor does not plan; the in charge does, from the task. */
   assert.equal((await api(`/api/production/task-plan/${production._id}/place`, { method: 'POST', as: 'ravi', body: { model: 'CRF-35', machine: crf35.best.machine._id } })).status, 403);

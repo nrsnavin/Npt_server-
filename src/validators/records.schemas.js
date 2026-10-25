@@ -122,6 +122,8 @@ export const workOrderPlanSchema = z.object({
 
 /** One model of a Production task put on a press [floorPlanning.service `placeTaskModel`]. */
 export const taskPlaceSchema = z.object({ model: z.string().trim().min(1).max(120), machine: objectId });
+/** The auto-planner's proposals confirmed — every model's, or these [floorPlanning.service `confirmTaskPlan`]. */
+export const taskConfirmSchema = z.object({ models: z.array(z.string().trim().min(1).max(120)).max(50).optional() });
 /** A tap on the mould change checklist [floorPlanning.service `setupStep`]. */
 export const setupStepSchema = z.object({ step: z.enum(['mouldOff', 'mouldOn', 'heated', 'firstPiece']), undo: z.boolean().optional() });
 

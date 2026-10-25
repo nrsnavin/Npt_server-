@@ -1,4 +1,4 @@
-import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, placeTaskModelHandler, pressChoicesHandler, sequenceByColourHandler, setupStepHandler, taskPlanHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
+import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, placeTaskModelHandler, confirmTaskPlanHandler, proposeTaskPlanHandler, plannerStatsHandler, pressChoicesHandler, sequenceByColourHandler, setupStepHandler, taskPlanHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
 import { componentStockSchema } from '../validators/component.schemas.js';
 import { applyPlanHandler, askProductionHandler, floorMessagesHandler, maintenanceRiskHandler, purchaseForecastHandler, suggestPlanHandler } from '../controllers/productionInsights.controller.js';
 import { Router } from 'express';
@@ -12,7 +12,7 @@ import {
   listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine, logRunHandler, runReasonsHandler,
 } from '../controllers/records.controller.js';
 import {
-  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema, taskPlaceSchema, setupStepSchema, andonSchema, andonClearSchema, planApplySchema, productionAskSchema,
+  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema, taskPlaceSchema, taskConfirmSchema, setupStepSchema, andonSchema, andonClearSchema, planApplySchema, productionAskSchema,
 } from '../validators/records.schemas.js';
 
 /**
@@ -66,6 +66,10 @@ router.get('/production/plan/choices/:id', requireModule('production'), pressCho
 /* Floor planning: a Production task's press step, a model put on a press from the task, the mould change checklist. */
 router.get('/production/task-plan/:taskId', anyModule([['production', 'read'], ['orders', 'read']]), taskPlanHandler);
 router.post('/production/task-plan/:taskId/place', requireModule('production', 'write'), requireProductionInCharge(), validate(taskPlaceSchema), placeTaskModelHandler);
+/* The auto-planner: its proposals confirmed (or proposed again) by the in charge; how often they agreed. */
+router.post('/production/task-plan/:taskId/confirm', requireModule('production', 'write'), requireProductionInCharge(), validate(taskConfirmSchema), confirmTaskPlanHandler);
+router.post('/production/task-plan/:taskId/propose', requireModule('production', 'write'), requireProductionInCharge(), proposeTaskPlanHandler);
+router.get('/production/planner-stats', anyModule([['production', 'read'], ['orders', 'read']]), plannerStatsHandler);
 router.post('/work-orders/:id/setup', requireModule('production', 'write'), validate(setupStepSchema), setupStepHandler);
 /* The shop floor: the job card with its QR code, the tablet's view, the andon call, the shift handover. */
 router.get('/work-orders/:id/job-card', anyModule([['production', 'read'], ['orders', 'read']]), jobCardHandler);

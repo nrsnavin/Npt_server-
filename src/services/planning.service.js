@@ -248,6 +248,11 @@ export async function planningBoard({ days = 14 } = {}) {
         /* The mould change on the floor tablet: the first piece approved, or a run already made. */
         firstPiece: Boolean(job.setup?.firstPiece?.at || job.firstRunAt),
       } : null,
+      /* The auto-planner's proposal, waiting for the in charge to confirm [floorPlanning.service `proposeTaskPlan`]. */
+      proposal: !job.machine && job.proposal?.machine ? (() => {
+        const press = machines.find((entry) => String(entry._id) === String(job.proposal.machine));
+        return press ? { machine: { _id: press._id, code: press.code }, start: job.proposal.start || null, end: job.proposal.end || null, late: Boolean(job.proposal.late), learned: job.proposal.learned || [] } : null;
+      })() : null,
       updatedAt: job.updatedAt,
     };
   };
