@@ -282,3 +282,17 @@ test('the approved sample’s photos sit beside the order’s checks; a mould wi
   const after = await api(`/api/moulds/${mouldId}`, { as: 'admin' });
   assert.equal(after.json.data.photo.fromSample, undefined);
 });
+
+test('several models in the bag: the pieces sent of each, and the sample’s quantity is their sum', async () => {
+  const { sample } = await requested();
+  assert.ok(sample.items.length > 1, 'a sample of two models');
+  await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noPhoto: true, noPhotoReason: 'Photos taken on the phone' } });
+  const [first, second] = sample.items;
+  const short = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'dispatched', courier: 'Blue Dart', awbNumber: '77213904119', itemQuantities: [{ item: first._id, quantity: 3 }] } });
+  assert.equal(short.status, 400);
+  assert.match(short.json.message, /Say the pieces sent of/);
+  const gone = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'dispatched', courier: 'Blue Dart', awbNumber: '77213904119', itemQuantities: [{ item: first._id, quantity: 3 }, { model: second.modelNumber, quantity: 2 }] } });
+  assert.equal(gone.status, 200, gone.json.message);
+  assert.deepEqual(gone.json.data.items.map((row) => row.dispatchedQuantity), [3, 2]);
+  assert.equal(gone.json.data.dispatchedQuantity, 5);
+});

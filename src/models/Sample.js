@@ -216,6 +216,8 @@ const itemSchema = new mongoose.Schema(
     ...requirementFields(),
     mould: { type: mongoose.Schema.Types.ObjectId, ref: 'Mould' },
     quantity: { type: Number, min: 1, default: 1 },
+    /* The pieces of this model that went in the bag [setSampleStatus dispatched]; the sample's `dispatchedQuantity` is their sum. */
+    dispatchedQuantity: { type: Number, min: 0 },
     /**
      * The two pictures of this model, side by side [the sampling audit, gaps 1 and 2].
      *

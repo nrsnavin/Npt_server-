@@ -84,7 +84,7 @@ test('the suggestion spreads late work across presses that can hold the mould, k
   const all = result.plan.flatMap((press) => press.jobs.map((job) => ({ ...job, press: press.machine.code })));
   const urgent = all.find((job) => job.number === 'WO-3');
   assert.equal(urgent.press, 'IM-1', 'the urgent white job stays behind the white run — no purge, still on time');
-  assert.match(urgent.why, /already on White/);
+  assert.match(urgent.why, /^IM-1: .*Already on White — no purge/);
   const moved = all.find((job) => job.number === 'WO-2');
   assert.deepEqual([moved.press, moved.from], ['IM-2', 'IM-1'], 'the black job moves to the free press to make its date');
   assert.ok(result.moves.every((move) => move.workOrder !== 'run'), 'the running job is never moved');

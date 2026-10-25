@@ -1429,8 +1429,11 @@ async function answerParent(clarification, user, text) {
  * enquiry's marketing person, due today, with the comment. The status reached by uploading the
  * work (SO Prepared) is not chosen here — see `finishWithResult`.
  */
-export async function setTaskStatus(task, user, { status, note, date, fields, models, load = null }) {
+export async function setTaskStatus(task, user, { status, note, date, dates, fields, models, load = null }) {
   openHandoff(task, user);
+  /* A date for each model on the move, or one for all [Todo `modelDates`] — the latest stands for the move. */
+  const perModel = Array.isArray(dates) && dates.length && EDD_TASK_KINDS.includes(task.kind) ? datesForModels(task, { models: dates }) : null;
+  if (perModel) date = perModel.reduce((latest, entry) => (entry.date > latest ? entry.date : latest), '');
   const form = findHandoff(task.kind)?.form || {};
   const step = statusesOf(task).find((entry) => entry.key === status);
   if (!step) fail('That is not one of this task’s statuses');
@@ -1513,7 +1516,12 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   /* A team that hands on gives a hand-over date, not the EDD [decideRouting] — for a model that goes on from it. A move whose models all end here gives their completion date. */
   const handsOn = readyDate && (await goOnFromHere(task, partial ? moving : modelsOfTask(task))) ? handsOnOf(task) : [];
   const dateText = handsOn.length ? dateLabelOf(task) : form.statusDate?.label || 'Ready date';
-  const said = [label, readyDate && `${dateText} ${readyDate}`].filter(Boolean).join(' · ');
+  const movedModels = partial ? moving : modelsOfTask(task);
+  const dated = perModel ? perModel.filter((entry) => !movedModels.length || movedModels.includes(entry.model)) : null;
+  /* A hand-over is never on or after the EDD: the next team needs the days in between [assertHandoverBeforeEdd]. */
+  if (handsOn.length) await assertHandoverBeforeEdd(task, dated || movedModels.map((model) => ({ model, date: readyDate })));
+  const eachDate = dated && new Set(dated.map((entry) => entry.date)).size > 1 ? ` (${dated.map((entry) => `${entry.model} ${prettyDay(entry.date)}`).join(' · ')})` : '';
+  const said = [label, readyDate && `${dateText} ${readyDate}${eachDate}`].filter(Boolean).join(' · ');
   /* A ready date is the enquiry's EDD (Production) or ERD (the mould) from here on [enquiryProgress]. */
   const dateField = handsOn.length ? 'handover' : form.statusDate?.field || 'edd';
   /* What the move recorded — the models and pieces in a part load, who collected a sample — kept on the line with its date. */
@@ -1529,7 +1537,7 @@ export async function setTaskStatus(task, user, { status, note, date, fields, mo
   await task.save();
   /* A ready date with a status counts for every model on the task; each model's EDD is its teams' latest. */
   if (readyDate && (dateField === 'edd' || dateField === 'handover') && EDD_TASK_KINDS.includes(task.kind)) {
-    recordModelDates(task, user, (partial ? moving : modelsOfTask(task).length ? modelsOfTask(task) : ['All models']).map((model) => ({ model, date: readyDate })));
+    recordModelDates(task, user, dated?.length ? dated : (partial ? moving : modelsOfTask(task).length ? modelsOfTask(task) : ['All models']).map((model) => ({ model, date: readyDate })));
     await task.save();
     if (dateField === 'handover') await passHandover(task, user, readyDate, text);
     if (task.enquiry) await refreshModelEdds(task.enquiry, user, text);
@@ -1716,6 +1724,47 @@ const goesOnFrom = (task, row) => {
  * What the job ordered, model by model: the SO's lines, else the enquiry's items, else the models
  * the task names. `task` may be a Dispatch request or null (an enquiry alone).
  */
+/** Pieces a request's lines give each model: `[[model, quantity], …]`, quantities above nought only. */
+const linesOf = (brief) => (Array.isArray(brief?.items) ? brief.items : [])
+  .map((row) => [String(row?.model || row?.modelNumber || '').trim(), Number(String(row?.quantity ?? '').replace(/,/g, '')) || 0])
+  .filter(([model, quantity]) => model && quantity > 0);
+
+/**
+ * Fills the models with no pieces counted from the job's requests (newest first) and then its
+ * newest quotation [orderedModelsOf]. With no models named at all, the first request that gives
+ * pieces names them.
+ */
+async function fillQuantities(ordered, { task = null, enquiryKey = null } = {}) {
+  const missing = () => !ordered.size || [...ordered.values()].some((quantity) => !quantity);
+  if (!missing()) return;
+  const take = (rows) => {
+    const none = !ordered.size;
+    for (const [name, quantity] of rows) {
+      const match = [...ordered.keys()].find((model) => model.toLowerCase() === name.toLowerCase());
+      if (match && !ordered.get(match)) ordered.set(match, quantity);
+      else if (!match && none) ordered.set(name, quantity);
+    }
+  };
+  take(linesOf(task?.brief));
+  if (!missing()) return;
+  const where = enquiryKey
+    ? { enquiry: enquiryKey }
+    : task ? { $or: [{ chain: task.chain || task._id }, { _id: task.chain || task._id }] } : null;
+  if (where) {
+    /* A sample's pieces are three to show the buyer, not the order — never counted. */
+    const requests = await Todo.find({ ...where, kind: { $nin: ['sample_request', 'sample_collect'] }, 'brief.items.quantity': { $exists: true } }).sort({ createdAt: -1 }).select('brief.items').limit(30).lean();
+    for (const request of requests) {
+      take(linesOf(request.brief));
+      if (!missing()) return;
+    }
+  }
+  if (enquiryKey) {
+    const { default: Quotation } = await import('../models/Quotation.js');
+    const quotation = await Quotation.findOne({ enquiry: enquiryKey }).sort({ createdAt: -1 }).select('lines.modelNumber lines.quantity lines.mould').populate({ path: 'lines.mould', select: 'mouldCode' }).lean();
+    take((quotation?.lines || []).map((line) => [String(line.modelNumber || line.mould?.mouldCode || '').trim(), Number(line.quantity) || 0]).filter(([model, quantity]) => model && quantity > 0));
+  }
+}
+
 export async function orderedModelsOf({ task = null, enquiryId = null } = {}) {
   const { default: SalesOrder } = await import('../models/SalesOrder.js');
   const enquiryKey = enquiryId || task?.enquiry?._id || task?.enquiry || null;
@@ -1732,18 +1781,12 @@ export async function orderedModelsOf({ task = null, enquiryId = null } = {}) {
   };
   if (order?.lines?.length) for (const line of order.lines) add(line.modelNumber, line.quantity);
   else if (enquiry?.items?.length) for (const item of enquiry.items) add(item.modelNumber, item.quantity);
-  /* No SO and no quantities on the enquiry: the pieces the Production request carried, model by model. */
-  if (!order?.lines?.length && enquiryKey && [...ordered.values()].every((quantity) => !quantity)) {
-    const production = await Todo.findOne({ enquiry: enquiryKey, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('brief').lean();
-    const none = !ordered.size;
-    for (const row of Array.isArray(production?.brief?.items) ? production.brief.items : []) {
-      const name = String(row?.model || row?.modelNumber || '').trim();
-      const quantity = Number(String(row?.quantity ?? '').replace(/,/g, '')) || 0;
-      if (!name || !quantity) continue;
-      const match = [...ordered.keys()].find((model) => model.toLowerCase() === name.toLowerCase());
-      if (match || none) ordered.set(match || name, quantity);
-    }
-  }
+  /*
+   * No SO: a model the enquiry gives no pieces for takes them from the job's own requests, newest
+   * first — the SO request's lines, the Production request's, the quotation request's, this
+   * Dispatch request's — and else from the newest quotation. A model already counted keeps its count.
+   */
+  if (!order?.lines?.length) await fillQuantities(ordered, { task, enquiryKey });
   /* No SO: a request for one model says how many are to go. */
   const asked = Number(String(briefQuantity(task?.brief) || '').replace(/,/g, ''));
   if (!order?.lines?.length && ordered.size === 1 && asked > 0) ordered.set([...ordered.keys()][0], asked);
@@ -1803,6 +1846,7 @@ export async function dispatchSheet(task) {
   const readiness = enquiryId ? await modelReadiness(enquiryId) : await modelReadiness(null, { task });
   const key = (model) => String(model || '').trim().toLowerCase();
   const waiting = new Map((readiness.waiting || []).map((row) => [key(row.model), row.team]));
+  const waitingStatus = new Map((readiness.waiting || []).map((row) => [key(row.model), row.status]));
   return {
     plan: enquiry ? dispatchModeOf(enquiry) : 'together',
     order: order ? { _id: order._id, number: order.number } : null,
@@ -1813,7 +1857,7 @@ export async function dispatchSheet(task) {
     models: [...ordered].map(([model, quantity]) => ({
       model, ordered: quantity, sent: sent.get(model) || 0,
       ready: !waiting.has(key(model)),
-      ...(waiting.has(key(model)) ? { waitingOn: waiting.get(key(model)) } : {}),
+      ...(waiting.has(key(model)) ? { waitingOn: waiting.get(key(model)), waitingStatus: waitingStatus.get(key(model)) } : {}),
     })),
     modes: findHandoff(task.kind)?.form?.dispatchModes || [],
     loads: (task.loads || []).length,
@@ -3309,8 +3353,11 @@ export async function taskPrefill(enquiryId) {
   const source = enquiry.items?.length ? enquiry.items : [enquiry.requirement || {}];
   let rows = source.map(described).filter((row) => row.model || row.material || row.colour);
   if (!rows.length) rows = others.filter((row, at) => row.model && others.findIndex((entry) => sameModel(entry, row)) === at);
+  /* What the job last said of each model — a print changed on the quotation, a resin changed for the sample — carries on [itemDetails.service]. */
+  const { latestItemDetails, withLatest } = await import('./itemDetails.service.js');
+  const lastSaid = await latestItemDetails(enquiry._id);
   const filledRows = rows.map((row) => {
-    const filled = { ...row };
+    let filled = { ...row };
     for (const other of others.filter((entry) => sameModel(entry, row))) {
       for (const key of ['material', 'colour', 'hook', 'clip', 'print', 'packing']) {
         if (!filled[key] && other[key]) filled[key] = other[key];
@@ -3318,6 +3365,7 @@ export async function taskPrefill(enquiryId) {
       if (filled.mandatory == null && other.mandatory != null) filled.mandatory = other.mandatory;
     }
     if (!filled.material) filled.material = filled.family || others.find((entry) => sameModel(entry, row) && entry.family)?.family || '';
+    filled = withLatest(filled, lastSaid.get(String(filled.model || '').trim().toLowerCase()));
     return {
       model: filled.model,
       material: filled.material,
@@ -3490,6 +3538,7 @@ export async function setTaskEdd(task, user, { date, note, models }) {
     /* The next team hears the date of the models that go on to it — a model that ends here is its completion date, not theirs. */
     const onward = [];
     for (const entry of entries) if (await goOnFromHere(task, [entry.model])) onward.push(entry);
+    await assertHandoverBeforeEdd(task, onward.length ? onward : entries);
     const handOverDay = (onward.length ? onward : entries).reduce((latest, entry) => (entry.date > latest ? entry.date : latest), '');
     const said = `Hand-over to ${teamWords(handsOn)} on ${prettyDay(handOverDay)}${perModel}`;
     task.updates = [...(task.updates || []), {
@@ -3826,6 +3875,29 @@ async function marketingEddFor(task) {
 }
 
 /**
+ * How many days each finishing team gets before the EDD by default [settings.service
+ * `handoverLeadDays`, which Production, Admin or marketing may change; web: utils/edd.js
+ * `handOverDefault`]: printed and assembled, to Printing 10 days before and to Assembly 5.
+ */
+export const HANDOVER_LEAD_DAYS = 5;
+
+/**
+ * A hand-over to Printing or Assembly is never on or after the EDD — the next team needs the
+ * days in between; by default it is HANDOVER_LEAD_DAYS before. A model's own EDD wins over the job's.
+ */
+async function assertHandoverBeforeEdd(task, entries) {
+  const edd = await marketingEddFor(task);
+  if (!edd) return;
+  for (const entry of entries) {
+    const due = (edd.models || []).find((row) => row.model === entry.model)?.date || edd.date;
+    if (due && entry.date && entry.date >= due) {
+      const lead = (await (await import('./settings.service.js')).plantCalendar()).handoverLeadDays || HANDOVER_LEAD_DAYS;
+      fail(`The hand-over${entry.model && entry.model !== 'All models' ? ` for ${entry.model}` : ''} (${prettyDay(entry.date)}) is on or after the EDD (${prettyDay(due)}) — hand over before it, ${lead} days a team by default, so the next team has time`);
+    }
+  }
+}
+
+/**
  * Production's answer, model by model: which need printing, which need assembly. The teams that
  * follow get their tasks at once, with only the models they have and the hand-over date if one
  * was given; a team no longer needed has its untouched task closed, or is told. May be changed
@@ -4079,22 +4151,34 @@ export async function modelReadiness(enquiryId, { task: onTask = null } = {}) {
   const tasks = await Todo.find({ ...where, kind: { $in: EDD_TASK_KINDS }, createdAt: { $gte: start.createdAt } }).select('kind status completed modelStatuses').lean();
   const KIND_OF_TEAM = { production: 'ask_edd', printing: 'ask_printing', assembling: 'ask_assembling_edd' };
   /* The model's own status on that team's task, where it moved on its own; else the task's. */
-  const isDone = (task, model) => {
+  const stepOf = (task, model) => {
+    const status = (task.modelStatuses || []).find((row) => row.model === model)?.status || task.status;
+    return statusesOf(task).find((entry) => entry.key === status) || null;
+  };
+  /* Through this team: ready for dispatch or done — and, before the last team, handed on to the next. */
+  const through = (task, model, last) => {
     if (!task) return false;
     if (task.completed) return true;
-    const status = (task.modelStatuses || []).find((row) => row.model === model)?.status || task.status;
-    const step = statusesOf(task).find((entry) => entry.key === status);
-    return Boolean(step?.readyForDispatch || step?.done);
+    const step = stepOf(task, model);
+    return Boolean(step?.readyForDispatch || step?.done || (!last && step?.handsTo));
   };
   const routes = (start.routing?.models || []).length
-    ? start.routing.models.map((row) => ({ model: row.model, last: row.assembly ? 'assembling' : row.printing ? 'printing' : 'production' }))
-    : modelsOfTask(start).map((model) => ({ model, last: 'production' }));
+    ? start.routing.models.map((row) => ({ model: row.model, route: ['production', ...(row.printing ? ['printing'] : []), ...(row.assembly ? ['assembling'] : [])] }))
+    : modelsOfTask(start).map((model) => ({ model, route: ['production'] }));
   const ready = [];
   const waiting = [];
-  for (const { model, last } of routes) {
-    const task = tasks.find((entry) => entry.kind === KIND_OF_TEAM[last]);
-    if (isDone(task, model)) ready.push(model);
-    else waiting.push({ model, team: last });
+  /*
+   * A model not ready is with the first team on its route that has not passed it on — still in
+   * Production while it is moulded, not "with Assembly" because Assembly finishes it — and that
+   * team's status for it says where exactly.
+   */
+  const taskOf = (team) => tasks.find((entry) => entry.kind === KIND_OF_TEAM[team]);
+  for (const { model, route } of routes) {
+    /* Ready once the last team on its route says so, as before. */
+    if (through(taskOf(route.at(-1)), model, true)) { ready.push(model); continue; }
+    const at = route.find((team, index) => !through(taskOf(team), model, index === route.length - 1)) || route.at(-1);
+    const task = tasks.find((entry) => entry.kind === KIND_OF_TEAM[at]);
+    waiting.push({ model, team: at, status: task ? stepOf(task, model)?.label || 'Asked' : 'Not tasked yet' });
   }
   /*
    * Which of them have gone, from the loads on every Dispatch request of the job [recordDispatchLoad]:
@@ -4136,6 +4220,98 @@ export async function modelReadiness(enquiryId, { task: onTask = null } = {}) {
     ? { required: true, passed: ready.filter((model) => qcPassedModels(gate, [model])), atQc: ready.filter((model) => !qcPassedModels(gate, [model])) }
     : { required: false };
   return { ready, waiting, sent: routes.map((route) => route.model).filter((model) => sent.has(model)), partSent, qc };
+}
+
+/**
+ * Each model's own journey [web: components/ModelJourney.jsx]: the steps its route takes —
+ * Production, then Printing and Assembly where Production routed it there, Quality where QC is
+ * compulsory, then Dispatch — and where each stands: `done` (handed on, ready, passed, sent),
+ * `now` (the team working it), `issue` (a problem said on it), or `waiting` (a step before it is
+ * not through yet). A model with neither printing nor assembly goes Production → Dispatch.
+ * Works for an enquiry's job, or a team job (no enquiry) by its chain.
+ */
+export async function modelJourneys(enquiryId, { task: onTask = null } = {}) {
+  const id = enquiryId?._id || enquiryId || null;
+  const where = id ? { enquiry: id } : onTask ? jobFilter(onTask) : null;
+  if (!where) return [];
+  const start = await Todo.findOne({ ...where, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt routing brief kind status modelStatuses completed').lean();
+  if (!start) return [];
+  const key = (model) => String(model || '').trim().toLowerCase();
+  const KINDS = { production: 'ask_edd', printing: 'ask_printing', assembling: 'ask_assembling_edd' };
+  const tasks = await Todo.find({ ...where, kind: { $in: EDD_TASK_KINDS }, createdAt: { $gte: start.createdAt } }).sort({ createdAt: -1 }).select('kind status completed modelStatuses modelDates routing jobEdd').lean();
+  const taskOf = (kind) => tasks.find((entry) => entry.kind === kind) || null;
+  /* Marketing's EDD for each model: set for it, else the enquiry's (a team job's, from its tasks). */
+  const enquiry = id ? await Enquiry.findById(id).select('edd eddByModel').lean() : null;
+  const jobEdd = enquiry ? enquiry.edd?.date || null : tasks.find((entry) => entry.jobEdd?.date)?.jobEdd?.date || null;
+  const eddOf = (model) => (enquiry?.eddByModel || []).find((row) => key(row.model) === key(model))?.final?.date || jobEdd;
+  /* The date a team gave for a model — by name, else its date for all models. */
+  const dateOf = (team, model) => {
+    const rows = taskOf(KINDS[team])?.modelDates || [];
+    return (rows.find((row) => key(row.model) === key(model)) || rows.find((row) => row.model === 'All models'))?.date || null;
+  };
+  const readiness = await modelReadiness(id, { task: onTask });
+  const { ordered } = await orderedModelsOf(id ? { enquiryId: id } : { task: onTask });
+  const loads = await jobDispatchLoads(id ? { enquiryId: id } : { task: onTask });
+  const sentQty = sentByModel(loads);
+  const qtyOf = (map, model) => [...map].find(([name]) => key(name) === key(model))?.[1] || 0;
+  const TEAM_LABELS = { production: 'Production', printing: 'Printing', assembling: 'Assembly', quality: 'Quality', dispatch: 'Dispatch' };
+  /* One team's reading of one model: its own status where it moved on its own, else the task's. */
+  const teamStep = (team, model, before, prior) => {
+    const task = taskOf(KINDS[team]);
+    const waitingWords = prior ? `Waiting for ${TEAM_LABELS[prior]}` : 'Waiting';
+    if (!task) return { team, label: TEAM_LABELS[team], status: before === 'done' ? 'Not tasked yet' : waitingWords, state: 'waiting' };
+    const own = (task.modelStatuses || []).find((row) => key(row.model) === key(model))?.status;
+    const statusKey = own || task.status;
+    const step = statusesOf(task).find((entry) => entry.key === statusKey);
+    const through = Boolean(task.completed || step?.handsTo || step?.readyForDispatch || step?.done);
+    const state = through ? 'done' : step?.issue ? 'issue' : before === 'done' || team === 'production' ? 'now' : 'waiting';
+    /* A team whose goods have not come yet waits for the team before — its own "Asked …" says nothing about the model. */
+    const status = state === 'waiting' ? waitingWords : task.completed && !through ? 'Done' : step?.label || 'Asked';
+    return { team, label: TEAM_LABELS[team], status, state };
+  };
+  const routes = (start.routing?.models || []).length
+    ? start.routing.models.map((row) => ({ model: row.model, printing: Boolean(row.printing), assembly: Boolean(row.assembly), decided: true }))
+    : modelsOfTask(start).map((model) => ({ model, printing: false, assembly: false, decided: false }));
+  return routes.map(({ model, printing, assembly, decided }) => {
+    const steps = [];
+    let before = 'done';
+    let prior = null;
+    const route = ['production', ...(printing ? ['printing'] : []), ...(assembly ? ['assembling'] : [])];
+    for (const team of route) {
+      const step = teamStep(team, model, before, prior);
+      /*
+       * Its date: the day it hands the model on to the next team where it goes on, else the day
+       * it completes it — the model's estimated completion [refreshModelEdds].
+       */
+      const date = dateOf(team, model);
+      if (date) Object.assign(step, { date, dateKind: team === route.at(-1) ? 'completion' : 'handover', dateLabel: team === route.at(-1) ? 'Completion' : `Hand-over to ${TEAM_LABELS[route[route.indexOf(team) + 1]]}` });
+      steps.push(step);
+      before = step.state;
+      prior = team;
+    }
+    const completion = dateOf(route.at(-1), model);
+    const ready = (readiness.ready || []).includes(model);
+    if (readiness.qc?.required) {
+      const passed = (readiness.qc.passed || []).includes(model);
+      steps.push({ team: 'quality', label: 'Quality', status: passed ? 'QC passed' : ready ? 'At Quality' : `Waiting for ${TEAM_LABELS[prior]}`, state: passed ? 'done' : ready ? 'now' : 'waiting' });
+      prior = 'quality';
+      before = passed ? 'done' : 'waiting';
+    }
+    const want = qtyOf(ordered, model);
+    const gone = qtyOf(sentQty, model);
+    const sent = (readiness.sent || []).includes(model);
+    const mayGo = ready && (!readiness.qc?.required || (readiness.qc.passed || []).includes(model));
+    steps.push({
+      team: 'dispatch', label: 'Dispatch',
+      status: sent ? `Sent${gone ? ` ${gone.toLocaleString('en-IN')} pcs` : ''}`
+        : gone ? `Part sent ${gone.toLocaleString('en-IN')}${want ? ` of ${want.toLocaleString('en-IN')}` : ''} pcs`
+          : mayGo ? 'Ready to dispatch' : `Waiting for ${TEAM_LABELS[prior]}`,
+      state: sent ? 'done' : gone || mayGo ? 'now' : 'waiting',
+      ordered: want, sent: gone,
+    });
+    const edd = eddOf(model);
+    return { model, decided, printing, assembly, steps, edd, completion, late: Boolean(edd && completion && completion > edd) };
+  });
 }
 
 /**

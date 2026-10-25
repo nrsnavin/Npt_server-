@@ -697,9 +697,10 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
   expectVersion(sample, req.body);
 
   const {
-    status, note, courier, awbNumber, dispatchedAt, dispatchedQuantity, dispatchedColour,
-    deliveryMethod, handedTo, recipientPhone,
+    status, note, courier, awbNumber, dispatchedAt, dispatchedColour,
+    deliveryMethod, handedTo, recipientPhone, itemQuantities,
   } = req.body;
+  let { dispatchedQuantity } = req.body;
 
   if (status === sample.status) throw ApiError.badRequest(`Already at ${status}`);
   if (CLOSED_SAMPLE_STATUSES.includes(sample.status)) {
@@ -835,6 +836,22 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
   }
 
   if (status === 'dispatched') {
+    /*
+     * Several models in the bag: the pieces of each, model by model [web: SampleDetail's dispatch
+     * step], and the sample's quantity is their sum. Every model is answered — none sent is a 0.
+     * A total alone (an older caller) is still taken.
+     */
+    const rows = sample.items || [];
+    if (rows.length > 1 && Array.isArray(itemQuantities) && itemQuantities.length) {
+      const said = (row) => itemQuantities.find((entry) => (entry.item && String(entry.item) === String(row._id))
+        || (entry.model && String(entry.model).trim().toLowerCase() === String(row.modelNumber || '').trim().toLowerCase()));
+      const unanswered = rows.filter((row) => !said(row));
+      if (unanswered.length) throw ApiError.badRequest(`Say the pieces sent of ${unanswered.map((row) => row.modelNumber || 'each model').join(', ')}`);
+      for (const row of rows) row.dispatchedQuantity = said(row).quantity;
+      dispatchedQuantity = rows.reduce((sum, row) => sum + (row.dispatchedQuantity || 0), 0);
+      if (!(dispatchedQuantity > 0)) throw ApiError.badRequest('A dispatch sends at least one piece');
+      sample.markModified('items');
+    }
     // Whatever was arranged earlier stands unless this call overrides it, so details entered
     // in advance do not have to be typed a second time to get the sample out of the door.
     const method = deliveryMethod || sample.deliveryMethod || 'courier';

@@ -128,6 +128,12 @@ export const sampleStatusSchema = z.object({
   awbNumber: z.string().optional(),
   dispatchedAt: z.coerce.date().optional(),
   dispatchedQuantity: z.number().int().positive('A dispatch sends at least one piece').optional(),
+  /* Several models: the pieces of each that went [setSampleStatus] — by row id, or by model. */
+  itemQuantities: z.array(z.object({
+    item: z.string().regex(/^[a-f\d]{24}$/i).optional(),
+    model: z.string().trim().max(120).optional(),
+    quantity: z.number().int().min(0),
+  })).max(60).optional(),
   dispatchedColour: z.string().max(60).optional(),
   /* Sample Sent closes the bench's task in the same move, unless the bench unticks it [the work queue]. */
   closeTask: z.boolean().optional(),

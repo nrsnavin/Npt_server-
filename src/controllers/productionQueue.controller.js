@@ -260,6 +260,13 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
       },
     };
   });
+  /* Each model's own journey — Production, Printing / Assembly as routed, Quality, Dispatch [handoff.service `modelJourneys`]. */
+  const { modelJourneys } = await import('../services/handoff.service.js');
+  await Promise.all(rows.map(async (row, at) => {
+    const own = mine[at];
+    const enquiryId = row.enquiry?.team ? null : row.enquiry?._id || null;
+    row.journeys = await modelJourneys(enquiryId, { task: { _id: own._id, chain: own.chain } }).catch(() => []);
+  }));
   /* Will each order make marketing's EDD, all its models and teams counted [deliveryRisk.service]. */
   const deliveries = await deliveryRiskFor(rows.map((row) => row.enquiry?._id));
   for (const row of rows) row.delivery = (row.enquiry?._id && deliveries.get(String(row.enquiry._id))) || null;
@@ -365,6 +372,8 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
       delivery: team ? null : (await deliveryRiskFor([enquiry._id])).get(String(enquiry._id)) || null,
       summary: summarise({ task, enquiry, teams, floor: { ...floor, running: floor.running.map((run) => ({ ...run, machine: run.machine?.code, mould: run.mould?.mouldCode })) }, workOrders, edd }),
       models: modelRows({ task, enquiry, teams, workOrders }),
+      /* Each model's own journey, step by step [handoff.service `modelJourneys`]. */
+      journeys: await (await import('../services/handoff.service.js')).modelJourneys(team ? null : enquiry._id, { task: { _id: task._id, chain: task.chain } }).catch(() => []),
       teams: teamsWithClosable,
       workOrders,
       specs,

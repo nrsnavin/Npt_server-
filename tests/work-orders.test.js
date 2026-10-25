@@ -300,6 +300,36 @@ test('the board chains a press back to back, refuses a mould the press cannot ho
   assert.equal(fit.json.data.ok, false);
 });
 
+test('every press is scored for a job, with reasons; a press that cannot hold the mould says why', async () => {
+  const narrow = await machineOf('IM-NARROW');
+  /* The tie bars and the mould's face: 450 × 450 does not pass a 300 × 300 gap. */
+  const saved = await api(`/api/machines/${narrow._id}`, { method: 'PATCH', token: ramesh, body: { tieBarWidthMm: 300, tieBarHeightMm: 300, hasDryer: false } });
+  assert.equal(saved.status, 200, saved.json.message);
+  assert.equal(saved.json.data.tieBarWidthMm, 300);
+  const sized = await api(`/api/moulds/${mould}`, { method: 'PATCH', token: admin, body: { widthMm: 450, heightMm: 450, changeoverMinutes: 90 } });
+  assert.equal(sized.status, 200, sized.json.message);
+
+  const order = await released([{ mould, modelNumber: 'NH-400', colour: 'Blue', quantity: 9000, unitPrice: 7.5, deliveryDate: inDays(25) }]);
+  const [wo] = (await api(`/api/work-orders?order=${order._id}`, { token: ramesh })).json.data;
+  const ranked = await api(`/api/production/plan/choices/${wo._id}`, { token: ramesh });
+  assert.equal(ranked.status, 200, ranked.json.message);
+  const { choices, cannot } = ranked.json.data;
+  assert.ok(choices.length >= 1);
+  assert.deepEqual(choices.map((choice) => choice.rank), choices.map((_, index) => index + 1));
+  assert.ok(choices.every((choice, index) => !index || choices[index - 1].score <= choice.score), 'lowest score first');
+  assert.ok(choices[0].reasons.length >= 2 && choices[0].summary);
+  const narrowNo = cannot.find((entry) => entry.machine.code === 'IM-NARROW');
+  assert.match(narrowNo.why, /does not pass between IM-NARROW’s tie bars/);
+  assert.ok(cannot.some((entry) => entry.machine.code === 'IM-SMALL'), 'the small shot press is out too');
+
+  /* Not on a press yet: the board names its best press. */
+  const board = (await api('/api/production/plan', { token: ramesh })).json.data;
+  const hint = board.unplanned.find((job) => String(job._id) === String(wo._id));
+  assert.equal(hint.best.machine.code, choices[0].machine.code);
+  assert.equal((await api(`/api/work-orders/${wo._id}`, { method: 'PATCH', token: ramesh, body: { machine: narrow._id } })).status, 400, 'the plan refuses it as well');
+  await api(`/api/moulds/${mould}`, { method: 'PATCH', token: admin, body: { widthMm: null, heightMm: null } });
+});
+
 test('the bill of materials gives the stores out in plan order and says what to buy', async () => {
   const { default: Material } = await import('../src/models/Material.js');
   const { default: Component } = await import('../src/models/Component.js');

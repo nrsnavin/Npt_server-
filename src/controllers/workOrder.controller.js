@@ -56,6 +56,13 @@ export const sequenceByColourHandler = asyncHandler(transactional(async (req, re
   res.json({ success: true, data: await sequenceByColour(req.params.machineId) });
 }));
 
+/** Every press ranked for one work order, lowest score best, with the reasons [pressScore.service]. */
+export const pressChoicesHandler = asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw ApiError.notFound('Work order not found');
+  const { pressChoices } = await import('../services/pressScore.service.js');
+  res.json({ success: true, data: await pressChoices(req.params.id) });
+});
+
 /** Whether a mould can go on a press — the blocks and the warnings — before anybody plans it. */
 export const fitHandler = asyncHandler(async (req, res) => {
   const { default: Mould } = await import('../models/Mould.js');

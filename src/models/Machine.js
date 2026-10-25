@@ -16,6 +16,19 @@ const machineSchema = new mongoose.Schema(
     year: { type: Number, min: 1950, max: 2100 },
     /* The largest shot it takes, for matching a mould to a machine. */
     shotCapacityGrams: { type: Number, min: 0 },
+    /*
+     * What else decides whether a mould fits [planning.service `fitOf`]: the clear gap between
+     * the tie bars (the mould passes between them), the smallest and largest mould thickness the
+     * platens close on, the hot-runner zones its controller drives, and whether a dryer stands
+     * beside it. Left blank, the check is not made.
+     */
+    tieBarWidthMm: { type: Number, min: 0 },
+    tieBarHeightMm: { type: Number, min: 0 },
+    minMouldHeightMm: { type: Number, min: 0 },
+    maxMouldHeightMm: { type: Number, min: 0 },
+    hotRunnerZones: { type: Number, min: 0, max: 64 },
+    hasDryer: { type: Boolean },
+    /* The bay or group it stands in — the machine wall groups by it. */
     location: { type: String, trim: true, maxlength: 80 },
     status: { type: String, enum: MACHINE_STATUSES, default: 'idle', index: true },
     /* Preventive maintenance every this many days; the last one and when the next falls due. */

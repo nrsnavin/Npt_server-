@@ -30,7 +30,9 @@ export async function setSecurityPolicy(changes, by) {
  * [services/capacity.service.js]. Hours a press actually runs in a day (two twelve-hour shifts,
  * less changeovers and breaks), the shifts worked, and the weekly day off.
  */
-export const PLANT_DEFAULTS = Object.freeze({ hoursPerDay: 22, shifts: ['A', 'B'], weeklyOff: 0 });
+export const PLANT_DEFAULTS = Object.freeze({ hoursPerDay: 22, shifts: ['A', 'B'], weeklyOff: 0, mouldChangeHours: 2, handoverLeadDays: 5 });
+/** The days each finishing team gets before the EDD, the least and most it may be set to. */
+export const HANDOVER_LEAD_RANGE = Object.freeze({ min: 1, max: 30 });
 export const PLANT_SHIFTS = ['A', 'B', 'C', 'General'];
 
 export async function plantCalendar() {
@@ -44,8 +46,25 @@ export async function setPlantCalendar(changes, by) {
     hoursPerDay: changes.hoursPerDay === undefined ? current.hoursPerDay : Math.min(24, Math.max(1, Number(changes.hoursPerDay))),
     shifts: changes.shifts === undefined ? current.shifts : [...new Set(changes.shifts.filter((shift) => PLANT_SHIFTS.includes(shift)))],
     weeklyOff: changes.weeklyOff === undefined ? current.weeklyOff : (changes.weeklyOff === null ? null : Number(changes.weeklyOff)),
+    /* A mould change, heat-up and first piece approved, when the mould itself does not say [pressScore.service]. */
+    mouldChangeHours: changes.mouldChangeHours === undefined ? current.mouldChangeHours : Math.min(24, Math.max(0, Number(changes.mouldChangeHours))),
+    /* Kept as it is: Production, Admin or marketing set it on its own [setHandoverLead]. */
+    handoverLeadDays: current.handoverLeadDays,
   };
   if (!next.shifts.length) next.shifts = [...PLANT_DEFAULTS.shifts];
+  await Setting.updateOne({ key: 'plant' }, { $set: { value: next, updatedBy: by?._id } }, { upsert: true });
+  return next;
+}
+
+/**
+ * The days each finishing team gets before the EDD [handoff.service `assertHandoverBeforeEdd`;
+ * web: utils/edd.js `handOverDefault`]: a printed and assembled model goes to Printing twice this
+ * before the EDD and to Assembly once; printed or assembled only, once. Production, Admin or
+ * marketing set it.
+ */
+export async function setHandoverLead(days, by) {
+  const current = await plantCalendar();
+  const next = { ...current, handoverLeadDays: Math.min(HANDOVER_LEAD_RANGE.max, Math.max(HANDOVER_LEAD_RANGE.min, Math.round(Number(days)))) };
   await Setting.updateOne({ key: 'plant' }, { $set: { value: next, updatedBy: by?._id } }, { upsert: true });
   return next;
 }

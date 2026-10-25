@@ -333,7 +333,7 @@ test('dispatch plan: each model as it is ready — a ready model goes to Quality
   assert.match(quality.notes || '', /Ready: DP-1 · still to come: DP-2/);
   const view = (await api(`/api/enquiries/${split.enquiry._id}/handoffs`, { as: 'nandhini' })).json;
   assert.equal(view.dispatchPlan.mode, 'by_model');
-  assert.deepEqual(view.readiness, { ready: ['DP-1'], waiting: [{ model: 'DP-2', team: 'printing' }], sent: [], partSent: [], qc: { required: true, passed: [], atQc: ['DP-1'] } }, 'made, and with Quality until it passes');
+  assert.deepEqual(view.readiness, { ready: ['DP-1'], waiting: [{ model: 'DP-2', team: 'production', status: 'EDD Request Received' }], sent: [], partSent: [], qc: { required: true, passed: [], atQc: ['DP-1'] } }, 'made, and with Quality until it passes');
 });
 
 test('Printing’s date for a model with no assembly after is its completion date — never a hand-over to Assembly', async () => {
@@ -421,7 +421,7 @@ test('only goods ready can be dispatched: no finishing → after Production; pri
   await new Promise((resolve) => setTimeout(resolve, 200));
   const dispatch = await Todo.findOne({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false }).lean();
   assert.ok(dispatch, 'RD-1 ready: Dispatch is asked');
-  assert.deepEqual(await sheetOf(dispatch._id), { 'RD-1': 'ready', 'RD-2': 'printing', 'RD-3': 'assembling' });
+  assert.deepEqual(await sheetOf(dispatch._id), { 'RD-1': 'ready', 'RD-2': 'printing', 'RD-3': 'printing' }, 'each where it is now — RD-3 is at Printing on its way to Assembly');
   const tooSoon = await dispatchLoad({ baseUrl, token: token.admin, taskId: dispatch._id, status: 'part_dispatched', models: 'RD-1, RD-2', pieces: 2000 });
   assert.equal(tooSoon.status, 400);
   assert.match(tooSoon.json.message, /RD-2 is still with Printing — only models marked Ready for Dispatch by their last team/);
@@ -481,11 +481,97 @@ test('all together: even with the request raised early, Dispatch can send nothin
   const dispatchId = raised.json.data.task._id;
   const early = await dispatchLoad({ baseUrl, token: token.admin, taskId: dispatchId, status: 'part_dispatched', models: 'PR-1', pieces: 400 });
   assert.equal(early.status, 400);
-  assert.match(early.json.message, /This order goes all together — nothing is dispatched until every model is ready \(PR-2 still with Printing\)/);
+  assert.match(early.json.message, /This order goes all together — nothing is dispatched until every model is ready \(PR-2 still with Production\)/);
 
   /* Marketing changes it to each model as it is ready: PR-1 may go now. */
   assert.equal((await api(`/api/enquiries/${enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'by_model' } })).status, 200);
   const now = await dispatchLoad({ baseUrl, token: token.admin, taskId: dispatchId, status: 'part_dispatched', models: 'PR-1', pieces: 400 });
   assert.equal(now.status, 200, now.json.message);
   assert.equal(now.json.data.status, 'part_dispatched', 'PR-2 still to go');
+});
+
+test('each model’s own journey: printed and assembled, assembled only, or neither — each step where it stands, on the workflow page and the queues', async () => {
+  const { enquiry, production } = await routedEnquiry('Journey Knits', '9840013780',
+    [{ modelNumber: 'JR-PA', quantity: 100 }, { modelNumber: 'JR-A', quantity: 100 }, { modelNumber: 'JR-0', quantity: 100 }],
+    [{ model: 'JR-PA', printing: true, assembly: true }, { model: 'JR-A', assembly: true }, { model: 'JR-0' }]);
+  const status = (id, as, body) => api(`/api/workspace/todos/${id}/status`, { method: 'POST', as, body });
+  const shape = (journeys) => Object.fromEntries(journeys.map((row) => [row.model, row.steps.map((step) => `${step.team}:${step.state}`).join(' → ')]));
+
+  let page = (await api(`/api/production/workflow/${production._id}`, { as: 'siva' })).json.data;
+  assert.deepEqual(shape(page.journeys), {
+    'JR-PA': 'production:now → printing:waiting → assembling:waiting → dispatch:waiting',
+    'JR-A': 'production:now → assembling:waiting → dispatch:waiting',
+    'JR-0': 'production:now → dispatch:waiting',
+  }, 'the route each model takes');
+  /* The same on the Production queue's row. */
+  const queueRow = (await api('/api/production/queue', { as: 'siva' })).json.data.find((row) => row.task._id === String(production._id));
+  assert.deepEqual(shape(queueRow.journeys), shape(page.journeys));
+
+  /* Production's dates: a hand-over for a model going on, the completion for one that ends with it. */
+  const dated = await api(`/api/workspace/todos/${production._id}/edd`, { method: 'POST', as: 'siva', body: { models: [{ model: 'JR-PA', date: indiaDay(3) }, { model: 'JR-0', date: indiaDay(2) }] } });
+  assert.equal(dated.status, 200, dated.json.message);
+  page = (await api(`/api/production/workflow/${production._id}`, { as: 'siva' })).json.data;
+  const stepOf = (model, team) => page.journeys.find((row) => row.model === model).steps.find((step) => step.team === team);
+  assert.deepEqual([stepOf('JR-PA', 'production').date, stepOf('JR-PA', 'production').dateLabel], [indiaDay(3), 'Hand-over to Printing']);
+  assert.deepEqual([stepOf('JR-0', 'production').date, stepOf('JR-0', 'production').dateLabel], [indiaDay(2), 'Completion']);
+  assert.equal(page.journeys.find((row) => row.model === 'JR-0').completion, indiaDay(2), 'its estimated completion');
+  assert.equal(page.journeys.find((row) => row.model === 'JR-PA').completion, null, 'Assembly has not given its completion yet');
+
+  /* JR-0 ready from Production; JR-PA to Printing; JR-A to Assembly. */
+  assert.equal((await status(production._id, 'siva', { status: 'ready_dispatch', note: 'JR-0 packed', models: ['JR-0'] })).status, 200);
+  assert.equal((await status(production._id, 'siva', { status: 'handed_printing', note: 'JR-PA moulded', models: ['JR-PA'] })).status, 200);
+  assert.equal((await status(production._id, 'siva', { status: 'handed_assembly', note: 'JR-A moulded', models: ['JR-A'] })).status, 200);
+  page = (await api(`/api/production/workflow/${production._id}`, { as: 'siva' })).json.data;
+  assert.deepEqual(shape(page.journeys), {
+    'JR-PA': 'production:done → printing:now → assembling:waiting → dispatch:waiting',
+    'JR-A': 'production:done → assembling:now → dispatch:waiting',
+    'JR-0': 'production:done → dispatch:now',
+  });
+  const dispatchStep = (journeys, model) => journeys.find((row) => row.model === model).steps.at(-1);
+  assert.equal(dispatchStep(page.journeys, 'JR-0').status, 'Ready to dispatch');
+  assert.equal(page.journeys.find((row) => row.model === 'JR-PA').steps[1].status, 'Goods Received', 'Printing’s own word for the model');
+  assert.equal(page.journeys.find((row) => row.model === 'JR-PA').steps[2].status, 'Waiting for Printing', 'a step not reached says whom it waits for');
+  assert.equal(page.journeys.find((row) => row.model === 'JR-PA').steps[3].status, 'Waiting for Assembly');
+
+  /* The same journeys on Printing's queue (Production's task has closed: every model has left it). */
+  const printingRow = (await api('/api/production/queue/printing', { as: 'priya' })).json.data.find((row) => row.enquiry?._id === String(enquiry._id));
+  assert.deepEqual(shape(printingRow.journeys), shape(page.journeys));
+});
+
+test('Printing gives each model its own date on a status move; a hand-over is never on or after the EDD', async () => {
+  const { enquiry: job, production: asked } = await routedEnquiry('Hand Over Knits', '9840011733',
+    [{ modelNumber: 'HO-1', quantity: 1000 }, { modelNumber: 'HO-2', quantity: 1000 }],
+    [{ model: 'HO-1', printing: true, assembly: true }, { model: 'HO-2', printing: true, assembly: true }]);
+  assert.equal((await api(`/api/enquiries/${job._id}/edd`, { method: 'POST', as: 'nandhini', body: { date: indiaDay(20) } })).status, 200);
+  /* Production's hand-over on the EDD itself is refused; five days before it is taken. */
+  const onEdd = await api(`/api/workspace/todos/${asked._id}/edd`, { method: 'POST', as: 'siva', body: { date: indiaDay(20) } });
+  assert.equal(onEdd.status, 400);
+  assert.match(onEdd.json.message, /on or after the EDD .* 5 days a team by default/);
+  assert.equal((await api(`/api/workspace/todos/${asked._id}/edd`, { method: 'POST', as: 'siva', body: { date: indiaDay(15) } })).status, 200);
+
+  /* Printing hands over to Assembly: a date for each model on the move. */
+  const printing = await Todo.findOne({ enquiry: job._id, kind: 'ask_printing', completed: false });
+  const handed = await api(`/api/workspace/todos/${asked._id}/status`, { method: 'POST', as: 'siva', body: { status: 'handed_printing', note: 'Moulded' } });
+  assert.equal(handed.status, 200, handed.json.message);
+  const late = await api(`/api/workspace/todos/${printing._id}/status`, { method: 'POST', as: 'priya', body: { status: 'handed_assembly', note: 'Printed', dates: [{ model: 'HO-1', date: indiaDay(17) }, { model: 'HO-2', date: indiaDay(21) }] } });
+  assert.equal(late.status, 400, 'HO-2 after the EDD');
+  assert.match(late.json.message, /for HO-2/);
+  const moved = await api(`/api/workspace/todos/${printing._id}/status`, { method: 'POST', as: 'priya', body: { status: 'handed_assembly', note: 'Printed', dates: [{ model: 'HO-1', date: indiaDay(16) }, { model: 'HO-2', date: indiaDay(18) }] } });
+  assert.equal(moved.status, 200, moved.json.message);
+  const saved = await Todo.findById(printing._id).lean();
+  assert.deepEqual(Object.fromEntries(saved.modelDates.map((row) => [row.model, row.date])), { 'HO-1': indiaDay(16), 'HO-2': indiaDay(18) });
+  assert.match(saved.updates.at(-1).note, /HO-1 .* · HO-2 /, 'the move says each model’s date');
+});
+
+test('the hand-over days are the Production in charge’s, Admin’s or marketing’s to change — not Printing’s', async () => {
+  assert.equal((await api('/api/settings/plant', { as: 'priya' })).json.data.handoverLeadDays, 5, 'five days a team by default');
+  assert.equal((await api('/api/settings/handover-lead', { method: 'PUT', as: 'priya', body: { days: 4 } })).status, 403);
+  const byMarketing = await api('/api/settings/handover-lead', { method: 'PUT', as: 'nandhini', body: { days: 6 } });
+  assert.equal(byMarketing.status, 200, byMarketing.json.message);
+  assert.equal(byMarketing.json.data.handoverLeadDays, 6);
+  assert.equal((await api('/api/settings/handover-lead', { method: 'PUT', as: 'siva', body: { days: 5 } })).json.data.handoverLeadDays, 5);
+  /* Changing the plant hours keeps it. */
+  await api('/api/settings/plant', { method: 'PUT', as: 'siva', body: { hoursPerDay: 21 } });
+  assert.equal((await api('/api/settings/plant', { as: 'siva' })).json.data.handoverLeadDays, 5);
+  assert.equal((await api('/api/settings/handover-lead', { method: 'PUT', as: 'siva', body: { days: 0 } })).status, 400);
 });

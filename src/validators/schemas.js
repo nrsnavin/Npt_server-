@@ -252,7 +252,11 @@ export const plantCalendarSchema = z.object({
   hoursPerDay: z.number().min(1).max(24).optional(),
   shifts: z.array(z.enum(['A', 'B', 'C', 'General'])).min(1).max(4).optional(),
   weeklyOff: z.number().int().min(0).max(6).nullable().optional(),
+  mouldChangeHours: z.number().min(0).max(24).optional(),
 });
+
+/** The days each finishing team gets before the EDD [settings.service `setHandoverLead`]. */
+export const handoverLeadSchema = z.object({ days: z.number().int().min(1).max(30) });
 
 export const securityPolicySchema = z.object({
   pinRequired: z.boolean().optional(),

@@ -261,6 +261,13 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
     row.summary = summariseRow(req.params.team, row);
     return row;
   });
+  /* Each model's own journey — Production, Printing / Assembly as routed, Quality, Dispatch [handoff.service `modelJourneys`]. */
+  const { modelJourneys } = await import('../services/handoff.service.js');
+  await Promise.all(rows.map(async (row, at) => {
+    const own = mine[at];
+    const enquiryId = row.enquiry?.team ? null : row.enquiry?._id || null;
+    row.journeys = await modelJourneys(enquiryId, { task: { _id: own._id, chain: own.chain } }).catch(() => []);
+  }));
   /* Will each order make marketing's EDD, all its models and teams counted [deliveryRisk.service]. */
   const deliveries = await deliveryRiskFor(rows.map((row) => row.enquiry?._id));
   for (const row of rows) row.delivery = (row.enquiry?._id && deliveries.get(String(row.enquiry._id))) || null;

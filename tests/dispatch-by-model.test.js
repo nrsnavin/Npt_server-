@@ -85,9 +85,12 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   const desk = await api('/api/departments/despatch/dashboard', { as: 'ravi' });
   assert.equal(desk.status, 200, desk.json.message);
   const row = desk.json.data.enquiries.find((entry) => String(entry.task._id) === String(dispatch._id));
-  assert.deepEqual(row.readiness, { plan: 'by_model', ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: [], partSent: [], qc: { required: false } });
+  /* The dispatch form says where CRF30 really is: still in Production, not with Assembly, which only finishes it. */
+  const early = (await api(`/api/workspace/todos/${dispatch._id}/dispatch`, { as: 'ravi' })).json.data.models.find((row) => row.model === 'CRF30');
+  assert.deepEqual([early.waitingOn, early.waitingStatus], ['production', 'EDD Request Received']);
+  assert.deepEqual(row.readiness, { plan: 'by_model', ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'production', status: 'EDD Request Received' }], sent: [], partSent: [], qc: { required: false } });
   /* Every Dispatch row carries the goods state for the desk's table, whatever the plan. */
-  assert.deepEqual(row.goods, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: [], partSent: [], qc: { required: false } });
+  assert.deepEqual(row.goods, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'production', status: 'EDD Request Received' }], sent: [], partSent: [], qc: { required: false } });
 
   /* Dispatch sends CRF25 on its own: the models sent are recorded on the move; the enquiry reads Part sent. */
   const part = await move(dispatch._id, 'ravi', 'part_dispatched', { note: 'VRL, LR 55021', fields: { modelsSent: 'crf25', piecesSent: 10000 } });
@@ -96,8 +99,15 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   const after = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data;
   assert.equal(after.marketingStatus, 'part_sent');
   const { readiness } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
-  assert.deepEqual(readiness, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: ['CRF25'], partSent: [], qc: { required: false } }, 'matched to the model however it was typed');
+  assert.deepEqual(readiness, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'production', status: 'EDD Request Received' }], sent: ['CRF25'], partSent: [], qc: { required: false } }, 'matched to the model however it was typed');
   assert.ok(await Todo.exists({ enquiry: enquiry._id, kind: 'lr_copy' }), 'the part load has its LR task');
+  /* The enquiry's one-glance view: where each model is, and the pieces gone. */
+  const records = await api(`/api/enquiries/${enquiry._id}/records`, { as: 'nandhini' });
+  assert.equal(records.status, 200, records.json.message);
+  const glance = Object.fromEntries(records.json.data.journeys.map((row) => [row.model, row.steps.map((step) => `${step.label}: ${step.status}`)]));
+  assert.deepEqual(glance.CRF25, ['Production: Ready for Dispatch', 'Dispatch: Sent 10,000 pcs']);
+  assert.equal(glance.CRF30[1], 'Assembly: Waiting for Production');
+  assert.equal(records.json.data.journeys.find((row) => row.model === 'CRF25').steps.at(-1).sent, 10000);
 
   /* CRF30 assembled and ready: the same request hears it, and Dispatched sends what is left. */
   const assembly = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_assembling_edd', completed: false }).lean();
@@ -106,6 +116,10 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   assert.equal((await move(assembly._id, 'anand', 'ready_dispatch', { note: 'CRF30 clipped and packed' })).status, 400, 'CRF30 is still with Production');
   assert.equal((await move(production._id, 'siva', 'handed_assembly', { models: ['CRF30'], note: 'CRF30 moulded' })).status, 200);
   assert.equal((await Todo.findById(assembly._id).lean()).status, 'goods_received', 'the hand-over reads Goods Received on Assembly’s task');
+  /* Where CRF30 is now: with Assembly, its goods received — it was in Production, not "with Assembly", until this hand-over. */
+  const sheet = (await api(`/api/workspace/todos/${dispatch._id}/dispatch`, { as: 'ravi' })).json.data;
+  const crf30 = sheet.models.find((row) => row.model === 'CRF30');
+  assert.deepEqual([crf30.ready, crf30.waitingOn, crf30.waitingStatus], [false, 'assembling', 'Goods Received']);
   assert.equal((await move(assembly._id, 'anand', 'ready_dispatch', { note: 'CRF30 clipped and packed' })).status, 200);
   await settle();
   const again = (await api('/api/departments/despatch/dashboard', { as: 'ravi' })).json.data.enquiries.find((entry) => String(entry.task._id) === String(dispatch._id));
@@ -187,4 +201,23 @@ test('models ready at different times: the first goes, its request is closed; th
     [[['TM-1 6000', 'Own vehicle', 'Part Quantity Dispatched']], [['TM-2 3000', 'Transporter', 'Fully Dispatched']]]);
   assert.ok(records.dispatch.requests[0].loads[0].proof?.key, 'with its proof');
   assert.equal(records.dispatch.requests[0].loads[0].by, 'Ravi Despatch');
+});
+
+test('no SO and no pieces on the enquiry: each model takes its pieces from the SO request, then the quotation — never a sample', async () => {
+  const enquiry = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customerId, items: [{ modelNumber: 'CRF-35' }, { modelNumber: 'CRF-44' }], nextAction: 'Call', nextFollowUpDate: soon() },
+  })).json.data;
+  /* A sample of three each first — not the order. */
+  await Todo.create({ department: 'sampling', title: 'Sample', kind: 'sample_request', enquiry: enquiry._id, brief: { items: [{ model: 'CRF-35', quantity: '3' }, { model: 'CRF-44', quantity: '3' }] } });
+  const { orderedModelsOf } = await import('../src/services/handoff.service.js');
+  assert.deepEqual([...(await orderedModelsOf({ enquiryId: enquiry._id })).ordered], [['CRF-35', 0], ['CRF-44', 0]]);
+  /* The SO request names the pieces of each model, before any SO is uploaded. */
+  await Todo.create({ department: 'order_confirmation', title: 'SO request', kind: 'po_so', enquiry: enquiry._id, brief: { items: [{ model: 'CRF-35', quantity: '10,000' }, { model: 'crf-44', quantity: '6000' }] } });
+  assert.deepEqual([...(await orderedModelsOf({ enquiryId: enquiry._id })).ordered], [['CRF-35', 10000], ['CRF-44', 6000]]);
+  /* The enquiry page's chart reads the same. */
+  const records = await api(`/api/enquiries/${enquiry._id}/records`, { as: 'nandhini' });
+  if (records.status === 200 && records.json.data?.dispatch?.models) {
+    assert.deepEqual(records.json.data.dispatch.models.map((row) => [row.model, row.ordered]), [['CRF-35', 10000], ['CRF-44', 6000]]);
+  }
 });
