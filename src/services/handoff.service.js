@@ -4139,6 +4139,80 @@ export async function modelReadiness(enquiryId, { task: onTask = null } = {}) {
 }
 
 /**
+ * Each model's own journey [web: components/ModelJourney.jsx]: the steps its route takes —
+ * Production, then Printing and Assembly where Production routed it there, Quality where QC is
+ * compulsory, then Dispatch — and where each stands: `done` (handed on, ready, passed, sent),
+ * `now` (the team working it), `issue` (a problem said on it), or `waiting` (a step before it is
+ * not through yet). A model with neither printing nor assembly goes Production → Dispatch.
+ * Works for an enquiry's job, or a team job (no enquiry) by its chain.
+ */
+export async function modelJourneys(enquiryId, { task: onTask = null } = {}) {
+  const id = enquiryId?._id || enquiryId || null;
+  const where = id ? { enquiry: id } : onTask ? jobFilter(onTask) : null;
+  if (!where) return [];
+  const start = await Todo.findOne({ ...where, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt routing brief kind status modelStatuses completed').lean();
+  if (!start) return [];
+  const tasks = await Todo.find({ ...where, kind: { $in: EDD_TASK_KINDS }, createdAt: { $gte: start.createdAt } }).sort({ createdAt: -1 }).select('kind status completed modelStatuses routing').lean();
+  const taskOf = (kind) => tasks.find((entry) => entry.kind === kind) || null;
+  const readiness = await modelReadiness(id, { task: onTask });
+  const { ordered } = await orderedModelsOf(id ? { enquiryId: id } : { task: onTask });
+  const loads = await jobDispatchLoads(id ? { enquiryId: id } : { task: onTask });
+  const sentQty = sentByModel(loads);
+  const key = (model) => String(model || '').trim().toLowerCase();
+  const qtyOf = (map, model) => [...map].find(([name]) => key(name) === key(model))?.[1] || 0;
+  const TEAM_LABELS = { production: 'Production', printing: 'Printing', assembling: 'Assembly', quality: 'Quality', dispatch: 'Dispatch' };
+  const KINDS = { production: 'ask_edd', printing: 'ask_printing', assembling: 'ask_assembling_edd' };
+  /* One team's reading of one model: its own status where it moved on its own, else the task's. */
+  const teamStep = (team, model, before, prior) => {
+    const task = taskOf(KINDS[team]);
+    const waitingWords = prior ? `Waiting for ${TEAM_LABELS[prior]}` : 'Waiting';
+    if (!task) return { team, label: TEAM_LABELS[team], status: before === 'done' ? 'Not tasked yet' : waitingWords, state: 'waiting' };
+    const own = (task.modelStatuses || []).find((row) => key(row.model) === key(model))?.status;
+    const statusKey = own || task.status;
+    const step = statusesOf(task).find((entry) => entry.key === statusKey);
+    const through = Boolean(task.completed || step?.handsTo || step?.readyForDispatch || step?.done);
+    const state = through ? 'done' : step?.issue ? 'issue' : before === 'done' || team === 'production' ? 'now' : 'waiting';
+    /* A team whose goods have not come yet waits for the team before — its own "Asked …" says nothing about the model. */
+    const status = state === 'waiting' ? waitingWords : task.completed && !through ? 'Done' : step?.label || 'Asked';
+    return { team, label: TEAM_LABELS[team], status, state };
+  };
+  const routes = (start.routing?.models || []).length
+    ? start.routing.models.map((row) => ({ model: row.model, printing: Boolean(row.printing), assembly: Boolean(row.assembly), decided: true }))
+    : modelsOfTask(start).map((model) => ({ model, printing: false, assembly: false, decided: false }));
+  return routes.map(({ model, printing, assembly, decided }) => {
+    const steps = [];
+    let before = 'done';
+    let prior = null;
+    for (const team of ['production', ...(printing ? ['printing'] : []), ...(assembly ? ['assembling'] : [])]) {
+      const step = teamStep(team, model, before, prior);
+      steps.push(step);
+      before = step.state;
+      prior = team;
+    }
+    const ready = (readiness.ready || []).includes(model);
+    if (readiness.qc?.required) {
+      const passed = (readiness.qc.passed || []).includes(model);
+      steps.push({ team: 'quality', label: 'Quality', status: passed ? 'QC passed' : ready ? 'At Quality' : `Waiting for ${TEAM_LABELS[prior]}`, state: passed ? 'done' : ready ? 'now' : 'waiting' });
+      prior = 'quality';
+      before = passed ? 'done' : 'waiting';
+    }
+    const want = qtyOf(ordered, model);
+    const gone = qtyOf(sentQty, model);
+    const sent = (readiness.sent || []).includes(model);
+    const mayGo = ready && (!readiness.qc?.required || (readiness.qc.passed || []).includes(model));
+    steps.push({
+      team: 'dispatch', label: 'Dispatch',
+      status: sent ? `Sent${gone ? ` ${gone.toLocaleString('en-IN')} pcs` : ''}`
+        : gone ? `Part sent ${gone.toLocaleString('en-IN')}${want ? ` of ${want.toLocaleString('en-IN')}` : ''} pcs`
+          : mayGo ? 'Ready to dispatch' : `Waiting for ${TEAM_LABELS[prior]}`,
+      state: sent ? 'done' : gone || mayGo ? 'now' : 'waiting',
+      ordered: want, sent: gone,
+    });
+    return { model, decided, printing, assembly, steps };
+  });
+}
+
+/**
  * How an order of several models goes out — each model as it is ready, or all together — set by
  * the enquiry's marketing person or Admin. The dispatch request and the teams making the goods
  * hear it; with `by_model`, Quality and Dispatch are asked as soon as a model is ready.

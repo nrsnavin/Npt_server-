@@ -489,3 +489,41 @@ test('all together: even with the request raised early, Dispatch can send nothin
   assert.equal(now.status, 200, now.json.message);
   assert.equal(now.json.data.status, 'part_dispatched', 'PR-2 still to go');
 });
+
+test('each model’s own journey: printed and assembled, assembled only, or neither — each step where it stands, on the workflow page and the queues', async () => {
+  const { enquiry, production } = await routedEnquiry('Journey Knits', '9840013780',
+    [{ modelNumber: 'JR-PA', quantity: 100 }, { modelNumber: 'JR-A', quantity: 100 }, { modelNumber: 'JR-0', quantity: 100 }],
+    [{ model: 'JR-PA', printing: true, assembly: true }, { model: 'JR-A', assembly: true }, { model: 'JR-0' }]);
+  const status = (id, as, body) => api(`/api/workspace/todos/${id}/status`, { method: 'POST', as, body });
+  const shape = (journeys) => Object.fromEntries(journeys.map((row) => [row.model, row.steps.map((step) => `${step.team}:${step.state}`).join(' → ')]));
+
+  let page = (await api(`/api/production/workflow/${production._id}`, { as: 'siva' })).json.data;
+  assert.deepEqual(shape(page.journeys), {
+    'JR-PA': 'production:now → printing:waiting → assembling:waiting → dispatch:waiting',
+    'JR-A': 'production:now → assembling:waiting → dispatch:waiting',
+    'JR-0': 'production:now → dispatch:waiting',
+  }, 'the route each model takes');
+  /* The same on the Production queue's row. */
+  const queueRow = (await api('/api/production/queue', { as: 'siva' })).json.data.find((row) => row.task._id === String(production._id));
+  assert.deepEqual(shape(queueRow.journeys), shape(page.journeys));
+
+  /* JR-0 ready from Production; JR-PA to Printing; JR-A to Assembly. */
+  assert.equal((await status(production._id, 'siva', { status: 'ready_dispatch', note: 'JR-0 packed', models: ['JR-0'] })).status, 200);
+  assert.equal((await status(production._id, 'siva', { status: 'handed_printing', note: 'JR-PA moulded', models: ['JR-PA'] })).status, 200);
+  assert.equal((await status(production._id, 'siva', { status: 'handed_assembly', note: 'JR-A moulded', models: ['JR-A'] })).status, 200);
+  page = (await api(`/api/production/workflow/${production._id}`, { as: 'siva' })).json.data;
+  assert.deepEqual(shape(page.journeys), {
+    'JR-PA': 'production:done → printing:now → assembling:waiting → dispatch:waiting',
+    'JR-A': 'production:done → assembling:now → dispatch:waiting',
+    'JR-0': 'production:done → dispatch:now',
+  });
+  const dispatchStep = (journeys, model) => journeys.find((row) => row.model === model).steps.at(-1);
+  assert.equal(dispatchStep(page.journeys, 'JR-0').status, 'Ready to dispatch');
+  assert.equal(page.journeys.find((row) => row.model === 'JR-PA').steps[1].status, 'Goods Received', 'Printing’s own word for the model');
+  assert.equal(page.journeys.find((row) => row.model === 'JR-PA').steps[2].status, 'Waiting for Printing', 'a step not reached says whom it waits for');
+  assert.equal(page.journeys.find((row) => row.model === 'JR-PA').steps[3].status, 'Waiting for Assembly');
+
+  /* The same journeys on Printing's queue (Production's task has closed: every model has left it). */
+  const printingRow = (await api('/api/production/queue/printing', { as: 'priya' })).json.data.find((row) => row.enquiry?._id === String(enquiry._id));
+  assert.deepEqual(shape(printingRow.journeys), shape(page.journeys));
+});
