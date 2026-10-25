@@ -868,14 +868,14 @@ export async function dispatchDetailsForOrder(order) {
  */
 export async function enquiryRecords(enquiry, { withQc }) {
   const [orders, requests, lrTasks, qc] = await Promise.all([
-    SalesOrder.find({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('number status customerPo.number lines.modelNumber lines.quantity createdAt').lean(),
+    SalesOrder.find({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('number status customerPo.number paymentTerms lines.modelNumber lines.quantity createdAt').lean(),
     Todo.find({ enquiry: enquiry._id, kind: 'invoice_dispatch' }).sort({ createdAt: 1 }).populate(REQUEST_POPULATE).lean(),
     Todo.find({ enquiry: enquiry._id, kind: 'lr_copy' }).sort({ createdAt: 1 }).select(LR_SELECT).populate([{ path: 'resultFile', select: 'key filename' }, { path: 'order', select: 'number' }]).lean(),
     withQc ? populateQc(QcRecord.find({ enquiry: enquiry._id }).sort({ inspectedAt: -1 }).limit(100)) : null,
   ]);
   return {
     orders: orders.map((row) => ({
-      _id: row._id, number: row.number, status: row.status, buyerPo: row.customerPo?.number || '',
+      _id: row._id, number: row.number, status: row.status, buyerPo: row.customerPo?.number || '', paymentTerms: row.paymentTerms || '',
       models: (row.lines || []).map((line) => line.modelNumber).filter(Boolean).join(', '),
       quantity: (row.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0),
     })),

@@ -332,3 +332,18 @@ export const orderPaymentWaiverSchema = z.object({
   stage: z.enum(['production', 'dispatch']),
   reason: z.string().trim().min(5, 'Say why it can go on without the payment').max(300),
 });
+
+/** New payment terms on a prepared SO; `decision` when it is in production and the advance is not in [orderEdits.service]. */
+export const orderTermsSchema = z.object({
+  terms: z.string().trim().min(1, 'Pick the payment terms').max(80),
+  decision: z.enum(['hold', 'keep']).optional(),
+});
+
+/** New pieces on a prepared SO's lines. */
+export const orderQuantitiesSchema = z.object({
+  lines: z.array(z.object({
+    _id: z.string().regex(/^[0-9a-f]{24}$/i, 'Not a valid id'),
+    quantity: z.coerce.number().int().min(1),
+  })).min(1).max(100),
+  note: z.string().trim().max(300).optional(),
+});

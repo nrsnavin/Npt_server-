@@ -502,13 +502,13 @@ const salesOrderSchema = new mongoose.Schema(
     },
     /*
      * Production held for the advance after the payment terms were changed [paymentTerms.service]:
-     * when, by whom, the status it was at, and the work orders paused — resumed on release.
+     * when, by whom, and the status it was at. Cleared when it is released again.
      */
     paymentHold: {
       at: Date,
       by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
       fromStatus: String,
-      workOrders: { type: [mongoose.Schema.Types.ObjectId], default: undefined },
+      terms: String,
     },
 
     /** The owning marketing person: an order is still a customer relationship [§29]. */

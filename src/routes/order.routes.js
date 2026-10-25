@@ -4,6 +4,7 @@ import {
   createOrder, orderFromQuotation, updateOrder,
   setOrderCheck, applyOrderAction, listOrderActions, setOrderPo, setLinePrintReference, setOrderPriority,
   setLinePromisedDate, orderPaymentStanding, orderReleaseCheck, waiveOrderPayment,
+  orderTermsPreview, changeOrderTerms, changeOrderQuantitiesHandler,
 } from '../controllers/order.controller.js';
 import {
   listOrderQueries, listQueryQueue, raiseOrderQuery, answerOrderQuery, closeOrderQuery,
@@ -42,7 +43,7 @@ import { validate } from '../middleware/validate.js';
 import { singleDocument } from '../middleware/upload.js';
 import {
   orderSchema, orderUpdateSchema, orderFromQuotationSchema,
-  orderCheckSchema, orderActionSchema, orderPaymentWaiverSchema,
+  orderCheckSchema, orderActionSchema, orderPaymentWaiverSchema, orderTermsSchema, orderQuantitiesSchema,
   orderQuerySchema, orderAnswerSchema, orderQueryCloseSchema,
   orderEscalationSchema, escalationUpdateSchema, escalationResolveSchema,
   productionLineSchema, orderPrioritySchema, linePromiseSchema,
@@ -165,6 +166,10 @@ router.get('/orders/:id/payment', requireModule('orders'), orderPaymentStanding)
 /* What stands between the order and the plant: checks, the advance, a Production Holded Order. */
 router.get('/orders/:id/release-check', requireModule('orders'), orderReleaseCheck);
 router.post('/orders/:id/payment-waiver', requireModule('orders'), validate(orderPaymentWaiverSchema), waiveOrderPayment);
+/* Corrections to a prepared SO by Admin or the buyer's marketing person — checked inside [orderEdits.service]. */
+router.get('/orders/:id/payment-terms', requireModule('orders'), orderTermsPreview);
+router.post('/orders/:id/payment-terms', requireModule('orders'), validate(orderTermsSchema), changeOrderTerms);
+router.post('/orders/:id/quantities', requireModule('orders'), validate(orderQuantitiesSchema), changeOrderQuantitiesHandler);
 
 /*
  * Questions about an order [§25 for the clock].

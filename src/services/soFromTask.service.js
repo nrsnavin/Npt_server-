@@ -295,14 +295,14 @@ export async function orderInProductionFor(enquiryId) {
 export const inProductionWords = (order) => `${order.number} is already in production (${String(order.status).replace(/_/g, ' ')}). A new SO request stops that production — its work orders are cancelled — and the plant follows the revised SO once the SO team prepares it.`;
 
 /**
- * An order in production that a new SO request revises: the plant stops — the order goes back to
- * its checks, every line on hold, its open work orders cancelled — until the revised SO is
- * prepared and released again. Said on the order; `save: false` leaves the save to the caller.
+ * An order taken back from the plant: it goes back to its checks, every line on hold, its open work
+ * orders cancelled — marked to open again, with what they made, when it is released
+ * [workOrder.service `ensureWorkOrders`]. `record` names the field that says why
+ * (`revisionStop`, `paymentHold`); `save: false` leaves the save to the caller.
  */
-export async function stopForRevision(order, user, { task = null, save = true } = {}) {
+export async function stopProduction(order, user, { why, record, extra = {}, save = true }) {
   if (PRE_RELEASE_STATUSES.includes(order.status)) return false;
-  const why = `Production stopped — a new SO request${task?.title ? ` (${task.title})` : ''} revises this order${user?.name ? `, sent by ${user.name}` : ''}`;
-  order.revisionStop = { at: new Date(), by: user._id, task: task?._id, fromStatus: order.status };
+  order[record] = { at: new Date(), by: user._id, fromStatus: order.status, ...extra };
   order.statusHistory.push({ from: order.status, to: 'order_verification', by: user._id, note: why });
   order.status = 'order_verification';
   order.releasedAt = undefined;
@@ -320,6 +320,12 @@ export async function stopForRevision(order, user, { task = null, save = true } 
   }
   if (save) await order.save();
   return true;
+}
+
+/** An order in production that a new SO request revises: the plant stops until the revised SO is released [stopProduction]. */
+export async function stopForRevision(order, user, { task = null, save = true } = {}) {
+  const why = `Production stopped — a new SO request${task?.title ? ` (${task.title})` : ''} revises this order${user?.name ? `, sent by ${user.name}` : ''}`;
+  return stopProduction(order, user, { why, record: 'revisionStop', extra: { task: task?._id }, save });
 }
 
 /**
@@ -340,6 +346,7 @@ export async function releaseFromTask(order, user, why) {
   order.releasedBy = user._id;
   order.releasedAt = new Date();
   order.revisionStop = undefined;
+  order.paymentHold = undefined;
   for (const line of order.lines) {
     if (!line.production) line.production = {};
     line.production.status = 'awaiting_planning';
