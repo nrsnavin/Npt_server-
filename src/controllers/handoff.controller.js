@@ -28,7 +28,7 @@ import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
   WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, closeByAdmin, escalateToAdmin, resolveEscalation, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
   updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, registerLists, raiseAssemblyWith, routingFor, decideRouting, addToProductionQueue, addToWorkQueue,
-  dispatchSheet, recordDispatchLoad,
+  dispatchSheet, recordDispatchLoad, addLoadProof,
 } from '../services/handoff.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
 import { ownershipFilter } from '../services/ownership.service.js';
@@ -686,27 +686,58 @@ export const handoffDispatchLoad = asyncHandler(async (req, res) => {
   const modes = findHandoff(task.kind)?.form?.dispatchModes || [];
   const how = modes.find((entry) => entry.key === req.body?.mode);
   if (!how) throw ApiError.badRequest(modes.length ? `Say how it travels — ${modes.map((entry) => entry.label).join(', ')}` : 'Only a Dispatch request is dispatched from the form');
-  if (!req.file) throw ApiError.badRequest(`Upload the ${how.proofLabel.toLowerCase()} with the load`);
-  if (!['application/pdf', 'image/jpeg', 'image/png'].includes(req.file.mimetype)) throw ApiError.badRequest('Attach a PDF, or a JPEG / PNG photo');
+  /* The paper is optional: Reception chases the LR copy, and Dispatch adds it to the load when it comes [addLoadProof]. */
+  if (req.file && !['application/pdf', 'image/jpeg', 'image/png'].includes(req.file.mimetype)) throw ApiError.badRequest('Attach a PDF, or a JPEG / PNG photo');
   let lines;
   try {
     lines = typeof req.body?.lines === 'string' ? JSON.parse(req.body.lines) : req.body?.lines;
   } catch {
     throw ApiError.badRequest('The models in the load could not be read');
   }
-  const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+  const details = { lrNumber: req.body?.lrNumber, transporter: req.body?.transporter, vehicleNumber: req.body?.vehicleNumber };
+  const key = req.file ? await put({ buffer: req.file.buffer, mimeType: req.file.mimetype }) : null;
   try {
     const done = await inTransaction(async () => {
       const fresh = await taskFor(req);
-      const [made] = await Attachment.create([{
+      const made = key ? (await Attachment.create([{
         key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
         uploadedBy: req.user._id, task: fresh._id, docType: how.proof, title: how.proofLabel,
-      }]);
-      return recordDispatchLoad(fresh, req.user, { lines, mode: how.key, note: req.body?.note, attachmentId: made._id });
+      }]))[0] : null;
+      return recordDispatchLoad(fresh, req.user, { lines, mode: how.key, note: req.body?.note, attachmentId: made?._id || null, details });
     }, { label: 'dispatch load' });
     await answer(res, done);
   } catch (error) {
-    await remove(key);
+    if (key) await remove(key);
+    throw error;
+  }
+});
+
+/**
+ * The paper and details for a load already gone [handoff.service `addLoadProof`]: the LR copy, proof
+ * of delivery or signed receipt, and the LR number, transporter and vehicle. The Dispatch team's, and
+ * Admin's — on a closed request too, since the paper often comes after.
+ */
+export const handoffLoadProof = asyncHandler(async (req, res) => {
+  const task = await Todo.findById(req.params.id);
+  if (!task) throw ApiError.notFound('Task not found');
+  if (!mayWorkOnHandoff(req.user, task)) throw ApiError.forbidden(`This task is on the ${DEPARTMENTS.find((entry) => entry.key === task.department)?.label || task.department} queue`);
+  if (req.file && !['application/pdf', 'image/jpeg', 'image/png'].includes(req.file.mimetype)) throw ApiError.badRequest('Attach a PDF, or a JPEG / PNG photo');
+  const load = (task.loads || []).find((entry) => String(entry._id) === String(req.params.loadId));
+  const how = (findHandoff(task.kind)?.form?.dispatchModes || []).find((entry) => entry.key === load?.mode);
+  const details = { lrNumber: req.body?.lrNumber, transporter: req.body?.transporter, vehicleNumber: req.body?.vehicleNumber };
+  const key = req.file ? await put({ buffer: req.file.buffer, mimeType: req.file.mimetype }) : null;
+  try {
+    const done = await inTransaction(async () => {
+      const fresh = await Todo.findById(req.params.id);
+      const made = key ? (await Attachment.create([{
+        key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
+        uploadedBy: req.user._id, task: fresh._id, docType: how?.proof || 'other', title: how?.proofLabel || 'Load paper',
+      }]))[0] : null;
+      return addLoadProof(fresh, req.user, req.params.loadId, { attachmentId: made?._id || null, details });
+    }, { label: 'load proof' });
+    await answer(res, done);
+  } catch (error) {
+    if (key) await remove(key);
     throw error;
   }
 });

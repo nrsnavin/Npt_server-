@@ -38,7 +38,7 @@ import {
 import { notificationStatus, pushKey, renewPush, sendTestNotification, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffWorkQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, setTaskJobEdd, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments, listTaskPdfs, handoffDispatchSheet, handoffDispatchLoad, handoffSendResult,
+  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffWorkQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, setTaskJobEdd, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments, listTaskPdfs, handoffDispatchSheet, handoffDispatchLoad, handoffLoadProof, handoffSendResult,
 } from '../controllers/handoff.controller.js';
 import {
   handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, handoffAdminCloseSchema, handoffEscalateSchema, handoffEscalationResolveSchema, deliveryUrgencySchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, jobEddSchema, taskRoutingSchema, taskStatusSchema, productionQueueAddSchema, workQueueAddSchema,
@@ -121,6 +121,8 @@ router.post('/todos/:id/result', singleTaskResult('file'), handoffResult);
 router.post('/todos/:id/result/send', handoffSendResult);
 router.get('/todos/:id/dispatch', handoffDispatchSheet);
 router.post('/todos/:id/dispatch', singleTaskResult('file'), handoffDispatchLoad);
+/* The LR copy / proof and details added to a load already gone — the paper often comes after the goods. */
+router.post('/todos/:id/loads/:loadId', singleTaskResult('file'), handoffLoadProof);
 /* Papers a department keeps on its task — the invoice, dispatch details — for marketing to attach. */
 router.get('/todos/:id/documents', handoffDocuments);
 router.post('/todos/:id/documents', singleTaskResult('file'), handoffDocument);

@@ -255,7 +255,12 @@ const todoSchema = new mongoose.Schema(
         status: { type: String, trim: true },
         lines: [{ model: { type: String, trim: true }, quantity: { type: Number, min: 0 }, _id: false }],
         mode: { type: String, enum: ['transporter', 'own_vehicle', 'party_collects'] },
+        /* The LR copy, proof of delivery or signed receipt — optional when the load goes; added later [handoff.service `addLoadProof`]. */
         attachment: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+        /* What Dispatch knows of how it went: the LR / docket number, the transporter, the vehicle. */
+        lrNumber: { type: String, trim: true, maxlength: 80 },
+        transporter: { type: String, trim: true, maxlength: 120 },
+        vehicleNumber: { type: String, trim: true, maxlength: 40 },
         note: { type: String, trim: true, maxlength: 1000 },
         by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         at: { type: Date, default: Date.now },
