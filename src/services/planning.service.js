@@ -40,7 +40,8 @@ export function fitOf(mould, machine, { on } = {}) {
   const warnings = [];
   if (!machine) return { ok: true, blocks, warnings };
   if (machine.active === false || machine.status === 'retired') blocks.push(`${machine.code} is retired`);
-  if (mould && mould.status && mould.status !== 'active') blocks.push(`${mould.mouldCode} is ${mould.status} — not ready to run`);
+  const MOULD_STATE = { development: 'still in development', maintenance: 'in maintenance', retired: 'retired' };
+  if (mould && mould.status && mould.status !== 'active') blocks.push(`${mould.mouldCode} is ${MOULD_STATE[mould.status] || mould.status} — not ready to run`);
   const shot = shotGrams(mould);
   if (shot && machine.shotCapacityGrams && shot > machine.shotCapacityGrams) {
     blocks.push(`One shot of ${mould.mouldCode} is ${shot} g — more than ${machine.code} can inject (${machine.shotCapacityGrams} g)`);
@@ -49,6 +50,25 @@ export function fitOf(mould, machine, { on } = {}) {
   if (needs && machine.tonnage && needs > machine.tonnage) {
     blocks.push(`${mould.mouldCode} needs a ${needs} T press — ${machine.code} is ${machine.tonnage} T`);
   }
+  /* The mould passes between the tie bars one way up or the other. */
+  const [width, height] = [Number(mould?.widthMm) || 0, Number(mould?.heightMm) || 0];
+  const [gapWidth, gapHeight] = [Number(machine.tieBarWidthMm) || 0, Number(machine.tieBarHeightMm) || 0];
+  if (width && height && gapWidth && gapHeight && !((width <= gapWidth && height <= gapHeight) || (height <= gapWidth && width <= gapHeight))) {
+    blocks.push(`${mould.mouldCode} is ${width} × ${height} mm — it does not pass between ${machine.code}’s tie bars (${gapWidth} × ${gapHeight} mm)`);
+  }
+  const thick = Number(mould?.thicknessMm) || 0;
+  if (thick && machine.maxMouldHeightMm && thick > machine.maxMouldHeightMm) {
+    blocks.push(`${mould.mouldCode} is ${thick} mm thick — ${machine.code} opens to hold at most ${machine.maxMouldHeightMm} mm`);
+  }
+  if (thick && machine.minMouldHeightMm && thick < machine.minMouldHeightMm) {
+    blocks.push(`${mould.mouldCode} is ${thick} mm thick — ${machine.code} cannot close on less than ${machine.minMouldHeightMm} mm`);
+  }
+  if (mould?.hotRunnerZones && machine.hotRunnerZones != null && mould.hotRunnerZones > machine.hotRunnerZones) {
+    blocks.push(machine.hotRunnerZones
+      ? `${mould.mouldCode} needs ${mould.hotRunnerZones} hot-runner zones — ${machine.code} drives ${machine.hotRunnerZones}`
+      : `${mould.mouldCode} has a hot runner — ${machine.code} has no hot-runner controller`);
+  }
+  if (mould?.needsDryer && machine.hasDryer === false) warnings.push(`${mould.mouldCode}’s resin needs drying — ${machine.code} has no dryer beside it`);
   if (machine.status === 'breakdown') warnings.push(`${machine.code} is broken down now`);
   if (machine.status === 'maintenance') warnings.push(`${machine.code} is in maintenance now`);
   if (machine.nextServiceDue && (!on || indiaDay(machine.nextServiceDue) <= indiaDay(on))) {
@@ -60,8 +80,8 @@ export function fitOf(mould, machine, { on } = {}) {
   return { ok: blocks.length === 0, blocks, warnings };
 }
 
-const MOULD_FIT_FIELDS = `mouldCode status partWeightGrams runnerWeightGrams machine totalShots maintenanceEveryShots lastMaintenanceShots ${CAPACITY_FIELDS}`;
-const MACHINE_FIT_FIELDS = 'code name tonnage shotCapacityGrams status active nextServiceDue';
+export const MOULD_FIT_FIELDS = `mouldCode status partWeightGrams runnerWeightGrams machine totalShots maintenanceEveryShots lastMaintenanceShots widthMm heightMm thicknessMm hotRunnerZones needsDryer preferredMachines changeoverMinutes ${CAPACITY_FIELDS}`;
+export const MACHINE_FIT_FIELDS = 'code name tonnage shotCapacityGrams status active nextServiceDue location tieBarWidthMm tieBarHeightMm minMouldHeightMm maxMouldHeightMm hotRunnerZones hasDryer';
 
 /** Refuses a plan that puts a mould on a press that cannot hold it; returns the warnings. */
 export async function assertFits(moulId, machineId, on) {
@@ -226,11 +246,15 @@ export async function planningBoard({ days = 14 } = {}) {
       return queue.filter((job) => job.plannedStart && job.plannedEnd && indiaDay(job.plannedStart) <= day && indiaDay(job.plannedEnd) >= day).length * plant.hoursPerDay;
     });
     return {
-      machine: { _id: machine._id, code: machine.code, name: machine.name, tonnage: machine.tonnage, shotCapacityGrams: machine.shotCapacityGrams, status: machine.status, nextServiceDue: machine.nextServiceDue },
+      machine: { _id: machine._id, code: machine.code, name: machine.name, tonnage: machine.tonnage, shotCapacityGrams: machine.shotCapacityGrams, status: machine.status, nextServiceDue: machine.nextServiceDue, location: machine.location || null },
       queue, load, changeovers: changeovers(queue), changeoversIfSorted: changeovers(colourOrder(queue)),
     };
   });
   const unplanned = jobs.filter((job) => !job.machine).map((job) => describe(job, null))
     .sort((a, b) => Number(b.late) - Number(a.late) || String(a.dueDate || '9').localeCompare(String(b.dueDate || '9')));
+  /* The best press for each job not on one yet — the hint beside it [pressScore.service]. */
+  const { bestPresses } = await import('./pressScore.service.js');
+  const best = await bestPresses(unplanned.map((job) => job._id));
+  for (const job of unplanned) job.best = best.get(String(job._id)) || null;
   return { days: dayKeys, hoursPerDay: plant.hoursPerDay, weeklyOff: plant.weeklyOff, presses, unplanned };
 }

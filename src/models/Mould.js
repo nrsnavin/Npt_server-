@@ -199,6 +199,21 @@ const mouldSchema = new mongoose.Schema(
       hourRate: { type: Number, min: 0 },
     },
 
+    /*
+     * What a press must take to hold this tool [planning.service `fitOf`, pressScore.service]:
+     * the mould's face (it passes between the tie bars), its thickness (between the platens'
+     * smallest and largest daylight), the hot-runner zones it needs, whether its resin is dried,
+     * the presses it usually runs on, and how long changing it over takes. Left blank, a check is
+     * simply not made.
+     */
+    widthMm: { type: Number, min: 0 },
+    heightMm: { type: Number, min: 0 },
+    thicknessMm: { type: Number, min: 0 },
+    hotRunnerZones: { type: Number, min: 0, max: 64 },
+    needsDryer: { type: Boolean },
+    preferredMachines: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Machine' }],
+    changeoverMinutes: { type: Number, min: 0, max: 1440 },
+
     status: { type: String, enum: MOULD_STATUSES, default: 'active', index: true },
 
     /**

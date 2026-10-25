@@ -20,6 +20,17 @@ const pieceWeight = (message) => z.number().positive(message).transform(cutGrams
  * clerk can type both a runner weight and a consumption figure is one where the two disagree,
  * and the wrong one is whichever was typed second.
  */
+/* What a press must take to hold the tool [planning.service `fitOf`]; null clears a figure. */
+const pressFit = {
+  widthMm: z.number().nonnegative().max(10000).nullable().optional(),
+  heightMm: z.number().nonnegative().max(10000).nullable().optional(),
+  thicknessMm: z.number().nonnegative().max(10000).nullable().optional(),
+  hotRunnerZones: z.number().int().nonnegative().max(64).nullable().optional(),
+  needsDryer: z.boolean().nullable().optional(),
+  preferredMachines: z.array(objectId).max(40).optional(),
+  changeoverMinutes: z.number().nonnegative().max(1440).nullable().optional(),
+};
+
 const mouldFields = z.object({
     mouldCode: z.string().min(2).max(40),
     name: z.string().min(2).max(120),
@@ -92,6 +103,7 @@ const mouldFields = z.object({
 
     notes: z.string().optional(),
     isActive: z.boolean().optional(),
+    ...pressFit,
 });
 
 export const mouldSchema = mouldFields
@@ -186,5 +198,6 @@ export const mouldUpdateSchema = z
 
     notes: z.string().optional(),
     isActive: z.boolean().optional(),
+    ...pressFit,
   })
   .extend(versioned);

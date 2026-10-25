@@ -30,7 +30,7 @@ export async function setSecurityPolicy(changes, by) {
  * [services/capacity.service.js]. Hours a press actually runs in a day (two twelve-hour shifts,
  * less changeovers and breaks), the shifts worked, and the weekly day off.
  */
-export const PLANT_DEFAULTS = Object.freeze({ hoursPerDay: 22, shifts: ['A', 'B'], weeklyOff: 0 });
+export const PLANT_DEFAULTS = Object.freeze({ hoursPerDay: 22, shifts: ['A', 'B'], weeklyOff: 0, mouldChangeHours: 2 });
 export const PLANT_SHIFTS = ['A', 'B', 'C', 'General'];
 
 export async function plantCalendar() {
@@ -44,6 +44,8 @@ export async function setPlantCalendar(changes, by) {
     hoursPerDay: changes.hoursPerDay === undefined ? current.hoursPerDay : Math.min(24, Math.max(1, Number(changes.hoursPerDay))),
     shifts: changes.shifts === undefined ? current.shifts : [...new Set(changes.shifts.filter((shift) => PLANT_SHIFTS.includes(shift)))],
     weeklyOff: changes.weeklyOff === undefined ? current.weeklyOff : (changes.weeklyOff === null ? null : Number(changes.weeklyOff)),
+    /* A mould change, heat-up and first piece approved, when the mould itself does not say [pressScore.service]. */
+    mouldChangeHours: changes.mouldChangeHours === undefined ? current.mouldChangeHours : Math.min(24, Math.max(0, Number(changes.mouldChangeHours))),
   };
   if (!next.shifts.length) next.shifts = [...PLANT_DEFAULTS.shifts];
   await Setting.updateOne({ key: 'plant' }, { $set: { value: next, updatedBy: by?._id } }, { upsert: true });

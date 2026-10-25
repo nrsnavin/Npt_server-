@@ -52,6 +52,8 @@ export const machineSchema = z.object({
   code: z.string().trim().min(1, 'The machine number').max(20),
   name: text(80), make: text(80), tonnage: num(5000), year: z.number().int().min(1950).max(2100).nullable().optional(),
   shotCapacityGrams: num(100000), location: text(80), status: z.enum(MACHINE_STATUSES).optional(),
+  tieBarWidthMm: num(10000), tieBarHeightMm: num(10000), minMouldHeightMm: num(10000), maxMouldHeightMm: num(10000),
+  hotRunnerZones: num(64), hasDryer: z.boolean().nullable().optional(),
   serviceEveryDays: num(3650), notes: text(1000), active: z.boolean().optional(), expectedUpdatedAt: z.string().optional(),
 });
 export const machineUpdateSchema = machineSchema.partial();

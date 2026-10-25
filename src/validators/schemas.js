@@ -252,6 +252,7 @@ export const plantCalendarSchema = z.object({
   hoursPerDay: z.number().min(1).max(24).optional(),
   shifts: z.array(z.enum(['A', 'B', 'C', 'General'])).min(1).max(4).optional(),
   weeklyOff: z.number().int().min(0).max(6).nullable().optional(),
+  mouldChangeHours: z.number().min(0).max(24).optional(),
 });
 
 export const securityPolicySchema = z.object({

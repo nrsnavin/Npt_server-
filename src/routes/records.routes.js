@@ -1,4 +1,4 @@
-import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, sequenceByColourHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
+import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, pressChoicesHandler, sequenceByColourHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
 import { componentStockSchema } from '../validators/component.schemas.js';
 import { applyPlanHandler, askProductionHandler, floorMessagesHandler, maintenanceRiskHandler, purchaseForecastHandler, suggestPlanHandler } from '../controllers/productionInsights.controller.js';
 import { Router } from 'express';
@@ -61,6 +61,8 @@ router.patch('/work-orders/:id', requireModule('production', 'write'), requirePr
 /* The planning board: presses by day, the fit of a mould on a press, and a press's queue light to dark. */
 router.get('/production/plan', anyModule([['production', 'read'], ['orders', 'read']]), planningBoardHandler);
 router.get('/production/fit', requireModule('production'), fitHandler);
+/* Which press should make a work order: every press scored, with the reasons. */
+router.get('/production/plan/choices/:id', requireModule('production'), pressChoicesHandler);
 /* The shop floor: the job card with its QR code, the tablet's view, the andon call, the shift handover. */
 router.get('/work-orders/:id/job-card', anyModule([['production', 'read'], ['orders', 'read']]), jobCardHandler);
 router.get('/production/floor', requireModule('production'), floorHandler);
