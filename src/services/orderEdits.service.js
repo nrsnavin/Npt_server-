@@ -161,6 +161,10 @@ export async function changeOrderQuantities(order, user, { lines, note }) {
   await assertMayEdit(order, user);
   const { claimsFor } = await import('./dispatchStock.service.js');
   const claims = await claimsFor([order._id]);
+  /* And what the Dispatch task's loads sent of each model — the floor runs dispatch from its task [handoff.service `recordDispatchLoad`]. */
+  const { jobDispatchLoads, sentByModel } = await import('./handoff.service.js');
+  const loaded = order.enquiry ? sentByModel(await jobDispatchLoads({ enquiryId: order.enquiry, current: { order: order._id } })) : new Map();
+  const loadedOf = (model) => [...loaded].filter(([name]) => sameModel(name, model)).reduce((sum, [, quantity]) => sum + quantity, 0);
   const changes = [];
   for (const asked of Array.isArray(lines) ? lines : []) {
     const line = order.lines.id(asked?._id);
@@ -170,6 +174,8 @@ export async function changeOrderQuantities(order, user, { lines, note }) {
     const claim = claims.get(String(line._id));
     const claimed = claim ? claim.dispatched + claim.reserved : 0;
     if (quantity < claimed) throw ApiError.badRequest(`${line.modelNumber || 'A line'} has ${pcs(claimed)} on a consignment already — it cannot go below that`);
+    const sent = loadedOf(line.modelNumber);
+    if (quantity < sent) throw ApiError.badRequest(`${line.modelNumber || 'A line'} has ${pcs(sent)} sent already — it cannot go below that`);
     if (quantity === line.quantity) continue;
     changes.push({ model: line.modelNumber || '', from: line.quantity, to: quantity });
     line.quantity = quantity;
@@ -222,5 +228,11 @@ export async function changeOrderQuantities(order, user, { lines, note }) {
     }
   }
   await tellTeams(order, user, `${order.number}: ${said}`, { status: 'quantity_changed', label: 'Order pieces changed' });
+  /* Cut down to what has gone: the Dispatch request has nothing left to send — it says so, and may be closed. */
+  const allGone = order.lines.every((line) => loadedOf(line.modelNumber) + (claims.get(String(line._id))?.dispatched || 0) >= line.quantity);
+  if (allGone && order.enquiry) {
+    const note = `Everything ordered on ${order.number} has now gone — the pieces were changed to what was sent. Close the request.`;
+    await Todo.updateMany({ enquiry: order.enquiry, kind: 'invoice_dispatch', completed: false }, { $push: { updates: { kind: 'notice', statusLabel: 'Nothing left to send', text: note, note, by: user._id, at: new Date() } } });
+  }
   return { order: await SalesOrder.findById(order._id), said, changes };
 }
