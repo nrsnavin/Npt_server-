@@ -80,7 +80,7 @@ export async function linkTaskWorkOrders(task, user) {
     let wo = linked.find((entry) => key(entry.model) === key(route.model));
     const item = traded.get(modelKeyOf(route.model));
     if (item && !wo) {
-      await ensureTradeOrder({ task, model: route.model, item, enquiry: enquiry ? { ...enquiry, _id: enquiryId } : null, quantity: piecesOf(route.model), due, user });
+      await ensureTradeOrder({ task, model: route.model, item, enquiry: enquiry ? { ...enquiry, _id: enquiryId } : null, quantity: piecesOf(route.model), due, user, route });
       continue;
     }
     if (!wo && enquiryId) {
@@ -272,6 +272,10 @@ const FORWARD_FROM = {
   planning: ['received', 'accepted', 'machine_not_allotted'],
   started: ['received', 'accepted', 'planning', 'ready_tomorrow', 'ready_on_date', 'machine_not_allotted'],
   completed: ['received', 'accepted', 'planning', 'ready_tomorrow', 'ready_on_date', 'started', 'part1_ready', 'part2_ready', 'machine_not_allotted'],
+  /* A traded model, all in from the supplier, handed on as routed [trading.service]. */
+  handed_printing: ['completed'],
+  handed_assembly: ['completed'],
+  ready_dispatch: ['completed'],
 };
 
 /**
