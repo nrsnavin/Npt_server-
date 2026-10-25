@@ -42,6 +42,13 @@ const workOrderSchema = new mongoose.Schema(
     quantity: { type: Number, min: 0, required: true },
     dueDate: Date,
     priority: { type: String, default: 'normal' },
+    /*
+     * How soon it should run, 1–10, as the Production in charge weighs it: an urgent order higher.
+     * Unset, its order's priority stands in (urgent 9, high 7, normal 5, low 3) [priorityQueue
+     * `weightOf`]. A heavier job goes ahead of lighter ones not yet running on its press, and the
+     * suggested schedule serves the heaviest first [scheduleSuggest.service].
+     */
+    weightage: { type: Number, min: 1, max: 10, default: undefined },
 
     status: { type: String, enum: WORK_ORDER_STATUSES, default: 'planned', index: true },
     /*

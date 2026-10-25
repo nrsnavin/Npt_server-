@@ -6,6 +6,7 @@ import { MACHINE_FIT_FIELDS, MOULD_FIT_FIELDS, changeovers, colourOrder, fitOf, 
 import { chainQueue, mouldSlotsOf, planInputs, rankPresses } from './pressScore.service.js';
 import { BUDGETS, askForJson, llmConfigured } from './llm.client.js';
 import { indiaDay } from '../utils/indiaDays.js';
+import { PriorityQueue, byWeight, weightOf } from './priorityQueue.js';
 import { z } from 'zod';
 
 /**
@@ -13,11 +14,14 @@ import { z } from 'zod';
  * fewest jobs end after their due date — a proposal the planner reads and applies, never a plan
  * that changes on its own.
  *
- *   Order     jobs are placed most urgent first: the order's priority, then the earliest due
- *             date, then the biggest job (the hardest to fit late).
- *   Press     each job goes on the press with the lowest score [pressScore.service]: of those
- *             that can hold its mould, the one that ends it soonest after its due date costs
- *             least, then the fewest mould changes, colour steps and days waiting.
+ *   Order     a priority queue of the waiting jobs, heaviest weightage first — what the
+ *             Production in charge gave the job (1–10), else its order's priority — then the
+ *             earliest due date, then the biggest job (the hardest to fit late) [priorityQueue].
+ *   Press     each job, as it comes off the queue, goes on the press free soonest of those that
+ *             can hold its mould — the presses for it a second queue, by the day it could start
+ *             there — and between presses free the same day, the lowest score [pressScore.service]:
+ *             the one that ends it soonest after its due date, then the fewest mould changes,
+ *             colour steps and days waiting.
  *   Duration  press days are the standard days scaled by how much longer the mould (or press)
  *             really runs [productionInsights `slipFactors`] — the plan the history believes.
  *   Colour    each press's queue is then put light to dark, but only if no job ends later than
@@ -27,13 +31,7 @@ import { z } from 'zod';
  * press can hold, is left where it is and said.
  */
 
-const PRIORITY = { urgent: 0, high: 1, normal: 2, low: 3 };
-
 export { chainQueue };
-
-const urgencyOrder = (a, b) => (PRIORITY[a.priority] ?? 2) - (PRIORITY[b.priority] ?? 2)
-  || String(a.dueDay || '9').localeCompare(String(b.dueDay || '9'))
-  || (b.toMake || 0) - (a.toMake || 0);
 
 
 /**
@@ -61,22 +59,24 @@ export function suggestSchedule({ presses, jobs, plant, slipOf = () => 1, today 
   for (const job of jobs) if (job.status === 'running' && job.machine && queues.has(String(job.machine))) queues.get(String(job.machine)).push(job);
   const reasons = new Map();
   const cannot = [];
-  const waiting = jobs.filter((job) => !(job.status === 'running' && job.machine && queues.has(String(job.machine)))).sort(urgencyOrder);
+  const waiting = new PriorityQueue(byWeight, jobs.filter((job) => !(job.status === 'running' && job.machine && queues.has(String(job.machine)))));
 
-  for (const job of waiting) {
-    /* Every press scored for it as the plan now stands [pressScore.service] — the lowest wins. */
+  while (waiting.size) {
+    const job = waiting.pop();
+    /* Every press scored for it as the plan now stands [pressScore.service]. */
     const ranked = rankPresses({ job, presses, queues, plant, slipOf, today, mouldSlots: mouldSlotsOf(queues, presses, options), learnedOf });
     if (!ranked.sized) {
       cannot.push({ _id: job._id, number: job.number, why: ranked.why });
       continue;
     }
-    const pick = ranked.choices[0];
+    /* The press free soonest for it; the same day, the lower score. */
+    const pick = new PriorityQueue((a, b) => String(a.start).localeCompare(String(b.start)) || a.score - b.score, ranked.choices).pop();
     if (!pick) {
       cannot.push({ _id: job._id, number: job.number, why: presses.length ? ranked.cannot[0]?.why || 'No press can hold its mould' : 'No presses on the register — add them on the Machines page' });
       continue;
     }
     queues.get(String(pick.machine._id)).push(job);
-    reasons.set(String(job._id), `${pick.machine.code}: ${pick.summary}`);
+    reasons.set(String(job._id), `${pick.machine.code}: free soonest for it (from ${pick.start}) · weightage ${weightOf(job)} · ${pick.summary}`);
   }
 
   /* Light to dark on each press, if nobody ends late for it. */

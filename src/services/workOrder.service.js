@@ -194,7 +194,25 @@ export const WORK_ORDER_MOVES = {
  * Plans a work order: the press, the start, its place in the press's queue — the end worked out
  * from the mould's capacity for what is left to make [capacity.service] — and any move.
  */
-export async function planWorkOrder(wo, user, { machine, plannedStart, sequence, move, note, step }) {
+/**
+ * A press's queue heaviest first: the running job stays first, the rest by weightage — what the in
+ * charge gave each, else its order's priority [priorityQueue `weightOf`] — keeping their order
+ * where the weightage is the same. Sequence numbers rewritten 1, 2, 3 … ; the caller re-chains.
+ */
+export async function byWeightOnPress(machineId) {
+  const { weightOf } = await import('./priorityQueue.js');
+  const jobs = await WorkOrder.find({ machine: machineId, status: { $in: OPEN_WORK_ORDER_STATUSES } }).select('status sequence weightage priority order').populate({ path: 'order', select: 'priority' }).lean();
+  const weigh = (job) => weightOf({ weightage: job.weightage, priority: job.order?.priority || job.priority });
+  const ordered = [...jobs].sort((a, b) => (a.status === 'running' ? -1 : b.status === 'running' ? 1 : 0)
+    || (a.status === 'running' ? 0 : weigh(b) - weigh(a))
+    || (a.sequence ?? 1e9) - (b.sequence ?? 1e9));
+  for (const [index, job] of ordered.entries()) {
+    if (job.sequence !== index + 1) await WorkOrder.updateOne({ _id: job._id }, { $set: { sequence: index + 1 } }, { keepVersion: true });
+  }
+  return ordered;
+}
+
+export async function planWorkOrder(wo, user, { machine, plannedStart, sequence, move, note, step, weightage }) {
   const text = String(note || '').trim();
   const pressBefore = wo.machine ? String(wo.machine) : null;
   /* The auto-planner's proposal, if one was waiting: a placement confirms or changes it [planLearning.service]. */
@@ -227,6 +245,18 @@ export async function planWorkOrder(wo, user, { machine, plannedStart, sequence,
   }
   if (plannedStart !== undefined) wo.plannedStart = plannedStart ? new Date(plannedStart) : undefined;
   if (sequence !== undefined) wo.sequence = sequence ?? undefined;
+  /* The in charge's weightage: said on the job, and its press's queue put heaviest first [byWeightOnPress]. */
+  const { weightOf } = await import('./priorityQueue.js');
+  const weightBefore = weightOf({ weightage: wo.weightage, priority: wo.priority });
+  let reweighed = false;
+  if (weightage !== undefined && (weightage ?? null) !== (wo.weightage ?? null)) {
+    wo.weightage = weightage ?? undefined;
+    const now = weightOf({ weightage: wo.weightage, priority: wo.priority });
+    wo.history = [...(wo.history || []), { status: wo.status, note: `Weightage ${weightBefore} → ${now}${text ? ` — ${text}` : ''}`, by: user._id, at: new Date() }];
+    reweighed = true;
+  }
+  /* Put on a press with no place named: it goes ahead of the lighter jobs not yet running there. */
+  const placedNew = machine && String(machine) !== pressBefore && sequence === undefined;
   /* One place earlier or later in its press's queue: it swaps with the job beside it. */
   let swapped = false;
   if (step && wo.machine) {
@@ -247,14 +277,15 @@ export async function planWorkOrder(wo, user, { machine, plannedStart, sequence,
     const plan = estimate(wo.toMakeQty, mould, await plantCalendar(), wo.plannedStart);
     wo.plannedEnd = plan.finish || wo.plannedStart;
   } else wo.plannedEnd = undefined;
-  if (!move && text) wo.history = [...(wo.history || []), { status: wo.status, note: text, by: user._id, at: new Date() }];
+  if (!move && text && !reweighed) wo.history = [...(wo.history || []), { status: wo.status, note: text, by: user._id, at: new Date() }];
   await wo.save();
   /*
    * A press's jobs run back to back: moving a job, reordering it or closing it re-chains the
    * presses it touched — unless a start day was typed, which is the planner overriding the chain.
    */
   const pressNow = wo.machine ? String(wo.machine) : null;
-  const touched = machine !== undefined || sequence !== undefined || Boolean(move) || swapped;
+  if ((reweighed || placedNew) && pressNow) await byWeightOnPress(pressNow);
+  const touched = machine !== undefined || sequence !== undefined || Boolean(move) || swapped || reweighed;
   if (touched && plannedStart === undefined) {
     if (pressNow) await rechain(pressNow);
     if (pressBefore && pressBefore !== pressNow) await rechain(pressBefore);

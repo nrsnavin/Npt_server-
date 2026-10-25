@@ -3,6 +3,7 @@ import Machine from '../models/Machine.js';
 import Mould from '../models/Mould.js';
 import ApiError from '../utils/ApiError.js';
 import { CAPACITY_FIELDS, estimate, piecesPerDay } from './capacity.service.js';
+import { weightOf } from './priorityQueue.js';
 import { plantCalendar } from './settings.service.js';
 import { addDays, dayToDate, firstWorkingDay, indiaDay, nextWorkingDay, weekdayOf } from '../utils/indiaDays.js';
 
@@ -180,16 +181,14 @@ export async function sequenceByColour(machineId) {
 /**
  * The board for a span of days: every active press with its open work orders (and their fit),
  * how many press hours each day carries against the plant's hours, and the work orders not on a
- * press yet — late ones first.
+ * press yet — heaviest weightage first, then late ones.
  */
+/** The longest the board runs: past this a job reads by its date rather than as a bar. */
+export const BOARD_MAX_DAYS = 120;
+
 export async function planningBoard({ days = 14 } = {}) {
   const plant = await plantCalendar();
-  const span = Math.min(Math.max(Number(days) || 14, 7), 42);
   const today = indiaDay();
-  const dayKeys = [];
-  for (let at = 0, cursor = today; at < span; at += 1, cursor = addDays(cursor, 1)) {
-    dayKeys.push({ day: cursor, off: plant.weeklyOff != null && weekdayOf(cursor) === plant.weeklyOff });
-  }
   const [machines, jobs] = await Promise.all([
     Machine.find({ active: { $ne: false }, status: { $ne: 'retired' } }).select(MACHINE_FIT_FIELDS).sort({ code: 1 }).lean(),
     WorkOrder.find({ status: { $in: OPEN_WORK_ORDER_STATUSES } })
@@ -201,6 +200,23 @@ export async function planningBoard({ days = 14 } = {}) {
       ])
       .lean({ virtuals: true }),
   ]);
+  /*
+   * The days the board runs: at least the span asked for (two weeks), and on to the last day any
+   * press is booked — so the in charge sees how far each press's programme runs, scrolling across
+   * rather than reading "outside these days".
+   */
+  const lastBooked = jobs.filter((job) => job.machine).reduce((latest, job) => {
+    const end = job.plannedEnd || job.plannedStart;
+    const day = end ? indiaDay(end) : '';
+    return day > latest ? day : latest;
+  }, '');
+  const asked = Math.min(Math.max(Number(days) || 14, 7), BOARD_MAX_DAYS);
+  const reach = lastBooked > today ? Math.round((new Date(`${lastBooked}T00:00:00Z`) - new Date(`${today}T00:00:00Z`)) / 86400000) + 2 : 0;
+  const span = Math.min(Math.max(asked, reach), BOARD_MAX_DAYS);
+  const dayKeys = [];
+  for (let at = 0, cursor = today; at < span; at += 1, cursor = addDays(cursor, 1)) {
+    dayKeys.push({ day: cursor, off: plant.weeklyOff != null && weekdayOf(cursor) === plant.weeklyOff });
+  }
   /* A Production task's work orders [floorPlanning.service]: the model's route after moulding, for the card. */
   const taskIds = [...new Set(jobs.filter((job) => job.task).map((job) => String(job.task)))];
   const { default: Todo } = await import('../models/Todo.js');
@@ -236,6 +252,8 @@ export async function planningBoard({ days = 14 } = {}) {
       modelNumber: job.modelNumber, colour: job.colour, colourRank: colourRank(job.colour),
       quantity: job.quantity, goodQty: job.goodQty || 0, toMake,
       customer: job.customer?.name || null, order: job.order?.number || null, priority: job.order?.priority || job.priority || 'normal',
+      /* The in charge's weightage, and the weight it runs by (the order's priority when none is given) [priorityQueue]. */
+      weightage: job.weightage ?? null, weight: weightOf({ weightage: job.weightage, priority: job.order?.priority || job.priority }),
       dueDate: job.dueDate || null, plannedStart: job.plannedStart || null, plannedEnd: job.plannedEnd || null,
       perDay: perDay || null, pressDays: perDay ? Math.ceil(toMake / perDay) : null,
       ...predicted(job, perDay, toMake, machine),
@@ -268,10 +286,15 @@ export async function planningBoard({ days = 14 } = {}) {
     return {
       machine: { _id: machine._id, code: machine.code, name: machine.name, tonnage: machine.tonnage, shotCapacityGrams: machine.shotCapacityGrams, status: machine.status, nextServiceDue: machine.nextServiceDue, location: machine.location || null },
       queue, load, changeovers: changeovers(queue), changeoversIfSorted: changeovers(colourOrder(queue)),
+      /* The last day this press is booked: how far its programme runs. */
+      bookedUntil: queue.reduce((latest, job) => {
+        const end = job.plannedEnd || job.plannedStart;
+        return end && (!latest || new Date(end) > new Date(latest)) ? end : latest;
+      }, null),
     };
   });
   const unplanned = jobs.filter((job) => !job.machine).map((job) => describe(job, null))
-    .sort((a, b) => Number(b.late) - Number(a.late) || String(a.dueDate || '9').localeCompare(String(b.dueDate || '9')));
+    .sort((a, b) => b.weight - a.weight || Number(b.late) - Number(a.late) || String(a.dueDate || '9').localeCompare(String(b.dueDate || '9')));
   /* The best press for each job not on one yet — the hint beside it [pressScore.service]. */
   const { bestPresses } = await import('./pressScore.service.js');
   const best = await bestPresses(unplanned.map((job) => job._id));
