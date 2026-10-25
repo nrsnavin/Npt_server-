@@ -8,8 +8,8 @@ export const dashboardOverview = asyncHandler(async (req, res) => {
 
 /** The department tasks this person follows — by department, and open / done / all. */
 export const dashboardTasks = asyncHandler(async (req, res) => {
-  const { department, state } = req.query;
-  res.json({ success: true, data: await trackedTasks(req.user, { department: department || undefined, state: state || 'open' }) });
+  const { department, state, assigned } = req.query;
+  res.json({ success: true, data: await trackedTasks(req.user, { department: department || undefined, state: state || 'open', assigned: assigned === 'me' ? 'me' : null }) });
 });
 
 /** The customer / party master: each customer with where it stands, by chip, paged. */

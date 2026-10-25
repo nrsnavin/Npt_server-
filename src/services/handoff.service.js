@@ -762,9 +762,12 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
 
   /* The first task of its own job: the teams it goes on to carry its id [Todo `chain`]. */
   const _id = new mongoose.Types.ObjectId();
+  const { nextNumber } = await import('./numbering.service.js');
   const task = await Todo.create({
     _id,
     chain: _id,
+    /* A job of its own, numbered so people can name it on a call [Team jobs]. */
+    jobNumber: await nextNumber('JOB'),
     customer: buyer?._id,
     kind,
     department,
@@ -2679,6 +2682,9 @@ async function raiseFromStatus(task, user, step, text, fields = {}) {
     createdBy: user._id,
     title: `${target.label}${fields?.prtMode ? ` (${fields.prtMode.toLowerCase()})` : ''} — ${buyer?.name || 'team task'}`,
     notes: why,
+    /* On the same job as the task it came from — PRT's case under the Payment Collection job [Team jobs]. */
+    chain: chainOf(task),
+    previousTask: task._id,
     ...(Object.keys(brief).length ? { brief } : {}),
     ...(form.statuses?.length ? { status: form.statuses[0].key, statusHistory: [{ status: form.statuses[0].key, by: user._id, at: new Date() }] } : {}),
     ...(step.done ? {} : { parentTask: task._id }),

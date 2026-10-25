@@ -175,6 +175,12 @@ const todoSchema = new mongoose.Schema(
      */
     jobEdd: { type: mongoose.Schema.Types.Mixed, default: undefined },
     /**
+     * A task Admin or marketing gave a team with no enquiry behind it is a job of its own:
+     * `JOB-2026-0012`, on the first task — every task raised from it is on its chain
+     * [services/teamJobs.service.js, web: Team jobs].
+     */
+    jobNumber: { type: String, trim: true, index: true, sparse: true },
+    /**
      * The other departments' tasks that asked for this one (Dispatch's "Ask Production") — their
      * people hear each move on it, as the enquiry's marketing person and Admin do [handoff.service
      * `noticeStatus`]. Not the enquiry's owner: the department that asked.

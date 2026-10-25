@@ -683,6 +683,21 @@ export const handoffShipments = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await shipmentsOf(task) });
 });
 
+/* ---- Team jobs: the tasks Admin and marketing gave with no enquiry, read like an enquiry [teamJobs.service] ---- */
+
+/** The jobs this person gave or follows: open (default), done or all, with a search. */
+export const listTeamJobsHandler = asyncHandler(async (req, res) => {
+  const { listTeamJobs } = await import('../services/teamJobs.service.js');
+  const state = ['open', 'done', 'all'].includes(req.query.state) ? req.query.state : 'open';
+  res.json({ success: true, data: await listTeamJobs(req.user, { state, search: String(req.query.search || '').slice(0, 80) }) });
+});
+
+/** One job, whole: what was asked, where it is now, each team's step, every move, and its money, shipments and files. */
+export const teamJobHandler = asyncHandler(async (req, res) => {
+  const { teamJob } = await import('../services/teamJobs.service.js');
+  res.json({ success: true, data: await teamJob(req.user, req.params.id) });
+});
+
 /* ---- A Production task with no enquiry: link it, start it from where the goods are [teamProduction.service] ---- */
 
 /** The buyer's open enquiries the task could join, and the start points offered. */
