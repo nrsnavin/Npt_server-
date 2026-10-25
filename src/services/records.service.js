@@ -12,7 +12,7 @@ import Material from '../models/Material.js';
 import StockMovement from '../models/StockMovement.js';
 import { recordChange, snapshot } from './audit.service.js';
 import { findHandoff } from '../config/handoffs.js';
-import { orderedModelsOf, warnDispatchOfQc } from './handoff.service.js';
+import { modelJourneys, orderedModelsOf, warnDispatchOfQc } from './handoff.service.js';
 import ApiError from '../utils/ApiError.js';
 import { nextNumber } from './numbering.service.js';
 import { finishedOn, startedOn, workOrderForRun } from './workOrder.service.js';
@@ -877,6 +877,12 @@ export async function enquiryRecords(enquiry, { withQc }) {
     })),
     qc,
     dispatch: await describeDispatch(requests, lrTasks, { ordered: (await orderedModelsOf({ enquiryId: enquiry._id })).ordered }),
+    /*
+     * Where each model is, once Production has the job: each team on its route with its status
+     * (Goods Received, In Work Queue, Ready for Dispatch…), Quality where compulsory, and the
+     * pieces dispatched [handoff.service `modelJourneys`] — the enquiry's one-glance view.
+     */
+    journeys: await modelJourneys(enquiry._id),
   };
 }
 

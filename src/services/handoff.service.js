@@ -1716,6 +1716,47 @@ const goesOnFrom = (task, row) => {
  * What the job ordered, model by model: the SO's lines, else the enquiry's items, else the models
  * the task names. `task` may be a Dispatch request or null (an enquiry alone).
  */
+/** Pieces a request's lines give each model: `[[model, quantity], …]`, quantities above nought only. */
+const linesOf = (brief) => (Array.isArray(brief?.items) ? brief.items : [])
+  .map((row) => [String(row?.model || row?.modelNumber || '').trim(), Number(String(row?.quantity ?? '').replace(/,/g, '')) || 0])
+  .filter(([model, quantity]) => model && quantity > 0);
+
+/**
+ * Fills the models with no pieces counted from the job's requests (newest first) and then its
+ * newest quotation [orderedModelsOf]. With no models named at all, the first request that gives
+ * pieces names them.
+ */
+async function fillQuantities(ordered, { task = null, enquiryKey = null } = {}) {
+  const missing = () => !ordered.size || [...ordered.values()].some((quantity) => !quantity);
+  if (!missing()) return;
+  const take = (rows) => {
+    const none = !ordered.size;
+    for (const [name, quantity] of rows) {
+      const match = [...ordered.keys()].find((model) => model.toLowerCase() === name.toLowerCase());
+      if (match && !ordered.get(match)) ordered.set(match, quantity);
+      else if (!match && none) ordered.set(name, quantity);
+    }
+  };
+  take(linesOf(task?.brief));
+  if (!missing()) return;
+  const where = enquiryKey
+    ? { enquiry: enquiryKey }
+    : task ? { $or: [{ chain: task.chain || task._id }, { _id: task.chain || task._id }] } : null;
+  if (where) {
+    /* A sample's pieces are three to show the buyer, not the order — never counted. */
+    const requests = await Todo.find({ ...where, kind: { $nin: ['sample_request', 'sample_collect'] }, 'brief.items.quantity': { $exists: true } }).sort({ createdAt: -1 }).select('brief.items').limit(30).lean();
+    for (const request of requests) {
+      take(linesOf(request.brief));
+      if (!missing()) return;
+    }
+  }
+  if (enquiryKey) {
+    const { default: Quotation } = await import('../models/Quotation.js');
+    const quotation = await Quotation.findOne({ enquiry: enquiryKey }).sort({ createdAt: -1 }).select('lines.modelNumber lines.quantity lines.mould').populate({ path: 'lines.mould', select: 'mouldCode' }).lean();
+    take((quotation?.lines || []).map((line) => [String(line.modelNumber || line.mould?.mouldCode || '').trim(), Number(line.quantity) || 0]).filter(([model, quantity]) => model && quantity > 0));
+  }
+}
+
 export async function orderedModelsOf({ task = null, enquiryId = null } = {}) {
   const { default: SalesOrder } = await import('../models/SalesOrder.js');
   const enquiryKey = enquiryId || task?.enquiry?._id || task?.enquiry || null;
@@ -1732,18 +1773,12 @@ export async function orderedModelsOf({ task = null, enquiryId = null } = {}) {
   };
   if (order?.lines?.length) for (const line of order.lines) add(line.modelNumber, line.quantity);
   else if (enquiry?.items?.length) for (const item of enquiry.items) add(item.modelNumber, item.quantity);
-  /* No SO and no quantities on the enquiry: the pieces the Production request carried, model by model. */
-  if (!order?.lines?.length && enquiryKey && [...ordered.values()].every((quantity) => !quantity)) {
-    const production = await Todo.findOne({ enquiry: enquiryKey, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('brief').lean();
-    const none = !ordered.size;
-    for (const row of Array.isArray(production?.brief?.items) ? production.brief.items : []) {
-      const name = String(row?.model || row?.modelNumber || '').trim();
-      const quantity = Number(String(row?.quantity ?? '').replace(/,/g, '')) || 0;
-      if (!name || !quantity) continue;
-      const match = [...ordered.keys()].find((model) => model.toLowerCase() === name.toLowerCase());
-      if (match || none) ordered.set(match || name, quantity);
-    }
-  }
+  /*
+   * No SO: a model the enquiry gives no pieces for takes them from the job's own requests, newest
+   * first — the SO request's lines, the Production request's, the quotation request's, this
+   * Dispatch request's — and else from the newest quotation. A model already counted keeps its count.
+   */
+  if (!order?.lines?.length) await fillQuantities(ordered, { task, enquiryKey });
   /* No SO: a request for one model says how many are to go. */
   const asked = Number(String(briefQuantity(task?.brief) || '').replace(/,/g, ''));
   if (!order?.lines?.length && ordered.size === 1 && asked > 0) ordered.set([...ordered.keys()][0], asked);
