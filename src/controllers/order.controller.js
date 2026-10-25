@@ -809,6 +809,7 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
   if (action === 'release') {
     order.releasedBy = req.user._id;
     order.releasedAt = new Date();
+    order.revisionStop = undefined;
     /*
      * Every line joins the plant's queue at once. The alternative — releasing lines
      * individually — is a real requirement one day and not this one: §13 gates *the order*,

@@ -94,7 +94,7 @@ export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) =>
   const task = await sendHandoff({
     enquiry, kind: req.body.kind, note: req.body.note, fields: req.body.fields, brief: req.body.brief,
     priority: req.body.priority, requiredDate: req.body.requiredDate || undefined, addToOpen: req.body.addToOpen === true, order: req.body.order, user: req.user,
-    edd: req.body.edd || undefined,
+    edd: req.body.edd || undefined, revise: req.body.revise === true,
   });
   /* Details changed on the form, and the person asked: the enquiry follows [itemDetails.service]. */
   const enquiryChanges = req.body.updateEnquiry && Array.isArray(req.body.brief?.items)
@@ -183,7 +183,16 @@ async function storeTaskPdf(req, res, task) {
 /** What a department task's form is filled from — the enquiry, its buyer and its order. */
 export const enquiryTaskPrefill = asyncHandler(async (req, res) => {
   const enquiry = await enquiryFor(req);
-  res.json({ success: true, data: await taskPrefill(enquiry._id) });
+  /* The order already in production, for the alert a new SO request opens with [handoff.service `sendHandoff`]. */
+  const { orderInProductionFor, inProductionWords } = await import('../services/soFromTask.service.js');
+  const running = await orderInProductionFor(enquiry._id);
+  res.json({
+    success: true,
+    data: {
+      ...(await taskPrefill(enquiry._id)),
+      orderInProduction: running ? { _id: running._id, number: running.number, status: running.status, words: inProductionWords(running) } : null,
+    },
+  });
 });
 
 /**

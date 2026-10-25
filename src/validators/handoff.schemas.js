@@ -14,6 +14,8 @@ export const handoffSchema = z.object({
   priority: z.enum(['low', 'normal', 'high']).optional(),
   /** Add to the department's open task of this kind instead of refusing the second one. */
   addToOpen: z.boolean().optional(),
+  /** Sent knowing the enquiry's order is in production: that production stops and the order is revised [handoff.service `sendHandoff`]. */
+  revise: z.boolean().optional(),
   /** The models' details changed on the form are written onto the enquiry too [itemDetails.service]. */
   updateEnquiry: z.boolean().optional(),
   /** The task's due date, when the person raising it names one. */

@@ -490,6 +490,26 @@ const salesOrderSchema = new mongoose.Schema(
       readProblem: String,
       at: Date,
     },
+    /*
+     * Production stopped because a new SO request revises the order [soFromTask `stopForRevision`]:
+     * when, by whom, the request, and the status it was at. Cleared when it is released again.
+     */
+    revisionStop: {
+      at: Date,
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      task: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
+      fromStatus: String,
+    },
+    /*
+     * Production held for the advance after the payment terms were changed [paymentTerms.service]:
+     * when, by whom, the status it was at, and the work orders paused — resumed on release.
+     */
+    paymentHold: {
+      at: Date,
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      fromStatus: String,
+      workOrders: { type: [mongoose.Schema.Types.ObjectId], default: undefined },
+    },
 
     /** The owning marketing person: an order is still a customer relationship [§29]. */
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },

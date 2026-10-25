@@ -91,6 +91,12 @@ export async function ensureWorkOrders({ orderIds, user } = {}) {
         });
         continue;
       }
+      /* Stopped with its order and the order back with the plant: opened again where it was. */
+      if (live && wo.status === 'cancelled' && wo.reopenOnRelease) {
+        wo.status = 'planned';
+        wo.reopenOnRelease = undefined;
+        wo.history = [...(wo.history || []), { status: 'planned', note: `${order.number} is back with production`, by: user?._id, at: new Date() }];
+      }
       if (!OPEN_WORK_ORDER_STATUSES.includes(wo.status)) continue;
       if (!live) {
         wo.status = 'cancelled';
@@ -100,10 +106,8 @@ export async function ensureWorkOrders({ orderIds, user } = {}) {
       }
       const fields = LINE_FIELDS(line, order);
       const changed = Object.entries(fields).filter(([field, value]) => !sameValue(wo[field], value));
-      if (changed.length) {
-        for (const [field, value] of changed) wo[field] = value;
-        await wo.save();
-      }
+      for (const [field, value] of changed) wo[field] = value;
+      if (wo.isModified()) await wo.save();
     }
     /* A line taken off the order: its open work order is cancelled with it. */
     for (const wo of existing.filter((entry) => String(entry.order) === String(order._id) && !lineIds.has(String(entry.orderLine)) && OPEN_WORK_ORDER_STATUSES.includes(entry.status))) {

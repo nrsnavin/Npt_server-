@@ -1067,11 +1067,33 @@ async function reachEnquiry(task, user, reach, note) {
   await moveStage(enquiry, reach.stage || null, { user, task, note: note || task.title, marketing: reach.marketing, won: Boolean(reach.won) });
 }
 
+/** The tasks on an enquiry that work from its order — told when production stops for a revision. */
+const ORDER_WORK_KINDS = ['ask_edd', 'ask_printing', 'ask_assembling_edd', 'quality_check', 'invoice_dispatch'];
+
+/**
+ * A new SO request sent on an enquiry already in production [sendHandoff]: the order stops, the
+ * teams working from it are told on their tasks, and the enquiry's marketing person and every Admin
+ * — and the people on Production's task — hear it.
+ */
+async function stopProductionForNewRequest(order, raised, user) {
+  const { stopForRevision } = await import('./soFromTask.service.js');
+  if (!(await stopForRevision(order, user, { task: raised }))) return;
+  const said = `${order.number} production stopped — a new SO request revises it (sent by ${user.name}). The plant follows the revised SO once the SO team prepares it.`;
+  const working = await Todo.find({ enquiry: raised.enquiry, kind: { $in: ORDER_WORK_KINDS }, completed: false });
+  const people = [];
+  for (const task of working) {
+    await Todo.updateOne({ _id: task._id }, { $push: { updates: { kind: 'notice', statusLabel: 'Production stopped', text: said, note: said, by: user._id, at: new Date() } } }, { keepVersion: true });
+    if (task.kind === 'ask_edd') people.push(...(await peopleOn(task)));
+  }
+  await Todo.updateOne({ _id: raised._id }, { $push: { updates: { kind: 'notice', statusLabel: 'Production stopped', text: said, note: said, by: user._id, at: new Date() } } }, { keepVersion: true });
+  await noticeStatus(raised, user, { step: { key: 'production_stopped', label: 'Production stopped — SO being revised' }, note: said, toAdminAndMarketing: true, also: people });
+}
+
 /**
  * One button pressed on the enquiry screen. Returns the task (or the record, for the buttons
  * that only record). `enquiry` must be a document with `customer` populated or an id.
  */
-export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, addToOpen, order, user, edd }) {
+export async function sendHandoff({ enquiry, kind, note, fields, brief, priority, requiredDate, addToOpen, order, user, edd, revise = false }) {
   const handoff = findHandoff(kind);
   if (!handoff || handoff.hidden) fail('That is not one of the buttons');
 
@@ -1093,7 +1115,18 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
       enquiry.edd = { date: day, department: 'marketing' };
     }
     const wasHeld = enquiry.stage === 'production_hold';
+    /*
+     * A new SO request on an enquiry whose order is already in production: said first, and sent
+     * only once the person says so (`revise`) — then that production stops and the order is revised
+     * from this request when the SO team prepares it [soFromTask `stopForRevision`, `reviseOrder`].
+     */
+    const running = kind === 'po_so' ? await (await import('./soFromTask.service.js')).orderInProductionFor(enquiry._id) : null;
+    if (running && !revise) {
+      const { inProductionWords } = await import('./soFromTask.service.js');
+      throw ApiError.conflict(inProductionWords(running), { code: 'SO_IN_PRODUCTION', order: { _id: running._id, number: running.number, status: running.status } });
+    }
     const raised = await moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, order, user });
+    if (running) await stopProductionForNewRequest(running, raised, user);
     /* The EDD marketing gave on the SO request's rows is the enquiry's [eddsFromOrderRows]. */
     if (kind === 'po_so' && Array.isArray(brief?.items)) await eddsFromOrderRows(enquiry, user, brief.items);
     /* QC compulsory before dispatch, as marketing or Admin ticked it when the job went to Production [qcGate.service]. */
@@ -2940,9 +2973,12 @@ async function bookOrderFor(task, user, { held, reading, readProblem }) {
   const drafted = booked.drafted || {};
   const differences = drafted.differences || [];
   const source = drafted.from === 'so_pdf' ? `read from the SO PDF${drafted.soNumber ? ` (${drafted.soNumber})` : ''}` : 'drafted from the request';
-  let said = booked.linked
-    ? `linked to ${order.number}, already on the Sales orders screen`
-    : `${order.number} ${source} — ${order.lines.length} line${order.lines.length === 1 ? '' : 's'}, ${pieces.toLocaleString('en-IN')} pcs`;
+  /* A second or third request on the enquiry revises its open order [soFromTask `reviseOrder`]. */
+  let said = booked.revised
+    ? `${order.number} revised from this request${booked.changes?.length ? ` — ${booked.changes.join('; ')}` : ' — nothing changed'}; now ${order.lines.length} line${order.lines.length === 1 ? '' : 's'}, ${pieces.toLocaleString('en-IN')} pcs`
+    : booked.linked
+      ? `linked to ${order.number}, already on the Sales orders screen${booked.problem ? ` (${booked.problem})` : ''}`
+      : `${order.number} ${source} — ${order.lines.length} line${order.lines.length === 1 ? '' : 's'}, ${pieces.toLocaleString('en-IN')} pcs`;
   if (!booked.linked && drafted.readProblem) said += ` (SO PDF not used: ${drafted.readProblem})`;
   if (differences.length) said += `. The SO differs from the request: ${differences.join('; ')}`;
   let released = false;
@@ -2959,7 +2995,7 @@ async function bookOrderFor(task, user, { held, reading, readProblem }) {
     said += released ? ' and released to production' : result.problem ? ` — not released yet: ${result.problem}` : '';
   }
   await noteOrderOnTask(task, user, said);
-  return { _id: order._id, number: order.number, booked: Boolean(booked.booked), linked: Boolean(booked.linked), released, said, from: drafted.from || null, differences };
+  return { _id: order._id, number: order.number, booked: Boolean(booked.booked), linked: Boolean(booked.linked), revised: Boolean(booked.revised), changes: booked.changes || [], released, said, from: drafted.from || null, differences };
 }
 
 /**

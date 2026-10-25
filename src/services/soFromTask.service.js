@@ -24,9 +24,12 @@ import { EVENTS, publish } from './events.service.js';
  * it to Production [releaseHeldOrders]. The order's §13 checklist is not ticked on anybody's
  * behalf: the release says it came from the SO request, and who confirmed it.
  *
- * An enquiry that already has an open order (booked on the Sales orders screen) keeps it: the task
- * is linked to it rather than booking a second one. A line without a model, pieces or a price
- * cannot be an order line; nothing is booked then, and the task says what is missing.
+ * An enquiry that already has an open order keeps it: a second (or third) SO request revises that
+ * order from the latest request — its lines, terms and PO — rather than booking another
+ * [reviseOrder]. A line kept keeps what the plant made and sent of it. An order already in
+ * production was stopped when the request was sent [stopForRevision]; it goes back to the plant
+ * as revised. A line without a model, pieces or a price cannot be an order line; nothing is booked
+ * (or revised) then, and the task says what is missing.
  */
 
 const lower = (text) => String(text || '').trim().toLowerCase();
@@ -153,10 +156,9 @@ export async function bookOrderFromTask(task, user, { reading = null, readProble
   const enquiry = await Enquiry.findById(enquiryId).select('customer assignedTo number').lean();
   if (!enquiry?.customer) return { order: null, problem: 'the enquiry has no customer yet — convert the prospect first' };
 
-  /* Already booked on the Sales orders screen (or by an earlier upload): the task is linked to it. */
   const open = await SalesOrder.findOne({ enquiry: enquiryId, status: { $nin: ['cancelled', 'closed'] } }).sort({ createdAt: -1 });
-  if (open) {
-    /* The SO PDF uploaded on the request is the order's too, where it has none yet. */
+  /* Already booked by this request (an upload again): linked, with the PDF where it has none. */
+  if (open && String(open.sourceTask || '') === String(task._id)) {
     if (task.resultFile && !open.soDocument) {
       open.soDocument = task.resultFile;
       await open.save();
@@ -179,11 +181,19 @@ export async function bookOrderFromTask(task, user, { reading = null, readProble
     }
   }
   const { lines, problem } = built || await orderLinesFromBrief(task.brief);
-  if (problem) return { order: null, problem };
+  if (problem) {
+    /* An order already open stays as it was, linked; the request's gaps are said. */
+    if (open) return { order: open, linked: true, problem: `not revised — ${problem}` };
+    return { order: null, problem };
+  }
 
   const presetNamed = (words) => PAYMENT_PRESETS.find((preset) => lower(preset.label) === lower(words));
   const terms = presetNamed(task.brief?.paymentTerms) || presetNamed(reading?.paymentTerms);
   const poNumber = String(task.brief?.poNumber || reading?.poNumber || '').trim();
+  if (open) {
+    const changes = await reviseOrder(open, user, { task, lines, terms, poNumber, reading, drafted });
+    return { order: open, revised: true, changes, drafted };
+  }
   const [order] = await SalesOrder.create([{
     number: await nextNumber('SO'),
     customer: enquiry.customer,
@@ -203,6 +213,115 @@ export async function bookOrderFromTask(task, user, { reading = null, readProble
   return { order, booked: true, drafted };
 }
 
+const modelKey = (line) => String(line.mould || line.modelNumber || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const pcs = (value) => `${Number(value || 0).toLocaleString('en-IN')} pcs`;
+const LINE_TERMS = ['mould', 'modelNumber', 'category', 'material', 'materialRef', 'hookRef', 'clipRef', 'printRef', 'colour', 'printing', 'quantity', 'unitPrice', 'deliveryDate', 'remarks'];
+
+/**
+ * The open order revised from the latest SO request: each line matched to the order's line for the
+ * same model keeps its id, what was made and sent of it, and takes the request's material, parts,
+ * pieces, price and EDD; a model new on the request is added; a model no longer on it is taken
+ * off — unless some of it has gone, when it stays at what has gone. The terms and PO follow the
+ * request. Returns the changes in words. An order still in production is stopped first.
+ */
+export async function reviseOrder(order, user, { task, lines, terms, poNumber, reading = null, drafted = null }) {
+  if (!PRE_RELEASE_STATUSES.includes(order.status)) await stopForRevision(order, user, { task, save: false });
+  const changes = [];
+  const old = [...order.lines];
+  /* What is on a consignment already (sent or loading) — a line is never cut below it. */
+  const { claimsFor } = await import('./dispatchStock.service.js');
+  const claims = await claimsFor([order._id]);
+  const claimedOf = (line) => { const claim = claims.get(String(line._id)); return claim ? claim.dispatched + claim.reserved : 0; };
+  const kept = new Set();
+  const next = [];
+  for (const line of lines) {
+    const match = old.find((entry) => !kept.has(String(entry._id)) && modelKey(entry) && modelKey(entry) === modelKey(line));
+    if (match) {
+      kept.add(String(match._id));
+      const name = match.modelNumber || line.modelNumber || 'line';
+      const claimed = claimedOf(match);
+      if (line.quantity < claimed) {
+        changes.push(`${name} kept at the ${pcs(claimed)} already on a consignment (the request said ${pcs(line.quantity)})`);
+        line.quantity = claimed;
+      }
+      if (match.quantity !== line.quantity) changes.push(`${name} ${pcs(match.quantity)} → ${pcs(line.quantity)}`);
+      if (match.unitPrice !== line.unitPrice) changes.push(`${name} ₹${match.unitPrice} → ₹${line.unitPrice}`);
+      for (const field of LINE_TERMS) match.set(field, line[field]);
+      next.push(match);
+    } else {
+      changes.push(`${line.modelNumber || 'a model'} added (${pcs(line.quantity)})`);
+      next.push(line);
+    }
+  }
+  for (const line of old.filter((entry) => !kept.has(String(entry._id)))) {
+    const gone = claimedOf(line);
+    if (gone > 0) {
+      line.quantity = gone;
+      next.push(line);
+      changes.push(`${line.modelNumber || 'a model'} cut to the ${pcs(gone)} already on a consignment`);
+    } else {
+      changes.push(`${line.modelNumber || 'a model'} taken off`);
+    }
+  }
+  order.lines = next;
+  if (terms && order.paymentTerms !== terms.label) {
+    changes.push(`terms ${order.paymentTerms || 'none'} → ${terms.label}`);
+    order.paymentTerms = terms.label;
+    order.paymentPlan = { advancePercent: terms.advancePercent, beforeDispatchPercent: terms.beforeDispatchPercent };
+  }
+  if (poNumber && order.customerPo?.number !== poNumber) {
+    changes.push(`PO ${order.customerPo?.number || 'none'} → ${poNumber}`);
+    order.customerPo = { number: poNumber, ...(reading?.poDate ? { date: new Date(reading.poDate) } : {}) };
+  }
+  if (task.resultFile) order.soDocument = task.resultFile;
+  order.sourceTask = task._id;
+  if (drafted) order.drafted = { ...drafted, at: new Date() };
+  order.statusHistory.push({ from: order.status, to: order.status, by: user._id, note: `Revised from the SO request (${task.title})${changes.length ? `: ${changes.join('; ')}` : ' — nothing changed'}` });
+  await order.save();
+  const { ensureWorkOrders } = await import('./workOrder.service.js');
+  await ensureWorkOrders({ orderIds: [order._id], user });
+  await planCollection(order, { by: user });
+  return changes;
+}
+
+/** The enquiry's open order already with the plant (released, not closed), if any. */
+export async function orderInProductionFor(enquiryId) {
+  if (!enquiryId) return null;
+  const { CLOSED_ORDER_STATUSES } = await import('../models/SalesOrder.js');
+  return SalesOrder.findOne({ enquiry: enquiryId, status: { $nin: [...PRE_RELEASE_STATUSES, ...CLOSED_ORDER_STATUSES] } }).sort({ createdAt: -1 });
+}
+
+/** In words, for the alert before a new SO request is sent and the notice after. */
+export const inProductionWords = (order) => `${order.number} is already in production (${String(order.status).replace(/_/g, ' ')}). A new SO request stops that production — its work orders are cancelled — and the plant follows the revised SO once the SO team prepares it.`;
+
+/**
+ * An order in production that a new SO request revises: the plant stops — the order goes back to
+ * its checks, every line on hold, its open work orders cancelled — until the revised SO is
+ * prepared and released again. Said on the order; `save: false` leaves the save to the caller.
+ */
+export async function stopForRevision(order, user, { task = null, save = true } = {}) {
+  if (PRE_RELEASE_STATUSES.includes(order.status)) return false;
+  const why = `Production stopped — a new SO request${task?.title ? ` (${task.title})` : ''} revises this order${user?.name ? `, sent by ${user.name}` : ''}`;
+  order.revisionStop = { at: new Date(), by: user._id, task: task?._id, fromStatus: order.status };
+  order.statusHistory.push({ from: order.status, to: 'order_verification', by: user._id, note: why });
+  order.status = 'order_verification';
+  order.releasedAt = undefined;
+  order.releasedBy = undefined;
+  for (const line of order.lines) {
+    if (!line.production) line.production = {};
+    line.production.status = 'production_hold';
+  }
+  const { default: WorkOrder, OPEN_WORK_ORDER_STATUSES } = await import('../models/WorkOrder.js');
+  for (const wo of await WorkOrder.find({ order: order._id, status: { $in: OPEN_WORK_ORDER_STATUSES } })) {
+    wo.status = 'cancelled';
+    wo.reopenOnRelease = true;
+    wo.history = [...(wo.history || []), { status: 'cancelled', note: `${order.number}: ${why}`, by: user._id, at: new Date() }];
+    await wo.save();
+  }
+  if (save) await order.save();
+  return true;
+}
+
 /**
  * Released to the plant from the SO request (Production confirmed) or the enquiry's Move to
  * Production: the same release as the Sales orders screen's button, said as such. Refused by the
@@ -220,6 +339,7 @@ export async function releaseFromTask(order, user, why) {
   order.status = 'approved_for_production';
   order.releasedBy = user._id;
   order.releasedAt = new Date();
+  order.revisionStop = undefined;
   for (const line of order.lines) {
     if (!line.production) line.production = {};
     line.production.status = 'awaiting_planning';

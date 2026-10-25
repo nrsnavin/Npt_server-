@@ -44,6 +44,12 @@ const workOrderSchema = new mongoose.Schema(
     priority: { type: String, default: 'normal' },
 
     status: { type: String, enum: WORK_ORDER_STATUSES, default: 'planned', index: true },
+    /*
+     * Cancelled because its order was stopped — a new SO request revising it [soFromTask
+     * `stopForRevision`] or the advance after the terms changed [paymentTerms.service]: opened
+     * again, with what it made, when the order goes back to the plant [workOrder.service `ensureWorkOrders`].
+     */
+    reopenOnRelease: { type: Boolean, default: undefined },
 
     /* The plan: which press, from when to when, and its place in that press's queue. */
     machine: { type: mongoose.Schema.Types.ObjectId, ref: 'Machine', index: true },
