@@ -1342,7 +1342,19 @@ async function assertMayFinish(task) {
    * task's own statuses and updates, not from consignments on the Dispatch screen, so an order's
    * consignment balance is not a reason to refuse — it would count lots the team never records
    * there. (A consignment leaving still finishes the task by itself once nothing is left.)
+   *
+   * What it does refuse is closing, part way through its loads, with goods ready and still to go:
+   * nothing would raise a request for them again — their readiness was already said — and they
+   * would sit at the plant unsent.
    */
+  /* Only once the job runs its dispatch through loads — a request moved on before the dispatch form closes as it always did. */
+  if (task.kind === 'invoice_dispatch' && (await jobDispatchLoads({ task, current: task })).length) {
+    const sheet = await dispatchSheet(task).catch(() => null);
+    const stranded = (sheet?.models || []).filter((row) => row.ready && row.ordered > 0 && row.sent < row.ordered);
+    if (stranded.length) {
+      fail(`${stranded.map((row) => `${row.model} ${(row.ordered - row.sent).toLocaleString('en-IN')} pcs`).join(', ')} ${stranded.length > 1 ? 'are' : 'is'} ready and still to go — dispatch ${stranded.length > 1 ? 'them' : 'it'} before closing. If the buyer does not want the rest, change the pieces on the sales order first.`);
+    }
+  }
 }
 
 /**
@@ -1879,7 +1891,16 @@ export async function jobDispatchLoads({ enquiryId = null, task = null, current 
   let where;
   if (enquiryKey) {
     const start = await Todo.findOne({ enquiry: enquiryKey, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt').lean();
-    where = { enquiry: enquiryKey, ...(start ? { createdAt: { $gte: start.createdAt } } : {}) };
+    /*
+     * And every request on the same sales order: a revised SO gives Production a fresh request, but
+     * what the order's loads already sent still went — counting from zero let it go again. A repeat
+     * order on the enquiry is another SO, and starts afresh.
+     */
+    const { default: SalesOrder } = await import('../models/SalesOrder.js');
+    const orderKey = task?.order?._id || task?.order || current?.order?._id || current?.order
+      || (await SalesOrder.findOne({ enquiry: enquiryKey, status: { $ne: 'cancelled' } }).sort({ createdAt: -1 }).select('_id').lean())?._id || null;
+    const since = start ? { createdAt: { $gte: start.createdAt } } : {};
+    where = { enquiry: enquiryKey, ...(start && orderKey ? { $or: [since, { order: orderKey }] } : since) };
   } else if (task) {
     where = { $or: [{ chain: task.chain || task._id }, { _id: task.chain || task._id }] };
   } else return [];
@@ -1899,7 +1920,7 @@ export async function jobDispatchLoads({ enquiryId = null, task = null, current 
 const TEAM_WORDS_OF = { production: 'Production', printing: 'Printing', assembling: 'Assembly' };
 
 /** Pieces sent of each model across the loads. */
-const sentByModel = (loads) => {
+export const sentByModel = (loads) => {
   const sent = new Map();
   for (const load of loads) for (const line of load.lines || []) sent.set(line.model, (sent.get(line.model) || 0) + (line.quantity || 0));
   return sent;
@@ -1975,12 +1996,42 @@ export async function recordDispatchLoad(task, user, { lines, mode, note, attach
   if (unready.length) {
     fail(`${unready.map((row) => `${row.model} is still with ${TEAM_WORDS_OF[row.waitingOn] || 'the plant'}`).join('; ')} — only models marked Ready for Dispatch by their last team (Assembly, else Printing, else Production) can be dispatched`);
   }
-  const pieces = given.reduce((sum, line) => sum + line.quantity, 0);
   /* The names as the order spells them, so every load reads the same model the same way. */
   const spelled = new Map(sheet.models.map((row) => [row.model.toLowerCase(), row.model]));
   for (const line of given) line.model = spelled.get(line.model.toLowerCase()) || line.model;
+  /* The same model twice in a load is one line of their pieces together. */
+  for (let at = given.length - 1; at > 0; at -= 1) {
+    const first = given.findIndex((line) => line.model.toLowerCase() === given[at].model.toLowerCase());
+    if (first < at) { given[first].quantity += given[at].quantity; given.splice(at, 1); }
+  }
+  const pieces = given.reduce((sum, line) => sum + line.quantity, 0);
   const { ordered } = await orderedModelsOf({ task });
   const before = await jobDispatchLoads({ task, current: task });
+  /*
+   * Never more than is left to send: what the order asks of each model, less what every load of the
+   * job has taken already. A buyer taking more is a change to the order [orderEdits.service].
+   */
+  const sentBefore = sentByModel(before);
+  if (ordered.size && everythingSent(ordered, sentBefore)) {
+    fail('Everything ordered has gone in full — nothing is left to dispatch on this order. If the buyer wants more, change the pieces on the sales order first.');
+  }
+  const leftOf = (model) => {
+    const want = [...ordered].find(([name]) => name.toLowerCase() === model.toLowerCase())?.[1] || 0;
+    return want > 0 ? want - (sentBefore.get(model) || 0) : null;
+  };
+  for (const line of given) {
+    const left = leftOf(line.model);
+    if (left == null) continue;
+    if (left <= 0) fail(`${line.model} has gone in full — nothing of it is left to send`);
+    if (line.quantity > left) fail(`${line.model}: only ${left.toLocaleString('en-IN')} pcs left to send — ${line.quantity.toLocaleString('en-IN')} is more than the order has left. If the buyer takes more, change the pieces on the sales order first.`);
+  }
+  /* The money due before dispatch, on the order's terms [paymentGates.service] — the request may have been raised before the terms asked for it. */
+  if (task.enquiry) await assertEnquiryPaidFor(task.enquiry?._id || task.enquiry, 'dispatch', { by: user });
+  else if (task.order) {
+    const { default: SalesOrder } = await import('../models/SalesOrder.js');
+    const order = await SalesOrder.findById(task.order?._id || task.order);
+    if (order) await (await import('./paymentGates.service.js')).assertPaidFor(order, 'dispatch', { by: user });
+  }
   const after = sentByModel([...before, { lines: given }]);
   const status = ordered.size && everythingSent(ordered, after) ? 'fully_dispatched' : 'part_dispatched';
   const still = [...ordered].filter(([model, quantity]) => (quantity > 0 ? (after.get(model) || 0) < quantity : !(after.get(model) > 0)))
