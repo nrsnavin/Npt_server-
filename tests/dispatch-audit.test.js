@@ -286,3 +286,63 @@ test('P: two models, one part sent and one not produced yet — each reads its o
   assert.equal(done.status, 'fully_dispatched');
   if (!done.completed) assert.equal((await move(request._id, 'ravi', 'closed', { note: 'All gone' })).status, 200);
 });
+
+test('Q: three shipments gone before Reception looks — three LRs to upload, one a shipment, none overwritten; the LR task stays open until each has its LR', async () => {
+  const { enquiry, request } = await readyToGo([['DQ-1', 9000]]);
+  /* Three transporter loads, no LR copy with any of them. */
+  for (const pieces of [3000, 3000, 2000]) {
+    assert.equal((await loadLines(request._id, [{ model: 'DQ-1', quantity: pieces }])).status, 200);
+  }
+  await Todo.updateOne({ _id: request._id }, { $set: { 'loads.$[].attachment': null } });
+  const lr = await Todo.findOne({ enquiry, kind: 'lr_copy', completed: false }).lean();
+  assert.ok(lr, 'Reception has one LR task for the job');
+  let shipments = (await api(`/api/workspace/todos/${lr._id}/shipments`, { as: 'rekha' })).json.data;
+  assert.equal(shipments.length, 3, 'one line a shipment');
+  assert.ok(shipments.every((row) => row.needsLr && !row.paper));
+  assert.deepEqual(shipments.map((row) => row.pieces), [3000, 3000, 2000]);
+
+  const uploadLr = async (loadId) => {
+    const form = new FormData();
+    form.append('file', new Blob(['%PDF-1.4 lr'], { type: 'application/pdf' }), `lr-${loadId || 'x'}.pdf`);
+    if (loadId) form.append('loadId', String(loadId));
+    const response = await fetch(`${baseUrl}/api/workspace/todos/${lr._id}/result`, { method: 'POST', headers: { Authorization: `Bearer ${token.rekha}` }, body: form });
+    return { status: response.status, json: await response.json().catch(() => ({})) };
+  };
+  /* Not saying which shipment, with three waiting: refused — it would land on the wrong one. */
+  const vague = await uploadLr(null);
+  assert.equal(vague.status, 400);
+  assert.match(vague.json.message, /3 shipments are waiting for their LR — upload each against its own shipment/);
+  /* Each against its own shipment. */
+  assert.equal((await uploadLr(shipments[0]._id)).status, 200);
+  assert.equal((await uploadLr(shipments[1]._id)).status, 200);
+  shipments = (await api(`/api/workspace/todos/${lr._id}/shipments`, { as: 'rekha' })).json.data;
+  assert.deepEqual(shipments.map((row) => Boolean(row.paper)), [true, true, false]);
+  assert.notEqual(String(shipments[0].paper._id), String(shipments[1].paper._id), 'the second did not overwrite the first');
+  assert.ok(shipments[0].lrSentAt, 'sent to the buyer on upload');
+
+  /* Closing with one shipment still waiting is refused. */
+  const early = await move(lr._id, 'rekha', 'closed', { note: 'Done' });
+  assert.equal(early.status, 400);
+  assert.match(early.json.message, /Upload the LR for every shipment first — still waiting: the shipment of .* \(DQ-1 2,000 pcs\)/);
+  /* The last one, the only one waiting: the upload needs no shipment named. */
+  assert.equal((await uploadLr(null)).status, 200);
+  assert.equal((await Todo.findById(lr._id).lean()).status, 'sent');
+  /* Another shipment goes, with no LR, while the task reads Sent: it is LR Copy Awaiting again, with one LR to upload. */
+  const bare = new FormData();
+  bare.append('status', 'part_dispatched');
+  bare.append('mode', 'transporter');
+  bare.append('lines', JSON.stringify([{ model: 'DQ-1', quantity: 1000 }]));
+  const went = await fetch(`${baseUrl}/api/workspace/todos/${request._id}/dispatch`, { method: 'POST', headers: { Authorization: `Bearer ${token.ravi}` }, body: bare });
+  assert.equal(went.status, 200);
+  assert.equal((await Todo.findById(lr._id).lean()).status, 'awaiting');
+  assert.equal((await move(lr._id, 'rekha', 'closed', { note: 'Done' })).status, 400, 'not closed with the new LR to come');
+  assert.equal((await uploadLr(null)).status, 200, 'the one waiting');
+  shipments = (await api(`/api/workspace/todos/${lr._id}/shipments`, { as: 'rekha' })).json.data;
+  assert.ok(shipments.every((row) => row.paper));
+  assert.equal((await move(lr._id, 'rekha', 'closed', { note: 'All LRs sent' })).status, 200);
+
+  /* The enquiry's records carry each shipment with its LR. */
+  const loads = (await records(enquiry)).dispatch.requests.flatMap((row) => row.loads);
+  assert.equal(loads.length, 4);
+  assert.ok(loads.every((row) => row.proof && row.needsLr && row.lrSentAt));
+});

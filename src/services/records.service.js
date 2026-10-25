@@ -860,6 +860,9 @@ async function describeDispatch(requests, lrTasks, { ordered = null } = {}) {
         /* What Dispatch said of how it went; the paper may follow the goods [handoff.service `addLoadProof`]. */
         lrNumber: load.lrNumber || '', transporter: load.transporter || '', vehicleNumber: load.vehicleNumber || '',
         proofPending: !load.attachment,
+        /* A transporter's shipment has an LR to send; Reception marks it sent from its LR Copy task [handoff.service `markShipmentSent`]. */
+        needsLr: load.mode === 'transporter',
+        lrSentAt: load.lrSent?.at || null,
         by: load.by?.name || '',
         note: load.note || '',
       })),

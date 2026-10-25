@@ -262,6 +262,10 @@ const todoSchema = new mongoose.Schema(
         transporter: { type: String, trim: true, maxlength: 120 },
         vehicleNumber: { type: String, trim: true, maxlength: 40 },
         note: { type: String, trim: true, maxlength: 1000 },
+        /* Who put the paper on it — Dispatch with the load, or Reception on its LR Copy task [handoff.service `attachShipmentLr`]. */
+        paperBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        /* The shipment's LR copy sent to the buyer, from Reception's LR Copy task. */
+        lrSent: { at: Date, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } },
         by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         at: { type: Date, default: Date.now },
       }, { _id: true })],

@@ -1352,6 +1352,11 @@ async function assertMayFinish(task, { system = false } = {}) {
    * job's earlier ones — a model still in Production is still owed to the buyer, and nothing else
    * would send it. The app closing it (a consignment left with nothing more owed) is not held back.
    */
+  /* Reception's LR Copy task: not closed while a transporter shipment of the job still has no LR uploaded [shipmentsOf]. */
+  if (task.kind === 'lr_copy' && !system) {
+    const waiting = (await shipmentsOf(task)).filter((row) => row.needsLr && !row.paper);
+    if (waiting.length) fail(`Upload the LR for every shipment first — still waiting: ${waiting.map((row) => shipmentWords(row)).join('; ')}`);
+  }
   if (task.kind === 'invoice_dispatch' && !system) {
     const sheet = await dispatchSheet(task).catch(() => null);
     const owed = (sheet?.models || []).filter((row) => row.state !== 'sent');
@@ -2093,6 +2098,8 @@ export async function recordDispatchLoad(task, user, { lines, mode, note, attach
   if (mode === 'transporter' && attachmentId) await lrToReception(moved || task, user, attachmentId, said);
   /* No paper yet: the Dispatch team is reminded to add it to the load when it comes [addLoadProof]. */
   if (!attachmentId) await remindLoadProof(moved || task, user, how, said);
+  /* A transporter's shipment with no LR yet: Reception's LR task reads Awaiting again, whatever an earlier shipment left it at. */
+  if (mode === 'transporter' && !attachmentId) await lrAwaitedAgain(moved || task, user, said);
   /* The last of it gone after a part load: the enquiry no longer reads Part sent — it reads LR Copy [holdsPartSent]. */
   if (status === 'fully_dispatched') await reachEnquiry(moved || task, user, { marketing: 'lr_copy' }, `Fully Dispatched — ${said}`);
   return moved || task;
@@ -2147,12 +2154,99 @@ export async function addLoadProof(task, user, loadId, { attachmentId = null, de
   return task;
 }
 
+/**
+ * The job's shipments [web: LrShipments, EnquiryShipments] — every load sent on its Dispatch
+ * requests, oldest first: the day, the models and pieces, how it went, and its paper. A
+ * transporter's load needs its LR copy (`needsLr`): Reception's LR Copy task holds one upload a
+ * shipment, so three loads gone before Reception looks are three LRs to upload, never one.
+ */
+export async function shipmentsOf(task) {
+  const loads = await jobDispatchLoads({ task, current: task.kind === 'invoice_dispatch' ? task : null });
+  const { default: Attachment } = await import('../models/Attachment.js');
+  const papers = new Map((await Attachment.find({ _id: { $in: loads.map((load) => load.attachment).filter(Boolean) } }).select('key filename mimeType').lean()).map((file) => [String(file._id), file]));
+  const modes = findHandoff('invoice_dispatch')?.form?.dispatchModes || [];
+  return loads.map((load) => {
+    const how = modes.find((entry) => entry.key === load.mode);
+    return {
+      _id: load._id, task: load.task, at: load.at,
+      lines: (load.lines || []).map((line) => ({ model: line.model, quantity: line.quantity || 0 })),
+      pieces: (load.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0),
+      mode: load.mode || null, modeLabel: how?.label || load.mode || '', paperLabel: how?.proofLabel || 'Paper',
+      needsLr: load.mode === 'transporter',
+      paper: load.attachment ? papers.get(String(load.attachment)) || null : null,
+      lrNumber: load.lrNumber || null, transporter: load.transporter || null, vehicleNumber: load.vehicleNumber || null,
+      lrSentAt: load.lrSent?.at || null,
+    };
+  });
+}
+
+/* One shipment in words: "the shipment of 25 Oct (CRF25 5,000 pcs)". */
+const shipmentWords = (load) => `the shipment of ${prettyDay(indiaDay(load.at))} (${(load.lines || []).map((line) => `${line.model} ${Number(line.quantity || 0).toLocaleString('en-IN')} pcs`).join(' · ')})`;
+
+/**
+ * Which shipment an LR uploaded on Reception's LR Copy task is for: the one named, else the only
+ * transporter shipment still without its LR. Two or more waiting and none named is refused —
+ * the LR would land on the wrong consignment. No shipment on the job (an LR task raised by hand)
+ * links to nothing, as before.
+ */
+export async function shipmentForLr(lrTask, loadId = null) {
+  if (lrTask.kind !== 'lr_copy') return null;
+  const shipments = await shipmentsOf(lrTask);
+  if (loadId) {
+    const named = shipments.find((row) => String(row._id) === String(loadId));
+    if (!named) throw ApiError.notFound('That shipment is not on this job');
+    if (!named.needsLr) fail(`That shipment went by ${named.modeLabel.toLowerCase()} — it has no LR`);
+    return named;
+  }
+  const waiting = shipments.filter((row) => row.needsLr && !row.paper);
+  if (waiting.length > 1) fail(`${waiting.length} shipments are waiting for their LR — upload each against its own shipment: ${waiting.map((row) => shipmentWords(row)).join('; ')}`);
+  return waiting[0] || null;
+}
+
+/** The LR Reception uploaded, onto its shipment's load on the Dispatch request — said on both tasks. */
+export async function attachShipmentLr(lrTask, user, shipment, attachmentId) {
+  const request = await Todo.findById(shipment.task);
+  const load = request?.loads?.id(shipment._id);
+  if (!load) throw ApiError.notFound('That shipment is not on this job');
+  load.attachment = attachmentId;
+  load.paperBy = user._id;
+  request.markModified('loads');
+  const said = `LR copy for ${shipmentWords(load)} uploaded by ${user.name} (Reception)`;
+  request.updates = [...(request.updates || []), { kind: 'uploaded', statusLabel: 'LR copy', text: said, note: said, by: user._id, at: new Date() }];
+  await request.save();
+  return said;
+}
+
+/** A shipment's LR copy went to the buyer: the load says so, and it leaves Reception's "to send" list. */
+export async function markShipmentSent(shipment, user) {
+  if (!shipment?._id) return;
+  await Todo.updateOne({ _id: shipment.task, 'loads._id': shipment._id }, { $set: { 'loads.$.lrSent': { at: new Date(), by: user._id } } }, { keepVersion: true });
+}
+
+/**
+ * A new shipment's LR is awaited: Reception's open LR Copy task — sent, in transit or delivered for
+ * an earlier shipment — goes back to LR Copy Awaiting, so it never reads finished while an LR is
+ * still to upload. A task already awaiting is only told.
+ */
+async function lrAwaitedAgain(task, user, said) {
+  const where = task.enquiry ? { enquiry: task.enquiry?._id || task.enquiry } : { chain: task.chain || task._id };
+  const lr = await Todo.findOne({ ...where, kind: 'lr_copy', completed: false });
+  if (!lr || !lr.status || lr.status === 'awaiting') return null;
+  const line = `New shipment — LR to upload: ${said}`;
+  lr.status = 'awaiting';
+  lr.statusHistory = [...(lr.statusHistory || []), { status: 'awaiting', note: line, by: user._id, at: new Date() }];
+  lr.updates = [...(lr.updates || []), { kind: 'status', status: 'awaiting', statusLabel: 'LR Copy Awaiting', text: line, note: line, by: user._id, at: new Date() }];
+  await lr.save();
+  await publish(EVENTS.HANDOFF_UPDATED, { task: lr, by: user });
+  return lr;
+}
+
 /** The LR copy uploaded with a load, onto Reception's open LR Copy task: LR Copy Received, Reception sends it to the buyer. */
 async function lrToReception(task, user, attachmentId, said) {
   const where = task.enquiry ? { enquiry: task.enquiry?._id || task.enquiry } : { chain: task.chain || task._id };
   const lr = await Todo.findOne({ ...where, kind: 'lr_copy', completed: false });
   if (!lr) return null;
-  const line = `LR copy uploaded by ${user.name} (Dispatch) with the load: ${said} — send it to the buyer`;
+  const line = `LR copy uploaded by ${user.name} (Dispatch) with the load: ${said} — send it to the buyer from this shipment`;
   lr.resultFile = attachmentId;
   lr.status = 'received';
   lr.statusHistory = [...(lr.statusHistory || []), { status: 'received', note: line, by: user._id, at: new Date() }];

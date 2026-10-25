@@ -98,6 +98,12 @@ export async function withDeskDetails(rows) {
       const sample = samples.get(idOf(row.task.brief?.sample));
       if (sample) row.sample = { _id: sample._id, number: sample.number, status: sample.status, quantity: sample.quantity, collection: sample.collection || null };
     }
+    /* Reception's LR Copy task: each shipment of the job and whether its LR is up and sent [handoff.service `shipmentsOf`]. */
+    if (row.task.kind === 'lr_copy') {
+      const { shipmentsOf } = await import('./handoff.service.js');
+      row.shipments = (await shipmentsOf(row.task).catch(() => [])).filter((shipment) => shipment.needsLr)
+        .map(({ _id, at, lines, pieces, paper, lrNumber, lrSentAt }) => ({ _id, at, lines, pieces, paper, lrNumber, lrSentAt }));
+    }
     if (RECEPTION_KINDS.includes(row.task.kind)) {
       row.documents = papers.filter((paper) => String(paper.task) === String(row.task._id))
         .map(({ _id, key, filename, mimeType, docType, title, createdAt }) => ({ _id, key, filename, mimeType, docType, title, createdAt }));
