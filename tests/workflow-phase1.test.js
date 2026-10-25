@@ -410,7 +410,12 @@ test('the buyer accepting the quotation reads PO awaiting, and never pulls an en
 test('Dispatched on the task with no consignment behind it asks Dispatch to record one', async () => {
   const enquiry = await inProduction();
   const order = await orderOn(enquiry, { quantity: 1000 });
-  const task = (await send(enquiry, 'invoice_dispatch')).json.data.task;
+  /* The order's model ready, so the dispatch plan lets it go. */
+  const production = await Todo.findOne({ enquiry, kind: 'ask_edd' });
+  const ready = await api(`/api/workspace/todos/${production._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_dispatch', note: 'Packed' } });
+  assert.equal(ready.status, 200, ready.json.message);
+  /* Ready for dispatch raises the Dispatch request itself [journey.service]. */
+  const task = await until(() => Todo.findOne({ enquiry, kind: 'invoice_dispatch', completed: false }));
   const moved = await dispatchLoad({ baseUrl, token: token.anita, taskId: task._id, status: 'dispatched', note: 'Gone on VRL this evening' });
   assert.equal(moved.status, 200, moved.json.message);
   const reminder = await Todo.findOne({ originKey: `record-consignment:${order._id}` });

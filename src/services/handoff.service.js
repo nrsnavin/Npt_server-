@@ -739,12 +739,10 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
   const asked = keptBrief(kind, picked.brief, { strict: true });
   assertNote(kind, asked, note);
   /*
-   * With no enquiry, the model is all Production, Printing and Assembly have to plan by — the
-   * printing and assembly decided for it, the dates given for it [decideRouting].
+   * With no enquiry, the model is all Production, Printing and Assembly have to plan by — but a
+   * job may go before its details are known: the team fills the model, pieces, material, hook,
+   * clip and print on the task [editTaskBrief], and plans once it has [decideRouting].
    */
-  if (['ask_edd', 'ask_printing', 'ask_assembling_edd'].includes(kind) && !String(asked.model || asked.models || '').trim()) {
-    fail('Name the model — with no enquiry, the team plans by it');
-  }
   /* The instruction is optional when the form's answers — the model, the material, the quantity — say what the team should do. */
   const text = String(note || '').trim();
   if (text.length < 3 && !Object.keys(asked).length) fail('Say what the team should do, or fill in what it is about');
@@ -1515,8 +1513,32 @@ export async function setTaskStatus(task, user, { status, note, date, dates, fie
   const finishes = move.finishes || (step.handsTo && (await handedOnForGood(task, step, after, byModel)));
   const overall = finishes ? step.key : move.overall;
   const unchanged = byModel ? task.status === overall && after.every((row, at) => row.status === modelStatusesOf(task)[at].status) : task.status === status;
-  /* The same status again says nothing new — except money confirmed in, which is more money each time. */
-  if (unchanged && !readyDate && !step.confirmsInward) return task;
+  /*
+   * The same status again says nothing new — except money confirmed in, which is more money each
+   * time, and a dispatch load: a second or third Part Quantity Dispatched is another load, and
+   * returning here left it unsaved — only the first load ever counted as sent [recordDispatchLoad].
+   */
+  if (unchanged && !readyDate && !step.confirmsInward && !load) {
+    /*
+     * Said again with something new — a remark, or what the status records (pieces, who) — it is
+     * an update on the task, not nothing: "Part Quantity Ready" a second time is more goods ready,
+     * and dropping it lost the remark and the pieces. The status does not move, so nothing it
+     * raises or hands on happens twice; the people it tells hear it, and Dispatch hears more goods
+     * ready [tellDispatchReady].
+     */
+    if (!text && !Object.keys(asked).length) return task;
+    const againLabel = partial ? `${step.label} · ${moving.join(', ')}` : step.label;
+    task.updates = [...(task.updates || []), {
+      kind: 'status', status: step.key, statusLabel: againLabel, text: text || undefined,
+      note: text ? `${againLabel} (again): ${text}` : `${againLabel} (again)`, ...(Object.keys(asked).length ? { fields: asked } : {}), by: user._id, at: new Date(),
+    }];
+    task.attention = undefined;
+    await task.save();
+    if (form.notifyStatus) await noticeStatus(task, user, { step: { ...step, label: againLabel }, note: text });
+    if (step.readyForDispatch) await tellDispatchReady(task, user, { ...step, label: againLabel }, text, { partial });
+    await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
+    return task;
+  }
   await assertNotWaiting(task);
   /* Refused before the status moves, so a refusal leaves the task where it was. */
   if (finishes) await assertMayFinish(task);
@@ -3967,7 +3989,9 @@ export async function decideRouting(task, user, { models }) {
     if (!model || rows.some((entry) => entry.model === model)) continue;
     rows.push({ model, printing: row.printing === true, assembly: row.assembly === true });
   }
-  if (!rows.length) fail('Name at least one model');
+  if (!rows.length) {
+    fail(task.enquiry || modelsOfTask(task).length ? 'Name at least one model' : 'This task came without its model — add the hanger details on the task (model, pieces, material, hook, clip, print), then decide printing and assembly');
+  }
 
   const printed = rows.filter((row) => row.printing);
   const assembled = rows.filter((row) => row.assembly);
@@ -4197,6 +4221,26 @@ export async function setModelEdds(enquiry, user, { models, note }) {
  * (Assembly, else Printing, else Production) says Ready for Dispatch or has finished. The rest are
  * waiting on that team.
  */
+/**
+ * The models a job's journey follows before Production has routed them [decideRouting]: every
+ * model ordered — the SO's lines, else the requests', else the enquiry's items [orderedModelsOf] —
+ * with the Production task's own, each once. Without it only the task's first model showed, and a
+ * second model on the order was nowhere until the routing was decided.
+ */
+async function unroutedModels(start, { id = null, onTask = null } = {}) {
+  /* "CRF-25" on the SO and "CRF-25 · 380mm hanger" on the request are one model. */
+  const key = (model) => String(model || '').split('·')[0].replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const { ordered } = await orderedModelsOf(id ? { enquiryId: id } : { task: onTask });
+  const names = [...ordered.keys(), ...modelsOfTask(start)];
+  const seen = new Set();
+  return names.filter((model) => {
+    const name = key(model);
+    if (!name || seen.has(name)) return false;
+    seen.add(name);
+    return true;
+  });
+}
+
 export async function modelReadiness(enquiryId, { task: onTask = null } = {}) {
   const id = enquiryId?._id || enquiryId || null;
   /* An enquiry's job, or — raised from the customer — the team job's chain [journey.service `jobFilter`]. */
@@ -4220,7 +4264,8 @@ export async function modelReadiness(enquiryId, { task: onTask = null } = {}) {
   };
   const routes = (start.routing?.models || []).length
     ? start.routing.models.map((row) => ({ model: row.model, route: ['production', ...(row.printing ? ['printing'] : []), ...(row.assembly ? ['assembling'] : [])] }))
-    : modelsOfTask(start).map((model) => ({ model, route: ['production'] }));
+    /* Not routed yet: through every team already tasked on the job — Printing or Assembly asked by hand. */
+    : (await unroutedModels(start, { id, onTask })).map((model) => ({ model, route: ['production', ...(tasks.some((entry) => entry.kind === 'ask_printing') ? ['printing'] : []), ...(tasks.some((entry) => entry.kind === 'ask_assembling_edd') ? ['assembling'] : [])] }));
   const ready = [];
   const waiting = [];
   /*
@@ -4327,7 +4372,7 @@ export async function modelJourneys(enquiryId, { task: onTask = null } = {}) {
   };
   const routes = (start.routing?.models || []).length
     ? start.routing.models.map((row) => ({ model: row.model, printing: Boolean(row.printing), assembly: Boolean(row.assembly), decided: true }))
-    : modelsOfTask(start).map((model) => ({ model, printing: false, assembly: false, decided: false }));
+    : (await unroutedModels(start, { id, onTask })).map((model) => ({ model, printing: Boolean(taskOf('ask_printing')), assembly: Boolean(taskOf('ask_assembling_edd')), decided: false }));
   /* Floor planning: the model's work order says where it is on the floor — planned on a press, running, how far [floorPlanning.service]. */
   const floorOrders = await (await import('../models/WorkOrder.js')).default.find({ task: start._id }).select('model status machine plannedEnd goodQty quantity').populate('machine', 'code').lean();
   /* A traded model: where its supply stands on the Trading page [trading.service]. */
