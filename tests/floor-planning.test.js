@@ -123,9 +123,12 @@ test('on: each routed model gets a work order; planned from the task, the runs m
   const early = await api('/api/mould-runs', { method: 'POST', as: 'ravi', body: { workOrder: wo._id, machine: crf35.best.machine._id, counterStart: 0 } });
   assert.equal(early.status, 400);
   assert.match(early.json.message, /Approve the first piece/);
+  const boardJob = async () => (await api('/api/production/plan', { as: 'siva' })).json.data.presses.flatMap((press) => press.queue).find((job) => String(job._id) === String(wo._id));
+  assert.deepEqual([(await boardJob()).forTask.enquiry, (await boardJob()).forTask.firstPiece], [enquiry.number, false], 'the board: whose job, first piece pending');
   for (const step of ['mouldOff', 'mouldOn', 'heated', 'firstPiece']) {
     assert.equal((await api(`/api/work-orders/${wo._id}/setup`, { method: 'POST', as: 'ravi', body: { step } })).status, 200);
   }
+  assert.equal((await boardJob()).forTask.firstPiece, true, 'the board: first piece approved');
   const run = await api('/api/mould-runs', { method: 'POST', as: 'ravi', body: { workOrder: wo._id, machine: crf35.best.machine._id, counterStart: 0 } });
   assert.equal(run.status, 201, run.json.message);
   task = await Todo.findById(production._id).lean();

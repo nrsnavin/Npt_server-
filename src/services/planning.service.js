@@ -243,7 +243,11 @@ export async function planningBoard({ days = 14 } = {}) {
       fit: { blocks: fit.blocks, warnings: fit.warnings },
       short: byWorkOrder[String(job._id)]?.short || [],
       /* Planned from a Production task: the enquiry, the model and its route — the due day is its hand-over day. */
-      forTask: job.task ? { _id: job.task, model: job.model || job.modelNumber, enquiry: job.enquiry?.number || null, route: routeOf(job) } : null,
+      forTask: job.task ? {
+        _id: job.task, model: job.model || job.modelNumber, enquiry: job.enquiry?.number || null, route: routeOf(job),
+        /* The mould change on the floor tablet: the first piece approved, or a run already made. */
+        firstPiece: Boolean(job.setup?.firstPiece?.at || job.firstRunAt),
+      } : null,
       updatedAt: job.updatedAt,
     };
   };
