@@ -78,7 +78,7 @@ export const TASK_STATES = ['open', 'done', 'all'];
  * any one department's tasks, finished ones included. A department outside what this person
  * may see returns nothing rather than widening the scope.
  */
-export async function trackedTasks(user, { department, state = 'open', limit = 300 } = {}) {
+export async function trackedTasks(user, { department, state = 'open', limit = 300, assigned = null } = {}) {
   if (!TASK_STATES.includes(state)) throw new ApiError(400, `State must be one of ${TASK_STATES.join(', ')}`);
   /* A department, or a desk shared by several [config/modules.js DESK_GROUPS] — every one of its queues. */
   const members = department ? (deskOf(department)?.key === department ? deskOf(department).departments : [department]) : [];
@@ -86,7 +86,12 @@ export async function trackedTasks(user, { department, state = 'open', limit = 3
   const filter = { kind: { $exists: true }, ...NOT_THE_ENQUIRY };
   if (state === 'open') filter.completed = false;
   if (state === 'done') filter.completed = true;
-  if (!isManagement(user)) {
+  /*
+   * `assigned: 'me'` — the home page's board: only the tasks assigned to this person, Admin too.
+   * Every department's tasks are on Department Tasks [web: /tasks].
+   */
+  if (assigned === 'me') filter.user = user._id;
+  else if (!isManagement(user)) {
     if (isOwnershipScoped(user)) {
       const [enquiries, customers] = await Promise.all([
         Enquiry.find(ownershipFilter(user)).distinct('_id'),

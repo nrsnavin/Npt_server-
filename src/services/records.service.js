@@ -856,6 +856,7 @@ async function describeDispatch(requests, lrTasks, { ordered = null } = {}) {
         statusLabel: statusLabel('invoice_dispatch', load.status),
         lines: (load.lines || []).map((line) => ({ model: line.model, quantity: line.quantity || 0 })),
         mode: LOAD_MODES_SAID[load.mode] || load.mode || '',
+        modeKey: load.mode || null,
         proof: load.attachment?.key ? load.attachment : null,
         /* What Dispatch said of how it went; the paper may follow the goods [handoff.service `addLoadProof`]. */
         lrNumber: load.lrNumber || '', transporter: load.transporter || '', vehicleNumber: load.vehicleNumber || '',

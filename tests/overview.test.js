@@ -238,3 +238,23 @@ test('a marketing person follows the tasks on their own enquiries — not a coll
   assert.equal(arun.includes(String(asked._id)), true, 'his enquiry');
   assert.equal(arun.includes(String(team._id)), false);
 });
+
+test('the home page’s board: only the tasks assigned to the reader — Admin too; every department’s are on Department Tasks', async () => {
+  const mine = async (as) => (await api('/api/dashboard/tasks?assigned=me&state=all', { as })).json.data;
+  const { default: Todo } = await import('../src/models/Todo.js');
+  const task = await Todo.findById(ids.task).lean();
+  /* Nobody has the task yet: it is on nobody's own list, Admin's included. */
+  if (!task.user) {
+    assert.equal((await mine('admin')).some((row) => row._id === ids.task), false, 'not on Admin’s home');
+    assert.equal((await mine('nandhini')).some((row) => row._id === ids.task), false, 'raised by her, not assigned to her');
+  }
+  /* Assigned to the production person: on theirs only. */
+  const siva = (await api('/api/auth/me', { as: 'siva' })).json.data.id;
+  await Todo.updateOne({ _id: ids.task }, { $set: { user: siva } });
+  assert.equal((await mine('siva')).some((row) => row._id === ids.task), true);
+  assert.equal((await mine('admin')).some((row) => row._id === ids.task), false);
+  assert.ok((await mine('siva')).every((row) => String(row.user?._id || row.user) === String(siva)));
+  /* Department Tasks (no `assigned`) still reads every department for Admin. */
+  assert.equal((await api('/api/dashboard/tasks?state=all', { as: 'admin' })).json.data.some((row) => row._id === ids.task), true);
+  await Todo.updateOne({ _id: ids.task }, { $set: { user: task.user || null } });
+});
