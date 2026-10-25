@@ -159,8 +159,9 @@ test('Dispatch: offered the moment everything is dispatched (Fully Dispatched, a
   assert.equal((await move(dispatch._id, 'ravi', 'waiting_vehicle', { note: 'Packed' })).json.data.closable, null);
   const gone = await move(dispatch._id, 'ravi', 'dispatched', { note: 'VRL, LR 55021' });
   assert.equal(gone.status, 200, gone.json.message);
-  assert.equal(gone.json.data.completed, false);
-  assert.equal(gone.json.data.closable.why, 'Fully Dispatched — Reception has the LR copy task');
+  /* Everything gone with its paper: the request closes itself, reading Fully Dispatched [handoff.service `closeDispatchWhenDone`]. */
+  assert.equal(gone.json.data.completed, true);
+  assert.match(gone.json.data.status, /dispatched/);
   const lr = await Todo.findOne({ enquiry: enquiry._id, kind: 'lr_copy', completed: false }).lean();
   assert.ok(lr, 'Reception has the LR copy task');
   assert.equal((await api('/api/workspace/todos?scope=department&status=open', { as: 'rekha' })).json.data.find((row) => row._id === String(lr._id)).closable, null);
