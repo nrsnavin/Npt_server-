@@ -1846,6 +1846,7 @@ export async function dispatchSheet(task) {
   const readiness = enquiryId ? await modelReadiness(enquiryId) : await modelReadiness(null, { task });
   const key = (model) => String(model || '').trim().toLowerCase();
   const waiting = new Map((readiness.waiting || []).map((row) => [key(row.model), row.team]));
+  const waitingStatus = new Map((readiness.waiting || []).map((row) => [key(row.model), row.status]));
   return {
     plan: enquiry ? dispatchModeOf(enquiry) : 'together',
     order: order ? { _id: order._id, number: order.number } : null,
@@ -1856,7 +1857,7 @@ export async function dispatchSheet(task) {
     models: [...ordered].map(([model, quantity]) => ({
       model, ordered: quantity, sent: sent.get(model) || 0,
       ready: !waiting.has(key(model)),
-      ...(waiting.has(key(model)) ? { waitingOn: waiting.get(key(model)) } : {}),
+      ...(waiting.has(key(model)) ? { waitingOn: waiting.get(key(model)), waitingStatus: waitingStatus.get(key(model)) } : {}),
     })),
     modes: findHandoff(task.kind)?.form?.dispatchModes || [],
     loads: (task.loads || []).length,
@@ -4145,22 +4146,34 @@ export async function modelReadiness(enquiryId, { task: onTask = null } = {}) {
   const tasks = await Todo.find({ ...where, kind: { $in: EDD_TASK_KINDS }, createdAt: { $gte: start.createdAt } }).select('kind status completed modelStatuses').lean();
   const KIND_OF_TEAM = { production: 'ask_edd', printing: 'ask_printing', assembling: 'ask_assembling_edd' };
   /* The model's own status on that team's task, where it moved on its own; else the task's. */
-  const isDone = (task, model) => {
+  const stepOf = (task, model) => {
+    const status = (task.modelStatuses || []).find((row) => row.model === model)?.status || task.status;
+    return statusesOf(task).find((entry) => entry.key === status) || null;
+  };
+  /* Through this team: ready for dispatch or done — and, before the last team, handed on to the next. */
+  const through = (task, model, last) => {
     if (!task) return false;
     if (task.completed) return true;
-    const status = (task.modelStatuses || []).find((row) => row.model === model)?.status || task.status;
-    const step = statusesOf(task).find((entry) => entry.key === status);
-    return Boolean(step?.readyForDispatch || step?.done);
+    const step = stepOf(task, model);
+    return Boolean(step?.readyForDispatch || step?.done || (!last && step?.handsTo));
   };
   const routes = (start.routing?.models || []).length
-    ? start.routing.models.map((row) => ({ model: row.model, last: row.assembly ? 'assembling' : row.printing ? 'printing' : 'production' }))
-    : modelsOfTask(start).map((model) => ({ model, last: 'production' }));
+    ? start.routing.models.map((row) => ({ model: row.model, route: ['production', ...(row.printing ? ['printing'] : []), ...(row.assembly ? ['assembling'] : [])] }))
+    : modelsOfTask(start).map((model) => ({ model, route: ['production'] }));
   const ready = [];
   const waiting = [];
-  for (const { model, last } of routes) {
-    const task = tasks.find((entry) => entry.kind === KIND_OF_TEAM[last]);
-    if (isDone(task, model)) ready.push(model);
-    else waiting.push({ model, team: last });
+  /*
+   * A model not ready is with the first team on its route that has not passed it on — still in
+   * Production while it is moulded, not "with Assembly" because Assembly finishes it — and that
+   * team's status for it says where exactly.
+   */
+  const taskOf = (team) => tasks.find((entry) => entry.kind === KIND_OF_TEAM[team]);
+  for (const { model, route } of routes) {
+    /* Ready once the last team on its route says so, as before. */
+    if (through(taskOf(route.at(-1)), model, true)) { ready.push(model); continue; }
+    const at = route.find((team, index) => !through(taskOf(team), model, index === route.length - 1)) || route.at(-1);
+    const task = tasks.find((entry) => entry.kind === KIND_OF_TEAM[at]);
+    waiting.push({ model, team: at, status: task ? stepOf(task, model)?.label || 'Asked' : 'Not tasked yet' });
   }
   /*
    * Which of them have gone, from the loads on every Dispatch request of the job [recordDispatchLoad]:

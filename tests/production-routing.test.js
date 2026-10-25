@@ -333,7 +333,7 @@ test('dispatch plan: each model as it is ready — a ready model goes to Quality
   assert.match(quality.notes || '', /Ready: DP-1 · still to come: DP-2/);
   const view = (await api(`/api/enquiries/${split.enquiry._id}/handoffs`, { as: 'nandhini' })).json;
   assert.equal(view.dispatchPlan.mode, 'by_model');
-  assert.deepEqual(view.readiness, { ready: ['DP-1'], waiting: [{ model: 'DP-2', team: 'printing' }], sent: [], partSent: [], qc: { required: true, passed: [], atQc: ['DP-1'] } }, 'made, and with Quality until it passes');
+  assert.deepEqual(view.readiness, { ready: ['DP-1'], waiting: [{ model: 'DP-2', team: 'production', status: 'EDD Request Received' }], sent: [], partSent: [], qc: { required: true, passed: [], atQc: ['DP-1'] } }, 'made, and with Quality until it passes');
 });
 
 test('Printing’s date for a model with no assembly after is its completion date — never a hand-over to Assembly', async () => {
@@ -421,7 +421,7 @@ test('only goods ready can be dispatched: no finishing → after Production; pri
   await new Promise((resolve) => setTimeout(resolve, 200));
   const dispatch = await Todo.findOne({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false }).lean();
   assert.ok(dispatch, 'RD-1 ready: Dispatch is asked');
-  assert.deepEqual(await sheetOf(dispatch._id), { 'RD-1': 'ready', 'RD-2': 'printing', 'RD-3': 'assembling' });
+  assert.deepEqual(await sheetOf(dispatch._id), { 'RD-1': 'ready', 'RD-2': 'printing', 'RD-3': 'printing' }, 'each where it is now — RD-3 is at Printing on its way to Assembly');
   const tooSoon = await dispatchLoad({ baseUrl, token: token.admin, taskId: dispatch._id, status: 'part_dispatched', models: 'RD-1, RD-2', pieces: 2000 });
   assert.equal(tooSoon.status, 400);
   assert.match(tooSoon.json.message, /RD-2 is still with Printing — only models marked Ready for Dispatch by their last team/);
@@ -481,7 +481,7 @@ test('all together: even with the request raised early, Dispatch can send nothin
   const dispatchId = raised.json.data.task._id;
   const early = await dispatchLoad({ baseUrl, token: token.admin, taskId: dispatchId, status: 'part_dispatched', models: 'PR-1', pieces: 400 });
   assert.equal(early.status, 400);
-  assert.match(early.json.message, /This order goes all together — nothing is dispatched until every model is ready \(PR-2 still with Printing\)/);
+  assert.match(early.json.message, /This order goes all together — nothing is dispatched until every model is ready \(PR-2 still with Production\)/);
 
   /* Marketing changes it to each model as it is ready: PR-1 may go now. */
   assert.equal((await api(`/api/enquiries/${enquiry._id}/dispatch-plan`, { method: 'POST', as: 'nandhini', body: { mode: 'by_model' } })).status, 200);

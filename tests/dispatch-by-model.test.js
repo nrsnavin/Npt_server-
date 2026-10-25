@@ -85,9 +85,12 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   const desk = await api('/api/departments/despatch/dashboard', { as: 'ravi' });
   assert.equal(desk.status, 200, desk.json.message);
   const row = desk.json.data.enquiries.find((entry) => String(entry.task._id) === String(dispatch._id));
-  assert.deepEqual(row.readiness, { plan: 'by_model', ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: [], partSent: [], qc: { required: false } });
+  /* The dispatch form says where CRF30 really is: still in Production, not with Assembly, which only finishes it. */
+  const early = (await api(`/api/workspace/todos/${dispatch._id}/dispatch`, { as: 'ravi' })).json.data.models.find((row) => row.model === 'CRF30');
+  assert.deepEqual([early.waitingOn, early.waitingStatus], ['production', 'EDD Request Received']);
+  assert.deepEqual(row.readiness, { plan: 'by_model', ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'production', status: 'EDD Request Received' }], sent: [], partSent: [], qc: { required: false } });
   /* Every Dispatch row carries the goods state for the desk's table, whatever the plan. */
-  assert.deepEqual(row.goods, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: [], partSent: [], qc: { required: false } });
+  assert.deepEqual(row.goods, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'production', status: 'EDD Request Received' }], sent: [], partSent: [], qc: { required: false } });
 
   /* Dispatch sends CRF25 on its own: the models sent are recorded on the move; the enquiry reads Part sent. */
   const part = await move(dispatch._id, 'ravi', 'part_dispatched', { note: 'VRL, LR 55021', fields: { modelsSent: 'crf25', piecesSent: 10000 } });
@@ -96,7 +99,7 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   const after = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data;
   assert.equal(after.marketingStatus, 'part_sent');
   const { readiness } = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { as: 'nandhini' })).json;
-  assert.deepEqual(readiness, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'assembling' }], sent: ['CRF25'], partSent: [], qc: { required: false } }, 'matched to the model however it was typed');
+  assert.deepEqual(readiness, { ready: ['CRF25'], waiting: [{ model: 'CRF30', team: 'production', status: 'EDD Request Received' }], sent: ['CRF25'], partSent: [], qc: { required: false } }, 'matched to the model however it was typed');
   assert.ok(await Todo.exists({ enquiry: enquiry._id, kind: 'lr_copy' }), 'the part load has its LR task');
   /* The enquiry's one-glance view: where each model is, and the pieces gone. */
   const records = await api(`/api/enquiries/${enquiry._id}/records`, { as: 'nandhini' });
@@ -113,6 +116,10 @@ test('a model ready from its last team goes to Dispatch; Part Quantity Dispatche
   assert.equal((await move(assembly._id, 'anand', 'ready_dispatch', { note: 'CRF30 clipped and packed' })).status, 400, 'CRF30 is still with Production');
   assert.equal((await move(production._id, 'siva', 'handed_assembly', { models: ['CRF30'], note: 'CRF30 moulded' })).status, 200);
   assert.equal((await Todo.findById(assembly._id).lean()).status, 'goods_received', 'the hand-over reads Goods Received on Assembly’s task');
+  /* Where CRF30 is now: with Assembly, its goods received — it was in Production, not "with Assembly", until this hand-over. */
+  const sheet = (await api(`/api/workspace/todos/${dispatch._id}/dispatch`, { as: 'ravi' })).json.data;
+  const crf30 = sheet.models.find((row) => row.model === 'CRF30');
+  assert.deepEqual([crf30.ready, crf30.waitingOn, crf30.waitingStatus], [false, 'assembling', 'Goods Received']);
   assert.equal((await move(assembly._id, 'anand', 'ready_dispatch', { note: 'CRF30 clipped and packed' })).status, 200);
   await settle();
   const again = (await api('/api/departments/despatch/dashboard', { as: 'ravi' })).json.data.enquiries.find((entry) => String(entry.task._id) === String(dispatch._id));
