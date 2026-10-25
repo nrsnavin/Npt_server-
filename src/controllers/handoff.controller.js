@@ -698,6 +698,12 @@ export const teamJobHandler = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await teamJob(req.user, req.params.id) });
 });
 
+/** The buyer named on a job given with none — and, its goods ready, Dispatch asked [teamJobs.service `nameJobBuyer`]. */
+export const nameJobBuyerHandler = asyncHandler(transactional(async (req, res) => {
+  const { nameJobBuyer } = await import('../services/teamJobs.service.js');
+  res.json({ success: true, data: await nameJobBuyer(req.user, req.params.id, req.body?.customer, { noBuyer: req.body?.noBuyer === true }) });
+}));
+
 /* ---- A Production task with no enquiry: link it, start it from where the goods are [teamProduction.service] ---- */
 
 /** The buyer's open enquiries the task could join, and the start points offered. */

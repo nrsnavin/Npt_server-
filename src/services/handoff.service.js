@@ -729,7 +729,7 @@ async function moveEnquiryChecked({
  * same way, except for the steps that only make sense on an enquiry (asking its marketing
  * person, raising the next department's task on it), which say so.
  */
-export async function raiseTeamTask({ kind, note, brief, priority, requiredDate, customer, user, edd }) {
+export async function raiseTeamTask({ kind, note, brief, priority, requiredDate, customer, user, edd, allowDuplicate = false }) {
   if (!(isAdmin(user) || inDepartment(user, 'marketing'))) {
     throw ApiError.forbidden('Only Admin and the marketing team raise team tasks without an enquiry');
   }
@@ -755,6 +755,18 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
     buyer = /^[0-9a-f]{24}$/i.test(String(customer)) ? await Customer.findById(customer).select('code name assignedTo') : null;
     /* A marketing person names their own buyers, as everywhere else; Admin any. */
     if (!buyer || (isOwnershipScoped(user) && !ownsRecord(user, buyer))) fail('That customer is not on the register');
+  }
+  /*
+   * The same ask already open for this buyer — the same team, the same model: said, with the job,
+   * before a second is raised beside it. Raised anyway only when the asker says so.
+   */
+  if (buyer && allowDuplicate !== true) {
+    const same = await sameOpenJob(kind, buyer._id, asked);
+    if (same) {
+      throw ApiError.conflict(`${same.jobNumber || 'A job'} is already open for ${buyer.name}${same.models.length ? ` — ${same.models.join(', ')}` : ''}, with ${handoff.label}. Follow that job, or raise another anyway.`, {
+        code: 'DUPLICATE_JOB', job: { _id: same._id, number: same.jobNumber || null, title: same.title, models: same.models },
+      });
+    }
   }
   let department = handoff.department;
   let assignee = picked.member?._id;
@@ -786,6 +798,8 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
   });
   /* Raised with none: whoever raised it is asked for it [eddAsk.service]. */
   await askForEdd(task);
+  /* A Sample Request: the sample itself, for the bench to work [raiseTeamSample]. */
+  if (kind === 'sample_request') await raiseTeamSample(task, user, asked, buyer);
   /*
    * Create Quotation for a buyer with no enquiry: the quotation is raised for the buyer with the
    * models the form named, and the task points at it — the Quotation desk opens it from the card,
@@ -802,6 +816,67 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
   }
   await publish(EVENTS.HANDOFF_SENT, { task, enquiry: null, by: user });
   return task;
+}
+
+/* Every model a brief names — its rows, its list, its one model. */
+const briefModels = (brief = {}) => [...new Set([
+  ...(Array.isArray(brief.items) ? brief.items.map((row) => row?.model) : []),
+  ...String(brief.models || '').split(','), brief.model,
+].map((model) => String(model || '').trim()).filter(Boolean))];
+
+/**
+ * An open job of the same kind for the same buyer, with no enquiry: one naming a model this ask
+ * names too — or, where neither names a model (a payment follow-up), any. Null when none.
+ */
+async function sameOpenJob(kind, customerId, brief) {
+  const key = (model) => model.toLowerCase().replace(/\s+/g, '');
+  const mine = briefModels(brief).map(key);
+  const open = await Todo.find({ kind, customer: customerId, completed: false, enquiry: null, $expr: { $eq: ['$chain', '$_id'] } })
+    .select('jobNumber title brief routing').sort({ createdAt: -1 }).limit(20).lean();
+  for (const job of open) {
+    const models = [...new Set([...briefModels(job.brief), ...modelsOfTask(job)])];
+    if ((!mine.length && !models.length) || models.some((model) => mine.includes(key(model)))) return { ...job, models };
+  }
+  return null;
+}
+
+/**
+ * A team Sample Request: the sample itself, raised for the buyer from the brief — its models,
+ * pieces, colour and material — so the bench works it as any sample (photos, courier, the sample
+ * PDF) and it is on the Samples queue. Sending it closes the task [finishSampleTasks].
+ */
+async function raiseTeamSample(task, user, asked, buyer) {
+  const rows = (Array.isArray(asked.items) ? asked.items : []).filter((row) => String(row?.model || '').trim());
+  const said = sampleFromBrief(asked);
+  delete said.rows;
+  /* A piece from the rack or collected at the desk never reaches the bench; the task is the record of it. */
+  if (said.handover === 'in_person' || said.handover === 'collect') return null;
+  const items = rows.map((row) => {
+    const material = row.material && row.material.toLowerCase().replace(/\s+/g, '_');
+    return {
+      /* "NPT-400S · Shirt hanger 400" as the form offers it: the code is the model. */
+      modelNumber: String(row.model).split(' · ')[0].trim(),
+      ...(Number(row.quantity) > 0 ? { quantity: Number(row.quantity) } : {}),
+      ...(row.colour ? { colour: row.colour } : {}),
+      ...(material && MATERIALS.includes(material) ? { material } : {}),
+      ...(row.colourType ? { colourMandatory: row.colourType === 'Compulsory colour' } : {}),
+    };
+  });
+  const model = items[0]?.modelNumber || String(asked.model || '').split(' · ')[0].trim() || undefined;
+  const { createSampleRequest } = await import('./sampling.service.js');
+  const { sample } = await createSampleRequest({
+    customer: buyer?._id || undefined,
+    job: task._id,
+    ...(model ? { modelNumber: model } : {}),
+    ...said,
+    ...(items.length ? { items } : {}),
+    ...(task.dueDate ? { requiredDate: task.dueDate } : {}),
+    standaloneReason: [`Team job ${task.jobNumber || ''}`.trim(), task.notes].filter(Boolean).join(' — ').slice(0, 500),
+  }, user);
+  task.link = `/samples/${sample._id}`;
+  task.updates = [...(task.updates || []), { kind: 'note', text: `Sample ${sample.number} raised for the bench`, note: `Sample ${sample.number} raised for the bench`, by: user._id, at: new Date() }];
+  await task.save();
+  return sample;
 }
 
 /** What a team task's form can fill without an enquiry: the members to pick, and the named customer's contact. */
@@ -1377,8 +1452,12 @@ async function assertMayFinish(task, { system = false } = {}) {
  */
 export async function finishSampleTasks(sample, by) {
   const enquiryId = sample?.enquiry?._id || sample?.enquiry;
-  if (!enquiryId) return [];
-  const tasks = await Todo.find({ enquiry: enquiryId, kind: 'sample_request', completed: false, holds: { $ne: true } });
+  /* A team job's sample closes the job's Sample Request [raiseTeamSample]; an enquiry's, the enquiry's. */
+  if (!enquiryId && !sample?.job) return [];
+  const tasks = await Todo.find({
+    kind: 'sample_request', completed: false, holds: { $ne: true },
+    $or: [...(enquiryId ? [{ enquiry: enquiryId }] : []), ...(sample?.job ? [{ _id: sample.job }] : [])],
+  });
   if (!tasks.length) return [];
   const direct = sample.deliveryMethod === 'direct';
   const count = sample.dispatchedQuantity || sample.piecesToMake;
@@ -2256,6 +2335,8 @@ export async function attachShipmentLr(lrTask, user, shipment, attachmentId) {
   const said = `LR copy for ${shipmentWords(load)} uploaded by ${user.name} (Reception)`;
   request.updates = [...(request.updates || []), { kind: 'uploaded', statusLabel: 'LR copy', text: said, note: said, by: user._id, at: new Date() }];
   await request.save();
+  /* The last paper in, with every model gone in full: the Dispatch request closes itself [closeDispatchWhenDone]. */
+  await closeDispatchWhenDone(request, user);
   return said;
 }
 

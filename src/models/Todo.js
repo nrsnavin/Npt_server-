@@ -181,6 +181,23 @@ const todoSchema = new mongoose.Schema(
      */
     jobNumber: { type: String, trim: true, index: true, sparse: true },
     /**
+     * The job joined the buyer's enquiry [teamProduction.service `linkToEnquiry`]: it follows the
+     * enquiry from then on, and stays on its asker's Team jobs, saying where it went.
+     */
+    jobLinked: {
+      type: new mongoose.Schema({ enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry' }, number: String, at: Date, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } }, { _id: false }),
+      default: undefined,
+    },
+    /*
+     * A job with no buyer whose goods are ready: Dispatch is not asked until its asker names the
+     * buyer [journey.service `advanceTeamTask`, teamJobs.service `nameJobBuyer`].
+     */
+    buyerWantedAt: Date,
+    /* Its asker said it goes with no buyer (stock, a fair): Dispatch is asked without one. */
+    buyerWaivedAt: Date,
+    /* When Production started it from where the goods are [teamProduction.service `startFrom`]. */
+    startedFromAt: Date,
+    /**
      * The other departments' tasks that asked for this one (Dispatch's "Ask Production") — their
      * people hear each move on it, as the enquiry's marketing person and Admin do [handoff.service
      * `noticeStatus`]. Not the enquiry's owner: the department that asked.
