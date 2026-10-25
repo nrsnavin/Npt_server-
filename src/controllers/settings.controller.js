@@ -1,5 +1,7 @@
 import asyncHandler from '../utils/asyncHandler.js';
-import { plantCalendar, securityPolicy, setPlantCalendar, setSecurityPolicy } from '../services/settings.service.js';
+import { plantCalendar, securityPolicy, setHandoverLead, setPlantCalendar, setSecurityPolicy } from '../services/settings.service.js';
+import ApiError from '../utils/ApiError.js';
+import { inDepartment, isProductionInCharge } from '../utils/departments.js';
 
 /** The security policy, for any signed-in app to follow. */
 export const getSecurity = asyncHandler(async (_req, res) => {
@@ -18,4 +20,12 @@ export const getPlant = asyncHandler(async (_req, res) => {
 
 export const putPlant = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await setPlantCalendar(req.body || {}, req.user) });
+});
+
+/** The days each finishing team gets before the EDD: the Production in charge's, Admin's or marketing's to set. */
+export const putHandoverLead = asyncHandler(async (req, res) => {
+  if (!isProductionInCharge(req.user) && !inDepartment(req.user, 'marketing')) {
+    throw ApiError.forbidden('The Production in charge, Admin or marketing sets the hand-over days');
+  }
+  res.json({ success: true, data: await setHandoverLead(req.body.days, req.user) });
 });

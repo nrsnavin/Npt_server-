@@ -255,6 +255,9 @@ export const plantCalendarSchema = z.object({
   mouldChangeHours: z.number().min(0).max(24).optional(),
 });
 
+/** The days each finishing team gets before the EDD [settings.service `setHandoverLead`]. */
+export const handoverLeadSchema = z.object({ days: z.number().int().min(1).max(30) });
+
 export const securityPolicySchema = z.object({
   pinRequired: z.boolean().optional(),
   lockAfterMinutes: z.number().int().min(1).max(240).optional(),

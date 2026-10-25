@@ -546,7 +546,7 @@ test('Printing gives each model its own date on a status move; a hand-over is ne
   /* Production's hand-over on the EDD itself is refused; five days before it is taken. */
   const onEdd = await api(`/api/workspace/todos/${asked._id}/edd`, { method: 'POST', as: 'siva', body: { date: indiaDay(20) } });
   assert.equal(onEdd.status, 400);
-  assert.match(onEdd.json.message, /on or after the EDD .* 5 days ahead by default/);
+  assert.match(onEdd.json.message, /on or after the EDD .* 5 days a team by default/);
   assert.equal((await api(`/api/workspace/todos/${asked._id}/edd`, { method: 'POST', as: 'siva', body: { date: indiaDay(15) } })).status, 200);
 
   /* Printing hands over to Assembly: a date for each model on the move. */
@@ -561,4 +561,17 @@ test('Printing gives each model its own date on a status move; a hand-over is ne
   const saved = await Todo.findById(printing._id).lean();
   assert.deepEqual(Object.fromEntries(saved.modelDates.map((row) => [row.model, row.date])), { 'HO-1': indiaDay(16), 'HO-2': indiaDay(18) });
   assert.match(saved.updates.at(-1).note, /HO-1 .* · HO-2 /, 'the move says each model’s date');
+});
+
+test('the hand-over days are the Production in charge’s, Admin’s or marketing’s to change — not Printing’s', async () => {
+  assert.equal((await api('/api/settings/plant', { as: 'priya' })).json.data.handoverLeadDays, 5, 'five days a team by default');
+  assert.equal((await api('/api/settings/handover-lead', { method: 'PUT', as: 'priya', body: { days: 4 } })).status, 403);
+  const byMarketing = await api('/api/settings/handover-lead', { method: 'PUT', as: 'nandhini', body: { days: 6 } });
+  assert.equal(byMarketing.status, 200, byMarketing.json.message);
+  assert.equal(byMarketing.json.data.handoverLeadDays, 6);
+  assert.equal((await api('/api/settings/handover-lead', { method: 'PUT', as: 'siva', body: { days: 5 } })).json.data.handoverLeadDays, 5);
+  /* Changing the plant hours keeps it. */
+  await api('/api/settings/plant', { method: 'PUT', as: 'siva', body: { hoursPerDay: 21 } });
+  assert.equal((await api('/api/settings/plant', { as: 'siva' })).json.data.handoverLeadDays, 5);
+  assert.equal((await api('/api/settings/handover-lead', { method: 'PUT', as: 'siva', body: { days: 0 } })).status, 400);
 });

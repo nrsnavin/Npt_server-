@@ -11,8 +11,8 @@ import whatsappRoutes from './whatsapp.routes.js';
 import queryRoutes from './query.routes.js';
 import dispatchPlanningRoutes from './dispatchPlanning.routes.js';
 import recordsRoutes from './records.routes.js';
-import { getPlant, getSecurity, putPlant, putSecurity } from '../controllers/settings.controller.js';
-import { plantCalendarSchema, securityPolicySchema } from '../validators/schemas.js';
+import { getPlant, getSecurity, putHandoverLead, putPlant, putSecurity } from '../controllers/settings.controller.js';
+import { handoverLeadSchema, plantCalendarSchema, securityPolicySchema } from '../validators/schemas.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
 import { globalSearch } from '../controllers/search.controller.js';
 import { inbox } from '../controllers/inbox.controller.js';
@@ -55,6 +55,8 @@ router.put('/settings/security', authenticate, adminOnly, validate(securityPolic
 /* The plant calendar capacity is worked out from: read by everyone signed in, set by Production or Admin. */
 router.get('/settings/plant', authenticate, getPlant);
 router.put('/settings/plant', authenticate, requireModule('production', 'write'), validate(plantCalendarSchema), putPlant);
+/* The days each finishing team gets before the EDD: the Production in charge, Admin or marketing. */
+router.put('/settings/handover-lead', authenticate, validate(handoverLeadSchema), putHandoverLead);
 /* Everything waiting on me — the bell in the header. */
 router.get('/inbox', authenticate, inbox);
 /*

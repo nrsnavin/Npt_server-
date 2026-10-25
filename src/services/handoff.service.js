@@ -3874,7 +3874,11 @@ async function marketingEddFor(task) {
   return { date, by, models };
 }
 
-/** How many days before the EDD a hand-over falls by default [web: utils/edd.js `handOverDefault`]. */
+/**
+ * How many days each finishing team gets before the EDD by default [settings.service
+ * `handoverLeadDays`, which Production, Admin or marketing may change; web: utils/edd.js
+ * `handOverDefault`]: printed and assembled, to Printing 10 days before and to Assembly 5.
+ */
 export const HANDOVER_LEAD_DAYS = 5;
 
 /**
@@ -3887,7 +3891,8 @@ async function assertHandoverBeforeEdd(task, entries) {
   for (const entry of entries) {
     const due = (edd.models || []).find((row) => row.model === entry.model)?.date || edd.date;
     if (due && entry.date && entry.date >= due) {
-      fail(`The hand-over${entry.model && entry.model !== 'All models' ? ` for ${entry.model}` : ''} (${prettyDay(entry.date)}) is on or after the EDD (${prettyDay(due)}) — hand over before it, ${HANDOVER_LEAD_DAYS} days ahead by default, so the next team has time`);
+      const lead = (await (await import('./settings.service.js')).plantCalendar()).handoverLeadDays || HANDOVER_LEAD_DAYS;
+      fail(`The hand-over${entry.model && entry.model !== 'All models' ? ` for ${entry.model}` : ''} (${prettyDay(entry.date)}) is on or after the EDD (${prettyDay(due)}) — hand over before it, ${lead} days a team by default, so the next team has time`);
     }
   }
 }
