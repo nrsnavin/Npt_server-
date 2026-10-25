@@ -221,3 +221,36 @@ test('no SO and no pieces on the enquiry: each model takes its pieces from the S
     assert.deepEqual(records.json.data.dispatch.models.map((row) => [row.model, row.ordered]), [['CRF-35', 10000], ['CRF-44', 6000]]);
   }
 });
+
+test('part loads of the same model, one after another: every load counts as sent, and each is on the task', async () => {
+  const enquiry = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customerId, items: [{ modelNumber: 'PL-25', quantity: 10000 }, { modelNumber: 'PL-30', quantity: 10000 }], nextAction: 'Call', nextFollowUpDate: soon() },
+  })).json.data;
+  const production = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Make these', brief: { model: 'PL-25' } } })).json.data.task;
+  assert.equal((await api(`/api/workspace/todos/${production._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'PL-25' }, { model: 'PL-30' }] } })).status, 200);
+  await Todo.updateOne({ _id: production._id }, { $set: { 'brief.items': [{ model: 'PL-25', quantity: '10000' }, { model: 'PL-30', quantity: '10000' }] } });
+  assert.equal((await move(production._id, 'siva', 'ready_dispatch', { models: ['PL-25'], note: 'PL-25 packed' })).status, 200);
+  await settle();
+  const request = await Todo.findOne({ enquiry: enquiry._id, kind: 'invoice_dispatch', completed: false }).lean();
+  assert.ok(request, 'Dispatch has the request for PL-25');
+
+  /* Three part loads of PL-25: 5,000, then 3,000, then 2,000. */
+  for (const [pieces, left] of [[5000, '5,000'], [3000, '2,000'], [2000, null]]) {
+    const load = await dispatchLoad({ baseUrl, token: token.ravi, taskId: request._id, status: 'part_dispatched', models: 'PL-25', pieces });
+    assert.equal(load.status, 200, load.json.message);
+    assert.equal(load.json.data.status, 'part_dispatched', 'PL-30 is still to go');
+    assert.match(load.json.data.updates.at(-1).note, new RegExp(`PL-25 ${pieces.toLocaleString('en-IN')} pcs — Transporter.*still to go: ${left ? `PL-25 ${left} pcs, ` : ''}PL-30 10,000 pcs`));
+  }
+  const saved = await Todo.findById(request._id).lean();
+  assert.equal(saved.loads.length, 3, 'every load is kept on the task');
+  assert.equal(saved.updates.filter((entry) => entry.status === 'part_dispatched').length, 3, 'and each is on its timeline');
+  const sheet = (await api(`/api/workspace/todos/${request._id}/dispatch`, { as: 'ravi' })).json.data;
+  assert.deepEqual(sheet.models.map((row) => [row.model, row.sent]), [['PL-25', 10000], ['PL-30', 0]]);
+  /* The enquiry: PL-25 sent in full, across the three loads. */
+  const records = (await api(`/api/enquiries/${enquiry._id}/records`, { as: 'nandhini' })).json.data;
+  assert.deepEqual(records.dispatch.models.map((row) => [row.model, row.sent, row.left]), [['PL-25', 10000, 0], ['PL-30', 0, 10000]]);
+  const journey = records.journeys.find((row) => row.model === 'PL-25');
+  assert.ok(journey, 'PL-25 has its journey');
+  assert.equal(records.dispatch.requests[0].loads.length, 3);
+});
