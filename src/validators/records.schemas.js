@@ -77,6 +77,8 @@ export const runStartSchema = z.object({
   startedAt: date, shift: z.enum(SHIFTS).optional(), operator: text(80),
   counterStart: num(1e10), cavitiesRunning: num(1000), cycleTimeSeconds: num(10000),
   resin: z.object({ material: optionalId, name: text(80), batch: text(60), usedKg: num(1e7) }).optional(),
+  /* Floor planning: why a run starts before its first piece is approved [floorPlanning.service `assertSetupDone`]. */
+  setupSkipReason: text(300),
 }).refine((body) => body.mould || body.workOrder, { message: 'Pick the mould, or start it from a work order', path: ['mould'] });
 
 const downtimeEntry = z.object({ reason: z.enum(DOWNTIME_KEYS), minutes: z.number().min(0).max(100000), note: text(300) });
@@ -117,6 +119,11 @@ export const workOrderPlanSchema = z.object({
   note: text(500),
   updatedAt: z.string().optional(),
 });
+
+/** One model of a Production task put on a press [floorPlanning.service `placeTaskModel`]. */
+export const taskPlaceSchema = z.object({ model: z.string().trim().min(1).max(120), machine: objectId });
+/** A tap on the mould change checklist [floorPlanning.service `setupStep`]. */
+export const setupStepSchema = z.object({ step: z.enum(['mouldOff', 'mouldOn', 'heated', 'firstPiece']), undo: z.boolean().optional() });
 
 /** The floor calls a breakdown on a press, and later marks it running again. */
 export const andonSchema = z.object({ reason: z.enum(DOWNTIME_KEYS).optional(), note: text(500) });

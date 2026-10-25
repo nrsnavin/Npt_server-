@@ -1,7 +1,7 @@
 import asyncHandler from '../utils/asyncHandler.js';
-import { plantCalendar, securityPolicy, setHandoverLead, setPlantCalendar, setSecurityPolicy } from '../services/settings.service.js';
+import { plantCalendar, securityPolicy, setFloorPlanning, setHandoverLead, setPlantCalendar, setSecurityPolicy } from '../services/settings.service.js';
 import ApiError from '../utils/ApiError.js';
-import { inDepartment, isProductionInCharge } from '../utils/departments.js';
+import { inDepartment, isManagement, isProductionInCharge } from '../utils/departments.js';
 
 /** The security policy, for any signed-in app to follow. */
 export const getSecurity = asyncHandler(async (_req, res) => {
@@ -28,4 +28,10 @@ export const putHandoverLead = asyncHandler(async (req, res) => {
     throw ApiError.forbidden('The Production in charge, Admin or marketing sets the hand-over days');
   }
   res.json({ success: true, data: await setHandoverLead(req.body.days, req.user) });
+});
+
+/** Production floor planning on or off: Admin's switch [floorPlanning.service]. */
+export const putFloorPlanning = asyncHandler(async (req, res) => {
+  if (!isManagement(req.user)) throw ApiError.forbidden('Admin turns production floor planning on or off');
+  res.json({ success: true, data: await setFloorPlanning(req.body.on, req.user) });
 });

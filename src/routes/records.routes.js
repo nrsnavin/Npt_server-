@@ -1,4 +1,4 @@
-import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, pressChoicesHandler, sequenceByColourHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
+import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, placeTaskModelHandler, pressChoicesHandler, sequenceByColourHandler, setupStepHandler, taskPlanHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
 import { componentStockSchema } from '../validators/component.schemas.js';
 import { applyPlanHandler, askProductionHandler, floorMessagesHandler, maintenanceRiskHandler, purchaseForecastHandler, suggestPlanHandler } from '../controllers/productionInsights.controller.js';
 import { Router } from 'express';
@@ -12,7 +12,7 @@ import {
   listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine, logRunHandler, runReasonsHandler,
 } from '../controllers/records.controller.js';
 import {
-  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema, andonSchema, andonClearSchema, planApplySchema, productionAskSchema,
+  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema, taskPlaceSchema, setupStepSchema, andonSchema, andonClearSchema, planApplySchema, productionAskSchema,
 } from '../validators/records.schemas.js';
 
 /**
@@ -63,6 +63,10 @@ router.get('/production/plan', anyModule([['production', 'read'], ['orders', 're
 router.get('/production/fit', requireModule('production'), fitHandler);
 /* Which press should make a work order: every press scored, with the reasons. */
 router.get('/production/plan/choices/:id', requireModule('production'), pressChoicesHandler);
+/* Floor planning: a Production task's press step, a model put on a press from the task, the mould change checklist. */
+router.get('/production/task-plan/:taskId', anyModule([['production', 'read'], ['orders', 'read']]), taskPlanHandler);
+router.post('/production/task-plan/:taskId/place', requireModule('production', 'write'), requireProductionInCharge(), validate(taskPlaceSchema), placeTaskModelHandler);
+router.post('/work-orders/:id/setup', requireModule('production', 'write'), validate(setupStepSchema), setupStepHandler);
 /* The shop floor: the job card with its QR code, the tablet's view, the andon call, the shift handover. */
 router.get('/work-orders/:id/job-card', anyModule([['production', 'read'], ['orders', 'read']]), jobCardHandler);
 router.get('/production/floor', requireModule('production'), floorHandler);

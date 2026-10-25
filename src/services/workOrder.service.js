@@ -57,6 +57,19 @@ export async function ensureWorkOrders({ orderIds, user } = {}) {
         if (!live) continue;
         await withCreateLocks([`work-order:${key}`], async () => {
           if (await WorkOrder.exists({ order: order._id, orderLine: line._id })) return;
+          /*
+           * A Production task's work order for the same model, made before the SO [floorPlanning.service]:
+           * the line adopts it — its press, plan and pieces made carry on — rather than a second one.
+           */
+          const early = order.enquiry && line.modelNumber
+            ? await WorkOrder.findOne({ enquiry: order.enquiry, order: { $exists: false }, task: { $exists: true }, modelNumber: new RegExp(`^${String(line.modelNumber).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') })
+            : null;
+          if (early) {
+            Object.assign(early, { ...LINE_FIELDS(line, order), mould: early.mould || LINE_FIELDS(line, order).mould, order: order._id, orderLine: line._id });
+            early.history = [...(early.history || []), { status: early.status, note: `Made for ${order.number} from here on`, by: user?._id, at: new Date() }];
+            await early.save();
+            return;
+          }
           await WorkOrder.create([{
             ...LINE_FIELDS(line, order), number: await nextNumber('WO'), order: order._id, orderLine: line._id,
             status: 'planned', history: [{ status: 'planned', note: `Raised for ${order.number}`, by: user?._id, at: new Date() }],
@@ -118,6 +131,8 @@ export async function startedOn(wo, run, user) {
   if (!wo.firstRunAt) wo.firstRunAt = run.startedAt;
   if (!wo.machine && run.machine) wo.machine = run.machine;
   await wo.save();
+  /* A work order a Production task planned: its model reads Production Started [floorPlanning.service]. */
+  if (wo.task) await (await import('./floorPlanning.service.js')).afterRunStarted(wo, run, user);
 }
 
 /**
@@ -144,6 +159,8 @@ export async function finishedOn(run, user) {
   if (done && !wo.completedAt) wo.completedAt = new Date();
   await wo.save();
   run.workOrderCounted = true;
+  /* Its pieces made: the task's model reads Production Completed [floorPlanning.service]. */
+  if (done && wo.task) await (await import('./floorPlanning.service.js')).afterMade(wo, user);
 }
 
 /** The moves a person may make on a work order, from where it stands. */
@@ -231,6 +248,8 @@ export async function planWorkOrder(wo, user, { machine, plannedStart, sequence,
     for (const item of short) warnings.push(`Short of ${item.name}: ${item.short.toLocaleString('en-IN')} ${item.unit} more needed`);
   }
   wo.$locals.warnings = warnings;
+  /* Put on a press for a Production task: its model reads Planning, with the press and the dates [floorPlanning.service]. */
+  if (machine && wo.task && String(wo.machine || '') !== String(pressBefore || '')) await (await import('./floorPlanning.service.js')).afterPlanned(wo, user);
   return wo;
 }
 

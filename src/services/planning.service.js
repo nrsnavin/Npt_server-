@@ -197,9 +197,18 @@ export async function planningBoard({ days = 14 } = {}) {
         { path: 'mould', select: MOULD_FIT_FIELDS },
         { path: 'customer', select: 'name' },
         { path: 'order', select: 'number priority' },
+        { path: 'enquiry', select: 'number' },
       ])
       .lean({ virtuals: true }),
   ]);
+  /* A Production task's work orders [floorPlanning.service]: the model's route after moulding, for the card. */
+  const taskIds = [...new Set(jobs.filter((job) => job.task).map((job) => String(job.task)))];
+  const { default: Todo } = await import('../models/Todo.js');
+  const tasks = taskIds.length ? await Todo.find({ _id: { $in: taskIds } }).select('routing.models').lean() : [];
+  const routeOf = (job) => {
+    const row = (tasks.find((task) => String(task._id) === String(job.task))?.routing?.models || []).find((entry) => String(entry.model || '').toLowerCase() === String(job.model || '').toLowerCase());
+    return row ? ['Moulding', row.printing && 'Printing', row.assembly && 'Assembly'].filter(Boolean).join(' → ') : null;
+  };
   /* What each job will run short of, in plan order [bom.service]. */
   const { shortages } = await import('./bom.service.js');
   const { byWorkOrder } = await shortages();
@@ -233,6 +242,8 @@ export async function planningBoard({ days = 14 } = {}) {
       late: Boolean(due && ((job.plannedEnd && indiaDay(job.plannedEnd) > due) || due < today)),
       fit: { blocks: fit.blocks, warnings: fit.warnings },
       short: byWorkOrder[String(job._id)]?.short || [],
+      /* Planned from a Production task: the enquiry, the model and its route — the due day is its hand-over day. */
+      forTask: job.task ? { _id: job.task, model: job.model || job.modelNumber, enquiry: job.enquiry?.number || null, route: routeOf(job) } : null,
       updatedAt: job.updatedAt,
     };
   };

@@ -123,3 +123,33 @@ export const shiftSummaryHandler = asyncHandler(async (req, res) => {
   const shift = ['A', 'B', 'C', 'General'].includes(req.query.shift) ? req.query.shift : undefined;
   res.json({ success: true, data: await shiftSummary({ day, shift }) });
 });
+
+/* ------------------------------------------------------- floor planning --- */
+
+/** A Production task's press step, model by model [floorPlanning.service `taskPlan`]. */
+export const taskPlanHandler = asyncHandler(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.taskId)) throw ApiError.notFound('Task not found');
+  const { default: Todo } = await import('../models/Todo.js');
+  const task = await Todo.findById(req.params.taskId);
+  if (!task) throw ApiError.notFound('Task not found');
+  const { taskPlan } = await import('../services/floorPlanning.service.js');
+  res.json({ success: true, data: await taskPlan(task, req.user) });
+});
+
+/** One model of the task put on a press — the Production in charge's call. */
+export const placeTaskModelHandler = asyncHandler(transactional(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.taskId)) throw ApiError.notFound('Task not found');
+  const { default: Todo } = await import('../models/Todo.js');
+  const task = await Todo.findById(req.params.taskId);
+  if (!task) throw ApiError.notFound('Task not found');
+  const { placeTaskModel } = await import('../services/floorPlanning.service.js');
+  res.json({ success: true, data: await placeTaskModel(task, req.user, req.body) });
+}));
+
+/** A tap on the floor tablet's mould change checklist [floorPlanning.service `setupStep`]. */
+export const setupStepHandler = asyncHandler(transactional(async (req, res) => {
+  const wo = await byId(req.params.id);
+  const { setupStep } = await import('../services/floorPlanning.service.js');
+  await setupStep(wo, req.user, req.body);
+  res.json({ success: true, data: await WorkOrder.findById(wo._id).populate(WORK_ORDER_POPULATE) });
+}));

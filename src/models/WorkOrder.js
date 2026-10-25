@@ -19,8 +19,16 @@ export const OPEN_WORK_ORDER_STATUSES = ['planned', 'released', 'running', 'paus
 const workOrderSchema = new mongoose.Schema(
   {
     number: { type: String, required: true, unique: true },
-    order: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder', required: true, index: true },
+    /*
+     * The SO line it makes. With production floor planning on [settings.service `floorPlanning`],
+     * a model routed on a Production task gets its work order before any SO: `order` is empty and
+     * `orderLine` a key of its own until the SO is released and its line adopts it [ensureWorkOrders].
+     */
+    order: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder', index: true },
     orderLine: { type: mongoose.Schema.Types.ObjectId, required: true },
+    /* The Production task and the model on it this work order makes [floorPlanning.service]. */
+    task: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo', index: true },
+    model: { type: String, trim: true },
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', index: true },
 
@@ -50,6 +58,19 @@ const workOrderSchema = new mongoose.Schema(
     firstRunAt: Date,
     lastRunAt: Date,
     completedAt: Date,
+    /*
+     * The mould change before the first run, one tap each on the floor tablet, timed
+     * [floorPlanning.service `setupStep`]: mould off the press, the mould on, heated, the first
+     * piece approved. A run starts once the first piece is approved, or with a reason.
+     */
+    setup: {
+      mouldOff: { at: Date, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } },
+      mouldOn: { at: Date, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } },
+      heated: { at: Date, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } },
+      firstPiece: { at: Date, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } },
+      skipped: { reason: { type: String, trim: true, maxlength: 300 }, at: Date, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } },
+      _id: false,
+    },
 
     history: {
       type: [new mongoose.Schema({
