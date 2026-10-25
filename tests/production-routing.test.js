@@ -507,6 +507,16 @@ test('each model’s own journey: printed and assembled, assembled only, or neit
   const queueRow = (await api('/api/production/queue', { as: 'siva' })).json.data.find((row) => row.task._id === String(production._id));
   assert.deepEqual(shape(queueRow.journeys), shape(page.journeys));
 
+  /* Production's dates: a hand-over for a model going on, the completion for one that ends with it. */
+  const dated = await api(`/api/workspace/todos/${production._id}/edd`, { method: 'POST', as: 'siva', body: { models: [{ model: 'JR-PA', date: indiaDay(3) }, { model: 'JR-0', date: indiaDay(2) }] } });
+  assert.equal(dated.status, 200, dated.json.message);
+  page = (await api(`/api/production/workflow/${production._id}`, { as: 'siva' })).json.data;
+  const stepOf = (model, team) => page.journeys.find((row) => row.model === model).steps.find((step) => step.team === team);
+  assert.deepEqual([stepOf('JR-PA', 'production').date, stepOf('JR-PA', 'production').dateLabel], [indiaDay(3), 'Hand-over to Printing']);
+  assert.deepEqual([stepOf('JR-0', 'production').date, stepOf('JR-0', 'production').dateLabel], [indiaDay(2), 'Completion']);
+  assert.equal(page.journeys.find((row) => row.model === 'JR-0').completion, indiaDay(2), 'its estimated completion');
+  assert.equal(page.journeys.find((row) => row.model === 'JR-PA').completion, null, 'Assembly has not given its completion yet');
+
   /* JR-0 ready from Production; JR-PA to Printing; JR-A to Assembly. */
   assert.equal((await status(production._id, 'siva', { status: 'ready_dispatch', note: 'JR-0 packed', models: ['JR-0'] })).status, 200);
   assert.equal((await status(production._id, 'siva', { status: 'handed_printing', note: 'JR-PA moulded', models: ['JR-PA'] })).status, 200);

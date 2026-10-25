@@ -4152,16 +4152,25 @@ export async function modelJourneys(enquiryId, { task: onTask = null } = {}) {
   if (!where) return [];
   const start = await Todo.findOne({ ...where, kind: 'ask_edd' }).sort({ createdAt: -1 }).select('createdAt routing brief kind status modelStatuses completed').lean();
   if (!start) return [];
-  const tasks = await Todo.find({ ...where, kind: { $in: EDD_TASK_KINDS }, createdAt: { $gte: start.createdAt } }).sort({ createdAt: -1 }).select('kind status completed modelStatuses routing').lean();
+  const key = (model) => String(model || '').trim().toLowerCase();
+  const KINDS = { production: 'ask_edd', printing: 'ask_printing', assembling: 'ask_assembling_edd' };
+  const tasks = await Todo.find({ ...where, kind: { $in: EDD_TASK_KINDS }, createdAt: { $gte: start.createdAt } }).sort({ createdAt: -1 }).select('kind status completed modelStatuses modelDates routing jobEdd').lean();
   const taskOf = (kind) => tasks.find((entry) => entry.kind === kind) || null;
+  /* Marketing's EDD for each model: set for it, else the enquiry's (a team job's, from its tasks). */
+  const enquiry = id ? await Enquiry.findById(id).select('edd eddByModel').lean() : null;
+  const jobEdd = enquiry ? enquiry.edd?.date || null : tasks.find((entry) => entry.jobEdd?.date)?.jobEdd?.date || null;
+  const eddOf = (model) => (enquiry?.eddByModel || []).find((row) => key(row.model) === key(model))?.final?.date || jobEdd;
+  /* The date a team gave for a model — by name, else its date for all models. */
+  const dateOf = (team, model) => {
+    const rows = taskOf(KINDS[team])?.modelDates || [];
+    return (rows.find((row) => key(row.model) === key(model)) || rows.find((row) => row.model === 'All models'))?.date || null;
+  };
   const readiness = await modelReadiness(id, { task: onTask });
   const { ordered } = await orderedModelsOf(id ? { enquiryId: id } : { task: onTask });
   const loads = await jobDispatchLoads(id ? { enquiryId: id } : { task: onTask });
   const sentQty = sentByModel(loads);
-  const key = (model) => String(model || '').trim().toLowerCase();
   const qtyOf = (map, model) => [...map].find(([name]) => key(name) === key(model))?.[1] || 0;
   const TEAM_LABELS = { production: 'Production', printing: 'Printing', assembling: 'Assembly', quality: 'Quality', dispatch: 'Dispatch' };
-  const KINDS = { production: 'ask_edd', printing: 'ask_printing', assembling: 'ask_assembling_edd' };
   /* One team's reading of one model: its own status where it moved on its own, else the task's. */
   const teamStep = (team, model, before, prior) => {
     const task = taskOf(KINDS[team]);
@@ -4183,12 +4192,20 @@ export async function modelJourneys(enquiryId, { task: onTask = null } = {}) {
     const steps = [];
     let before = 'done';
     let prior = null;
-    for (const team of ['production', ...(printing ? ['printing'] : []), ...(assembly ? ['assembling'] : [])]) {
+    const route = ['production', ...(printing ? ['printing'] : []), ...(assembly ? ['assembling'] : [])];
+    for (const team of route) {
       const step = teamStep(team, model, before, prior);
+      /*
+       * Its date: the day it hands the model on to the next team where it goes on, else the day
+       * it completes it — the model's estimated completion [refreshModelEdds].
+       */
+      const date = dateOf(team, model);
+      if (date) Object.assign(step, { date, dateKind: team === route.at(-1) ? 'completion' : 'handover', dateLabel: team === route.at(-1) ? 'Completion' : `Hand-over to ${TEAM_LABELS[route[route.indexOf(team) + 1]]}` });
       steps.push(step);
       before = step.state;
       prior = team;
     }
+    const completion = dateOf(route.at(-1), model);
     const ready = (readiness.ready || []).includes(model);
     if (readiness.qc?.required) {
       const passed = (readiness.qc.passed || []).includes(model);
@@ -4208,7 +4225,8 @@ export async function modelJourneys(enquiryId, { task: onTask = null } = {}) {
       state: sent ? 'done' : gone || mayGo ? 'now' : 'waiting',
       ordered: want, sent: gone,
     });
-    return { model, decided, printing, assembly, steps };
+    const edd = eddOf(model);
+    return { model, decided, printing, assembly, steps, edd, completion, late: Boolean(edd && completion && completion > edd) };
   });
 }
 
