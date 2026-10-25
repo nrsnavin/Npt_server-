@@ -38,7 +38,7 @@ import {
 import { notificationStatus, pushKey, renewPush, sendTestNotification, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffWorkQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, setTaskJobEdd, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments, listTaskPdfs, handoffDispatchSheet, handoffDispatchLoad, handoffLoadProof, handoffReceipts, handoffSendResult, handoffShipments, handoffDues, handoffLinkOptions, handoffLinkEnquiry, handoffStartFrom, listTeamJobsHandler, teamJobHandler,
+  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffWorkQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, setTaskJobEdd, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments, listTaskPdfs, handoffDispatchSheet, handoffDispatchLoad, handoffLoadProof, handoffReceipts, handoffSendResult, handoffShipments, handoffDues, handoffLinkOptions, handoffLinkEnquiry, handoffStartFrom, listTeamJobsHandler, teamJobHandler, shipmentPaper,
 } from '../controllers/handoff.controller.js';
 import {
   handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, handoffAdminCloseSchema, handoffEscalateSchema, handoffEscalationResolveSchema, deliveryUrgencySchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, jobEddSchema, taskRoutingSchema, taskStatusSchema, productionQueueAddSchema, workQueueAddSchema,
@@ -136,6 +136,8 @@ router.get('/todos/:id/dues', handoffDues);
 router.post('/todos/:id/dispatch', singleTaskResult('file'), handoffDispatchLoad);
 /* The LR copy / proof and details added to a load already gone — the paper often comes after the goods. */
 router.post('/todos/:id/loads/:loadId', singleTaskResult('file'), handoffLoadProof);
+/* One shipment's proof of delivery or LR, from anywhere it is seen — Dispatch or Reception [shipmentPaper]. */
+router.post('/loads/:loadId/paper', singleTaskResult('file'), shipmentPaper);
 /* Papers a department keeps on its task — the invoice, dispatch details — for marketing to attach. */
 router.get('/todos/:id/documents', handoffDocuments);
 router.post('/todos/:id/documents', singleTaskResult('file'), handoffDocument);

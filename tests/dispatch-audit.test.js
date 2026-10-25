@@ -211,7 +211,7 @@ test('I: a load goes without its LR copy — Reception has the LR to chase, and 
   const json = await sent.json();
   assert.equal(sent.status, 200, json.message);
   assert.equal(json.data.status, 'fully_dispatched');
-  assert.match(json.data.updates.at(-1).note, /Transporter \(VRL Logistics\), lr copy to follow/);
+  assert.match(json.data.updates.at(-1).note, /Transporter \(VRL Logistics\), LR copy to follow/);
   const saved = await Todo.findById(request._id).lean();
   const [gone] = saved.loads;
   assert.equal(gone.attachment, undefined);
@@ -345,4 +345,76 @@ test('Q: three shipments gone before Reception looks — three LRs to upload, on
   const loads = (await records(enquiry)).dispatch.requests.flatMap((row) => row.loads);
   assert.equal(loads.length, 4);
   assert.ok(loads.every((row) => row.proof && row.needsLr && row.lrSentAt));
+});
+
+test('R: every shipment of the job reads on the request, each papered from it — and once all has gone, each load papered, it closes itself', async () => {
+  const { request } = await readyToGo([['DR-1', 20000]]);
+  /* Two loads of 10,000 with no paper — the second from another request of the same job (a request raised again). */
+  const bare = async (taskId, quantity) => {
+    const form = new FormData();
+    form.append('status', 'part_dispatched');
+    form.append('mode', 'own_vehicle');
+    form.append('lines', JSON.stringify([{ model: 'DR-1', quantity }]));
+    const response = await fetch(`${baseUrl}/api/workspace/todos/${taskId}/dispatch`, { method: 'POST', headers: { Authorization: `Bearer ${token.ravi}` }, body: form });
+    return { status: response.status, json: await response.json().catch(() => ({})) };
+  };
+  assert.equal((await bare(request._id, 10000)).status, 200);
+  const second = await Todo.create({ kind: 'invoice_dispatch', department: 'despatch', enquiry: request.enquiry, title: 'Invoice & Dispatch — again', createdBy: request.createdBy, status: 'received' });
+  const went = await bare(second._id, 10000);
+  assert.equal(went.status, 200, went.json.message);
+  assert.equal(went.json.data.status, 'fully_dispatched');
+  assert.equal(went.json.data.completed, false, 'all gone, but the paper is still to come — stays open');
+
+  /* The first request lists both shipments, the one sent from the other request too. */
+  const shipments = (await api(`/api/workspace/todos/${request._id}/shipments`, { as: 'ravi' })).json.data;
+  assert.deepEqual(shipments.map((row) => [row.pieces, Boolean(row.paper)]), [[10000, false], [10000, false]]);
+
+  /* Paper for each, added from the first request — the second request's load included. */
+  const paper = async (taskId, loadId) => {
+    const form = new FormData();
+    form.append('file', new Blob(['%PDF-1.4 pod'], { type: 'application/pdf' }), 'pod.pdf');
+    const response = await fetch(`${baseUrl}/api/workspace/todos/${taskId}/loads/${loadId}`, { method: 'POST', headers: { Authorization: `Bearer ${token.ravi}` }, body: form });
+    return { status: response.status, json: await response.json().catch(() => ({})) };
+  };
+  const firstPaper = await paper(second._id, shipments[0]._id);
+  assert.equal(firstPaper.status, 200, firstPaper.json.message);
+  assert.equal((await Todo.findById(second._id).lean()).completed, false, 'one load still without paper');
+  const lastPaper = await paper(request._id, shipments[1]._id);
+  assert.equal(lastPaper.json.data.completed, true, 'the request it was added from closes');
+  assert.equal(lastPaper.status, 200, lastPaper.json.message);
+  const fromOther = (await Todo.findById(second._id).lean()).loads[0];
+  assert.ok(fromOther.attachment, 'the other request’s load has its paper');
+  assert.equal((await Todo.findById(second._id).lean()).completed, true, 'all gone, every load papered: closed by itself');
+  assert.equal((await Todo.findById(second._id).lean()).status, 'fully_dispatched', 'reads Fully Dispatched, closed');
+});
+
+test('S: Dispatch and Reception add a shipment’s proof of delivery from anywhere it is seen; nobody else', async () => {
+  const { request } = await readyToGo([['DS-1', 4000]]);
+  const form = new FormData();
+  form.append('status', 'part_dispatched');
+  form.append('mode', 'own_vehicle');
+  form.append('lines', JSON.stringify([{ model: 'DS-1', quantity: 2000 }]));
+  assert.equal((await fetch(`${baseUrl}/api/workspace/todos/${request._id}/dispatch`, { method: 'POST', headers: { Authorization: `Bearer ${token.ravi}` }, body: form })).status, 200);
+  const form2 = new FormData();
+  form2.append('status', 'part_dispatched');
+  form2.append('mode', 'own_vehicle');
+  form2.append('lines', JSON.stringify([{ model: 'DS-1', quantity: 2000 }]));
+  assert.equal((await fetch(`${baseUrl}/api/workspace/todos/${request._id}/dispatch`, { method: 'POST', headers: { Authorization: `Bearer ${token.ravi}` }, body: form2 })).status, 200);
+  const [first, second] = (await Todo.findById(request._id).lean()).loads;
+  const pod = (as, loadId) => {
+    const body = new FormData();
+    body.append('file', new Blob(['%PDF-1.4 pod'], { type: 'application/pdf' }), 'pod.pdf');
+    return fetch(`${baseUrl}/api/workspace/loads/${loadId}/paper`, { method: 'POST', headers: { Authorization: `Bearer ${token[as]}` }, body }).then(async (response) => ({ status: response.status, json: await response.json().catch(() => ({})) }));
+  };
+  assert.equal((await pod('siva', first._id)).status, 403, 'not Production');
+  const byReception = await pod('rekha', first._id);
+  assert.equal(byReception.status, 200, byReception.json.message);
+  assert.equal(byReception.json.completed, false, 'one load still without its proof');
+  const byDispatch = await pod('ravi', second._id);
+  assert.equal(byDispatch.status, 200, byDispatch.json.message);
+  assert.equal(byDispatch.json.completed, true, 'all gone, every load proved: the request closes itself');
+  const loads = (await Todo.findById(request._id).lean()).loads;
+  assert.ok(loads.every((load) => load.attachment));
+  const { default: Attachment } = await import('../src/models/Attachment.js');
+  assert.equal((await Attachment.findById(loads[0].attachment).lean()).docType, 'proof_of_delivery');
 });

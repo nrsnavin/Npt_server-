@@ -778,7 +778,10 @@ export const handoffLoadProof = asyncHandler(async (req, res) => {
   if (!task) throw ApiError.notFound('Task not found');
   if (!mayWorkOnHandoff(req.user, task)) throw ApiError.forbidden(`This task is on the ${DEPARTMENTS.find((entry) => entry.key === task.department)?.label || task.department} queue`);
   if (req.file && !['application/pdf', 'image/jpeg', 'image/png'].includes(req.file.mimetype)) throw ApiError.badRequest('Attach a PDF, or a JPEG / PNG photo');
-  const load = (task.loads || []).find((entry) => String(entry._id) === String(req.params.loadId));
+  /* The load on this request, or on another request of the same job [handoff.service `shipmentsOf`]. */
+  const { jobDispatchLoads } = await import('../services/handoff.service.js');
+  const load = (task.loads || []).find((entry) => String(entry._id) === String(req.params.loadId))
+    || (await jobDispatchLoads({ task, current: task })).find((entry) => String(entry._id) === String(req.params.loadId));
   const how = (findHandoff(task.kind)?.form?.dispatchModes || []).find((entry) => entry.key === load?.mode);
   const details = { lrNumber: req.body?.lrNumber, transporter: req.body?.transporter, vehicleNumber: req.body?.vehicleNumber };
   const key = req.file ? await put({ buffer: req.file.buffer, mimeType: req.file.mimetype }) : null;
@@ -792,6 +795,44 @@ export const handoffLoadProof = asyncHandler(async (req, res) => {
       return addLoadProof(fresh, req.user, req.params.loadId, { attachmentId: made?._id || null, details });
     }, { label: 'load proof' });
     await answer(res, done);
+  } catch (error) {
+    if (key) await remove(key);
+    throw error;
+  }
+});
+
+/**
+ * The paper for one shipment, from wherever it is seen — the enquiry's Shipments, a team job, the
+ * Dispatch or LR task [web: Shipments]: the proof of delivery, signed receipt or LR copy, and its
+ * details. Dispatch and Reception add it (Admin too); the load is found on whichever request of the
+ * job it went on [addLoadProof], and the request closes itself once all is gone and papered.
+ */
+export const shipmentPaper = asyncHandler(async (req, res) => {
+  const { inDepartment, isManagement } = await import('../utils/departments.js');
+  if (!(isManagement(req.user) || inDepartment(req.user, 'despatch') || inDepartment(req.user, 'reception'))) {
+    throw ApiError.forbidden('Dispatch or Reception adds the proof of delivery');
+  }
+  const request = await Todo.findOne({ kind: 'invoice_dispatch', 'loads._id': req.params.loadId });
+  if (!request) throw ApiError.notFound('That shipment is not on record');
+  if (!req.file && !req.body?.lrNumber && !req.body?.transporter && !req.body?.vehicleNumber) throw ApiError.badRequest('Upload the paper or enter a detail of the load');
+  if (req.file && !['application/pdf', 'image/jpeg', 'image/png'].includes(req.file.mimetype)) throw ApiError.badRequest('Attach a PDF, or a JPEG / PNG photo');
+  const load = request.loads.id(req.params.loadId);
+  const how = (findHandoff('invoice_dispatch')?.form?.dispatchModes || []).find((entry) => entry.key === load?.mode);
+  const details = { lrNumber: req.body?.lrNumber, transporter: req.body?.transporter, vehicleNumber: req.body?.vehicleNumber };
+  const key = req.file ? await put({ buffer: req.file.buffer, mimeType: req.file.mimetype }) : null;
+  try {
+    const done = await inTransaction(async () => {
+      const fresh = await Todo.findById(request._id);
+      const made = key ? (await Attachment.create([{
+        key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size,
+        uploadedBy: req.user._id, task: fresh._id, docType: how?.proof || 'proof_of_delivery', title: how?.proofLabel || 'Proof of delivery',
+      }]))[0] : null;
+      return addLoadProof(fresh, req.user, req.params.loadId, { attachmentId: made?._id || null, details });
+    }, { label: 'shipment paper' });
+    /* The task the paper was added from (a Dispatch request on screen), read again with the paper in — else the request itself. */
+    const shown = req.body?.from && /^[0-9a-f]{24}$/i.test(String(req.body.from)) ? await Todo.findById(req.body.from) : null;
+    const view = await taskWithClosable(await (shown || await Todo.findById(done._id)).populate(TASK_POPULATE));
+    res.json({ success: true, data: view, completed: Boolean(done.completed), status: done.status });
   } catch (error) {
     if (key) await remove(key);
     throw error;

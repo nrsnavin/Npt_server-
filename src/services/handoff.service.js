@@ -2090,7 +2090,7 @@ export async function recordDispatchLoad(task, user, { lines, mode, note, attach
     .map(([model, quantity]) => (quantity > 0 ? `${model} ${Math.max(0, quantity - (after.get(model) || 0)).toLocaleString('en-IN')} pcs` : model));
   const carried = loadDetails(details);
   const detailWords = [carried.lrNumber && `LR ${carried.lrNumber}`, carried.transporter, carried.vehicleNumber && `vehicle ${carried.vehicleNumber}`].filter(Boolean).join(', ');
-  const said = `${given.map((line) => `${line.model} ${line.quantity.toLocaleString('en-IN')} pcs`).join(' · ')} — ${how.label}${detailWords ? ` (${detailWords})` : ''}, ${how.proofLabel.toLowerCase()} ${attachmentId ? 'attached' : 'to follow'}`
+  const said = `${given.map((line) => `${line.model} ${line.quantity.toLocaleString('en-IN')} pcs`).join(' · ')} — ${how.label}${detailWords ? ` (${detailWords})` : ''}, ${how.proofLabel.replace(/^(?!LR)\w/, (letter) => letter.toLowerCase())} ${attachmentId ? 'attached' : 'to follow'}`
     + (status === 'part_dispatched' && still.length ? ` · still to go: ${still.join(', ')}` : '');
   const text = [String(note || '').trim(), said].filter(Boolean).join(' — ');
   task.loads = [...(task.loads || []), { status, lines: given, mode, ...(attachmentId ? { attachment: attachmentId } : {}), ...carried, note: String(note || '').trim() || undefined, by: user._id, at: new Date() }];
@@ -2107,6 +2107,8 @@ export async function recordDispatchLoad(task, user, { lines, mode, note, attach
   if (mode === 'transporter' && !attachmentId) await lrAwaitedAgain(moved || task, user, said);
   /* The last of it gone after a part load: the enquiry no longer reads Part sent — it reads LR Copy [holdsPartSent]. */
   if (status === 'fully_dispatched') await reachEnquiry(moved || task, user, { marketing: 'lr_copy' }, `Fully Dispatched — ${said}`);
+  /* Everything gone, every load papered: the request closes itself [closeDispatchWhenDone]. */
+  if (status === 'fully_dispatched') return (await closeDispatchWhenDone(moved || task, user)) || moved || task;
   return moved || task;
 }
 
@@ -2141,22 +2143,57 @@ async function remindLoadProof(task, user, how, said) {
  */
 export async function addLoadProof(task, user, loadId, { attachmentId = null, details = {} } = {}) {
   if (task.kind !== 'invoice_dispatch') fail('Only a Dispatch request has loads');
-  const load = (task.loads || []).find((entry) => String(entry._id) === String(loadId));
-  if (!load) throw ApiError.notFound('That load is not on this task');
+  /* A load of the same job sent from another of its requests is papered from here too [shipmentsOf]. */
+  let holder = task;
+  let load = (task.loads || []).find((entry) => String(entry._id) === String(loadId));
+  if (!load) {
+    const elsewhere = (await jobDispatchLoads({ task, current: task })).find((entry) => String(entry._id) === String(loadId));
+    holder = elsewhere ? await Todo.findById(elsewhere.task) : null;
+    load = holder?.loads?.id(loadId) || null;
+  }
+  if (!load) throw ApiError.notFound('That load is not on this job');
   const known = loadDetails(details);
   if (!attachmentId && !Object.keys(known).length) fail('Upload the paper or enter a detail of the load');
   const how = (findHandoff(task.kind)?.form?.dispatchModes || []).find((entry) => entry.key === load.mode);
-  if (attachmentId) load.attachment = attachmentId;
+  if (attachmentId) { load.attachment = attachmentId; load.paperBy = user._id; }
   Object.assign(load, known);
-  task.markModified('loads');
+  holder.markModified('loads');
   const lines = (load.lines || []).map((line) => `${line.model} ${Number(line.quantity || 0).toLocaleString('en-IN')} pcs`).join(' · ');
   const added = [attachmentId && (how?.proofLabel || 'Paper'), known.lrNumber && `LR ${known.lrNumber}`, known.transporter, known.vehicleNumber && `vehicle ${known.vehicleNumber}`].filter(Boolean).join(', ');
   const said = `Added to the load of ${prettyDay(indiaDay(load.at))} (${lines}): ${added}`;
-  task.updates = [...(task.updates || []), { kind: attachmentId ? 'uploaded' : 'note', statusLabel: 'Load details', text: said, note: said, by: user._id, at: new Date() }];
-  await task.save();
-  if (attachmentId && load.mode === 'transporter') await lrToReception(task, user, attachmentId, said);
+  holder.updates = [...(holder.updates || []), { kind: attachmentId ? 'uploaded' : 'note', statusLabel: 'Load details', text: said, note: said, by: user._id, at: new Date() }];
+  await holder.save();
+  if (holder !== task) {
+    task.updates = [...(task.updates || []), { kind: 'note', statusLabel: 'Load details', text: said, note: said, by: user._id, at: new Date() }];
+    await task.save();
+  }
+  if (attachmentId && load.mode === 'transporter') await lrToReception(holder, user, attachmentId, said);
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
-  return task;
+  /* The last paper in, with every model gone in full: the request closes itself [closeDispatchWhenDone]. */
+  return (await closeDispatchWhenDone(task, user)) || task;
+}
+
+/**
+ * A Dispatch request closes by itself once its work is done: every model ordered has gone in full
+ * across the job's loads, and every load has its paper — the LR copy, proof of delivery or signed
+ * receipt. Fully dispatched with paper still to come, it stays open at Fully Dispatched with the
+ * loads to paper listed; a person may still close it. Returns the task closed, or null.
+ */
+export async function closeDispatchWhenDone(task, user) {
+  if (task.kind !== 'invoice_dispatch' || task.completed) return null;
+  const sheet = await dispatchSheet(task).catch(() => null);
+  if (!sheet?.models?.length || sheet.models.some((row) => row.state !== 'sent')) return null;
+  const loads = await jobDispatchLoads({ task, current: task });
+  if (!loads.length || loads.some((load) => !load.attachment)) return null;
+  const note = `Every model has gone in full — ${sheet.models.map((row) => `${row.model} ${Number(row.sent || 0).toLocaleString('en-IN')} pcs`).join(', ')} — and each load has its paper`;
+  /* This request and every other still open whose loads the job counted — one job, closed together. */
+  const ids = [...new Set([String(task._id), ...loads.map((load) => String(load.task))])];
+  let closed = null;
+  for (const request of await Todo.find({ _id: { $in: ids }, kind: 'invoice_dispatch', completed: false })) {
+    const done = await completeHandoff(request, user, { note, system: true });
+    if (String(request._id) === String(task._id)) closed = done;
+  }
+  return closed;
 }
 
 /**
