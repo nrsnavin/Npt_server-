@@ -68,10 +68,13 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-async function routedJob(phone, models) {
+async function routedJob(phone, rows) {
+  /* A model by name, or a row with more to say (a new development). */
+  const items = rows.map((row) => (typeof row === 'string' ? { modelNumber: row, colour: 'Black' } : { colour: 'Black', ...row }));
+  const models = items.map((item) => item.modelNumber);
   const me = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
   const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: `Planner ${phone}`, mobile: phone, assignedTo: me } })).json.data._id;
-  const enquiry = (await api('/api/enquiries', { method: 'POST', as: 'nandhini', body: { customer, items: models.map((modelNumber) => ({ modelNumber, colour: 'Black' })), nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 864e5).toISOString() } })).json.data;
+  const enquiry = (await api('/api/enquiries', { method: 'POST', as: 'nandhini', body: { customer, items, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 864e5).toISOString() } })).json.data;
   assert.equal((await api(`/api/enquiries/${enquiry._id}/edd`, { method: 'POST', as: 'nandhini', body: { date: day(30) } })).status, 200);
   await Todo.create({ department: 'order_confirmation', title: 'SO request', kind: 'po_so', enquiry: enquiry._id, completed: true, brief: { items: models.map((model) => ({ model, quantity: '6000' })) } });
   const production = (await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Make these', brief: { model: models[0] } } })).json.data.task;
@@ -148,15 +151,41 @@ test('the planner learns: a press the in charge chose is preferred, one they tur
   assert.ok(wo.proposal.learned.some((line) => line.startsWith(`You chose ${first.chosen44} for CRF-44`)), 'the lesson is said beside the proposal');
 });
 
-test('a model no press can take is proposed with why; the planner proposes again on asking', async () => {
+test('a model the plant makes with no mould on the register gets one on the plant defaults, said as such', async () => {
   const task = await routedJob('9840044103', ['ZZ-99']);
   const wo = await WorkOrder.findOne({ task: task._id }).lean();
+  const { default: Mould } = await import('../src/models/Mould.js');
+  const mould = await Mould.findById(wo.mould).lean();
+  assert.equal(mould.mouldCode, 'ZZ-99', 'set up under the model’s own code');
+  assert.deepEqual([mould.cavities, mould.cycleTimeSeconds, mould.partWeightGrams, mould.machine.tonnage, mould.changeoverMinutes], [2, 30, 20, 120, 120]);
+  assert.ok(mould.defaulted.includes('cycleTimeSeconds') && mould.defaulted.includes('machine.tonnage'), 'every default named');
+  assert.ok(wo.proposal.machine, 'sized and proposed on a press like any other');
+  const plan = (await api(`/api/production/task-plan/${task._id}`, { as: 'siva' })).json.data;
+  assert.equal(plan.models[0].workOrder.mouldDefaults, true, 'the task says its mould is on defaults');
+
+  /* Measured and corrected: that value leaves the defaults; the mould reads measured once all are. */
+  const fixed = await api(`/api/moulds/${mould._id}`, { method: 'PATCH', body: { cycleTimeSeconds: 24, updatedAt: mould.updatedAt } });
+  assert.equal(fixed.status, 200, fixed.json.message);
+  const after = await Mould.findById(mould._id).lean();
+  assert.ok(!after.defaulted.includes('cycleTimeSeconds'));
+  assert.ok(after.defaulted.includes('cavities'), 'the rest are still defaults');
+
+  /* A second job for it uses the same mould, never a second one. */
+  const again = await routedJob('9840044104', ['ZZ-99']);
+  assert.equal(String((await WorkOrder.findOne({ task: again._id }).lean()).mould), String(mould._id));
+  assert.equal(await Mould.countDocuments({ mouldCode: 'ZZ-99' }), 1);
+});
+
+test('a new development has no tool yet: no mould is made, the proposal says why', async () => {
+  const task = await routedJob('9840044105', [{ modelNumber: 'ND-01', isNewDevelopment: true }]);
+  const wo = await WorkOrder.findOne({ task: task._id }).lean();
+  assert.equal(wo.mould, undefined);
   assert.equal(wo.proposal.machine, undefined);
-  assert.match(wo.proposal.why, /No mould on record for ZZ-99/);
+  assert.match(wo.proposal.why, /No mould on record for ND-01/);
   assert.equal(await Todo.countDocuments({ originKey: `production-presses:${task._id}` }), 0, 'nothing to confirm: nobody is asked');
   assert.equal((await api(`/api/production/task-plan/${task._id}/propose`, { method: 'POST', as: 'ravi' })).status, 403);
-  const again = await api(`/api/production/task-plan/${task._id}/propose`, { method: 'POST', as: 'siva' });
-  assert.equal(again.status, 200, again.json.message);
-  assert.match(again.json.data.models[0].workOrder.proposal.why, /No mould on record/);
+  const proposed = await api(`/api/production/task-plan/${task._id}/propose`, { method: 'POST', as: 'siva' });
+  assert.equal(proposed.status, 200, proposed.json.message);
+  assert.match(proposed.json.data.models[0].workOrder.proposal.why, /No mould on record/);
   assert.equal((await api(`/api/production/task-plan/${task._id}/confirm`, { method: 'POST', as: 'siva', body: {} })).status, 400, 'nothing to confirm');
 });

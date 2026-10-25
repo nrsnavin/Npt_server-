@@ -212,6 +212,12 @@ const mouldSchema = new mongoose.Schema(
     hotRunnerZones: { type: Number, min: 0, max: 64 },
     needsDryer: { type: Boolean },
     preferredMachines: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Machine' }],
+    /*
+     * Values the mould was set up with from the plant's defaults, not measured [config/mouldDefaults.js]
+     * — floor planning makes such a mould for a routed model with none on the register. Each
+     * leaves the list when somebody corrects it.
+     */
+    defaulted: { type: [String], default: undefined },
     changeoverMinutes: { type: Number, min: 0, max: 1440 },
 
     status: { type: String, enum: MOULD_STATUSES, default: 'active', index: true },
