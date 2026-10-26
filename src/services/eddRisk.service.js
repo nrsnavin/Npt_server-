@@ -19,7 +19,7 @@ export const CLOSE_WITHIN_DAYS = 3;
 export const SLACK_DAYS = 1;
 export const RISK_LEVELS = ['late', 'at_risk', 'close', 'on_track'];
 /** The statuses where the goods are made: the EDD no longer threatens them. */
-export const DONE_STATUSES = ['ready_dispatch', 'closed', 'completed', 'handed_printing', 'handed_assembly'];
+export const DONE_STATUSES = ['ready_awaiting_payment', 'ready_dispatch', 'closed', 'completed', 'handed_printing', 'handed_assembly'];
 
 const indiaDay = (date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(date);
 const dayOf = (value) => (value ? (value instanceof Date ? indiaDay(value) : String(value).slice(0, 10)) : null);

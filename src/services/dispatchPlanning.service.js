@@ -57,7 +57,7 @@ export const SCHEDULE_STATUSES = SCHEDULE_ORDER.map((label) => ({ key: scheduleK
 
 /* What Production or Assembly says when the goods are ready to go. */
 const PLANT_KINDS = ['ask_edd', 'ask_assembling_edd'];
-const PLANT_READY = new Set(['ready_dispatch', 'completed', 'full_ready', 'closed']);
+const PLANT_READY = new Set(['ready_awaiting_payment', 'ready_dispatch', 'completed', 'full_ready', 'closed']);
 
 /**
  * One spelling for a landmark, however it was typed: "Kumar Nagar Bus Stand", "kumarnagar bus

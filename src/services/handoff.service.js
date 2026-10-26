@@ -1222,6 +1222,18 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
     }
     const raised = await moveEnquiry({ enquiry, kind, note: text, fields, brief, priority, requiredDate, addToOpen, order, user });
     if (running) await stopProductionForNewRequest(running, raised, user);
+    /*
+     * Production asked with no model, material or pieces [web: DepartmentTaskDialog asks first]:
+     * said on the task, so the Production in charge gives them on "Add to production queue"
+     * [fillQueueDetails] before the plan.
+     */
+    if (kind === 'ask_edd' && raised?._id) {
+      const unsaid = bareDetails(brief);
+      if (unsaid.length) {
+        const said = `Not given when raised: ${unsaid.join(', ')} — the Production in charge enters them on Add to production queue`;
+        await Todo.updateOne({ _id: raised._id }, { $push: { updates: { kind: 'notice', statusLabel: 'Details not given', text: said, note: said, by: user._id, at: new Date() } } }, { keepVersion: true });
+      }
+    }
     /* The EDD marketing gave on the SO request's rows is the enquiry's [eddsFromOrderRows]. */
     if (kind === 'po_so' && Array.isArray(brief?.items)) await eddsFromOrderRows(enquiry, user, brief.items);
     /* QC compulsory before dispatch, as marketing or Admin ticked it when the job went to Production [qcGate.service]. */
@@ -1276,6 +1288,12 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
   });
   return record;
 }
+
+/** The hanger's details a Production request was raised without — model, material, pieces — in words. */
+export const bareDetails = (brief = {}) => {
+  const given = (key) => String(brief?.[key] ?? '').trim() || (Array.isArray(brief?.items) && brief.items.some((row) => String(row?.[key] ?? '').trim()));
+  return [['model', 'model'], ['material', 'material'], ['quantity', 'pieces']].filter(([key]) => !given(key)).map(([, word]) => word);
+};
 
 function openHandoff(task, user) {
   /* A department task — about an enquiry, or raised for the team without one [raiseTeamTask]. */
@@ -1763,6 +1781,8 @@ export async function setTaskStatus(task, user, { status, note, date, dates, fie
   if (step.next === 'lr_copy' && task.order) await remindConsignment(task, user, step);
   /* Production or Assembly saying the goods are ready reaches the Dispatch request waiting on them. */
   if (step.readyForDispatch) await tellDispatchReady(task, user, { ...step, label }, text, { partial });
+  /* Made, and held for the buyer's money: Payment Collection is given the amount; Accounts' confirmation sends it to Dispatch [dispatchPayment.service]. */
+  if (step.awaitsPayment) await (await import('./dispatchPayment.service.js')).holdForPayment(task, user, { models: partial ? moving : modelsOfTask(task), note: text });
   /* The goods handed to the next team: its task hears it, with the day they came [handOn]. */
   if (step.handsTo) {
     await handOn(task, user, step, text, partial ? moving : null);
@@ -2515,7 +2535,7 @@ async function movesFor(task, step, models) {
   const routes = await modelRoutes(task);
   /* A hand-over to a team nothing goes to is refused below, in those words [setTaskStatus]. */
   const handsThere = !step.handsTo || handsOnOf(task).includes(step.handsTo);
-  if (routes.size && handsThere && (step.handsTo || step.readyForDispatch) && task.kind !== 'ask_assembling_edd') {
+  if (routes.size && handsThere && (step.handsTo || step.readyForDispatch || step.awaitsPayment) && task.kind !== 'ask_assembling_edd') {
     const fits = (model) => {
       const row = routes.get(model);
       if (!row) return true;
@@ -2529,7 +2549,7 @@ async function movesFor(task, step, models) {
           fail(`${off.join(', ')} ${plural(off, 'does', 'do')} not go to ${ROUTE_LABEL[step.handsTo] || step.handsTo} — Production routed ${plural(off, 'it', 'them')} elsewhere`);
         }
         const next = (model) => (task.kind === 'ask_edd' && routes.get(model)?.printing ? 'Printing' : 'Assembly');
-        fail(`${off.join(', ')} ${plural(off, 'goes', 'go')} on to ${[...new Set(off.map(next))].join(' and ')} — mark ${plural(off, 'it', 'them')} Handed to ${[...new Set(off.map(next))].join(' / ')} instead of Ready for Dispatch`);
+        fail(`${off.join(', ')} ${plural(off, 'goes', 'go')} on to ${[...new Set(off.map(next))].join(' and ')} — mark ${plural(off, 'it', 'them')} Handed to ${[...new Set(off.map(next))].join(' / ')} instead of ${step.readyForDispatch ? 'Ready for Dispatch' : step.label}`);
       }
       pool = candidates.filter(fits);
       narrowed = true;
@@ -4267,7 +4287,7 @@ export const dateLabelOf = (task, fallback = 'Ready date') => {
  * The statuses at which a Production task's goods are already moulded — nothing left to queue.
  * Up to Part 1 / Part 2 Ready (some made, more to come) it may still be added.
  */
-const MOULDED = ['completed', 'handed_printing', 'handed_assembly', 'assembling', 'ready_dispatch', 'closed'];
+const MOULDED = ['completed', 'handed_printing', 'handed_assembly', 'assembling', 'ready_awaiting_payment', 'ready_dispatch', 'closed'];
 /* Where a task added to the queue starts its cycle, when it has not been planned yet. */
 const UNPLANNED = ['received', 'accepted'];
 
@@ -4282,12 +4302,14 @@ const UNPLANNED = ['received', 'accepted'];
  *   - stamped as queued, and said on the task.
  * Refused for a task whose goods are already moulded, and for one already in the queue.
  */
-export async function addToProductionQueue(task, user, { models, date, note } = {}) {
+export async function addToProductionQueue(task, user, { models, items, updateEnquiry = false, date, note } = {}) {
   openHandoff(task, user);
   if (task.kind !== 'ask_edd') fail('Only a Production task goes on the production queue');
   assertPlansProduction(task, user, 'adds work to the production queue');
   if (task.queuedAt) throw ApiError.conflict('This task is already in the production queue');
   if (MOULDED.includes(task.status)) fail('The goods are already moulded — there is nothing to queue');
+  /* What the enquiry left out — model, material, pieces, hook, clip, print — given by the in charge first [fillQueueDetails]. */
+  if (items?.length) task = await fillQueueDetails(task, user, items, { updateEnquiry });
   if (models?.length) task = (await decideRouting(task, user, { models })).task;
   assertRouted(task);
   const text = String(note || '').trim() || 'Added to the production queue';
@@ -4302,6 +4324,110 @@ export async function addToProductionQueue(task, user, { models, date, note } = 
   await toldOfAdminPlan(task, user, 'added it to the production queue');
   task.updates = [...(task.updates || []), { kind: 'note', text: 'Added to the production queue', note: `Added to the production queue: ${text}`, by: user._id, at: new Date() }];
   if (!task.user) task.user = user._id;
+  await task.save();
+  return task;
+}
+
+/** The details the in charge gives each model on the queue form, in the order the form shows them. */
+const QUEUE_DETAILS = [
+  { key: 'material', label: 'material' },
+  { key: 'quantity', label: 'pieces' },
+  { key: 'hook', label: 'hook' },
+  { key: 'clip', label: 'clip' },
+  { key: 'print', label: 'print' },
+];
+
+/**
+ * An enquiry that reached Production without its model, material or pieces: the Production in
+ * charge gives them on the "Add to production queue" form, model by model [web:
+ * AddToProductionQueue]. Kept on the task as its items — where the pieces, the work orders and
+ * every later request read them [orderedModelsOf, itemDetails.service `latestItemDetails`] — and
+ * written onto the enquiry: a model it does not name is added, and a detail it leaves blank is
+ * filled. A detail the enquiry already has is changed only when `updateEnquiry` asks.
+ */
+async function fillQueueDetails(task, user, items, { updateEnquiry = false } = {}) {
+  const rows = [];
+  for (const item of items) {
+    const model = String(item?.model || '').trim();
+    if (!model) continue;
+    const quantity = Number(String(item.quantity ?? '').replace(/,/g, ''));
+    const row = { model };
+    for (const field of ['material', 'hook', 'clip', 'print']) if (String(item[field] ?? '').trim()) row[field] = String(item[field]).trim();
+    if (Number.isFinite(quantity) && quantity > 0) row.quantity = String(Math.round(quantity));
+    const at = rows.findIndex((entry) => entry.model.toLowerCase() === model.toLowerCase());
+    if (at >= 0) rows[at] = row;
+    else rows.push(row);
+  }
+  if (!rows.length) fail('Name the model');
+  const brief = { ...(task.brief?.toObject?.() ?? task.brief ?? {}) };
+  const before = new Map((Array.isArray(brief.items) ? brief.items : []).map((row) => [String(row?.model || '').trim().toLowerCase(), row]));
+  const changed = rows.some((row) => {
+    const was = before.get(row.model.toLowerCase());
+    return !was || QUEUE_DETAILS.some((field) => String(was[field.key] ?? '') !== String(row[field.key] ?? ''));
+  }) || rows.length !== before.size;
+  brief.items = rows;
+  /* One model: the task names it as a task raised with it would. */
+  if (rows.length === 1) {
+    if (!String(brief.model || '').trim()) brief.model = rows[0].model;
+    if (!String(brief.material || '').trim() && rows[0].material) brief.material = rows[0].material;
+    if (!String(brief.quantity || '').trim() && rows[0].quantity) brief.quantity = rows[0].quantity;
+  }
+  task.brief = brief;
+  task.markModified('brief');
+  task.attention = undefined;
+
+  /* The enquiry: the models it does not name added, its blanks filled — or, asked, corrected. */
+  let enquiryWords = '';
+  const enquiryId = task.enquiry?._id || task.enquiry;
+  if (enquiryId) {
+    const { default: Mould } = await import('../models/Mould.js');
+    const { applyItemsToEnquiry } = await import('./itemDetails.service.js');
+    const enquiry = await Enquiry.findById(enquiryId)
+      .populate([{ path: 'items.materialRef', select: 'name' }, { path: 'items.hookRef', select: 'name' }, { path: 'items.clipRef', select: 'name' }, { path: 'items.printRef', select: 'name' }]);
+    const added = [];
+    if (enquiry) {
+      const named = (model) => (enquiry.items || []).find((entry) => String(entry.modelNumber || '').trim().toLowerCase() === model.toLowerCase());
+      for (const row of rows) {
+        if (named(row.model)) continue;
+        const mould = await Mould.findOne({ mouldCode: new RegExp(`^${row.model.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).select('_id').lean();
+        /* A row the enquiry left without its model ("shirt hangers, a new development") takes it; else the model is added. */
+        const unnamed = (enquiry.items || []).find((entry) => !String(entry.modelNumber || '').trim() && !entry.mould);
+        if (unnamed) {
+          unnamed.modelNumber = row.model;
+          if (mould) { unnamed.mould = mould._id; unnamed.isNewDevelopment = false; }
+        } else enquiry.items.push({ modelNumber: row.model, ...(mould ? { mould: mould._id } : {}) });
+        added.push(row.model);
+      }
+      if (added.length) {
+        enquiry.markModified('items');
+        enquiry.$locals = { ...(enquiry.$locals || {}), by: user._id };
+        await enquiry.save();
+      }
+      /* Only the blanks, unless the in charge asked to correct the enquiry too. */
+      const blank = (item, field) => (field === 'material' ? !item.materialRef && !item.material && !item.colour
+        : field === 'print' ? !item.printRef && !String(item.printing || '').trim()
+          : !item[`${field}Ref`]);
+      const toWrite = rows.map((row) => {
+        const item = named(row.model);
+        if (!item) return null;
+        const out = { model: row.model };
+        for (const field of ['material', 'hook', 'clip', 'print']) if (row[field] && (updateEnquiry || blank(item, field))) out[field] = row[field];
+        return Object.keys(out).length > 1 ? out : null;
+      }).filter(Boolean);
+      const changes = toWrite.length ? await applyItemsToEnquiry(enquiry._id, toWrite, user) : [];
+      enquiryWords = [
+        added.length && `${added.join(', ')} added to the enquiry`,
+        changes.length && `the enquiry's ${[...new Set(changes.map((entry) => entry.field))].join(', ')} filled`,
+      ].filter(Boolean).join('; ');
+    }
+  }
+  if (changed || enquiryWords) {
+    const words = rows.map((row) => [row.model, row.material, row.quantity && `${Number(row.quantity).toLocaleString('en-IN')} pcs`, row.hook && `hook ${row.hook}`, row.clip && `clip ${row.clip}`, row.print && `print ${row.print}`].filter(Boolean).join(' · ')).join('; ');
+    task.updates = [...(task.updates || []), {
+      kind: 'corrected', statusLabel: 'Details filled', text: ['Model', ...QUEUE_DETAILS.filter((field) => rows.some((row) => row[field.key])).map((field) => field.label)].join(', '),
+      note: `Details for the plan — ${words}${enquiryWords ? ` (${enquiryWords})` : ''}`, by: user._id, at: new Date(),
+    }];
+  }
   await task.save();
   return task;
 }
@@ -4326,27 +4452,69 @@ export function assertRouted(task) {
 export async function routingFor(task, user) {
   if (task.kind !== 'ask_edd') fail('Only Production decides printing and assembly');
   if (!mayWorkOnHandoff(user, task)) throw ApiError.forbidden(`This task is on the ${departmentName(task.department)} queue`);
-  const enquiryId = task.enquiry?._id || task.enquiry;
   /* The EDD marketing or Admin set — the job's and each model's — shown on the form and its date filled from it. */
   const edd = await marketingEddFor(task);
+  const { models, fromOrder } = await modelDetailsOf(task);
+  /* Everyone in Production reads the decision; only the Production in charge (or Admin) makes it. */
+  return { models, routing: task.routing || null, mayDecide: isProductionInCharge(user), edd, fromOrder };
+}
+
+/**
+ * Each model of a Production task with what is known of it — material & colour, pieces, hook,
+ * clip, print: the enquiry's (or its newest quotation, order or sample's), the pieces the SO or the
+ * job's requests count [orderedModelsOf], and over them what the task's own items say (the in
+ * charge's, given on the queue form [fillQueueDetails]). `fromOrder`: the SO counts the pieces.
+ */
+export async function modelDetailsOf(task) {
+  const enquiryId = task.enquiry?._id || task.enquiry;
+  /* What the task's own items say of each model — what the in charge gave on the queue form, or the task was raised with. */
+  const own = new Map((Array.isArray(task.brief?.items) ? task.brief.items : []).map((row) => [String(row?.model || '').trim().toLowerCase(), row]));
+  const ownOf = (model) => {
+    const row = own.get(String(model).trim().toLowerCase()) || {};
+    const single = own.size === 0 && String(task.brief?.model || '').trim().toLowerCase() === String(model).trim().toLowerCase() ? task.brief : {};
+    return Object.fromEntries(['material', 'quantity', 'hook', 'clip', 'print']
+      .map((field) => [field, String(row[field] ?? single?.[field] ?? '').trim()]).filter(([, value]) => value));
+  };
   /* Raised from the customer with no enquiry: the models the task names. */
   if (!enquiryId) {
     const said = (task.routing?.models || []).map((row) => row.model);
-    const models = [...new Set([...said, ...modelsOfTask(task)].filter(Boolean).map((model) => String(model).trim()))];
-    return { models: models.map((model) => ({ model })), routing: task.routing || null, mayDecide: isProductionInCharge(user), edd };
+    const models = [...new Set([...said, ...modelsOfTask(task), ...(task.brief?.items || []).map((row) => row?.model)].filter(Boolean).map((model) => String(model).trim()))];
+    const { ordered } = await orderedModelsOf({ task });
+    const piecesOf = (model) => [...ordered].find(([name]) => name.toLowerCase() === model.toLowerCase())?.[1] || '';
+    return { models: models.map((model) => ({ model, quantity: piecesOf(model) ? String(piecesOf(model)) : '', ...ownOf(model) })), fromOrder: false };
   }
   const prefill = await taskPrefill(enquiryId);
   const { default: SalesOrder } = await import('../models/SalesOrder.js');
   const order = task.order ? await SalesOrder.findById(task.order?._id || task.order).select('lines.modelNumber').lean() : null;
   const fromOrder = (order?.lines || []).map((line) => line.modelNumber).filter(Boolean);
   const said = (task.routing?.models || []).map((row) => row.model);
-  const models = [...new Set([...fromOrder, ...(prefill.modelList || []), ...said, task.brief?.model].filter(Boolean).map((model) => String(model).trim()))];
-  /* The print and the clip the enquiry carries, as a hint beside each model. */
-  const hints = Object.fromEntries((prefill.items || []).map((row) => [row.model, {
-    print: row.print || '', hook: row.hook || '', clip: row.clip || '',
+  const models = [...new Set([...fromOrder, ...(prefill?.modelList || []), ...said, task.brief?.model, ...(task.brief?.items || []).map((row) => row?.model)].filter(Boolean).map((model) => String(model).trim()))];
+  /* What the enquiry (or its newest quotation, order or sample) says of each model: material & colour, hook, clip, print. */
+  const { materialAndColour } = await import('./itemDetails.service.js');
+  const hints = Object.fromEntries((prefill?.items || []).map((row) => [String(row.model || '').toLowerCase(), {
+    material: materialAndColour(row.material, row.colour) || '', print: row.print || '', hook: row.hook || '', clip: row.clip || '',
   }]));
-  /* Everyone in Production reads the decision; only the Production in charge (or Admin) makes it. */
-  return { models: models.map((model) => ({ model, ...(hints[model] || {}) })), routing: task.routing || null, mayDecide: isProductionInCharge(user), edd };
+  /* The pieces: the SO's lines, else the job's requests and quotation [orderedModelsOf]. */
+  const { ordered } = await orderedModelsOf({ task, enquiryId });
+  const piecesOf = (model) => [...ordered].find(([name]) => name.toLowerCase() === model.toLowerCase())?.[1] || '';
+  return {
+    models: models.map((model) => {
+      const hint = Object.fromEntries(Object.entries(hints[model.toLowerCase()] || {}).filter(([, value]) => value));
+      return { model, quantity: piecesOf(model) ? String(piecesOf(model)) : '', ...hint, ...ownOf(model) };
+    }),
+    /* The SO's pieces are the order's — changed on the SO, not here. */
+    fromOrder: fromOrder.length > 0,
+  };
+}
+
+/** What a Production task still lacks to plan — model, material, pieces — read the way the queue form reads it [modelDetailsOf]. */
+export async function missingDetailsOf(task) {
+  const { models } = await modelDetailsOf(task);
+  if (!models.length) return ['model', 'material', 'pieces'];
+  return [
+    models.some((row) => !row.material) && 'material',
+    models.some((row) => !(Number(row.quantity) > 0)) && 'pieces',
+  ].filter(Boolean);
 }
 
 /**

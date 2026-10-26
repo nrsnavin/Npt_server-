@@ -108,6 +108,16 @@ export const taskRoutingSchema = z.object({
 /** Production adds its task to the production queue: printing and assembly per model (unless decided), an EDD, a remark. */
 export const productionQueueAddSchema = z.object({
   models: taskRoutingSchema.shape.models.optional(),
+  /* The model's details the enquiry left out, given by the in charge [handoff.service `fillQueueDetails`]. */
+  items: z.array(z.object({
+    model: z.string().trim().min(1, 'Name the model').max(120),
+    material: z.string().trim().max(160).optional(),
+    quantity: z.union([z.number().min(0).max(1e9), z.string().trim().max(20)]).optional(),
+    hook: z.string().trim().max(120).optional(),
+    clip: z.string().trim().max(120).optional(),
+    print: z.string().trim().max(200).optional(),
+  })).max(100).optional(),
+  updateEnquiry: z.boolean().optional(),
   date: z.string().trim().max(10).optional().or(z.literal('')),
   note: z.string().trim().max(2000).optional(),
 });

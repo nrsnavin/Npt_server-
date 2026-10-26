@@ -95,6 +95,23 @@ const todoSchema = new mongoose.Schema(
      */
     routing: { type: mongoose.Schema.Types.Mixed, default: undefined },
     /*
+     * On Production's task: goods ready and held for the buyer's money before dispatch
+     * [dispatchPayment.service] — the models held, the order, the amount Payment Collection was
+     * given to collect and the confirmed total that releases them (`target`), its collection task,
+     * who held it. `releasedAt` once Accounts confirmed it and the models went to Ready for Dispatch.
+     */
+    paymentHold: {
+      models: { type: [String], default: undefined },
+      order: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder' },
+      amount: Number,
+      target: Number,
+      collection: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      releasedAt: Date,
+      _id: false,
+    },
+    /*
      * On a Dispatch request: how soon the buyer needs the goods, as marketing or Admin said it
      * [services/deliveryUrgency.service.js] — `urgency` (config/deliveryUrgency.js), its label,
      * `dueBy` (the cut-off after which it reads late), who said it and when. The delivery queue

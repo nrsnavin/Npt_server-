@@ -14,6 +14,7 @@ import { raiseTask, resolveTasks } from '../services/task.service.js';
 import { dueDateFor, orderPosition } from '../services/receivable.service.js';
 import { afterCommit, transactional } from '../utils/transaction.js';
 import { afterNotInBank, afterPayment, askAccountsToConfirm, closeLoggedTask, confirmTaskKey } from '../services/paymentGates.service.js';
+import { releasePaymentHolds } from '../services/dispatchPayment.service.js';
 import { FOLLOW_UP_MODES, FOLLOW_UP_STATUSES } from '../config/paymentFollowUp.js';
 import { endOfDayIST } from '../services/handoff.service.js';
 import Todo from '../models/Todo.js';
@@ -698,6 +699,8 @@ export const confirmReceipt = asyncHandler(withOrderLock(async req => (await Rec
   const closedTask = await closeLoggedTask(receivable, receipt, req.user, said);
   const justClosed = closedTask?.originKey ? [closedTask.originKey] : [];
   if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order, { by: req.user, justClosed }));
+  /* Goods held on Production for this money, collected on its own task: they go on to Dispatch [dispatchPayment.service]. */
+  if (receipt?.loggedFrom) afterCommit(() => releasePaymentHolds({ collectionTaskId: receipt.loggedFrom._id || receipt.loggedFrom, by: req.user }));
   await receivable.populate(POPULATE);
   return res.json({ success: true, data: receivable });
 })));
@@ -783,6 +786,8 @@ export const confirmLateReceipt = asyncHandler(withOrderLock(async req => (await
   const closedTask = await closeLoggedTask(receivable, receipt, req.user, said);
   const justClosed = closedTask?.originKey ? [closedTask.originKey] : [];
   if (receivable.order) afterCommit(() => afterPayment(receivable.order._id || receivable.order, { by: req.user, justClosed }));
+  /* Goods held on Production for this money, collected on its own task: they go on to Dispatch [dispatchPayment.service]. */
+  if (receipt?.loggedFrom) afterCommit(() => releasePaymentHolds({ collectionTaskId: receipt.loggedFrom._id || receipt.loggedFrom, by: req.user }));
   await receivable.populate(POPULATE);
   return res.json({ success: true, data: receivable });
 })));

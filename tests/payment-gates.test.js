@@ -721,3 +721,86 @@ test('a Payment Collection task with no sales order: the money goes against a du
   assert.ok(prtReceipt, 'PRT’s cheque on account');
   assert.deepEqual([prtReceipt.receipts[0].amount, prtReceipt.receipts[0].mode], [7000, 'cheque']);
 });
+
+/* ---------------------------------------- goods ready, waiting for the payment ------------ */
+
+/** Production's task on a fresh enquiry, its one model routed straight to dispatch. */
+async function productionReady(model = 'NH-400') {
+  const enquiry = await freshEnquiry(model);
+  const asked = await send(enquiry, 'ask_edd');
+  assert.equal(asked.status, 201, asked.json.message);
+  const task = asked.json.data.task;
+  const routed = await api(`/api/workspace/todos/${task._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model }] } });
+  assert.equal(routed.status, 200, routed.json.message);
+  return { enquiry, task };
+}
+const accountsLine = async (match) => (await api('/api/departments/accounts/dashboard', { as: 'kiran' })).json.data.paymentsToConfirm.find(match);
+
+test('Materials ready, waiting for payment: Payment Collection gets the amount; Accounts confirms; the goods go to Dispatch', async () => {
+  const { enquiry, task } = await productionReady('NH-400');
+  /* Credit terms — nothing asked before dispatch by the order — and the plant holds the goods for the money all the same. */
+  const order = await book(enquiry, { advancePercent: 0, beforeDispatchPercent: 0 });
+  const held = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_awaiting_payment', note: 'Packed — buyer to pay before we send' } });
+  assert.equal(held.status, 200, held.json.message);
+  let production = await Todo.findById(task._id).lean();
+  assert.equal(production.status, 'ready_awaiting_payment');
+  assert.equal(production.paymentHold.amount, 7500);
+  assert.ok(production.updates.some((entry) => entry.statusLabel === 'Waiting for payment' && /Payment Collection asked to collect ₹7,500 before dispatch/.test(entry.note)));
+  assert.equal(await Todo.exists({ enquiry, kind: 'invoice_dispatch' }), null, 'Dispatch not asked yet');
+
+  /* Payment Collection's desk: the amount to collect. */
+  const chase = await Todo.findOne({ originKey: `dispatch-payment:${order._id}`, completed: false }).lean();
+  assert.ok(chase, 'Payment Collection has it');
+  assert.equal(chase.department, 'payment_collection');
+  assert.match(chase.title, new RegExp(`^Collect ₹7,500 before dispatch — ${order.number} · SCM Garments`));
+  assert.equal(String(production.paymentHold.collection), String(chase._id));
+
+  /* Collected and logged; Accounts confirms it in the bank. */
+  const logged = await api(`/api/workspace/todos/${chase._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'payment_inward', note: 'Paid by NEFT', fields: { amount: 7500, mode: 'NEFT', reference: 'UTR-DP-1' } } });
+  assert.equal(logged.status, 200, logged.json.message);
+  production = await Todo.findById(task._id).lean();
+  assert.equal(production.status, 'ready_awaiting_payment', 'logged is not confirmed — still waiting');
+  const line = await accountsLine((row) => row.order?.number === order.number && row.receipt.reference === 'UTR-DP-1');
+  assert.ok(line, 'on Accounts’ list');
+  const confirmed = await api(`/api/payments/${line.receivable._id}/receipts/${line.receipt._id}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(7500, 'UTR-DP-1') });
+  assert.equal(confirmed.status, 200, confirmed.json.message);
+
+  /* The money in: the goods go on to Ready for Dispatch, and Dispatch is asked. */
+  assert.ok(await until(async () => (await Todo.findById(task._id).lean()).status === 'ready_dispatch'), 'moved on to Ready for Dispatch');
+  production = await Todo.findById(task._id).lean();
+  assert.ok(production.paymentHold.releasedAt);
+  assert.match(production.statusHistory.at(-1).note, /Payment confirmed by Accounts \(Kiran Accounts\) — ₹7,500 of ₹7,500 confirmed/);
+  assert.ok(await until(() => Todo.exists({ enquiry, kind: 'invoice_dispatch', completed: false })), 'Dispatch has the request');
+  assert.equal((await Todo.findById(chase._id).lean()).completed, true, 'the chase closes, paid');
+});
+
+test('waiting for payment with no sales order: Payment Collection settles the amount with marketing; what Accounts confirms sends it on', async () => {
+  const { enquiry, task } = await productionReady('NH-410');
+  const held = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_awaiting_payment', note: 'Made — waiting for the money' } });
+  assert.equal(held.status, 200, held.json.message);
+  const chase = await Todo.findOne({ originKey: `dispatch-payment:task:${task._id}`, completed: false }).lean();
+  assert.ok(chase, 'Payment Collection has it');
+  assert.match(chase.notes, /no sales order on it — confirm the amount with the marketing person/);
+  const logged = await api(`/api/workspace/todos/${chase._id}/status`, { method: 'POST', as: 'vijay', body: { status: 'payment_inward', note: 'Cash at the office', fields: { amount: 4200, mode: 'NEFT', reference: 'UTR-DP-2' } } });
+  assert.equal(logged.status, 200, logged.json.message);
+  const line = await accountsLine((row) => row.receipt.reference === 'UTR-DP-2');
+  assert.ok(line, 'on Accounts’ list');
+  const confirmed = await api(`/api/payments/${line.receivable._id}/receipts/${line.receipt._id}/confirm`, { method: 'POST', as: 'kiran', body: bankLine(4200, 'UTR-DP-2') });
+  assert.equal(confirmed.status, 200, confirmed.json.message);
+  assert.ok(await until(async () => (await Todo.findById(task._id).lean()).status === 'ready_dispatch'), 'moved on to Ready for Dispatch');
+  assert.ok(await until(() => Todo.exists({ enquiry, kind: 'invoice_dispatch', completed: false })), 'Dispatch has the request');
+});
+
+test('waiting for payment with nothing owed goes straight on to Dispatch', async () => {
+  const { enquiry, task } = await productionReady('NH-430');
+  const order = await book(enquiry, { advancePercent: 0, beforeDispatchPercent: 0 });
+  /* Paid in full already, confirmed. */
+  const { default: Receivable2 } = await import('../src/models/Receivable.js');
+  await Receivable2.create({ number: `RCV-T-${Date.now()}`, kind: 'advance', customer: customerId, order: order._id, assignedTo: id.admin, dueBy: new Date(), invoice: { value: 7500, date: new Date() }, receipts: [{ amount: 7500, receivedAt: new Date(), mode: 'neft', recordedBy: id.vijay, confirmed: { at: new Date(), by: id.kiran } }] });
+  const held = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'ready_awaiting_payment', note: 'Made' } });
+  assert.equal(held.status, 200, held.json.message);
+  const production = await Todo.findById(task._id).lean();
+  assert.equal(production.status, 'ready_dispatch');
+  assert.match(production.statusHistory.at(-1).note, /Nothing is owed on .* on to Dispatch/);
+  assert.equal(await Todo.exists({ originKey: `dispatch-payment:${order._id}` }), null, 'nothing to collect');
+});
