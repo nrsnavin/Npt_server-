@@ -4,7 +4,7 @@ import {
   freshTodos,
   createTodo,
   updateTodo,
-  deleteTodo,
+  deleteTodo, todoDeletionPreview,
   escalateTodo,
   needsMeToday,
   suggestRoutingFor,
@@ -142,6 +142,7 @@ router.post('/loads/:loadId/paper', singleTaskResult('file'), shipmentPaper);
 /* Papers a department keeps on its task — the invoice, dispatch details — for marketing to attach. */
 router.get('/todos/:id/documents', handoffDocuments);
 router.post('/todos/:id/documents', singleTaskResult('file'), handoffDocument);
+router.get('/todos/:id/deletion', todoDeletionPreview);
 router.delete('/todos/:id', deleteTodo);
 
 /*

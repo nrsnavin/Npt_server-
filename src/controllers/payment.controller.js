@@ -20,6 +20,7 @@ import Todo from '../models/Todo.js';
 import { CREDIT_RULE, COLLECTION_KINDS, creditStatusOf } from '../services/collections.service.js';
 import { inDepartment, isManagement } from '../utils/departments.js';
 import { findHandoff } from '../config/handoffs.js';
+import { claimReference, moveReference, releaseReference } from '../services/paymentRefs.service.js';
 
 /**
  * Payments [BLUEPRINT §20, §25].
@@ -601,6 +602,8 @@ export const recordReceipt = asyncHandler(withOrderLock(async req => (await Rece
   /* Logged on the receivable's own log too, beside the calls, with who took it. */
   receivable.followUps.push(paymentLogEntry(req.user, req.body, { partial: receivable.balance > 0 }));
   const logged = receivable.receipts.at(-1);
+  /* The UTR (or cheque number) is the money's key [paymentRefs.service]: one already on record refuses the whole entry. */
+  await claimReference({ mode: logged.mode, reference: logged.reference, customer: receivable.customer, receivable: receivable._id, receipt: logged._id, amount: logged.amount, by: req.user._id });
 
   /* Settled: the ladder stops, and a re-opened balance starts it again from wherever it stands
      rather than from where it left off. */
@@ -675,6 +678,8 @@ export const confirmReceipt = asyncHandler(withOrderLock(async req => (await Rec
     by: req.user._id, at: new Date(), reference: utr || undefined, amount, creditedOn,
     bankAccount: bankAccount || undefined, note: note || undefined, loggedAmount: differs ? logged : undefined,
   };
+  /* The bank line's UTR is the money's key: one already confirmed on another receipt is the same money twice, and refused. */
+  await moveReference({ mode: receipt.mode, reference: receipt.reference, customer: receivable.customer, receivable: receivable._id, receipt: receipt._id, amount, by: req.user._id });
   await applyPaymentPositions([receivable]);
   if (differs && (receivable.invoice?.value || 0) + 0.5 < receivable.received) {
     throw ApiError.badRequest(`₹${Math.round(amount).toLocaleString('en-IN')} is more than is owed on ${receivable.number} — check the amount on the bank line`);
@@ -726,6 +731,8 @@ export const rejectReceipt = asyncHandler(withOrderLock(async req => (await Rece
     state: 'not_in_bank',
   }];
   receipt.deleteOne();
+  /* Not the money: its reference is free for the real payment's entry. */
+  await releaseReference(receipt._id);
   receivable.followUps.push({ by: req.user._id, at: new Date(), note: `Payment not found in the bank: ${said} — ${label}${reason ? `: ${reason}` : ''}`.slice(0, 1000), status: 'other' });
   await applyPaymentPositions([receivable]);
   await receivable.save();
@@ -762,6 +769,8 @@ export const confirmLateReceipt = asyncHandler(withOrderLock(async req => (await
   });
   entry.state = 'confirmed_late';
   entry.settled = { by: req.user._id, at: new Date() };
+  /* Back on the RCV under its UTR — refused when that UTR is already another receipt's. */
+  await claimReference({ mode: entry.mode, reference: utr || entry.reference, customer: receivable.customer, receivable: receivable._id, receipt: entry._id, amount, by: req.user._id });
   await applyPaymentPositions([receivable]);
   if ((receivable.invoice?.value || 0) + 0.5 < receivable.received) {
     throw ApiError.badRequest(`₹${Math.round(amount).toLocaleString('en-IN')} is more than is owed on ${receivable.number} — check the amount on the bank line`);

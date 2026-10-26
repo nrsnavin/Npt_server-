@@ -1,5 +1,5 @@
 import { MANAGEMENT_QUERY } from '../utils/departments.js';
-import { applyPaymentPositions } from './paymentPosition.service.js';
+import { MAYBE_OWING, applyPaymentPositions } from './paymentPosition.service.js';
 import Receivable, { PAYMENT_ESCALATIONS } from '../models/Receivable.js';
 import Customer from '../models/Customer.js';
 import User from '../models/User.js';
@@ -216,10 +216,21 @@ export function tierFor(receivable, now = new Date()) {
  * that conversation is being handled elsewhere.
  */
 export async function runPaymentEscalations({ now = new Date() } = {}) {
+  /*
+   * Only what is still owed, oldest due first, and never an order that was cancelled. Paid ones
+   * used to be read too — they keep level 0 — and with no order to the read, once a thousand of
+   * them had piled up the overdue ones past them were simply never reached: no reminder, no word
+   * to Accounts or management, and nothing in the log to say so.
+   */
+  const { default: SalesOrder } = await import('../models/SalesOrder.js');
+  const cancelled = await SalesOrder.find({ status: 'cancelled' }).distinct('_id');
   const due = await Receivable.find({
+    ...MAYBE_OWING,
     judgement: { $exists: false },
     escalationLevel: { $lt: 4 },
+    ...(cancelled.length ? { order: { $nin: cancelled } } : {}),
   })
+    .sort({ dueBy: 1 })
     .populate('customer', 'code name whatsapp mobile')
     .populate('order', 'number enquiry')
     .limit(1000);

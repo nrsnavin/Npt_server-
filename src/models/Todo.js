@@ -432,6 +432,18 @@ todoSchema.index({ department: 1, originKey: 1 }, { sparse: true });
 /* Department dashboards and the late sweep read department tasks by department and state. */
 todoSchema.index({ kind: 1, department: 1, completed: 1, dueDate: 1 }, { partialFilterExpression: { kind: { $type: 'string' } } });
 todoSchema.index({ openKey: 1 }, { unique: true, partialFilterExpression: { openKey: { $type: 'string' } } });
+/*
+ * Read on almost every event — "is this reminder already open?", "resolve it" — by its origin
+ * alone, without the department: the department index above cannot serve that, and the whole
+ * collection was scanned each time [the audit's query plans].
+ */
+todoSchema.index({ originKey: 1, completed: 1 }, { partialFilterExpression: { originKey: { $exists: true } } });
+/* A shipment found by its load, for its paper from anywhere [handoff.controller `shipmentPaper`]. */
+todoSchema.index({ 'loads._id': 1 }, { partialFilterExpression: { kind: 'invoice_dispatch' } });
+/* "Mine": what I hold or handed to another department — both halves of the $or need an index, or every task is read. */
+todoSchema.index({ 'escalation.by': 1, completed: 1 }, { partialFilterExpression: { 'escalation.by': { $exists: true } } });
+/* What this department asked of others, done this week — the dashboard's "came back" [handoff.service]. */
+todoSchema.index({ fromDepartment: 1, completed: 1, completedAt: -1 }, { partialFilterExpression: { fromDepartment: { $exists: true } } });
 /* One department holds an enquiry at a time: a second open holding task is refused by the database. */
 todoSchema.index({ enquiry: 1 }, { unique: true, name: 'one_holder_per_enquiry', partialFilterExpression: { holds: true, completed: false } });
 

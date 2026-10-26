@@ -5,7 +5,7 @@ import Announcement from '../models/Announcement.js';
 import Customer from '../models/Customer.js';
 import Query, { askedOfFilter } from '../models/Query.js';
 import ApiError from '../utils/ApiError.js';
-import { departmentsOf, inDepartment } from '../utils/departments.js';
+import { departmentsOf, inDepartment, isManagement } from '../utils/departments.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { EVENTS, publish } from '../services/events.service.js';
 import { canRead, canWrite } from '../services/access.service.js';
@@ -337,7 +337,7 @@ async function todoInView(req) {
   const todo = await Todo.findById(req.params.id);
   if (!todo) throw ApiError.notFound('Task not found');
 
-  if (req.user.role === 'admin') return todo;
+  if (req.user.role === 'admin' || isManagement(req.user)) return todo;
   if (String(todo.user || '') === String(req.user._id)) return todo;
   if (String(todo.escalation?.by || '') === String(req.user._id)) return todo;
   if (inDepartment(req.user, todo.department)) return todo;
@@ -493,8 +493,18 @@ export const escalateTodo = asyncHandler(transactional(async (req, res) => {
   res.json({ success: true, data: await todo.populate(TODO_POPULATE) });
 }));
 
-export const deleteTodo = asyncHandler(async (req, res) => {
+export const deleteTodo = asyncHandler(transactional(async (req, res) => {
   const todo = await todoInView(req);
+  /*
+   * Admin deletes any task — a department's, the app's — with what hangs on it, unless it is the
+   * record of something that happened [services/deletion.service.js]; a team job's first task
+   * takes its whole job. Everyone else deletes only their own notes, as before.
+   */
+  if (isManagement(req.user) && (todo.kind || todo.system)) {
+    const { deleteTask } = await import('../services/deletion.service.js');
+    const result = await deleteTask(todo, req.user, { reason: String(req.body?.reason || req.query.reason || '').trim().slice(0, 300) || undefined });
+    return res.json({ success: true, data: { id: todo._id, ...result } });
+  }
 
   const refusal = mayWorkOn(req.user, todo);
   if (refusal) throw ApiError.forbidden(refusal);
@@ -518,6 +528,13 @@ export const deleteTodo = asyncHandler(async (req, res) => {
 
   await todo.deleteOne();
   res.json({ success: true, data: { id: todo._id } });
+}));
+
+/** What deleting this task would take, and what stops it — Admin's confirmation [deletion.service]. */
+export const todoDeletionPreview = asyncHandler(async (req, res) => {
+  const todo = await todoInView(req);
+  const { previewTaskDeletion } = await import('../services/deletion.service.js');
+  res.json({ success: true, data: await previewTaskDeletion(todo, req.user) });
 });
 
 /**

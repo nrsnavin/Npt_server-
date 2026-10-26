@@ -2324,6 +2324,32 @@ export async function shipmentForLr(lrTask, loadId = null) {
   return waiting[0] || null;
 }
 
+/**
+ * An order cancelled: the work raised for it stops — its Production, Printing, Assembly and
+ * Dispatch tasks, the money chases on it (Payment Collection, PRT, its payment gate), each closed
+ * with the reason so its team reads why. Left open they planned goods nobody would buy and rang a
+ * buyer for an advance on an order that no longer existed. Returns how many closed.
+ */
+export async function closeWorkOfCancelledOrder(order, user, reason) {
+  const note = `${order.number} was cancelled${reason ? ` — ${reason}` : ''}. Nothing more to do on it.`;
+  const gates = ['production', 'dispatch'].map((stage) => `payment-gate:${order._id}:${stage}`);
+  const open = await Todo.find({ completed: false, $or: [{ order: order._id }, { originKey: { $in: gates } }] });
+  let closed = 0;
+  for (const task of open) {
+    if (task.holds) continue;
+    if (task.kind) {
+      await completeHandoff(task, user, { note, system: true, quiet: true });
+    } else {
+      task.completed = true;
+      task.completedAt = new Date();
+      task.updates = [...(task.updates || []), { kind: 'note', text: note, note, by: user?._id, at: new Date() }];
+      await task.save();
+    }
+    closed += 1;
+  }
+  return closed;
+}
+
 /** The LR Reception uploaded, onto its shipment's load on the Dispatch request — said on both tasks. */
 export async function attachShipmentLr(lrTask, user, shipment, attachmentId) {
   const request = await Todo.findById(shipment.task);

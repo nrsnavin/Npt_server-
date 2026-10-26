@@ -20,8 +20,13 @@ const idOf = (value) => String(value?._id || value || '');
 const ROOT = { enquiry: null, $expr: { $eq: ['$chain', '$_id'] } };
 /* A personal reminder (My Payment Follow-up) is its raiser's own, not a job given to a team. */
 const PERSONAL_KINDS = HANDOFFS.filter((handoff) => handoff.department === 'owner').map((handoff) => handoff.key);
-/* A job: a team task's first task — or one that has since joined the buyer's enquiry [`jobLinked`]. */
-const JOBS = { kind: { $exists: true, $nin: PERSONAL_KINDS }, $or: [ROOT, { 'jobLinked.enquiry': { $exists: true } }] };
+/*
+ * A job: a team task's first task — numbered on raising [numberOldJobs numbers any from before],
+ * and still one when it has since joined the buyer's enquiry [`jobLinked`]. Read by its number,
+ * which is indexed: the shape of a first task (`chain` is its own id) cannot be, and asking for it
+ * read every task in the book.
+ */
+const JOBS = { jobNumber: { $exists: true, $nin: [null, ''] }, kind: { $exists: true, $nin: PERSONAL_KINDS } };
 
 const stepLabel = (task) => (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status)?.label || (task.status ? String(task.status).replace(/_/g, ' ') : 'Received');
 const taskLabel = (task) => findHandoff(task.kind)?.label || task.title || 'Task';
@@ -29,7 +34,8 @@ const teamOf = (task) => findDepartment(task.department)?.label || String(task.d
 
 /** Jobs raised before they were numbered get their number the first time they are read. */
 async function numberOldJobs() {
-  const old = await Todo.find({ ...ROOT, kind: { $exists: true, $nin: PERSONAL_KINDS }, jobNumber: null }).select('_id createdAt').sort({ createdAt: 1 }).limit(200).lean();
+  /* Through the chain index: only tasks on a chain are looked at, never the whole book. */
+  const old = await Todo.find({ chain: { $exists: true }, jobNumber: null, ...ROOT, kind: { $exists: true, $nin: PERSONAL_KINDS } }).select('_id createdAt').sort({ createdAt: 1 }).limit(200).lean();
   if (!old.length) return;
   const { nextNumber } = await import('./numbering.service.js');
   for (const row of old) await Todo.updateOne({ _id: row._id, jobNumber: null }, { $set: { jobNumber: await nextNumber('JOB', row.createdAt) } }, { keepVersion: true });
@@ -105,13 +111,29 @@ const modelsOf = (task) => {
 };
 
 /** The jobs this person gave or follows, newest move first: open ones by default, or done. */
-export async function listTeamJobs(user, { state = 'open', search = '', limit = 200 } = {}) {
+export async function listTeamJobs(user, { state = 'open', search = '', limit = 200, page = 1 } = {}) {
   await numberOldJobs();
   const scope = await scopeFor(user);
-  const roots = await Todo.find({ $and: [JOBS, scope] })
+  /*
+   * Open jobs are found from their open tasks — through the chain index — and done ones are read a
+   * page at a time, newest first [web: Team jobs "Load more"]: a year of finished jobs is never
+   * loaded to show the handful still open, nor all at once to show the done list.
+   */
+  const needle = String(search || '').trim().toLowerCase();
+  /* A job whose only open task is an LR already with the buyer may read done [lrSettled]: it is looked at for both lists, and where it is now decides. */
+  const [openChains, workingChains] = await Promise.all([
+    Todo.distinct('chain', { chain: { $exists: true }, completed: false }),
+    Todo.distinct('chain', { chain: { $exists: true }, completed: false, $nor: [{ kind: 'lr_copy', status: { $in: LR_SENT } }] }),
+  ]);
+  const elsewhere = [{ 'jobLinked.enquiry': { $exists: true }, completed: false }, { buyerWantedAt: { $exists: true }, customer: null }];
+  const which = state === 'open' ? [{ $or: [{ _id: { $in: openChains } }, ...elsewhere] }]
+    : state === 'done' ? [{ $nor: [{ _id: { $in: workingChains } }, ...elsewhere] }] : [];
+  const size = needle ? 500 : state === 'done' ? Math.min(limit, 50) : 500;
+  const skip = !needle && state === 'done' ? (Math.max(1, Number(page) || 1) - 1) * size : 0;
+  const roots = await Todo.find({ $and: [JOBS, scope, ...which] })
     .select('jobNumber jobLinked buyerWantedAt kind department title notes brief customer createdBy createdAt updatedAt jobEdd completed status')
     .populate([{ path: 'customer', select: 'name' }, { path: 'createdBy', select: 'name' }])
-    .sort({ createdAt: -1 }).limit(500).lean();
+    .sort(state === 'done' ? { updatedAt: -1 } : { createdAt: -1 }).skip(skip).limit(size).lean();
   if (!roots.length) return [];
   const all = await Todo.find({ chain: { $in: roots.map((root) => root._id) } })
     .select('chain kind department status modelStatuses.status completed completedAt createdAt updatedAt loads.mode loads.lrSent').lean();
@@ -121,7 +143,6 @@ export async function listTeamJobs(user, { state = 'open', search = '', limit = 
     if (!byJob.has(key)) byJob.set(key, []);
     byJob.get(key).push(task);
   }
-  const needle = String(search || '').trim().toLowerCase();
   const rows = roots.map((root) => {
     /* A job that joined an enquiry has no chain any more: its own task is the whole of it here. */
     const tasks = root.jobLinked?.enquiry ? [root] : byJob.get(idOf(root._id)) || [root];
@@ -141,6 +162,7 @@ export async function listTeamJobs(user, { state = 'open', search = '', limit = 
     };
   });
   return rows
+    /* Open/done by where each job is now — a job whose last open task is an LR already with the buyer reads done. */
     .filter((row) => (state === 'done' ? row.now.done : state === 'all' ? true : !row.now.done))
     .filter((row) => !needle || [row.number, row.customer?.name, row.asked.what, row.asked.note, row.asked.models.join(' '), row.raisedBy].some((value) => String(value || '').toLowerCase().includes(needle)))
     .sort((a, b) => b.lastMoveAt - a.lastMoveAt)

@@ -831,6 +831,11 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
     const { ensureWorkOrders } = await import('../services/workOrder.service.js');
     await ensureWorkOrders({ orderIds: [order._id], user: req.user });
   }
+  /* Cancelled: every task raised for it — the plant's, Dispatch's, the money chases — closes with the reason. */
+  if (action === 'cancel') {
+    const { closeWorkOfCancelledOrder } = await import('../services/handoff.service.js');
+    await closeWorkOfCancelledOrder(order, req.user, rest.cancellationReason || note);
+  }
 
   await order.populate(POPULATE);
   res.json({
