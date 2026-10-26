@@ -71,7 +71,7 @@ test('a job Admin gives Production: numbered, read whole — the asking, where i
   const task = sent.json.data.task || sent.json.data;
   assert.match((await Todo.findById(task._id).lean()).jobNumber, /^JOB-\d{4}-\d{4}$/);
   /* Production fills it and starts it partway: with Printing since yesterday. */
-  assert.equal((await api(`/api/workspace/todos/${task._id}/brief`, { method: 'POST', as: 'siva', body: { brief: { model: 'JB-1', quantity: '5000' } } })).status, 200);
+  assert.equal((await api(`/api/workspace/todos/${task._id}/brief`, { method: 'POST', as: 'siva', body: { brief: { model: 'JB-1', material: 'PP black', quantity: '5000' } } })).status, 200);
   const yesterday = new Date(Date.now() - 864e5 + 330 * 60 * 1000).toISOString().slice(0, 10);
   assert.equal((await api(`/api/workspace/todos/${task._id}/start-from`, { method: 'POST', as: 'siva', body: { models: [{ model: 'JB-1', printing: true, at: 'handed_printing', date: yesterday }] } })).status, 200);
 
@@ -90,6 +90,14 @@ test('a job Admin gives Production: numbered, read whole — the asking, where i
   assert.ok(job.timeline.some((line) => /Already handed to Printing on/.test(line.text)), 'what Production did, in its words');
   assert.ok(new Date(job.timeline[0].at) >= new Date(job.timeline.at(-1).at), 'newest first');
   assert.deepEqual(job.journeys.map((row2) => row2.model), ['JB-1']);
+  /* Admin gave no model or material: what Production filled is the job's — and says who filled it. */
+  const filled = (await api(`/api/workspace/team-jobs/${task._id}`, { as: 'admin' })).json.data;
+  assert.deepEqual(filled.hanger.map((row2) => [row2.label, row2.value]), [['Model', 'JB-1'], ['Material & colour', 'PP black'], ['Quantity (pcs)', '5,000']]);
+  for (const row2 of filled.hanger) {
+    assert.equal(row2.filledBy?.team, 'Production', `${row2.label} filled by Production`);
+    assert.equal(row2.filledBy?.name, 'Sivakumar');
+  }
+  assert.deepEqual(filled.asked.models, ['JB-1']);
 });
 
 test('who reads which job: whoever gave it, the buyer’s marketing person, Admin — not another marketing person', async () => {

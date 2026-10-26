@@ -2,6 +2,7 @@ import Todo from '../models/Todo.js';
 import Customer from '../models/Customer.js';
 import ApiError from '../utils/ApiError.js';
 import { HANDOFFS, findHandoff } from '../config/handoffs.js';
+import { HANGER_DETAILS } from '../config/departmentTaskForms.js';
 import { findDepartment } from '../config/modules.js';
 import { isManagement } from '../utils/departments.js';
 
@@ -108,6 +109,28 @@ function nowOf(tasks, root = null) {
 const modelsOf = (task) => {
   const items = Array.isArray(task.brief?.items) ? task.brief.items.map((item) => item.model) : [];
   return [...new Set([...String(task.brief?.models || task.brief?.model || '').split(','), ...items].map((model) => String(model || '').trim()).filter(Boolean))];
+};
+
+/**
+ * The hanger's details on the job — model, material & colour, hook, clip, print, quantity — read
+ * from what was asked and, where the asker left one out, from the task that filled it later (the
+ * Production team, say, on its own task [handoff.service `editTaskBrief`]), with who filled it.
+ */
+const detailsOf = (root, tasks) => {
+  /* The asking first — as read with its updates' names — then the rest in order. */
+  const ordered = [tasks.find((task) => idOf(task._id) === idOf(root._id)) || root, ...tasks.filter((task) => idOf(task._id) !== idOf(root._id))];
+  return HANGER_DETAILS.map((field) => {
+    const task = ordered.find((entry) => String(entry.brief?.[field.key] ?? '').trim());
+    if (!task) return null;
+    /* Filled after the asking: the latest "Details filled" / "Corrected" line naming it says who. */
+    const line = [...(task.updates || [])].reverse().find((entry) => entry.kind === 'corrected' && String(entry.text || '').split(', ').includes(field.label));
+    const value = String(task.brief[field.key]).trim();
+    return {
+      key: field.key, label: field.label,
+      value: field.type === 'number' && Number.isFinite(Number(value)) ? Number(value).toLocaleString('en-IN') : value,
+      ...(line ? { filledBy: { team: teamOf(task), name: line.by?.name || null, at: line.at } } : {}),
+    };
+  }).filter(Boolean);
 };
 
 /** The jobs this person gave or follows, newest move first: open ones by default, or done. */
@@ -223,7 +246,9 @@ export async function teamJob(user, id) {
     _id: root._id,
     number: root.jobNumber || null,
     customer: root.customer ? { _id: root.customer._id, name: root.customer.name, mobile: root.customer.mobile || null } : null,
-    asked: { team: teamOf(root), what: taskLabel(root), note: root.notes || '', models: modelsOf(root), brief: root.brief || {} },
+    /* A model the asker left out and a team filled later is the job's model too. */
+    asked: { team: teamOf(root), what: taskLabel(root), note: root.notes || '', models: [...new Set([...modelsOf(root), ...tasks.flatMap((task) => modelsOf(task))])], brief: root.brief || {} },
+    hanger: detailsOf(root, tasks),
     raisedBy: root.createdBy?.name || null,
     raisedAt: root.createdAt,
     edd: root.jobEdd?.date || null,
