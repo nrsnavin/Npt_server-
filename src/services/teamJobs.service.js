@@ -290,3 +290,27 @@ async function advanceHeld(root, user, why) {
   const from = finishing.find((task) => !task.completed) || finishing[0];
   if (from) await advanceJourney(from, user, why);
 }
+
+/**
+ * Admin closes a team job where it stands [web: TeamJobDetail "Close job"]: every open task on it
+ * closed with the reason, each team told, and the reminders about the job ended. Its record stays.
+ */
+export async function closeTeamJob(user, id, reason) {
+  if (!isManagement(user)) throw ApiError.forbidden('Only Admin closes a team job outright');
+  const why = String(reason || '').trim();
+  if (why.length < 5) throw ApiError.badRequest('Say why the job is being closed');
+  if (!/^[0-9a-f]{24}$/i.test(String(id))) throw ApiError.notFound('Job not found');
+  const root = await Todo.findOne({ $and: [{ _id: id }, JOBS] });
+  if (!root) throw ApiError.notFound('Job not found');
+  const open = root.jobLinked?.enquiry
+    ? (root.completed ? [] : [root])
+    : await Todo.find({ $or: [{ chain: root._id }, { _id: root._id }], completed: false });
+  if (!open.length) throw ApiError.conflict('Nothing is open on this job');
+  const { closeByAdmin } = await import('./handoff.service.js');
+  for (const task of open) await closeByAdmin(task, user, { reason: why });
+  const { resolveTasks } = await import('./task.service.js');
+  const { askKeyFor } = await import('./eddAsk.service.js');
+  await resolveTasks(`job-buyer:${root._id}`);
+  await resolveTasks(askKeyFor({ chain: root._id }));
+  return teamJob(user, id);
+}

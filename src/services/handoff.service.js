@@ -1070,6 +1070,25 @@ async function closeOpenTasks(enquiry, why, user, { except } = {}) {
 }
 
 /**
+ * What closing the enquiry would do [web: Admin's "Close enquiry"]: the open tasks that close with
+ * it, the money cases that stay open until the money is in, and the samples and quotation stopped.
+ */
+export async function enquiryClosePreview(enquiry) {
+  const open = await Todo.find({ enquiry: enquiry._id, kind: { $exists: true }, completed: false, holds: { $ne: true }, $nor: [{ kind: 'lr_copy', resultFile: { $exists: true } }] })
+    .select('title kind department customer order').lean();
+  const tasks = [];
+  const keptOpen = [];
+  for (const task of open) {
+    const row = { _id: task._id, title: task.title, department: task.department };
+    if (COLLECTION_KINDS.includes(task.kind) && (await receivablesOf(task)).length) keptOpen.push(row);
+    else tasks.push(row);
+  }
+  const { default: Sample } = await import('../models/Sample.js');
+  const samples = await Sample.countDocuments({ enquiry: enquiry._id, status: { $nin: ['dispatched', 'delivered', 'feedback_received', 'approved', 'rejected', 'cancelled', 'modification_required'] } });
+  return { number: enquiry.number, closed: enquiry.stage === CLOSED_STAGE, tasks, keptOpen, samples };
+}
+
+/**
  * Something another record says about the enquiry, written on it: the order booked (won), or
  * what marketing's word for it now is. `forward` keeps a marketing status from pulling the
  * enquiry back — an accepted quotation reads Price approved only on an enquiry not past it.

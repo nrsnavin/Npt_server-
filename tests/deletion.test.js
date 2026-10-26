@@ -161,3 +161,41 @@ test('a team job’s first task takes its whole job; a task with money logged fr
   assert.match(kept.json.message, /money was logged from it \(RCV-\d{4}-\d{4}\)/);
   assert.ok(await Todo.exists({ _id: collect._id }));
 });
+
+/* ------------------------------------------------------------------ closing */
+
+test('Admin closes an enquiry: the preview names the open tasks, and closing ends them with the reason', async () => {
+  const made = await enquiry('CL-1');
+  const production = await ask(made._id, 'ask_edd', { model: 'CL-1' });
+  const preview = await api(`/api/enquiries/${made._id}/closing`);
+  assert.equal(preview.status, 200, preview.json.message);
+  assert.ok(preview.json.data.tasks.some((row) => String(row._id) === String(production._id)), 'the Production task is named');
+  assert.equal((await api(`/api/enquiries/${made._id}/closing`, { as: 'nandhini' })).status, 403, 'Admin’s preview');
+  const closed = await api(`/api/enquiries/${made._id}/handoffs`, { method: 'POST', body: { kind: 'task_closed', note: 'Buyer went with another supplier' } });
+  assert.equal(closed.status, 201, closed.json.message);
+  const task = await Todo.findById(production._id).lean();
+  assert.equal(task.completed, true);
+  assert.match(task.outcome.note, /Closed with the enquiry: Buyer went with another supplier/);
+  assert.equal((await api(`/api/enquiries/${made._id}`)).json.data.stage, 'closed');
+  assert.equal((await api(`/api/enquiries/${made._id}/closing`)).json.data.closed, true);
+});
+
+test('Admin closes a task, or a whole team job, where it stands — with a reason; nobody else can', async () => {
+  const made = await enquiry('CL-2');
+  const production = await ask(made._id, 'ask_edd', { model: 'CL-2' });
+  assert.equal((await api(`/api/workspace/todos/${production._id}/admin-close`, { method: 'POST', as: 'nandhini', body: { reason: 'Not needed any more' } })).status, 403);
+  const closedTask = await api(`/api/workspace/todos/${production._id}/admin-close`, { method: 'POST', body: { reason: 'Not needed any more' } });
+  assert.equal(closedTask.status, 200, closedTask.json.message);
+  assert.equal((await Todo.findById(production._id).lean()).outcome.result, 'closed_by_admin');
+
+  const job = (await api('/api/workspace/team-tasks', { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Make CL-3', customer: customerId, brief: { model: 'CL-3', quantity: '500' } } })).json.data.task;
+  assert.equal((await api(`/api/workspace/todos/${job._id}/routing`, { method: 'POST', as: 'siva', body: { models: [{ model: 'CL-3', printing: true }] } })).status, 200);
+  await settle();
+  assert.equal((await api(`/api/workspace/team-jobs/${job._id}/close`, { method: 'POST', as: 'nandhini', body: { reason: 'Buyer cancelled' } })).status, 403);
+  assert.equal((await api(`/api/workspace/team-jobs/${job._id}/close`, { method: 'POST', body: { reason: 'no' } })).status, 400, 'a reason');
+  const closedJob = await api(`/api/workspace/team-jobs/${job._id}/close`, { method: 'POST', body: { reason: 'Buyer cancelled the order' } });
+  assert.equal(closedJob.status, 200, closedJob.json.message);
+  assert.equal(closedJob.json.data.now.done, true);
+  assert.equal(await Todo.countDocuments({ $or: [{ chain: job._id }, { _id: job._id }], completed: false }), 0, 'every task on it closed');
+  assert.equal((await api(`/api/workspace/team-jobs/${job._id}/close`, { method: 'POST', body: { reason: 'Again please' } })).status, 409);
+});

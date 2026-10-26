@@ -712,6 +712,12 @@ export const teamJobHandler = asyncHandler(async (req, res) => {
   res.json({ success: true, data: await teamJob(req.user, req.params.id) });
 });
 
+/** Admin closes the job where it stands: every open task on it, with the reason [teamJobs.service `closeTeamJob`]. */
+export const closeTeamJobHandler = asyncHandler(transactional(async (req, res) => {
+  const { closeTeamJob } = await import('../services/teamJobs.service.js');
+  res.json({ success: true, data: await closeTeamJob(req.user, req.params.id, req.body?.reason) });
+}));
+
 /** The buyer named on a job given with none — and, its goods ready, Dispatch asked [teamJobs.service `nameJobBuyer`]. */
 export const nameJobBuyerHandler = asyncHandler(transactional(async (req, res) => {
   const { nameJobBuyer } = await import('../services/teamJobs.service.js');
