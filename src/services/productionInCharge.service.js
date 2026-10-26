@@ -128,3 +128,26 @@ export const pressesConfirmed = (task) => resolveTasks(pressKey(task));
 export async function inChargeIds() {
   return (await productionInCharge()).map((person) => person._id);
 }
+
+/**
+ * A model planned on a press whose start has come, with no run on it yet: the in charge is asked
+ * to confirm it is running there — one tap on the task starts the run [productionStep.service].
+ */
+export const startKey = (wo) => `confirm-start:${wo._id}`;
+export async function askToConfirmStart(task, wo, machineCode) {
+  const { people } = await planners();
+  const what = await about(task);
+  const link = await workflowLink(task);
+  for (const person of people) {
+    await raiseTask({
+      user: person._id,
+      title: `Confirm production on ${machineCode} — ${wo.model || wo.modelNumber || what}`,
+      notes: `${what}: planned on ${machineCode} from now. Confirm it is running (Production Started on the task), or move the plan.`,
+      priority: 'high',
+      dueDate: new Date(),
+      link,
+      originKey: startKey(wo),
+    });
+  }
+}
+export const startConfirmed = (wo) => resolveTasks(startKey(wo));
