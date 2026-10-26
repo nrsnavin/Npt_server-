@@ -150,6 +150,8 @@ export async function startedOn(wo, run, user) {
   await wo.save();
   /* A work order a Production task planned: its model reads Production Started [floorPlanning.service]. */
   if (wo.task) await (await import('./floorPlanning.service.js')).afterRunStarted(wo, run, user);
+  /* Running: the "confirm production on the press" alert has its answer [productionStep.service `askForDueStarts`]. */
+  if (wo.task) await (await import('./productionInCharge.service.js')).startConfirmed(wo);
 }
 
 /**

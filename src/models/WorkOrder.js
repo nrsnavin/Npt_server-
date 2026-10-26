@@ -85,6 +85,17 @@ const workOrderSchema = new mongoose.Schema(
       _id: false,
     },
     /*
+     * "Not today" on a planned start [pressDay.service `holdStart`]: the in charge is not asked to
+     * confirm production on its press again until `until`, with why.
+     */
+    startHeld: {
+      until: Date,
+      reason: { type: String, trim: true, maxlength: 300 },
+      at: Date,
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      _id: false,
+    },
+    /*
      * The auto-planner's proposal for a work order not on a press yet [floorPlanning.service
      * `proposeTaskPlan`]: the press it would go on, the days, the reasons — what it learned from
      * the in charge's own choices among them. Nothing is placed until the in charge confirms; a

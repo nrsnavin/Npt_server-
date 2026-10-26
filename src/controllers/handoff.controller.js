@@ -507,10 +507,29 @@ export const handoffStatus = asyncHandler(withRequestLock(moneyMoveKey, transact
   /* A load is sent from the dispatch form — models, pieces, how it travels, its LR copy or proof of delivery [handoffDispatchLoad]. */
   const step = (findHandoff(found.kind)?.form?.statuses || []).find((entry) => entry.key === req.body?.status);
   if (step?.loads) throw ApiError.badRequest(`${step.label} is given from the dispatch form — tick the models sent and their pieces, say how it travels, and upload the LR copy or proof of delivery`);
-  const { load: _load, ...body } = req.body || {};
+  const { load: _load, floor, ...body } = req.body || {};
+  /* The press confirmed on the move is said on it, whether or not the floor is planned [productionStep.service]. */
+  const { STEP_OF, applyPressStep, checkPressStep, pressWords } = await import('../services/productionStep.service.js');
+  const pressKind = STEP_OF[body.status];
+  if (found.kind === 'ask_edd') await checkPressStep(found, { status: body.status, floor });
+  if (found.kind === 'ask_edd' && ['plan', 'start'].includes(pressKind) && floor && !floor.skip) {
+    const words = await pressWords(floor);
+    if (words) body.note = [String(body.note || '').trim(), `${pressKind === 'start' ? 'Running on' : 'Planned on'} ${words}`].filter(Boolean).join(' — ');
+  }
   const task = await setTaskStatus(found, req.user, body);
-  await answer(res, task);
+  /* …and the floor follows: the press planned, the run started or ended, the press called in. */
+  const floorDone = found.kind === 'ask_edd' ? await applyPressStep(task, req.user, { status: body.status, floor, note: body.note }) : [];
+  const shown = floorDone.length ? await Todo.findById(task._id) : task;
+  res.json({ success: true, data: await taskWithClosable(await shown.populate(TASK_POPULATE)), floor: floorDone });
 })));
+
+/** What the move form asks before a Production status move: the press, the run, the presses free [productionStep.service]. */
+export const handoffPressStep = asyncHandler(async (req, res) => {
+  const task = await taskFor(req);
+  const { pressStep } = await import('../services/productionStep.service.js');
+  const models = String(req.query.models || '').split(',').map((model) => model.trim()).filter(Boolean);
+  res.json({ success: true, data: await pressStep(task, req.user, { status: String(req.query.status || ''), models }) });
+});
 
 /** A task's uploaded work behind a signed link — what WhatsApp fetches. No session: the signature is the permission. */
 export const publicTaskFile = asyncHandler(async (req, res) => {

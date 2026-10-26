@@ -82,6 +82,11 @@ function startEscalationSweep() {
         );
       }
 
+      /* And the presses whose planned start has come with nothing running: the in charge confirms production there [productionStep.service]. */
+      const { askForDueStarts } = await import('./services/productionStep.service.js');
+      const starts = await askForDueStarts().catch((error) => { console.error('Confirm-start sweep failed:', error.message); return 0; });
+      if (starts) console.log(`Production: asked to confirm ${starts} planned start(s)`);
+
       /* And the jobs past the date the plant itself agreed [§25]. */
       const late = await runProductionEscalations();
       if (late.length) {

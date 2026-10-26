@@ -134,6 +134,18 @@ export const tradeOrderUpdateSchema = z.object({
   receivedQty: num(1e9), receivedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'A date').optional(),
   note: text(500),
 });
+/** Today on the presses [pressDay.service]: confirm a planned start, hold it a day, the shift change. */
+export const pressConfirmSchema = z.object({ counterStart: z.number().int().min(0).max(1e10).nullable().optional() });
+export const pressHoldSchema = z.object({ reason: z.string().trim().min(3, 'Say why it does not start today').max(300), until: z.string().datetime().optional() });
+export const shiftReadingsSchema = z.object({
+  shift: z.enum(['A', 'B', 'C', 'General']).optional(),
+  readings: z.array(z.object({
+    run: objectId,
+    counter: z.number().int().min(0).max(1e10).nullable().optional(),
+    goodPieces: z.number().int().min(0).max(1e9).nullable().optional(),
+    rejectedPieces: z.number().int().min(0).max(1e9).nullable().optional(),
+  })).min(1).max(100),
+});
 /** A tap on the mould change checklist [floorPlanning.service `setupStep`]. */
 export const setupStepSchema = z.object({ step: z.enum(['mouldOff', 'mouldOn', 'heated', 'firstPiece']), undo: z.boolean().optional() });
 

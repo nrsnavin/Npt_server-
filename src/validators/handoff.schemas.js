@@ -71,6 +71,17 @@ export const taskStatusSchema = z.object({
   fields: z.record(z.string().max(40), z.union([z.string().max(500), z.number(), z.boolean()])).optional(),
   /* Only these of the task's models move [Todo `modelStatuses`]; none named, every model does. */
   models: z.array(z.string().trim().min(1).max(120)).max(60).optional(),
+  /*
+   * Production's move, carried to the floor [productionStep.service]: the press each model is
+   * planned on or running on, the pieces made, whether to call the press in — or `skip`.
+   */
+  floor: z.object({
+    skip: z.boolean().optional(),
+    presses: z.array(z.object({ model: z.string().trim().min(1).max(120), machine: z.string().trim().regex(/^[0-9a-f]{24}$/i), counterStart: z.union([z.number().min(0), z.literal('')]).optional() })).max(60).optional(),
+    made: z.array(z.object({ model: z.string().trim().min(1).max(120), goodPieces: z.number().min(0).max(1e8), rejectedPieces: z.number().min(0).max(1e8).optional(), counterEnd: z.union([z.number().min(0), z.literal('')]).optional() })).max(60).optional(),
+    stop: z.boolean().optional(),
+    models: z.array(z.string().trim().min(1).max(120)).max(60).optional(),
+  }).optional(),
 });
 
 /** The expected delivery date, given from the Production / Assembly / Printing task [handoff.service `setTaskEdd`]. */
