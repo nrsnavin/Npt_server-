@@ -76,13 +76,13 @@ test.after(async () => {
   await mongo?.stop();
 });
 
-test('the Production task starts at EDD Request Received; the seventeen statuses come from the server', async () => {
+test('the Production task starts at EDD Request Received; the eighteen statuses come from the server', async () => {
   const { buttons } = (await api('/api/handoffs', { as: 'siva' })).json.data;
   const form = buttons.find((button) => button.key === 'ask_edd').form;
   assert.deepEqual(form.statuses.map((entry) => entry.label), [
     'EDD Request Received', 'EDD Accepted', 'Planning', 'Ready Tomorrow', 'Ready on Selected Date', 'Production Started',
     'Part 1 Ready', 'Part 2 Ready', 'Mould Issue', 'Machine Not Allotted / Alternate Required', 'Raw Material Not Available',
-    'Production Completed', 'Handed to Printing', 'Handed to Assembly', 'Assembling', 'Ready for Dispatch', 'Task Closed',
+    'Production Completed', 'Handed to Printing', 'Handed to Assembly', 'Assembling', 'Materials Ready — Waiting for Payment to Dispatch', 'Ready for Dispatch', 'Task Closed',
   ]);
   assert.equal(form.remarkRequired, true);
   assert.equal(form.statusDate.label, 'Completion date');

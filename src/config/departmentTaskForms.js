@@ -528,6 +528,12 @@ export const TASK_FORMS = {
       { key: 'handed_printing', label: 'Handed to Printing', handsTo: 'printing' },
       { key: 'handed_assembly', label: 'Handed to Assembly', handsTo: 'assembling' },
       { key: 'assembling', label: 'Assembling' },
+      /*
+       * The goods are made and wait for the buyer's money before they leave [dispatchPayment.service]:
+       * Payment Collection gets the amount to collect, Accounts confirms it in the bank, and the model
+       * moves to Ready for Dispatch by itself — Dispatch is asked then.
+       */
+      { key: 'ready_awaiting_payment', label: 'Materials Ready — Waiting for Payment to Dispatch', awaitsPayment: true },
       /* Tells the enquiry's open Dispatch request, which moves to Goods Ready [handoff.service `tellDispatchReady`]. */
       { key: 'ready_dispatch', label: 'Ready for Dispatch', readyForDispatch: true },
       { key: 'closed', label: 'Task Closed', done: true },

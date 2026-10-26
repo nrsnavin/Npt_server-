@@ -207,6 +207,8 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
    * invoice chase, PRT's case — the oldest still owed on its order (or buyer), the advance among them.
    */
   const chasesAdvance = String(task.originKey || '').startsWith('payment-gate:');
+  /* Goods held for the money with no sales order behind them [dispatchPayment.service]: the money is for them — on account, never another order's dues. */
+  if (!against && !order && String(task.originKey || '').startsWith('dispatch-payment:task:')) against = 'on_account';
   let receivable = null;
   /* Picked on the form: one of the buyer's dues [duesOfTask], or a receipt on account. */
   if (against && against !== 'on_account') {
@@ -230,7 +232,7 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
   if (!receivable) throw ApiError.badRequest(order ? `Nothing is owed on ${order.number} — nothing to log` : 'Nothing is owed by this buyer — nothing to log');
   const owed = round2(Math.max(0, (receivable.invoice?.value || 0) - (receivable.received || 0)));
   if (value > owed + 0.5) {
-    throw ApiError.badRequest(receivable.kind === 'advance' ? `That is more than the ${rupees(owed)} still owed on ${order.number}'s advance`
+    throw ApiError.badRequest(receivable.kind === 'advance' ? `That is more than the ${rupees(owed)} still owed on ${order?.number || receivable.number}'s advance`
       : `That is more than the ${rupees(owed)} still owed on ${receivable.invoice?.number || receivable.number} — record the rest against the next invoice in Payments`);
   }
   const at = new Date();
@@ -778,5 +780,7 @@ export async function afterPayment(orderId, { by, justClosed = [] } = {}) {
   await askForNext(order, standing);
   /* And a chase with nothing left to chase ends — the collector is not left pressing Paid. */
   await settleCollectionTasks(order._id).catch((error) => console.error(`[payments] collection tasks not settled on ${order.number}: ${error.message}`));
+  /* Goods held on Production for the money before dispatch: those now paid go on to Dispatch [dispatchPayment.service]. */
+  await (await import('./dispatchPayment.service.js')).releasePaymentHolds({ orderId: order._id, by });
   return standing;
 }

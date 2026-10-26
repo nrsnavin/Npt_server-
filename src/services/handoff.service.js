@@ -1781,6 +1781,8 @@ export async function setTaskStatus(task, user, { status, note, date, dates, fie
   if (step.next === 'lr_copy' && task.order) await remindConsignment(task, user, step);
   /* Production or Assembly saying the goods are ready reaches the Dispatch request waiting on them. */
   if (step.readyForDispatch) await tellDispatchReady(task, user, { ...step, label }, text, { partial });
+  /* Made, and held for the buyer's money: Payment Collection is given the amount; Accounts' confirmation sends it to Dispatch [dispatchPayment.service]. */
+  if (step.awaitsPayment) await (await import('./dispatchPayment.service.js')).holdForPayment(task, user, { models: partial ? moving : modelsOfTask(task), note: text });
   /* The goods handed to the next team: its task hears it, with the day they came [handOn]. */
   if (step.handsTo) {
     await handOn(task, user, step, text, partial ? moving : null);
@@ -2533,7 +2535,7 @@ async function movesFor(task, step, models) {
   const routes = await modelRoutes(task);
   /* A hand-over to a team nothing goes to is refused below, in those words [setTaskStatus]. */
   const handsThere = !step.handsTo || handsOnOf(task).includes(step.handsTo);
-  if (routes.size && handsThere && (step.handsTo || step.readyForDispatch) && task.kind !== 'ask_assembling_edd') {
+  if (routes.size && handsThere && (step.handsTo || step.readyForDispatch || step.awaitsPayment) && task.kind !== 'ask_assembling_edd') {
     const fits = (model) => {
       const row = routes.get(model);
       if (!row) return true;
@@ -2547,7 +2549,7 @@ async function movesFor(task, step, models) {
           fail(`${off.join(', ')} ${plural(off, 'does', 'do')} not go to ${ROUTE_LABEL[step.handsTo] || step.handsTo} — Production routed ${plural(off, 'it', 'them')} elsewhere`);
         }
         const next = (model) => (task.kind === 'ask_edd' && routes.get(model)?.printing ? 'Printing' : 'Assembly');
-        fail(`${off.join(', ')} ${plural(off, 'goes', 'go')} on to ${[...new Set(off.map(next))].join(' and ')} — mark ${plural(off, 'it', 'them')} Handed to ${[...new Set(off.map(next))].join(' / ')} instead of Ready for Dispatch`);
+        fail(`${off.join(', ')} ${plural(off, 'goes', 'go')} on to ${[...new Set(off.map(next))].join(' and ')} — mark ${plural(off, 'it', 'them')} Handed to ${[...new Set(off.map(next))].join(' / ')} instead of ${step.readyForDispatch ? 'Ready for Dispatch' : step.label}`);
       }
       pool = candidates.filter(fits);
       narrowed = true;
@@ -4285,7 +4287,7 @@ export const dateLabelOf = (task, fallback = 'Ready date') => {
  * The statuses at which a Production task's goods are already moulded — nothing left to queue.
  * Up to Part 1 / Part 2 Ready (some made, more to come) it may still be added.
  */
-const MOULDED = ['completed', 'handed_printing', 'handed_assembly', 'assembling', 'ready_dispatch', 'closed'];
+const MOULDED = ['completed', 'handed_printing', 'handed_assembly', 'assembling', 'ready_awaiting_payment', 'ready_dispatch', 'closed'];
 /* Where a task added to the queue starts its cycle, when it has not been planned yet. */
 const UNPLANNED = ['received', 'accepted'];
 
