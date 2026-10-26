@@ -163,6 +163,8 @@ const refusal = (order, stage, needed) =>
   + `then marketing or Admin can release it. Admin can also allow it without the payment, with a reason.`;
 
 const MODE_KEYS = { NEFT: 'neft', RTGS: 'rtgs', UPI: 'upi', CHEQUE: 'cheque', CASH: 'cash' };
+/* The same amount from the same task inside this window, with no reference to tell them apart, is one payment tapped twice. */
+export const REPEAT_WINDOW_MS = 10 * 60 * 1000;
 
 /**
  * Payment Collection logs the money in, from its task [departmentTaskForms `payment_inward`]:
@@ -177,6 +179,29 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
   if (orderId && !order) throw ApiError.badRequest('The sales order on this task no longer exists');
   const value = round2(Number(amount));
   if (!(value > 0)) throw ApiError.badRequest('Give the amount received');
+  const ref = String(reference || '').trim();
+  const howPaid = MODE_KEYS[String(mode || '').toUpperCase()] || 'other';
+  /*
+   * One payment, entered once — before anything is written, a receipt on account included. The
+   * reference (UTR, cheque number) is the money's key [paymentRefs.service]: one already on record
+   * is refused with where it is. With none to go by, the same amount logged from this task in the
+   * last few minutes is the same money tapped twice.
+   */
+  const { referenceKey } = await import('./paymentRefs.service.js');
+  const refKey = referenceKey({ mode: howPaid, reference: ref, customer: task.customer || order?.customer });
+  if (refKey) {
+    const { default: PaymentReference } = await import('../models/PaymentReference.js');
+    const held = await PaymentReference.findOne({ key: refKey }).populate('receivable', 'number').lean();
+    if (held) throw ApiError.conflict(`${ref} is already recorded — ${rupees(held.amount)} on ${held.receivable?.number || 'another receipt'}. One payment is entered once: if this is a different payment, give its own reference.`, { code: 'REFERENCE_TAKEN' });
+  } else {
+    const since = new Date(Date.now() - REPEAT_WINDOW_MS);
+    const recent = await Receivable.findOne({ receipts: { $elemMatch: { loggedFrom: task._id, amount: value, createdAt: { $gte: since } } } }).select('number receipts').lean();
+    const twin = recent?.receipts?.find((row) => String(row.loggedFrom) === String(task._id) && row.amount === value && new Date(row.createdAt) >= since && !String(row.reference || '').trim());
+    if (twin) {
+      const minutes = Math.max(1, Math.round((Date.now() - new Date(twin.createdAt)) / 60000));
+      throw ApiError.conflict(`${rupees(value)} was logged from this task ${minutes} min ago (${recent.number}) — the same payment is not entered twice. If this is a second payment, give its UTR, cheque or receipt number.`, { code: 'PAYMENT_REPEATED' });
+    }
+  }
   /*
    * Which money it is: a stage's collection task chases the order's advance; any other — an
    * invoice chase, PRT's case — the oldest still owed on its order (or buyer), the advance among them.
@@ -203,8 +228,6 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
     }
   }
   if (!receivable) throw ApiError.badRequest(order ? `Nothing is owed on ${order.number} — nothing to log` : 'Nothing is owed by this buyer — nothing to log');
-  const ref = String(reference || '').trim();
-  if (ref && receivable.receipts.some((row) => row.reference === ref && row.amount === value)) return { order, receivable, again: true };
   const owed = round2(Math.max(0, (receivable.invoice?.value || 0) - (receivable.received || 0)));
   if (value > owed + 0.5) {
     throw ApiError.badRequest(receivable.kind === 'advance' ? `That is more than the ${rupees(owed)} still owed on ${order.number}'s advance`
@@ -224,7 +247,7 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
   receivable.receipts.push({
     amount: value,
     receivedAt: at,
-    mode: MODE_KEYS[String(mode || '').toUpperCase()] || 'other',
+    mode: howPaid,
     reference: ref || undefined,
     note: [`Logged by Payment Collection on the task`, again && `again after Not in bank (${again})`, note].filter(Boolean).join(' — ').slice(0, 500),
     recordedBy: user._id,
@@ -232,6 +255,9 @@ export async function confirmInwardFromTask(task, user, { amount, mode, referenc
   });
   /* Logged on the receivable beside the calls: who took it, how much, how, the UTR. */
   receivable.followUps.push(paymentLogEntry(user, { amount: value, mode, reference: ref, note }, { partial: value + 0.5 < owed }));
+  /* The reference becomes the money's key, in the same transaction: a second claim rolls all of this back. */
+  const { claimReference } = await import('./paymentRefs.service.js');
+  await claimReference({ mode: howPaid, reference: ref, customer: receivable.customer, receivable: receivable._id, receipt: receivable.receipts.at(-1)._id, amount: value, by: user._id });
   await receivable.save();
   await askAccountsToConfirm(receivable, receivable.receipts.at(-1), user, order, { again });
   return { order, receivable, again: false };

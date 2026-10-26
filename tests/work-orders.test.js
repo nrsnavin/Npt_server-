@@ -245,10 +245,19 @@ test('a cancelled order cancels its open work orders; a changed line is followed
   [wo] = (await api(`/api/work-orders?order=${order._id}`, { token: ramesh })).json.data;
   assert.equal(wo.quantity, 9000);
   assert.equal(wo.colour, 'Red');
+  /* Work raised for the order: Payment Collection chasing its advance, a reminder on its gate. */
+  const { default: Todo } = await import('../src/models/Todo.js');
+  const chase = await Todo.create({ kind: 'team_payment_followup', department: 'payment_collection', title: 'Collect the advance', order: order._id, status: 'assigned' });
+  const gate = await Todo.create({ department: 'payment_collection', title: 'Gate reminder', originKey: `payment-gate:${order._id}:dispatch`, system: true });
   const cancelled = await api(`/api/orders/${order._id}/actions`, { method: 'POST', token: priya, body: { action: 'cancel', cancellationReason: 'Buyer withdrew the PO' } });
   assert.equal(cancelled.status, 200, cancelled.json.message);
   [wo] = (await api(`/api/work-orders?order=${order._id}`, { token: ramesh })).json.data;
   assert.equal(wo.status, 'cancelled');
+  /* …and every task raised for it closes, saying why. */
+  const closedChase = await Todo.findById(chase._id).lean();
+  assert.equal(closedChase.completed, true, 'nobody chases an advance on a cancelled order');
+  assert.match(JSON.stringify(closedChase.outcome || closedChase.updates || ''), /was cancelled — Buyer withdrew the PO/);
+  assert.equal((await Todo.findById(gate._id).lean()).completed, true);
 });
 
 test('the board chains a press back to back, refuses a mould the press cannot hold, and sequences by colour', async () => {

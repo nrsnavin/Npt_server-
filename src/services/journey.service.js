@@ -301,6 +301,8 @@ async function advanceTeamTask(task, user, why) {
     const { modelReadiness } = await import('./handoff.service.js');
     const readiness = await modelReadiness(null, { task });
     if (readiness.ready.length && !readiness.waiting.length && readiness.ready.every((model) => (readiness.sent || []).includes(model))) return null;
+    /* Nobody named to send them to: the asker names the buyer first [teamJobs.service `nameJobBuyer`]. */
+    if (!task.customer && await waitsForBuyer(task, user)) return null;
     if (tickedQc(production?.brief?.qcRequired) || tickedQc(task.brief?.qcRequired)) {
       return raiseNextTeamTask(task, 'quality_check', user, why || 'Goods ready — QC compulsory: check them before dispatch');
     }
@@ -312,6 +314,35 @@ async function advanceTeamTask(task, user, why) {
   /* Only Quality's pass sends the goods on; a failed check closed by Admin does not. */
   if (task.kind === 'quality_check' && !(await import('./qcGate.service.js')).qcPassed(task)) return null;
   return raiseNextTeamTask(task, kind, user, why);
+}
+
+/**
+ * Goods ready on a job given with no buyer: Dispatch would have no one to deliver to, no contact
+ * and no one to send the LR. The job waits, saying so, and whoever gave it is asked — once — to
+ * name the buyer on the job; naming one — or saying it goes with none — asks Dispatch then.
+ * True while it waits.
+ */
+async function waitsForBuyer(task, user) {
+  const root = await Todo.findById(idOf(task.chain || task._id));
+  /* Its asker said it goes with no buyer — stock, a fair: Dispatch is asked as it is. */
+  if (!root || root.customer || root.buyerWaivedAt) return false;
+  if (root.buyerWantedAt) return true;
+  const said = 'Goods ready — Dispatch waits for the buyer: whoever gave the job names who it is for';
+  /* In place: the task moving now (often the job's first) is saved again by the move itself. */
+  await Todo.updateOne({ _id: root._id }, { $set: { buyerWantedAt: new Date() } }, { keepVersion: true });
+  await Todo.updateOne({ _id: task._id }, { $push: { updates: { kind: 'note', text: said, note: said, by: user?._id, at: new Date() } } }, { keepVersion: true });
+  if (root.createdBy) {
+    const { raiseTask } = await import('./task.service.js');
+    await raiseTask({
+      user: root.createdBy,
+      title: `Name the buyer for ${root.jobNumber || 'your team job'} — the goods are ready`,
+      notes: 'The job was given with no buyer. Name who it is for on the job, and Dispatch is asked to send it.',
+      priority: 'high',
+      link: `/team-jobs/${root._id}`,
+      originKey: `job-buyer:${root._id}`,
+    });
+  }
+  return true;
 }
 
 /**

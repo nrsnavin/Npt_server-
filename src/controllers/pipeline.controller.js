@@ -1992,3 +1992,25 @@ export const enquiryPipeline = asyncHandler(async (req, res) => {
 
   res.json({ success: true, data: rows });
 });
+
+/** What deleting the enquiry would take — its tasks, samples, quotations — and what stops it [deletion.service]. */
+export const enquiryDeletionPreview = asyncHandler(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id);
+  if (!enquiry) throw ApiError.notFound('Enquiry not found');
+  const { previewEnquiryDeletion } = await import('../services/deletion.service.js');
+  res.json({ success: true, data: await previewEnquiryDeletion(enquiry, req.user) });
+});
+
+/** Admin deletes the enquiry and every task on it — refused while an order, money or the plant's work stands on it. */
+export const deleteEnquiryHandler = asyncHandler(transactional(async (req, res) => {
+  const { deleteEnquiry } = await import('../services/deletion.service.js');
+  res.json({ success: true, data: await deleteEnquiry(req.params.id, req.user, { reason: String(req.body?.reason || '').trim().slice(0, 300) || undefined }) });
+}));
+
+/** What closing the enquiry would close — its open tasks, the money cases kept open, samples stopped [handoff.service `enquiryClosePreview`]. */
+export const enquiryClosePreviewHandler = asyncHandler(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id).select('number stage');
+  if (!enquiry) throw ApiError.notFound('Enquiry not found');
+  const { enquiryClosePreview } = await import('../services/handoff.service.js');
+  res.json({ success: true, data: await enquiryClosePreview(enquiry) });
+});

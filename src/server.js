@@ -67,6 +67,21 @@ async function start() {
 
     await connectDatabase();
     console.log('MongoDB connected');
+    /*
+     * Money and orders commit whole or not at all — a receipt with its payment reference, an
+     * order with its number. That needs MongoDB as a replica set; a production server on a
+     * standalone database would quietly write record by record, so it does not come up on one.
+     * MONGO_TRANSACTIONS=off is the deliberate, logged way round it.
+     */
+    const { transactionsSupported } = await import('./utils/transaction.js');
+    const transactional = await transactionsSupported();
+    if (!transactional && process.env.MONGO_TRANSACTIONS !== 'off') {
+      const problem = 'MongoDB is not running as a replica set, so transactions are off. Turn the database into a one-node replica set (docs/SCALING.md §1) and add replicaSet=rs0 to MONGO_URI — or set MONGO_TRANSACTIONS=off to start without them.';
+      if (isProduction || !nodeEnvSet) throw new Error(problem);
+      console.warn(`Transactions: off — ${problem}`);
+    } else {
+      console.log(`Transactions: ${transactional ? 'on' : 'off (MONGO_TRANSACTIONS=off)'}`);
+    }
     /* Optional: without REDIS_URL, limits and caches stay in this process as before. */
     await connectCache();
 

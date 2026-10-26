@@ -12,7 +12,7 @@ import {
   marketingRoster,
   enquiryOwners,
   customerOwners,
-  listEnquiries, getEnquiry, createEnquiry, createEnquiryGroup, updateEnquiry,
+  listEnquiries, getEnquiry, enquiryDeletionPreview, deleteEnquiryHandler, enquiryClosePreviewHandler, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, applyEnquiryAction, listEnquiryActions,
   logEnquiryActivity, setEnquiryMarketingStatus, checkEnquiry, setEnquiryEdd, setEnquiryModelEdds, setEnquiryDispatchPlan, listEnquiryActivities, enquiryActivityTypes, delegateEnquiryTo, listDelegationTargets, promoteToMould, enquiryPipeline,
   enquiryBoard,
@@ -248,6 +248,9 @@ router.post('/enquiries', requireModule('enquiries', 'write'), validate(enquiryS
 router.post('/enquiries/group', requireModule('enquiries', 'write'), validate(enquiryGroupSchema), createEnquiryGroup);
 /* No module gate: a department that holds or held the enquiry may read it — checked inside. */
 router.get('/enquiries/:id', getEnquiry);
+router.get('/enquiries/:id/deletion', adminOnly, enquiryDeletionPreview);
+router.get('/enquiries/:id/closing', adminOnly, enquiryClosePreviewHandler);
+router.delete('/enquiries/:id', adminOnly, deleteEnquiryHandler);
 router.patch('/enquiries/:id', requireModule('enquiries', 'write'), validate(enquiryUpdateSchema), updateEnquiry);
 // A prospect's enquiry becomes a customer's: a new customer from the form, or one already on the register.
 router.post('/enquiries/:id/customer', requireModule('enquiries', 'write'), validate(enquiryConvertSchema), convertEnquiryToCustomer);

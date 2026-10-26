@@ -7,7 +7,7 @@ not need new infrastructure is already on.
 
 | Piece | Switched on by | Without it |
 | --- | --- | --- |
-| Transactions | MongoDB running as a replica set (Atlas, or one node on the box — §1) | writes run as before, one record at a time |
+| Transactions | MongoDB running as a replica set (Atlas, or one node on the box — §1) | **required in production**: the server refuses to start on a standalone database unless `MONGO_TRANSACTIONS=off` is set |
 | Durable handovers (outbox) | always on | — |
 | One runner per sweep (leases) | always on | — |
 | Background worker | `npm run worker` + `RUN_BACKGROUND=false` on the API | the API runs the sweeps itself |
@@ -65,6 +65,12 @@ Then add `replicaSet=rs0` to `MONGO_URI` in `.env`
 --update-env`, and check `/health/ready` says `"transactions": true`. Nothing else changes.
 
 `MONGO_TRANSACTIONS=off` turns them off without touching the database, should one ever misbehave.
+
+**Required in production.** Money and orders depend on them — a receipt is written with its payment
+reference (UTR) in one transaction, so the same payment cannot be entered twice
+(`services/paymentRefs.service.js`). A production server (or one with `NODE_ENV` unset) on a
+standalone database refuses to start, saying so; `MONGO_TRANSACTIONS=off` starts it anyway, and the
+start-up log says transactions are off.
 
 `npm run test:replset` runs the whole test suite against a replica set.
 

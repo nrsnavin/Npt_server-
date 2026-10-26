@@ -203,8 +203,9 @@ written together — an order and the number it takes, a customer and the enquir
 this one server a one-node replica set: same data, same port, a few minutes. The steps are in
 [SCALING.md §1](SCALING.md#1-transactions) (a keyfile, two lines of config, `rs.initiate`), and add
 `&replicaSet=rs0` to `MONGO_URI` (§5) once it is done. They were checked against MongoDB 8 with a database already
-holding data. Skipping this is safe — the app runs as before — but orders and quotes can then lose
-a number when two are raised at the same moment.
+holding data. **This is required**: the server will not start in production on a standalone database
+(money and orders are written in transactions). `MONGO_TRANSACTIONS=off` in `.env` starts it anyway,
+at the cost of payments and numbers being written record by record.
 
 ---
 

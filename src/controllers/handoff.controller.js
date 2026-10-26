@@ -19,6 +19,8 @@ import { inDepartment, isManagement } from '../utils/departments.js';
 import { qcGateFor } from '../services/qcGate.service.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import { inTransaction, transactional } from '../utils/transaction.js';
+import { withRequestLock } from '../services/operationLock.service.js';
+import { TASK_FORMS } from '../config/departmentTaskForms.js';
 import { retryOnConflict } from '../utils/concurrency.js';
 import { STAGES, CLOSED_STAGE } from '../config/enquiryStages.js';
 import { HANDOFFS, QUERY_KINDS, TILE_KIND, findHandoff } from '../config/handoffs.js';
@@ -140,10 +142,13 @@ export const attachTeamTaskPdf = asyncHandler(async (req, res) => {
 });
 
 /** Raising a department task for a team with no enquiry behind it — Admin and marketing. */
-export const createTeamTask = asyncHandler(transactional(async (req, res) => {
+/* The same ask for the same buyer, one at a time: two presses at once would both pass the "already open?" check [raiseTeamTask]. */
+const teamTaskKey = (req) => (req.body?.kind ? `team-task:${req.body.kind}:${req.body.customer || 'none'}` : null);
+
+export const createTeamTask = asyncHandler(withRequestLock(teamTaskKey, transactional(async (req, res) => {
   const task = await raiseTeamTask({ ...req.body, user: req.user });
   res.status(201).json({ success: true, data: { task: await task.populate(TASK_POPULATE) } });
-}));
+})));
 
 /** The team task form's answers without an enquiry: members to pick, the named customer's contact. */
 export const teamTaskFormPrefill = asyncHandler(async (req, res) => {
@@ -488,7 +493,16 @@ export const handoffWorkQueue = asyncHandler(transactional(async (req, res) => {
 }));
 
 /** The department's own status on its task — SO Waiting, Preparing, Needs Clarification. */
-export const handoffStatus = asyncHandler(transactional(async (req, res) => {
+/* The statuses that log money in [departmentTaskForms `confirmsInward`]. */
+const MONEY_STATUSES = new Set(Object.values(TASK_FORMS).flatMap((form) => (form?.statuses || []).filter((entry) => entry.confirmsInward).map((entry) => entry.key)));
+
+/*
+ * Money logged from a task, one at a time per task: the second press — a double tap, a retry —
+ * starts only once the first has committed, and finds its receipt [paymentGates `confirmInwardFromTask`].
+ */
+const moneyMoveKey = (req) => (MONEY_STATUSES.has(req.body?.status) ? `task-money:${req.params.id}` : null);
+
+export const handoffStatus = asyncHandler(withRequestLock(moneyMoveKey, transactional(async (req, res) => {
   const found = await taskFor(req);
   /* A load is sent from the dispatch form — models, pieces, how it travels, its LR copy or proof of delivery [handoffDispatchLoad]. */
   const step = (findHandoff(found.kind)?.form?.statuses || []).find((entry) => entry.key === req.body?.status);
@@ -496,7 +510,7 @@ export const handoffStatus = asyncHandler(transactional(async (req, res) => {
   const { load: _load, ...body } = req.body || {};
   const task = await setTaskStatus(found, req.user, body);
   await answer(res, task);
-}));
+})));
 
 /** A task's uploaded work behind a signed link — what WhatsApp fetches. No session: the signature is the permission. */
 export const publicTaskFile = asyncHandler(async (req, res) => {
@@ -689,7 +703,7 @@ export const handoffShipments = asyncHandler(async (req, res) => {
 export const listTeamJobsHandler = asyncHandler(async (req, res) => {
   const { listTeamJobs } = await import('../services/teamJobs.service.js');
   const state = ['open', 'done', 'all'].includes(req.query.state) ? req.query.state : 'open';
-  res.json({ success: true, data: await listTeamJobs(req.user, { state, search: String(req.query.search || '').slice(0, 80) }) });
+  res.json({ success: true, data: await listTeamJobs(req.user, { state, search: String(req.query.search || '').slice(0, 80), page: Number(req.query.page) || 1 }) });
 });
 
 /** One job, whole: what was asked, where it is now, each team's step, every move, and its money, shipments and files. */
@@ -697,6 +711,18 @@ export const teamJobHandler = asyncHandler(async (req, res) => {
   const { teamJob } = await import('../services/teamJobs.service.js');
   res.json({ success: true, data: await teamJob(req.user, req.params.id) });
 });
+
+/** Admin closes the job where it stands: every open task on it, with the reason [teamJobs.service `closeTeamJob`]. */
+export const closeTeamJobHandler = asyncHandler(transactional(async (req, res) => {
+  const { closeTeamJob } = await import('../services/teamJobs.service.js');
+  res.json({ success: true, data: await closeTeamJob(req.user, req.params.id, req.body?.reason) });
+}));
+
+/** The buyer named on a job given with none — and, its goods ready, Dispatch asked [teamJobs.service `nameJobBuyer`]. */
+export const nameJobBuyerHandler = asyncHandler(transactional(async (req, res) => {
+  const { nameJobBuyer } = await import('../services/teamJobs.service.js');
+  res.json({ success: true, data: await nameJobBuyer(req.user, req.params.id, req.body?.customer, { noBuyer: req.body?.noBuyer === true }) });
+}));
 
 /* ---- A Production task with no enquiry: link it, start it from where the goods are [teamProduction.service] ---- */
 

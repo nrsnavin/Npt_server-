@@ -192,6 +192,17 @@ function startIndiamartPoll() {
 const LEASES = ['sweep:escalations', 'sweep:indiamart', 'sweep:dispatch-recovery', 'sweep:outbox', 'sweep:handoff-late'];
 
 export function startBackground() {
+  /*
+   * The UTRs recorded before the payment-reference registry, written into it once at start
+   * [paymentRefs.service]. Idempotent: a second run, or a second process, adds nothing.
+   */
+  import('./services/paymentRefs.service.js')
+    .then(({ backfillReferences }) => backfillReferences())
+    .then(({ added, shared }) => {
+      if (added) console.log(`Payment references: ${added} recorded from earlier receipts`);
+      if (shared) console.warn(`Payment references: ${shared} earlier receipt(s) share a UTR with another — check them on Payments`);
+    })
+    .catch((error) => console.error('Payment references backfill failed:', error.message));
   const timers = [
     /* Interrupted dispatches, every minute, independent of the reminders [data-consistency.md]. */
     everyExclusively('sweep:dispatch-recovery', 60_000, () =>

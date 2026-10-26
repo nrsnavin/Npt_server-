@@ -337,6 +337,11 @@ const sampleSchema = new mongoose.Schema(
      */
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer', index: true },
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry', index: true },
+    /*
+     * A team job's Sample Request [handoff.service `raiseTeamSample`]: the job is where it is found,
+     * as an enquiry's sample is found on the enquiry — the one sample raised without an enquiry.
+     */
+    job: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo', index: true, sparse: true },
     /** The marketing person who needs it back. Ownership for marketing runs through here. */
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     /** The sample-team member working it. Empty until someone picks it up. */
@@ -656,6 +661,6 @@ sampleSchema.set('toObject', { virtuals: true });
 
 protectWrites(sampleSchema);
 protectOwnership(sampleSchema, ['requestedBy', 'assignedTo']);
-sampleSchema.plugin(belongsToEnquiry, { what: 'sample' });
+sampleSchema.plugin(belongsToEnquiry, { what: 'sample', orOn: 'job' });
 
 export default mongoose.model('Sample', sampleSchema);

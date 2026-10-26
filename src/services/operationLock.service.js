@@ -104,6 +104,24 @@ export const withOrderLock = (orderId, handler) => async (req, res) => {
   }
   if (hasReply) return res.json(reply);
 };
+/**
+ * One request at a time for a key the request names (null: no lock), taken before its transaction
+ * begins — so the second of two at once starts only once the first has committed, and reads what
+ * it wrote. For a double tap on a money move or on raising the same team task.
+ */
+export const withRequestLock = (keyOf, handler) => async (req, res) => {
+  const key = await keyOf(req);
+  if (!key) return handler(req, res);
+  const json = res.json;
+  let reply, hasReply = false;
+  res.json = function (body) { reply = body; hasReply = true; return this; };
+  try {
+    await withOperationLock(key, () => handler(req, res));
+  } finally {
+    res.json = json;
+  }
+  if (hasReply) return res.json(reply);
+};
 export async function withOwnerLocks(ids, work) {
   const releases = [];
   try {

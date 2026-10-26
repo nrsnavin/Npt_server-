@@ -36,6 +36,8 @@ export const teamTaskSchema = z.object({
   customer: z.string().trim().max(40).optional().or(z.literal('')),
   /** The job's EDD, marketing's [services/eddAsk.service.js]. */
   edd: z.string().trim().max(10).optional().or(z.literal('')),
+  /** Raised beside the same ask already open for the buyer and model, said so [handoff.service `sameOpenJob`]. */
+  allowDuplicate: z.boolean().optional(),
 });
 
 /** A job raised from the customer: its EDD, set by marketing or Admin from any of its tasks. */

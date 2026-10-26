@@ -35,9 +35,26 @@ export const START_POINTS = [
 ];
 
 const fail = (message) => { throw ApiError.badRequest(message); };
+/* A Production task not yet under way: received, accepted, being planned. */
+const BEFORE_START = ['received', 'accepted', 'planning'];
+/* The teams after Production: a task of theirs on the job means the goods have moved on. */
+const AFTER_PRODUCTION = ['ask_printing', 'ask_assembling_edd', 'invoice_dispatch', 'quality_check', 'lr_copy'];
 const idOf = (value) => String(value?._id || value || '');
 const indiaDay = (date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(date);
 const prettyDay = (day) => new Date(`${day}T00:00:00Z`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+
+/* A model's pieces on the task — its row's, else the task's one quantity when it has one model. 0 when unknown. */
+function quantityOf(task, model) {
+  const key = (value) => String(value || '').trim().toLowerCase();
+  const row = (Array.isArray(task.brief?.items) ? task.brief.items : []).find((item) => key(item.model) === key(model));
+  const count = (value) => Number(String(value ?? '').replace(/[^\d]/g, '')) || 0;
+  if (row && count(row.quantity)) return count(row.quantity);
+  /* One model on the task: the task's own pieces are its. */
+  const items = Array.isArray(task.brief?.items) ? task.brief.items : [];
+  return items.length <= 1 && handoffModels(task).length <= 1 ? count(task.brief?.quantity) : 0;
+}
+
+const handoffModels = (task) => [...new Set([task.brief?.model, ...String(task.brief?.models || '').split(',')].map((model) => String(model || '').trim()).filter(Boolean))];
 
 function assertTeamProduction(task) {
   if (task.kind !== 'ask_edd') fail('Only a Production task starts from where the goods are');
@@ -78,7 +95,7 @@ export async function linkToEnquiry(task, user, enquiryId) {
   const enquiry = await Enquiry.findById(enquiryId);
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   if (idOf(enquiry.customer) !== idOf(task.customer)) fail(`${enquiry.number} is another buyer's — link the task to this buyer's enquiry`);
-  if (await Todo.exists({ chain: task._id, kind: { $in: ['ask_printing', 'ask_assembling_edd', 'invoice_dispatch', 'quality_check', 'lr_copy'] } })) fail('Link it before starting — Printing, Assembly or Dispatch already have tasks from this one');
+  if (await Todo.exists({ chain: task._id, kind: { $in: AFTER_PRODUCTION } })) fail('Link it before starting — Printing, Assembly or Dispatch already have tasks from this one');
   const handoff = await import('./handoff.service.js');
   const existing = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_edd', completed: false });
   if (existing) {
@@ -89,6 +106,8 @@ export async function linkToEnquiry(task, user, enquiryId) {
   }
   const { default: SalesOrder } = await import('../models/SalesOrder.js');
   const order = await SalesOrder.findOne({ enquiry: enquiry._id, status: { $nin: ['cancelled', 'closed'] } }).sort({ createdAt: -1 }).select('number lines.modelNumber lines.quantity').lean();
+  /* The job stays on its asker's Team jobs, saying which enquiry it joined [teamJobs.service]. */
+  if (idOf(task.chain) === idOf(task._id)) task.jobLinked = { enquiry: enquiry._id, number: enquiry.number, at: new Date(), by: user._id };
   task.enquiry = enquiry._id;
   task.chain = undefined;
   if (order) task.order = order._id;
@@ -119,6 +138,17 @@ export async function startFrom(task, user, { models = [] } = {}) {
   assertTeamProduction(task);
   const handoff = await import('./handoff.service.js');
   handoff.assertPlansProduction(task, user, 'starts the task from where the goods are');
+  /*
+   * Once: started from where the goods are, or under way already — a model moved on, a team after
+   * Production raised — each model moves on its own task from there. Starting again would route
+   * it afresh and say on the job it had not started.
+   */
+  const moved = (status) => status && !BEFORE_START.includes(status);
+  if (task.startedFromAt) throw ApiError.conflict('This task was already started from where the goods are — move each model on from its task');
+  if (moved(task.status) || (task.modelStatuses || []).some((row) => moved(row.status))
+    || await Todo.exists({ chain: task._id, kind: { $in: AFTER_PRODUCTION } })) {
+    throw ApiError.conflict('This task is already under way — move each model on from its task');
+  }
   const key = (model) => String(model || '').trim().toLowerCase();
   /*
    * A task with no enquiry: the in charge names the models as he reads the order — each with its
@@ -163,6 +193,11 @@ export async function startFrom(task, user, { models = [] } = {}) {
     }
     const pieces = Number(String(given.pieces ?? '').replace(/,/g, ''));
     if (point.pieces && !(pieces > 0)) fail(`Give the pieces of ${model} already dispatched`);
+    /* Never more gone than the model's pieces, where the task knows them. */
+    const ordered = quantityOf(task, model);
+    if (point.pieces && ordered && pieces > ordered) {
+      fail(`${model}: ${pieces.toLocaleString('en-IN')} pcs is more than its ${ordered.toLocaleString('en-IN')} pcs — give what was dispatched, or correct the model's pieces first`);
+    }
     /* The teams still ahead of it: what it has passed through is done. */
     const route = at === 'ready_dispatch' || at === 'dispatched' ? { printing: false, assembly: false }
       : at === 'handed_assembly' ? { printing: false, assembly: true }
@@ -204,6 +239,7 @@ export async function startFrom(task, user, { models = [] } = {}) {
   const done = await fresh();
   const said = `Started from where the goods are — ${rows.map(words).join(' · ')}`;
   done.updates = [...(done.updates || []), { kind: 'note', text: said, note: said, by: user._id, at: new Date() }];
+  done.startedFromAt = new Date();
   await done.save();
   return done;
 }
