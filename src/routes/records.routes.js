@@ -1,4 +1,4 @@
-import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, placeTaskModelHandler, confirmTaskPlanHandler, proposeTaskPlanHandler, plannerStatsHandler, listTradeOrdersHandler, updateTradeOrderHandler, pressChoicesHandler, sequenceByColourHandler, setupStepHandler, taskPlanHandler, shortagesHandler } from '../controllers/workOrder.controller.js';
+import { clearAndonHandler, componentBookHandler, componentStockHandler, fitHandler, floorHandler, jobCardHandler, raiseAndonHandler, shiftSummaryHandler, getWorkOrderHandler, listWorkOrdersHandler, planWorkOrderHandler, planningBoardHandler, placeTaskModelHandler, confirmTaskPlanHandler, proposeTaskPlanHandler, plannerStatsHandler, listTradeOrdersHandler, updateTradeOrderHandler, pressChoicesHandler, sequenceByColourHandler, setupStepHandler, taskPlanHandler, shortagesHandler, pressDayHandler, pressDayMoveHandler, shiftReadingsHandler } from '../controllers/workOrder.controller.js';
 import { componentStockSchema } from '../validators/component.schemas.js';
 import { applyPlanHandler, askProductionHandler, floorMessagesHandler, maintenanceRiskHandler, purchaseForecastHandler, suggestPlanHandler } from '../controllers/productionInsights.controller.js';
 import { Router } from 'express';
@@ -12,7 +12,7 @@ import {
   listMaintenance, listQc, listRunsHandler, machineDetail, mouldHistoryHandler, orderDispatchHandler, orderQcHandler, qcCertificate, startRunHandler, updateMachine, logRunHandler, runReasonsHandler,
 } from '../controllers/records.controller.js';
 import {
-  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema, taskPlaceSchema, taskConfirmSchema, tradeOrderUpdateSchema, setupStepSchema, andonSchema, andonClearSchema, planApplySchema, productionAskSchema,
+  machineSchema, machineUpdateSchema, maintenanceSchema, qcRecordSchema, runFinishSchema, runLogSchema, runStartSchema, stockMovementSchema, workOrderPlanSchema, taskPlaceSchema, taskConfirmSchema, tradeOrderUpdateSchema, setupStepSchema, andonSchema, andonClearSchema, planApplySchema, productionAskSchema, pressConfirmSchema, pressHoldSchema, shiftReadingsSchema,
 } from '../validators/records.schemas.js';
 
 /**
@@ -78,6 +78,12 @@ router.post('/work-orders/:id/setup', requireModule('production', 'write'), vali
 /* The shop floor: the job card with its QR code, the tablet's view, the andon call, the shift handover. */
 router.get('/work-orders/:id/job-card', anyModule([['production', 'read'], ['orders', 'read']]), jobCardHandler);
 router.get('/production/floor', requireModule('production'), floorHandler);
+/* Today on the presses [pressDay.service]: the floor confirms what runs; holding a start is the in charge's call. */
+router.get('/production/press-day', requireModule('production'), pressDayHandler);
+router.post('/production/press-day/shift', requireModule('production', 'write'), validate(shiftReadingsSchema), shiftReadingsHandler);
+router.post('/production/press-day/:id/:move(confirm)', requireModule('production', 'write'), validate(pressConfirmSchema), pressDayMoveHandler);
+router.post('/production/press-day/:id/:move(hold)', requireModule('production', 'write'), requireProductionInCharge(), validate(pressHoldSchema), pressDayMoveHandler);
+router.post('/production/press-day/:id/:move(said-started|call-in)', requireModule('production', 'write'), pressDayMoveHandler);
 router.get('/production/shift-summary', requireModule('production'), shiftSummaryHandler);
 router.post('/machines/:machineId/andon', requireModule('production', 'write'), validate(andonSchema), raiseAndonHandler);
 router.post('/machines/:machineId/andon/clear', requireModule('production', 'write'), validate(andonClearSchema), clearAndonHandler);

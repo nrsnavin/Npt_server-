@@ -26,6 +26,8 @@ export const STEP_OF = {
   started: 'start',
   part1_ready: 'made', part2_ready: 'made', completed: 'made',
   mould_issue: 'stop', raw_material: 'stop',
+  /* Machine Not Allotted / Alternate Required: the alternate press picked on the move — it reads Planning there. */
+  machine_not_allotted: 'plan',
 };
 const STOP_REASON = { mould_issue: 'mould_problem', raw_material: 'material_shortage' };
 const routedOf = (task) => (task?.routing?.models || []).map((row) => String(row?.model || '').trim()).filter(Boolean);
@@ -37,7 +39,7 @@ const modelsOf = (task, models) => {
 /** The presses, each with what runs on it now and whether it is called in. */
 async function pressList() {
   const [machines, running] = await Promise.all([
-    Machine.find({ isActive: { $ne: false } }).select('code tonnage status andon').sort({ code: 1 }).lean(),
+    Machine.find({ active: { $ne: false }, status: { $ne: 'retired' } }).select('code tonnage status andon').sort({ code: 1 }).collation({ locale: 'en', numericOrdering: true }).lean(),
     MouldRun.find({ status: 'running', machine: { $exists: true } }).select('number machine modelNumber').lean(),
   ]);
   return machines.map((machine) => {
@@ -75,7 +77,7 @@ export async function pressStep(task, user, { status, models } = {}) {
       const suggested = run?.machine || wo.machine || wo.proposal?.machine || bestNow?.machine?._id || bestNow?.machine || null;
       return {
         model,
-        workOrder: { _id: wo._id, number: wo.number, status: wo.status, quantity: wo.quantity || 0, goodQty: wo.goodQty || 0, mouldMissing: !wo.mould },
+        workOrder: { _id: wo._id, number: wo.number, status: wo.status, quantity: wo.quantity || 0, goodQty: wo.goodQty || 0, mouldMissing: !wo.mould, plannedStart: wo.plannedStart || null, plannedEnd: wo.plannedEnd || null },
         planned: wo.machine ? pressOf(wo.machine) : null,
         suggested: suggested ? pressOf(suggested) : null,
         suggestedWhy: run ? 'running on it now' : wo.machine ? 'planned on it' : wo.proposal?.machine ? 'proposed by the planner' : suggested ? 'the best press free now' : null,
@@ -124,7 +126,7 @@ export async function applyPressStep(task, user, { status, floor, note }) {
   const orders = await linkTaskWorkOrders(await Todo.findById(task._id), user);
   const woOf = (model) => orders.find((entry) => key(entry.model) === key(model));
   const { planWorkOrder } = await import('./workOrder.service.js');
-  const { startRun, finishRun } = await import('./records.service.js');
+  const { startRun } = await import('./records.service.js');
   const done = [];
   const runningOn = (wo) => MouldRun.findOne({ workOrder: wo._id, status: 'running' });
   const planOn = async (wo, machine) => {
@@ -176,14 +178,8 @@ export async function applyPressStep(task, user, { status, floor, note }) {
         if (!machine || !good) continue;
         run = await startRun({ workOrder: wo._id, machine: String(machine), setupSkipReason: 'Pieces logged from the Production task' }, user);
       }
-      const finished = await finishRun(run, { goodPieces: good, rejectedPieces: Number(row.rejectedPieces) || 0, ...(row.counterEnd != null && row.counterEnd !== '' ? { counterEnd: Number(row.counterEnd) } : {}) }, user);
-      done.push(`${finished.number} — ${good.toLocaleString('en-IN')} good pieces of ${row.model}`);
       /* A part made, the rest still to come: the press keeps running it, on a fresh run. */
-      const fresh = await WorkOrder.findById(wo._id).select('status goodQty quantity').lean();
-      if (status !== 'completed' && fresh && fresh.status !== 'completed' && (fresh.goodQty || 0) < (fresh.quantity || 0) && machine) {
-        const next = await startRun({ workOrder: wo._id, machine: String(machine), ...(finished.counterEnd != null ? { counterStart: finished.counterEnd } : {}), setupSkipReason: 'Continues after a part was made' }, user);
-        done.push(`${next.number} continues on the press`);
-      }
+      done.push(...(await logPieces(run, user, { model: row.model, goodPieces: good, rejectedPieces: row.rejectedPieces, counterEnd: row.counterEnd, goOn: status !== 'completed', why: 'Continues after a part was made' })).lines);
     }
   }
 
@@ -203,6 +199,30 @@ export async function applyPressStep(task, user, { status, floor, note }) {
 }
 
 /**
+ * The pieces a running run made, logged: the run ends with them and — the work order not made yet
+ * and `goOn` — the press goes on with it on a fresh run from where the counter stood. Used by the
+ * ready statuses on the task and by the shift change [pressDay.service]. Returns the lines said.
+ */
+export async function logPieces(run, user, { model, goodPieces, rejectedPieces, counterEnd, shift, goOn = true, why = 'Continues on the press' }) {
+  const { startRun, finishRun } = await import('./records.service.js');
+  const good = Number(goodPieces) || 0;
+  const finished = await finishRun(run, {
+    goodPieces: good,
+    rejectedPieces: Number(rejectedPieces) || 0,
+    ...(counterEnd != null && counterEnd !== '' ? { counterEnd: Number(counterEnd) } : {}),
+    ...(shift ? { shift } : {}),
+  }, user);
+  const lines = [`${finished.number} — ${good.toLocaleString('en-IN')} good pieces${model ? ` of ${model}` : ''}`];
+  let next = null;
+  const fresh = finished.workOrder ? await WorkOrder.findById(finished.workOrder).select('status goodQty quantity').lean() : null;
+  if (goOn && fresh && fresh.status !== 'completed' && (fresh.goodQty || 0) < (fresh.quantity || 0) && finished.machine) {
+    next = await startRun({ workOrder: finished.workOrder, machine: String(finished.machine), ...(finished.counterEnd != null ? { counterStart: finished.counterEnd } : {}), setupSkipReason: why }, user);
+    lines.push(`${next.number} continues on the press`);
+  } else if (fresh?.status === 'completed') lines.push(`${model || 'The work order'} made in full`);
+  return { finished, next, lines };
+}
+
+/**
  * The plan's start has come and nothing runs: the in charge is asked to confirm production on the
  * press [productionInCharge `askToConfirmStart`] — once a work order. Run from the sweep.
  */
@@ -211,6 +231,8 @@ export async function askForDueStarts({ now = new Date() } = {}) {
   const due = await WorkOrder.find({
     task: { $exists: true }, machine: { $exists: true }, status: { $in: ['planned', 'released'] },
     plannedStart: { $lte: now }, firstRunAt: { $exists: false },
+    /* "Not today" on Today on the presses holds the question until the day after [pressDay.service `holdStart`]. */
+    $or: [{ 'startHeld.until': { $exists: false } }, { 'startHeld.until': { $lte: now } }],
   }).select('task machine model modelNumber number').limit(200).lean();
   if (!due.length) return 0;
   const { askToConfirmStart } = await import('./productionInCharge.service.js');

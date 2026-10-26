@@ -126,6 +126,28 @@ export const shiftSummaryHandler = asyncHandler(async (req, res) => {
 
 /* ------------------------------------------------------- floor planning --- */
 
+/** Today on the presses [pressDay.service]: each press, its run, the job next and whether its start has come; where task and floor disagree. */
+export const pressDayHandler = asyncHandler(async (req, res) => {
+  const { pressDay } = await import('../services/pressDay.service.js');
+  res.json({ success: true, data: await pressDay() });
+});
+
+/** One tap on Today on the presses, on a work order: confirm, not today, said started, call in. */
+const PRESS_DAY_MOVES = { confirm: 'confirmStart', hold: 'holdStart', 'said-started': 'saidStarted', 'call-in': 'callIn' };
+export const pressDayMoveHandler = asyncHandler(transactional(async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) throw ApiError.notFound('Work order not found');
+  const service = await import('../services/pressDay.service.js');
+  const move = PRESS_DAY_MOVES[req.params.move];
+  if (!move) throw ApiError.notFound('Not a move');
+  res.json({ success: true, data: await service[move](req.params.id, req.user, req.body || {}) });
+}));
+
+/** The shift change: the counters, and the pieces made, on every running press at once. */
+export const shiftReadingsHandler = asyncHandler(transactional(async (req, res) => {
+  const { shiftReadings } = await import('../services/pressDay.service.js');
+  res.json({ success: true, data: await shiftReadings(req.user, req.body) });
+}));
+
 /** A Production task's press step, model by model [floorPlanning.service `taskPlan`]. */
 export const taskPlanHandler = asyncHandler(async (req, res) => {
   if (!mongoose.isValidObjectId(req.params.taskId)) throw ApiError.notFound('Task not found');
