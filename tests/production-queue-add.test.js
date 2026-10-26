@@ -122,3 +122,55 @@ test('the Add to production queue form carries the EDD marketing set, for the da
   form = (await api(`/api/workspace/todos/${task._id}/routing`, { as: 'siva' })).json.data;
   assert.deepEqual([form.edd.date, form.edd.by, form.edd.models], [day, 'Nandhini S', []]);
 });
+
+test('an enquiry that reached Production with no model, material or pieces: the in charge gives them on the queue form — the task, the enquiry and the pieces follow', async () => {
+  const made = await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    /* "Shirt hangers, like last year" — no model, no material, no pieces. */
+    body: { customer: customer._id, items: [{ category: 'shirt', isNewDevelopment: true }], nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  });
+  const enquiry = made.json.data;
+  assert.ok(enquiry?._id, `an enquiry with no model: ${made.json.message}`);
+  const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Make what they had last year' } });
+  assert.equal(sent.status, 201, sent.json.message);
+  const task = sent.json.data.task;
+  let form = (await api(`/api/workspace/todos/${task._id}/routing`, { as: 'siva' })).json.data;
+  assert.deepEqual(form.models, [], 'nothing named yet');
+
+  const add = (as, body) => api(`/api/workspace/todos/${task._id}/production-queue`, { method: 'POST', as, body });
+  const items = [{ model: 'NQ-77', material: 'PP Black', quantity: '4,000', hook: 'Chrome swivel', print: 'Brand logo' }];
+  assert.equal((await add('nandhini', { items, models: [{ model: 'NQ-77' }] })).status, 403, 'the in charge’s call');
+  const added = await add('siva', { items, models: [{ model: 'NQ-77', printing: true }], date: indiaDay(7) });
+  assert.equal(added.status, 200, added.json.message);
+
+  const saved = await Todo.findById(task._id).lean();
+  assert.deepEqual(saved.brief.items, [{ model: 'NQ-77', material: 'PP Black', quantity: '4000', hook: 'Chrome swivel', print: 'Brand logo' }]);
+  assert.equal(saved.brief.model, 'NQ-77');
+  assert.ok(saved.queuedAt);
+  assert.ok(saved.updates.some((entry) => entry.statusLabel === 'Details filled' && /NQ-77 · PP Black · 4,000 pcs · hook Chrome swivel · print Brand logo/.test(entry.note) && /NQ-77 added to the enquiry/.test(entry.note)));
+
+  /* The enquiry names the model now, with what it lacked. */
+  const { default: Enquiry } = await import('../src/models/Enquiry.js');
+  const fresh = await Enquiry.findById(enquiry._id).lean();
+  const item = fresh.items.find((entry) => entry.modelNumber === 'NQ-77');
+  assert.ok(item, 'the model is on the enquiry');
+  assert.equal(fresh.items.length, 1, 'the row that had no model took it');
+  assert.equal(item.printing, 'Brand logo');
+  /* The form, read again, says what was given — and the pieces count for the plan. */
+  form = (await api(`/api/workspace/todos/${task._id}/routing`, { as: 'siva' })).json.data;
+  const row = form.models.find((entry) => entry.model === 'NQ-77');
+  assert.equal(row.quantity, '4000');
+  assert.equal(row.print, 'Brand logo');
+  assert.equal(row.hook, 'Chrome swivel');
+  assert.ok(await Todo.exists({ enquiry: enquiry._id, kind: 'ask_printing', completed: false }), 'Printing tasked for it');
+});
+
+test('the enquiry’s own details are kept unless the in charge asks to correct them', async () => {
+  const { enquiry, task } = await productionTask('KEEP-1');
+  const { default: Enquiry } = await import('../src/models/Enquiry.js');
+  await Enquiry.updateOne({ _id: enquiry._id, 'items.modelNumber': 'KEEP-1' }, { $set: { 'items.$.printing': 'Buyer logo' } });
+  const added = await api(`/api/workspace/todos/${task._id}/production-queue`, { method: 'POST', as: 'siva', body: { items: [{ model: 'KEEP-1', quantity: 10000, print: 'Plain' }], models: [{ model: 'KEEP-1' }] } });
+  assert.equal(added.status, 200, added.json.message);
+  assert.equal((await Enquiry.findById(enquiry._id).lean()).items.find((entry) => entry.modelNumber === 'KEEP-1').printing, 'Buyer logo', 'marketing’s print kept');
+  assert.equal((await Todo.findById(task._id).lean()).brief.items[0].print, 'Plain', 'the task says what Production plans');
+});
