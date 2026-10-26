@@ -372,6 +372,8 @@ export const productionWorkflow = asyncHandler(async (req, res) => {
       delivery: team ? null : (await deliveryRiskFor([enquiry._id])).get(String(enquiry._id)) || null,
       summary: summarise({ task, enquiry, teams, floor: { ...floor, running: floor.running.map((run) => ({ ...run, machine: run.machine?.code, mould: run.mould?.mouldCode })) }, workOrders, edd }),
       models: modelRows({ task, enquiry, teams, workOrders }),
+      /* What the task still lacks to plan — said to the in charge, who gives it on "Add to production queue" [handoff.service `fillQueueDetails`]. */
+      missingDetails: task.queuedAt || task.completed ? [] : await (await import('../services/handoff.service.js')).missingDetailsOf(task).catch(() => []),
       /* Each model's own journey, step by step [handoff.service `modelJourneys`]. */
       journeys: await (await import('../services/handoff.service.js')).modelJourneys(team ? null : enquiry._id, { task: { _id: task._id, chain: task.chain } }).catch(() => []),
       teams: teamsWithClosable,

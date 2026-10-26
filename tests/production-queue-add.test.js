@@ -134,8 +134,13 @@ test('an enquiry that reached Production with no model, material or pieces: the 
   const sent = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'Make what they had last year' } });
   assert.equal(sent.status, 201, sent.json.message);
   const task = sent.json.data.task;
+  /* Raised with nothing said of the hanger: the task says so, for the in charge. */
+  const raised = await Todo.findById(task._id).lean();
+  assert.ok(raised.updates.some((entry) => entry.statusLabel === 'Details not given' && /Not given when raised: model, material, pieces — the Production in charge enters them on Add to production queue/.test(entry.note)));
   let form = (await api(`/api/workspace/todos/${task._id}/routing`, { as: 'siva' })).json.data;
   assert.deepEqual(form.models, [], 'nothing named yet');
+  /* The workflow page says what it lacks, for the in charge to give. */
+  assert.deepEqual((await api(`/api/production/workflow/${task._id}`, { as: 'siva' })).json.data.missingDetails, ['model', 'material', 'pieces']);
 
   const add = (as, body) => api(`/api/workspace/todos/${task._id}/production-queue`, { method: 'POST', as, body });
   const items = [{ model: 'NQ-77', material: 'PP Black', quantity: '4,000', hook: 'Chrome swivel', print: 'Brand logo' }];
@@ -163,10 +168,13 @@ test('an enquiry that reached Production with no model, material or pieces: the 
   assert.equal(row.print, 'Brand logo');
   assert.equal(row.hook, 'Chrome swivel');
   assert.ok(await Todo.exists({ enquiry: enquiry._id, kind: 'ask_printing', completed: false }), 'Printing tasked for it');
+  assert.deepEqual((await api(`/api/production/workflow/${task._id}`, { as: 'siva' })).json.data.missingDetails, [], 'nothing lacking once given and queued');
 });
 
 test('the enquiry’s own details are kept unless the in charge asks to correct them', async () => {
   const { enquiry, task } = await productionTask('KEEP-1');
+  /* Raised with the model and pieces but no material: only the material is said missing. */
+  assert.match((await Todo.findById(task._id).lean()).updates.find((entry) => entry.statusLabel === 'Details not given')?.note || '', /Not given when raised: material —/);
   const { default: Enquiry } = await import('../src/models/Enquiry.js');
   await Enquiry.updateOne({ _id: enquiry._id, 'items.modelNumber': 'KEEP-1' }, { $set: { 'items.$.printing': 'Buyer logo' } });
   const added = await api(`/api/workspace/todos/${task._id}/production-queue`, { method: 'POST', as: 'siva', body: { items: [{ model: 'KEEP-1', quantity: 10000, print: 'Plain' }], models: [{ model: 'KEEP-1' }] } });
