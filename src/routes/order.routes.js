@@ -18,7 +18,7 @@ import {
   productionDay,
   productionOee,
 } from '../controllers/production.controller.js';
-import { listOrdersAtRisk, listProductionQueue, productionWorkflow } from '../controllers/productionQueue.controller.js';
+import { listOrdersAtRisk, listProductionQueue, productionWorkflow, queuePlacesHandler } from '../controllers/productionQueue.controller.js';
 import { listFinishingQueue } from '../controllers/finishingQueue.controller.js';
 import {
   listDispatches, dispatchBoard, exportDispatches, getDispatch, listReadyStock,
@@ -220,6 +220,8 @@ router.post('/orders/:id/escalations', requireModule('orders'), validate(orderEs
  * same ordering the statuses and the export already rely on.
  */
 /* The production queue in EDD order, read by every department that works to it — access checked inside. */
+/* Every job's place in the Production, Printing and Assembly queues — for the task lists, the desks and the enquiry list [queuePlaces.service]. */
+router.get('/production/queue-places', queuePlacesHandler);
 router.get('/production/queue', listProductionQueue);
 /* Orders in danger of missing their EDD, worst first, earlier for orders of several models [deliveryRisk.service]. */
 router.get('/production/at-risk', listOrdersAtRisk);

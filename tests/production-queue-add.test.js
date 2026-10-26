@@ -182,3 +182,22 @@ test('the enquiry’s own details are kept unless the in charge asks to correct 
   assert.equal((await Enquiry.findById(enquiry._id).lean()).items.find((entry) => entry.modelNumber === 'KEEP-1').printing, 'Buyer logo', 'marketing’s print kept');
   assert.equal((await Todo.findById(task._id).lean()).brief.items[0].print, 'Plain', 'the task says what Production plans');
 });
+
+test('every job’s place in the queues, by EDD over the whole queue — on the queue rows and for the task lists', async () => {
+  const day = (offset) => indiaDay(offset);
+  const { enquiry: soon, task: first } = await productionTask('PLACE-1');
+  const { enquiry: later, task: second } = await productionTask('PLACE-2');
+  await api(`/api/enquiries/${later._id}/edd`, { method: 'POST', as: 'nandhini', body: { date: day(20) } });
+  await api(`/api/enquiries/${soon._id}/edd`, { method: 'POST', as: 'nandhini', body: { date: day(3) } });
+  const places = (await api('/api/production/queue-places', { as: 'nandhini' })).json.data;
+  const a = places.tasks[first._id];
+  const b = places.tasks[second._id];
+  assert.equal(a.queue, 'Production');
+  assert.ok(a.place < b.place, 'the sooner EDD first');
+  assert.equal(a.of, b.of);
+  assert.equal(a.of, await Todo.countDocuments({ kind: 'ask_edd', completed: false }), 'counted over the whole queue');
+  assert.deepEqual(places.enquiries[soon._id].map((row) => row.queue), ['Production']);
+  /* The queue rows carry the same place. */
+  const queue = (await api('/api/production/queue', { as: 'siva' })).json.data;
+  assert.equal(queue.find((row) => String(row.task._id) === String(first._id)).place.place, a.place);
+});

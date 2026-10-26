@@ -274,6 +274,9 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
   rows.sort((a, b) => (BAND_RANK[a.band] - BAND_RANK[b.band])
     || String(a.edd?.date || '').localeCompare(String(b.edd?.date || ''))
     || (new Date(a.task.dueDate || 0) - new Date(b.task.dueDate || 0)));
+  /* Each row's place in the whole queue [queuePlaces.service]. */
+  const { byTask } = await (await import('../services/queuePlaces.service.js')).queuePlaces();
+  for (const row of rows) row.place = byTask.get(String(row.task._id)) || null;
 
   const count = (test) => rows.filter(test).length;
   res.json({
