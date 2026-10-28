@@ -13,6 +13,7 @@ import Enquiry from '../models/Enquiry.js';
 import { mayReleaseHeld } from '../services/handoff.service.js';
 import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import { placeOfSupplyFor } from '../utils/gst.js';
+import { noticeOrderBooked } from '../services/orderNotices.service.js';
 import Customer from '../models/Customer.js';
 import Attachment from '../models/Attachment.js';
 import ApiError from '../utils/ApiError.js';
@@ -493,6 +494,8 @@ export const createOrder = asyncHandler(transactional(async (req, res) => {
 
   /* The terms say what is collected before production and dispatch: raise it and ask for it. */
   await planCollection(order, { by: req.user });
+  /* Booked: Admin and the buyer's marketing person hear it [orderNotices.service]. */
+  await noticeOrderBooked(order, { by: req.user });
 
   await order.populate(POPULATE);
   res.status(201).json({ success: true, data: await orderOut(order, req.user) });
@@ -608,6 +611,8 @@ export const orderFromQuotation = asyncHandler(transactional(async (req, res) =>
 
   /* The terms say what is collected before production and dispatch: raise it and ask for it. */
   await planCollection(order, { by: req.user });
+  /* Booked: Admin and the buyer's marketing person hear it [orderNotices.service]. */
+  await noticeOrderBooked(order, { by: req.user });
 
   await order.populate(POPULATE);
   res.status(201).json({ success: true, data: await orderOut(order, req.user) });

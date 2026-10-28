@@ -137,5 +137,6 @@ test('six updates written on one task in the same instant: every one kept, none 
   const results = await Promise.all(notes.map((note, i) => api(`/api/workspace/todos/${task}/update`, { method: 'POST', as: i % 2 ? 'siva' : 'ravi', body: { note } })));
   assert.deepEqual(results.map((result) => result.status), Array(6).fill(200), results.map((result) => result.json.message).join(' | '));
   const saved = await Todo.findById(task).lean();
-  assert.deepEqual(saved.updates.map((update) => update.note).sort(), [...notes].sort());
+  /* Beside the system's own line — the details the raise left out [handoff.service `bareDetails`]. */
+  assert.deepEqual(saved.updates.filter((update) => update.kind !== 'notice').map((update) => update.note).sort(), [...notes].sort());
 });

@@ -80,3 +80,77 @@ test('a production Mould Issue is told to everyone who is Admin — the role, an
   assert.equal(await noticed('meena'), true, 'Admin by an extra department');
   assert.equal(await noticed('siva'), false, 'not whoever made the move');
 });
+
+test('Admin and the enquiry’s marketing person hear a sales order booked, a job queued for production, made, taken into Printing’s queue and finished, and every load', async () => {
+  const customer = (await api('/api/customers', { method: 'POST', as: 'nandhini', body: { name: 'Notice Garments', mobile: '9840011002', assignedTo: ids.nandhini } })).json.data;
+  const enquiry = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customer._id, requirement: { modelNumber: 'NPT-500S' }, nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const madePriya = await api('/api/users', { method: 'POST', as: 'admin', body: { name: 'Priya', email: 'priya@np.com', password: 'Pass@123456', department: 'order_confirmation' } });
+  assert.equal(madePriya.status, 201, madePriya.json.message);
+  token.priya = (await api('/api/auth/login', { method: 'POST', body: { email: 'priya@np.com', password: 'Pass@123456' } })).json.data.token;
+  const madeKala = await api('/api/users', { method: 'POST', as: 'admin', body: { name: 'Kala', email: 'kala@np.com', password: 'Pass@123456', department: 'printing' } });
+  assert.equal(madeKala.status, 201, madeKala.json.message);
+  token.kala = (await api('/api/auth/login', { method: 'POST', body: { email: 'kala@np.com', password: 'Pass@123456' } })).json.data.token;
+  const notices = async (as) => (await api('/api/workspace/notices', { as })).json.data || [];
+  const heard = async (as, label) => (await notices(as)).some((notice) => String(notice.statusLabel || '').startsWith(label));
+
+  /* The order, booked by the SO team: both hear it, with the pieces; Priya, who booked it, does not. */
+  const booked = await api('/api/orders', {
+    method: 'POST', as: 'priya',
+    body: { customer: customer._id, enquiry: enquiry._id, paymentTerms: '30 days', customerPo: { number: 'PO-77' }, lines: [{ modelNumber: 'NPT-500S', quantity: 12000, unitPrice: 6 }] },
+  });
+  assert.equal(booked.status, 201, booked.json.message);
+  for (const who of ['nandhini', 'admin', 'meena']) {
+    const notice = (await notices(who)).find((entry) => entry.statusLabel === `Sales order ${booked.json.data.number} created`);
+    assert.ok(notice, `${who} hears the order`);
+    assert.equal(notice.department, 'order_confirmation');
+    assert.equal(String(notice.order?._id || notice.order), String(booked.json.data._id), 'linked to the order');
+    assert.equal(String(notice.enquiry?._id || notice.enquiry), String(enquiry._id), 'and the enquiry');
+    assert.match(notice.note, /NPT-500S 12,000 pcs — PO PO-77 — terms: 30 days/);
+  }
+  assert.equal(await heard('priya', 'Sales order'), false, 'not whoever booked it');
+
+  /* Production: added to the queue, then made. */
+  const raised = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'ask_edd', note: 'When?', brief: { model: 'NPT-500S', quantity: '12000' } } });
+  assert.equal(raised.status, 201, JSON.stringify(raised.json));
+  const task = raised.json.data.task;
+  const queued = await api(`/api/workspace/todos/${task._id}/production-queue`, { method: 'POST', as: 'siva', body: { models: [{ model: 'NPT-500S', printing: true }], date: inDays(6), note: 'Press 3 from Monday' } });
+  assert.equal(queued.status, 200, queued.json.message);
+  for (const who of ['nandhini', 'admin']) {
+    const notice = (await notices(who)).find((entry) => entry.statusLabel === 'Added to the production queue');
+    assert.ok(notice, `${who} hears the queue`);
+    assert.match(notice.note, /NPT-500S — Press 3 from Monday/);
+    assert.equal(notice.date, inDays(6), 'with the EDD');
+  }
+  assert.equal(await heard('siva', 'Added to the production queue'), false);
+  const started = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'started', note: 'Running on press 3' } });
+  assert.equal(started.status, 200, started.json.message);
+  assert.equal(await heard('admin', 'Production Started'), false, 'Started stays on the task');
+  const done = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'siva', body: { status: 'completed', note: 'All 12,000 moulded' } });
+  assert.equal(done.status, 200, done.json.message);
+  assert.equal(await heard('nandhini', 'Production Completed'), true);
+  assert.equal(await heard('admin', 'Production Completed'), true);
+
+  /* Printing: the goods into its work queue, then the full quantity ready. */
+  /* Printing's task was raised by the queue, the model being routed there. */
+  const { default: Todo } = await import('../src/models/Todo.js');
+  const printing = await Todo.findOne({ enquiry: enquiry._id, kind: 'ask_printing', completed: false }).lean();
+  assert.ok(printing, 'Printing has its task from the routing');
+  const got = await api(`/api/workspace/todos/${printing._id}/status`, { method: 'POST', as: 'kala', body: { status: 'goods_received', note: 'Goods came from the press' } });
+  assert.equal(got.status, 200, got.json.message);
+  assert.equal(await heard('admin', 'Goods Received'), false, 'Goods Received stays on the task');
+  const inQueue = await api(`/api/workspace/todos/${printing._id}/work-queue`, { method: 'POST', as: 'kala', body: {} });
+  assert.equal(inQueue.status, 200, inQueue.json.message);
+  assert.equal(await heard('nandhini', 'In Work Queue'), true, 'marketing hears the printing queue');
+  assert.equal(await heard('admin', 'In Work Queue'), true, 'Admin hears the printing queue');
+  const part = await api(`/api/workspace/todos/${printing._id}/status`, { method: 'POST', as: 'kala', body: { status: 'part_ready', note: 'Half printed' } });
+  assert.equal(part.status, 200, part.json.message);
+  assert.equal(await heard('admin', 'Part Quantity Ready'), false, 'a part stays on the task');
+  const full = await api(`/api/workspace/todos/${printing._id}/status`, { method: 'POST', as: 'kala', body: { status: 'full_ready', note: 'All printed' } });
+  assert.equal(full.status, 200, full.json.message);
+  assert.equal(await heard('nandhini', 'Full Quantity Ready'), true, 'marketing hears printing done');
+  assert.equal(await heard('admin', 'Full Quantity Ready'), true, 'Admin hears printing done');
+  assert.equal(await heard('kala', 'Full Quantity Ready'), false, 'not whoever made the move');
+});

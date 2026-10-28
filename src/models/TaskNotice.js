@@ -14,7 +14,9 @@ export const READ_NOTICE_KEPT_MS = 24 * 60 * 60 * 1000;
 const taskNoticeSchema = new mongoose.Schema(
   {
     recipient: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    task: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo', required: true },
+    /* The task moved — or, for an order booked [orderNotices.service], the order alone. */
+    task: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
+    order: { type: mongoose.Schema.Types.ObjectId, ref: 'SalesOrder' },
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: 'Enquiry' },
     customer: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
     department: { type: String },

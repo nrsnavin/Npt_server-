@@ -210,6 +210,9 @@ export async function bookOrderFromTask(task, user, { reading = null, readProble
   }]);
   /* The terms say what is collected before production and dispatch: raise it and ask for it. */
   await planCollection(order, { by: user });
+  /* Booked: Admin and the enquiry's marketing person hear it [orderNotices.service]. */
+  const { noticeOrderBooked } = await import('./orderNotices.service.js');
+  await noticeOrderBooked(order, { by: user });
   return { order, booked: true, drafted };
 }
 

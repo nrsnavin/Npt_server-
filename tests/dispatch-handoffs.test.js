@@ -278,13 +278,17 @@ test('a load is sent from the dispatch form: models and pieces, how it travels, 
   assert.equal((await api(`/api/workspace/todos/${lr._id}/result/send`, { method: 'POST', as: 'ravi' })).status, 403, 'Reception sends it');
 });
 
-test('a load is news for the buyer’s marketing person only — an Admin hears it only when they are that person', async () => {
+test('a load is news for the buyer’s marketing person and every Admin, with the pieces sent — the other dispatch moves stay the marketing person’s', async () => {
   const adminId = (await api('/api/auth/me', { as: 'admin' })).json.data.id;
   const theirs = await enquiryFor('Notice Knits', '9840030777');
   const dispatch = await raise(theirs, 'invoice_dispatch', { quantity: '1000' });
+  assert.equal((await move('ravi', dispatch, 'waiting_vehicle', 'Packed')).status, 200);
+  assert.equal(await TaskNotice.exists({ task: dispatch, recipient: adminId }), null, 'Goods Ready is not every Admin’s');
   assert.equal((await move('ravi', dispatch, 'fully_dispatched', 'All gone')).status, 200);
   assert.ok(await TaskNotice.exists({ task: dispatch, recipient: ids.nandhini, status: 'fully_dispatched' }), 'the marketing person hears it');
-  assert.equal(await TaskNotice.exists({ task: dispatch, recipient: adminId }), null, 'not every Admin');
+  const told = await TaskNotice.findOne({ task: dispatch, recipient: adminId, status: 'fully_dispatched' }).lean();
+  assert.ok(told, 'every Admin hears the load');
+  assert.match(told.note, /1,000 pcs/, 'with the pieces');
 
   /* Admin is the marketing person on this one: Admin hears it. */
   const own = await enquiryFor('Admin Own Knits', '9840030778');
