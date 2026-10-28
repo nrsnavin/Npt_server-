@@ -3,6 +3,7 @@ import { protectWrites } from '../utils/concurrency.js';
 import mongoose from 'mongoose';
 import belongsToEnquiry from './belongsToEnquiry.js';
 import { HANGER_CATEGORIES, MATERIALS } from './Mould.js';
+import { taxOn } from '../utils/gst.js';
 
 /**
  * The order statuses [BLUEPRINT §12], in the order work moves through them.
@@ -309,6 +310,13 @@ const lineSchema = new mongoose.Schema(
      */
     unitPrice: { type: Number, min: 0, required: true },
 
+    /**
+     * The tax on the line [utils/gst.js]: the HSN it is taxed under and its GST % — the mould's
+     * where the line named one and gave none, else the plant's heading and the order's rate.
+     */
+    hsnCode: { type: String, trim: true, maxlength: 10 },
+    gstPercent: { type: Number, min: 0, max: 100 },
+
     /** When this line is promised. Per line, because two models rarely ship together. */
     deliveryDate: Date,
 
@@ -523,8 +531,21 @@ const salesOrderSchema = new mongoose.Schema(
 
     lines: { type: [lineSchema], default: () => [] },
 
+    /** The order's GST % — what a line is taxed at where it gives none of its own [utils/gst.js]. */
     gstPercent: { type: Number, min: 0, max: 100 },
     isExport: { type: Boolean, default: false },
+    /**
+     * Where the goods are supplied to, for the tax's split [utils/gst.js `placeOfSupplyFor`]:
+     * the buyer's state — within the plant's it is CGST + SGST, to another IGST. `known` is
+     * false when the buyer's record gave no state or GSTIN and the plant's own was assumed.
+     */
+    placeOfSupply: {
+      code: String,
+      state: String,
+      intraState: Boolean,
+      known: Boolean,
+      _id: false,
+    },
     paymentTerms: String,
     /**
      * The payment terms as two numbers the plant acts on [services/paymentGates.service.js]:
@@ -707,10 +728,20 @@ salesOrderSchema.virtual('netValue').get(function netValue() {
   return Math.round((this.lines || []).reduce((sum, line) => sum + line.lineValue, 0) * 100) / 100;
 });
 
-/** The same with GST, or the bare value on an export order — see the quotation's note. */
+/**
+ * The tax on the order, line by line and in total [utils/gst.js `taxOn`]: each line's HSN and
+ * rate, the CGST + SGST or IGST on it; the sums, the round-off and the invoice total to the rupee.
+ */
+salesOrderSchema.virtual('tax').get(function tax() {
+  return taxOn({
+    lines: this.lines || [], gstPercent: this.gstPercent, isExport: this.isExport,
+    intraState: this.placeOfSupply?.intraState ?? true,
+  });
+});
+
+/** What the buyer pays: the lines with their GST, rounded to the rupee — the bare value on an export order. */
 salesOrderSchema.virtual('totalValue').get(function totalValue() {
-  if (this.isExport || !this.gstPercent) return this.netValue;
-  return Math.round(this.netValue * (1 + this.gstPercent / 100) * 100) / 100;
+  return this.tax.total;
 });
 
 salesOrderSchema.virtual('lineCount').get(function lineCount() {

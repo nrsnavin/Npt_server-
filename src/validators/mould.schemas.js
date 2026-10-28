@@ -35,6 +35,9 @@ const mouldFields = z.object({
     mouldCode: z.string().min(2).max(40),
     name: z.string().min(2).max(120),
     material: z.enum(MATERIALS).optional(),
+    /* The tax a piece off it carries on an order, where it differs from the plant's [utils/gst.js]. */
+    hsnCode: z.string().trim().max(10).optional().or(z.literal('')),
+    gstPercent: z.number().min(0).max(100).nullable().optional(),
 
     /** What the tool cuts, and what an offer off it starts from [§28]. */
     category: z.enum(HANGER_CATEGORIES).optional(),
@@ -145,6 +148,8 @@ export const mouldUpdateSchema = z
     mouldCode: z.string().trim().min(2).max(40).optional(),
     name: z.string().min(2).max(120).optional(),
     material: z.enum(MATERIALS).optional(),
+    hsnCode: z.string().trim().max(10).optional().or(z.literal('')),
+    gstPercent: z.number().min(0).max(100).nullable().optional(),
 
     category: z.enum(HANGER_CATEGORIES).optional(),
     sizeMm: z.number().nonnegative().optional(),

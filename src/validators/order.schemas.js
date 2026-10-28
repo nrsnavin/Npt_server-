@@ -45,6 +45,9 @@ const orderLine = z.object({
   packing: z.string().optional(),
   quantity: pieces,
   unitPrice: money,
+  /* The tax on the line: its HSN and GST % — left out, the mould's, else the plant's and the order's [utils/gst.js]. */
+  hsnCode: z.string().trim().max(10).optional().or(z.literal('')),
+  gstPercent: z.number().min(0).max(100).nullable().optional(),
   deliveryDate: z.coerce.date().optional(),
   /** The quotation line the price came from. */
   quotationLine: objectId.optional(),

@@ -266,10 +266,11 @@ export function orderVisibleTo(order, user) {
   delete plain.netValue;
   delete plain.totalValue;
   delete plain.gstPercent;
+  delete plain.tax;
   delete plain.paymentTerms;
 
   plain.lines = (plain.lines || []).map((line) => {
-    const { unitPrice, lineValue, pricing, ...rest } = line;
+    const { unitPrice, lineValue, pricing, gstPercent, ...rest } = line;
     return rest;
   });
 

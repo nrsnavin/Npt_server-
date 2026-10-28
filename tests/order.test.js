@@ -760,3 +760,62 @@ test('the export’s figures are the order’s own — the line value, the custo
   assert.ok(at('Mould'), 'the tool is named');
   assert.ok(at('Owner'), 'the owner is named');
 });
+
+/* ------------------------------ GST on the order ------------------------------ */
+
+test('GST on the order: each line at its HSN and rate, split by the place of supply, rounded to the rupee at the end — the quotation untouched', async () => {
+  const { default: Customer } = await import('../src/models/Customer.js');
+  const { taxOn, placeOfSupplyFor, stateCodeOfName } = await import('../src/utils/gst.js');
+
+  /* The arithmetic, on its own: 18% on 7.5 × 1,000, split in two within the state; the paise rounded off. */
+  const within = taxOn({ lines: [{ quantity: 1000, unitPrice: 7.5 }, { quantity: 333, unitPrice: 1.01, gstPercent: 12 }], gstPercent: 18, intraState: true });
+  assert.deepEqual(within.lines[0], { hsnCode: '39269069', gstPercent: 18, taxable: 7500, cgst: 675, sgst: 675, igst: 0, tax: 1350, total: 8850 });
+  assert.deepEqual([within.lines[1].taxable, within.lines[1].gstPercent, within.lines[1].tax], [336.33, 12, 40.36]);
+  assert.equal(within.gross, 9226.69);
+  assert.equal(within.total, 9227, 'to the rupee');
+  assert.equal(within.roundOff, 0.31);
+  assert.deepEqual(within.rates, [12, 18]);
+  const outside = taxOn({ lines: [{ quantity: 1000, unitPrice: 7.5 }], gstPercent: 18, intraState: false });
+  assert.deepEqual([outside.cgst, outside.sgst, outside.igst, outside.total], [0, 0, 1350, 8850]);
+  const exported = taxOn({ lines: [{ quantity: 1000, unitPrice: 7.5 }], gstPercent: 18, isExport: true });
+  assert.deepEqual([exported.tax, exported.total, exported.isExport], [0, 7500, true]);
+  assert.equal(taxOn({ lines: [{ quantity: 10, unitPrice: 1 }] }).tax, 0, 'no rate on the order: no tax');
+
+  /* The place of supply: the GSTIN's state first, then the state on the record; the plant's own assumed otherwise. */
+  assert.equal(stateCodeOfName('tamilnadu'), '33');
+  assert.equal(stateCodeOfName('Orissa'), '21');
+  assert.deepEqual(placeOfSupplyFor({ gstin: '29ABCDE1234F1Z5', state: 'Tamil Nadu' }), { code: '29', state: 'Karnataka', intraState: false, known: true, export: false });
+  assert.deepEqual(placeOfSupplyFor({ state: 'Tamil Nadu' }), { code: '33', state: 'Tamil Nadu', intraState: true, known: true, export: false });
+  assert.deepEqual(placeOfSupplyFor({}), { code: '33', state: 'Tamil Nadu', intraState: true, known: false, export: false });
+
+  /* On the order itself: the buyer in Karnataka, so IGST; the line's HSN from the mould where it gives none. */
+  await Customer.updateOne({ _id: customer }, { $set: { state: 'Karnataka', gstin: '29ABCDE1234F1Z5' } });
+  const { status: mouldSet, json: mouldJson } = await api(`/api/moulds/${mould}`, { method: 'PATCH', token: admin, body: { hsnCode: '39269099', gstPercent: 18 } });
+  assert.equal(mouldSet, 200, mouldJson.message);
+  const made = await order({
+    gstPercent: 18,
+    lines: [
+      { mould, modelNumber: 'NH-400', quantity: 1000, unitPrice: 7.5 },
+      { modelNumber: 'NPT-360W wooden skirt', quantity: 333, unitPrice: 1.01, hsnCode: '44219990', gstPercent: 12 },
+    ],
+  });
+  assert.deepEqual(made.placeOfSupply, { code: '29', state: 'Karnataka', intraState: false, known: true });
+  assert.equal(made.lines[0].hsnCode, '39269099', 'the mould’s HSN');
+  assert.equal(made.lines[1].hsnCode, '44219990');
+  assert.deepEqual([made.tax.taxable, made.tax.igst, made.tax.cgst, made.tax.roundOff, made.tax.total], [7836.33, 1390.36, 0, 0.31, 9227]);
+  assert.equal(made.totalValue, 9227, 'what the buyer pays — and what the payment gates count');
+  assert.equal(made.netValue, 7836.33);
+  /* The same buyer, back in Tamil Nadu: a correction to the order follows the record — CGST + SGST now. */
+  await Customer.updateOne({ _id: customer }, { $set: { state: 'Tamil Nadu', gstin: '33ABCDE1234F1Z5' } });
+  const { status, json } = await api(`/api/orders/${made._id}`, { method: 'PATCH', token: priya, body: { remarks: 'Buyer moved' } });
+  assert.equal(status, 200, json.message);
+  assert.equal(json.data.placeOfSupply.intraState, true);
+  assert.deepEqual([json.data.tax.cgst, json.data.tax.sgst, json.data.tax.igst], [695.18, 695.18, 0]);
+
+  /* Production sees the pieces and the HSN, not the money or the tax. */
+  const seen = (await api(`/api/orders/${made._id}`, { token: ramesh })).json.data;
+  assert.equal(seen.tax, undefined);
+  assert.equal(seen.lines[0].gstPercent, undefined);
+  assert.equal(seen.lines[0].hsnCode, '39269099');
+  await Customer.updateOne({ _id: customer }, { $unset: { state: 1, gstin: 1 } });
+});

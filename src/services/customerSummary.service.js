@@ -1,15 +1,11 @@
 import SalesOrder from '../models/SalesOrder.js';
 import Receivable from '../models/Receivable.js';
 import { MAYBE_OWING, applyPaymentPositions } from './paymentPosition.service.js';
+import { taxOn } from '../utils/gst.js';
 
-const round2 = (value) => Math.round(value * 100) / 100;
 
-/** An order's value with GST, as `SalesOrder#totalValue` works it out, from a plain object. */
-function orderTotal(order) {
-  const net = round2((order.lines || []).reduce(
-    (sum, line) => sum + (line.unitPrice && line.quantity ? round2(line.unitPrice * line.quantity) : 0), 0));
-  return order.isExport || !order.gstPercent ? net : round2(net * (1 + order.gstPercent / 100));
-}
+/** An order's value with GST, as `SalesOrder#totalValue` works it out, from a plain object [utils/gst.js]. */
+const orderTotal = (order) => taxOn({ lines: order.lines || [], gstPercent: order.gstPercent, isExport: order.isExport, intraState: order.placeOfSupply?.intraState ?? true }).total;
 
 /**
  * Business and balance beside each customer on a list page.
@@ -23,7 +19,7 @@ export async function customerSummaries(customers) {
   const ids = customers.map(customer => customer._id);
   const [orders, receivables] = await Promise.all([
     SalesOrder.find({ customer: { $in: ids }, status: { $ne: 'cancelled' } })
-      .select('customer orderDate isExport gstPercent lines.unitPrice lines.quantity')
+      .select('customer orderDate isExport gstPercent placeOfSupply lines.unitPrice lines.quantity lines.gstPercent')
       .lean(),
     Receivable.find({ customer: { $in: ids }, ...MAYBE_OWING }),
   ]);

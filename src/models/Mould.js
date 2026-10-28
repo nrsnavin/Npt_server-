@@ -114,6 +114,12 @@ const mouldSchema = new mongoose.Schema(
      * register rather than to hold two sets of figures nobody keeps in step.
      */
     material: { type: String, enum: MATERIALS, default: 'pp', index: true },
+    /*
+     * The tax a piece off this tool carries on a sales order [utils/gst.js]: its HSN and GST %,
+     * where they differ from the plant's heading and rate (3926 90, 18% — a moulded hanger).
+     */
+    hsnCode: { type: String, trim: true, maxlength: 10 },
+    gstPercent: { type: Number, min: 0, max: 100 },
 
     /*
      * The shot, in the three figures a tool room actually measures.
