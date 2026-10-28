@@ -34,6 +34,12 @@ import { EVENTS, publish } from './events.service.js';
 
 const lower = (text) => String(text || '').trim().toLowerCase();
 
+/** Why a draft is not released yet: who still has to read it [soDraftReview.service]. */
+export const draftWaitsWords = (order) => {
+  const waits = [!order?.drafted?.verified?.by && 'the SO team verifies it', !order?.drafted?.confirmed?.by && 'marketing or Admin confirms it'].filter(Boolean);
+  return `${order?.number || 'the order'} is a draft — ${waits.join(' and ')} first`;
+};
+
 /** "M-101 · 380mm slim shirt hanger" or "m-101" → the mould on the register, if there is one. */
 async function mouldNamed(text) {
   const code = String(text || '').split(' · ')[0].trim().toUpperCase();
@@ -338,6 +344,8 @@ export async function stopForRevision(order, user, { task = null, save = true } 
  */
 export async function releaseFromTask(order, user, why) {
   if (!order || !PRE_RELEASE_STATUSES.includes(order.status)) return { released: false };
+  /* A draft nobody has read yet goes nowhere [soDraftReview.service]. */
+  if (order.draftPending) return { released: false, problem: draftWaitsWords(order) };
   try {
     await assertPaidFor(order, 'production', { by: user });
   } catch (error) {

@@ -210,7 +210,7 @@ test('uploading the sales order PDF without Production confirmed: Won, held with
   assert.deepEqual(booked.lines.map((line) => [line.modelNumber, line.quantity, line.unitPrice, line.colour]), [['UTJRSH-0', 5000, 2.4, 'PP Black']]);
   assert.equal(booked.lines[0].deliveryDate.toISOString().slice(0, 10), '2026-11-10');
   assert.equal(String((await Todo.findById(soTask._id)).order), String(booked._id), 'the task is linked to its order');
-  assert.match((await Todo.findById(soTask._id)).updates.at(-1).note, /drafted from the request — 1 line, 5,000 pcs.* — waits for Move to Production/);
+  assert.match((await Todo.findById(soTask._id)).updates.at(-1).note, /drafted from the request — 1 line, 5,000 pcs.*a draft: the SO team verifies it and marketing or Admin confirms it.*then it waits for Move to Production/);
   const held = await Enquiry.findById(enquiry._id);
   assert.deepEqual([held.stage, held.marketingStatus, held.status], ['production_hold', 'production_hold', 'won']);
   assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'ask_edd' }), 0);
@@ -219,6 +219,46 @@ test('uploading the sales order PDF without Production confirmed: Won, held with
   /* The marketing desk counts it under its own stage. */
   const desk = (await api('/api/departments/mine/dashboard', { as: 'nandhini' })).json.data;
   assert.equal(desk.atStages.find((stage) => stage.key === 'production_hold')?.count, 1);
+});
+
+test('the draft is read by two people — the SO team verifies, the marketing person or Admin confirms — before anything moves', async () => {
+  const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
+  const order = await SalesOrder.findOne({ enquiry: enquiry._id }).lean();
+  assert.ok(order.drafted?.from, 'a draft');
+  /* What each side sees of it. */
+  const asPriya = await api(`/api/orders/${order._id}/draft`, { as: 'priya' });
+  assert.equal(asPriya.status, 200, asPriya.json.message);
+  assert.deepEqual([asPriya.json.review.pending, asPriya.json.review.mayVerify, asPriya.json.review.mayConfirm, asPriya.json.review.verified, asPriya.json.review.confirmed], [true, true, false, null, null]);
+  assert.match(asPriya.json.review.waits, /the SO team verifies it and marketing or Admin confirms it/);
+  assert.equal(asPriya.json.data.lines[0].quantity, 5000, 'the drafted lines');
+  const asNandhini = await api(`/api/orders/${order._id}/draft`, { as: 'nandhini' });
+  assert.deepEqual([asNandhini.json.review.mayVerify, asNandhini.json.review.mayConfirm], [false, true]);
+  /* Nothing goes until both: Move to Production and the Sales orders release are refused alike. */
+  const early = await api(`/api/orders/${order._id}/actions`, { method: 'POST', as: 'admin', body: { action: 'release', confirmAll: true } });
+  assert.equal(early.status, 400);
+  assert.match(early.json.message, /is a draft — the SO team verifies it and marketing or Admin confirms it first/);
+  /* Who may read it. */
+  assert.equal((await api(`/api/orders/${order._id}/draft/verify`, { method: 'POST', as: 'siva', body: {} })).status, 403, 'Production verifies nothing');
+  assert.equal((await api(`/api/orders/${order._id}/draft/confirm`, { method: 'POST', as: 'priya', body: {} })).status, 403, 'the SO team does not confirm for marketing');
+  const verified = await api(`/api/orders/${order._id}/draft/verify`, { method: 'POST', as: 'priya', body: { note: 'Matches the SO sent' } });
+  assert.equal(verified.status, 200, verified.json.message);
+  assert.equal(verified.json.outcome.pending, true, 'one reading left');
+  assert.equal(verified.json.review.verified.by, 'Priya Orders');
+  assert.equal((await api(`/api/orders/${order._id}/draft/verify`, { method: 'POST', as: 'admin', body: {} })).status, 409, 'verified once');
+  /* Marketing is told it is their turn; nobody else gets the line twice. */
+  const toConfirm = (await api('/api/workspace/notices', { as: 'nandhini' })).json.data.find((notice) => notice.statusLabel === `Sales order ${order.number} verified by the SO team — confirm it`);
+  assert.ok(toConfirm, 'marketing hears the SO team is done');
+  const confirmed = await api(`/api/orders/${order._id}/draft/confirm`, { method: 'POST', as: 'nandhini', body: {} });
+  assert.equal(confirmed.status, 200, confirmed.json.message);
+  assert.deepEqual([confirmed.json.outcome.pending, confirmed.json.review.pending, confirmed.json.review.confirmed.by], [false, false, 'Nandhini S']);
+  /* Production was not confirmed on the request: read by both, the order still waits for Move to Production. */
+  assert.equal(confirmed.json.outcome.released, false, confirmed.json.outcome.said);
+  assert.match(confirmed.json.outcome.said, /verified by Priya Orders, confirmed by Nandhini S — waits for Move to Production \(Production was not confirmed on the request\)/);
+  assert.equal((await SalesOrder.findById(order._id)).status, 'po_received');
+  assert.equal((await SalesOrder.findById(order._id)).draftPending, false, 'no longer a draft');
+  assert.ok((await Todo.findById(soTask._id)).updates.some((update) => /verified by Priya Orders, confirmed by Nandhini S — waits for Move to Production/.test(update.note)), 'said on the SO task');
+  const approved = (await api('/api/workspace/notices', { as: 'priya' })).json.data.find((notice) => notice.statusLabel === `Sales order ${order.number} verified and confirmed`);
+  assert.ok(approved, 'the SO team hears it went');
 });
 
 test('a held order goes to Production only by Admin or its marketing person', async () => {
@@ -232,7 +272,7 @@ test('a held order goes to Production only by Admin or its marketing person', as
   assert.equal(moved.status, 201, moved.json.message);
   assert.equal(moved.json.data.task.department, 'production');
   assert.equal((await Enquiry.findById(enquiry._id)).stage, 'production_edd');
-  /* Its order goes to the plant with it: released, and its work order raised for the planning board. */
+  /* Its order goes to the plant with it — the draft read by both: released, and its work order raised for the planning board. */
   const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
   const order = await SalesOrder.findOne({ enquiry: enquiry._id }).lean();
   assert.equal(order.status, 'approved_for_production');
@@ -260,8 +300,16 @@ test('ticked Production confirmed, the SO prepared goes straight to Production',
     const done = await upload('priya');
     assert.equal(done.status, 200, done.json.message);
     assert.equal(done.json.held, false);
-    assert.equal(done.json.next?.department, 'production', 'Production has its task');
-    assert.deepEqual([done.json.order.booked, done.json.order.released], [true, true], 'booked and released at once');
+    assert.equal(done.json.next, null, 'Production waits for the draft to be read');
+    assert.match(done.json.nextProblem, /is drafted — the Sales \/ SO team verifies it and marketing or Admin confirms it/);
+    assert.deepEqual([done.json.order.booked, done.json.order.released, done.json.order.draftPending], [true, false, true], 'booked as a draft');
+    assert.equal(await Todo.exists({ enquiry: second._id, kind: 'ask_edd' }), null);
+    /* Both read it: released, and Production asked, as the request said. */
+    assert.equal((await api(`/api/orders/${done.json.order._id}/draft/verify`, { method: 'POST', as: 'priya', body: {} })).status, 200);
+    const read = await api(`/api/orders/${done.json.order._id}/draft/confirm`, { method: 'POST', as: 'admin', body: { note: 'Buyer confirmed on the phone' } });
+    assert.equal(read.status, 200, read.json.message);
+    assert.deepEqual([read.json.outcome.released, read.json.outcome.next?.department], [true, 'production'], read.json.outcome.said);
+    assert.match(read.json.outcome.said, /and released to production — Production has its task/);
     const asked2 = await Todo.findOne({ enquiry: second._id, kind: 'ask_edd' });
     assert.equal(String(asked2.order), done.json.order._id, 'Production’s task carries the order');
     assert.equal((await Enquiry.findById(second._id)).stage, 'production_edd');
@@ -377,9 +425,18 @@ test('an SO PDF that differs from the request is booked from the PDF but not rel
   const result = await finishWithResult(task, priya, { attachmentId: new mongoose.Types.ObjectId(), note: 'SO sent', reading });
   assert.equal(result.order.from, 'so_pdf');
   assert.equal(result.order.released, false, 'a person settles the difference first');
-  assert.match(result.order.said, /read from the SO PDF \(SO\/118\).*2,500 pcs on the SO, 2,000 on the request.*not released/);
+  assert.equal(result.order.draftPending, true);
+  assert.match(result.order.said, /read from the SO PDF \(SO\/118\).*2,500 pcs on the SO, 2,000 on the request.*a draft.*then it is released once the difference is settled/);
   const order = await SalesOrder.findById(result.order._id).lean();
   assert.deepEqual([order.status, order.lines[0].quantity, order.customerPo.number, order.drafted.from, order.drafted.soNumber], ['po_received', 2500, 'PO-PDF-9', 'so_pdf', 'SO/118']);
+  /* Read by both, the difference still stops the automatic release: Sales orders settles it. */
+  const { verifyDraft, confirmDraft } = await import('../src/services/soDraftReview.service.js');
+  const admin = await User.findOne({ email: 'admin@np.com' });
+  await verifyDraft(await SalesOrder.findById(order._id), priya, {});
+  const outcome = await confirmDraft(await SalesOrder.findById(order._id), admin, {});
+  assert.equal(outcome.released, false);
+  assert.match(outcome.said, /not released: the SO differs from the request \(UTJRSH-0: 2,500 pcs on the SO, 2,000 on the request\); check it on Sales orders and release it/);
+  assert.equal((await SalesOrder.findById(order._id)).draftPending, false, 'read, so Sales orders may release it');
 });
 
 test('a task raised without the hanger details: the department fills them, the raiser may too, others may not', async () => {

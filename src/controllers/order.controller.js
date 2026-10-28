@@ -14,6 +14,8 @@ import { mayReleaseHeld } from '../services/handoff.service.js';
 import Mould, { mouldWithPhoto } from '../models/Mould.js';
 import { placeOfSupplyFor } from '../utils/gst.js';
 import { noticeOrderBooked } from '../services/orderNotices.service.js';
+import { confirmDraft, draftOrder, draftReviewOf, verifyDraft } from '../services/soDraftReview.service.js';
+import { draftWaitsWords } from '../services/soFromTask.service.js';
 import Customer from '../models/Customer.js';
 import Attachment from '../models/Attachment.js';
 import ApiError from '../utils/ApiError.js';
@@ -272,6 +274,30 @@ const checklistFor = (order) =>
     at: order.verification?.[check.key]?.at,
     note: order.verification?.[check.key]?.note,
   }));
+
+/**
+ * The draft the SO team's upload made, for whoever reads it [services/soDraftReview.service.js]: the
+ * order as this person may see it, and the review — who has verified or confirmed it, who still
+ * must, and what this person may do here.
+ */
+export const getOrderDraft = asyncHandler(async (req, res) => {
+  const order = await SalesOrder.findById(req.params.id).populate(POPULATE);
+  if (!order || !ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+  res.json({ success: true, data: await orderOut(order, req.user), review: await draftReviewOf(order, req.user) });
+});
+
+const reviewDraft = (how) => asyncHandler(transactional(async (req, res) => {
+  const order = await draftOrder(req.params.id);
+  if (!ownsRecord(req.user, order)) throw ApiError.notFound('Order not found');
+  const outcome = await how(order, req.user, { note: req.body.note });
+  const fresh = await SalesOrder.findById(order._id).populate(POPULATE);
+  res.json({ success: true, data: await orderOut(fresh, req.user), review: await draftReviewOf(fresh, req.user), outcome });
+}));
+
+/** The SO team's verification of the draft against the SO they sent. */
+export const verifyOrderDraft = reviewDraft(verifyDraft);
+/** Marketing's or Admin's confirmation that the draft is the buyer's order. */
+export const confirmOrderDraft = reviewDraft(confirmDraft);
 
 export const getOrder = asyncHandler(async (req, res) => {
   const order = await SalesOrder.findById(req.params.id)
@@ -796,6 +822,8 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
    * confirmed delivery date" is something a person can go and do, and "8 checks required" is
    * not.
    */
+  /* A draft nobody has read yet goes nowhere, whatever the eight checks say [soDraftReview.service]. */
+  if (recipe.gate === 'verified' && order.draftPending) throw ApiError.badRequest(draftWaitsWords(order));
   if (recipe.gate === 'verified' && !order.isVerified) {
     throw ApiError.badRequest(
       `This order still needs ${missingChecks(order)} before it can go to production`

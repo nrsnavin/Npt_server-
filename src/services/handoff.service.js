@@ -3403,6 +3403,9 @@ export async function finishWithResult(task, user, { attachmentId, note, reading
   const order = await bookOrderFor(task, user, { held, reading, readProblem });
   if (held) {
     nextProblem = 'Production was not confirmed on the request — the order is with marketing under Production Holded Orders until Admin or its marketing person moves it to Production.';
+  } else if (order?.draftPending) {
+    /* Nobody has read the draft yet: Production is asked once the SO team verifies it and marketing or Admin confirms it [continueAfterDraft]. */
+    nextProblem = `The sales order ${order.number} is drafted — the Sales / SO team verifies it and marketing or Admin confirms it (on the enquiry, this task or the order); Production is asked then.`;
   } else if (step.next && !task.enquiry) {
     /* A team task: the next team's task for the same buyer, on the same journey [journey.service]. */
     if (heldBack(task)) {
@@ -3454,8 +3457,14 @@ async function bookOrderFor(task, user, { held, reading, readProblem }) {
   if (!booked.linked && drafted.readProblem) said += ` (SO PDF not used: ${drafted.readProblem})`;
   if (differences.length) said += `. The SO differs from the request: ${differences.join('; ')}`;
   let released = false;
+  /* A draft: two people read it before it goes anywhere [soDraftReview.service] — the SO team and marketing or Admin. */
+  const draftPending = !booked.linked && Boolean(order.draftPending);
   if (booked.linked) {
     said += held ? '' : ' — release it there once its checks are done';
+  } else if (draftPending) {
+    said += ` — a draft: the SO team verifies it and marketing or Admin confirms it, on the enquiry, this task or the order; then it ${held ? 'waits for Move to Production' : differences.length ? 'is released once the difference is settled' : 'goes to Production'}`;
+    const { noticeDraft } = await import('./soDraftReview.service.js');
+    await noticeDraft(order, { by: user });
   } else if (held) {
     said += ' — waits for Move to Production';
   } else if (differences.length) {
@@ -3467,7 +3476,51 @@ async function bookOrderFor(task, user, { held, reading, readProblem }) {
     said += released ? ' and released to production' : result.problem ? ` — not released yet: ${result.problem}` : '';
   }
   await noteOrderOnTask(task, user, said);
-  return { _id: order._id, number: order.number, booked: Boolean(booked.booked), linked: Boolean(booked.linked), revised: Boolean(booked.revised), changes: booked.changes || [], released, said, from: drafted.from || null, differences };
+  return { _id: order._id, number: order.number, booked: Boolean(booked.booked), linked: Boolean(booked.linked), revised: Boolean(booked.revised), changes: booked.changes || [], released, draftPending, said, from: drafted.from || null, differences };
+}
+
+/**
+ * The draft verified and confirmed [soDraftReview.service]: the order goes on as its upload would
+ * have. Production confirmed on the request: released to the plant and Production asked on the
+ * enquiry (unless the SO and the request differ — then a person releases it on Sales orders).
+ * Not confirmed: it stays a Production Holded Order, released with Move to Production. The
+ * payment gate still holds a release back [releaseFromTask]. Said on the SO task. Returns what
+ * happened, in words.
+ */
+export async function continueAfterDraft(order, user) {
+  const { releaseFromTask, noteOrderOnTask } = await import('./soFromTask.service.js');
+  const task = order.sourceTask ? await Todo.findById(order.sourceTask?._id || order.sourceTask) : null;
+  const who = `verified by ${(await mongoose.model('User').findById(order.drafted?.verified?.by).select('name').lean())?.name || 'the SO team'}, confirmed by ${(await mongoose.model('User').findById(order.drafted?.confirmed?.by).select('name').lean())?.name || 'marketing'}`;
+  const outcome = { released: false, next: null, said: '' };
+  if (!task || !task.enquiry) {
+    outcome.said = `${order.number} ${who} — release it on Sales orders once its checks are done`;
+    return outcome;
+  }
+  /* Production asked already — Move to Production pressed while the draft waited, or the request confirmed it. */
+  const next = findHandoff(task.kind)?.form?.statuses?.find((entry) => entry.key === task.status)?.next || 'ask_edd';
+  const already = await Todo.exists({ enquiry: task.enquiry?._id || task.enquiry, kind: next, completed: false });
+  if (heldBack(task) && !already) {
+    outcome.said = `${order.number} ${who} — waits for Move to Production (Production was not confirmed on the request)`;
+  } else if (order.drafted?.differences?.length) {
+    outcome.said = `${order.number} ${who} — not released: the SO differs from the request (${order.drafted.differences.join('; ')}); check it on Sales orders and release it`;
+  } else {
+    const result = await releaseFromTask(order, user, `Released from the SO request — draft ${who}`);
+    outcome.released = result.released;
+    outcome.said = `${order.number} ${who}${result.released ? ' and released to production' : result.problem ? ` — not released yet: ${result.problem}` : ''}`;
+    /* Production asked on the enquiry, as the upload would have — unless it already was. */
+    if (!already) {
+      try {
+        const enquiry = await enquiryOfTask(task);
+        outcome.next = await moveEnquiry({ enquiry, kind: next, note: `Sales order ${order.number} ${who}`, user, system: true, order: order._id, brief: carriedBrief(task) });
+        outcome.said += ' — Production has its task';
+      } catch (error) {
+        if (error?.statusCode !== 400 && error?.statusCode !== 409) throw error;
+        outcome.said += ` — Production not asked yet: ${error.message}`;
+      }
+    }
+  }
+  await noteOrderOnTask(task, user, outcome.said);
+  return outcome;
 }
 
 /**

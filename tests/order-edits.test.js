@@ -35,7 +35,17 @@ async function upload(taskId, as = 'priya') {
   const form = new FormData();
   form.append('file', new Blob(['%PDF-1.4 so'], { type: 'application/pdf' }), 'SO.pdf');
   const response = await fetch(`${baseUrl}/api/workspace/todos/${taskId}/result`, { method: 'POST', headers: { Authorization: `Bearer ${token[as]}` }, body: form });
-  return { status: response.status, json: await response.json().catch(() => ({})) };
+  const json = await response.json().catch(() => ({}));
+  /* The draft is read by the SO team and Admin here, as both would on the task or the enquiry [soDraftReview.service] — the order then goes on as the request said. */
+  if (response.status === 200 && json.order?.draftPending) {
+    const verified = await api(`/api/orders/${json.order._id}/draft/verify`, { method: 'POST', as: 'priya', body: { note: 'Checked against the SO' } });
+    assert.equal(verified.status, 200, verified.json.message);
+    const confirmed = await api(`/api/orders/${json.order._id}/draft/confirm`, { method: 'POST', as: 'admin', body: {} });
+    assert.equal(confirmed.status, 200, confirmed.json.message);
+    json.order = { ...json.order, released: Boolean(confirmed.json.outcome?.released), draftPending: false };
+    json.next = confirmed.json.outcome?.next || json.next;
+  }
+  return { status: response.status, json };
 }
 const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
 async function until(check) {

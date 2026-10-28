@@ -194,6 +194,11 @@ export const orderActionSchema = z.object({
   cancellationReason: z.string().optional(),
 });
 
+/** Verifying or confirming a drafted order [services/soDraftReview.service.js]: a note, if any. */
+export const orderDraftReviewSchema = z.object({
+  note: z.string().trim().max(2000).optional(),
+});
+
 /* ------------------------------- Order queries ------------------------------- */
 
 /**

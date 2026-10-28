@@ -412,6 +412,12 @@ test('an SO with an advance in its terms: Payment Collection gets the task on up
   const uploaded = await fetch(`${baseUrl}/api/workspace/todos/${so._id}/result`, { method: 'POST', headers: { Authorization: `Bearer ${token.priya}` }, body: form }).then((response) => response.json());
   assert.equal(uploaded.data.completed, true, uploaded.message);
   assert.equal(uploaded.order.released, false, 'not released — the advance is not in');
+  /* The draft read by both [soDraftReview.service]: still not released — the advance is not in. */
+  assert.equal((await api(`/api/orders/${uploaded.order._id}/draft/verify`, { method: 'POST', as: 'priya', body: {} })).status, 200);
+  const read = await api(`/api/orders/${uploaded.order._id}/draft/confirm`, { method: 'POST', as: 'nandhini', body: {} });
+  assert.equal(read.status, 200, read.json.message);
+  assert.equal(read.json.outcome.released, false, 'verified and confirmed, but the advance is not in');
+  assert.match(read.json.outcome.said, /not released yet/);
   assert.equal(await Todo.exists({ enquiry, kind: 'ask_edd' }), null, 'Production is not asked yet');
   const order = await SalesOrder.findById(uploaded.order._id);
   const [chase] = (await collectionTasks(order)).filter((entry) => !entry.completed);
