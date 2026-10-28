@@ -11,7 +11,8 @@ import SalesOrder, {
 import Quotation from '../models/Quotation.js';
 import Enquiry from '../models/Enquiry.js';
 import { mayReleaseHeld } from '../services/handoff.service.js';
-import { mouldWithPhoto } from '../models/Mould.js';
+import Mould, { mouldWithPhoto } from '../models/Mould.js';
+import { placeOfSupplyFor } from '../utils/gst.js';
 import Customer from '../models/Customer.js';
 import Attachment from '../models/Attachment.js';
 import ApiError from '../utils/ApiError.js';
@@ -366,8 +367,15 @@ export const exportOrders = asyncHandler(async (req, res) => {
  */
 const lineFrom = async (line) => {
   const built = await buildSpec(line);
+  /* The tax on the line: what was given, else the mould's own HSN and rate [utils/gst.js]. */
+  const mould = built.mould && (!String(line.hsnCode || '').trim() || line.gstPercent == null)
+    ? await Mould.findById(built.mould).select('hsnCode gstPercent').lean() : null;
+  const hsnCode = String(line.hsnCode || '').trim() || mould?.hsnCode || undefined;
+  const gstPercent = line.gstPercent != null ? line.gstPercent : mould?.gstPercent ?? undefined;
 
   return {
+    hsnCode,
+    gstPercent,
     mould: built.mould || undefined,
     modelNumber: built.modelNumber,
     category: built.category,
@@ -471,6 +479,8 @@ export const createOrder = asyncHandler(transactional(async (req, res) => {
     ...req.body,
     customer: customer._id,
     enquiry: enquiry._id,
+    /* Where the goods go, for the GST split [utils/gst.js]. */
+    placeOfSupply: placeOfSupplyFor(customer, { isExport: req.body.isExport }),
     /* Stamped here rather than taken from the request — see the note on the schema. */
     ...(req.body.externalRef
       ? { externalRef: { ...req.body.externalRef, importedAt: new Date() } }
@@ -574,10 +584,13 @@ export const orderFromQuotation = asyncHandler(transactional(async (req, res) =>
       })
   );
 
+  const buyer = await Customer.findById(quotation.customer).select('state gstin').lean();
   const order = await SalesOrder.create({
     number: await nextNumber('SO'),
     customer: quotation.customer,
     quotation: quotation._id,
+    /* Where the goods go, for the GST split [utils/gst.js]. */
+    placeOfSupply: placeOfSupplyFor(buyer, { isExport: req.body.isExport ?? quotation.isExport }),
     enquiry: quotation.enquiry,
     /* The quote's owner keeps the customer — an order does not change whose relationship it is. */
     assignedTo: quotation.assignedTo,
@@ -656,6 +669,8 @@ export const updateOrder = asyncHandler(withOrderLock(req => req.params.id, tran
   }
 
   Object.assign(order, patch);
+  /* The buyer's state or GSTIN may have been corrected since: the tax's split follows it. */
+  order.placeOfSupply = placeOfSupplyFor(await Customer.findById(order.customer).select('state gstin').lean(), { isExport: order.isExport });
   await order.save();
   await recordChange({ model: 'SalesOrder', doc: order, before, by: req.user });
   if (patch.paymentPlan || patch.lines) await planCollection(order, { by: req.user });
