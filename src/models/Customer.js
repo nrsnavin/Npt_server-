@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import qcStandardsSchema from './qcStandards.schema.js';
 import { normalisePhone } from '../utils/phone.js';
 import { withConversationRef } from './conversationRef.js';
+import { GST_STATES, stateCodeOfGstin } from '../utils/gst.js';
 
 /** How a buyer's goods usually travel [services/dispatchPlanning.service.js]. */
 export const DELIVERY_MODES = ['own_vehicle', 'transport', 'party_collects', 'courier'];
@@ -272,6 +273,15 @@ customerSchema.index({ 'followUp.due': 1 }, { sparse: true });
 
 /** §8: present and null until the WhatsApp front door lands, so nothing is migrated then. */
 withConversationRef(customerSchema);
+
+/* A GSTIN names the buyer's state in its first two digits [utils/gst.js]: a record given one without a state takes it. */
+customerSchema.pre('save', function fillStateFromGstin(next) {
+  if (!String(this.state || '').trim()) {
+    const code = stateCodeOfGstin(this.gstin);
+    if (code) this.state = GST_STATES[code];
+  }
+  next();
+});
 
 protectWrites(customerSchema);
 protectOwnership(customerSchema);

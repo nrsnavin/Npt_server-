@@ -208,6 +208,13 @@ export function startBackground() {
       if (shared) console.warn(`Payment references: ${shared} earlier receipt(s) share a UTR with another — check them on Payments`);
     })
     .catch((error) => console.error('Payment references backfill failed:', error.message));
+  /* The orders booked before the place of supply was kept on them: their buyer's, once [gstBackfill.service]. */
+  import('./services/gstBackfill.service.js')
+    .then(({ backfillPlacesOfSupply }) => backfillPlacesOfSupply())
+    .then(({ written, assumed }) => {
+      if (written) console.log(`GST: place of supply written on ${written} earlier order(s)${assumed ? ` — ${assumed} assumed the plant's state, the buyer having no state or GSTIN on record` : ''}`);
+    })
+    .catch((error) => console.error('GST place-of-supply backfill failed:', error.message));
   const timers = [
     /* Interrupted dispatches, every minute, independent of the reminders [data-consistency.md]. */
     everyExclusively('sweep:dispatch-recovery', 60_000, () =>

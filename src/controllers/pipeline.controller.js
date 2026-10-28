@@ -31,6 +31,7 @@ import { normalisePhone } from '../utils/phone.js';
 import { withCreateLocks } from '../services/operationLock.service.js';
 import { customerKeys } from '../utils/customerKeys.js';
 import { listParams, paginated } from '../utils/query.js';
+import { GST_UNKNOWN } from '../services/gstBackfill.service.js';
 import { expectVersion, withoutVersion } from '../utils/concurrency.js';
 import { recordChange, snapshot } from '../services/audit.service.js';
 import { collect, sendCsv } from '../utils/csv.js';
@@ -291,13 +292,17 @@ export const listCustomers = asyncHandler(async (req, res) => {
   if (req.query.customerType) filter.customerType = req.query.customerType;
   if (req.query.rating) filter.rating = req.query.rating;
   if (req.query.status) filter.status = req.query.status;
+  /* The buyers with no state and no GSTIN: the GST on their orders assumes the plant's own state [gstBackfill.service]. */
+  const scoped = { ...filter };
+  if (req.query.gstMissing === 'true') filter.$and = [...(filter.$and || []), GST_UNKNOWN];
 
-  const [data, total] = await Promise.all([
+  const [data, total, gstMissing] = await Promise.all([
     Customer.find(filter).populate('assignedTo', 'name').sort(sort).skip((page - 1) * limit).limit(limit),
     Customer.countDocuments(filter),
+    Customer.countDocuments({ ...scoped, $and: [...(scoped.$and || []), GST_UNKNOWN] }),
   ]);
 
-  paginated(res, await customerSummaries(data), { page, limit, total });
+  paginated(res, await customerSummaries(data), { page, limit, total }, { gstMissing });
 });
 
 /**
