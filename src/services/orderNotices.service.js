@@ -9,6 +9,8 @@ import { MANAGEMENT_QUERY } from '../utils/departments.js';
  * Never fails the booking.
  */
 export async function noticeOrderBooked(order, { by } = {}) {
+  /* A draft from the SO team's upload is told as a draft to read, not as an order booked [soDraftReview.service `noticeDraft`]. */
+  if (order?.drafted?.from) return;
   try {
     const [{ default: TaskNotice }, { default: User }, { default: Enquiry }, { default: Customer }] = await Promise.all([
       import('../models/TaskNotice.js'), import('../models/User.js'), import('../models/Enquiry.js'), import('../models/Customer.js'),

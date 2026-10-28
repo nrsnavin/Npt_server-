@@ -5,6 +5,7 @@ import {
   setOrderCheck, applyOrderAction, listOrderActions, setOrderPo, setLinePrintReference, setOrderPriority,
   setLinePromisedDate, orderPaymentStanding, orderReleaseCheck, waiveOrderPayment,
   orderTermsPreview, changeOrderTerms, changeOrderQuantitiesHandler,
+  getOrderDraft, verifyOrderDraft, confirmOrderDraft,
 } from '../controllers/order.controller.js';
 import {
   listOrderQueries, listQueryQueue, raiseOrderQuery, answerOrderQuery, closeOrderQuery,
@@ -43,7 +44,7 @@ import { validate } from '../middleware/validate.js';
 import { singleDocument } from '../middleware/upload.js';
 import {
   orderSchema, orderUpdateSchema, orderFromQuotationSchema,
-  orderCheckSchema, orderActionSchema, orderPaymentWaiverSchema, orderTermsSchema, orderQuantitiesSchema,
+  orderCheckSchema, orderActionSchema, orderPaymentWaiverSchema, orderTermsSchema, orderQuantitiesSchema, orderDraftReviewSchema,
   orderQuerySchema, orderAnswerSchema, orderQueryCloseSchema,
   orderEscalationSchema, escalationUpdateSchema, escalationResolveSchema,
   productionLineSchema, orderPrioritySchema, linePromiseSchema,
@@ -159,6 +160,10 @@ router.post(
  * route can only ever know about the caller.
  */
 router.post('/orders/:id/checks', requireModule('orders', 'write'), validate(orderCheckSchema), setOrderCheck);
+/* The draft the SO upload made, and the two readings that let it go on [services/soDraftReview.service.js]. */
+router.get('/orders/:id/draft', requireModule('orders'), getOrderDraft);
+router.post('/orders/:id/draft/verify', requireModule('orders'), validate(orderDraftReviewSchema), verifyOrderDraft);
+router.post('/orders/:id/draft/confirm', requireModule('orders'), validate(orderDraftReviewSchema), confirmOrderDraft);
 router.get('/orders/:id/actions', requireModule('orders'), listOrderActions);
 router.post('/orders/:id/actions', requireModule('orders', 'write'), validate(orderActionSchema), applyOrderAction);
 /* Money before work: where the order stands against its payment terms, and Admin's exception. */

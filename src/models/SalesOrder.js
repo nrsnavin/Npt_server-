@@ -497,6 +497,13 @@ const salesOrderSchema = new mongoose.Schema(
       differences: { type: [String], default: undefined },
       readProblem: String,
       at: Date,
+      /*
+       * A draft goes nowhere until two people have read it [services/soDraftReview.service.js]:
+       * the SO team verifies it against the SO they sent, and the enquiry's marketing person or
+       * Admin confirms it is the buyer's order. Each with a name and a time.
+       */
+      verified: { type: checkSchema },
+      confirmed: { type: checkSchema },
     },
     /*
      * Production stopped because a new SO request revises the order [soFromTask `stopForRevision`]:
@@ -800,8 +807,17 @@ salesOrderSchema.virtual('isVerified').get(function isVerified() {
  * `releasedAt` and reset the production statuses underneath it — which looks like a harmless
  * repeat of a button press and is not.
  */
+/**
+ * A draft still to be read: booked from the SO team's upload and not yet both verified by the SO
+ * team and confirmed by the enquiry's marketing person or Admin [services/soDraftReview.service.js].
+ * An order typed on the Sales orders screen is no draft.
+ */
+salesOrderSchema.virtual('draftPending').get(function draftPending() {
+  return Boolean(this.drafted?.from) && !(this.drafted?.verified?.by && this.drafted?.confirmed?.by);
+});
+
 salesOrderSchema.virtual('releasable').get(function releasable() {
-  return this.isVerified && PRE_RELEASE_STATUSES.includes(this.status);
+  return this.isVerified && !this.draftPending && PRE_RELEASE_STATUSES.includes(this.status);
 });
 
 salesOrderSchema.set('toJSON', { virtuals: true });

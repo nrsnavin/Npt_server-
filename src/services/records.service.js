@@ -921,7 +921,7 @@ export async function dispatchDetailsForOrder(order) {
  */
 export async function enquiryRecords(enquiry, { withQc }) {
   const [orders, requests, lrTasks, qc] = await Promise.all([
-    SalesOrder.find({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('number status customerPo.number paymentTerms lines.modelNumber lines.quantity createdAt').lean(),
+    SalesOrder.find({ enquiry: enquiry._id }).sort({ createdAt: -1 }).select('number status customerPo.number paymentTerms lines.modelNumber lines.quantity createdAt drafted').lean(),
     Todo.find({ enquiry: enquiry._id, kind: 'invoice_dispatch' }).sort({ createdAt: 1 }).populate(REQUEST_POPULATE).lean(),
     Todo.find({ enquiry: enquiry._id, kind: 'lr_copy' }).sort({ createdAt: 1 }).select(LR_SELECT).populate([{ path: 'resultFile', select: 'key filename' }, { path: 'order', select: 'number' }]).lean(),
     withQc ? populateQc(QcRecord.find({ enquiry: enquiry._id }).sort({ inspectedAt: -1 }).limit(100)) : null,
@@ -929,6 +929,8 @@ export async function enquiryRecords(enquiry, { withQc }) {
   return {
     orders: orders.map((row) => ({
       _id: row._id, number: row.number, status: row.status, buyerPo: row.customerPo?.number || '', paymentTerms: row.paymentTerms || '',
+      /* A draft from the SO upload still to be verified and confirmed [soDraftReview.service] — the page shows it to read. */
+      draftPending: Boolean(row.drafted?.from) && !(row.drafted?.verified?.by && row.drafted?.confirmed?.by),
       models: (row.lines || []).map((line) => line.modelNumber).filter(Boolean).join(', '),
       quantity: (row.lines || []).reduce((sum, line) => sum + (line.quantity || 0), 0),
     })),
