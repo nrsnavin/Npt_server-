@@ -1227,7 +1227,8 @@ export async function sendHandoff({ enquiry, kind, note, fields, brief, priority
      * said on the task, so the Production in charge gives them on "Add to production queue"
      * [fillQueueDetails] before the plan.
      */
-    if (kind === 'ask_edd' && raised?._id) {
+    /* Said once, when the task is raised — asked again onto the open task, the ask stays the latest line. */
+    if (kind === 'ask_edd' && raised?._id && !raised.$locals?.addedTo) {
       const unsaid = bareDetails(brief);
       if (unsaid.length) {
         const said = `Not given when raised: ${unsaid.join(', ')} — the Production in charge enters them on Add to production queue`;
@@ -3214,7 +3215,21 @@ function statusDate(form, step, date) {
  * The moves that reach Admin's and marketing's "Needs your action", by task kind: Production's
  * Mould Issue and Raw Material Not Available, Dispatch's Dispatched. Nothing else.
  */
-export const ADMIN_MARKETING_NOTICES = Object.freeze({ ask_edd: ['mould_issue', 'raw_material'], invoice_dispatch: ['dispatched', 'part_dispatched', 'fully_dispatched'] });
+/*
+ * What Admin and the enquiry's marketing person hear of a job's progress, beside what they must
+ * act on: Production Completed; Printing and Assembly taking the goods into their work queue and
+ * finishing them; every dispatch load, with the pieces that went. (Added to the production queue
+ * is told from the queue itself [addToProductionQueue]; a sales order booked from the order
+ * [orderNotices.service].)
+ */
+export const ADMIN_MARKETING_NOTICES = Object.freeze({
+  ask_edd: ['mould_issue', 'raw_material', 'completed'],
+  ask_printing: ['in_queue', 'full_ready'],
+  ask_assembling_edd: ['in_queue', 'full_ready'],
+  invoice_dispatch: ['dispatched', 'part_dispatched', 'fully_dispatched'],
+});
+/* The loads: the pieces gone are every Admin's news too, as the buyer's marketing person's. */
+const LOAD_NOTICES = ADMIN_MARKETING_NOTICES.invoice_dispatch;
 /*
  * Dispatch's news — its request and Reception's LR copy — is the buyer's marketing person's, not
  * every Admin's: an Admin hears it only as that marketing person [noticeStatus].
@@ -3258,8 +3273,8 @@ export async function noticeStatus(task, user, { step, note, date, also = [], on
     const office = await User.find({ _id: { $in: [...recipients] }, $or: [{ department: 'marketing' }, { extraDepartments: 'marketing' }] }).select('_id').lean();
     for (const person of office) recipients.delete(String(person._id));
   }
-  /* Dispatch's moves: the marketing person of the buyer, never Admin as Admin. */
-  if (DISPATCH_NOTICE_KINDS.includes(task.kind)) {
+  /* Dispatch's moves: the marketing person of the buyer, never Admin as Admin — but a load gone, with its pieces, every Admin hears [LOAD_NOTICES]. */
+  if (DISPATCH_NOTICE_KINDS.includes(task.kind) && !(task.kind === 'invoice_dispatch' && LOAD_NOTICES.includes(step?.key))) {
     for (const admin of admins) if (String(admin._id) !== String(asker || '')) recipients.delete(String(admin._id));
   }
   if (user?._id) recipients.delete(String(user._id));
@@ -3321,6 +3336,7 @@ export async function noticesFor(user) {
       { path: 'by', select: 'name department' },
       { path: 'customer', select: 'code name' },
       { path: 'enquiry', select: 'number' },
+      { path: 'order', select: 'number' },
     ]).lean();
 }
 
@@ -4325,6 +4341,14 @@ export async function addToProductionQueue(task, user, { models, items, updateEn
   task.updates = [...(task.updates || []), { kind: 'note', text: 'Added to the production queue', note: `Added to the production queue: ${text}`, by: user._id, at: new Date() }];
   if (!task.user) task.user = user._id;
   await task.save();
+  /* Queued: Admin and the enquiry's marketing person hear it, with the models and the EDD if one was given. */
+  const queued = modelsOfTask(task);
+  await noticeStatus(task, user, {
+    step: { key: 'production_queued', label: 'Added to the production queue' },
+    note: [queued.length && queued.join(', '), text !== 'Added to the production queue' && text].filter(Boolean).join(' — ') || undefined,
+    date: day || undefined,
+    toAdminAndMarketing: true,
+  });
   return task;
 }
 

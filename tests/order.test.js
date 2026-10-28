@@ -819,3 +819,38 @@ test('GST on the order: each line at its HSN and rate, split by the place of sup
   assert.equal(seen.lines[0].hsnCode, '39269099');
   await Customer.updateOne({ _id: customer }, { $unset: { state: 1, gstin: 1 } });
 });
+
+test('after the GST change: earlier orders get their place of supply once; the list finds buyers with no state or GSTIN; a GSTIN fills the state and a wrong one is refused', async () => {
+  const { default: Customer } = await import('../src/models/Customer.js');
+  const { default: SalesOrder } = await import('../src/models/SalesOrder.js');
+  const { backfillPlacesOfSupply } = await import('../src/services/gstBackfill.service.js');
+
+  /* An order booked before the change: no place of supply on it. The buyer has none either, so the plant's state is assumed and counted. */
+  const made = await order({ lines: [{ mould, modelNumber: 'NH-400', quantity: 100, unitPrice: 7.5 }] });
+  await SalesOrder.updateOne({ _id: made._id }, { $unset: { placeOfSupply: 1 } }, { keepVersion: true });
+  assert.equal((await SalesOrder.findById(made._id).lean()).placeOfSupply, undefined);
+  assert.deepEqual(await backfillPlacesOfSupply(), { written: 1, assumed: 1 });
+  const filled = (await api(`/api/orders/${made._id}`, { token: priya })).json.data;
+  assert.deepEqual(filled.placeOfSupply, { code: '33', state: 'Tamil Nadu', intraState: true, known: false });
+  assert.deepEqual(await backfillPlacesOfSupply(), { written: 0, assumed: 0 }, 'a second run adds nothing');
+
+  /* The list: the buyers with neither, and how many there are. */
+  const { status: listed, json: all } = await api('/api/customers', { token: admin });
+  assert.equal(listed, 200, all.message);
+  assert.ok(all.gstMissing >= 1, `${all.gstMissing} without a state or GSTIN`);
+  const { json: only } = await api('/api/customers?gstMissing=true', { token: admin });
+  assert.ok(only.data.length >= 1);
+  assert.ok(only.data.every((row) => !row.state && !row.gstin));
+  assert.equal(only.pagination.total, all.gstMissing);
+
+  /* A GSTIN that is not one is refused; a Kerala GSTIN on a record with no state names the state. */
+  const current = (await api(`/api/customers/${customer}`, { token: nandhini })).json.data.customer || (await api(`/api/customers/${customer}`, { token: nandhini })).json.data;
+  const wrong = await api(`/api/customers/${customer}`, { method: 'PATCH', token: nandhini, body: { expectedUpdatedAt: current.updatedAt, gstin: '33ABCDE1234F1Z' } });
+  assert.equal(wrong.status, 400, wrong.json.message);
+  assert.match(JSON.stringify(wrong.json), /Not a GSTIN — 15 characters/);
+  const right = await api(`/api/customers/${customer}`, { method: 'PATCH', token: nandhini, body: { expectedUpdatedAt: current.updatedAt, gstin: '32ABCDE1234F1Z5' } });
+  assert.equal(right.status, 200, right.json.message);
+  assert.equal((await Customer.findById(customer).lean()).state, 'Kerala');
+  assert.equal((await api('/api/customers?gstMissing=true', { token: admin })).json.data.some((row) => row._id === customer), false);
+  await Customer.updateOne({ _id: customer }, { $unset: { state: 1, gstin: 1 } });
+});

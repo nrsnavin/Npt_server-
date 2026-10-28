@@ -832,11 +832,13 @@ test('Dispatch marking it Dispatched hands Reception the LR copy, with the dispa
     : api(`/api/workspace/todos/${dispatchId}/status`, { method: 'POST', as: 'ravi', body: { status, note } }));
 
   assert.equal((await move('part_dispatched', 'Left with VRL, vehicle TN39 AB 1234')).status, 200);
-  /* A load is news for the buyer's marketing person — not for every Admin [handoff.service `DISPATCH_NOTICE_KINDS`]. */
+  /* A load is news for the buyer's marketing person and every Admin, with the pieces that went [handoff.service `LOAD_NOTICES`]. */
   const notice = (await noticesOf('nandhini')).find((entry) => String(entry.task?._id || entry.task) === String(dispatchId));
   assert.equal(notice?.statusLabel, 'Part Quantity Dispatched');
   assert.equal(notice.department, 'despatch');
-  assert.equal((await noticesOf('admin')).some((entry) => String(entry.task?._id || entry.task) === String(dispatchId)), false, 'Admin is not the marketing person here');
+  const adminNotice = (await noticesOf('admin')).find((entry) => String(entry.task?._id || entry.task) === String(dispatchId));
+  assert.equal(adminNotice?.statusLabel, 'Part Quantity Dispatched', 'Admin hears the load too');
+  assert.match(adminNotice.note, /UTJRSH-0 2,000 pcs/, 'with the pieces sent');
   const lr = await Todo.findOne({ enquiry: fresh._id, kind: 'lr_copy', completed: false });
   assert.ok(lr, 'Reception has the LR copy task');
   assert.equal(lr.department, 'reception');

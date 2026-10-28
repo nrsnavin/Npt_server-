@@ -164,7 +164,8 @@ export const customerSchema = z.object({
   mobile: z.string().optional(),
   whatsapp: z.string().optional(),
   email: z.string().trim().email().optional(),
-  gstin: z.string().optional(),
+  /* 15 characters — the state code, the PAN, an entity number, Z, a check digit — or blank [utils/gst.js]. */
+  gstin: z.string().trim().toUpperCase().regex(/^\d{2}[A-Z]{5}\d{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/, 'Not a GSTIN — 15 characters, like 33ABCDE1234F1Z5').optional().or(z.literal('')),
   contacts: z.array(contactSchema).optional(),
   deliveryContact: roleContact,
   accountsContact: roleContact,
