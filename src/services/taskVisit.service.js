@@ -18,6 +18,9 @@ import { findHandoff } from '../config/handoffs.js';
  * recorded, with why there is no picture.
  */
 
+/** A fix within this is the buyer's gate, not the street. */
+export const PRECISE_M = 10;
+
 /** The tasks a visit is recorded on. */
 export const VISIT_KINDS = ['sample_request', 'team_payment_followup', 'my_payment_followup', 'prt_recovery'];
 
@@ -28,7 +31,7 @@ export const visitSummary = (task) => {
   return {
     task: task?._id || null,
     count: visits.length,
-    last: last ? { at: last.capturedAt || last.at, place: last.place?.name || null } : null,
+    last: last ? { at: last.capturedAt || last.at, place: last.place?.name || null, accuracyM: last.accuracyM ?? null } : null,
   };
 };
 
@@ -113,7 +116,8 @@ export async function recordVisit(task, user, { lat, lng, accuracyM, capturedAt,
     note: String(note || '').trim() || undefined, capturedAt: capturedAt ? new Date(capturedAt) : new Date(), by: user._id, at: new Date(),
   };
   task.visits = [...(task.visits || []), visit];
-  const where = [placeWords(place), coords(latitude, longitude), visit.accuracyM != null && `±${visit.accuracyM} m`].filter(Boolean).join(' · ');
+  /* Within 10 m is the buyer's gate; a rougher fix is said as approximate [web: hooks/usePreciseLocation.js]. */
+  const where = [placeWords(place), coords(latitude, longitude), visit.accuracyM != null && `±${visit.accuracyM} m${visit.accuracyM > PRECISE_M ? ' (approximate)' : ''}`].filter(Boolean).join(' · ');
   const said = `Visited — ${where}${visit.note ? `: ${visit.note}` : ''}`;
   task.updates = [...(task.updates || []), { kind: 'note', statusLabel: 'Visited', text: visit.note, note: said, by: user._id, at: new Date() }];
   if (!task.user) task.user = user._id;

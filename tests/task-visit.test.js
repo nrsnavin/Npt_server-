@@ -89,12 +89,12 @@ test('whoever works the task records the visit from the phone: the fix, the near
   assert.ok(visit.image?.key || visit.imageProblem, 'a picture, or why there is none');
   assert.equal(recorded.json.data.visits.length, 1, 'on the task as read');
   const saved = await Todo.findById(task._id).lean();
-  assert.match(saved.updates.at(-1).note, /^Visited — Tiruppur · 11\.10850, 77\.34110 · ±12 m: Met the merchandiser, sample handed over$/);
+  assert.match(saved.updates.at(-1).note, /^Visited — Tiruppur · 11\.10850, 77\.34110 · ±12 m \(approximate\): Met the merchandiser, sample handed over$/);
   assert.equal(saved.updates.at(-1).statusLabel, 'Visited');
   /* Admin and the enquiry's marketing person hear it — not whoever recorded it. */
   const heard = async (as) => ((await api('/api/workspace/notices', { as })).json.data || []).find((notice) => notice.statusLabel === 'Sample Request: visited near Tiruppur');
   assert.ok(await heard('admin'), 'Admin');
-  assert.match((await heard('nandhini')).note, /Tiruppur · 11\.10850, 77\.34110 · ±12 m — Met the merchandiser/);
+  assert.match((await heard('nandhini')).note, /Tiruppur · 11\.10850, 77\.34110 · ±12 m \(approximate\) — Met the merchandiser/);
   assert.equal(await heard('mani'), undefined);
 });
 
@@ -109,6 +109,7 @@ test('the satellite picture of the spot is kept as an attachment on the task; wi
   assert.deepEqual([attachment.mimeType, attachment.docType, attachment.title, String(attachment.task), String(attachment.enquiry), attachment.size], ['image/jpeg', 'visit_satellite', 'Satellite view of the visit', String(task._id), String(enquiry._id), JPEG.length]);
   assert.match(attachment.filename, /^visit-\d{4}-\d{2}-\d{2}\.jpg$/);
   assert.equal(pictured.imageProblem, undefined);
+  assert.match((await Todo.findById(task._id)).updates.at(-1).note, /· ±8 m$/, 'a fix within 10 m is not said as approximate');
   const dark = await recordVisit(await Todo.findById(task._id), mani, { lat: 11.1101, lng: 77.3399 }, { fetchImpl: imagery(false) });
   assert.equal(dark.image, undefined);
   assert.match(dark.imageProblem, /^Satellite picture not kept: the imagery service could not be reached \(getaddrinfo ENOTFOUND/);
@@ -143,6 +144,7 @@ test('the Sampling queue row carries the task a visit goes on, with the visits s
   assert.equal(String(row.visit.task), String(task._id), 'the enquiry’s Sampling task');
   assert.equal(row.visit.count, 3);
   assert.equal(row.visit.last.place, 'Tiruppur');
+  assert.equal(row.visit.last.accuracyM, null, 'the last visit was recorded without an accuracy');
   /* The task done, the visit pressed after the hand-over is still kept. */
   await Todo.updateOne({ _id: task._id }, { $set: { completed: true, completedAt: new Date() } });
   const late = await api(`/api/workspace/todos/${task._id}/visit`, { method: 'POST', as: 'mani', body: TIRUPPUR });
