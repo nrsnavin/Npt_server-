@@ -926,7 +926,17 @@ export async function enquiryRecords(enquiry, { withQc }) {
     Todo.find({ enquiry: enquiry._id, kind: 'lr_copy' }).sort({ createdAt: 1 }).select(LR_SELECT).populate([{ path: 'resultFile', select: 'key filename' }, { path: 'order', select: 'number' }]).lean(),
     withQc ? populateQc(QcRecord.find({ enquiry: enquiry._id }).sort({ inspectedAt: -1 }).limit(100)) : null,
   ]);
+  /* Visits to the buyer's place recorded on the enquiry's tasks [taskVisit.service]: when, who, where, with the satellite picture. */
+  const visited = await Todo.find({ enquiry: enquiry._id, 'visits.0': { $exists: true } }).select('kind title department visits')
+    .populate([{ path: 'visits.by', select: 'name' }, { path: 'visits.image', select: 'key filename' }]).lean();
+  const visits = visited.flatMap((task) => (task.visits || []).map((visit) => ({
+    _id: visit._id, task: { _id: task._id, kind: task.kind, title: task.title, department: task.department },
+    lat: visit.lat, lng: visit.lng, accuracyM: visit.accuracyM, place: visit.place, note: visit.note,
+    image: visit.image ? { _id: visit.image._id, key: visit.image.key, filename: visit.image.filename } : null, imageProblem: visit.imageProblem,
+    by: visit.by ? { _id: visit.by._id, name: visit.by.name } : null, capturedAt: visit.capturedAt, at: visit.at,
+  }))).sort((a, b) => new Date(b.at) - new Date(a.at));
   return {
+    visits,
     orders: orders.map((row) => ({
       _id: row._id, number: row.number, status: row.status, buyerPo: row.customerPo?.number || '', paymentTerms: row.paymentTerms || '',
       /* A draft from the SO upload still to be verified and confirmed [soDraftReview.service] — the page shows it to read. */

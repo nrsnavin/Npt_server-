@@ -334,6 +334,29 @@ const todoSchema = new mongoose.Schema(
       }, { _id: false })],
       default: undefined,
     },
+    /**
+     * Visits to the buyer's place, recorded from the phone on the spot [services/taskVisit.service.js]:
+     * the fix (where, how sure, when), the nearest town, and a satellite picture of the spot kept as
+     * an attachment — so Admin and the enquiry's marketing person can see the visit was made.
+     * Sampling's and the payment teams' tasks.
+     */
+    visits: {
+      type: [new mongoose.Schema({
+        lat: { type: Number, required: true, min: -90, max: 90 },
+        lng: { type: Number, required: true, min: -180, max: 180 },
+        accuracyM: Number,
+        place: { name: String, state: String, distanceKm: Number },
+        /* The satellite view of the spot [taskVisit.service `satelliteImage`] — or why there is none. */
+        image: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+        imageProblem: { type: String, trim: true, maxlength: 300 },
+        note: { type: String, trim: true, maxlength: 1000 },
+        /* When the phone took the fix, and when it was recorded here. */
+        capturedAt: Date,
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        at: { type: Date, default: Date.now },
+      }, { _id: true })],
+      default: undefined,
+    },
     /** When the late notice went out — once per task, so a late task is told about, not nagged. */
     lateNotifiedAt: Date,
     /** Every change of due date, and why — the reason is the point of allowing it. */

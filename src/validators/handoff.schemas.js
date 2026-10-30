@@ -60,6 +60,15 @@ export const handoffUpdateSchema = z.object({
   fields,
 });
 
+/** A visit recorded from the phone on the spot [services/taskVisit.service.js]: the fix, and a word if any. */
+export const taskVisitSchema = z.object({
+  lat: z.coerce.number().min(-90).max(90),
+  lng: z.coerce.number().min(-180).max(180),
+  accuracyM: z.coerce.number().min(0).optional(),
+  capturedAt: z.string().datetime({ offset: true }).optional(),
+  note: z.string().trim().max(1000).optional(),
+});
+
 /** A department's own status on its task [config/departmentTaskForms.js `statuses`]. */
 export const taskStatusSchema = z.object({
   status: z.string().trim().min(1).max(40),
