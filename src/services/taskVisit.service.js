@@ -13,8 +13,8 @@ import { findHandoff } from '../config/handoffs.js';
  * as an attachment, so whoever reads the task or the enquiry sees the visit was made, where and
  * when. Admin and the enquiry's marketing person hear of it under "Needs your action".
  *
- * The picture comes from Esri's World Imagery service — no key, one request for one JPEG. When
- * it cannot be fetched (no internet from the server, the service down) the visit is still
+ * The picture comes from Esri's World Imagery service — no key, 50 × 35 m around the fix at the
+ * finest the service has there [satelliteImage]. When it cannot be fetched (no internet from the server, the service down) the visit is still
  * recorded, with why there is no picture.
  */
 
@@ -51,30 +51,70 @@ export async function samplingTasksFor(enquiryIds) {
 
 export const mayRecordVisit = (user, task) => VISIT_KINDS.includes(task?.kind) && mayWorkOnHandoff(user, task);
 
-/* About 500 m across at the equator — a street and its neighbours, not a town. */
-const SPAN_LNG = 0.0025;
-const SPAN_LAT = 0.0016;
+/*
+ * The picture covers the spot itself: 50 m across and 35 m high, centred on the fix — the buyer's
+ * gate and building, not the street. Esri serves its imagery no finer than it has it — about
+ * 0.3 m a pixel in Indian towns, coarser in the country — and refuses (HTTP 500) a request finer
+ * than that. So the same 50 × 35 m is asked at 640 pixels wide first, then at fewer pixels each
+ * time, and the first picture the service gives is the sharpest there is of that spot.
+ */
+export const IMAGE_SPAN_M = { width: 50, height: 35 };
+export const IMAGE_WIDTHS_PX = [640, 480, 320, 256, 200, 180, 170, 160, 150, 128, 100, 80, 64];
 export const IMAGERY_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export';
+const EARTH_R = 6378137;
 
-/** The satellite view of a spot as a JPEG, or null with why not. */
-export async function satelliteImage({ lat, lng }, { fetchImpl = fetch, timeoutMs = 10000 } = {}) {
-  const bbox = [lng - SPAN_LNG, lat - SPAN_LAT, lng + SPAN_LNG, lat + SPAN_LAT].map((value) => value.toFixed(6)).join(',');
-  const url = `${IMAGERY_URL}?bbox=${bbox}&bboxSR=4326&imageSR=4326&size=640,400&format=jpg&f=image`;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetchImpl(url, { signal: controller.signal });
-    if (!response.ok) return { buffer: null, problem: `the imagery service answered ${response.status}` };
-    const type = String(response.headers.get('content-type') || '');
-    if (!type.startsWith('image/')) return { buffer: null, problem: 'the imagery service did not return a picture' };
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (!buffer.length) return { buffer: null, problem: 'the imagery service returned an empty picture' };
-    return { buffer, mimeType: type.startsWith('image/png') ? 'image/png' : 'image/jpeg', problem: null };
-  } catch (error) {
-    return { buffer: null, problem: error.name === 'AbortError' ? 'the imagery service did not answer in time' : `the imagery service could not be reached (${error.message})` };
-  } finally {
-    clearTimeout(timer);
+/** The request for the box around a spot, in Web Mercator — square metres stay square, whatever the latitude. */
+export function imageryUrl({ lat, lng }, widthPx) {
+  const x = (EARTH_R * lng * Math.PI) / 180;
+  const y = EARTH_R * Math.log(Math.tan(Math.PI / 4 + (lat * Math.PI) / 360));
+  /* A Mercator metre is a ground metre stretched by 1 / cos(latitude). */
+  const stretch = 1 / Math.cos((lat * Math.PI) / 180);
+  const halfW = (IMAGE_SPAN_M.width / 2) * stretch;
+  const halfH = (IMAGE_SPAN_M.height / 2) * stretch;
+  const heightPx = Math.round((widthPx * IMAGE_SPAN_M.height) / IMAGE_SPAN_M.width);
+  const bbox = [x - halfW, y - halfH, x + halfW, y + halfH].map((value) => value.toFixed(2)).join(',');
+  return { url: `${IMAGERY_URL}?bbox=${bbox}&bboxSR=3857&imageSR=3857&size=${widthPx},${heightPx}&format=jpg&f=image`, heightPx };
+}
+
+/**
+ * The satellite view of a spot as a JPEG — the 50 × 35 m around it at the finest the service has
+ * there — or null with why not. A refusal (finer than the imagery) tries fewer pixels; no answer
+ * at all (no internet, the service down) stops at once.
+ */
+export async function satelliteImage({ lat, lng }, { fetchImpl = fetch, timeoutMs = 8000, budgetMs = 25000 } = {}) {
+  const started = Date.now();
+  let refused = null;
+  for (const widthPx of IMAGE_WIDTHS_PX) {
+    if (Date.now() - started > budgetMs) return { buffer: null, problem: 'the imagery service did not answer in time' };
+    /* The last tries get what is left of the budget, not a full timeout each. */
+    const wait = Math.max(1000, Math.min(timeoutMs, budgetMs - (Date.now() - started)));
+    const { url, heightPx } = imageryUrl({ lat, lng }, widthPx);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), wait);
+    try {
+      const response = await fetchImpl(url, { signal: controller.signal });
+      const type = String(response.headers.get('content-type') || '');
+      if (!response.ok || !type.startsWith('image/')) {
+        await response.arrayBuffer?.().catch(() => null);
+        refused = response.status;
+        continue;
+      }
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (!buffer.length) { refused = 'an empty picture'; continue; }
+      return {
+        buffer, mimeType: type.startsWith('image/png') ? 'image/png' : 'image/jpeg', problem: null,
+        span: { widthM: IMAGE_SPAN_M.width, heightM: IMAGE_SPAN_M.height, widthPx, heightPx, metresPerPixel: Math.round((IMAGE_SPAN_M.width / widthPx) * 100) / 100 },
+      };
+    } catch (error) {
+      /* A slow answer is tried again at the next size, inside the budget; no answer at all stops here. */
+      if (error.name === 'AbortError') { refused = 'nothing in time'; continue; }
+      return { buffer: null, problem: `the imagery service could not be reached (${error.message})` };
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  if (refused === 'nothing in time') return { buffer: null, problem: 'the imagery service did not answer in time' };
+  return { buffer: null, problem: `the imagery service has no picture of this spot${refused ? ` (it answered ${refused})` : ''}` };
 }
 
 const coords = (lat, lng) => `${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)}`;
@@ -112,7 +152,7 @@ export async function recordVisit(task, user, { lat, lng, accuracyM, capturedAt,
   }
   const visit = {
     lat: latitude, lng: longitude, accuracyM: Number.isFinite(Number(accuracyM)) ? Math.round(Number(accuracyM)) : undefined,
-    place, image: image?._id, imageProblem: picture.problem ? `Satellite picture not kept: ${picture.problem}` : undefined,
+    place, image: image?._id, imageSpan: picture.span || undefined, imageProblem: picture.problem ? `Satellite picture not kept: ${picture.problem}` : undefined,
     note: String(note || '').trim() || undefined, capturedAt: capturedAt ? new Date(capturedAt) : new Date(), by: user._id, at: new Date(),
   };
   task.visits = [...(task.visits || []), visit];

@@ -105,6 +105,7 @@ test('the satellite picture of the spot is kept as an attachment on the task; wi
   const fresh = await Todo.findById(task._id);
   const pictured = await recordVisit(fresh, mani, { lat: 11.1101, lng: 77.3399, accuracyM: 8 }, { fetchImpl: imagery(true) });
   assert.ok(pictured.image, 'the picture is an attachment');
+  assert.deepEqual(pictured.imageSpan.toObject?.() ?? pictured.imageSpan, { widthM: 50, heightM: 35, widthPx: 640, heightPx: 448, metresPerPixel: 0.08 }, 'where the service has it, 640 px');
   const attachment = await Attachment.findById(pictured.image).lean();
   assert.deepEqual([attachment.mimeType, attachment.docType, attachment.title, String(attachment.task), String(attachment.enquiry), attachment.size], ['image/jpeg', 'visit_satellite', 'Satellite view of the visit', String(task._id), String(enquiry._id), JPEG.length]);
   assert.match(attachment.filename, /^visit-\d{4}-\d{2}-\d{2}\.jpg$/);
@@ -114,10 +115,27 @@ test('the satellite picture of the spot is kept as an attachment on the task; wi
   assert.equal(dark.image, undefined);
   assert.match(dark.imageProblem, /^Satellite picture not kept: the imagery service could not be reached \(getaddrinfo ENOTFOUND/);
   assert.equal((await Todo.findById(task._id)).visits.length, 3);
-  /* The request the service makes: Esri's World Imagery export, a few hundred metres around the spot, one JPEG. */
+  /* The request: 50 × 35 m round the spot, in Web Mercator, at 640 px first and fewer each time the service refuses — the first picture is the sharpest it has there. */
   const calls = [];
-  await satelliteImage(TIRUPPUR, { fetchImpl: async (url) => { calls.push(url); return { ok: false, status: 503, headers: { get: () => '' } }; } });
-  assert.match(calls[0], /^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/World_Imagery\/MapServer\/export\?bbox=77\.338600,11\.106900,77\.343600,11\.110100&bboxSR=4326&imageSR=4326&size=640,400&format=jpg&f=image$/);
+  const sharpest = await satelliteImage(TIRUPPUR, {
+    fetchImpl: async (url) => {
+      calls.push(url);
+      const width = Number(url.match(/size=(\d+),/)[1]);
+      return width > 170
+        ? { ok: false, status: 500, headers: { get: () => 'text/html' }, arrayBuffer: async () => new ArrayBuffer(0) }
+        : { ok: true, status: 200, headers: { get: () => 'image/jpeg' }, arrayBuffer: async () => JPEG.buffer.slice(JPEG.byteOffset, JPEG.byteOffset + JPEG.byteLength) };
+    },
+  });
+  assert.match(calls[0], /^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/World_Imagery\/MapServer\/export\?bbox=\d+\.\d{2},\d+\.\d{2},\d+\.\d{2},\d+\.\d{2}&bboxSR=3857&imageSR=3857&size=640,448&format=jpg&f=image$/);
+  const [xmin, ymin, xmax, ymax] = calls[0].match(/bbox=([^&]+)/)[1].split(',').map(Number);
+  const stretch = 1 / Math.cos((TIRUPPUR.lat * Math.PI) / 180);
+  assert.ok(Math.abs((xmax - xmin) / stretch - 50) < 0.05, `50 m across, was ${((xmax - xmin) / stretch).toFixed(2)}`);
+  assert.ok(Math.abs((ymax - ymin) / stretch - 35) < 0.05, `35 m high, was ${((ymax - ymin) / stretch).toFixed(2)}`);
+  assert.deepEqual(calls.map((url) => url.match(/size=([\d,]+)/)[1]), ['640,448', '480,336', '320,224', '256,179', '200,140', '180,126', '170,119'], 'fewer pixels each time, the same 50 × 35 m');
+  assert.deepEqual(sharpest.span, { widthM: 50, heightM: 35, widthPx: 170, heightPx: 119, metresPerPixel: 0.29 });
+  /* No picture of the spot at any size: the visit says so. */
+  const none = await satelliteImage(TIRUPPUR, { fetchImpl: async () => ({ ok: false, status: 500, headers: { get: () => 'text/html' }, arrayBuffer: async () => new ArrayBuffer(0) }) });
+  assert.match(none.problem, /^the imagery service has no picture of this spot \(it answered 500\)$/);
 });
 
 test('the enquiry lists every visit — when, who, where, the picture — for its marketing person and Admin', async () => {

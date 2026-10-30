@@ -348,6 +348,8 @@ const todoSchema = new mongoose.Schema(
         place: { name: String, state: String, distanceKm: Number },
         /* The satellite view of the spot [taskVisit.service `satelliteImage`] — or why there is none. */
         image: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
+        /* What the picture covers: 50 × 35 m round the fix, and how many pixels the service had for it. */
+        imageSpan: { widthM: Number, heightM: Number, widthPx: Number, heightPx: Number, metresPerPixel: Number },
         imageProblem: { type: String, trim: true, maxlength: 300 },
         note: { type: String, trim: true, maxlength: 1000 },
         /* When the phone took the fix, and when it was recorded here. */
