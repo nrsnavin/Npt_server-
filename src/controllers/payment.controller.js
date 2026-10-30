@@ -1,3 +1,4 @@
+import { visitSummary } from '../services/taskVisit.service.js';
 import { MAYBE_OWING, applyPaymentPositions } from '../services/paymentPosition.service.js';
 import { withOrderLock } from '../services/operationLock.service.js';
 import Receivable, { JUDGED_STATUSES, paymentLogEntry } from '../models/Receivable.js';
@@ -325,7 +326,7 @@ export const paymentDay = asyncHandler(async (req, res) => {
     ? (await Customer.find(customerScope(req.user)).select('_id').lean()).map((row) => row._id)
     : null;
   const cases = await Todo.find({ kind: { $in: COLLECTION_KINDS }, completed: false, ...(visible ? { customer: { $in: visible } } : {}) })
-    .select('kind department status user customer order dueDate priority suggestion statusHistory createdAt')
+    .select('kind department status user customer order dueDate priority suggestion statusHistory createdAt visits')
     .populate([{ path: 'user', select: 'name' }, { path: 'customer', select: 'code name' }, { path: 'order', select: 'number' }])
     .sort({ dueDate: 1 }).lean();
   const labelOf = (task) => (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status)?.label || task.status;
@@ -339,6 +340,10 @@ export const paymentDay = asyncHandler(async (req, res) => {
     with: task.user?.name || null, customer: task.customer, order: task.order, dueDate: task.dueDate, priority: task.priority,
     suggestion: task.suggestion || null, owed: Math.round(owedBy.get(String(task.customer?._id || task.customer)) || 0),
     promisesBroken: (task.statusHistory || []).filter((entry) => entry.status === 'promise_broken').length,
+    /* The visits to the buyer so far, and who works the case — the card's Record location button [taskVisit.service]. */
+    visit: visitSummary(task),
+    department: task.department,
+    user: task.user?._id || task.user || null,
   });
   const recovery = cases.filter((task) => task.kind === 'prt_recovery').map(caseCard);
   const collecting = cases.filter((task) => task.kind !== 'prt_recovery');

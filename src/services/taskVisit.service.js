@@ -21,6 +21,31 @@ import { findHandoff } from '../config/handoffs.js';
 /** The tasks a visit is recorded on. */
 export const VISIT_KINDS = ['sample_request', 'team_payment_followup', 'my_payment_followup', 'prt_recovery'];
 
+/** A task's visits, short — how many, and the last one's when and where — for the queues and cards that offer the button. */
+export const visitSummary = (task) => {
+  const visits = task?.visits || [];
+  const last = visits.at(-1);
+  return {
+    task: task?._id || null,
+    count: visits.length,
+    last: last ? { at: last.capturedAt || last.at, place: last.place?.name || null } : null,
+  };
+};
+
+/**
+ * The Sampling task each enquiry's samples are visited under: its open Sample Request, else its
+ * latest — the same task the bench's moves are told on [handoff.service `noticeSampleMove`].
+ */
+export async function samplingTasksFor(enquiryIds) {
+  const { default: Todo } = await import('../models/Todo.js');
+  const ids = [...new Set((enquiryIds || []).filter(Boolean).map(String))];
+  if (!ids.length) return new Map();
+  const tasks = await Todo.find({ enquiry: { $in: ids }, kind: 'sample_request' }).select('enquiry completed createdAt visits').sort({ completed: 1, createdAt: -1 }).lean();
+  const byEnquiry = new Map();
+  for (const task of tasks) if (!byEnquiry.has(String(task.enquiry))) byEnquiry.set(String(task.enquiry), task);
+  return byEnquiry;
+}
+
 export const mayRecordVisit = (user, task) => VISIT_KINDS.includes(task?.kind) && mayWorkOnHandoff(user, task);
 
 /* About 500 m across at the equator — a street and its neighbours, not a town. */
@@ -59,7 +84,7 @@ const placeWords = (place) => (place?.name ? `${place.distanceKm < 3 ? '' : `${M
 export async function recordVisit(task, user, { lat, lng, accuracyM, capturedAt, note } = {}, { fetchImpl } = {}) {
   if (!VISIT_KINDS.includes(task.kind)) throw ApiError.badRequest('A visit is recorded on a Sampling or payment follow-up task');
   if (!mayWorkOnHandoff(user, task)) throw ApiError.forbidden('Only whoever works this task records a visit on it');
-  if (task.completed) throw ApiError.badRequest('This task is done — a visit is recorded while it is open');
+  /* A task done — the sample handed over, say — still takes the visit that went with it: the fix is the evidence, whenever it is pressed. */
   const latitude = Number(lat);
   const longitude = Number(lng);
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) throw ApiError.badRequest('The phone gave no usable location — try again outside');

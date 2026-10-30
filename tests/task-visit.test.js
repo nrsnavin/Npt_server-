@@ -131,3 +131,37 @@ test('the enquiry lists every visit — when, who, where, the picture — for it
   assert.ok(visits.some((visit) => visit.imageProblem), 'and a missing one says why');
   assert.equal((await api(`/api/enquiries/${enquiry._id}/records`, { as: 'admin' })).json.data.visits.length, 3, 'Admin too');
 });
+
+test('the Sampling queue row carries the task a visit goes on, with the visits so far; a done task still takes its visit', async () => {
+  const { default: Sample } = await import('../src/models/Sample.js');
+  const customerId = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data.customer?._id;
+  const sample = await Sample.create({ number: 'S-VISIT-1', enquiry: enquiry._id, customer: customerId, modelNumber: 'NPT-400S', quantity: 3, requestedBy: ids.nandhini, status: 'request_received', requiredDate: new Date(Date.now() + 86400000) });
+  const queue = await api('/api/samples/queue', { as: 'mani' });
+  assert.equal(queue.status, 200, queue.json.message);
+  const row = queue.json.data.rows.find((entry) => String(entry._id) === String(sample._id));
+  assert.ok(row, 'on the queue');
+  assert.equal(String(row.visit.task), String(task._id), 'the enquiry’s Sampling task');
+  assert.equal(row.visit.count, 3);
+  assert.equal(row.visit.last.place, 'Tiruppur');
+  /* The task done, the visit pressed after the hand-over is still kept. */
+  await Todo.updateOne({ _id: task._id }, { $set: { completed: true, completedAt: new Date() } });
+  const late = await api(`/api/workspace/todos/${task._id}/visit`, { method: 'POST', as: 'mani', body: TIRUPPUR });
+  assert.equal(late.status, 201, late.json.message);
+  assert.equal((await Todo.findById(task._id)).visits.length, 4);
+  await Todo.updateOne({ _id: task._id }, { $set: { completed: false }, $unset: { completedAt: 1 } });
+});
+
+test('a PRT case card on the payments home carries its visits, so the field person records one from the card', async () => {
+  const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name: 'Ravi PRT', email: 'ravi@np.com', password: 'Pass@123456', department: 'payment_recovery' } });
+  assert.equal(made.status, 201, made.json.message);
+  token.ravi = (await api('/api/auth/login', { method: 'POST', body: { email: 'ravi@np.com', password: 'Pass@123456' } })).json.data.token;
+  const customerId = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data.customer?._id;
+  const prt = await Todo.create({ title: 'PRT Recovery — Visit Knits', kind: 'prt_recovery', department: 'payment_recovery', customer: customerId, createdBy: ids.admin, dueDate: new Date(Date.now() + 86400000) });
+  const visited = await api(`/api/workspace/todos/${prt._id}/visit`, { method: 'POST', as: 'ravi', body: { ...TIRUPPUR, accuracyM: 20 } });
+  assert.equal(visited.status, 201, visited.json.message);
+  const day = await api('/api/payments/day', { as: 'ravi' });
+  assert.equal(day.status, 200, day.json.message);
+  const card = (day.json.data.recovery || []).find((entry) => String(entry._id) === String(prt._id));
+  assert.ok(card, 'the case card');
+  assert.deepEqual([card.visit.count, card.visit.last.place, card.department], [1, 'Tiruppur', 'payment_recovery']);
+});

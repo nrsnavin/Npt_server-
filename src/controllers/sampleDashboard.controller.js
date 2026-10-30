@@ -451,7 +451,11 @@ export const sampleQueue = asyncHandler(async (req, res) => {
     .lean();
 
   const usual = await usualHoursAtStatus({ now });
+  /* The Sampling task each sample's visit is recorded on, and its visits so far [taskVisit.service] — the queue's Record location button. */
+  const { samplingTasksFor, visitSummary } = await import('../services/taskVisit.service.js');
+  const visitTasks = await samplingTasksFor(samples.map((sample) => sample.enquiry?._id));
   const rows = samples.map((sample) => {
+    const visitTask = sample.enquiry ? visitTasks.get(String(sample.enquiry._id)) : null;
     const queueStatus = queueStatusOf(sample);
     const closed = queueStatus === 'closed' || CLOSED_SAMPLE_STATUSES.includes(sample.status);
     const unsent = ['received', 'not_available', 'under_process', 'ready'].includes(queueStatus);
@@ -514,6 +518,8 @@ export const sampleQueue = asyncHandler(async (req, res) => {
           colour: sample.dispatchedColour || null,
         }
         : null,
+      /* Record location from the row: the enquiry's Sampling task, and the visits on it — none for a sample with no enquiry or no Sampling task. */
+      visit: visitTask ? visitSummary(visitTask) : null,
       link: `/samples/${sample._id}`,
     };
   });
