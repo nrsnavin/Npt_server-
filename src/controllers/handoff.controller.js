@@ -54,6 +54,8 @@ export const TASK_POPULATE = [
   { path: 'completedBy', select: 'name' },
   { path: 'outcome.by', select: 'name' },
   { path: 'updates.by', select: 'name' },
+  { path: 'visits.by', select: 'name' },
+  { path: 'visits.image', select: 'key filename size' },
   { path: 'reschedules.by', select: 'name' },
   { path: 'escalation.by', select: 'name department' },
   { path: 'adminEscalation.by', select: 'name department' },
@@ -597,6 +599,20 @@ export const listTaskPdfs = asyncHandler(async (req, res) => {
   const { taskPdfs } = await import('../services/taskPdfs.service.js');
   res.json({ success: true, data: await taskPdfs(req.user, { enquiries: split(req.query.enquiries), tasks: split(req.query.tasks), kinds: split(req.query.kinds) }) });
 });
+
+/**
+ * A visit to the buyer's place, recorded from the phone on the spot [services/taskVisit.service.js]:
+ * the fix kept on the task with a satellite picture of the spot. Sampling's and the payment teams'
+ * tasks. The picture is fetched outside the transaction (a network call), the line committed with
+ * a retry against another line written on the task meanwhile.
+ */
+export const handoffVisit = asyncHandler(againOnConflict(transactional(async (req, res) => {
+  const { recordVisit } = await import('../services/taskVisit.service.js');
+  const task = await taskFor(req);
+  const visit = await recordVisit(task, req.user, req.body);
+  const fresh = await (await taskFor(req)).populate(TASK_POPULATE);
+  res.status(201).json({ success: true, data: await taskWithClosable(fresh), visit: fresh.visits.id(visit._id) });
+})));
 
 export const handoffDocuments = asyncHandler(async (req, res) => {
   const task = await taskFor(req);
