@@ -167,3 +167,26 @@ test('a PRT case card on the payments home carries its visits, so the field pers
   assert.ok(card, 'the case card');
   assert.deepEqual([card.visit.count, card.visit.last.place, card.department], [1, 'Tiruppur', 'payment_recovery']);
 });
+
+test('a PRT job given without an enquiry takes its visit; the buyer’s marketing person hears it and the team job page lists it', async () => {
+  const customerId = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data.customer?._id;
+  const raised = await api('/api/workspace/team-tasks', { method: 'POST', as: 'admin', body: { kind: 'prt_recovery', note: 'Collect the old balance', customer: customerId, brief: { prtMode: 'Collect cheque' } } });
+  assert.equal(raised.status, 201, raised.json.message);
+  const job = raised.json.data.task;
+  assert.equal(job.enquiry ?? null, null, 'no enquiry');
+  const visited = await api(`/api/workspace/todos/${job._id}/visit`, { method: 'POST', as: 'ravi', body: { ...TIRUPPUR, accuracyM: 7, note: 'Cheque promised for Monday' } });
+  assert.equal(visited.status, 201, visited.json.message);
+  assert.match((await Todo.findById(job._id)).updates.at(-1).note, /^Visited — Tiruppur · 11\.10850, 77\.34110 · ±7 m: Cheque promised for Monday$/);
+  /* No enquiry: the buyer's marketing person is told, as the enquiry's would be — and Admin. */
+  const heard = async (as) => ((await api('/api/workspace/notices', { as })).json.data || []).some((notice) => String(notice.task?._id || notice.task) === String(job._id) && notice.statusLabel === 'PRT Recovery: visited near Tiruppur');
+  assert.equal(await heard('nandhini'), true, 'the buyer’s marketing person');
+  assert.equal(await heard('ravi'), false, 'not whoever visited');
+  /* The team job page: the visit, with when, who and where. */
+  const page = await api(`/api/workspace/team-jobs/${job._id}`, { as: 'admin' });
+  assert.equal(page.status, 200, page.json.message);
+  const [shown] = page.json.data.visits;
+  assert.deepEqual([shown.task.kind, shown.by.name, shown.place.name, shown.accuracyM, shown.note], ['prt_recovery', 'Ravi PRT', 'Tiruppur', 7, 'Cheque promised for Monday']);
+  /* The older Request PRT Visit takes one too. */
+  const older = await Todo.create({ title: 'Request PRT Visit — Visit Knits', kind: 'request_prt_visit', department: 'payment_recovery', customer: customerId, createdBy: ids.admin, dueDate: new Date(Date.now() + 86400000) });
+  assert.equal((await api(`/api/workspace/todos/${older._id}/visit`, { method: 'POST', as: 'ravi', body: TIRUPPUR })).status, 201);
+});

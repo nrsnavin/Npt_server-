@@ -204,7 +204,7 @@ export async function teamJob(user, id) {
   const root = await Todo.findOne({ $and: [{ _id: id }, JOBS, await scopeFor(user)] })
     .populate([{ path: 'customer', select: 'name mobile' }, { path: 'createdBy', select: 'name' }]);
   if (!root) throw ApiError.notFound('Job not found');
-  const POPULATE = [{ path: 'user', select: 'name' }, { path: 'updates.by', select: 'name' }, { path: 'createdBy', select: 'name' }];
+  const POPULATE = [{ path: 'user', select: 'name' }, { path: 'updates.by', select: 'name' }, { path: 'createdBy', select: 'name' }, { path: 'visits.by', select: 'name' }, { path: 'visits.image', select: 'key filename' }];
   /* Joined an enquiry: its own task, read here; the rest of its workflow is the enquiry's. */
   const tasks = root.jobLinked?.enquiry
     ? [await root.populate(POPULATE)]
@@ -242,7 +242,15 @@ export async function teamJob(user, id) {
     const task = tasks.find((entry) => idOf(entry._id) === idOf(file.task));
     return { _id: file._id, key: file.key, filename: file.filename, mimeType: file.mimeType, title: file.title || file.filename, at: file.createdAt, team: task ? teamOf(task) : null };
   });
+  /* Visits to the buyer's place on the job's tasks [taskVisit.service] — a job has no enquiry page to show them on. */
+  const visits = tasks.flatMap((task) => (task.visits || []).map((visit) => ({
+    _id: visit._id, task: { _id: task._id, kind: task.kind, title: task.title, department: task.department },
+    lat: visit.lat, lng: visit.lng, accuracyM: visit.accuracyM, place: visit.place, note: visit.note,
+    image: visit.image?.key ? { _id: visit.image._id, key: visit.image.key, filename: visit.image.filename } : null, imageProblem: visit.imageProblem,
+    by: visit.by?.name ? { _id: visit.by._id, name: visit.by.name } : null, capturedAt: visit.capturedAt, at: visit.at,
+  }))).sort((a, b) => new Date(b.at) - new Date(a.at));
   return {
+    visits,
     _id: root._id,
     number: root.jobNumber || null,
     customer: root.customer ? { _id: root.customer._id, name: root.customer.name, mobile: root.customer.mobile || null } : null,

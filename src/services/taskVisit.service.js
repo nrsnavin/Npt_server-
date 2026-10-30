@@ -22,7 +22,7 @@ import { findHandoff } from '../config/handoffs.js';
 export const PRECISE_M = 10;
 
 /** The tasks a visit is recorded on. */
-export const VISIT_KINDS = ['sample_request', 'team_payment_followup', 'my_payment_followup', 'prt_recovery'];
+export const VISIT_KINDS = ['sample_request', 'team_payment_followup', 'my_payment_followup', 'prt_recovery', 'request_prt_visit'];
 
 /** A task's visits, short — how many, and the last one's when and where — for the queues and cards that offer the button. */
 export const visitSummary = (task) => {
@@ -123,10 +123,17 @@ export async function recordVisit(task, user, { lat, lng, accuracyM, capturedAt,
   if (!task.user) task.user = user._id;
   await task.save();
   /* Admin and the enquiry's marketing person see the visit was made, where and when. */
+  /* A task given without an enquiry — a PRT job on the buyer's dues: the buyer's marketing person is told too, as the enquiry's would be. */
+  let buyerOwner = null;
+  if (!task.enquiry && task.customer) {
+    const { default: Customer } = await import('../models/Customer.js');
+    buyerOwner = (await Customer.findById(task.customer?._id || task.customer).select('assignedTo').lean())?.assignedTo || null;
+  }
   await noticeStatus(task, user, {
     step: { key: 'visited', label: `${findHandoff(task.kind)?.label || 'Task'}: visited${place?.name ? ` near ${place.name}` : ''}` },
     note: `${where}${visit.note ? ` — ${visit.note}` : ''}`,
     toAdminAndMarketing: true,
+    also: buyerOwner ? [buyerOwner] : [],
   });
   return task.visits.at(-1);
 }
