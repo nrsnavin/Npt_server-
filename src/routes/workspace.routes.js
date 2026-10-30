@@ -1,6 +1,6 @@
 import { Router } from 'express';
-import { handoffVisit } from '../controllers/handoff.controller.js';
-import { taskVisitSchema } from '../validators/handoff.schemas.js';
+import { handoffVisit, handoffVisitNote } from '../controllers/handoff.controller.js';
+import { taskVisitSchema, visitNoteSchema } from '../validators/handoff.schemas.js';
 import {
   listTodos,
   freshTodos,
@@ -87,6 +87,8 @@ router.post('/todos/:id/done', validate(handoffDoneSchema), handoffDone);
 router.post('/todos/:id/update', validate(handoffUpdateSchema), handoffUpdate);
 /* A visit to the buyer's place, from the phone on the spot — Sampling's and the payment teams' tasks [taskVisit.service]. */
 router.post('/todos/:id/visit', validate(taskVisitSchema), handoffVisit);
+/* Who was met, what happened, what they said — the visitor's few words, written up for Admin and marketing [visitNote.llm]. */
+router.post('/todos/:id/visits/:visitId/note', validate(visitNoteSchema), handoffVisitNote);
 router.post('/todos/:id/send-back', validate(handoffReturnSchema), handoffSendBack);
 router.post('/todos/:id/admin-close', validate(handoffAdminCloseSchema), handoffAdminClose);
 /* An issue on the task goes to Admin alone, under "Needs your action"; Admin's answer comes back to whoever raised it. */
