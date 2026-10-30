@@ -932,7 +932,7 @@ export async function enquiryRecords(enquiry, { withQc }) {
   const visits = visited.flatMap((task) => (task.visits || []).map((visit) => ({
     _id: visit._id, task: { _id: task._id, kind: task.kind, title: task.title, department: task.department },
     lat: visit.lat, lng: visit.lng, accuracyM: visit.accuracyM, place: visit.place, note: visit.note,
-    image: visit.image ? { _id: visit.image._id, key: visit.image.key, filename: visit.image.filename } : null, imageProblem: visit.imageProblem,
+    image: visit.image ? { _id: visit.image._id, key: visit.image.key, filename: visit.image.filename } : null, imageProblem: visit.imageProblem, imageSpan: visit.imageSpan || null,
     by: visit.by ? { _id: visit.by._id, name: visit.by.name } : null, capturedAt: visit.capturedAt, at: visit.at,
   }))).sort((a, b) => new Date(b.at) - new Date(a.at));
   return {

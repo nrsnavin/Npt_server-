@@ -89,12 +89,12 @@ test('whoever works the task records the visit from the phone: the fix, the near
   assert.ok(visit.image?.key || visit.imageProblem, 'a picture, or why there is none');
   assert.equal(recorded.json.data.visits.length, 1, 'on the task as read');
   const saved = await Todo.findById(task._id).lean();
-  assert.match(saved.updates.at(-1).note, /^Visited — Tiruppur · 11\.10850, 77\.34110 · ±12 m: Met the merchandiser, sample handed over$/);
+  assert.match(saved.updates.at(-1).note, /^Visited — Tiruppur · 11\.10850, 77\.34110 · ±12 m \(approximate\): Met the merchandiser, sample handed over$/);
   assert.equal(saved.updates.at(-1).statusLabel, 'Visited');
   /* Admin and the enquiry's marketing person hear it — not whoever recorded it. */
   const heard = async (as) => ((await api('/api/workspace/notices', { as })).json.data || []).find((notice) => notice.statusLabel === 'Sample Request: visited near Tiruppur');
   assert.ok(await heard('admin'), 'Admin');
-  assert.match((await heard('nandhini')).note, /Tiruppur · 11\.10850, 77\.34110 · ±12 m — Met the merchandiser/);
+  assert.match((await heard('nandhini')).note, /Tiruppur · 11\.10850, 77\.34110 · ±12 m \(approximate\) — Met the merchandiser/);
   assert.equal(await heard('mani'), undefined);
 });
 
@@ -105,18 +105,37 @@ test('the satellite picture of the spot is kept as an attachment on the task; wi
   const fresh = await Todo.findById(task._id);
   const pictured = await recordVisit(fresh, mani, { lat: 11.1101, lng: 77.3399, accuracyM: 8 }, { fetchImpl: imagery(true) });
   assert.ok(pictured.image, 'the picture is an attachment');
+  assert.deepEqual(pictured.imageSpan.toObject?.() ?? pictured.imageSpan, { widthM: 50, heightM: 35, widthPx: 640, heightPx: 448, metresPerPixel: 0.08 }, 'where the service has it, 640 px');
   const attachment = await Attachment.findById(pictured.image).lean();
   assert.deepEqual([attachment.mimeType, attachment.docType, attachment.title, String(attachment.task), String(attachment.enquiry), attachment.size], ['image/jpeg', 'visit_satellite', 'Satellite view of the visit', String(task._id), String(enquiry._id), JPEG.length]);
   assert.match(attachment.filename, /^visit-\d{4}-\d{2}-\d{2}\.jpg$/);
   assert.equal(pictured.imageProblem, undefined);
+  assert.match((await Todo.findById(task._id)).updates.at(-1).note, /· ±8 m$/, 'a fix within 10 m is not said as approximate');
   const dark = await recordVisit(await Todo.findById(task._id), mani, { lat: 11.1101, lng: 77.3399 }, { fetchImpl: imagery(false) });
   assert.equal(dark.image, undefined);
   assert.match(dark.imageProblem, /^Satellite picture not kept: the imagery service could not be reached \(getaddrinfo ENOTFOUND/);
   assert.equal((await Todo.findById(task._id)).visits.length, 3);
-  /* The request the service makes: Esri's World Imagery export, a few hundred metres around the spot, one JPEG. */
+  /* The request: 50 × 35 m round the spot, in Web Mercator, at 640 px first and fewer each time the service refuses — the first picture is the sharpest it has there. */
   const calls = [];
-  await satelliteImage(TIRUPPUR, { fetchImpl: async (url) => { calls.push(url); return { ok: false, status: 503, headers: { get: () => '' } }; } });
-  assert.match(calls[0], /^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/World_Imagery\/MapServer\/export\?bbox=77\.338600,11\.106900,77\.343600,11\.110100&bboxSR=4326&imageSR=4326&size=640,400&format=jpg&f=image$/);
+  const sharpest = await satelliteImage(TIRUPPUR, {
+    fetchImpl: async (url) => {
+      calls.push(url);
+      const width = Number(url.match(/size=(\d+),/)[1]);
+      return width > 170
+        ? { ok: false, status: 500, headers: { get: () => 'text/html' }, arrayBuffer: async () => new ArrayBuffer(0) }
+        : { ok: true, status: 200, headers: { get: () => 'image/jpeg' }, arrayBuffer: async () => JPEG.buffer.slice(JPEG.byteOffset, JPEG.byteOffset + JPEG.byteLength) };
+    },
+  });
+  assert.match(calls[0], /^https:\/\/server\.arcgisonline\.com\/ArcGIS\/rest\/services\/World_Imagery\/MapServer\/export\?bbox=\d+\.\d{2},\d+\.\d{2},\d+\.\d{2},\d+\.\d{2}&bboxSR=3857&imageSR=3857&size=640,448&format=jpg&f=image$/);
+  const [xmin, ymin, xmax, ymax] = calls[0].match(/bbox=([^&]+)/)[1].split(',').map(Number);
+  const stretch = 1 / Math.cos((TIRUPPUR.lat * Math.PI) / 180);
+  assert.ok(Math.abs((xmax - xmin) / stretch - 50) < 0.05, `50 m across, was ${((xmax - xmin) / stretch).toFixed(2)}`);
+  assert.ok(Math.abs((ymax - ymin) / stretch - 35) < 0.05, `35 m high, was ${((ymax - ymin) / stretch).toFixed(2)}`);
+  assert.deepEqual(calls.map((url) => url.match(/size=([\d,]+)/)[1]), ['640,448', '480,336', '320,224', '256,179', '200,140', '180,126', '170,119'], 'fewer pixels each time, the same 50 × 35 m');
+  assert.deepEqual(sharpest.span, { widthM: 50, heightM: 35, widthPx: 170, heightPx: 119, metresPerPixel: 0.29 });
+  /* No picture of the spot at any size: the visit says so. */
+  const none = await satelliteImage(TIRUPPUR, { fetchImpl: async () => ({ ok: false, status: 500, headers: { get: () => 'text/html' }, arrayBuffer: async () => new ArrayBuffer(0) }) });
+  assert.match(none.problem, /^the imagery service has no picture of this spot \(it answered 500\)$/);
 });
 
 test('the enquiry lists every visit — when, who, where, the picture — for its marketing person and Admin', async () => {
@@ -130,4 +149,62 @@ test('the enquiry lists every visit — when, who, where, the picture — for it
   assert.ok(visits.some((visit) => visit.image?.key), 'the picture is read by its key');
   assert.ok(visits.some((visit) => visit.imageProblem), 'and a missing one says why');
   assert.equal((await api(`/api/enquiries/${enquiry._id}/records`, { as: 'admin' })).json.data.visits.length, 3, 'Admin too');
+});
+
+test('the Sampling queue row carries the task a visit goes on, with the visits so far; a done task still takes its visit', async () => {
+  const { default: Sample } = await import('../src/models/Sample.js');
+  const customerId = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data.customer?._id;
+  const sample = await Sample.create({ number: 'S-VISIT-1', enquiry: enquiry._id, customer: customerId, modelNumber: 'NPT-400S', quantity: 3, requestedBy: ids.nandhini, status: 'request_received', requiredDate: new Date(Date.now() + 86400000) });
+  const queue = await api('/api/samples/queue', { as: 'mani' });
+  assert.equal(queue.status, 200, queue.json.message);
+  const row = queue.json.data.rows.find((entry) => String(entry._id) === String(sample._id));
+  assert.ok(row, 'on the queue');
+  assert.equal(String(row.visit.task), String(task._id), 'the enquiry’s Sampling task');
+  assert.equal(row.visit.count, 3);
+  assert.equal(row.visit.last.place, 'Tiruppur');
+  assert.equal(row.visit.last.accuracyM, null, 'the last visit was recorded without an accuracy');
+  /* The task done, the visit pressed after the hand-over is still kept. */
+  await Todo.updateOne({ _id: task._id }, { $set: { completed: true, completedAt: new Date() } });
+  const late = await api(`/api/workspace/todos/${task._id}/visit`, { method: 'POST', as: 'mani', body: TIRUPPUR });
+  assert.equal(late.status, 201, late.json.message);
+  assert.equal((await Todo.findById(task._id)).visits.length, 4);
+  await Todo.updateOne({ _id: task._id }, { $set: { completed: false }, $unset: { completedAt: 1 } });
+});
+
+test('a PRT case card on the payments home carries its visits, so the field person records one from the card', async () => {
+  const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name: 'Ravi PRT', email: 'ravi@np.com', password: 'Pass@123456', department: 'payment_recovery' } });
+  assert.equal(made.status, 201, made.json.message);
+  token.ravi = (await api('/api/auth/login', { method: 'POST', body: { email: 'ravi@np.com', password: 'Pass@123456' } })).json.data.token;
+  const customerId = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data.customer?._id;
+  const prt = await Todo.create({ title: 'PRT Recovery — Visit Knits', kind: 'prt_recovery', department: 'payment_recovery', customer: customerId, createdBy: ids.admin, dueDate: new Date(Date.now() + 86400000) });
+  const visited = await api(`/api/workspace/todos/${prt._id}/visit`, { method: 'POST', as: 'ravi', body: { ...TIRUPPUR, accuracyM: 20 } });
+  assert.equal(visited.status, 201, visited.json.message);
+  const day = await api('/api/payments/day', { as: 'ravi' });
+  assert.equal(day.status, 200, day.json.message);
+  const card = (day.json.data.recovery || []).find((entry) => String(entry._id) === String(prt._id));
+  assert.ok(card, 'the case card');
+  assert.deepEqual([card.visit.count, card.visit.last.place, card.department], [1, 'Tiruppur', 'payment_recovery']);
+});
+
+test('a PRT job given without an enquiry takes its visit; the buyer’s marketing person hears it and the team job page lists it', async () => {
+  const customerId = (await api(`/api/enquiries/${enquiry._id}`, { as: 'nandhini' })).json.data.customer?._id;
+  const raised = await api('/api/workspace/team-tasks', { method: 'POST', as: 'admin', body: { kind: 'prt_recovery', note: 'Collect the old balance', customer: customerId, brief: { prtMode: 'Collect cheque' } } });
+  assert.equal(raised.status, 201, raised.json.message);
+  const job = raised.json.data.task;
+  assert.equal(job.enquiry ?? null, null, 'no enquiry');
+  const visited = await api(`/api/workspace/todos/${job._id}/visit`, { method: 'POST', as: 'ravi', body: { ...TIRUPPUR, accuracyM: 7, note: 'Cheque promised for Monday' } });
+  assert.equal(visited.status, 201, visited.json.message);
+  assert.match((await Todo.findById(job._id)).updates.at(-1).note, /^Visited — Tiruppur · 11\.10850, 77\.34110 · ±7 m: Cheque promised for Monday$/);
+  /* No enquiry: the buyer's marketing person is told, as the enquiry's would be — and Admin. */
+  const heard = async (as) => ((await api('/api/workspace/notices', { as })).json.data || []).some((notice) => String(notice.task?._id || notice.task) === String(job._id) && notice.statusLabel === 'PRT Recovery: visited near Tiruppur');
+  assert.equal(await heard('nandhini'), true, 'the buyer’s marketing person');
+  assert.equal(await heard('ravi'), false, 'not whoever visited');
+  /* The team job page: the visit, with when, who and where. */
+  const page = await api(`/api/workspace/team-jobs/${job._id}`, { as: 'admin' });
+  assert.equal(page.status, 200, page.json.message);
+  const [shown] = page.json.data.visits;
+  assert.deepEqual([shown.task.kind, shown.by.name, shown.place.name, shown.accuracyM, shown.note], ['prt_recovery', 'Ravi PRT', 'Tiruppur', 7, 'Cheque promised for Monday']);
+  /* The older Request PRT Visit takes one too. */
+  const older = await Todo.create({ title: 'Request PRT Visit — Visit Knits', kind: 'request_prt_visit', department: 'payment_recovery', customer: customerId, createdBy: ids.admin, dueDate: new Date(Date.now() + 86400000) });
+  assert.equal((await api(`/api/workspace/todos/${older._id}/visit`, { method: 'POST', as: 'ravi', body: TIRUPPUR })).status, 201);
 });
