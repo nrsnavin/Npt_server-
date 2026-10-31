@@ -614,6 +614,19 @@ export const handoffVisit = asyncHandler(againOnConflict(transactional(async (re
   res.status(201).json({ success: true, data: await taskWithClosable(fresh), visit: fresh.visits.id(visit._id) });
 })));
 
+/**
+ * A visit's note [services/taskVisit.service.js `noteVisit`]: the words checked and written up
+ * first — the model may take a few seconds — then kept and told in one transaction, tried again
+ * on the task as it stands if another line was written meanwhile.
+ */
+export const handoffVisitNote = asyncHandler(async (req, res) => {
+  const { reportForVisit, noteVisit } = await import('../services/taskVisit.service.js');
+  const prepared = await reportForVisit(await taskFor(req), req.user, req.params.visitId, req.body);
+  const visit = await retryOnConflict(() => inTransaction(async () => noteVisit(await taskFor(req), req.user, req.params.visitId, prepared), { label: 'visit note' }));
+  const fresh = await (await taskFor(req)).populate(TASK_POPULATE);
+  res.json({ success: true, data: await taskWithClosable(fresh), visit: fresh.visits.id(visit._id) });
+});
+
 export const handoffDocuments = asyncHandler(async (req, res) => {
   const task = await taskFor(req);
   if (!mayWorkOnHandoff(req.user, task) && String(task.createdBy) !== String(req.user._id)) throw ApiError.notFound('Task not found');

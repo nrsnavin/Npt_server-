@@ -208,3 +208,51 @@ test('a PRT job given without an enquiry takes its visit; the buyer’s marketin
   const older = await Todo.create({ title: 'Request PRT Visit — Visit Knits', kind: 'request_prt_visit', department: 'payment_recovery', customer: customerId, createdBy: ids.admin, dueDate: new Date(Date.now() + 86400000) });
   assert.equal((await api(`/api/workspace/todos/${older._id}/visit`, { method: 'POST', as: 'ravi', body: TIRUPPUR })).status, 201);
 });
+
+test('a visit note: the visitor’s few words, written up for Admin and marketing — the rules’ sentences where the model is not set up', async () => {
+  const visitId = (await Todo.findById(task._id)).visits[0]._id;
+  const note = (as, body) => api(`/api/workspace/todos/${task._id}/visits/${visitId}/note`, { method: 'POST', as, body });
+  assert.equal((await note('siva', { met: 'manager' })).status, 403, 'Production is not on this task');
+  assert.equal((await note('mani', { met: ' ', happened: '' })).status, 400, 'nothing said');
+  const saved = await note('mani', { met: 'manager suresh', happened: 'gave 3 sample pcs. he check colour', response: 'ok will confirm po next week' });
+  assert.equal(saved.status, 200, saved.json.message);
+  const visit = saved.json.visit;
+  assert.deepEqual([visit.met, visit.happened, visit.response], ['manager suresh', 'gave 3 sample pcs. he check colour', 'ok will confirm po next week'], 'their own words, kept');
+  assert.equal(visit.report.writtenBy, 'rules', 'no key in the tests');
+  assert.equal(visit.report.text, 'Met manager suresh. Gave 3 sample pcs. he check colour. Response: ok will confirm po next week.');
+  const fresh = await Todo.findById(task._id).lean();
+  assert.equal(fresh.updates.at(-1).statusLabel, 'Visit note');
+  /* Admin and the marketing person read the report; whoever wrote it is not told. */
+  const heard = async (as) => ((await api('/api/workspace/notices', { as })).json.data || []).find((entry) => entry.statusLabel === 'Sample Request: visit report — Tiruppur');
+  assert.equal((await heard('nandhini'))?.note, visit.report.text);
+  assert.ok(await heard('admin'));
+  assert.equal(await heard('mani'), undefined);
+  /* Corrected: written up again, said as corrected. */
+  const again = await note('mani', { met: 'manager suresh', response: 'po on monday' });
+  assert.equal(again.status, 200, again.json.message);
+  assert.equal(again.json.visit.report.text, 'Met manager suresh. Response: po on monday.');
+  assert.equal((await Todo.findById(task._id).lean()).updates.at(-1).statusLabel, 'Visit note corrected');
+  /* On the enquiry: the report beside the words. */
+  const records = (await api(`/api/enquiries/${enquiry._id}/records`, { as: 'nandhini' })).json.data;
+  const shown = records.visits.find((entry) => String(entry._id) === String(visitId));
+  assert.deepEqual([shown.report.text, shown.met, shown.response], ['Met manager suresh. Response: po on monday.', 'manager suresh', 'po on monday']);
+});
+
+test('the model writes the report from the words and the visit’s facts; a failed call falls back to the rules', async () => {
+  const { writeVisitReport, rulesReport } = await import('../src/services/visitNote.llm.js');
+  const asked = [];
+  const written = await writeVisitReport(
+    { met: 'accounts madam', happened: 'chq not ready', response: 'tmrw 11 am collect pannunga, 45000', context: { task: 'PRT Recovery to collect cheque', buyer: 'Visit Knits', visitor: 'Ravi PRT', when: '30 Oct 2026, 05:20 pm', where: 'Tiruppur' } },
+    { ask: async (request) => { asked.push(request); return { report: 'Ravi met the accounts lady at Visit Knits. The cheque was not ready; she asked him to collect ₹45,000 tomorrow at 11 am.', outcome: 'neutral' }; } },
+  );
+  assert.deepEqual([written.writtenBy, written.outcome], ['model', 'neutral']);
+  assert.match(written.text, /collect ₹45,000 tomorrow at 11 am/);
+  assert.equal(asked[0].label, 'visit-note');
+  assert.match(asked[0].user, /Buyer: Visit Knits\nVisited by: Ravi PRT/);
+  assert.match(asked[0].user, /The buyer's response: tmrw 11 am collect pannunga, 45000/);
+  assert.match(asked[0].system, /Never invent names, amounts, dates or promises/);
+  assert.match(asked[0].system, /Translate Tanglish to English/);
+  const fallen = await writeVisitReport({ met: 'owner', happened: 'shop closed' }, { ask: async () => null });
+  assert.deepEqual([fallen.writtenBy, fallen.text], ['rules', 'Met owner. Shop closed.']);
+  assert.equal(rulesReport({ response: 'Response: will pay friday' }), 'Response: will pay friday.');
+});

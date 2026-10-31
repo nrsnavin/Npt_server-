@@ -177,3 +177,72 @@ export async function recordVisit(task, user, { lat, lng, accuracyM, capturedAt,
   });
   return task.visits.at(-1);
 }
+
+/** The buyer's marketing person on a task with no enquiry — told as the enquiry's would be. */
+async function buyerOwnerOf(task) {
+  if (task.enquiry || !task.customer) return null;
+  const { default: Customer } = await import('../models/Customer.js');
+  return (await Customer.findById(task.customer?._id || task.customer).select('assignedTo').lean())?.assignedTo || null;
+}
+
+const clean = (value, max) => String(value ?? '').trim().replace(/\s+/g, ' ').slice(0, max);
+
+/**
+ * The visit and the words for its note, checked — before anything is written up. Whoever works
+ * the task notes a visit on it: the visitor, their team, Admin.
+ */
+export function visitToNote(task, user, visitId, { met, happened, response } = {}) {
+  if (!VISIT_KINDS.includes(task.kind)) throw ApiError.badRequest('A visit note goes on a Sampling or payment follow-up task');
+  if (!mayWorkOnHandoff(user, task)) throw ApiError.forbidden('Only whoever works this task adds a note to its visits');
+  const visit = (task.visits || []).find((entry) => String(entry._id) === String(visitId));
+  if (!visit) throw ApiError.notFound('Visit not found');
+  const words = { met: clean(met, 500), happened: clean(happened, 1000), response: clean(response, 1000) };
+  if (!words.met && !words.happened && !words.response) throw ApiError.badRequest('Say who you met, what happened, or what they said');
+  return { visit, words };
+}
+
+/**
+ * The report for the note [visitNote.llm.js] — written before the save, so a slow model never
+ * holds a transaction open. The visit's own facts go with the words: the task, the buyer, who
+ * visited, when and where.
+ */
+export async function reportForVisit(task, user, visitId, body, { ask } = {}) {
+  const { visit, words } = visitToNote(task, user, visitId, body);
+  const { writeVisitReport } = await import('./visitNote.llm.js');
+  const [{ default: Customer }, { default: User }] = await Promise.all([import('../models/Customer.js'), import('../models/User.js')]);
+  const [buyer, visitor] = await Promise.all([
+    task.customer ? Customer.findById(task.customer?._id || task.customer).select('name').lean() : null,
+    visit.by ? User.findById(visit.by?._id || visit.by).select('name').lean() : null,
+  ]);
+  const when = new Date(visit.capturedAt || visit.at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const report = await writeVisitReport({
+    ...words,
+    context: {
+      task: [findHandoff(task.kind)?.label, task.brief?.prtMode && `to ${String(task.brief.prtMode).toLowerCase()}`].filter(Boolean).join(' '),
+      buyer: buyer?.name, visitor: visitor?.name, when, where: placeWords(visit.place) || coords(visit.lat, visit.lng),
+    },
+  }, ask ? { ask } : {});
+  return { words, report };
+}
+
+/**
+ * The note kept on the visit — the words and the report — said on the task, and told to Admin and
+ * the enquiry's marketing person (or the buyer's, on a task with no enquiry) with the report.
+ */
+export async function noteVisit(task, user, visitId, { words, report }) {
+  const visit = (task.visits || []).find((entry) => String(entry._id) === String(visitId));
+  if (!visit) throw ApiError.notFound('Visit not found');
+  const again = Boolean(visit.report?.text);
+  Object.assign(visit, { met: words.met || undefined, happened: words.happened || undefined, response: words.response || undefined, report, notedBy: user._id, notedAt: new Date() });
+  task.markModified('visits');
+  task.updates = [...(task.updates || []), { kind: 'note', statusLabel: again ? 'Visit note corrected' : 'Visit note', text: report.text, note: `${again ? 'Visit note corrected' : 'Visit note'}: ${report.text}`, by: user._id, at: new Date() }];
+  await task.save();
+  const buyerOwner = await buyerOwnerOf(task);
+  await noticeStatus(task, user, {
+    step: { key: 'visit_note', label: `${findHandoff(task.kind)?.label || 'Task'}: visit report${visit.place?.name ? ` — ${visit.place.name}` : ''}${again ? ' (corrected)' : ''}` },
+    note: report.text,
+    toAdminAndMarketing: true,
+    also: buyerOwner ? [buyerOwner] : [],
+  });
+  return (task.visits || []).find((entry) => String(entry._id) === String(visitId));
+}

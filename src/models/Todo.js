@@ -352,6 +352,22 @@ const todoSchema = new mongoose.Schema(
         imageSpan: { widthM: Number, heightM: Number, widthPx: Number, heightPx: Number, metresPerPixel: Number },
         imageProblem: { type: String, trim: true, maxlength: 300 },
         note: { type: String, trim: true, maxlength: 1000 },
+        /*
+         * The visit's note, in the visitor's own few words [taskVisit.service `noteVisit`] — who they
+         * met, what happened, the buyer's response — and the report written up from them for Admin
+         * and the marketing person [visitNote.llm.js]: the model's, else the rules'.
+         */
+        met: { type: String, trim: true, maxlength: 500 },
+        happened: { type: String, trim: true, maxlength: 1000 },
+        response: { type: String, trim: true, maxlength: 1000 },
+        report: {
+          text: { type: String, trim: true, maxlength: 1500 },
+          outcome: { type: String, enum: ['positive', 'neutral', 'negative', 'unclear'] },
+          writtenBy: { type: String, enum: ['model', 'rules'] },
+          at: Date,
+        },
+        notedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        notedAt: Date,
         /* When the phone took the fix, and when it was recorded here. */
         capturedAt: Date,
         by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },

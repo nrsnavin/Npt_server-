@@ -60,6 +60,13 @@ export const handoffUpdateSchema = z.object({
   fields,
 });
 
+/** A visit's note, in the visitor's own few words [services/taskVisit.service.js `noteVisit`]. */
+export const visitNoteSchema = z.object({
+  met: z.string().trim().max(500).optional(),
+  happened: z.string().trim().max(1000).optional(),
+  response: z.string().trim().max(1000).optional(),
+});
+
 /** A visit recorded from the phone on the spot [services/taskVisit.service.js]: the fix, and a word if any. */
 export const taskVisitSchema = z.object({
   lat: z.coerce.number().min(-90).max(90),
