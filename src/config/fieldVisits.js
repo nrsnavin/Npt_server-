@@ -49,7 +49,7 @@ export const OUTCOMES = Object.freeze({
   payment_collection: COLLECTION_OUTCOMES,
   prt_collection: COLLECTION_OUTCOMES,
   sample_delivery: [
-    { key: 'delivered', label: 'Delivered', fields: ['receivedBy'], required: ['receivedBy'], completes: true },
+    { key: 'delivered', label: 'Delivered', fields: ['receivedBy', 'receivedByPhone', 'pieces'], required: ['receivedBy'], completes: true },
     { key: 'not_accepted', label: 'Not accepted', fields: ['reason'], required: ['reason'], completes: false },
     PERSON_UNAVAILABLE,
   ],
@@ -75,10 +75,31 @@ export const OUTCOME_FIELDS = Object.freeze({
   committedDate: { label: 'Committed date', type: 'date' },
   reason: { label: 'Reason', type: 'text' },
   receivedBy: { label: 'Received by', type: 'text' },
+  receivedByPhone: { label: 'Their phone', type: 'text' },
+  pieces: { label: 'Pieces handed over', type: 'number' },
   metWhom: { label: 'Who was met', type: 'text' },
   summary: { label: 'What happened', type: 'text' },
   nextFollowUp: { label: 'Next follow-up', type: 'date' },
 });
+
+/**
+ * How each outcome moves the task the visit was planned from [services/fieldVisit.service.js
+ * `linkOutcome`] — the task's own status [config/departmentTaskForms.js], so the desk, the
+ * receivable's chase log and Accounts read the visit as they read a move made from the task.
+ *   PRT (prt_recovery, request_prt_visit): Visit Planned → Visited → Cheque Collected / Payment
+ *   Received → Promised; Payment Collection: Contacted → Payment Received / Promised / Not Reachable;
+ *   Sampling has no statuses of its own: Delivered is the sample's hand-over [sampling.service
+ *   `recordHandover`], which closes the Sample Request. Refused is logged, not a status.
+ *   Marketing: the enquiry's next follow-up and an activity.
+ */
+export const TASK_STATUS_FOR = Object.freeze({
+  prt_recovery: { planned: 'visit_planned', visited: 'visited', collected: 'collected', cheque: 'cheque_collected', promised: 'promised' },
+  request_prt_visit: { planned: 'visit_planned', visited: 'visited', collected: 'collected', cheque: 'cheque_collected', promised: 'promised' },
+  team_payment_followup: { visited: 'contacted', collected: 'payment_inward', cheque: 'payment_inward', promised: 'promised', unavailable: 'not_reachable' },
+  my_payment_followup: { visited: 'contacted', promised: 'promised', unavailable: 'not_reachable' },
+});
+/** The money's mode as the task's form spells it [departmentTaskForms MONEY_FIELDS]. */
+export const MODE_LABELS = Object.freeze({ cash: 'Cash', cheque: 'Cheque', upi: 'UPI', neft: 'NEFT', rtgs: 'RTGS', other: 'Other' });
 
 /** The statuses a visit moves through. */
 export const VISIT_STATUSES = ['planned', 'checked_in', 'completed', 'not_completed', 'rescheduled', 'cancelled'];

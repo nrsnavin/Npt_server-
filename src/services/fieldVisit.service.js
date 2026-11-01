@@ -10,10 +10,12 @@ import { nearestTown } from '../data/places.js';
 import { MANAGEMENT_QUERY, isManagement } from '../utils/departments.js';
 import { fieldVisitOf } from '../utils/fieldVisit.js';
 import {
-  CATEGORY_FOR_KIND, CATEGORY_KEYS, FIELD_RULES, OPEN_VISIT_STATUSES, PAYMENT_TASK_KINDS, VISIT_CATEGORIES, OUTCOME_FIELDS,
+  CATEGORY_FOR_KIND, CATEGORY_KEYS, FIELD_RULES, MODE_LABELS, OPEN_VISIT_STATUSES, TASK_STATUS_FOR, VISIT_CATEGORIES, OUTCOME_FIELDS,
   categoryLabel, flagLabel, outcomesFor,
 } from '../config/fieldVisits.js';
 import { VISIT_KINDS, mayRecordVisit, recordVisit } from './taskVisit.service.js';
+import { endOfDayIST, mayWorkOnHandoff, setTaskStatus } from './handoff.service.js';
+import { findHandoff } from '../config/handoffs.js';
 
 /**
  * Field visits [config/fieldVisits.js; models/FieldVisit.js, FieldDay.js].
@@ -282,6 +284,247 @@ export async function summarise(day, visits) {
   return { planned, completed, notCompleted, rescheduled, visited: done.length, dutyMinutes, lunchMinutes, visitMinutes, travelMinutes, unrecordedMinutes, gpsNotVerified, flags: flags.length, at: new Date() };
 }
 
+/* ------------------------------------------------------------------ the task's workflow ----- */
+
+/**
+ * A visit planned from a task moves the task as a move made from the task would [TASK_STATUS_FOR]:
+ * the PRT desk reads Visit Planned, Visited, Cheque Collected; Payment Collection's chase log gets
+ * the call; the sample is handed. The move is made by whoever may work the task — the visitor,
+ * else Admin, else the planner where the task allows — and a move the task cannot take (a status
+ * it does not have, a date it refuses) is said on the task rather than failing the visit, except
+ * money and a hand-over, which are refused back to the person so nothing is half recorded.
+ */
+const statusOf = (task, key) => key && (findHandoff(task.kind)?.form?.statuses || []).some((entry) => entry.key === key);
+const noteOnTask = async (taskId, user, text) => {
+  const task = await Todo.findById(taskId);
+  if (!task) return null;
+  task.updates = [...(task.updates || []), { kind: 'note', text, note: text, by: user._id, at: new Date() }];
+  await task.save();
+  return task;
+};
+async function actorFor(task, user, visit) {
+  if (mayWorkOnHandoff(user, task)) return user;
+  const visitor = visit?.user ? await User.findById(idOf(visit.user)) : null;
+  return visitor && mayWorkOnHandoff(visitor, task) ? visitor : user;
+}
+async function moveTask(visit, user, { step, note, date, fields }, { strict = false } = {}) {
+  if (!visit.task) return null;
+  const task = await Todo.findById(visit.task);
+  if (!task || task.completed) return null;
+  const status = TASK_STATUS_FOR[task.kind]?.[step];
+  if (!statusOf(task, status)) return null;
+  const actor = await actorFor(task, user, visit);
+  try {
+    return await setTaskStatus(task, actor, { status, note, date: date || undefined, fields });
+  } catch (error) {
+    if (strict) throw error;
+    await noteOnTask(task._id, user, `Field visit: ${note || step} — the task was not moved to ${status.replace(/_/g, ' ')}: ${error.message}`);
+    return null;
+  }
+}
+/** The buyer's chase log on a payment task: a call that is not a status (Refused, Person Unavailable on PRT). */
+async function logOnChase(visit, user, { key, label, followUp, text }) {
+  if (!visit.task) return;
+  const task = await Todo.findById(visit.task).lean();
+  if (!task || !['prt_recovery', 'request_prt_visit', 'team_payment_followup', 'my_payment_followup'].includes(task.kind)) return;
+  const { logCollectionCall } = await import('./collections.service.js');
+  await logCollectionCall(task, user, { key, label, followUp, mode: 'visit' }, text);
+}
+/** The visit as a line on the task, whatever its kind. */
+const sayOnTask = (visit, user, text) => (visit.task ? noteOnTask(visit.task, user, text) : Promise.resolve(null));
+
+/** A due date the plan gives the task, where the task has no Visit Planned status of its own. */
+async function dueOnTask(visit, user, date, text) {
+  if (!visit.task) return;
+  const task = await Todo.findById(visit.task);
+  if (!task || task.completed) return;
+  task.dueDate = endOfDayIST(new Date(`${date}T12:00:00+05:30`));
+  task.updates = [...(task.updates || []), { kind: 'note', text, note: text, by: user._id, at: new Date() }];
+  await task.save();
+}
+
+/** Planned: Visit Planned on a PRT task (its visitor and date on the brief too); the due date on any other. */
+async function linkPlanned(visit, user, person, { note } = {}) {
+  if (!visit.task) return;
+  const text = `Visit planned: ${person.name} on ${visit.plannedDate}${visit.plannedTime ? ` ${visit.plannedTime}` : ''}${note ? ` — ${note}` : ''}`;
+  const moved = await moveTask(visit, user, { step: 'planned', note: text, date: visit.plannedDate });
+  if (moved) {
+    if (findHandoff(moved.kind)?.asks?.some((entry) => entry.key === 'visitor')) {
+      moved.brief = { ...(moved.brief || {}), visitor: person.name, visitDate: visit.plannedDate };
+      moved.markModified('brief');
+      await moved.save();
+    }
+    return;
+  }
+  await dueOnTask(visit, user, visit.plannedDate, text);
+}
+
+/** Checked in: Visited (PRT), Contacted (Payment Collection) — the chase log gets the call. */
+const linkCheckedIn = (visit, user) => moveTask(visit, user, { step: 'visited', note: `Visited — field check-in${visit.checkIn?.place?.name ? ` near ${visit.checkIn.place.name}` : ''}` });
+
+/**
+ * Checked out: the outcome as the task's own move. Money and a hand-over are strict — a refusal
+ * (more than owed, a cheque number already recorded, the sample already with the buyer) comes
+ * back to the person at the gate, and nothing is half written.
+ */
+async function linkOutcome(visit, user, outcome, { next = null } = {}) {
+  const task = visit.task ? await Todo.findById(visit.task).lean() : null;
+  if (!task) return;
+  const line = (words) => `Field visit — ${words}`;
+  switch (outcome.key) {
+    case 'collected': {
+      const cheque = outcome.mode === 'cheque';
+      const step = cheque ? 'cheque' : 'collected';
+      const status = TASK_STATUS_FOR[task.kind]?.[step];
+      if (!status || task.completed) {
+        flag(visit, 'receipt_not_logged', `₹${outcome.amount} collected — ${task.kind === 'my_payment_followup' ? 'Payment Collection or PRT logs money for Accounts on their own task' : 'the task is closed; log it in Payments'}`);
+        await sayOnTask(visit, user, line(`collected ₹${outcome.amount}${outcome.mode ? ` by ${MODE_LABELS[outcome.mode] || outcome.mode}` : ''}${outcome.reference ? ` (${outcome.reference})` : ''} — not logged for Accounts from here`));
+        return;
+      }
+      const fields = status === 'cheque_collected'
+        ? { amount: outcome.amount, reference: outcome.reference, bank: outcome.bank }
+        : { amount: outcome.amount, mode: MODE_LABELS[outcome.mode] || 'Other', reference: outcome.reference };
+      await moveTask(visit, user, { step, note: line(`collected at the buyer's place`), fields }, { strict: true });
+      const { default: Receivable } = await import('../models/Receivable.js');
+      const logged = await Receivable.findOne({ 'receipts.loggedFrom': task._id }).sort({ updatedAt: -1 }).select('_id').lean();
+      if (logged) visit.outcome.receivable = logged._id;
+      return;
+    }
+    case 'promised':
+      if (!(await moveTask(visit, user, { step: 'promised', note: line(`promised for ${outcome.committedDate}`), date: outcome.committedDate }, { strict: true }))) {
+        await sayOnTask(visit, user, line(`promised for ${outcome.committedDate}`));
+      }
+      return;
+    case 'refused':
+      await sayOnTask(visit, user, line(`refused — ${outcome.reason}`));
+      await logOnChase(visit, user, { key: 'refused', label: 'Refused', followUp: 'other', text: `Refused on the visit — ${outcome.reason}` });
+      return;
+    case 'person_unavailable':
+      if (!(await moveTask(visit, user, { step: 'unavailable', note: line(`person unavailable${next ? ` — visit again ${next.plannedDate}` : ''}`) }))) {
+        await sayOnTask(visit, user, line(`person unavailable${next ? ` — visit again ${next.plannedDate}` : ''}`));
+        await logOnChase(visit, user, { key: 'person_unavailable', label: 'Person Unavailable', followUp: 'no_answer', text: `Person unavailable on the visit${next ? ` — visit again ${next.plannedDate}` : ''}` });
+      }
+      return;
+    case 'delivered':
+      if (!(await handOverSample(visit, user, task, outcome))) {
+        await sayOnTask(visit, user, line(`delivered — received by ${outcome.receivedBy}${outcome.pieces ? `, ${outcome.pieces} pieces` : ''}`));
+      }
+      return;
+    case 'not_accepted':
+      await sayOnTask(visit, user, line(`sample not accepted — ${outcome.reason}`));
+      return;
+    case 'met':
+      await sayOnTask(visit, user, line(`met ${outcome.metWhom}${outcome.summary ? ` — ${outcome.summary}` : ''}${outcome.nextFollowUp ? ` · next follow-up ${outcome.nextFollowUp}` : ''}`));
+      return;
+    default:
+      await sayOnTask(visit, user, line(`${outcome.label}${outcome.reason ? ` — ${outcome.reason}` : outcome.summary ? ` — ${outcome.summary}` : ''}`));
+  }
+}
+
+/**
+ * Delivered on a Sample Request: the hand-over goes onto the sample — who took it, how many — the
+ * sample is with the buyer from here, and the request closes as it does when the bench sends one
+ * [sampling.service `recordHandover`, handoff.service `finishSampleTasks`]. A refusal (the sample
+ * already closed) comes back to the person at the gate.
+ */
+async function handOverSample(visit, user, task, outcome) {
+  if (task.kind !== 'sample_request') return false;
+  const { default: Sample, CLOSED_SAMPLE_STATUSES } = await import('../models/Sample.js');
+  const sample = await Sample.findOne({ $or: [{ job: task._id }, ...(task.enquiry ? [{ enquiry: task.enquiry }] : [])], status: { $nin: CLOSED_SAMPLE_STATUSES } }).sort({ createdAt: -1 });
+  if (!sample) return false;
+  const { recordHandover } = await import('./sampling.service.js');
+  const actor = await actorFor(task, user, visit);
+  try {
+    await recordHandover(sample, actor, { receivedBy: outcome.receivedBy, phone: outcome.receivedByPhone, pieces: outcome.pieces, note: `Handed over on a field visit by ${user.name}`, via: 'visit' });
+  } catch (error) {
+    throw ApiError.conflict(error.message);
+  }
+  const { finishSampleTasks } = await import('./handoff.service.js');
+  await finishSampleTasks(sample, actor);
+  return true;
+}
+
+/** The enquiry: every checked-out visit on one is an activity on it; a marketing visit's next follow-up is the enquiry's. */
+async function linkEnquiry(visit, user, outcome) {
+  if (!visit.enquiry) return;
+  const { default: Enquiry } = await import('../models/Enquiry.js');
+  const words = [outcome.label, outcome.amount && `₹${outcome.amount}`, outcome.committedDate && `promised ${outcome.committedDate}`, outcome.reason, outcome.receivedBy && `received by ${outcome.receivedBy}`, outcome.summary, visit.outcome?.report?.text].filter(Boolean).join(' · ');
+  const update = { $push: { activities: { type: 'visit', spokeTo: outcome.metWhom || visit.outcome?.words?.met || undefined, note: `Field visit — ${visit.purpose}: ${words}`.slice(0, 2000), at: new Date(), by: user._id } } };
+  if (outcome.nextFollowUp) update.$set = { nextFollowUpDate: endOfDayIST(new Date(`${outcome.nextFollowUp}T12:00:00+05:30`)) };
+  await Enquiry.updateOne({ _id: visit.enquiry }, update, { keepVersion: true });
+}
+
+/** Put off or closed without going: the task hears it; a PRT task reads Visit Planned for the new day. */
+async function linkSettled(visit, user, { status, reason, next = null }) {
+  if (!visit.task) return;
+  if (status === 'rescheduled' && next) {
+    const person = await User.findById(idOf(next.user)).select('name').lean();
+    await linkPlanned(next, user, person || { name: 'the visitor' }, { note: `put off from ${visit.plannedDate}: ${reason}` });
+    return;
+  }
+  await sayOnTask(visit, user, `Field visit ${status === 'cancelled' ? 'cancelled' : 'not completed'}: ${reason}`);
+}
+
+/**
+ * A PRT task raised with its visitor and visit date on the form [departmentTaskForms `prt_recovery`
+ * asks]: the visit is planned onto that person's day from the form itself, so the brief and the
+ * plan are one fact. Called as the task is raised [handoff.service]; never fails the raising.
+ */
+export async function planFromBrief(task, user, member) {
+  try {
+    if (!task?.kind || !TASK_STATUS_FOR[task.kind]?.planned || !member?._id) return null;
+    const date = String(task.brief?.visitDate || '').slice(0, 10);
+    if (!isDay(date) || date < dayIST()) return null;
+    const person = await User.findById(member._id).select('name fieldVisit role isActive').lean();
+    if (!person || person.isActive === false) return null;
+    if (person.role !== 'admin' && !person.fieldVisit?.allowed) {
+      await noteOnTask(task._id, user, `${person.name} is not marked as going out on field visits — Admin sets that on the Users page; the visit is not on their field day`);
+      return null;
+    }
+    if (await FieldVisit.findOne({ task: task._id, status: { $in: OPEN_VISIT_STATUSES } }).select('_id').lean()) return null;
+    const visit = await FieldVisit.create({
+      user: person._id, assignedBy: user._id, category: CATEGORY_FOR_KIND[task.kind] || 'others', purpose: task.title, plannedDate: date,
+      task: task._id, enquiry: task.enquiry || undefined, customer: task.customer || undefined,
+      history: [{ by: user._id, action: 'planned', note: `from the task's form, for ${person.name} on ${date}` }],
+    });
+    if (!same(person._id, user._id)) {
+      await fieldNotice({ recipients: [person._id], toAdmin: false, by: user._id, label: `Visit planned: ${categoryLabel(visit.category)}`, note: `${task.title} · ${date} · by ${user.name}`, customer: visit.customer, enquiry: visit.enquiry, task: task._id });
+    }
+    return visit;
+  } catch (error) {
+    console.error(`[field] visit not planned from the task's form: ${error.message}`);
+    return null;
+  }
+}
+
+/** A task closed or deleted: its visits still planned are cancelled, and the visitor told. */
+export async function cancelVisitsOfTask(taskId, user, reason = 'Task closed') {
+  const open = await FieldVisit.find({ task: taskId, status: 'planned' });
+  for (const visit of open) {
+    visit.status = 'cancelled';
+    visit.settled = { reason, by: user?._id, at: new Date() };
+    visit.history.push({ by: user?._id, action: 'cancelled', note: reason });
+    await visit.save();
+    await fieldNotice({ recipients: [visit.user], toAdmin: false, by: user?._id, label: 'Visit cancelled', note: `${visit.purpose} · ${visit.plannedDate} — ${reason}`, customer: visit.customer, enquiry: visit.enquiry, task: visit.task });
+  }
+  return open.length;
+}
+
+/** Visits whose task closed through a door with no hook [runFieldVisitSweep]. */
+async function cancelOrphans(user = null) {
+  const planned = await FieldVisit.find({ status: 'planned', task: { $ne: null } }).select('task').lean();
+  if (!planned.length) return 0;
+  const tasks = await Todo.find({ _id: { $in: planned.map((row) => row.task) } }).select('_id completed').lean();
+  const live = new Set(tasks.filter((task) => !task.completed).map((task) => String(task._id)));
+  let count = 0;
+  for (const row of planned) {
+    if (live.has(String(row.task))) continue;
+    const gone = !tasks.some((task) => same(task._id, row.task));
+    count += await cancelVisitsOfTask(row.task, user, gone ? 'Task deleted' : 'Task closed');
+  }
+  return count;
+}
+
 /* ------------------------------------------------------------------ planning --------------- */
 
 const VISIT_POPULATE = [
@@ -334,10 +577,8 @@ export async function planVisit(user, { assignee, category, purpose, date, time,
     task: task?._id, enquiry: task?.enquiry || enquiry || undefined, customer: task?.customer || customer || undefined,
     history: [{ by: user._id, action: 'planned', note: [`for ${person.name} on ${plannedDate}`, note].filter(Boolean).join(' — ') }],
   });
-  if (task) {
-    task.updates = [...(task.updates || []), { kind: 'note', statusLabel: 'Visit planned', note: `Visit planned: ${person.name} on ${plannedDate}${note ? ` — ${note}` : ''}`, by: user._id, at: new Date() }];
-    await task.save();
-  }
+  /* The task reads it: Visit Planned on a PRT task (its visitor and date on the brief), the due date on any other. */
+  if (task) await linkPlanned(visit, user, person, { note });
   if (!same(who, user._id)) {
     await fieldNotice({ recipients: [who], toAdmin: false, by: user._id, label: `Visit planned: ${categoryLabel(chosen)}`, note: `${what} · ${plannedDate}${time ? ` ${time}` : ''} · by ${user.name}`, customer: visit.customer, enquiry: visit.enquiry, task: task?._id });
   }
@@ -379,6 +620,7 @@ export async function settleVisit(user, visit, { status, reason, date } = {}) {
   visit.settled = { reason: why, by: user._id, at: new Date() };
   visit.history.push({ by: user._id, action: status, note: why });
   await visit.save();
+  await linkSettled(visit, user, { status, reason: why });
   return visit;
 }
 
@@ -395,6 +637,7 @@ async function rescheduleVisit(user, visit, { date, reason }) {
   visit.rescheduledTo = next._id;
   visit.settled = { reason, by: user._id, at: new Date() };
   visit.history.push({ by: user._id, action: 'rescheduled', note: reason, to: { date } });
+  await linkSettled(visit, user, { status: 'rescheduled', reason, next });
   if (next.reschedules >= FIELD_RULES.maxReschedules) {
     flag(next, 'rescheduled_often', `${next.reschedules} times`);
     await next.save();
@@ -456,6 +699,8 @@ export async function checkIn(user, visit, { fix: rawFix, device, enteredLater =
     }
   }
   await visit.save();
+  /* The task reads Visited (PRT) or Contacted (Payment Collection), and the buyer's chase log gets the call. */
+  await linkCheckedIn(visit, user);
   if (!visit.checkIn.verified) {
     await fieldNotice({ by: user._id, label: `GPS not verified: ${user.name}`, note: `${visit.purpose} — ${enteredLater ? 'entered later' : fix ? `fix ±${fix.accuracyM ?? '?'} m` : 'no location from the phone'}`, customer: visit.customer, enquiry: visit.enquiry, task: visit.task, link: `/field/team?date=${date}&user=${user._id}` });
   }
@@ -500,6 +745,10 @@ const outcomeOf = (category, body = {}) => {
     const missing = OUTCOME_FIELDS[field].type === 'number' ? !(value > 0) : !value;
     if (missing && choice.required.includes(field)) throw ApiError.badRequest(`${OUTCOME_FIELDS[field].label} is needed for ${choice.label}`);
     if (!missing) outcome[field] = OUTCOME_FIELDS[field].type === 'number' ? Math.round(value * 100) / 100 : value.slice(0, 500);
+  }
+  if (outcome.key === 'collected' && outcome.mode === 'cheque' && !outcome.reference) throw ApiError.badRequest('The cheque number is needed for a cheque');
+  for (const field of ['committedDate', 'nextFollowUp']) {
+    if (outcome[field] && (!isDay(outcome[field]) || outcome[field] < dayIST())) throw ApiError.badRequest(`${OUTCOME_FIELDS[field].label} is today or a day to come`);
   }
   return outcome;
 };
@@ -561,15 +810,6 @@ export async function checkOut(user, visit, { fix: rawFix, outcome: rawOutcome, 
     }
     visit.outcome.report = await writeVisitReport({ ...said, context: { task: `${categoryLabel(visit.category)} visit: ${visit.purpose}`, buyer: buyer?.name, visitor: user.name, when: new Date(when).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }), where: visit.checkIn?.place?.name } }, ask ? { ask } : {});
   }
-  if (outcome.key === 'collected') {
-    if (task && PAYMENT_TASK_KINDS.includes(task.kind)) {
-      const { confirmInwardFromTask } = await import('./paymentGates.service.js');
-      const logged = await confirmInwardFromTask(await Todo.findById(task._id), user, { amount: outcome.amount, mode: outcome.mode, reference: outcome.reference, note: `Collected on a field visit${outcome.reference ? ` (${outcome.reference})` : ''}` });
-      visit.outcome.receivable = logged.receivable?._id;
-    } else {
-      flag(visit, 'receipt_not_logged', `₹${outcome.amount} collected — log it on the buyer's payment task for Accounts`);
-    }
-  }
   /* Put off from the gate — the person was not there — the next visit is planned now. */
   let next = null;
   if (reschedule?.date && !outcome.completes) {
@@ -583,7 +823,21 @@ export async function checkOut(user, visit, { fix: rawFix, outcome: rawOutcome, 
     visit.status = 'rescheduled';
     if (next.reschedules >= FIELD_RULES.maxReschedules) { flag(next, 'rescheduled_often', `${next.reschedules} times`); await next.save(); }
   }
+  /*
+   * The task's own workflow reads the outcome [linkOutcome]: the money logged for Accounts as the
+   * desk would log it, the promise with its date, the sample handed, the refusal on the chase log.
+   * Money and a hand-over the task refuses come back to the person before anything is kept.
+   */
+  await linkOutcome(visit, user, outcome, { next });
+  if (next && outcome.key !== 'person_unavailable') {
+    const person = await User.findById(idOf(next.user)).select('name').lean();
+    await linkPlanned(next, user, person || { name: user.name }, { note: `put off from ${visit.plannedDate}: ${outcome.label}${outcome.reason ? ` — ${outcome.reason}` : ''}` });
+  } else if (next) {
+    const person = await User.findById(idOf(next.user)).select('name').lean();
+    await linkPlanned(next, user, person || { name: user.name }, { note: 'put off — person unavailable' });
+  }
   await visit.save();
+  await linkEnquiry(visit, user, outcome);
 
   /* Admin and the buyer's marketing person hear the outcome; the task's own notice carried the report already. */
   const marketing = await marketingOf(visit);
@@ -718,6 +972,10 @@ export async function teamDay(viewer, date = dayIST()) {
   return { date, today, people, rows };
 }
 
+/** The visits on an enquiry's tasks, and on a job's, for their pages. */
+export const visitsOfEnquiry = (enquiryId) => FieldVisit.find({ enquiry: enquiryId }).populate(VISIT_POPULATE).sort({ plannedDate: -1, createdAt: -1 }).lean();
+export const visitsOfTasks = (taskIds) => (taskIds?.length ? FieldVisit.find({ task: { $in: taskIds } }).populate(VISIT_POPULATE).sort({ plannedDate: -1, createdAt: -1 }).lean() : Promise.resolve([]));
+
 /** The visits on one task, for its panel and cards. */
 export const visitsOfTask = (taskId) => FieldVisit.find({ task: taskId }).populate(VISIT_POPULATE).sort({ plannedDate: -1, createdAt: -1 }).lean();
 
@@ -767,6 +1025,9 @@ export async function runFieldVisitSweep({ now = new Date() } = {}) {
       told.push(`overnight:${visit._id}`);
     }
   }
+  /* Visits planned on a task that closed or was deleted through a door with no hook: cancelled, the visitor told. */
+  const orphaned = await cancelOrphans();
+  if (orphaned) told.push(`orphans:${orphaned}`);
   const unfinished = await FieldDay.find({ date: { $lt: dayIST(now) }, 'dutyStart.at': { $exists: true }, 'dutyEnd.at': { $exists: false }, incompleteToldAt: { $exists: false } }).populate('user', 'name').limit(100);
   for (const day of unfinished) {
     day.incompleteToldAt = now;

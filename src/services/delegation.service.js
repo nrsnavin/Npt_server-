@@ -83,6 +83,9 @@ export async function moveWorkWith({ enquiry, from, to }) {
     { enquiry: enquiry._id, completed: false, ...mine('user') },
     { $set: { user: to } }
   )).modifiedCount;
+  /* The field visits still to be made on it go to the new owner's day too [models/FieldVisit.js]. */
+  const { default: FieldVisit } = await import('../models/FieldVisit.js');
+  await FieldVisit.updateMany({ enquiry: enquiry._id, status: 'planned', ...mine('user') }, { $set: { user: to } }, { keepVersion: true });
   moved.samples = (await Sample.updateMany({ enquiry: enquiry._id, ...mine('requestedBy') }, { $set: { requestedBy: to } })).modifiedCount;
   moved.quotations = (await Quotation.updateMany({ enquiry: enquiry._id, ...mine('assignedTo') }, { $set: { assignedTo: to } })).modifiedCount;
 
@@ -150,6 +153,7 @@ export async function delegateCustomer({ customer, to, note, user }) {
   await customer.save();
   /* The buyer's own open tasks on the old owner's list — a follow-up raised on the buyer alone — go too. */
   if (from) await Todo.updateMany({ customer: customer._id, enquiry: null, completed: false, user: from }, { $set: { user: target._id } });
+  if (from) await (await import('../models/FieldVisit.js')).default.updateMany({ customer: customer._id, enquiry: null, status: 'planned', user: from }, { $set: { user: target._id } }, { keepVersion: true });
 
   const open = await Enquiry.find({ customer: customer._id, status: { $ne: 'lost' }, stage: { $ne: CLOSED_STAGE } });
   const enquiries = [];

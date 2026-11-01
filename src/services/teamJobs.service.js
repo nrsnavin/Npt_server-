@@ -249,8 +249,11 @@ export async function teamJob(user, id) {
     image: visit.image?.key ? { _id: visit.image._id, key: visit.image.key, filename: visit.image.filename } : null, imageProblem: visit.imageProblem, imageSpan: visit.imageSpan || null, met: visit.met, happened: visit.happened, response: visit.response, report: visit.report?.text ? visit.report : null, notedAt: visit.notedAt,
     by: visit.by?.name ? { _id: visit.by._id, name: visit.by.name } : null, capturedAt: visit.capturedAt, at: visit.at,
   }))).sort((a, b) => new Date(b.at) - new Date(a.at));
+  const { visitsOfTasks } = await import('./fieldVisit.service.js');
   return {
     visits,
+    /* The field visits planned on the job's tasks — who goes, when, what came of it [fieldVisit.service]. */
+    fieldVisits: await visitsOfTasks(tasks.map((task) => task._id)),
     _id: root._id,
     number: root.jobNumber || null,
     customer: root.customer ? { _id: root.customer._id, name: root.customer.name, mobile: root.customer.mobile || null } : null,
