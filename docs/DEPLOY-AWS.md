@@ -731,6 +731,11 @@ API's script says so at the end and stops:
 
 That is your cue to do §9's dump and then run it by hand.
 
+One script is safe to run any time and worth running once when the Field visits module goes
+live: `npm run grant-field-visits` (dry run) then `npm run grant-field-visits -- --confirm` gives
+every department its field-visit marks — Management and Marketing assign, Sampling, Payment
+Collection and the PRT go out — and never takes a mark away. Admin adjusts the rest on Users.
+
 ### 11.3 Turning it on
 
 Merge to `main` in either repo. The Actions tab shows tests, then `deploy` on `npt-box-server`

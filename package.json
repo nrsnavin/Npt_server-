@@ -16,6 +16,7 @@
     "test": "node --test tests/*.test.js",
     "test:replset": "node --import ./tests/support/replset.mjs --test tests/*.test.js",
     "create-user": "node scripts/create-user.js",
+    "grant-field-visits": "node scripts/grant-field-visits.js",
     "set-quote-number": "node scripts/set-quote-number.js",
     "load-test": "node tests/load/load-test.mjs",
     "volume-test": "node tests/load/volume-test.mjs",
