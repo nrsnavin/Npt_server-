@@ -1105,9 +1105,10 @@ export const visitsOfTask = (taskId) => FieldVisit.find({ task: taskId }).popula
 export async function fieldVisitSummary(taskIds) {
   const ids = [...new Set((taskIds || []).filter(Boolean).map(String))];
   if (!ids.length) return new Map();
-  const visits = await FieldVisit.find({ task: { $in: ids }, status: { $in: OPEN_VISIT_STATUSES } }).populate('user', 'name').select('task user status plannedDate plannedTime').lean();
+  const visits = await FieldVisit.find({ task: { $in: ids }, status: { $in: OPEN_VISIT_STATUSES } }).populate('user', 'name').select('task user status plannedDate plannedTime checkIn.at').lean();
   const map = new Map();
-  for (const visit of visits) map.set(String(visit.task), { _id: visit._id, status: visit.status, date: visit.plannedDate, time: visit.plannedTime || null, user: visit.user ? { _id: visit.user._id, name: visit.user.name } : null });
+  /* `checkInAt` for the card's running timer while the person is there. */
+  for (const visit of visits) map.set(String(visit.task), { _id: visit._id, status: visit.status, date: visit.plannedDate, time: visit.plannedTime || null, checkInAt: visit.checkIn?.at || null, user: visit.user ? { _id: visit.user._id, name: visit.user.name } : null });
   return map;
 }
 
