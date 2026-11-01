@@ -54,6 +54,25 @@ const userSchema = new mongoose.Schema(
      * department never silently changes what they can already do.
      */
     moduleAccess: { type: [moduleAccessSchema], default: [] },
+    /**
+     * Field visits [config/fieldVisits.js]: whether this person goes out (`allowed` — they see
+     * Field Duty Start and the visits planned for them), may plan visits for others (`mayAssign`,
+     * and for whom: `assignTo`), and may plan their own (`maySelfPlan`). Admin sets these on the
+     * Users page and holds all of them. Marking any of them grants the Field visits module.
+     */
+    fieldVisit: {
+      allowed: { type: Boolean, default: false },
+      mayAssign: { type: Boolean, default: false },
+      assignTo: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], default: () => [] },
+      maySelfPlan: { type: Boolean, default: false },
+      _id: false,
+    },
+    /**
+     * A field account works on one device at a time: the session id of its latest sign-in
+     * [middleware/auth.js]. A token carrying another id — the earlier phone — is refused, so a
+     * check-in is always the person whose account it is, from the phone in their hand.
+     */
+    activeSession: { type: String },
     /** Stored in E.164 so an OTP request can look it up unambiguously. */
     phone: {
       type: String,

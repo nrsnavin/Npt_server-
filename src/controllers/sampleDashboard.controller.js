@@ -454,6 +454,9 @@ export const sampleQueue = asyncHandler(async (req, res) => {
   /* The Sampling task each sample's visit is recorded on, and its visits so far [taskVisit.service] — the queue's Record location button. */
   const { samplingTasksFor, visitSummary } = await import('../services/taskVisit.service.js');
   const visitTasks = await samplingTasksFor(samples.map((sample) => sample.enquiry?._id));
+  /* And the field visit planned or under way on each of those tasks — the row's Needs visit / Check in [fieldVisit.service]. */
+  const { fieldVisitSummary } = await import('../services/fieldVisit.service.js');
+  const fieldVisits = await fieldVisitSummary([...visitTasks.values()].map((row) => row._id));
   const rows = samples.map((sample) => {
     const visitTask = sample.enquiry ? visitTasks.get(String(sample.enquiry._id)) : null;
     const queueStatus = queueStatusOf(sample);
@@ -520,6 +523,7 @@ export const sampleQueue = asyncHandler(async (req, res) => {
         : null,
       /* Record location from the row: the enquiry's Sampling task, and the visits on it — none for a sample with no enquiry or no Sampling task. */
       visit: visitTask ? visitSummary(visitTask) : null,
+      fieldVisit: visitTask ? fieldVisits.get(String(visitTask._id)) || null : null,
       link: `/samples/${sample._id}`,
     };
   });

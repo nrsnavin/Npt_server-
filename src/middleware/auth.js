@@ -8,10 +8,19 @@ import asyncHandler from '../utils/asyncHandler.js';
 import { accessLevel } from '../services/access.service.js';
 import { findModule, levelSatisfies } from '../config/modules.js';
 
-export const signToken = (user) =>
-  jwt.sign({ sub: user._id.toString(), role: user.role }, env.jwtSecret, {
+export const signToken = (user, { session } = {}) =>
+  jwt.sign({ sub: user._id.toString(), role: user.role, ...(session ? { sid: session } : {}) }, env.jwtSecret, {
     expiresIn: env.jwtExpiresIn,
   });
+
+/**
+ * A field account's token is also its device: the session id of the latest sign-in is kept on
+ * the user [models/User.js `activeSession`], and a token with another one — or none, once a
+ * guarded sign-in has happened — is the earlier phone, refused. Everyone else's tokens are not
+ * tied this way: an office account may stay signed in on a desk and a phone at once.
+ */
+export const ONE_DEVICE_MESSAGE = 'This account signed in on another device. Field accounts work on one device at a time — sign in again here to use it on this one.';
+export const sessionRefused = (user, payload) => Boolean(user?.fieldVisit?.allowed && user.activeSession && payload?.sid !== user.activeSession);
 
 /**
  * The signed-in person, from Redis when it holds a copy less than a minute old, otherwise from
@@ -47,6 +56,7 @@ export const authenticate = asyncHandler(async (req, _res, next) => {
   if (user.issuedBeforePasswordChange(payload.iat)) {
     throw ApiError.unauthorized('Your password was changed. Sign in again.');
   }
+  if (sessionRefused(user, payload)) throw ApiError.unauthorized(ONE_DEVICE_MESSAGE);
 
   req.user = user;
   /* The token's own dates, for the app to say when this sign-in lapses. */
