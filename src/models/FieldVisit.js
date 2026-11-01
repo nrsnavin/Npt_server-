@@ -94,6 +94,19 @@ const fieldVisitSchema = new mongoose.Schema(
 
     flags: { type: [flagSchema], default: () => [] },
     reminders: { afterHours: Date, evening: Date },
+    /**
+     * The five-minute fixes judged [fieldVisit.service `ping`]: strikes so far, the last one
+     * that strayed and whether the person has been asked to re-check, when they confirmed the
+     * place, and when the strikes reached the limit and Admin was told.
+     */
+    tracking: {
+      strikes: { type: Number, default: 0 },
+      pendingRecheck: Boolean,
+      lastDiscrepancy: { kind: String, detail: String, distanceM: Number, at: Date },
+      recheckedAt: Date,
+      suspectAt: Date,
+      _id: false,
+    },
     history: {
       type: [new mongoose.Schema({
         at: { type: Date, default: Date.now },

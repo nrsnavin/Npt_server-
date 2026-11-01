@@ -48,7 +48,7 @@ export const checkInSchema = z.object({
   device: z.string().max(120).optional(),
 });
 
-export const pingSchema = z.object({ fix: fixSchema });
+export const pingSchema = z.object({ fix: fixSchema, recheck: z.boolean().optional() });
 
 const outcomeSchema = z.object({
   key: z.string().trim().min(1, 'Say what came of the visit').max(40),

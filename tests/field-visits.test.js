@@ -196,10 +196,32 @@ test('a fix every five minutes while checked in: kept with its distance; leaving
   await api(`/api/field/visits/${ids.prtVisit}/ping`, { method: 'POST', as: 'ravi', body: { fix: AWAY } });
   const gone = await api(`/api/field/visits/${ids.prtVisit}/ping`, { method: 'POST', as: 'ravi', body: { fix: { ...AWAY, lat: 11.1122 } } });
   assert.ok(gone.json.data.distanceM > 300 && gone.json.data.flags.includes('left_site'), `two fixes away: ${JSON.stringify(gone.json.data)}`);
+  assert.deepEqual([gone.json.data.discrepancy.kind, gone.json.data.discrepancy.strikes, gone.json.data.discrepancy.limit], ['away', 2, 5], 'the person is told, and may re-check');
+  /* A re-check at the gate confirms the place and clears the ask; the strikes stay counted. */
+  const confirmed = await api(`/api/field/visits/${ids.prtVisit}/ping`, { method: 'POST', as: 'ravi', body: { fix: { lat: 11.10851, lng: 77.34111, accuracyM: 7 }, recheck: true } });
+  assert.deepEqual([confirmed.json.data.confirmed, confirmed.json.data.discrepancy, confirmed.json.data.strikes], [true, null, 2]);
+  assert.equal((await FieldVisit.findById(ids.prtVisit)).tracking.pendingRecheck, false);
   for (let i = 0; i < 3; i += 1) await api(`/api/field/visits/${ids.prtVisit}/ping`, { method: 'POST', as: 'ravi', body: { fix: { lat: 11.10850, lng: 77.34110, accuracyM: 5 } } });
   const frozen = await FieldVisit.findById(ids.prtVisit).lean();
-  assert.deepEqual(frozen.flags.map((row) => row.key), ['implausible_travel', 'left_site', 'stale_fix'], '400 m in a second is said too');
-  assert.equal(frozen.pings.length, 6);
+  assert.deepEqual(frozen.flags.map((row) => row.key), ['implausible_travel', 'left_site', 'stale_fix'], '400 m in a second is said too; the frozen fix is one strike, not yet the limit');
+  assert.equal(frozen.pings.length, 7);
+  assert.deepEqual([frozen.tracking.strikes, frozen.tracking.pendingRecheck, frozen.tracking.suspectAt], [3, true, undefined]);
+  /* Two more strays: the limit — Admin and whoever planned the visit hear something is wrong, under Needs your action. */
+  await api(`/api/field/visits/${ids.prtVisit}/ping`, { method: 'POST', as: 'ravi', body: { fix: { ...AWAY, lat: 11.1130 } } });
+  const fifth = await api(`/api/field/visits/${ids.prtVisit}/ping`, { method: 'POST', as: 'ravi', body: { fix: { ...AWAY, lat: 11.1131 } } });
+  assert.deepEqual([fifth.json.data.discrepancy.strikes, fifth.json.data.discrepancy.suspect], [5, true]);
+  const suspect = await FieldVisit.findById(ids.prtVisit).lean();
+  assert.ok(suspect.tracking.suspectAt && suspect.flags.some((row) => row.key === 'suspect_tracking'));
+  const toAdmin = await TaskNotice.findOne({ recipient: ids.admin, statusLabel: 'Something wrong in a field visit: Ravi PRT' }).lean();
+  assert.ok(toAdmin, 'Admin is told');
+  assert.match(toAdmin.note, /strayed 5 times/);
+  assert.equal(toAdmin.link, `/field/team?date=${service.dayIST()}&user=${ids.ravi}`);
+  assert.ok(await TaskNotice.findOne({ recipient: ids.nandhini, statusLabel: 'Something wrong in a field visit: Ravi PRT' }), 'and whoever planned the visit');
+  assert.equal(await TaskNotice.countDocuments({ statusLabel: 'Something wrong in a field visit: Ravi PRT' }), 2, 'once');
+  await api(`/api/field/visits/${ids.prtVisit}/ping`, { method: 'POST', as: 'ravi', body: { fix: { ...AWAY, lat: 11.1132 } } });
+  assert.equal(await TaskNotice.countDocuments({ statusLabel: 'Something wrong in a field visit: Ravi PRT' }), 2, 'not again on the sixth');
+  const today = (await api(`/api/field/team?date=${service.dayIST()}`, { as: 'admin' })).json.data.rows.find((row) => row.user.name === 'Ravi PRT');
+  assert.deepEqual([today.suspects.length, today.suspects[0].strikes], [1, 6], 'on Field today');
   assert.equal((await api(`/api/field/visits/${ids.bankVisit}/ping`, { method: 'POST', as: 'ravi', body: { fix: GATE } })).status, 409, 'not checked in there');
 });
 
