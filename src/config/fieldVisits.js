@@ -144,6 +144,12 @@ export const FIELD_RULES = Object.freeze({
   maxReschedules: 3,
   /** The most fixes kept on one visit — eight hours at five minutes. */
   maxPings: 120,
+  /**
+   * A fix that strays — away from the check-in point, frozen, or an impossible jump — is a
+   * strike: the person is told and may re-check the GPS on the spot. This many strikes on one
+   * visit, and Admin and whoever planned it are told something is wrong with it.
+   */
+  suspectStrikes: 5,
 });
 
 /** What each flag means, in the words the report shows. */
@@ -167,5 +173,6 @@ export const FLAGS = Object.freeze({
   times_edited: 'Times edited by Admin',
   receipt_not_logged: 'Collected money not on a payment task',
   no_outcome_report: 'Visit words not written up',
+  suspect_tracking: 'Something wrong in this visit — the GPS strayed repeatedly',
 });
 export const flagLabel = (key) => FLAGS[key] || String(key || '').replace(/_/g, ' ');

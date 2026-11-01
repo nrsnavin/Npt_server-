@@ -100,12 +100,14 @@ const flag = (record, key, detail) => {
   record.flags = [...(record.flags || []), { key, label: flagLabel(key), detail: detail || undefined, at: new Date() }];
   return true;
 };
+/* Speed between two fixes — only once they are a real distance apart: GPS jitter over seconds reads as any speed at all. */
 const kmh = (from, to) => {
   if (!from?.at || !to?.at || from.lat == null || to.lat == null) return null;
   const hours = (new Date(to.at) - new Date(from.at)) / 3_600_000;
   if (hours <= 0) return null;
   const distance = km(from, to);
-  return distance == null ? null : distance / hours;
+  if (distance == null || distance * 1000 <= FIELD_RULES.leftSiteM) return null;
+  return distance / hours;
 };
 
 /* ------------------------------------------------------------------ notices ---------------- */
@@ -119,7 +121,7 @@ export async function fieldNotice({ recipients = [], toAdmin = true, label, note
   const { default: TaskNotice } = await import('../models/TaskNotice.js');
   await TaskNotice.insertMany([...told].map((recipient) => ({
     recipient, task: task || undefined, enquiry: enquiry || undefined, customer: customer || undefined,
-    department: 'field', kind, status, statusLabel: label, note: note || undefined, by: by || undefined, at: new Date(),
+    department: 'field', kind, status, statusLabel: label, note: note || undefined, link: link || undefined, by: by || undefined, at: new Date(),
   })));
   afterCommit(() => import('./push.service.js')
     .then(({ sendPush }) => sendPush([...told], { title: label, body: String(note || '').slice(0, 200), link, kind: 'field-visit' }))
@@ -712,7 +714,7 @@ export async function checkIn(user, visit, { fix: rawFix, device, enteredLater =
  * from the check-in point; two in a row beyond the limit say the person left; the same
  * coordinates three times running say the GPS is not a GPS; a jump faster than a car is said so.
  */
-export async function ping(user, visit, { fix: rawFix } = {}) {
+export async function ping(user, visit, { fix: rawFix, recheck = false } = {}) {
   assertVisitor(user, visit);
   if (visit.status !== 'checked_in') throw ApiError.conflict('Not checked in');
   const fix = cleanFix(rawFix);
@@ -723,14 +725,59 @@ export async function ping(user, visit, { fix: rawFix } = {}) {
   const last = pings.slice(-FIELD_RULES.leftSitePings);
   if (last.length === FIELD_RULES.leftSitePings && last.every((row) => row.distanceM != null && row.distanceM > FIELD_RULES.leftSiteM)) flag(visit, 'left_site', `${distanceM} m away at ${timeIST(now)}`);
   const stale = pings.slice(-FIELD_RULES.stalePings);
-  if (stale.length === FIELD_RULES.stalePings && stale.every((row) => row.lat === fix.lat && row.lng === fix.lng && row.accuracyM === entry.accuracyM)) flag(visit, 'stale_fix', `the same fix ${FIELD_RULES.stalePings} times`);
+  const frozen = stale.length === FIELD_RULES.stalePings && stale.every((row) => row.lat === fix.lat && row.lng === fix.lng && row.accuracyM === entry.accuracyM);
+  if (frozen) flag(visit, 'stale_fix', `the same fix ${FIELD_RULES.stalePings} times`);
   const previous = pings.at(-2);
-  const speed = previous ? kmh(previous, entry) : null;
+  /* A re-check answers a fix that strayed: the jump back to the place is the point of it, not a strike. */
+  const speed = previous && !recheck ? kmh(previous, entry) : null;
   if (speed != null && speed > FIELD_RULES.implausibleKmh) flag(visit, 'implausible_travel', `${Math.round(speed)} km/h between fixes`);
   if (previous && minutesBetween(previous.at, now) * 60_000 > FIELD_RULES.pingGapMs) flag(visit, 'tracking_gaps', `${minutesBetween(previous.at, now)} min without a fix`);
   visit.pings = pings;
+
+  /*
+   * The fix judged [FIELD_RULES.suspectStrikes]: one that strays — away from the check-in point,
+   * frozen, an impossible jump — is a strike, and the person is asked to re-check the GPS on the
+   * spot; a re-check at the place confirms it and clears the ask. Strikes keep counting: at the
+   * limit the visit is marked, and Admin and whoever planned it hear something is wrong with it,
+   * under "Needs your action" and on Field today.
+   */
+  const away = distanceM != null && distanceM > FIELD_RULES.leftSiteM;
+  const discrepancy = away ? { kind: 'away', detail: `${distanceM} m from where you checked in`, distanceM }
+    : frozen ? { kind: 'frozen', detail: `the same fix ${FIELD_RULES.stalePings} times — the GPS is not updating`, distanceM }
+      : speed != null && speed > FIELD_RULES.implausibleKmh ? { kind: 'jump', detail: `${Math.round(speed)} km/h since the last fix`, distanceM } : null;
+  const tracking = visit.tracking || { strikes: 0 };
+  let suspect = null;
+  if (discrepancy) {
+    tracking.strikes = (tracking.strikes || 0) + 1;
+    tracking.pendingRecheck = true;
+    tracking.lastDiscrepancy = { ...discrepancy, at: now };
+    visit.history.push({ by: user._id, action: recheck ? 'gps_recheck_failed' : 'gps_strayed', note: `${discrepancy.detail} (strike ${tracking.strikes})` });
+    if (tracking.strikes >= FIELD_RULES.suspectStrikes && !tracking.suspectAt) {
+      tracking.suspectAt = now;
+      flag(visit, 'suspect_tracking', `${tracking.strikes} strikes — last: ${discrepancy.detail}`);
+      suspect = true;
+    }
+  } else if (recheck) {
+    tracking.pendingRecheck = false;
+    tracking.recheckedAt = now;
+    visit.history.push({ by: user._id, action: 'gps_rechecked', note: `at the place — ${distanceM ?? '?'} m from the check-in, ±${fix.accuracyM ?? '?'} m` });
+  }
+  visit.tracking = tracking;
+  visit.markModified('tracking');
   await visit.save();
-  return { distanceM, flags: visit.flags.map((row) => row.key), pings: pings.length };
+  if (suspect) {
+    const planner = visit.assignedBy && !same(visit.assignedBy, visit.user) ? [idOf(visit.assignedBy)] : [];
+    await fieldNotice({
+      recipients: planner, by: null, label: `Something wrong in a field visit: ${user.name}`,
+      note: `“${visit.purpose}” — the GPS strayed ${tracking.strikes} times since check-in (${discrepancy.detail}). Look at the visit on Field today.`,
+      customer: visit.customer, enquiry: visit.enquiry, task: visit.task, link: `/field/team?date=${visit.plannedDate}&user=${idOf(visit.user)}`,
+    });
+  }
+  return {
+    distanceM, flags: visit.flags.map((row) => row.key), pings: pings.length, strikes: tracking.strikes || 0, limit: FIELD_RULES.suspectStrikes,
+    discrepancy: discrepancy ? { ...discrepancy, strikes: tracking.strikes, limit: FIELD_RULES.suspectStrikes, suspect: Boolean(tracking.suspectAt) } : null,
+    confirmed: Boolean(recheck && !discrepancy),
+  };
 }
 
 /* ------------------------------------------------------------------ check-out -------------- */
@@ -966,6 +1013,8 @@ export async function teamDay(viewer, date = dayIST()) {
       user: person, day: day ? { ...day, flags: LIVE_FLAGS(day, date, today) } : null, visits: ordered(own), summary,
       mode: day?.dutyStart?.at ? 'field' : day?.punchIn?.at ? 'office' : own.length ? 'planned' : 'none',
       checkedIn: own.find((visit) => visit.status === 'checked_in') || null,
+      /* Visits whose fixes strayed past the limit — Admin's to look at [ping]. */
+      suspects: own.filter((visit) => visit.tracking?.suspectAt).map((visit) => ({ _id: visit._id, purpose: visit.purpose, strikes: visit.tracking.strikes, detail: visit.tracking.lastDiscrepancy?.detail || '', at: visit.tracking.suspectAt })),
       flags: [...LIVE_FLAGS(day, date, today), ...own.flatMap((visit) => (visit.flags || []).map((entry) => ({ ...entry, visit: visit._id, purpose: visit.purpose })))],
     });
   }

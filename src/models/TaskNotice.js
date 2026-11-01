@@ -24,6 +24,8 @@ const taskNoticeSchema = new mongoose.Schema(
     status: { type: String },
     statusLabel: { type: String },
     note: { type: String, trim: true, maxlength: 2000 },
+    /** Where to open it, when it is not an enquiry or an order — a field day, say [fieldVisit.service `fieldNotice`]. */
+    link: { type: String, trim: true, maxlength: 300 },
     /** The ready date given with the move (ERD), as YYYY-MM-DD. */
     date: { type: String },
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
