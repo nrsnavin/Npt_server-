@@ -330,6 +330,9 @@ export const paymentDay = asyncHandler(async (req, res) => {
     .populate([{ path: 'user', select: 'name' }, { path: 'customer', select: 'code name' }, { path: 'order', select: 'number' }])
     .sort({ dueDate: 1 }).lean();
   const labelOf = (task) => (findHandoff(task.kind)?.form?.statuses || []).find((entry) => entry.key === task.status)?.label || task.status;
+  /* The field visit planned or under way on each case — the card's Needs visit / Check in [fieldVisit.service]. */
+  const { fieldVisitSummary } = await import('../services/fieldVisit.service.js');
+  const fieldVisits = await fieldVisitSummary(cases.map((task) => task._id));
   const owedBy = new Map();
   for (const row of owing) {
     const key = String(row.customer?._id || row.customer);
@@ -342,6 +345,7 @@ export const paymentDay = asyncHandler(async (req, res) => {
     promisesBroken: (task.statusHistory || []).filter((entry) => entry.status === 'promise_broken').length,
     /* The visits to the buyer so far, and who works the case — the card's Record location button [taskVisit.service]. */
     visit: visitSummary(task),
+    fieldVisit: fieldVisits.get(String(task._id)) || null,
     department: task.department,
     user: task.user?._id || task.user || null,
   });

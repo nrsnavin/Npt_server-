@@ -278,6 +278,23 @@ export const MODULES = [
     blueprint: '35',
     available: false,
   },
+  /*
+   * Field visits [config/fieldVisits.js; services/fieldVisit.service.js]: a visit out of the
+   * office planned, checked into at the gate, checked out of with its outcome; the field day
+   * round it; Admin's report. Who may go, assign and plan is a per-user mark Admin sets
+   * [models/User.js `fieldVisit`] — the grant here opens the screens for them, and is given with
+   * the mark.
+   */
+  {
+    key: 'field_visits',
+    label: 'Field visits',
+    description: 'Visits planned and checked into with the phone’s location, the field day round them, and the day’s report for Admin.',
+    group: 'Workspace',
+    stage: null,
+    ownerDepartment: 'marketing',
+    blueprint: '35',
+    available: true,
+  },
   {
     key: 'reports',
     label: 'Reports & dashboards',

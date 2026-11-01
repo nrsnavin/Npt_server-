@@ -4,6 +4,8 @@ import { checkPassword } from '../utils/password.js';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import asyncHandler from '../utils/asyncHandler.js';
+import { randomUUID } from 'node:crypto';
+import { fieldVisitOf } from '../utils/fieldVisit.js';
 import { signToken } from '../middleware/auth.js';
 import { issueOtp, resolveIdentifier, verifyOtp } from '../services/otp.service.js';
 import { env } from '../config/env.js';
@@ -25,6 +27,8 @@ const publicUser = (user) => ({
   departments: departmentsOf(user),
   /** Gives Production's EDD and decides printing / assembly [utils/departments.js `isProductionInCharge`]. */
   productionInCharge: Boolean(user.productionInCharge),
+  /** Goes out on field visits, plans them for others, plans their own [models/User.js `fieldVisit`]. */
+  fieldVisit: fieldVisitOf(user),
   phone: user.phone,
   emailVerified: user.emailVerified,
   phoneVerified: user.phoneVerified,
@@ -36,6 +40,18 @@ const publicUser = (user) => ({
   /** Every response carrying a user carries their access, so the client is never guessing. */
   modules: moduleAccessFor(user),
 });
+
+/**
+ * The token for a sign-in. A field account's is bound to this device: a new session id goes on
+ * the user and into the token, and the token on any earlier phone stops [middleware/auth.js
+ * `sessionRefused`]. Other accounts get the plain token they always did.
+ */
+async function tokenFor(user) {
+  if (!user.fieldVisit?.allowed) return signToken(user);
+  const session = randomUUID();
+  await User.updateOne({ _id: user._id }, { $set: { activeSession: session } });
+  return signToken(user, { session });
+}
 
 /*
  * Loaded with the hash selected, only so `hasPassword` is true when it is true: the field is
@@ -53,7 +69,7 @@ async function completeSignIn(user, method) {
   /* The WhatsApp check, when WHATSAPP_LOGIN_PING is set; never holds up the sign-in. */
   pingOnSignIn(user, method);
 
-  return { user: publicUser(user), token: signToken(user) };
+  return { user: publicUser(user), token: await tokenFor(user) };
 }
 
 export const register = asyncHandler(async (req, res) => {
@@ -306,7 +322,7 @@ export const changePassword = asyncHandler(async (req, res) => {
   res.json({
     success: true,
     message: 'Password updated. Every other device has been signed out.',
-    data: { user: publicUser(user), token: signToken(user) },
+    data: { user: publicUser(user), token: await tokenFor(user) },
   });
 });
 

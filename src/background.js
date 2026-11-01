@@ -3,6 +3,7 @@ import { reconcileDispatches } from './services/dispatchRecovery.service.js';
 import { runFeedbackReminders, runSamplingEscalations } from './services/escalation.service.js';
 import { runStallSweep } from './services/anomaly.service.js';
 import { runLateTaskSweep } from './services/handoff.service.js';
+import { runFieldVisitSweep } from './services/fieldVisit.service.js';
 import { runQueryEscalations } from './services/queryEscalation.service.js';
 import { runPaymentEscalations } from './services/receivable.service.js';
 import { runCollectionSweep } from './services/collections.service.js';
@@ -194,7 +195,7 @@ function startIndiamartPoll() {
 }
 
 
-const LEASES = ['sweep:escalations', 'sweep:indiamart', 'sweep:dispatch-recovery', 'sweep:outbox', 'sweep:handoff-late'];
+const LEASES = ['sweep:escalations', 'sweep:indiamart', 'sweep:dispatch-recovery', 'sweep:outbox', 'sweep:handoff-late', 'sweep:field-visits'];
 
 export function startBackground() {
   /*
@@ -232,6 +233,14 @@ export function startBackground() {
         return [];
       });
       if (late.length) console.log(`Late department tasks: told about ${late.length}`);
+    }),
+    /* Field visits: check-out reminders, overnight check-ins, field days never ended [fieldVisit.service]. */
+    everyExclusively('sweep:field-visits', 5 * 60_000, async () => {
+      const told = await runFieldVisitSweep().catch((error) => {
+        console.error('Field-visit sweep failed:', error.message);
+        return [];
+      });
+      if (told.length) console.log(`Field visits: ${told.length} reminder(s) sent`);
     }),
     startEscalationSweep(),
     startIndiamartPoll(),

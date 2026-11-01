@@ -11,6 +11,7 @@ import whatsappRoutes from './whatsapp.routes.js';
 import queryRoutes from './query.routes.js';
 import dispatchPlanningRoutes from './dispatchPlanning.routes.js';
 import recordsRoutes from './records.routes.js';
+import fieldRoutes from './field.routes.js';
 import { getPlant, getSecurity, putFloorPlanning, putHandoverLead, putPlant, putSecurity } from '../controllers/settings.controller.js';
 import { floorPlanningSchema, handoverLeadSchema, plantCalendarSchema, securityPolicySchema } from '../validators/schemas.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
@@ -30,6 +31,8 @@ const router = Router();
 router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
 router.use('/workspace', workspaceRoutes);
+/* Field visits and the day round them: the office punch, field duty, check-ins [routes/field.routes.js]. */
+router.use('/field', fieldRoutes);
 router.use('/samples', sampleRoutes);
 /*
  * The WhatsApp front door [§41].

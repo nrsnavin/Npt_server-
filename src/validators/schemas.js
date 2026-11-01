@@ -66,6 +66,13 @@ export const updateUserSchema = z.object({
   department: z.enum(DEPARTMENT_KEYS).optional(),
   extraDepartments: z.array(z.enum(DEPARTMENT_KEYS)).max(9).optional(),
   productionInCharge: z.boolean().optional(),
+  /** Field visits: goes out, plans for others (and for whom), plans their own [models/User.js `fieldVisit`]. */
+  fieldVisit: z.object({
+    allowed: z.boolean().optional(),
+    mayAssign: z.boolean().optional(),
+    assignTo: z.array(z.string().regex(/^[0-9a-f]{24}$/i)).max(200).optional(),
+    maySelfPlan: z.boolean().optional(),
+  }).optional(),
   phone: z.string().optional(),
   isActive: z.boolean().optional(),
 });

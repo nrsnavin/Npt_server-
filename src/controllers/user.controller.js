@@ -8,6 +8,7 @@ import {
   normaliseGrants,
 } from '../services/access.service.js';
 import { defaultAccessForAll, findDepartment, LEVEL_RANK, PRODUCTION_IN_CHARGE_ACCESS } from '../config/modules.js';
+import { fieldVisitOf } from '../utils/fieldVisit.js';
 import { departmentsOf, isManagement } from '../utils/departments.js';
 import { env } from '../config/env.js';
 import { issueOtp, resolveIdentifier, verifyOtp } from '../services/otp.service.js';
@@ -38,6 +39,8 @@ const publicUser = (user) => ({
   extraDepartments: user.extraDepartments || [],
   departments: departmentsOf(user),
   productionInCharge: Boolean(user.productionInCharge),
+  /** Field visits: goes out, plans for others (and whom), plans their own [models/User.js `fieldVisit`]. */
+  fieldVisit: fieldVisitOf(user),
   phone: user.phone,
   emailVerified: user.emailVerified,
   phoneVerified: user.phoneVerified,
@@ -251,6 +254,32 @@ export const update = asyncHandler(async (req, res) => withOwnerLocks([req.param
       user.phone = next;
       user.phoneVerified = false;
     }
+  }
+
+  /*
+   * Field visits [models/User.js `fieldVisit`]: Admin marks who goes out, who plans visits for
+   * others and for whom, who plans their own. Any mark opens the Field visits screens — the module
+   * grant is given with it, raised never lowered — and `assignTo` is kept to people who go out.
+   */
+  if (req.body.fieldVisit !== undefined && user.role !== 'admin') {
+    const current = user.fieldVisit || {};
+    const next = {
+      allowed: req.body.fieldVisit.allowed ?? Boolean(current.allowed),
+      mayAssign: req.body.fieldVisit.mayAssign ?? Boolean(current.mayAssign),
+      maySelfPlan: req.body.fieldVisit.maySelfPlan ?? Boolean(current.maySelfPlan),
+      assignTo: req.body.fieldVisit.assignTo ?? (current.assignTo || []),
+    };
+    next.assignTo = [...new Set(next.assignTo.map(String))].filter((id) => id !== String(user._id));
+    if (next.assignTo.length) {
+      const goers = await User.find({ _id: { $in: next.assignTo }, 'fieldVisit.allowed': true }).select('_id').lean();
+      next.assignTo = goers.map((person) => String(person._id));
+    }
+    if (!next.mayAssign) next.assignTo = [];
+    if (!next.allowed) next.maySelfPlan = false;
+    /* Taken off the field: the device binding goes with it. */
+    if (current.allowed && !next.allowed) user.activeSession = undefined;
+    user.fieldVisit = next;
+    if (next.allowed || next.mayAssign) user.moduleAccess = withGrants(user.moduleAccess, [{ module: 'field_visits', level: 'write' }]);
   }
 
   if (user.role === 'admin') user.moduleAccess = [];
