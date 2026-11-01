@@ -44,7 +44,10 @@ export const settleVisitSchema = z.object({
 });
 
 export const checkInSchema = z.object({
-  fix: fixSchema,
+  /* None when the phone gave nothing — then `reason` says why. */
+  fix: fixSchema.nullable().optional(),
+  /* Why the fix is rough or missing: indoors, GPS off, a basement. */
+  reason: z.string().trim().max(300).optional(),
   device: z.string().max(120).optional(),
 });
 

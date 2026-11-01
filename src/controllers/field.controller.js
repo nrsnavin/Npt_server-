@@ -54,7 +54,7 @@ export const settle = guarded(async (req, res) => {
 });
 
 export const arrive = guarded(async (req, res) => {
-  const visit = await checkIn(req.user, await loadVisit(req.params.id), { fix: req.body.fix, device: req.body.device || req.headers['user-agent'] }, { fetchImpl: req.app.get('imageryFetch') });
+  const visit = await checkIn(req.user, await loadVisit(req.params.id), { fix: req.body.fix, reason: req.body.reason, device: req.body.device || req.headers['user-agent'] }, { fetchImpl: req.app.get('imageryFetch') });
   res.json({ success: true, data: await visitView(visit) });
 });
 

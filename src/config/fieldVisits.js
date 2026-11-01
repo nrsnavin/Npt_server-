@@ -110,8 +110,20 @@ export const OPEN_VISIT_STATUSES = ['planned', 'checked_in'];
  * checks agree — and so Admin's question "why was this flagged" has one answer.
  */
 export const FIELD_RULES = Object.freeze({
-  /** A fix within this is the gate, not the street [taskVisit.service PRECISE_M]. */
+  /** A fix within this is the gate, not the street [taskVisit.service PRECISE_M]: verified. */
   preciseM: 10,
+  /**
+   * The phone cannot always get under 10 m — indoors, under a roof, in a lane between tall
+   * buildings. A fix within this is kept as approximate: the visit is not flagged and Admin is
+   * not told; a later precise fix while there verifies it after the fact [fieldVisit.service `ping`].
+   */
+  acceptableM: 50,
+  /** Beyond this the fix is rough: the person says why (indoors, basement) and the check-in is kept unverified, Admin told. */
+  roughM: 100,
+  /** A fix worse than this is not judged at all — a strike from a ±300 m fix would be the phone's, not the person's. */
+  judgeMaxAccuracyM: 100,
+  /** This many unjudged fixes in a row: the place has poor GPS, said on the report (never a strike). */
+  poorPings: 4,
   /** The phone sends a fix this often while checked in [web: pages/FieldDay.jsx]. */
   pingEveryMs: 5 * 60_000,
   /** No fix for this long while checked in is a gap in the record — the app was closed or the phone asleep. */
@@ -174,5 +186,7 @@ export const FLAGS = Object.freeze({
   receipt_not_logged: 'Collected money not on a payment task',
   no_outcome_report: 'Visit words not written up',
   suspect_tracking: 'Something wrong in this visit — the GPS strayed repeatedly',
+  poor_gps: 'GPS poor at this place',
+  gps_verified_later: 'GPS verified later, at the place',
 });
 export const flagLabel = (key) => FLAGS[key] || String(key || '').replace(/_/g, ' ');
