@@ -716,6 +716,8 @@ async function moveEnquiryChecked({
   if (openRecords) await openWorkRecord(kind, enquiry, asked);
   /* A queue task with no EDD on the enquiry: its marketing person is asked for one [eddAsk.service]. */
   await askForEdd(task);
+  /* A PRT visitor and date on the form: the visit is on that person's field day from here [fieldVisit.service]. */
+  await (await import('./fieldVisit.service.js')).planFromBrief(task, user, picked.member);
 
   await publish(EVENTS.HANDOFF_SENT, { task, enquiry, by: user });
   return task;
@@ -798,6 +800,8 @@ export async function raiseTeamTask({ kind, note, brief, priority, requiredDate,
   });
   /* Raised with none: whoever raised it is asked for it [eddAsk.service]. */
   await askForEdd(task);
+  /* A PRT visitor and date on the form: the visit is on that person's field day from here [fieldVisit.service]. */
+  await (await import('./fieldVisit.service.js')).planFromBrief(task, user, picked.member);
   /* A Sample Request: the sample itself, for the bench to work [raiseTeamSample]. */
   if (kind === 'sample_request') await raiseTeamSample(task, user, asked, buyer);
   /*
@@ -1398,6 +1402,8 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
     result: 'done', note: text, fields: Object.keys(kept).length ? kept : undefined, by: user._id, at: new Date(),
   };
   await task.save();
+  /* A field visit still planned on it is cancelled, and the visitor told [fieldVisit.service]. */
+  await (await import('./fieldVisit.service.js')).cancelVisitsOfTask(task._id, user, 'Task closed');
 
   /* The sample collected at the desk is with the buyer now; the record says who took it. */
   if (task.kind === 'sample_collect') await collectedAtDesk(task, user, kept);
@@ -3734,6 +3740,7 @@ export async function closeByAdmin(task, user, { reason }) {
     kind: 'status', status: closing?.key, statusLabel: 'Closed by Admin', text: why, note: `Closed by Admin: ${why}`, by: user._id, at: now,
   }];
   await task.save();
+  await (await import('./fieldVisit.service.js')).cancelVisitsOfTask(task._id, user, `Closed by Admin: ${why}`);
   await noticeStatus(task, user, { step: { key: 'closed_by_admin', label: 'Closed by Admin' }, note: why, also: await peopleOn(task), onlyAlso: true });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   return task;

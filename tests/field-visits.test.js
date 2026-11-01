@@ -127,7 +127,10 @@ test('a visit is planned for a person on a day — from a task, from a customer,
   assert.equal(planned.status, 201, planned.json.message);
   const visit = planned.json.data;
   assert.deepEqual([visit.category, visit.purpose, visit.user.name, visit.assignedBy.name, visit.customer.name, visit.status, visit.plannedDate, visit.plannedTime], ['prt_collection', prtTask.title, 'Ravi PRT', 'Nandhini S', 'Field Knits', 'planned', today, '11:00'], 'the task gives the category, purpose and buyer');
-  assert.equal((await Todo.findById(prtTask._id)).updates.at(-1).note, `Visit planned: Ravi PRT on ${today} — Ask for the cheque`, 'said on the task');
+  /* The task reads it as its own move: Visit Planned, the visitor and the date on its brief, due that day. */
+  const planned0 = await Todo.findById(prtTask._id).lean();
+  assert.deepEqual([planned0.status, planned0.brief.visitor, planned0.brief.visitDate, service.dayIST(planned0.dueDate)], ['visit_planned', 'Ravi PRT', today, today]);
+  assert.match(planned0.updates.at(-1).note, /Visit planned: Ravi PRT on .* — Ask for the cheque/, 'said on the task');
   assert.ok(await TaskNotice.findOne({ recipient: ids.ravi, statusLabel: 'Visit planned: PRT Collection' }), 'Ravi is told');
   assert.equal((await api('/api/field/visits', { method: 'POST', as: 'admin', body: { assignee: ids.ravi, task: prtTask._id, date: today } })).status, 409, 'one open visit per task');
   /* Ravi plans his own general visit; Mani, not marked to plan his own, cannot. */
@@ -178,6 +181,7 @@ test('check-in at the gate: the fix verified, the day started, the task’s visi
   assert.equal(task.visits.length, 1, 'recorded on the task');
   assert.equal(String(task.visits[0]._id), String(visit.checkIn.taskVisit));
   assert.ok(task.visits[0].image, 'with its satellite picture');
+  assert.equal(task.status, 'visited', 'the PRT task reads Visited');
   assert.equal((await api(`/api/field/visits/${ids.bankVisit}/check-in`, { method: 'POST', as: 'ravi', body: { fix: GATE } })).status, 409, 'one at a time');
   assert.match((await api(`/api/field/visits/${ids.bankVisit}/check-in`, { method: 'POST', as: 'ravi', body: { fix: GATE } })).json.message, /check out there first/);
   assert.equal((await api('/api/field/day', { method: 'POST', as: 'ravi', body: { action: 'lunch_start', fix: GATE } })).status, 409, 'not during a visit');
@@ -212,6 +216,8 @@ test('check-out: the outcome the category asks for, the collected money on the t
   assert.ok(visit.outcome.receivable?.number, 'logged as a receipt for Accounts to confirm');
   const receivable = await Receivable.findById(visit.outcome.receivable._id).lean();
   assert.deepEqual([receivable.kind, receivable.receipts.at(-1).amount, receivable.receipts.at(-1).reference], ['on_account', 12500, 'CHQ 448812']);
+  const moved = await Todo.findById(prtTask._id).lean();
+  assert.deepEqual([moved.status, moved.statusHistory.at(-1).status, moved.updates.at(-1).fields?.reference], ['cheque_collected', 'cheque_collected', 'CHQ 448812'], 'the task reads Cheque Collected — Send to Accounts, as the desk would have set it');
   assert.match(visit.outcome.report.text, /accounts madam/);
   assert.equal((await Todo.findById(prtTask._id)).visits[0].report.text, visit.outcome.report.text, 'the task’s visit carries the same report');
   const keys = visit.flags.map((row) => row.key);
@@ -283,6 +289,110 @@ test('Field today: Admin sees everyone who went out; an assigner their own peopl
   const card = (home.recovery || []).find((row) => String(row._id) === String(prtTask._id));
   assert.ok(card, 'the case is on the PRT desk');
   assert.deepEqual([card.fieldVisit._id, card.fieldVisit.status, card.fieldVisit.user.name], [again._id, 'planned', 'Ravi PRT']);
+});
+
+test('Promised, Person Unavailable and Refused reach the PRT task: its status and date, the put-off visit as Visit Planned, the refusal on the record', async () => {
+  const today = service.dayIST();
+  const tomorrow = service.dayIST(new Date(Date.now() + 86400000));
+  const raise = async (note) => (await api('/api/workspace/team-tasks', { method: 'POST', as: 'admin', body: { kind: 'prt_recovery', note, customer: customerId, brief: { prtMode: 'Collect cheque' }, allowDuplicate: true } })).json.data.task;
+  const visitOn = async (task) => (await api('/api/field/visits', { method: 'POST', as: 'admin', body: { assignee: ids.ravi, task: task._id, date: today } })).json.data;
+  const go = async (visit, outcome, extra = {}) => {
+    assert.equal((await api(`/api/field/visits/${visit._id}/check-in`, { method: 'POST', as: 'ravi', body: { fix: GATE } })).status, 200);
+    const left = await api(`/api/field/visits/${visit._id}/check-out`, { method: 'POST', as: 'ravi', body: { fix: GATE, outcome, ...extra } });
+    assert.equal(left.status, 200, left.json.message);
+    return left.json.data;
+  };
+  const promised = await raise('Promised case');
+  await go(await visitOn(promised), { key: 'promised', committedDate: tomorrow });
+  const afterPromise = await Todo.findById(promised._id).lean();
+  assert.deepEqual([afterPromise.status, afterPromise.statusHistory.at(-1).date, service.dayIST(afterPromise.dueDate)], ['promised', tomorrow, tomorrow], 'Promised with its date; the task falls due that day');
+  const pastVisit = await visitOn(await raise('Past promise'));
+  assert.equal((await api(`/api/field/visits/${pastVisit._id}/check-in`, { method: 'POST', as: 'ravi', body: { fix: GATE } })).status, 200);
+  const ravisOpen = await FieldVisit.findOne({ user: ids.ravi, status: 'checked_in' });
+  assert.equal((await api(`/api/field/visits/${ravisOpen._id}/check-out`, { method: 'POST', as: 'ravi', body: { fix: GATE, outcome: { key: 'promised', committedDate: '2020-01-01' } } })).status, 400, 'a promise is for a day to come');
+  const gone = await api(`/api/field/visits/${ravisOpen._id}/check-out`, { method: 'POST', as: 'ravi', body: { fix: GATE, outcome: { key: 'person_unavailable' }, reschedule: { date: tomorrow } } });
+  assert.equal(gone.status, 200, gone.json.message);
+  const away = gone.json.data;
+  assert.equal(away.status, 'rescheduled');
+  const afterAway = await Todo.findById(ravisOpen.task).lean();
+  assert.deepEqual([afterAway.status, afterAway.brief.visitDate, service.dayIST(afterAway.dueDate)], ['visit_planned', tomorrow, tomorrow], 'the next visit is the task’s Visit Planned');
+  assert.match(afterAway.updates.find((row) => /person unavailable/.test(row.note))?.note || '', /Field visit — person unavailable — visit again/);
+  const refused = await raise('Refused case');
+  await go(await visitOn(refused), { key: 'refused', reason: 'Disputes the rate' });
+  const afterRefusal = await Todo.findById(refused._id).lean();
+  assert.equal(afterRefusal.status, 'visited', 'Refused is not a status of the task');
+  assert.match(afterRefusal.updates.at(-1).note, /Field visit — refused — Disputes the rate/, 'but it is on the task’s record');
+  const chequePlanned = await visitOn(await raise('Cheque case'));
+  assert.equal((await api(`/api/field/visits/${chequePlanned._id}/check-in`, { method: 'POST', as: 'ravi', body: { fix: GATE } })).status, 200);
+  const chequeVisit = await FieldVisit.findOne({ user: ids.ravi, status: 'checked_in' });
+  assert.match((await api(`/api/field/visits/${chequeVisit._id}/check-out`, { method: 'POST', as: 'ravi', body: { fix: GATE, outcome: { key: 'collected', amount: 500, mode: 'cheque' } } })).json.message, /cheque number/, 'a cheque has a number');
+  assert.match((await api(`/api/field/visits/${chequeVisit._id}/check-out`, { method: 'POST', as: 'ravi', body: { fix: GATE, outcome: { key: 'collected', amount: 500, mode: 'cheque', reference: 'CHQ 448812' } } })).json.message, /already recorded/, 'the same cheque is not entered twice — refused back to the gate, nothing kept');
+  assert.equal((await FieldVisit.findById(chequeVisit._id)).status, 'checked_in', 'still at the gate');
+  const cash = await api(`/api/field/visits/${chequeVisit._id}/check-out`, { method: 'POST', as: 'ravi', body: { fix: GATE, outcome: { key: 'collected', amount: 500, mode: 'cash' } } });
+  assert.equal(cash.status, 200, cash.json.message);
+  assert.equal((await Todo.findById(chequeVisit.task)).status, 'collected', 'cash reads Payment Received — Send to Accounts');
+});
+
+test('Sample Delivered hands the sample over: the Sampling task closes as Sample handed and the sample is with the buyer', async () => {
+  const today = service.dayIST();
+  const enquiry = (await api('/api/enquiries', { method: 'POST', as: 'nandhini', body: { customer: customerId, requirement: { modelNumber: 'NPT-400S' }, nextAction: 'Sample', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() } })).json.data;
+  const raised = await api(`/api/enquiries/${enquiry._id}/handoffs`, { method: 'POST', as: 'nandhini', body: { kind: 'sample_request', note: 'Take the sample to the buyer', brief: { items: [{ model: 'NPT-400S', quantity: '3' }] } } });
+  assert.equal(raised.status, 201, JSON.stringify(raised.json));
+  const task = raised.json.data.task;
+  const visit = (await api('/api/field/visits', { method: 'POST', as: 'admin', body: { assignee: ids.mani, task: task._id, date: today } })).json.data;
+  assert.deepEqual([visit.category, visit.enquiry.number], ['sample_delivery', enquiry.number]);
+  assert.equal(service.dayIST((await Todo.findById(task._id)).dueDate), today, 'due the day of the visit');
+  assert.equal((await api(`/api/field/visits/${visit._id}/check-in`, { method: 'POST', as: 'mani', body: { fix: GATE } })).status, 200);
+  const left = await api(`/api/field/visits/${visit._id}/check-out`, { method: 'POST', as: 'mani', body: { fix: GATE, outcome: { key: 'delivered', receivedBy: 'Merchandiser Priya', pieces: 3 }, words: { met: 'Priya', response: 'will show the buyer' } } });
+  assert.equal(left.status, 200, left.json.message);
+  const done = await Todo.findById(task._id).lean();
+  assert.deepEqual([done.completed, done.outcome?.fields?.courier, done.outcome?.fields?.pieces], [true, 'Direct handover', '3'], 'the Sample Request closed as a sample sent is');
+  assert.match(done.outcome.note, /handed over to Merchandiser Priya/);
+  const { default: Sample } = await import('../src/models/Sample.js');
+  const sample = await Sample.findOne({ enquiry: enquiry._id }).lean();
+  assert.deepEqual([sample.status, sample.handedTo, sample.collection.pieces, sample.deliveryMethod], ['delivered', 'Merchandiser Priya', 3, 'direct']);
+  const { default: Enquiry } = await import('../src/models/Enquiry.js');
+  const fresh = await Enquiry.findById(enquiry._id).lean();
+  assert.deepEqual([fresh.activities.at(-1).type, fresh.activities.at(-1).spokeTo], ['visit', 'Priya'], 'and an activity on the enquiry');
+  assert.match(fresh.activities.at(-1).note, /Field visit — .*Delivered · received by Merchandiser Priya/);
+  const records = await api(`/api/enquiries/${enquiry._id}/records`, { as: 'admin' });
+  assert.equal(records.status, 200, records.json.message);
+  assert.deepEqual(records.json.data.fieldVisits.map((row) => [row.status, row.outcome.label]), [['completed', 'Delivered']], 'read on the enquiry');
+  ids.sampleEnquiry = enquiry._id;
+});
+
+test('a marketing visit met: the enquiry’s next follow-up moves and the meeting is its activity; a general visit is linked to the enquiry at the end', async () => {
+  const today = service.dayIST();
+  const next = service.dayIST(new Date(Date.now() + 5 * 86400000));
+  const visit = (await api('/api/field/visits', { method: 'POST', as: 'ravi', body: { category: 'marketing', purpose: 'Meet Field Knits about the new model', date: today } })).json.data;
+  assert.equal((await api(`/api/field/visits/${visit._id}/check-in`, { method: 'POST', as: 'ravi', body: { fix: GATE } })).status, 200);
+  const left = await api(`/api/field/visits/${visit._id}/check-out`, { method: 'POST', as: 'ravi', body: { fix: GATE, outcome: { key: 'met', metWhom: 'Owner Raja', summary: 'Wants 2000 pcs', nextFollowUp: next }, link: { customer: customerId, enquiry: ids.sampleEnquiry } } });
+  assert.equal(left.status, 200, left.json.message);
+  assert.equal(left.json.data.enquiry?._id, ids.sampleEnquiry, 'linked at the end');
+  const { default: Enquiry } = await import('../src/models/Enquiry.js');
+  const fresh = await Enquiry.findById(ids.sampleEnquiry).lean();
+  assert.equal(service.dayIST(fresh.nextFollowUpDate), next, 'the next follow-up is the visit’s');
+  assert.deepEqual([fresh.activities.at(-1).type, fresh.activities.at(-1).spokeTo], ['visit', 'Owner Raja']);
+});
+
+test('a task closed cancels the visit still planned on it and tells the visitor; a task deleted is caught by the sweep; the PRT form’s visitor and date plan the visit', async () => {
+  const tomorrow = service.dayIST(new Date(Date.now() + 86400000));
+  const raised = (await api('/api/workspace/team-tasks', { method: 'POST', as: 'admin', body: { kind: 'prt_recovery', note: 'Visitor on the form', customer: customerId, brief: { prtMode: 'Collect cheque', visitor: ids.ravi, visitDate: tomorrow }, allowDuplicate: true } })).json.data.task;
+  const fromForm = await FieldVisit.findOne({ task: raised._id }).lean();
+  assert.ok(fromForm, 'the form planned it');
+  assert.deepEqual([String(fromForm.user), fromForm.plannedDate, fromForm.status], [ids.ravi, tomorrow, 'planned']);
+  assert.ok(await TaskNotice.findOne({ recipient: ids.ravi, statusLabel: 'Visit planned: PRT Collection', note: new RegExp(tomorrow) }), 'Ravi is told');
+  const closed = await api(`/api/workspace/todos/${raised._id}/admin-close`, { method: 'POST', as: 'admin', body: { reason: 'Buyer paid online' } });
+  assert.equal(closed.status, 200, closed.json.message);
+  const cancelled = await FieldVisit.findById(fromForm._id).lean();
+  assert.deepEqual([cancelled.status, cancelled.settled.reason], ['cancelled', 'Closed by Admin: Buyer paid online']);
+  assert.ok(await TaskNotice.findOne({ recipient: ids.ravi, statusLabel: 'Visit cancelled' }));
+  const another = (await api('/api/workspace/team-tasks', { method: 'POST', as: 'admin', body: { kind: 'prt_recovery', note: 'To be deleted', customer: customerId, brief: { prtMode: 'Collect cheque' }, allowDuplicate: true } })).json.data.task;
+  const orphan = (await api('/api/field/visits', { method: 'POST', as: 'admin', body: { assignee: ids.ravi, task: another._id, date: tomorrow } })).json.data;
+  await Todo.deleteOne({ _id: another._id });
+  const told = await service.runFieldVisitSweep();
+  assert.ok(told.some((entry) => entry.startsWith('orphans:')), `the sweep caught it: ${told}`);
+  assert.deepEqual([(await FieldVisit.findById(orphan._id)).status, (await FieldVisit.findById(orphan._id)).settled.reason], ['cancelled', 'Task deleted']);
 });
 
 test('the sweep: a check-in two hours old is reminded; one left overnight is flagged and Admin told; a day never ended is an incomplete report', async () => {

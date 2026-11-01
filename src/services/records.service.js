@@ -935,8 +935,12 @@ export async function enquiryRecords(enquiry, { withQc }) {
     image: visit.image ? { _id: visit.image._id, key: visit.image.key, filename: visit.image.filename } : null, imageProblem: visit.imageProblem, imageSpan: visit.imageSpan || null, met: visit.met, happened: visit.happened, response: visit.response, report: visit.report?.text ? visit.report : null, notedAt: visit.notedAt,
     by: visit.by ? { _id: visit.by._id, name: visit.by.name } : null, capturedAt: visit.capturedAt, at: visit.at,
   }))).sort((a, b) => new Date(b.at) - new Date(a.at));
+  /* The field visits planned on the enquiry's tasks — who goes, when, what came of it [fieldVisit.service]. */
+  const { visitsOfEnquiry } = await import('./fieldVisit.service.js');
+  const fieldVisits = await visitsOfEnquiry(enquiry._id);
   return {
     visits,
+    fieldVisits,
     orders: orders.map((row) => ({
       _id: row._id, number: row.number, status: row.status, buyerPo: row.customerPo?.number || '', paymentTerms: row.paymentTerms || '',
       /* A draft from the SO upload still to be verified and confirmed [soDraftReview.service] — the page shows it to read. */
