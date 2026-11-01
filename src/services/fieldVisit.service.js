@@ -91,6 +91,17 @@ const cleanFix = (fix, { required = true } = {}) => {
   };
 };
 const verifiedFix = (fix) => Boolean(fix) && fix.accuracyM != null && fix.accuracyM <= FIELD_RULES.preciseM;
+/** How good a fix is [FIELD_RULES]: precise, approximate, rough — or none. */
+const gradeOf = (fix) => (!fix ? 'none' : fix.accuracyM == null ? 'rough' : fix.accuracyM <= FIELD_RULES.preciseM ? 'precise' : fix.accuracyM <= FIELD_RULES.acceptableM ? 'approximate' : 'rough');
+/** Metres between two fixes the error circles of both cannot explain — zero when they overlap. */
+const effectiveM = (a, b) => {
+  const distance = metres(a, b);
+  if (distance == null) return null;
+  return Math.max(0, distance - ((a?.accuracyM || 0) + (b?.accuracyM || 0)));
+};
+/** The place as best known: a later precise fix stands in for a rough check-in. */
+const anchorOf = (visit) => (visit.checkIn?.anchor?.lat != null ? visit.checkIn.anchor : visit.checkIn);
+const unflag = (record, key) => { record.flags = (record.flags || []).filter((entry) => entry.key !== key); };
 const stampOf = (fix, extra = {}) => (fix
   ? { at: new Date(), lat: fix.lat, lng: fix.lng, accuracyM: fix.accuracyM ?? undefined, verified: verifiedFix(fix), place: fix.place, ...extra }
   : { at: new Date(), verified: false, ...extra });
@@ -106,7 +117,8 @@ const kmh = (from, to) => {
   const hours = (new Date(to.at) - new Date(from.at)) / 3_600_000;
   if (hours <= 0) return null;
   const distance = km(from, to);
-  if (distance == null || distance * 1000 <= FIELD_RULES.leftSiteM) return null;
+  /* …and only beyond what the two fixes' error circles explain. */
+  if (distance == null || distance * 1000 - ((from.accuracyM || 0) + (to.accuracyM || 0)) <= FIELD_RULES.leftSiteM) return null;
   return distance / hours;
 };
 
@@ -662,7 +674,16 @@ export async function checkIn(user, visit, { fix: rawFix, device, enteredLater =
   if (visit.status !== 'planned') throw ApiError.conflict('This visit is closed — plan another');
   const elsewhere = await FieldVisit.findOne({ user: user._id, status: 'checked_in', _id: { $ne: visit._id } }).select('purpose').lean();
   if (elsewhere) throw ApiError.conflict(`You are checked in at “${elsewhere.purpose}” — check out there first. One visit at a time.`, { code: 'CHECKED_IN_ELSEWHERE', visit: elsewhere._id });
-  const fix = cleanFix(rawFix, { required: !enteredLater });
+  const fix = cleanFix(rawFix, { required: false });
+  const why = String(reason || '').trim();
+  const grade = enteredLater ? 'none' : gradeOf(fix);
+  /*
+   * The phone could not get close [FIELD_RULES]: within 50 m is kept as approximate and nothing
+   * is said; rougher than that, or no fix at all, the person says why — indoors, GPS off, a
+   * basement — and the check-in is kept unverified for a later precise fix to confirm [ping].
+   */
+  if (!enteredLater && grade === 'none' && !why) throw ApiError.badRequest('No location from the phone. Step outside and try again — or say why (indoors, GPS off) to check in without it; a good fix while you are there will verify it.');
+  if (!enteredLater && grade === 'rough' && !why) throw ApiError.badRequest(`±${fix.accuracyM ?? '?'} m is too rough to be sure of the place. Step into the open and try again — or say why the GPS could not get closer (indoors, basement) and check in as it is.`);
   const now = new Date();
   const when = enteredLater && at ? new Date(at) : now;
   if (Number.isNaN(when.getTime()) || when > now) throw ApiError.badRequest('The time is in the past');
@@ -674,24 +695,29 @@ export async function checkIn(user, visit, { fix: rawFix, device, enteredLater =
     if (day.punchIn?.at) flag(day, 'office_and_field', `Punched in at ${timeIST(day.punchIn.at)}, field check-in at ${timeIST(now)}`);
     await day.save();
   }
-  visit.checkIn = { ...stampOf(fix), at: when, verified: !enteredLater && verifiedFix(fix), enteredLater: enteredLater || undefined, reason: enteredLater ? String(reason || '').trim() : undefined, device: String(device || '').slice(0, 120) || undefined, by: user._id };
+  visit.checkIn = {
+    ...stampOf(fix), at: when, verified: !enteredLater && verifiedFix(fix), grade, enteredLater: enteredLater || undefined,
+    reason: why || undefined, device: String(device || '').slice(0, 120) || undefined, by: user._id,
+    anchor: fix ? { lat: fix.lat, lng: fix.lng, accuracyM: fix.accuracyM ?? undefined } : undefined,
+  };
   visit.status = 'checked_in';
   if (visit.plannedDate !== date) visit.plannedDate = date;
   if (enteredLater) flag(visit, 'entered_later', visit.checkIn.reason);
-  if (!visit.checkIn.verified) flag(visit, 'gps_not_verified', fix ? `±${fix.accuracyM ?? '?'} m` : 'no location');
+  /* Approximate is said in the record, not flagged; rough or none is flagged with why, and Admin hears it. */
+  if (!visit.checkIn.verified && grade !== 'approximate') flag(visit, 'gps_not_verified', `${fix ? `±${fix.accuracyM ?? '?'} m` : 'no location'}${why ? ` — ${why}` : ''}`);
   if (fix) {
     if (Math.abs(fix.capturedAt - now) > FIELD_RULES.clockSkewMs && !enteredLater) flag(visit, 'clock_skew', `${Math.round(Math.abs(fix.capturedAt - now) / 60_000)} min`);
     if (visit.customer) {
       const { default: Customer } = await import('../models/Customer.js');
       const buyer = await Customer.findById(visit.customer).select('site').lean();
-      const away = buyer?.site?.lat != null ? metres(buyer.site, fix) : null;
-      if (away != null && away > FIELD_RULES.farFromBuyerM) flag(visit, 'far_from_buyer', `${away} m from the pinned gate`);
+      const away = buyer?.site?.lat != null ? effectiveM(buyer.site, fix) : null;
+      if (away != null && away > FIELD_RULES.farFromBuyerM) flag(visit, 'far_from_buyer', `${metres(buyer.site, fix)} m from the pinned gate (±${fix.accuracyM ?? '?'} m)`);
     }
     const previous = await FieldVisit.findOne({ user: user._id, 'checkOut.at': { $lt: when }, 'checkOut.lat': { $ne: null } }).sort({ 'checkOut.at': -1 }).select('checkOut purpose').lean();
     const speed = previous ? kmh(previous.checkOut, { ...fix, at: when }) : null;
     if (speed != null && speed > FIELD_RULES.implausibleKmh) flag(visit, 'implausible_travel', `${Math.round(speed)} km/h from “${previous.purpose}”`);
   }
-  visit.history.push({ by: user._id, action: 'checked_in', note: fix ? `${fix.place?.name || ''} ±${fix.accuracyM ?? '?'} m`.trim() : 'no location' });
+  visit.history.push({ by: user._id, action: 'checked_in', note: `${fix ? `${fix.place?.name || ''} ±${fix.accuracyM ?? '?'} m · ${grade}`.trim() : 'no location'}${why ? ` — ${why}` : ''}` });
   /* On the task too: the satellite picture, the update line, the notice to Admin and marketing. */
   if (visit.task && fix) {
     const task = await Todo.findById(visit.task);
@@ -703,8 +729,8 @@ export async function checkIn(user, visit, { fix: rawFix, device, enteredLater =
   await visit.save();
   /* The task reads Visited (PRT) or Contacted (Payment Collection), and the buyer's chase log gets the call. */
   await linkCheckedIn(visit, user);
-  if (!visit.checkIn.verified) {
-    await fieldNotice({ by: user._id, label: `GPS not verified: ${user.name}`, note: `${visit.purpose} — ${enteredLater ? 'entered later' : fix ? `fix ±${fix.accuracyM ?? '?'} m` : 'no location from the phone'}`, customer: visit.customer, enquiry: visit.enquiry, task: visit.task, link: `/field/team?date=${date}&user=${user._id}` });
+  if (!visit.checkIn.verified && grade !== 'approximate') {
+    await fieldNotice({ by: user._id, label: `GPS not verified: ${user.name}`, note: `${visit.purpose} — ${enteredLater ? 'entered later' : fix ? `fix ±${fix.accuracyM ?? '?'} m` : 'no location from the phone'}${why ? ` (${why})` : ''}. A good fix while they are there will verify it.`, customer: visit.customer, enquiry: visit.enquiry, task: visit.task, link: `/field/team?date=${date}&user=${user._id}` });
   }
   return visit;
 }
@@ -719,20 +745,66 @@ export async function ping(user, visit, { fix: rawFix, recheck = false } = {}) {
   if (visit.status !== 'checked_in') throw ApiError.conflict('Not checked in');
   const fix = cleanFix(rawFix);
   const now = new Date();
-  const distanceM = visit.checkIn?.lat != null ? metres(visit.checkIn, fix) : null;
-  const entry = { at: now, lat: fix.lat, lng: fix.lng, accuracyM: fix.accuracyM ?? undefined, distanceM: distanceM ?? undefined };
+  const tracking = visit.tracking || { strikes: 0 };
+  const grade = gradeOf(fix);
+  const anchor = anchorOf(visit);
+  const distanceM = anchor?.lat != null ? metres(anchor, fix) : null;
+  /* Metres the error circles cannot explain — a ±40 m fix 160 m off is not someone 160 m away. */
+  const clearM = anchor?.lat != null ? effectiveM(anchor, fix) : null;
+  const poor = fix.accuracyM == null || fix.accuracyM > FIELD_RULES.judgeMaxAccuracyM;
+  const entry = { at: now, lat: fix.lat, lng: fix.lng, accuracyM: fix.accuracyM ?? undefined, distanceM: distanceM ?? undefined, poor: poor || undefined };
   const pings = [...(visit.pings || []), entry].slice(-FIELD_RULES.maxPings);
-  const last = pings.slice(-FIELD_RULES.leftSitePings);
-  if (last.length === FIELD_RULES.leftSitePings && last.every((row) => row.distanceM != null && row.distanceM > FIELD_RULES.leftSiteM)) flag(visit, 'left_site', `${distanceM} m away at ${timeIST(now)}`);
-  const stale = pings.slice(-FIELD_RULES.stalePings);
-  const frozen = stale.length === FIELD_RULES.stalePings && stale.every((row) => row.lat === fix.lat && row.lng === fix.lng && row.accuracyM === entry.accuracyM);
-  if (frozen) flag(visit, 'stale_fix', `the same fix ${FIELD_RULES.stalePings} times`);
   const previous = pings.at(-2);
-  /* A re-check answers a fix that strayed: the jump back to the place is the point of it, not a strike. */
-  const speed = previous && !recheck ? kmh(previous, entry) : null;
-  if (speed != null && speed > FIELD_RULES.implausibleKmh) flag(visit, 'implausible_travel', `${Math.round(speed)} km/h between fixes`);
   if (previous && minutesBetween(previous.at, now) * 60_000 > FIELD_RULES.pingGapMs) flag(visit, 'tracking_gaps', `${minutesBetween(previous.at, now)} min without a fix`);
   visit.pings = pings;
+  /*
+   * A fix too poor to judge [FIELD_RULES.judgeMaxAccuracyM] is kept and left alone — a strike
+   * from it would be the phone's doing. Several in a row say the place has poor GPS, for the
+   * report, never for Admin's alarm.
+   */
+  if (poor) {
+    tracking.poorRun = (tracking.poorRun || 0) + 1;
+    if (tracking.poorRun >= FIELD_RULES.poorPings) flag(visit, 'poor_gps', `${tracking.poorRun} fixes of ±${fix.accuracyM ?? '?'} m or worse`);
+    visit.tracking = tracking;
+    visit.markModified('tracking');
+    await visit.save();
+    return { distanceM, poor: true, accuracyM: fix.accuracyM, message: `The phone's fix is ±${fix.accuracyM ?? '?'} m — too rough to judge, so it is not held against you. Stand near a window or outside when you can.`, flags: visit.flags.map((row) => row.key), pings: pings.length, strikes: tracking.strikes || 0, limit: FIELD_RULES.suspectStrikes, discrepancy: null, confirmed: false };
+  }
+  tracking.poorRun = 0;
+  /*
+   * A rough check-in verified after the fact: a precise fix while there, consistent with the
+   * rough one, is the place — the check-in reads verified from here, and the fixes are judged
+   * against it. Admin's "GPS not verified" is answered by "verified later" on the report.
+   */
+  let verifiedLater = false;
+  if (!visit.checkIn.verified && !visit.checkIn.enteredLater && grade === 'precise' && (visit.checkIn.lat == null || effectiveM(visit.checkIn, fix) <= FIELD_RULES.leftSiteM)) {
+    visit.checkIn.verified = true;
+    visit.checkIn.verifiedLaterAt = now;
+    visit.checkIn.anchor = { lat: fix.lat, lng: fix.lng, accuracyM: fix.accuracyM ?? undefined };
+    visit.markModified('checkIn');
+    unflag(visit, 'gps_not_verified');
+    flag(visit, 'gps_verified_later', `±${fix.accuracyM} m at ${timeIST(now)}`);
+    visit.history.push({ by: user._id, action: 'gps_verified_later', note: `a precise fix at the place, ±${fix.accuracyM} m` });
+    verifiedLater = true;
+  }
+  const judged = pings.filter((row) => !row.poor);
+  const last = judged.slice(-FIELD_RULES.leftSitePings);
+  const away = clearM != null && clearM > FIELD_RULES.leftSiteM;
+  if (away && last.length === FIELD_RULES.leftSitePings && last.every((row) => row.distanceM != null && row.distanceM - (row.accuracyM || 0) - (anchor?.accuracyM || 0) > FIELD_RULES.leftSiteM)) flag(visit, 'left_site', `${distanceM} m away at ${timeIST(now)}`);
+  const stale = judged.slice(-FIELD_RULES.stalePings);
+  const frozen = stale.length === FIELD_RULES.stalePings && stale.every((row) => row.lat === fix.lat && row.lng === fix.lng && row.accuracyM === entry.accuracyM);
+  if (frozen) flag(visit, 'stale_fix', `the same fix ${FIELD_RULES.stalePings} times`);
+  const previousJudged = judged.at(-2);
+  /* A re-check answers a fix that strayed: the jump back to the place is the point of it, not a strike. */
+  const speed = previousJudged && !recheck ? kmh(previousJudged, entry) : null;
+  if (speed != null && speed > FIELD_RULES.implausibleKmh) flag(visit, 'implausible_travel', `${Math.round(speed)} km/h between fixes`);
+  /* A re-check that is itself rough settles nothing: no strike, the ask stays. */
+  if (recheck && grade === 'rough') {
+    visit.tracking = tracking;
+    visit.markModified('tracking');
+    await visit.save();
+    return { distanceM, inconclusive: true, accuracyM: fix.accuracyM, message: `±${fix.accuracyM ?? '?'} m is not close enough to tell. Step into the open and try again.`, flags: visit.flags.map((row) => row.key), pings: pings.length, strikes: tracking.strikes || 0, limit: FIELD_RULES.suspectStrikes, discrepancy: null, confirmed: false };
+  }
 
   /*
    * The fix judged [FIELD_RULES.suspectStrikes]: one that strays — away from the check-in point,
@@ -741,11 +813,9 @@ export async function ping(user, visit, { fix: rawFix, recheck = false } = {}) {
    * limit the visit is marked, and Admin and whoever planned it hear something is wrong with it,
    * under "Needs your action" and on Field today.
    */
-  const away = distanceM != null && distanceM > FIELD_RULES.leftSiteM;
-  const discrepancy = away ? { kind: 'away', detail: `${distanceM} m from where you checked in`, distanceM }
+  const discrepancy = away ? { kind: 'away', detail: `${distanceM} m from where you checked in (±${fix.accuracyM ?? '?'} m)`, distanceM }
     : frozen ? { kind: 'frozen', detail: `the same fix ${FIELD_RULES.stalePings} times — the GPS is not updating`, distanceM }
       : speed != null && speed > FIELD_RULES.implausibleKmh ? { kind: 'jump', detail: `${Math.round(speed)} km/h since the last fix`, distanceM } : null;
-  const tracking = visit.tracking || { strikes: 0 };
   let suspect = null;
   if (discrepancy) {
     tracking.strikes = (tracking.strikes || 0) + 1;
@@ -774,7 +844,7 @@ export async function ping(user, visit, { fix: rawFix, recheck = false } = {}) {
     });
   }
   return {
-    distanceM, flags: visit.flags.map((row) => row.key), pings: pings.length, strikes: tracking.strikes || 0, limit: FIELD_RULES.suspectStrikes,
+    distanceM, accuracyM: fix.accuracyM, verifiedLater, flags: visit.flags.map((row) => row.key), pings: pings.length, strikes: tracking.strikes || 0, limit: FIELD_RULES.suspectStrikes,
     discrepancy: discrepancy ? { ...discrepancy, strikes: tracking.strikes, limit: FIELD_RULES.suspectStrikes, suspect: Boolean(tracking.suspectAt) } : null,
     confirmed: Boolean(recheck && !discrepancy),
   };
@@ -820,10 +890,13 @@ export async function checkOut(user, visit, { fix: rawFix, outcome: rawOutcome, 
   /* A general visit linked to a buyer or an enquiry at the end. */
   if (link?.customer && !visit.customer) visit.customer = link.customer;
   if (link?.enquiry && !visit.enquiry) visit.enquiry = link.enquiry;
-  const away = fix && visit.checkIn?.lat != null ? metres(visit.checkIn, fix) : null;
+  const anchor = anchorOf(visit);
+  const away = fix && anchor?.lat != null ? metres(anchor, fix) : null;
+  const clearAway = fix && anchor?.lat != null ? effectiveM(anchor, fix) : null;
   visit.checkOut = { ...stampOf(fix), at: when, verified: !enteredLater && verifiedFix(fix), distanceFromCheckInM: away ?? undefined, by: user._id };
-  if (!visit.checkOut.verified) flag(visit, 'gps_not_verified', fix ? `check-out ±${fix.accuracyM ?? '?'} m` : 'no location at check-out');
-  if (away != null && away > FIELD_RULES.checkOutAwayM) flag(visit, 'checked_out_elsewhere', `${away} m from the check-in point`);
+  /* An approximate check-out is noted, not flagged; rough or none is. */
+  if (!visit.checkOut.verified && gradeOf(fix) !== 'approximate') flag(visit, 'gps_not_verified', fix ? `check-out ±${fix.accuracyM ?? '?'} m` : 'no location at check-out');
+  if (clearAway != null && clearAway > FIELD_RULES.checkOutAwayM) flag(visit, 'checked_out_elsewhere', `${away} m from the check-in point (±${fix.accuracyM ?? '?'} m)`);
   const stayed = when - new Date(visit.checkIn.at);
   if (!enteredLater && stayed < FIELD_RULES.tooShortMs) flag(visit, 'too_short', `${Math.max(1, Math.round(stayed / 60_000))} min`);
   const expected = Math.floor(stayed / FIELD_RULES.pingEveryMs) - 1;

@@ -243,7 +243,7 @@ test('check-out: the outcome the category asks for, the collected money on the t
   assert.match(visit.outcome.report.text, /accounts madam/);
   assert.equal((await Todo.findById(prtTask._id)).visits[0].report.text, visit.outcome.report.text, 'the task’s visit carries the same report');
   const keys = visit.flags.map((row) => row.key);
-  assert.ok(keys.includes('gps_not_verified') && keys.includes('too_short'), `a rough fix at the gate and a short stay are said: ${keys}`);
+  assert.ok(keys.includes('too_short') && !keys.includes('gps_not_verified'), `a short stay is said; a ±40 m check-out is approximate, not a flag: ${keys}`);
   assert.ok(await TaskNotice.findOne({ recipient: ids.admin, statusLabel: 'PRT Collection visit: Collected' }), 'Admin hears the outcome');
   assert.ok(await TaskNotice.findOne({ recipient: ids.nandhini, statusLabel: 'PRT Collection visit: Collected' }), 'and the buyer’s marketing person');
   assert.equal((await api(`/api/field/visits/${ids.prtVisit}/check-out`, { method: 'POST', as: 'ravi', body: { fix: GATE, outcome: { key: 'collected', amount: 1, mode: 'cash' } } })).status, 409, 'once');
@@ -417,6 +417,60 @@ test('a task closed cancels the visit still planned on it and tells the visitor;
   assert.deepEqual([(await FieldVisit.findById(orphan._id)).status, (await FieldVisit.findById(orphan._id)).settled.reason], ['cancelled', 'Task deleted']);
 });
 
+test('poor GPS: within 50 m is approximate and quiet; rougher needs why and is verified by a later precise fix; fixes too poor to judge are never strikes; no GPS at all checks in with why', async () => {
+  const today = service.dayIST();
+  const told = await TaskNotice.countDocuments({ statusLabel: 'GPS not verified: Ravi PRT' });
+  const indoors = (await api('/api/field/visits', { method: 'POST', as: 'ravi', body: { category: 'others', purpose: 'Indoor office — bad GPS', date: today } })).json.data;
+  const rough = await api(`/api/field/visits/${indoors._id}/check-in`, { method: 'POST', as: 'ravi', body: { fix: { ...GATE, accuracyM: 80 } } });
+  assert.equal(rough.status, 400);
+  assert.match(rough.json.message, /too rough to be sure/);
+  const withWhy = await api(`/api/field/visits/${indoors._id}/check-in`, { method: 'POST', as: 'ravi', body: { fix: { ...GATE, accuracyM: 80 }, reason: 'Inside the office, no window' } });
+  assert.equal(withWhy.status, 200, withWhy.json.message);
+  assert.deepEqual([withWhy.json.data.checkIn.grade, withWhy.json.data.checkIn.verified, withWhy.json.data.checkIn.reason], ['rough', false, 'Inside the office, no window']);
+  assert.match(withWhy.json.data.flags.find((row) => row.key === 'gps_not_verified').detail, /±80 m — Inside the office/);
+  assert.equal(await TaskNotice.countDocuments({ statusLabel: 'GPS not verified: Ravi PRT' }), told + 1, 'Admin hears, with why');
+  /* Fixes too poor to judge: kept, never a strike; several in a row say the place has poor GPS. */
+  for (let i = 0; i < 4; i += 1) {
+    const poor = await api(`/api/field/visits/${indoors._id}/ping`, { method: 'POST', as: 'ravi', body: { fix: { lat: 11.1095, lng: 77.3420, accuracyM: 250 } } });
+    assert.deepEqual([poor.json.data.poor, poor.json.data.strikes, poor.json.data.discrepancy], [true, 0, null]);
+  }
+  const poorPlace = await FieldVisit.findById(indoors._id).lean();
+  assert.ok(poorPlace.flags.some((row) => row.key === 'poor_gps'), 'said on the report');
+  assert.equal(poorPlace.tracking.strikes, 0);
+  /* A precise fix while there, consistent with the rough one: the check-in is verified after the fact. */
+  const precise = await api(`/api/field/visits/${indoors._id}/ping`, { method: 'POST', as: 'ravi', body: { fix: { lat: 11.10853, lng: 77.34113, accuracyM: 6 } } });
+  assert.deepEqual([precise.json.data.verifiedLater, precise.json.data.discrepancy], [true, null]);
+  const verified = await FieldVisit.findById(indoors._id).lean();
+  assert.deepEqual([verified.checkIn.verified, Boolean(verified.checkIn.verifiedLaterAt), verified.checkIn.anchor.accuracyM, verified.flags.some((row) => row.key === 'gps_not_verified'), verified.flags.some((row) => row.key === 'gps_verified_later')], [true, true, 6, false, true]);
+  /* A ±40 m fix 160 m off is not someone 160 m away: the error circles explain it. */
+  const tolerant = await api(`/api/field/visits/${indoors._id}/ping`, { method: 'POST', as: 'ravi', body: { fix: { lat: 11.10997, lng: 77.34113, accuracyM: 40 } } });
+  assert.ok(tolerant.json.data.distanceM > 150 && tolerant.json.data.discrepancy === null, `tolerated: ${JSON.stringify(tolerant.json.data)}`);
+  /* A re-check that is itself rough settles nothing. */
+  const vague = await api(`/api/field/visits/${indoors._id}/ping`, { method: 'POST', as: 'ravi', body: { fix: { ...GATE, accuracyM: 90 }, recheck: true } });
+  assert.deepEqual([vague.json.data.inconclusive, vague.json.data.confirmed, vague.json.data.strikes], [true, false, 0]);
+  /* An approximate check-out is noted, not flagged. */
+  const out = await api(`/api/field/visits/${indoors._id}/check-out`, { method: 'POST', as: 'ravi', body: { fix: { ...GATE, accuracyM: 30 }, outcome: { key: 'done' } } });
+  assert.equal(out.status, 200, out.json.message);
+  assert.ok(!out.json.data.flags.some((row) => row.key === 'gps_not_verified'));
+  /* No fix at all: why is needed, then the check-in is kept for a later fix to verify. */
+  const basement = (await api('/api/field/visits', { method: 'POST', as: 'ravi', body: { category: 'others', purpose: 'Basement godown', date: today } })).json.data;
+  assert.match((await api(`/api/field/visits/${basement._id}/check-in`, { method: 'POST', as: 'ravi', body: { fix: null } })).json.message, /No location from the phone/);
+  const blind = await api(`/api/field/visits/${basement._id}/check-in`, { method: 'POST', as: 'ravi', body: { fix: null, reason: 'GPS off in the basement' } });
+  assert.equal(blind.status, 200, blind.json.message);
+  assert.deepEqual([blind.json.data.status, blind.json.data.checkIn.grade, blind.json.data.checkIn.lat], ['checked_in', 'none', undefined]);
+  assert.equal(await TaskNotice.countDocuments({ statusLabel: 'GPS not verified: Ravi PRT' }), told + 2, 'Admin hears of a check-in with no GPS');
+  const seen = await api(`/api/field/visits/${basement._id}/ping`, { method: 'POST', as: 'ravi', body: { fix: { ...GATE, accuracyM: 8 } } });
+  assert.equal(seen.json.data.verifiedLater, true, 'the first precise fix is the place');
+  assert.equal((await api(`/api/field/visits/${basement._id}/check-out`, { method: 'POST', as: 'ravi', body: { fix: GATE, outcome: { key: 'done' } } })).status, 200);
+  /* Within 50 m: approximate, nothing said to Admin. */
+  const lane = (await api('/api/field/visits', { method: 'POST', as: 'ravi', body: { category: 'others', purpose: 'Narrow lane shop', date: today } })).json.data;
+  const near = await api(`/api/field/visits/${lane._id}/check-in`, { method: 'POST', as: 'ravi', body: { fix: { ...GATE, accuracyM: 32 } } });
+  assert.equal(near.status, 200, near.json.message);
+  assert.deepEqual([near.json.data.checkIn.grade, near.json.data.checkIn.verified, near.json.data.flags.length], ['approximate', false, 0]);
+  assert.equal(await TaskNotice.countDocuments({ statusLabel: 'GPS not verified: Ravi PRT' }), told + 2, 'Admin not told of an approximate fix');
+  assert.equal((await api(`/api/field/visits/${lane._id}/check-out`, { method: 'POST', as: 'ravi', body: { fix: GATE, outcome: { key: 'done' } } })).status, 200);
+});
+
 test('the sweep: a check-in two hours old is reminded; one left overnight is flagged and Admin told; a day never ended is an incomplete report', async () => {
   const today = service.dayIST();
   const visit = await FieldVisit.create({ user: ids.mani, assignedBy: ids.admin, category: 'sample_delivery', purpose: 'Sample to Field Knits', plannedDate: today, customer: customerId, status: 'checked_in', checkIn: { at: new Date(Date.now() - 3 * 3600000), lat: GATE.lat, lng: GATE.lng, accuracyM: 6, verified: true, by: ids.mani } });
@@ -427,7 +481,8 @@ test('the sweep: a check-in two hours old is reminded; one left overnight is fla
   const evening = await service.runFieldVisitSweep({ now: new Date(`${today}T18:30:00+05:30`) });
   assert.ok(evening.includes(`evening:${visit._id}`));
   assert.ok(await TaskNotice.findOne({ recipient: ids.admin, statusLabel: 'Still checked in: Mani Sampler' }));
-  assert.equal((await service.runFieldVisitSweep({ now: new Date(`${today}T19:00:00+05:30`) })).length, 0, 'said once');
+  const again = await service.runFieldVisitSweep({ now: new Date(`${today}T19:00:00+05:30`) });
+  assert.ok(!again.some((entry) => entry.endsWith(String(visit._id))), `said once: ${again}`);
   const tomorrow = new Date(`${today}T09:00:00+05:30`.replace(today, service.dayIST(new Date(Date.now() + 86400000))));
   const next = await service.runFieldVisitSweep({ now: tomorrow });
   assert.ok(next.includes(`overnight:${visit._id}`), `overnight: ${next}`);

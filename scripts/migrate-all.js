@@ -33,6 +33,7 @@ export const STEPS = [
   ['migrate-lr-to-reception.js', 'open LR Copy tasks handed from Dispatch to Reception'],
   ['migrate-confirm-receipts.js', 'receipts from before Accounts confirmed them, confirmed as of when recorded'],
   ['backfill-receivable-enquiries.js', 'every RCV linked to its order’s enquiry'],
+  ['grant-field-visits.js', 'each department’s field-visit marks: who goes out, who plans, who assigns to whom'],
 ];
 
 function run() {

@@ -48,6 +48,11 @@ const fieldVisitSchema = new mongoose.Schema(
 
     checkIn: {
       ...fix(),
+      /* How good the fix was [config/fieldVisits.js]: precise (verified), approximate, rough (with why), none (with why). */
+      grade: { type: String, enum: ['precise', 'approximate', 'rough', 'none'] },
+      /* A later precise fix while there verified a rough check-in after the fact; `anchor` is the place as best known. */
+      verifiedLaterAt: Date,
+      anchor: { lat: Number, lng: Number, accuracyM: Number },
       /* The visit on the task this check-in was recorded as [Todo `visits`]. */
       taskVisit: mongoose.Schema.Types.ObjectId,
       /* Typed after the fact rather than pressed at the gate — never verified. */
@@ -58,7 +63,7 @@ const fieldVisitSchema = new mongoose.Schema(
     checkOut: { ...fix(), distanceFromCheckInM: Number },
     /** The fixes while checked in, every five minutes [FIELD_RULES.pingEveryMs]. */
     pings: {
-      type: [new mongoose.Schema({ at: Date, lat: Number, lng: Number, accuracyM: Number, distanceM: Number }, { _id: false })],
+      type: [new mongoose.Schema({ at: Date, lat: Number, lng: Number, accuracyM: Number, distanceM: Number, poor: Boolean }, { _id: false })],
       default: undefined,
     },
 
@@ -101,6 +106,8 @@ const fieldVisitSchema = new mongoose.Schema(
      */
     tracking: {
       strikes: { type: Number, default: 0 },
+      /* Unjudged fixes in a row — poor GPS here. */
+      poorRun: { type: Number, default: 0 },
       pendingRecheck: Boolean,
       lastDiscrepancy: { kind: String, detail: String, distanceM: Number, at: Date },
       recheckedAt: Date,
