@@ -782,6 +782,9 @@ Honest limits, so they are not discovered later:
 ## Checks and common failures
 
 ```bash
+# The API's own address opened in a browser — https://api2.baluelastics.com/ — shows the CRM's
+# sign-in page in the app's theme [src/views/signin.html], to look at only: nothing on it signs
+# anyone in. Sign-in is the app's alone. Plain HTML, not a PWA.
 # /health sits outside the /api mount, so a probe never trips the rate limiter.
 curl -s https://api2.baluelastics.com/health         # live
 curl -s https://api2.baluelastics.com/health/ready   # live + the database
