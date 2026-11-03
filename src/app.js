@@ -28,16 +28,20 @@ const app = express();
 
 app.set('trust proxy', 1);
 app.use(helmet());
+/*
+ * The app's origins, and the server's own: a browser sends Origin on a same-origin POST too, and
+ * the front door's page [views/signin.js] asks for its SMS code from the API's own address.
+ */
 app.use(
-  cors({
+  cors((req, done) => done(null, {
     origin: (origin, callback) => {
-      if (!origin || env.corsOrigin.includes(origin) || env.corsOrigin.includes('*')) {
+      if (!origin || env.corsOrigin.includes(origin) || env.corsOrigin.includes('*') || origin === `${req.protocol}://${req.get('host')}`) {
         return callback(null, true);
       }
       return callback(new Error(`Origin ${origin} is not allowed by CORS`));
     },
     credentials: true,
-  })
+  }))
 );
 app.use(express.json({
   limit: '1mb',
@@ -195,9 +199,15 @@ app.use('/api', routes);
  * app's alone. Plain HTML read once at start: not a PWA, no manifest, no service worker.
  */
 const signInPage = readFileSync(new URL('./views/signin.html', import.meta.url), 'utf8');
+/* Its one script: the tabs, and Code by SMS's request — never a sign-in [views/signin.js]. A file, so the CSP's script-src 'self' allows it. */
+const signInScript = readFileSync(new URL('./views/signin.js', import.meta.url), 'utf8');
 app.get(['/', '/login', '/index.html'], (_req, res) => {
   res.set('Cache-Control', 'no-store');
   res.type('html').send(signInPage);
+});
+app.get('/signin.js', (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.type('application/javascript').send(signInScript);
 });
 /*
  * The signed document links once more at the root. A server whose PUBLIC_API_URL stopped at the
