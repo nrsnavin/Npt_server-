@@ -8,6 +8,7 @@ import compression from 'compression';
 import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 import { env, isProduction } from './config/env.js';
 import { SharedRateStore } from './services/cache.service.js';
@@ -187,6 +188,17 @@ app.use('/api', (req, _res, next) => {
 });
 
 app.use('/api', routes);
+/*
+ * The front door [views/signin.html]. Somebody who opens the API's own address in a browser —
+ * https://api2…/ rather than the app — sees the CRM's sign-in page in the app's own theme, and
+ * nothing works on it: no submit button, no script, nothing is sent anywhere. Signing in is the
+ * app's alone. Plain HTML read once at start: not a PWA, no manifest, no service worker.
+ */
+const signInPage = readFileSync(new URL('./views/signin.html', import.meta.url), 'utf8');
+app.get(['/', '/login', '/index.html'], (_req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.type('html').send(signInPage);
+});
 /*
  * The signed document links once more at the root. A server whose PUBLIC_API_URL stopped at the
  * host (https://api.example.com, no /api) sent buyers links to /public/… — which answered
