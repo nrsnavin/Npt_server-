@@ -305,6 +305,23 @@ test('a quotation request takes a row per model, each with its own parts and tar
   assert.equal(rows.length, 2);
   assert.deepEqual(rows[0], { model: 'UTJRSH-0', material: 'PP Black', hook: 'Chrome hook 3 mm', print: 'Logo, 1 colour', quantity: '6000', targetPrice: '1.8' });
   assert.equal(rows[1].clip, 'Pinch clip');
+  /* A photo travels with the task as a PDF does — JPEG, PNG, an iPhone's HEIC — up to 5 MB; a PDF stays at 1 MB. */
+  const quoteTask = sent.json.data.task._id;
+  const jpeg = new Uint8Array(2 * 1024 * 1024);
+  jpeg.set([0xff, 0xd8, 0xff, 0xe0]);
+  assert.match((await upload(quoteTask, { bytes: new Uint8Array(1024 * 1024 + 10), name: 'big.pdf' })).json.message, /limit is 1 MB/);
+  assert.match((await upload(quoteTask, { bytes: new Uint8Array(5 * 1024 * 1024 + 10), type: 'image/jpeg', name: 'huge.jpg' })).json.message, /5 MB for a photo/);
+  assert.match((await upload(quoteTask, { bytes: 'x', type: 'application/zip', name: 'a.zip' })).json.message, /Attach a PDF or a photo \(JPEG, PNG, WebP, HEIC\)/);
+  const photo = await upload(quoteTask, { bytes: jpeg, type: 'image/jpeg', name: 'drawing.jpg' });
+  assert.equal(photo.status, 201, photo.json.message);
+  const withPhoto = await Todo.findById(quoteTask).populate('attachment').lean();
+  assert.deepEqual([withPhoto.attachment.mimeType, withPhoto.attachment.filename, withPhoto.attachment.size], ['image/jpeg', 'drawing.jpg', 2 * 1024 * 1024]);
+  const served = await fetch(`${baseUrl}/api/files/${withPhoto.attachment.key}`, { headers: { Authorization: `Bearer ${nandhini}` } });
+  assert.equal(served.status, 200);
+  assert.match(served.headers.get('content-type'), /image\/jpeg/);
+  assert.equal((await fetch(`${baseUrl}/api/files/${withPhoto.attachment.key}`, { headers: { Authorization: `Bearer ${siva}` } })).status, 404, 'Production was not asked');
+  const png = await upload(sampleTask._id, { bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]), type: 'image/png', name: 'x.png' });
+  assert.equal(png.status, 409, 'still one file per task');
   const bad = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
     method: 'POST', token: nandhini, body: { kind: 'price_negotiation', brief: { items: [{ material: 'PP' }] } },
   });

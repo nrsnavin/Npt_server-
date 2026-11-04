@@ -5500,7 +5500,7 @@ export const WAITING_ON_POPULATE = { path: 'waitingOn', select: 'kind department
 
 const LIST_POPULATE = [
   WAITING_ON_POPULATE,
-  { path: 'attachment', select: 'key filename size' },
+  { path: 'attachment', select: 'key filename size mimeType' },
   { path: 'resultFile', select: 'key filename size' },
   { path: 'createdBy', select: 'name department' },
   { path: 'user', select: 'name' },

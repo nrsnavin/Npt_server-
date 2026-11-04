@@ -231,7 +231,7 @@ export const downloadAttachment = asyncHandler(async (req, res) => {
     /* The trading master's photo: whoever may read the master [routes: `tradingRead`]. */
     if (!canRead(req.user, 'materials') && !canRead(req.user, 'pricing')) throw ApiError.notFound('File not found');
   } else if (attachment.task) {
-    /* A department task's PDF: whoever may work the task, whoever raised it, the enquiry's owner, Admin. */
+    /* A department task's file — the PDF or photo sent with it: everyone in the task's department, whoever may work it, whoever raised it, the enquiry's owner, Admin. */
     const { default: Todo } = await import('../models/Todo.js');
     const { inDepartment } = await import('../utils/departments.js');
     const task = await Todo.findById(attachment.task).select('department user createdBy enquiry');

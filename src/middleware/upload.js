@@ -64,25 +64,33 @@ export const singleDocument = (field = 'file') => (req, res, next) =>
   });
 
 /**
- * The PDF sent with a department task — a drawing, a PO, a PI. PDF only and one megabyte at most,
- * as the task form says: it travels to the department's phones, not into a document archive.
+ * The file sent with a department task — a drawing, a PO, a PI as a PDF, or a photo of one: JPEG,
+ * PNG, WebP, HEIC (an iPhone's), GIF, BMP or TIFF. It travels to the department's phones, not into
+ * a document archive, so a PDF is one megabyte at most and a photo — which a phone takes at two to
+ * four — five.
  */
 export const TASK_PDF_BYTES = 1024 * 1024;
-const taskPdfs = multer({
+export const TASK_PHOTO_BYTES = 5 * 1024 * 1024;
+export const TASK_ATTACHMENT_TYPES = ['application/pdf', 'image/jpeg', 'image/pjpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'image/gif', 'image/bmp', 'image/tiff'];
+const taskAttachments = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: TASK_PDF_BYTES, files: 1 },
+  limits: { fileSize: TASK_PHOTO_BYTES, files: 1 },
   fileFilter: (_req, file, callback) => {
-    if (file.mimetype === 'application/pdf') return callback(null, true);
-    callback(ApiError.badRequest('Attach a PDF'));
+    if (TASK_ATTACHMENT_TYPES.includes(file.mimetype)) return callback(null, true);
+    callback(ApiError.badRequest('Attach a PDF or a photo (JPEG, PNG, WebP, HEIC)'));
   },
 });
 
 export const singlePdf = (field = 'file') => (req, res, next) =>
-  taskPdfs.single(field)(req, res, (error) => {
-    if (!error) return next();
-    if (error.code === 'LIMIT_FILE_SIZE') return next(ApiError.badRequest('That PDF is too large — the limit is 1 MB'));
+  taskAttachments.single(field)(req, res, (error) => {
+    if (!error) {
+      /* The PDF's own limit, under the photo's. */
+      if (req.file?.mimetype === 'application/pdf' && req.file.size > TASK_PDF_BYTES) return next(ApiError.badRequest('That PDF is too large — the limit is 1 MB'));
+      return next();
+    }
+    if (error.code === 'LIMIT_FILE_SIZE') return next(ApiError.badRequest('That file is too large — the limit is 1 MB for a PDF, 5 MB for a photo'));
     if (error.code === 'LIMIT_FILE_COUNT' || error.code === 'LIMIT_UNEXPECTED_FILE') {
-      return next(ApiError.badRequest('Attach one PDF'));
+      return next(ApiError.badRequest('Attach one file'));
     }
     return next(error);
   });
