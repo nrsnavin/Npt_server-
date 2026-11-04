@@ -130,7 +130,7 @@ export async function trackedTasks(user, { department, state = 'open', limit = 3
       { path: 'user', select: 'name' },
       { path: 'updates.by', select: 'name' },
       { path: 'outcome.by', select: 'name' },
-      { path: 'attachment', select: 'key filename size' },
+      { path: 'attachment', select: 'key filename size mimeType' },
       WAITING_ON_POPULATE,
     ])
     .sort(state === 'open' ? { dueDate: 1, createdAt: 1 } : { completed: 1, completedAt: -1, createdAt: -1 })

@@ -47,7 +47,7 @@ import { DISPATCH_PLAN_FIELDS, dispatchModeOf, dispatchPlanOf } from '../utils/d
 
 export const TASK_POPULATE = [
   WAITING_ON_POPULATE,
-  { path: 'attachment', select: 'key filename size' },
+  { path: 'attachment', select: 'key filename size mimeType' },
   { path: 'resultFile', select: 'key filename size' },
   { path: 'createdBy', select: 'name department' },
   { path: 'user', select: 'name department' },
@@ -164,10 +164,10 @@ export const taskRegisters = asyncHandler(async (req, res) => {
 
 async function storeTaskPdf(req, res, task) {
   if (String(task.createdBy) !== String(req.user._id) && req.user.role !== 'admin') {
-    throw ApiError.forbidden('Only whoever raised the task can attach its PDF');
+    throw ApiError.forbidden('Only whoever raised the task can attach its file');
   }
-  if (task.attachment) throw ApiError.conflict('This task already has its PDF');
-  if (!req.file) throw ApiError.badRequest('Attach a PDF');
+  if (task.attachment) throw ApiError.conflict('This task already has its file');
+  if (!req.file) throw ApiError.badRequest('Attach a PDF or a photo');
 
   const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
   let attachment;
