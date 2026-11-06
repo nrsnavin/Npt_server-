@@ -17,6 +17,8 @@ export const STAGES = [
   { key: 'po_so', number: 4, label: 'PO & SO', department: 'order_confirmation' },
   /* The SO prepared without Production confirmed: back with marketing until it is moved on [handoffs po_so `whenHeld`]. */
   { key: 'production_hold', number: '4A', label: 'Production Holded Orders', department: 'marketing' },
+  /* A PP sample before bulk production: made, sent with a DC, approved by the buyer [services/ppSample.service.js]. */
+  { key: 'pp_sample', number: '4B', label: 'PP Sample', department: 'production' },
   { key: 'production_edd', number: 5, label: 'Production / EDD', department: 'production' },
   /* Not on the plant's original screen: Assembling's own stage, so its work is counted as its own. */
   { key: 'assembling', number: '5A', label: 'Assembly', department: 'assembling' },

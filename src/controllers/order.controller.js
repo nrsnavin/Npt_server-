@@ -824,6 +824,8 @@ export const applyOrderAction = asyncHandler(withOrderLock(req => req.params.id,
    */
   /* A draft nobody has read yet goes nowhere, whatever the eight checks say [soDraftReview.service]. */
   if (recipe.gate === 'verified' && order.draftPending) throw ApiError.badRequest(draftWaitsWords(order));
+  /* A PP sample still to be approved holds bulk production [services/ppSample.service.js]. */
+  if (recipe.gate === 'verified') await (await import('../services/ppSample.service.js')).assertPpCleared({ order: order._id, enquiry: order.enquiry, sourceTask: order.sourceTask });
   if (recipe.gate === 'verified' && !order.isVerified) {
     throw ApiError.badRequest(
       `This order still needs ${missingChecks(order)} before it can go to production`

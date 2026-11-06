@@ -188,6 +188,23 @@ const BUTTONS = [
     key: 'ac_clarify', label: 'A/C Clarify', department: 'accounts', stage: 'ac_clarify',
     hint: 'Accounts to clarify the account',
   },
+  /*
+   * The PP sample [services/ppSample.service.js]: ticked on the PO & SO request, raised when the SO
+   * is uploaded — never by hand. Production makes it, Dispatch prepares the DC and sends it, the
+   * enquiry's marketing person records the buyer's answer. Bulk production waits for the approval.
+   */
+  {
+    key: 'pp_sample', label: 'PP Sample', department: 'production', stage: 'pp_sample', hidden: true, quietDone: true,
+    hint: 'Make the pre-production sample with the order’s own material, mould, hook, clip and printing',
+  },
+  {
+    key: 'pp_sample_send', label: 'Send PP Sample', department: 'despatch', stage: 'pp_sample', hidden: true, quietDone: true,
+    hint: 'Prepare the DC and send the PP sample to the buyer',
+  },
+  {
+    key: 'pp_sample_approval', label: 'PP Sample Approval', department: 'owner', stage: 'pp_sample', hidden: true, quietDone: true,
+    hint: 'Record the buyer’s answer on the PP sample — approved, or the changes they want',
+  },
   {
     /*
      * Raised by the SO team's "Needs Clarification" [config/departmentTaskForms.js po_so]: the
@@ -263,6 +280,7 @@ export const KIND_FOR_STAGE = {
   sample: 'sample_request',
   pricing_quote: 'create_quotation',
   po_so: 'po_so',
+  pp_sample: 'pp_sample',
   production_edd: 'ask_edd',
   assembling: 'ask_assembling_edd',
   mould: 'mould_issue',
@@ -285,4 +303,6 @@ export const TILE_KIND = {
   ...KIND_FOR_STAGE,
   enquiry: null,
   quality: 'quality_check',
+  /* The PP sample is raised by the SO upload, never from a tile. */
+  pp_sample: null,
 };

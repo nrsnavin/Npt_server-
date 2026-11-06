@@ -140,6 +140,16 @@ const SO_COLUMNS = [
   { key: 'edd', label: 'EDD', type: 'date' },
 ];
 
+/** A PP sample's lines: each model as the order has it, and how many pieces of the sample [services/ppSample.service.js]. */
+const PP_COLUMNS = [
+  { key: 'model', label: 'Model', required: true, register: 'moulds' },
+  { key: 'material', label: 'Material & colour', register: 'materials' },
+  { key: 'hook', label: 'Hook', register: 'hooks' },
+  { key: 'clip', label: 'Clip', register: 'clips' },
+  { key: 'print', label: 'Print', register: 'prints' },
+  { key: 'pieces', label: 'PP pieces', type: 'number' },
+];
+
 /** The rows of a quotation request: each model as the buyer wants it — material and colour, its parts, how many, and the price they hope for. */
 const QUOTE_COLUMNS = [
   { key: 'model', label: 'Model', required: true, register: 'moulds' },
@@ -482,6 +492,13 @@ export const TASK_FORMS = {
        * The form starts ticked (`checked`); marketing unticks it to hold the order.
        */
       { key: 'productionConfirmed', label: 'Production confirmed — send to Production once the SO is prepared', type: 'check', checked: true },
+      /*
+       * A pre-production sample first [services/ppSample.service.js]: once the SO is uploaded,
+       * Production makes it, Dispatch sends it with a DC, and bulk production starts only after
+       * marketing marks it approved.
+       */
+      { key: 'ppSampleRequired', label: 'PP sample required — production starts only after the PP sample is approved', type: 'check', section: 'PP sample' },
+      { key: 'ppPieces', label: 'PP sample pieces per model', type: 'number', placeholder: 'e.g. 25', hint: 'How many pieces of each model the PP sample carries' },
       QC_ASK,
     ],
   },
@@ -746,6 +763,45 @@ export const TASK_FORMS = {
       { key: 'corrected', label: 'Corrected' },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
+  },
+  /* The PP sample: Production makes it [services/ppSample.service.js]. */
+  pp_sample: {
+    team: 'Production Team',
+    asks: [{ key: 'items', label: 'PP sample — what to make', type: 'items', columns: PP_COLUMNS }],
+    remark: { label: 'Remarks', placeholder: 'What was made, anything the buyer should know' },
+    statuses: [
+      { key: 'waiting', label: 'PP Sample Waiting' },
+      { key: 'making', label: 'Making PP Sample' },
+      /* `ppSample`: the step moves the PP sample on [ppSample.service `onPpStep`] — here, Dispatch is asked to send it. */
+      { key: 'ready', label: 'PP Sample Ready', done: true, ppSample: 'ready' },
+    ],
+    taskActions: ['escalate'],
+  },
+  /* Dispatch prepares the DC and sends the PP sample. */
+  pp_sample_send: {
+    team: 'Dispatch Team',
+    asks: [{ key: 'items', label: 'PP sample — what to send', type: 'items', columns: PP_COLUMNS }],
+    remark: { label: 'Remarks', placeholder: 'Courier, AWB, who it was handed to' },
+    statuses: [
+      { key: 'waiting', label: 'To Send' },
+      /* Refused until the DC is prepared [ppSample.service `onPpStep`]. */
+      { key: 'sent', label: 'PP Sample Sent', done: true, ppSample: 'sent' },
+    ],
+    taskActions: ['escalate'],
+    /* The DC is prepared on this task [web: PpChallanDialog]. */
+    challan: true,
+  },
+  /* The enquiry's marketing person records the buyer's answer. */
+  pp_sample_approval: {
+    team: 'Marketing',
+    asks: [{ key: 'items', label: 'PP sample sent', type: 'items', columns: PP_COLUMNS }],
+    statuses: [
+      { key: 'awaiting', label: 'Awaiting Buyer’s Answer' },
+      { key: 'approved', label: 'PP Approved', done: true, ppSample: 'approved' },
+      /* Another round: Production makes it again, with what the buyer said. */
+      { key: 'changes', label: 'Changes Needed', comment: true, done: true, ppSample: 'changes' },
+    ],
+    taskActions: ['escalate'],
   },
   ac_clarify: {
     team: 'Accounts Team',

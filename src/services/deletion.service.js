@@ -202,6 +202,8 @@ export async function deleteEnquiry(enquiryId, user, { reason } = {}) {
   await Todo.deleteMany({ enquiry: id });
   await model('FieldVisit').deleteMany({ enquiry: id });
   await (await import('../models/TaskQuery.js')).default.deleteMany({ $or: [{ enquiry: id }, { task: { $in: taskIds } }] });
+  await (await import('../models/PpSample.js')).default.deleteMany({ enquiry: id });
+  await (await import('../models/DeliveryChallan.js')).default.deleteMany({ enquiry: id, status: 'to_invoice' });
   await model('WhatsappThread').updateMany({ enquiry: id }, { $unset: { enquiry: 1 } });
   await model('BuyerCard').updateMany({ enquiry: id }, { $unset: { enquiry: 1 } });
   await model('Mould').updateMany({ developedFromEnquiry: id }, { $unset: { developedFromEnquiry: 1 } });

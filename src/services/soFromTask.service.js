@@ -346,6 +346,10 @@ export async function releaseFromTask(order, user, why) {
   if (!order || !PRE_RELEASE_STATUSES.includes(order.status)) return { released: false };
   /* A draft nobody has read yet goes nowhere [soDraftReview.service]. */
   if (order.draftPending) return { released: false, problem: draftWaitsWords(order) };
+  /* A PP sample still to be approved holds bulk production [ppSample.service]. */
+  const { ppPendingFor, ppWaitsWords } = await import('./ppSample.service.js');
+  const pp = await ppPendingFor({ order: order._id, enquiry: order.enquiry, sourceTask: order.sourceTask });
+  if (pp) return { released: false, problem: ppWaitsWords(pp) };
   try {
     await assertPaidFor(order, 'production', { by: user });
   } catch (error) {

@@ -13,6 +13,7 @@ import dispatchPlanningRoutes from './dispatchPlanning.routes.js';
 import recordsRoutes from './records.routes.js';
 import fieldRoutes from './field.routes.js';
 import taskQueryRoutes from './taskQuery.routes.js';
+import ppSampleRoutes from './ppSample.routes.js';
 import { getPlant, getSecurity, putFloorPlanning, putHandoverLead, putPlant, putSecurity } from '../controllers/settings.controller.js';
 import { floorPlanningSchema, handoverLeadSchema, plantCalendarSchema, securityPolicySchema } from '../validators/schemas.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
@@ -31,6 +32,8 @@ const router = Router();
 
 /* Queries on tasks and enquiries, to whoever raised the work [routes/taskQuery.routes.js] — above the routers that own /enquiries and /workspace. */
 router.use(taskQueryRoutes);
+/* The PP sample and its DCs [routes/ppSample.routes.js]. */
+router.use(ppSampleRoutes);
 router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
 router.use('/workspace', workspaceRoutes);

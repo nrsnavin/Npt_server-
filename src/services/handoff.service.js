@@ -653,6 +653,8 @@ async function moveEnquiryChecked({
    * Payment Collection is asked for it. Dispatch is not held for a Quality pass: the plant asks
    * Quality when it wants the goods checked (Quality Check), not as a lock on Dispatch.
    */
+  /* A PP sample first: bulk production waits for the buyer's approval [ppSample.service]. */
+  if (kind === 'ask_edd') await (await import('./ppSample.service.js')).assertPpCleared({ enquiry: enquiry._id });
   if (kind === 'ask_edd') await assertEnquiryPaidFor(enquiry._id, 'production', { by: user });
   if (kind === 'invoice_dispatch') await assertEnquiryPaidFor(enquiry._id, 'dispatch', { by: user });
 
@@ -1422,7 +1424,8 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
   /* `quiet`: whoever asked is already told another way (the sample's own feedback task). */
   /* Handed on: the sender heard the hand-over with the status, and the job goes on with the next team. */
   /* A readiness query answered: the team that asked read each move on its own task [answerAskers]. */
-  else if (!quiet && !handedOn && !handoff?.form?.query) {
+  /* `quietDone`: the PP sample's tasks say their own next step [ppSample.service]. */
+  else if (!quiet && !handedOn && !handoff?.form?.query && !handoff?.quietDone) {
     await backToSender(task, {
       user,
       title: `Done: ${task.title} — next step?`,
@@ -1711,6 +1714,8 @@ export async function setTaskStatus(task, user, { status, note, date, dates, fie
     : step.label;
 
   if (step.raises) await raiseFromStatus(task, user, step, text, asked);
+  /* A PP sample's step: Dispatch asked to send it, marketing asked for the answer, or the answer itself [ppSample.service]. */
+  if (step.ppSample) await (await import('./ppSample.service.js')).onPpStep(task, user, step, text);
   /* Needs Clarification: a query to whoever raised the task, its answer back here [taskQuery.service]. */
   if (step.opensQuery) await (await import('./taskQuery.service.js')).askFromWorkflow(task, user, step, text);
   /* The sample handed at the desk: written onto the sample first, so a refusal leaves the task where it was. */
@@ -3411,9 +3416,15 @@ export async function finishWithResult(task, user, { attachmentId, note, reading
   let nextProblem = null;
   /* Production not confirmed on the request: the order waits with marketing, nothing is raised. */
   const held = Boolean(step.next && task.enquiry && heldBack(task));
+  /* PP sample required: Production makes it first — before the order is booked, so booking does not release it [ppSample.service]. */
+  const pps = await import('./ppSample.service.js');
+  const pp = step.next ? await pps.startPpSample(task, user) : null;
   /* The SO prepared books the sales order from the request's lines, released when Production is confirmed. */
   const order = await bookOrderFor(task, user, { held, reading, readProblem });
-  if (held) {
+  if (pp) await pps.linkPpOrder(pp, order);
+  if (pp && pp.status !== 'approved') {
+    nextProblem = 'PP sample required — Production makes it first, Dispatch sends it with a DC, and bulk production starts once marketing marks it approved.';
+  } else if (held) {
     nextProblem = 'Production was not confirmed on the request — the order is with marketing under Production Holded Orders until Admin or its marketing person moves it to Production.';
   } else if (order?.draftPending) {
     /* Nobody has read the draft yet: Production is asked once the SO team verifies it and marketing or Admin confirms it [continueAfterDraft]. */
@@ -3533,6 +3544,45 @@ export async function continueAfterDraft(order, user) {
   }
   await noteOrderOnTask(task, user, outcome.said);
   return outcome;
+}
+
+/**
+ * The PP sample approved [ppSample.service `verdict`]: bulk production goes on as the SO upload
+ * would have sent it — the order released and Production asked — unless something else still
+ * holds it: the draft not yet read, Production not confirmed on the request (back to Production
+ * Holded Orders), or the advance (the payment gate says so and Payment Collection is on it).
+ */
+export async function continueAfterPp(pp, user) {
+  const { releaseFromTask } = await import('./soFromTask.service.js');
+  const source = pp.sourceTask ? await Todo.findById(pp.sourceTask) : null;
+  const order = pp.order ? await mongoose.model('SalesOrder').findById(pp.order) : null;
+  if (order?.draftPending) return { said: `${order.number} waits for its draft to be verified and confirmed — Production is asked then` };
+  const enquiry = source?.enquiry ? await enquiryOfTask(source) : null;
+  if (source && heldBack(source)) {
+    if (enquiry) await Enquiry.updateOne({ _id: enquiry._id }, { $set: { stage: 'production_hold' } }, { keepVersion: true });
+    return { said: 'bulk production waits for Move to Production — Production was not confirmed on the request' };
+  }
+  const parts = [];
+  if (order) {
+    const result = await releaseFromTask(order, user, 'Released — PP sample approved');
+    parts.push(result.released ? `${order.number} released to production` : result.problem ? `${order.number} not released yet: ${result.problem}` : '');
+  }
+  try {
+    if (enquiry) {
+      await Enquiry.updateOne({ _id: enquiry._id }, { $set: { stage: 'production_edd' } }, { keepVersion: true });
+      const open = await Todo.exists({ enquiry: enquiry._id, kind: 'ask_edd', completed: false });
+      if (!open) await moveEnquiry({ enquiry: await enquiryOfTask(source), kind: 'ask_edd', note: `PP sample approved by ${user.name}`, user, system: true, order: pp.order, brief: carriedBrief(source) });
+      parts.push('Production has its task');
+    } else if (source) {
+      const { raiseNextTeamTask } = await import('./journey.service.js');
+      const next = await raiseNextTeamTask(source, 'ask_edd', user, `PP sample approved by ${user.name}`, { brief: carriedBrief(source) });
+      if (next) parts.push('Production has its task');
+    }
+  } catch (error) {
+    if (error?.statusCode !== 400 && error?.statusCode !== 409) throw error;
+    parts.push(`Production not asked yet: ${error.message}`);
+  }
+  return { said: parts.filter(Boolean).join(' — ') };
 }
 
 /**
