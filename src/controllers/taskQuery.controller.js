@@ -6,7 +6,7 @@ import { transactional } from '../utils/transaction.js';
 import { isManagement } from '../utils/departments.js';
 import {
   QUERY_POPULATE, askOnEnquiry, askOnTask, closeTaskQuery, markQuerySeen, mayAnswer, mayReadEnquiry, mayReadTaskQueries,
-  onAskingSide, queriesOnEnquiry, queriesOnTask, queryBoard, readableTaskQuery, replyToQuery,
+  mayReplyOnTask, onAskingSide, queriesOnEnquiry, queriesOnTask, queryBoard, readableTaskQuery, replyOnTask, replyToQuery,
 } from '../services/taskQuery.service.js';
 
 /**
@@ -42,8 +42,17 @@ export const listTaskQueries = asyncHandler(async (req, res) => {
     success: true,
     data: await withRights(await queriesOnTask(task._id), req.user),
     mayAsk: !task.completed && mayWorkOnHandoff(req.user, task),
+    /* Admin and the buyer's marketing person reply to the team from the task itself. */
+    mayReply: !task.completed && (await mayReplyOnTask(task, req.user)),
   });
 });
+
+/** Admin's or marketing's reply on the task — the answer to its open question, or a reply to the team. */
+export const replyOnOneTask = asyncHandler(transactional(async (req, res) => {
+  const task = await taskFor(req);
+  if (!(await mayReadTaskQueries(task, req.user))) throw ApiError.notFound('Task not found');
+  res.json({ success: true, data: await replyOnTask(task, req.user, { body: req.body.body }) });
+}));
 
 export const askTaskQuery = asyncHandler(transactional(async (req, res) => {
   const query = await askOnTask(await taskFor(req), req.user, { question: req.body.question, subject: req.body.subject });

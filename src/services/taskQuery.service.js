@@ -11,6 +11,7 @@ import { EVENTS, publish } from './events.service.js';
 import { canRead } from './access.service.js';
 import { ensureSubject } from './querySubjects.service.js';
 import { isOwnershipScoped, ownsRecord } from './ownership.service.js';
+import Customer from '../models/Customer.js';
 
 /**
  * Questions asked on a task or an enquiry, and their answers [models/TaskQuery.js].
@@ -65,12 +66,35 @@ export async function recipientFor({ task = null, enquiry = null, asker }) {
   return null;
 }
 
-/** Who answers a question: whoever it was put to, the task's creator, the enquiry's marketing person, Admin. */
+/**
+ * Who replies to a team's doubt on its task, from the task itself: Admin, and marketing — the
+ * marketing person who raised the task, owns its enquiry or owns its buyer, or one not held to
+ * their own buyers. Not a marketing person working the task: they are the team that asks.
+ */
+export async function mayReplyOnTask(task, user) {
+  if (isManagement(user)) return true;
+  if (!inDepartment(user, 'marketing')) return false;
+  if (task.department && task.department !== 'marketing' && inDepartment(user, task.department)) return false;
+  if (!isOwnershipScoped(user)) return true;
+  if (task.createdBy && idOf(task.createdBy) === idOf(user._id)) return true;
+  if (task.enquiry) {
+    const enquiry = await Enquiry.findById(idOf(task.enquiry)).select('assignedTo').lean();
+    if (enquiry?.assignedTo && idOf(enquiry.assignedTo) === idOf(user._id)) return true;
+  }
+  if (task.customer) {
+    const customer = await Customer.findById(idOf(task.customer)).select('assignedTo').lean();
+    if (customer?.assignedTo && idOf(customer.assignedTo) === idOf(user._id)) return true;
+  }
+  return false;
+}
+
+/** Who answers a question: whoever it was put to, the task's creator, the enquiry's marketing person, Admin — and on a task, whoever may reply on it. */
 export async function mayAnswer(query, user) {
   if (isManagement(user)) return true;
   if (query.to && idOf(query.to) === idOf(user._id)) return true;
-  const task = query.task?.createdBy !== undefined ? query.task : query.task ? await Todo.findById(idOf(query.task)).select('createdBy').lean() : null;
+  const task = query.task ? await Todo.findById(idOf(query.task)).select('createdBy enquiry customer department').lean() : null;
   if (task?.createdBy && idOf(task.createdBy) === idOf(user._id)) return true;
+  if (task && !onAskingSide(query, user) && (await mayReplyOnTask(task, user))) return true;
   if (query.enquiry) {
     const enquiry = await Enquiry.findById(idOf(query.enquiry)).select('assignedTo').lean();
     if (enquiry?.assignedTo && idOf(enquiry.assignedTo) === idOf(user._id)) return true;
@@ -94,6 +118,7 @@ export async function mayReadTaskQueries(task, user) {
     const enquiry = await Enquiry.findById(idOf(task.enquiry)).select('assignedTo').lean();
     if (enquiry?.assignedTo && idOf(enquiry.assignedTo) === idOf(user._id)) return true;
   }
+  if (await mayReplyOnTask(task, user)) return true;
   return Boolean(await TaskQuery.exists({ task: task._id, $or: [{ to: user._id }, { askedBy: user._id }] }));
 }
 
@@ -296,6 +321,63 @@ export async function replyToQuery(query, user, { body }) {
     ring((await answerers(query)).filter((id) => id !== idOf(user._id)), { title: `${user.name} follows up`, body: `${query.question} — ${text}`, query });
   }
   return query;
+}
+
+/**
+ * Admin's or marketing's reply on a task, written under its timeline [web: TaskQueries `ReplyBox`].
+ * A question waiting on the task is answered by it — the newest one somebody else asked. With
+ * none, the reply goes onto the task as it is: a line in its timeline and "Replies" for the team
+ * working it; a task held at Needs Clarification from before queries goes back to where it was,
+ * the doubt and its answer kept on the task and the enquiry.
+ */
+export async function replyOnTask(task, user, { body }) {
+  if (!(await mayReplyOnTask(task, user))) throw ApiError.forbidden('Only Admin or the buyer’s marketing person replies on this task');
+  if (task.completed) fail('This task is done — reply on the enquiry instead');
+  const text = cleanText(body, 'the reply');
+  const open = await TaskQuery.findOne({ task: task._id, status: 'open', askedBy: { $ne: user._id } }).sort({ createdAt: -1 });
+  if (open) {
+    await replyToQuery(open, user, { body: text });
+    return { answered: idOf(open._id) };
+  }
+  const live = await Todo.findById(task._id);
+  const now = new Date();
+  live.updates = [...(live.updates || []), {
+    kind: 'reply', statusLabel: isManagement(user) ? 'Reply from Admin' : 'Reply from marketing', text,
+    note: `Reply from ${user.name}: ${text}`, by: user._id, at: now,
+  }];
+  live.attention = { kind: 'reply', note: text, by: user._id, at: now };
+  const step = statusesOf(live).find((entry) => entry.key === live.status);
+  if (step?.opensQuery) {
+    const history = [...(live.statusHistory || [])].reverse();
+    const asked = history.find((entry) => entry.status === step.key);
+    const pair = {
+      question: asked?.note || '', answer: text, askedBy: asked?.by || undefined, askedAt: asked?.at || undefined,
+      answeredBy: user._id, answeredAt: now,
+    };
+    live.clarifications = [...(live.clarifications || []), pair];
+    if (live.enquiry) {
+      await Enquiry.updateOne({ _id: idOf(live.enquiry) }, {
+        $push: { clarifications: { ...pair, kind: 'reply', department: live.department, task: live._id } },
+      }, { keepVersion: true });
+    }
+    const before = history.find((entry) => entry.status !== step.key)?.status || statusesOf(live)[0]?.key;
+    if (before && before !== step.key) {
+      live.status = before;
+      live.statusHistory = [...(live.statusHistory || []), { status: before, note: 'Replied', by: user._id, at: now }];
+    }
+  }
+  await live.save();
+  const holder = live.user && idOf(live.user) !== idOf(user._id) ? [idOf(live.user)] : [];
+  if (holder.length) {
+    afterCommit(() => import('./push.service.js')
+      .then(({ sendPush }) => sendPush(holder, {
+        title: `${user.name} replied`, body: `${live.title} — ${text}`.slice(0, 200),
+        link: live.enquiry ? `/enquiries/${idOf(live.enquiry)}` : '/workspace', kind: 'task-reply', taskId: idOf(live._id),
+      }))
+      .catch((error) => console.error(`[task-reply] push not sent: ${error.message}`)));
+  }
+  await publish(EVENTS.HANDOFF_UPDATED, { task: live, by: user });
+  return { replied: true };
 }
 
 /** Closed by the asking side or Admin: it no longer matters. A task held for it goes back. */

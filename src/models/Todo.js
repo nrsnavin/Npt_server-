@@ -323,9 +323,10 @@ const todoSchema = new mongoose.Schema(
          * words rather than one sentence [web: utils/taskHistory.js]. `kind`: status (a move on
          * the workflow), note (a plain update), asked_again, asked (another department asked from
          * this task), corrected, uploaded, notice (something the app noted — a message not sent),
-         * query (a question to whoever raised the task, its answer, its close [taskQuery.service]).
+         * query (a question to whoever raised the task, its answer, its close [taskQuery.service]),
+         * reply (Admin's or marketing's reply on the task, no question asked [taskQuery.service `replyOnTask`]).
          */
-        kind: { type: String, enum: ['status', 'note', 'asked_again', 'asked', 'corrected', 'uploaded', 'notice', 'query'] },
+        kind: { type: String, enum: ['status', 'note', 'asked_again', 'asked', 'corrected', 'uploaded', 'notice', 'query', 'reply'] },
         status: { type: String, trim: true },
         statusLabel: { type: String, trim: true, maxlength: 120 },
         date: { type: String, trim: true },

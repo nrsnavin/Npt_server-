@@ -1638,6 +1638,8 @@ export const setEnquiryMarketingStatus = asyncHandler(transactional(async (req, 
   } else {
     await enquiry.save();
   }
+  /* The sales stage follows the stage marketing's word put it at [salesStage.service]. */
+  await (await import('../services/salesStage.service.js')).syncSalesStatus(enquiry, { by: req.user._id, note: `Marketing status: ${marketingStatusLabel(status)}` });
 
   res.json({ success: true, data: enquiry, meta: { movedTo: moves ? salesMove : null } });
 }));
