@@ -126,7 +126,8 @@ test('the buttons and the stages come from the server', async () => {
   const { status, json } = await api('/api/handoffs', { token: arun });
   assert.equal(status, 200);
   /* The plant's twelve, plus Production Holded Orders (4A), Assembly's own (5A) and Audit's (11A). */
-  assert.equal(json.data.stages.filter((stage) => stage.number).length, 15);
+  /* 4B PP Sample joined the stages [services/ppSample.service.js]. */
+  assert.equal(json.data.stages.filter((stage) => stage.number).length, 16);
   assert.equal(json.data.stages.find((stage) => stage.key === 'production_hold').department, 'marketing');
   assert.equal(json.data.stages.find((stage) => stage.key === 'assembling').number, '5A');
   assert.equal(json.data.stages.find((stage) => stage.key === 'audit').department, 'audit');
@@ -134,7 +135,7 @@ test('the buttons and the stages come from the server', async () => {
   const drawn = json.data.buttons.filter((button) => !button.hidden);
   assert.deepEqual(drawn.map((button) => button.label), [
     'Photos Sent', 'Create Quotation', 'Sample Request', 'Price Negotiation', 'PO & SO', 'Ask EDD',
-    'Ask Assembly EDD', 'Ask Printing', 'Mould Issue', 'Team Payment Follow-up', 'Invoice & Dispatch', 'LR Copy',
+    'Ask Assembly EDD', 'Ask Printing', 'Mould Issue', 'Team Payment Follow-up', 'Invoice & Dispatch', 'Small Order — Check Stock', 'LR Copy',
     'Quality Check', 'Quality Issue', 'GST / Invoice Audit', 'A/C Clarify', 'PRT Recovery', 'My Payment Follow-up', 'Task Closed',
   ]);
   /* The form a Sample Request asks whoever raises it: a row per model [config/departmentTaskForms.js]. */
@@ -552,7 +553,8 @@ test('a department sees the enquiries at its own stages; the enquiry list filter
   const hand = await api('/api/departments/mine/dashboard', { token: ravi });
   assert.deepEqual(hand.json.data.atStages, []);
   const inCharge = await api('/api/departments/mine/dashboard', { token: siva });
-  assert.deepEqual(inCharge.json.data.atStages.map((stage) => stage.key), ['production_edd']);
+  /* Production's stages: the PP sample before bulk production, then Production / EDD. */
+  assert.deepEqual(inCharge.json.data.atStages.map((stage) => stage.key), ['pp_sample', 'production_edd']);
 
   const listed = await api('/api/enquiries?stage=po_so&limit=100', { token: admin });
   assert.ok(listed.json.data.length >= 1);

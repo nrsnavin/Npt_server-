@@ -42,7 +42,7 @@ const moulds = {};
 let Attachment;
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
-const NO_PHOTO = { noPhoto: true, noPhotoReason: 'No camera on the test bench' };
+const NO_PHOTO = { noPhoto: true, noPhotoReason: 'No camera on the test bench', noDetails: true, noDetailsReason: 'Not recorded in this test' };
 
 const api = async (path, { method = 'GET', body, as } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -207,12 +207,12 @@ test('the finished piece is checked against the reference as it lands; a differe
   const preview = await api(`/api/samples/${sample._id}/customer-message/preview?event=sample_ready`, { as: 'nandhini' });
   assert.equal(preview.json.data.checks[0].verdict, 'differs');
 
-  const held = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready' } });
+  const held = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test' } });
   assert.equal(held.status, 400);
   assert.match(held.json.message, /The check found a difference on NPT-400S — Darker than the reference/);
   assert.match(held.json.message, /tick Checked and say why/);
 
-  const ready = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', checkOverride: true, checkOverrideReason: 'Buyer wants the darker shade; hook agreed on the phone' } });
+  const ready = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test', checkOverride: true, checkOverrideReason: 'Buyer wants the darker shade; hook agreed on the phone' } });
   assert.equal(ready.status, 200, ready.json.message);
   assert.equal(ready.json.data.items[0].checkAccepted.reason, 'Buyer wants the darker shade; hook agreed on the phone');
   assert.match(ready.json.data.statusHistory.at(-1).note, /Checked past the difference on NPT-400S: Buyer wants the darker shade/);
@@ -223,7 +223,7 @@ test('the finished piece is checked against the reference as it lands; a differe
   await upload(`/api/samples/${fine._id}/items/${fine.items[0]._id}/reference-photo`, { as: 'nandhini' });
   const ok = await upload(`/api/samples/${fine._id}/items/${fine.items[0]._id}/photo`, { as: 'meera' });
   assert.equal(ok.json.data.items[0].check.verdict, 'matches');
-  const readyToo = await api(`/api/samples/${fine._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready' } });
+  const readyToo = await api(`/api/samples/${fine._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test' } });
   assert.equal(readyToo.status, 200, readyToo.json.message);
 
   /* With the model down, the photo still lands and nothing is held. */
@@ -232,5 +232,5 @@ test('the finished piece is checked against the reference as it lands; a differe
   const landed = await upload(`/api/samples/${quiet._id}/items/${quiet.items[0]._id}/photo`, { as: 'meera' });
   assert.equal(landed.status, 200);
   assert.equal(landed.json.data.items[0].check, undefined);
-  assert.equal((await api(`/api/samples/${quiet._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready' } })).status, 200);
+  assert.equal((await api(`/api/samples/${quiet._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test' } })).status, 200);
 });

@@ -122,6 +122,7 @@ export async function deleteTask(task, user, { reason } = {}) {
   }
   await Todo.deleteMany({ _id: { $in: taskIds } });
   await (await import('../models/FieldVisit.js')).default.deleteMany({ task: { $in: taskIds } });
+  await (await import('../models/TaskQuery.js')).default.deleteMany({ task: { $in: taskIds } });
   const { recordChange } = await import('./audit.service.js');
   const words = `${tasks.length > 1 ? `Job ${task.jobNumber || ''} — ${plural(tasks.length, 'task')}` : task.title} deleted${reason ? `: ${reason}` : ''}`;
   await recordChange({ model: 'Todo', doc: task, by: user, action: 'deleted', note: words, label: task.jobNumber || task.title });
@@ -200,6 +201,9 @@ export async function deleteEnquiry(enquiryId, user, { reason } = {}) {
   await model('Quotation').deleteMany({ enquiry: id });
   await Todo.deleteMany({ enquiry: id });
   await model('FieldVisit').deleteMany({ enquiry: id });
+  await (await import('../models/TaskQuery.js')).default.deleteMany({ $or: [{ enquiry: id }, { task: { $in: taskIds } }] });
+  await (await import('../models/PpSample.js')).default.deleteMany({ enquiry: id });
+  await (await import('../models/DeliveryChallan.js')).default.deleteMany({ enquiry: id, status: 'to_invoice' });
   await model('WhatsappThread').updateMany({ enquiry: id }, { $unset: { enquiry: 1 } });
   await model('BuyerCard').updateMany({ enquiry: id }, { $unset: { enquiry: 1 } });
   await model('Mould').updateMany({ developedFromEnquiry: id }, { $unset: { developedFromEnquiry: 1 } });

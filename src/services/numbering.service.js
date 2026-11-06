@@ -34,7 +34,8 @@ export function financialYear(date = new Date()) {
  * and a missing number on them reads as a cancelled or hidden one. Everything else (an enquiry,
  * a customer, a sample, a consignment) only has to be unique.
  */
-const GAPLESS = new Set(['SO']);
+/* A delivery challan (DC) goes with the goods and is billed later — a document too. */
+const GAPLESS = new Set(['SO', 'DC']);
 
 /**
  * One counter, one step.

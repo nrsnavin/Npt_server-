@@ -133,7 +133,7 @@ test('Preparing; Prepared only by uploading the PDF; another department cannot m
   assert.equal((await status('priya', 'nonsense', 'No such step')).status, 400);
 });
 
-test('Needs Clarification asks for a comment and gives the marketing person a task; the answer comes back', async () => {
+test('Needs Clarification asks for a comment and opens a query to whoever raised the task; the answer comes back', async () => {
   const bare = await status('priya', 'clarification');
   assert.equal(bare.status, 400);
   assert.match(bare.json.message, /asks for a comment/);
@@ -142,25 +142,47 @@ test('Needs Clarification asks for a comment and gives the marketing person a ta
   assert.equal(asked.json.data.status, 'clarification');
 
   const nandhini = (await api('/api/auth/me', { as: 'nandhini' })).json.data.id;
-  const question = await Todo.findOne({ enquiry: enquiry._id, kind: 'so_clarification', completed: false });
-  assert.ok(question, 'a task for the marketing person');
-  assert.equal(String(question.user), nandhini);
-  assert.equal(String(question.parentTask), soTask._id);
-  assert.match(question.notes, /Priya Orders: Which GSTIN/);
+  assert.equal(await Todo.countDocuments({ kind: 'so_clarification' }), 0, 'no second task for marketing');
+  const { default: TaskQuery } = await import('../src/models/TaskQuery.js');
+  const question = await TaskQuery.findOne({ task: soTask._id, status: 'open' });
+  assert.ok(question, 'a query on the SO task');
+  assert.equal(String(question.to), nandhini, 'to the marketing person who raised the request');
+  assert.equal(question.workflow.status, 'clarification');
+  assert.equal(question.workflow.from, 'preparing');
+  assert.equal(question.question, 'Which GSTIN — Tiruppur or Chennai unit?');
 
-  const again = await status('priya', 'preparing', 'Carrying on with the rest');
-  assert.equal(again.status, 200, 'the SO team may carry on meanwhile');
-  await status('priya', 'clarification', 'And the delivery address?');
-  /* At the top of the marketing person's dashboard, to answer there. */
+  /* On the task for everybody who works it or raised it; not for a department with nothing to do with it. */
+  const onTask = await api(`/api/workspace/todos/${soTask._id}/queries`, { as: 'nandhini' });
+  assert.equal(onTask.status, 200, onTask.json.message);
+  assert.equal(onTask.json.data[0].mayAnswer, true);
+  assert.equal(onTask.json.data[0].mayFollowUp, false);
+  assert.equal((await api(`/api/workspace/todos/${soTask._id}/queries`, { as: 'priya' })).json.data[0].mayFollowUp, true);
+  assert.equal((await api(`/api/workspace/todos/${soTask._id}/queries`, { as: 'siva' })).status, 404);
+  /* Only the people asked answer, and only the asking side follows up. */
+  assert.equal((await api(`/api/task-queries/${question._id}/reply`, { method: 'POST', as: 'siva', body: { body: 'Not mine to say' } })).status, 404);
+
+  /* At the top of the marketing person's dashboard, to answer there — and in the bell. */
   const mine = (await api('/api/departments/mine/dashboard', { as: 'nandhini' })).json.data.attention;
-  assert.ok(mine.questions.some((row) => row._id === String(question._id)), 'the question is at the top for marketing');
-  assert.equal(mine.questions.find((row) => row._id === String(question._id)).parentTask.department, 'order_confirmation');
-  const answered = await api(`/api/workspace/todos/${question._id}/done`, { method: 'POST', as: 'nandhini', body: { note: 'Tiruppur unit — 33AABCS1429P1ZQ' } });
+  assert.ok(mine.queries.some((row) => row._id === String(question._id)), 'the query is at the top for marketing');
+  assert.equal(mine.queries[0].task.department, 'order_confirmation');
+  const bell = (await api('/api/inbox', { as: 'nandhini' })).json.data.items;
+  assert.ok(bell.some((item) => item.kind === 'task_query' && /Which GSTIN/.test(item.title)));
+
+  /* The SO team adds to its question: still open, still with marketing. */
+  const followUp = await api(`/api/task-queries/${question._id}/reply`, { method: 'POST', as: 'priya', body: { body: 'The invoice copy shows both' } });
+  assert.equal(followUp.status, 200, followUp.json.message);
+  assert.equal(followUp.json.data.status, 'open');
+  assert.equal((await Todo.findById(soTask._id)).status, 'clarification', 'still waiting on the answer');
+
+  const answered = await api(`/api/task-queries/${question._id}/reply`, { method: 'POST', as: 'nandhini', body: { body: 'Tiruppur unit — 33AABCS1429P1ZQ' } });
   assert.equal(answered.status, 200, answered.json.message);
+  assert.equal(answered.json.data.status, 'answered');
   const back = await Todo.findById(soTask._id);
   assert.equal(back.status, 'preparing', 'back where it was before the question');
-  assert.match(back.updates.at(-1).note, /Clarified by Nandhini S: Tiruppur unit/);
-  assert.equal(await Todo.countDocuments({ title: /^Done: SO Clarification/ }), 0, 'the answer is on the SO task, not a new to-do');
+  assert.match(back.updates.at(-1).note, /Reply from Nandhini S: Tiruppur unit/);
+  assert.equal(back.clarifications.at(-1).answer, 'Tiruppur unit — 33AABCS1429P1ZQ');
+  const kept = await Enquiry.findById(enquiry._id);
+  assert.equal(kept.clarifications.at(-1).answer, 'Tiruppur unit — 33AABCS1429P1ZQ', 'kept on the enquiry too');
 
   /* The answer is at the top of the SO team's dashboard until somebody there acts on it. */
   const theirs = (await api('/api/departments/mine/dashboard', { as: 'priya' })).json.data.attention;
@@ -168,11 +190,21 @@ test('Needs Clarification asks for a comment and gives the marketing person a ta
   assert.ok(reply, 'the reply is highlighted for the SO team');
   assert.match(reply.attention.note, /Tiruppur unit/);
   assert.equal(reply.attention.by.name, 'Nandhini S');
-  assert.equal((await api('/api/departments/mine/dashboard', { as: 'nandhini' })).json.data.attention.questions.length, 0, 'answered, so gone from marketing');
+  assert.equal(theirs.answers.length, 0, 'the task’s Replies carries it — not twice');
+  assert.equal((await api('/api/departments/mine/dashboard', { as: 'nandhini' })).json.data.attention.queries.length, 0, 'answered, so gone from marketing');
   assert.equal((await api(`/api/workspace/todos/${soTask._id}/seen`, { method: 'POST', as: 'siva' })).status, 403);
   const seen = await api(`/api/workspace/todos/${soTask._id}/seen`, { method: 'POST', as: 'priya' });
   assert.equal(seen.status, 200, seen.json.message);
   assert.equal((await api('/api/departments/mine/dashboard', { as: 'priya' })).json.data.attention.replies.length, 0, '"Got it" clears it');
+  assert.ok((await TaskQuery.findById(question._id)).seenAt, 'and the query is read');
+
+  /* Asked again and closed unanswered: the task goes back too. */
+  await status('priya', 'clarification', 'And the delivery address?');
+  const second = await TaskQuery.findOne({ task: soTask._id, status: 'open' });
+  assert.equal((await api(`/api/task-queries/${second._id}/close`, { method: 'POST', as: 'nandhini', body: {} })).status, 403, 'closing is the asker’s');
+  const closed = await api(`/api/task-queries/${second._id}/close`, { method: 'POST', as: 'priya', body: { reason: 'Found it on the PO' } });
+  assert.equal(closed.status, 200, closed.json.message);
+  assert.equal((await Todo.findById(soTask._id)).status, 'preparing');
 });
 
 test('the SO team corrects the contact details, and only those', async () => {

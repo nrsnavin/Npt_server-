@@ -147,19 +147,22 @@ test('a second request on the enquiry, or an open order on it, is flagged', asyn
 });
 
 test('a Needs Clarification shows its question, then marketing’s answer', async () => {
-  /* A clarification goes to the enquiry's marketing person — so on the enquiry-backed request. A team task has nobody to ask. */
-  const refused = await api(`/api/workspace/todos/${gappy._id}/status`, { method: 'POST', as: 'priya', body: { status: 'clarification', note: 'Please add the price.' } });
-  assert.equal(refused.status, 400);
+  /* A clarification is a query to whoever raised the request — on a team task too, its creator [taskQuery.service]. */
+  const onTeamTask = await api(`/api/workspace/todos/${gappy._id}/status`, { method: 'POST', as: 'priya', body: { status: 'clarification', note: 'Please add the price.' } });
+  assert.equal(onTeamTask.status, 200, onTeamTask.json.message);
+  const teamQuery = await mongoose.connection.collection('taskqueries').findOne({ task: new mongoose.Types.ObjectId(gappy._id) });
+  assert.equal(String(teamQuery.to), String(ids.nandhini), 'the team task asks the person who gave it');
   const asked = await api(`/api/workspace/todos/${ready._id}/status`, { method: 'POST', as: 'priya', body: { status: 'clarification', note: 'Confirm the colour: black or jet black?' } });
   assert.equal(asked.status, 200, asked.json.message);
   let row = (await desk()).rows.find((entry) => String(entry.task._id) === String(ready._id));
   assert.equal(row.so.lane, 'clarification');
   assert.match(row.so.question.question, /black or jet black/);
   assert.equal(row.so.question.answer, null);
-  const child = await mongoose.connection.collection('todos').findOne({ kind: 'so_clarification', parentTask: new mongoose.Types.ObjectId(ready._id) });
-  assert.ok(child, 'marketing got the question as a task');
+  assert.equal(await mongoose.connection.collection('todos').countDocuments({ kind: 'so_clarification' }), 0, 'no task for marketing — a query');
+  const query = await mongoose.connection.collection('taskqueries').findOne({ task: new mongoose.Types.ObjectId(ready._id) });
+  assert.ok(query, 'marketing got the question as a query');
   assert.equal(row.so.question.waitingOn?.name, 'Nandhini S');
-  const answered = await api(`/api/workspace/todos/${child._id}/done`, { method: 'POST', as: 'nandhini', body: { note: 'Jet black, as sampled' } });
+  const answered = await api(`/api/task-queries/${query._id}/reply`, { method: 'POST', as: 'nandhini', body: { body: 'Jet black, as sampled' } });
   assert.equal(answered.status, 200, answered.json.message);
   row = (await desk()).rows.find((entry) => String(entry.task._id) === String(ready._id));
   /* The answer shows on the desk until the team says Got it — whichever lane the request is back in. */
@@ -175,7 +178,7 @@ test('a Needs Clarification shows its question, then marketing’s answer', asyn
   assert.equal(enquiry.clarifications.length, 1);
   assert.equal(enquiry.clarifications[0].answer, 'Jet black, as sampled');
   assert.equal(enquiry.clarifications[0].answeredBy.name, 'Nandhini S');
-  assert.equal(enquiry.clarifications[0].kind, 'so_clarification');
+  assert.equal(enquiry.clarifications[0].kind, 'query');
   /* After Got it the question folds away from the card, and the answer stays in the list. */
   await api(`/api/workspace/todos/${ready._id}/seen`, { method: 'POST', as: 'priya' });
   row = (await desk()).rows.find((entry) => String(entry.task._id) === String(ready._id));

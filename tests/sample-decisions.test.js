@@ -28,7 +28,7 @@ let Sample;
 let Todo;
 
 const DAY = 86400000;
-const NO_PHOTO = { noPhoto: true, noPhotoReason: 'No camera on the test bench' };
+const NO_PHOTO = { noPhoto: true, noPhotoReason: 'No camera on the test bench', noDetails: true, noDetailsReason: 'Not recorded in this test' };
 
 const api = async (path, { method = 'GET', body, as } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -91,7 +91,7 @@ test.after(async () => {
 test('three days with the buyer and no answer: marketing is reminded once, and the answer clears it', async () => {
   const { runFeedbackReminders } = await import('../src/services/escalation.service.js');
   const { sample } = await requested();
-  for (const body of [{ status: 'sample_available' }, { status: 'sample_ready', ...NO_PHOTO }]) assert.equal((await move(sample._id, body)).status, 200);
+  for (const body of [{ status: 'sample_available' }, { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test', ...NO_PHOTO }]) assert.equal((await move(sample._id, body)).status, 200);
   const sent = await move(sample._id, { status: 'dispatched', courier: 'Blue Dart', awbNumber: '77213904118', dispatchedQuantity: 5 });
   assert.equal(sent.status, 200, sent.json.message);
   await settle();
@@ -173,7 +173,7 @@ test('Not available: change the spec corrects the request and sends it back; can
 
 test('an exact-colour condition is stepped past only out loud: Send it anyway with a reason, and marketing is told at once', async () => {
   const { sample } = await requested({ modelNumber: 'NPT-400S', colour: 'Ivory', colourMandatory: true });
-  for (const body of [{ status: 'sample_available' }, { status: 'sample_ready', ...NO_PHOTO }]) assert.equal((await move(sample._id, body)).status, 200);
+  for (const body of [{ status: 'sample_available' }, { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test', ...NO_PHOTO }]) assert.equal((await move(sample._id, body)).status, 200);
   const courier = { status: 'dispatched', courier: 'Blue Dart', awbNumber: '77213904300', dispatchedQuantity: 5, dispatchedColour: 'White' };
 
   const refused = await move(sample._id, courier);

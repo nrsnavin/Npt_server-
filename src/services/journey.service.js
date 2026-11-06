@@ -350,6 +350,8 @@ async function waitsForBuyer(task, user) {
  * material, quantity). Once: a chain that already has it is left alone.
  */
 export async function raiseNextTeamTask(task, kind, user, why, { brief: given } = {}) {
+  /* Bulk production waits for a PP sample's approval [ppSample.service]. */
+  if (kind === 'ask_edd' && await (await import('./ppSample.service.js')).ppPendingFor({ sourceTask: task._id, order: task.order })) return null;
   /* Once on the job: Dispatch asked by Assembly is not asked again by Printing. */
   if (await Todo.exists({ previousTask: task._id, kind })) return null;
   if (!task.enquiry && await Todo.exists({ ...jobFilter(task), kind, completed: false })) return null;

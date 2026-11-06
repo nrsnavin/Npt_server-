@@ -12,6 +12,10 @@ import queryRoutes from './query.routes.js';
 import dispatchPlanningRoutes from './dispatchPlanning.routes.js';
 import recordsRoutes from './records.routes.js';
 import fieldRoutes from './field.routes.js';
+import taskQueryRoutes from './taskQuery.routes.js';
+import ppSampleRoutes from './ppSample.routes.js';
+import eddChangeRoutes from './eddChange.routes.js';
+import smallOrderRoutes from './smallOrder.routes.js';
 import { getPlant, getSecurity, putFloorPlanning, putHandoverLead, putPlant, putSecurity } from '../controllers/settings.controller.js';
 import { floorPlanningSchema, handoverLeadSchema, plantCalendarSchema, securityPolicySchema } from '../validators/schemas.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
@@ -28,6 +32,14 @@ import { validate } from '../middleware/validate.js';
 
 const router = Router();
 
+/* Queries on tasks and enquiries, to whoever raised the work [routes/taskQuery.routes.js] — above the routers that own /enquiries and /workspace. */
+router.use(taskQueryRoutes);
+/* The PP sample and its DCs [routes/ppSample.routes.js]. */
+router.use(ppSampleRoutes);
+/* EDD change requests from Production, Printing and Assembly [routes/eddChange.routes.js]. */
+router.use(eddChangeRoutes);
+/* A small order's stock check: in stock to Dispatch, the rest to Production [routes/smallOrder.routes.js]. */
+router.use(smallOrderRoutes);
 router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
 router.use('/workspace', workspaceRoutes);

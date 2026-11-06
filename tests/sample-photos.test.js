@@ -115,15 +115,15 @@ test.after(async () => {
 
 test('Sample Ready needs a photo of each finished piece — refused without, allowed with No photo and a reason', async () => {
   const { sample } = await requested();
-  const bare = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready' } });
+  const bare = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test' } });
   assert.equal(bare.status, 400);
   assert.match(bare.json.message, /photo of each finished piece/);
   assert.match(bare.json.message, /NPT-400S, NPT-380T/, 'names the rows without one');
 
-  const unsaid = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noPhoto: true, noPhotoReason: 'ok' } });
+  const unsaid = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test', noPhoto: true, noPhotoReason: 'ok' } });
   assert.equal(unsaid.status, 400, 'a reason too short to mean anything');
 
-  const excused = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noPhoto: true, noPhotoReason: 'Bench phone is dead; pieces already bagged' } });
+  const excused = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test', noPhoto: true, noPhotoReason: 'Bench phone is dead; pieces already bagged' } });
   assert.equal(excused.status, 200, excused.json.message);
   assert.equal(excused.json.data.status, 'sample_ready');
   assert.equal(excused.json.data.readyWithoutPhoto.reason, 'Bench phone is dead; pieces already bagged');
@@ -161,13 +161,13 @@ test('a photo per row: the bench takes the finished piece, marketing adds the re
   assert.equal(wrongRow.status, 404);
 
   /* Still one photo short: Sample Ready names the row without. */
-  const short = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready' } });
+  const short = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test' } });
   assert.equal(short.status, 400);
   assert.match(short.json.message, /NPT-380T has none/);
 
   const second_ = await upload(`/api/samples/${sample._id}/items/${second._id}/photo`, { as: 'meera' });
   assert.equal(second_.status, 200);
-  const ready = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready' } });
+  const ready = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test' } });
   assert.equal(ready.status, 200, ready.json.message);
   assert.equal(ready.json.data.readyWithoutPhoto, undefined, 'no excuse needed');
   assert.equal(ready.json.data.finishedPhotos.length, 2);
@@ -213,7 +213,7 @@ test('the photos travel: the queue row, the enquiry’s samples, a corrected bag
   assert.equal(preview.status, 200, preview.json.message);
   assert.deepEqual(preview.json.data.photos.map((photo) => photo.model), ['NPT-400S', 'NPT-380T'], 'the draft says which pictures go');
 
-  const ready = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready' } });
+  const ready = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test' } });
   assert.equal(ready.status, 200, ready.json.message);
   await settle();
   const sent = await CustomerMessage.find({ sample: sample._id, event: 'sample_ready', status: 'sent' }).lean();
@@ -241,7 +241,7 @@ test('the approved sample’s photos sit beside the order’s checks; a mould wi
   const taken = await upload(`/api/samples/${sample._id}/items/${first._id}/photo`, { as: 'meera' });
   assert.equal(taken.status, 200, taken.json.message);
   assert.ok(taken.json.data.items[0].photo?.key);
-  const readied = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noPhoto: true, noPhotoReason: 'Second model still drying' } });
+  const readied = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test', noPhoto: true, noPhotoReason: 'Second model still drying' } });
   assert.equal(readied.status, 200, readied.json.message);
   assert.ok(readied.json.data.items[0].photo?.key, 'kept through Sample Ready');
   const gone = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'dispatched', courier: 'Blue Dart', awbNumber: '77213904118', dispatchedQuantity: 5 } });
@@ -286,7 +286,7 @@ test('the approved sample’s photos sit beside the order’s checks; a mould wi
 test('several models in the bag: the pieces sent of each, and the sample’s quantity is their sum', async () => {
   const { sample } = await requested();
   assert.ok(sample.items.length > 1, 'a sample of two models');
-  await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noPhoto: true, noPhotoReason: 'Photos taken on the phone' } });
+  await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test', noPhoto: true, noPhotoReason: 'Photos taken on the phone' } });
   const [first, second] = sample.items;
   const short = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'dispatched', courier: 'Blue Dart', awbNumber: '77213904119', itemQuantities: [{ item: first._id, quantity: 3 }] } });
   assert.equal(short.status, 400);
@@ -299,10 +299,61 @@ test('several models in the bag: the pieces sent of each, and the sample’s qua
 
 test('one model in the bag: its pieces sent are kept against the model too', async () => {
   const { sample } = await requested([{ mould: mouldId, modelNumber: 'NPT-400S', colour: 'White', quantity: 5000 }]);
-  await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noPhoto: true, noPhotoReason: 'Photos taken on the phone' } });
+  await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test', noPhoto: true, noPhotoReason: 'Photos taken on the phone' } });
   const gone = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'dispatched', courier: 'Blue Dart', awbNumber: '77213904120', itemQuantities: [{ item: sample.items[0]._id, quantity: 4 }] } });
   assert.equal(gone.status, 200, gone.json.message);
   assert.deepEqual([gone.json.data.items[0].dispatchedQuantity, gone.json.data.dispatchedQuantity], [4, 4]);
   const listed = (await api(`/api/samples?enquiry=${sample.enquiry?._id || sample.enquiry}`, { as: 'nandhini' })).json.data[0];
   assert.equal(listed.items[0].dispatchedQuantity, 4, 'the enquiry’s sample list carries it, model by model');
+});
+
+test('Sample Ready records what each piece was made with — material, hook (or none), any clip, pieces — or says why not', async () => {
+  const { sample } = await requested([{ modelNumber: 'NPT-400S', colour: 'White', quantity: 20 }]);
+  const row = sample.items[0];
+  const photo = await upload(`/api/samples/${sample._id}/items/${row._id}/photo`, { as: 'meera' });
+  assert.equal(photo.status, 200, photo.json?.message);
+  const material = await mongoose.connection.collection('materials').insertOne({ name: 'PP Natural', code: 'PP-NAT', type: 'PP', colour: 'Natural', createdAt: new Date(), updatedAt: new Date() });
+  const hook = await mongoose.connection.collection('components').insertOne({ name: 'Chrome hook', code: 'HK-CR', kind: 'hook', createdAt: new Date(), updatedAt: new Date() });
+
+  const bare = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready' } });
+  assert.equal(bare.status, 400);
+  assert.match(bare.json.message, /NPT-400S \(material, hook, pieces\)/);
+  const noHook = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', itemsMade: [{ item: row._id, materialRef: String(material.insertedId), pieces: 20 }] } });
+  assert.equal(noHook.status, 400, 'the hook is asked, or No hook');
+  assert.match(noHook.json.message, /\(hook\)/);
+
+  const ready = await api(`/api/samples/${sample._id}/status`, {
+    method: 'POST', as: 'meera',
+    body: { status: 'sample_ready', itemsMade: [{ item: row._id, materialRef: String(material.insertedId), hookRef: String(hook.insertedId), pieces: 18 }] },
+  });
+  assert.equal(ready.status, 200, ready.json.message);
+  const made = ready.json.data.items[0].madeWith;
+  assert.equal(made.materialRef.name, 'PP Natural');
+  assert.equal(made.hookRef.name, 'Chrome hook');
+  assert.equal(made.pieces, 18);
+  assert.ok(made.by && made.at);
+
+  /* Not known: allowed with a reason, kept beside the move. */
+  const { sample: other } = await requested([{ modelNumber: 'NPT-380T', colour: 'Black', quantity: 5 }]);
+  await upload(`/api/samples/${other._id}/items/${other.items[0]._id}/photo`, { as: 'meera' });
+  const excused = await api(`/api/samples/${other._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Old stock piece, resin not labelled' } });
+  assert.equal(excused.status, 200, excused.json.message);
+  assert.match(excused.json.data.statusHistory.at(-1).note, /Details not known: Old stock piece/);
+});
+
+test('the hand-over takes a photo afterwards — added, or in place of the one it had', async () => {
+  const { sample } = await requested([{ modelNumber: 'NPT-410V', colour: 'Black', quantity: 3 }]);
+  const early = await upload(`/api/samples/${sample._id}/hand-over/photo`, { as: 'nandhini' });
+  assert.equal(early.status, 400, 'not before it is handed over');
+  await upload(`/api/samples/${sample._id}/items/${sample.items[0]._id}/photo`, { as: 'meera' });
+  const ready = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test' } });
+  assert.equal(ready.status, 200, ready.json.message);
+  const handed = await api(`/api/samples/${sample._id}/hand-over`, { method: 'POST', as: 'nandhini', body: { receivedBy: 'Mr Ravi', pieces: 3 } });
+  assert.equal(handed.status, 200, handed.json.message);
+  assert.equal(handed.json.data.collection.photo, undefined);
+  const taken = await upload(`/api/samples/${sample._id}/hand-over/photo`, { as: 'nandhini' });
+  assert.equal(taken.status, 200, taken.json?.message);
+  assert.ok(taken.json.data.collection.photo.key, 'the hand-over has its photo');
+  const again = await upload(`/api/samples/${sample._id}/hand-over/photo`, { as: 'nandhini' });
+  assert.notEqual(again.json.data.collection.photo.key, taken.json.data.collection.photo.key, 'a retake replaces it');
 });

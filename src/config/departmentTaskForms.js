@@ -140,6 +140,26 @@ const SO_COLUMNS = [
   { key: 'edd', label: 'EDD', type: 'date' },
 ];
 
+/** A small order's lines: each model as the buyer wants it, and how many. */
+const SMALL_ORDER_COLUMNS = [
+  { key: 'model', label: 'Model', required: true, register: 'moulds' },
+  { key: 'material', label: 'Material & colour', register: 'materials' },
+  { key: 'hook', label: 'Hook', register: 'hooks' },
+  { key: 'clip', label: 'Clip', register: 'clips' },
+  { key: 'print', label: 'Print', register: 'prints' },
+  { key: 'quantity', label: 'Qty (pcs)', type: 'number', required: true },
+];
+
+/** A PP sample's lines: each model as the order has it, and how many pieces of the sample [services/ppSample.service.js]. */
+const PP_COLUMNS = [
+  { key: 'model', label: 'Model', required: true, register: 'moulds' },
+  { key: 'material', label: 'Material & colour', register: 'materials' },
+  { key: 'hook', label: 'Hook', register: 'hooks' },
+  { key: 'clip', label: 'Clip', register: 'clips' },
+  { key: 'print', label: 'Print', register: 'prints' },
+  { key: 'pieces', label: 'PP pieces', type: 'number' },
+];
+
 /** The rows of a quotation request: each model as the buyer wants it — material and colour, its parts, how many, and the price they hope for. */
 const QUOTE_COLUMNS = [
   { key: 'model', label: 'Model', required: true, register: 'moulds' },
@@ -448,7 +468,12 @@ export const TASK_FORMS = {
     statuses: [
       { key: 'waiting', label: 'SO Waiting' },
       { key: 'preparing', label: 'SO Preparing' },
-      { key: 'clarification', label: 'Needs Clarification', comment: true, raises: 'so_clarification' },
+      /*
+       * A question for whoever raised the request — its creator, else the enquiry's marketing
+       * person, else Admin — opened as a query on the task [services/taskQuery.service.js]. The
+       * answer comes back onto the task, which goes back to where it was.
+       */
+      { key: 'clarification', label: 'Needs Clarification', comment: true, opensQuery: true, querySubject: 'Sales order / PO details' },
       { key: 'prepared', label: 'SO Prepared', pdf: true, done: true, next: 'ask_edd' },
     ],
     resultLabel: 'Upload Sales Order PDF',
@@ -477,6 +502,13 @@ export const TASK_FORMS = {
        * The form starts ticked (`checked`); marketing unticks it to hold the order.
        */
       { key: 'productionConfirmed', label: 'Production confirmed — send to Production once the SO is prepared', type: 'check', checked: true },
+      /*
+       * A pre-production sample first [services/ppSample.service.js]: once the SO is uploaded,
+       * Production makes it, Dispatch sends it with a DC, and bulk production starts only after
+       * marketing marks it approved.
+       */
+      { key: 'ppSampleRequired', label: 'PP sample required — production starts only after the PP sample is approved', type: 'check', section: 'PP sample' },
+      { key: 'ppPieces', label: 'PP sample pieces per model', type: 'number', placeholder: 'e.g. 25', hint: 'How many pieces of each model the PP sample carries' },
       QC_ASK,
     ],
   },
@@ -741,6 +773,62 @@ export const TASK_FORMS = {
       { key: 'corrected', label: 'Corrected' },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
+  },
+  /* A small order: Dispatch checks the stock per model [services/smallOrder.service.js]. */
+  small_order: {
+    team: 'Dispatch Team',
+    asks: [
+      { key: 'items', label: 'Models and quantities', section: 'Small order', type: 'items', add: '+ Add Model', columns: SMALL_ORDER_COLUMNS, required: true },
+      { key: 'deliveryNote', label: 'Delivery / packing instructions', placeholder: 'Where it goes, how it is packed' },
+    ],
+    note: { label: 'Note for Dispatch', placeholder: 'Small order — check the godown and send what is there' },
+    statuses: [
+      { key: 'received', label: 'Check Stock' },
+      /* Reached only through the stock check, which raises Dispatch and Production [smallOrder.service `checkStock`]. */
+      { key: 'checked', label: 'Stock Checked', done: true, byApp: true, byAppSays: 'Say what is in stock with Check stock — it sends what is there and asks Production for the rest' },
+    ],
+    taskActions: ['escalate'],
+    /* The stock check on the task [web: StockCheckDialog]. */
+    stockCheck: true,
+  },
+  /* The PP sample: Production makes it [services/ppSample.service.js]. */
+  pp_sample: {
+    team: 'Production Team',
+    asks: [{ key: 'items', label: 'PP sample — what to make', type: 'items', columns: PP_COLUMNS }],
+    remark: { label: 'Remarks', placeholder: 'What was made, anything the buyer should know' },
+    statuses: [
+      { key: 'waiting', label: 'PP Sample Waiting' },
+      { key: 'making', label: 'Making PP Sample' },
+      /* `ppSample`: the step moves the PP sample on [ppSample.service `onPpStep`] — here, Dispatch is asked to send it. */
+      { key: 'ready', label: 'PP Sample Ready', done: true, ppSample: 'ready' },
+    ],
+    taskActions: ['escalate'],
+  },
+  /* Dispatch prepares the DC and sends the PP sample. */
+  pp_sample_send: {
+    team: 'Dispatch Team',
+    asks: [{ key: 'items', label: 'PP sample — what to send', type: 'items', columns: PP_COLUMNS }],
+    remark: { label: 'Remarks', placeholder: 'Courier, AWB, who it was handed to' },
+    statuses: [
+      { key: 'waiting', label: 'To Send' },
+      /* Refused until the DC is prepared [ppSample.service `onPpStep`]. */
+      { key: 'sent', label: 'PP Sample Sent', done: true, ppSample: 'sent' },
+    ],
+    taskActions: ['escalate'],
+    /* The DC is prepared on this task [web: PpChallanDialog]. */
+    challan: true,
+  },
+  /* The enquiry's marketing person records the buyer's answer. */
+  pp_sample_approval: {
+    team: 'Marketing',
+    asks: [{ key: 'items', label: 'PP sample sent', type: 'items', columns: PP_COLUMNS }],
+    statuses: [
+      { key: 'awaiting', label: 'Awaiting Buyer’s Answer' },
+      { key: 'approved', label: 'PP Approved', done: true, ppSample: 'approved' },
+      /* Another round: Production makes it again, with what the buyer said. */
+      { key: 'changes', label: 'Changes Needed', comment: true, done: true, ppSample: 'changes' },
+    ],
+    taskActions: ['escalate'],
   },
   ac_clarify: {
     team: 'Accounts Team',

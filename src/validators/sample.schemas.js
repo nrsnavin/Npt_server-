@@ -137,6 +137,18 @@ export const sampleStatusSchema = z.object({
   dispatchedColour: z.string().max(60).optional(),
   /* Sample Sent closes the bench's task in the same move, unless the bench unticks it [the work queue]. */
   closeTask: z.boolean().optional(),
+  /* Sample Ready: what each finished piece was made with — material, hook (or none), any clip, pieces [setSampleStatus]. */
+  itemsMade: z.array(z.object({
+    item: z.string().regex(/^[a-f\d]{24}$/i),
+    materialRef: z.string().regex(/^[a-f\d]{24}$/i).optional().or(z.literal('')),
+    hookRef: z.string().regex(/^[a-f\d]{24}$/i).optional().or(z.literal('')),
+    noHook: z.boolean().optional(),
+    clipRef: z.string().regex(/^[a-f\d]{24}$/i).optional().or(z.literal('')),
+    pieces: z.number().int().min(0).optional(),
+  })).max(60).optional(),
+  /* Sample Ready without those details on every piece: allowed with a reason. */
+  noDetails: z.boolean().optional(),
+  noDetailsReason: z.string().trim().max(300).optional(),
   /* Sample Ready without a photo of every piece: allowed with a reason [setSampleStatus]. */
   noPhoto: z.boolean().optional(),
   noPhotoReason: z.string().trim().max(300).optional(),

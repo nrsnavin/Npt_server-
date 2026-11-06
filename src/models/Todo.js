@@ -259,6 +259,8 @@ const todoSchema = new mongoose.Schema(
         askedAt: Date,
         answeredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
         answeredAt: Date,
+        /* The query it was asked in [models/TaskQuery.js]; absent on the old SO Clarification tasks. */
+        query: { type: mongoose.Schema.Types.ObjectId, ref: 'TaskQuery' },
       }, { _id: false })],
       default: undefined,
     },
@@ -320,9 +322,10 @@ const todoSchema = new mongoose.Schema(
          * The same line in its parts, so a screen can draw it as a step, a date and the person's
          * words rather than one sentence [web: utils/taskHistory.js]. `kind`: status (a move on
          * the workflow), note (a plain update), asked_again, asked (another department asked from
-         * this task), corrected, uploaded, notice (something the app noted — a message not sent).
+         * this task), corrected, uploaded, notice (something the app noted — a message not sent),
+         * query (a question to whoever raised the task, its answer, its close [taskQuery.service]).
          */
-        kind: { type: String, enum: ['status', 'note', 'asked_again', 'asked', 'corrected', 'uploaded', 'notice'] },
+        kind: { type: String, enum: ['status', 'note', 'asked_again', 'asked', 'corrected', 'uploaded', 'notice', 'query'] },
         status: { type: String, trim: true },
         statusLabel: { type: String, trim: true, maxlength: 120 },
         date: { type: String, trim: true },

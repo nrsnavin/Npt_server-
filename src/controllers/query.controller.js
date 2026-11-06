@@ -139,7 +139,9 @@ async function peopleBehind(participant) {
 
 export const createQuery = asyncHandler(transactional(async (req, res) => {
   const { customer: customerId, question, participants = [] } = req.body;
-  const subject = req.body.subject || subjectFrom(question);
+  /* A subject from the drop-down, or a new one — on the shared list for everyone from now [querySubjects.service]. */
+  const picked = req.body.subject ? await (await import('../services/querySubjects.service.js')).ensureSubject(req.body.subject, req.user) : null;
+  const subject = picked || subjectFrom(question);
 
   const customer = await askableCustomer(customerId, req.user);
 

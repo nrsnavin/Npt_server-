@@ -211,7 +211,7 @@ test('a regular sample can be carried by the marketing person once the bench has
   assert.equal(early.status, 400);
   assert.match(early.json.message, /still on the bench/);
   for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
-    await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) } });
+    await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench', noDetails: true, noDetailsReason: 'Not recorded in this test' } : {}) } });
   }
   await settle();
   assert.equal(await Todo.countDocuments({ enquiry: enquiry._id, kind: 'sample_collect' }), 0, 'no desk task on a courier sample');
@@ -334,7 +334,7 @@ test('the enquiry’s finished Sample Request shows how the sample went — cour
   await settle();
   const [sample] = (await api(`/api/samples?enquiry=${enquiry._id}`, { as: 'meera' })).json.data;
   for (const status of ['checking_stock', 'sample_available', 'sample_ready']) {
-    const moved = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench' } : {}) } });
+    const moved = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status, ...(status === 'sample_ready' ? { noPhoto: true, noPhotoReason: 'No camera on the test bench', noDetails: true, noDetailsReason: 'Not recorded in this test' } : {}) } });
     assert.equal(moved.status, 200, moved.json.message);
   }
   const gone = await api(`/api/samples/${sample._id}/status`, { method: 'POST', as: 'meera', body: { status: 'dispatched', courier: 'DTDC', awbNumber: 'D12324354', dispatchedQuantity: 2, dispatchedColour: 'White' } });

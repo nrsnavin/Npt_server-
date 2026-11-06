@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import {
   listSamples, listStalledSamples, getSample, createSample, updateSample, assignSample,
-  setSampleStatus, closeSampleTask, setDispatchDetails, recordFeedback, resample, samplePipeline, sampleBoard, handOverSample,
+  setSampleStatus, closeSampleTask, setDispatchDetails, recordFeedback, resample, samplePipeline, sampleBoard, handOverSample, setHandoverPhoto,
   decideNotAvailable,
   linkEnquiry, linkCustomer,
   previewCustomerMessage, sendCustomerMessage, listCustomerMessages,
@@ -110,6 +110,8 @@ router.post(
   validate(handOverSchema),
   handOverSample
 );
+/* The hand-over's photo, taken afterwards — added, or put in place of the one it had. */
+router.put('/:id/hand-over/photo', requireAnyModule(['enquiries', 'write'], ['samples', 'write']), singleImage('photo'), setHandoverPhoto);
 /*
  * A request raised before its enquiry or its buyer existed joins them when they turn up.
  *
