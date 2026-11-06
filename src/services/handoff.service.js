@@ -210,6 +210,8 @@ async function moveStage(enquiry, to, { user, task, note, heldBy, marketing: sai
     enquiry.heldBy = heldBy || undefined;
     enquiry.unmarkModified('heldBy');
   }
+  /* The sales stage follows the task stage while the enquiry is in the sales stages [salesStage.service]. */
+  if (entry) await (await import('./salesStage.service.js')).syncSalesStatus(enquiry, { by: user?._id, note: task?.title ? `Follows the task: ${task.title}` : undefined });
 }
 
 const aboutOf = (enquiry) => {
