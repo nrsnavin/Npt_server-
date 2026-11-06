@@ -41,6 +41,8 @@ const taskQuerySchema = new mongoose.Schema(
     department: { type: String, enum: DEPARTMENT_KEYS },
     askedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     question: { type: String, trim: true, required: true, maxlength: 2000 },
+    /* What it is about, from the shared drop-down [services/querySubjects.service.js] — Dispatch, Accounts issue. */
+    subject: { type: String, trim: true, maxlength: 60, index: true },
 
     /* Who it was put to. Absent: nobody named could take it, so it is Admin's. */
     to: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

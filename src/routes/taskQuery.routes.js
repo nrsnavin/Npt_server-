@@ -1,10 +1,13 @@
 import { Router } from 'express';
-import { authenticate } from '../middleware/auth.js';
+import { adminOnly, authenticate } from '../middleware/auth.js';
+import { addSubject, editSubject, getSubjects } from '../controllers/querySubject.controller.js';
 import { validate } from '../middleware/validate.js';
 import {
   askEnquiryQuery, askTaskQuery, closeOneTaskQuery, listEnquiryQueries, listTaskQueries, replyTaskQuery, seeTaskQuery, taskQueryBoard,
 } from '../controllers/taskQuery.controller.js';
-import { taskQueryAskSchema, taskQueryCloseSchema, taskQueryReplySchema } from '../validators/taskQuery.schemas.js';
+import {
+  querySubjectEditSchema, querySubjectSchema, taskQueryAskSchema, taskQueryCloseSchema, taskQueryReplySchema,
+} from '../validators/taskQuery.schemas.js';
 
 /**
  * Queries on tasks and enquiries [services/taskQuery.service.js]. On no module grant: the teams
@@ -14,6 +17,10 @@ import { taskQueryAskSchema, taskQueryCloseSchema, taskQueryReplySchema } from '
 const router = Router();
 /* Signed in on each route, not `router.use` — this router is mounted at the root of /api, and must not stand in front of sign-in. */
 
+/* The subject drop-down, for both kinds of query: anybody adds, Admin renames or removes. */
+router.get('/query-subjects', authenticate, getSubjects);
+router.post('/query-subjects', authenticate, validate(querySubjectSchema), addSubject);
+router.patch('/query-subjects/:id', authenticate, adminOnly, validate(querySubjectEditSchema), editSubject);
 router.get('/task-queries', authenticate, taskQueryBoard);
 router.post('/task-queries/:id/reply', authenticate, validate(taskQueryReplySchema), replyTaskQuery);
 router.post('/task-queries/:id/close', authenticate, validate(taskQueryCloseSchema), closeOneTaskQuery);

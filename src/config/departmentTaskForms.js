@@ -453,7 +453,7 @@ export const TASK_FORMS = {
        * person, else Admin — opened as a query on the task [services/taskQuery.service.js]. The
        * answer comes back onto the task, which goes back to where it was.
        */
-      { key: 'clarification', label: 'Needs Clarification', comment: true, opensQuery: true },
+      { key: 'clarification', label: 'Needs Clarification', comment: true, opensQuery: true, querySubject: 'Sales order / PO details' },
       { key: 'prepared', label: 'SO Prepared', pdf: true, done: true, next: 'ask_edd' },
     ],
     resultLabel: 'Upload Sales Order PDF',

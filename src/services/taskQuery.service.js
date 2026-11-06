@@ -9,6 +9,7 @@ import { findDepartment } from '../config/modules.js';
 import { findHandoff } from '../config/handoffs.js';
 import { EVENTS, publish } from './events.service.js';
 import { canRead } from './access.service.js';
+import { ensureSubject } from './querySubjects.service.js';
 import { isOwnershipScoped, ownsRecord } from './ownership.service.js';
 
 /**
@@ -146,7 +147,7 @@ function cleanText(text, what = 'the question') {
 }
 
 /** Put a question on a task to the person who raised it. */
-export async function askOnTask(task, user, { question, workflow = null }) {
+export async function askOnTask(task, user, { question, subject = null, workflow = null }) {
   const { mayWorkOnHandoff } = await import('./handoff.service.js');
   if (!mayWorkOnHandoff(user, task)) throw ApiError.forbidden('Only the team working this task can ask on it');
   if (task.completed) fail('This task is closed — ask on the enquiry instead');
@@ -154,7 +155,10 @@ export async function askOnTask(task, user, { question, workflow = null }) {
   const enquiry = task.enquiry ? await Enquiry.findById(idOf(task.enquiry)).select('assignedTo customer number').lean() : null;
   const to = await recipientFor({ task, enquiry, asker: user });
   if (!to && isManagement(user)) fail('There is nobody else to ask on this task — it was raised by you or your team');
+  /* A new subject joins the drop-down for everyone. */
+  const filed = await ensureSubject(subject, user);
   const query = await TaskQuery.create({
+    subject: filed || undefined,
     task: task._id, enquiry: enquiry?._id, customer: task.customer?._id || task.customer || enquiry?.customer || undefined,
     order: task.order?._id || task.order || undefined,
     department: task.department, askedBy: user._id, question: text, to: to?._id,
@@ -175,7 +179,7 @@ export async function askOnTask(task, user, { question, workflow = null }) {
 }
 
 /** Put a question on the enquiry itself to its marketing person — or, from them, to Admin. */
-export async function askOnEnquiry(enquiry, user, { question }) {
+export async function askOnEnquiry(enquiry, user, { question, subject = null }) {
   if (!(await mayReadEnquiry(enquiry, user))) throw ApiError.notFound('Enquiry not found');
   const text = cleanText(question);
   const owner = idOf(enquiry.assignedTo) === idOf(user._id) ? null : await activeUser(enquiry.assignedTo);
@@ -184,7 +188,9 @@ export async function askOnEnquiry(enquiry, user, { question }) {
   const holding = await Todo.findOne({ enquiry: enquiry._id, completed: false, department: { $exists: true, $ne: null } })
     .sort({ createdAt: -1 }).select('department').lean();
   const department = holding && inDepartment(user, holding.department) ? holding.department : undefined;
+  const filed = await ensureSubject(subject, user);
   const query = await TaskQuery.create({
+    subject: filed || undefined,
     enquiry: enquiry._id, customer: enquiry.customer?._id || enquiry.customer || undefined,
     department, askedBy: user._id, question: text, to: owner?._id,
     messages: [{ body: text, by: user._id, side: 'ask', at: new Date() }],
@@ -200,7 +206,7 @@ export async function askOnEnquiry(enquiry, user, { question }) {
 export async function askFromWorkflow(task, user, step, text) {
   const open = await TaskQuery.findOne({ task: task._id, status: 'open', 'workflow.status': step.key }).sort({ createdAt: -1 }).lean();
   const from = task.status && task.status !== step.key ? task.status : open?.workflow?.from;
-  return askOnTask(task, user, { question: text, workflow: { status: step.key, from } });
+  return askOnTask(task, user, { question: text, subject: step.querySubject || null, workflow: { status: step.key, from } });
 }
 
 /* ------------------------------ Answering ------------------------------ */
@@ -364,15 +370,15 @@ export async function answersFor(user) {
 }
 
 /** The Task queries screen: for me, asked by me or my team, and (Admin) every open one. */
-export async function queryBoard(user, { show = 'open' } = {}) {
-  const live = show === 'all' ? {} : { status: { $ne: 'closed' } };
+export async function queryBoard(user, { show = 'open', subject = '' } = {}) {
+  const live = { ...(show === 'all' ? {} : { status: { $ne: 'closed' } }), ...(subject ? { subject } : {}) };
   const mine = [{ askedBy: user._id }];
   const departments = departmentsOf(user);
   if (departments.length) mine.push({ department: { $in: departments } });
   const [forMe, asked, everyOpen] = await Promise.all([
     TaskQuery.find({ ...live, $or: [{ to: user._id }, ...(isManagement(user) ? [{ to: null }] : [])] }).sort({ updatedAt: -1 }).limit(100).populate(QUERY_POPULATE),
     TaskQuery.find({ ...live, $or: mine }).sort({ updatedAt: -1 }).limit(100).populate(QUERY_POPULATE),
-    isManagement(user) ? TaskQuery.find({ status: 'open' }).sort({ createdAt: 1 }).limit(200).populate(QUERY_POPULATE) : [],
+    isManagement(user) ? TaskQuery.find({ status: 'open', ...(subject ? { subject } : {}) }).sort({ createdAt: 1 }).limit(200).populate(QUERY_POPULATE) : [],
   ]);
   return { forMe, asked, everyOpen };
 }

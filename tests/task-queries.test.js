@@ -162,3 +162,47 @@ test('signing in still works with the queries routes mounted at the root', async
   assert.equal(login.status, 200, login.json.message);
   assert.equal((await api('/api/task-queries')).status, 401);
 });
+
+test('query subjects: a shared drop-down — the starting list, anybody adds, Admin renames and removes', async () => {
+  const list = await api('/api/query-subjects', { as: 'ravi' });
+  assert.equal(list.status, 200, list.json.message);
+  const names = list.json.data.map((row) => row.name);
+  for (const name of ['Accounts issue', 'Sample', 'Dispatch', 'Production status', 'PP sample', 'Other']) assert.ok(names.includes(name), name);
+  assert.equal(names[0], 'Accounts issue', 'the starting subjects in their order');
+
+  /* A new subject, typed with a query, joins the list for everyone — once, whatever its case. */
+  const given = await teamTask('admin', { kind: 'invoice_dispatch', note: 'Send the lot', customer: customer._id, brief: { schedule: 'Tomorrow Dispatch' } });
+  const task = given.json.data.task || given.json.data;
+  const asked = await api(`/api/workspace/todos/${task._id}/queries`, { method: 'POST', as: 'ravi', body: { question: 'Can we use the buyer’s cartons?', subject: 'Carton  branding' } });
+  assert.equal(asked.status, 201, asked.json.message);
+  assert.equal(asked.json.data.subject, 'Carton branding');
+  await api(`/api/workspace/todos/${task._id}/queries`, { method: 'POST', as: 'ravi', body: { question: 'And the carton size?', subject: 'carton branding' } });
+  const after = (await api('/api/query-subjects', { as: 'kavi' })).json.data.filter((row) => row.name.toLowerCase() === 'carton branding');
+  assert.equal(after.length, 1, 'one subject, for everyone');
+  assert.equal((await api('/api/query-subjects', { method: 'POST', as: 'kavi', body: { name: 'Diwali rush' } })).status, 201);
+
+  /* The board filters by subject. */
+  const board = (await api('/api/task-queries?subject=Carton%20branding', { as: 'ravi' })).json.data;
+  assert.equal(board.asked.length, 2);
+  assert.ok(board.asked.every((row) => row.subject === 'Carton branding'));
+
+  /* Admin renames and removes; nobody else does. */
+  const row = (await api('/api/query-subjects', { as: 'admin' })).json.data.find((entry) => entry.name === 'Diwali rush');
+  assert.equal((await api(`/api/query-subjects/${row._id}`, { method: 'PATCH', as: 'kavi', body: { hidden: true } })).status, 403);
+  assert.equal((await api(`/api/query-subjects/${row._id}`, { method: 'PATCH', as: 'admin', body: { name: 'Festival rush' } })).json.data.name, 'Festival rush');
+  assert.equal((await api(`/api/query-subjects/${row._id}`, { method: 'PATCH', as: 'admin', body: { hidden: true } })).status, 200);
+  assert.ok(!(await api('/api/query-subjects', { as: 'kavi' })).json.data.some((entry) => entry.name === 'Festival rush'), 'off the list');
+  const clash = await api(`/api/query-subjects/${row._id}`, { method: 'PATCH', as: 'admin', body: { name: 'dispatch' } });
+  assert.equal(clash.status, 409);
+
+  /* The SO team's Needs Clarification files its query under Sales order / PO details. */
+  const { buttons } = (await api('/api/handoffs', { as: 'priya' })).json.data;
+  assert.equal(buttons.find((button) => button.key === 'po_so').form.statuses.find((entry) => entry.key === 'clarification').querySubject, 'Sales order / PO details');
+});
+
+test('a buyer’s query thread takes its subject from the same list, and a new one joins it', async () => {
+  const created = await api('/api/queries', { method: 'POST', as: 'admin', body: { customer: customer._id, subject: 'Rate revision', question: 'Can we revise the rate from next month?', participants: [{ department: 'marketing' }] } });
+  assert.equal(created.status, 201, created.json.message);
+  assert.equal(created.json.data.subject, 'Rate revision');
+  assert.ok((await api('/api/query-subjects', { as: 'nandhini' })).json.data.some((row) => row.name === 'Rate revision'));
+});

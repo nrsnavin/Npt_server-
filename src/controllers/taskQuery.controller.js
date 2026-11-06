@@ -46,7 +46,7 @@ export const listTaskQueries = asyncHandler(async (req, res) => {
 });
 
 export const askTaskQuery = asyncHandler(transactional(async (req, res) => {
-  const query = await askOnTask(await taskFor(req), req.user, { question: req.body.question });
+  const query = await askOnTask(await taskFor(req), req.user, { question: req.body.question, subject: req.body.subject });
   await query.populate(QUERY_POPULATE);
   res.status(201).json({ success: true, data: (await withRights([query], req.user))[0] });
 }));
@@ -58,13 +58,13 @@ export const listEnquiryQueries = asyncHandler(async (req, res) => {
 });
 
 export const askEnquiryQuery = asyncHandler(transactional(async (req, res) => {
-  const query = await askOnEnquiry(await enquiryFor(req), req.user, { question: req.body.question });
+  const query = await askOnEnquiry(await enquiryFor(req), req.user, { question: req.body.question, subject: req.body.subject });
   await query.populate(QUERY_POPULATE);
   res.status(201).json({ success: true, data: (await withRights([query], req.user))[0] });
 }));
 
 export const taskQueryBoard = asyncHandler(async (req, res) => {
-  const { forMe, asked, everyOpen } = await queryBoard(req.user, { show: req.query.show });
+  const { forMe, asked, everyOpen } = await queryBoard(req.user, { show: req.query.show, subject: typeof req.query.subject === 'string' ? req.query.subject.slice(0, 60) : '' });
   res.json({
     success: true,
     data: {
