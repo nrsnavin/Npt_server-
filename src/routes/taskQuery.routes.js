@@ -3,7 +3,7 @@ import { adminOnly, authenticate } from '../middleware/auth.js';
 import { addSubject, editSubject, getSubjects } from '../controllers/querySubject.controller.js';
 import { validate } from '../middleware/validate.js';
 import {
-  askEnquiryQuery, askTaskQuery, closeOneTaskQuery, listEnquiryQueries, listTaskQueries, replyTaskQuery, seeTaskQuery, taskQueryBoard,
+  askEnquiryQuery, askTaskQuery, closeOneTaskQuery, listEnquiryQueries, listTaskQueries, replyOnOneTask, replyTaskQuery, seeTaskQuery, taskQueryBoard,
 } from '../controllers/taskQuery.controller.js';
 import {
   querySubjectEditSchema, querySubjectSchema, taskQueryAskSchema, taskQueryCloseSchema, taskQueryReplySchema,
@@ -27,6 +27,7 @@ router.post('/task-queries/:id/close', authenticate, validate(taskQueryCloseSche
 router.post('/task-queries/:id/seen', authenticate, seeTaskQuery);
 router.get('/workspace/todos/:id/queries', authenticate, listTaskQueries);
 router.post('/workspace/todos/:id/queries', authenticate, validate(taskQueryAskSchema), askTaskQuery);
+router.post('/workspace/todos/:id/reply', authenticate, validate(taskQueryReplySchema), replyOnOneTask);
 router.get('/enquiries/:id/queries', authenticate, listEnquiryQueries);
 router.post('/enquiries/:id/queries', authenticate, validate(taskQueryAskSchema), askEnquiryQuery);
 

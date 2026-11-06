@@ -87,7 +87,7 @@ test('a team asks on a task Admin gave it: the query goes to Admin by name, the 
 
   const forAdmin = await attention('admin');
   assert.ok(forAdmin.queries.some((row) => row._id === asked.json.data._id), 'Admin sees it under Needs your action');
-  assert.equal((await reply(asked.json.data._id, 'nandhini', 'KPN')).status, 404, 'a marketing person with nothing to do with it does not answer');
+  assert.equal((await reply(asked.json.data._id, 'kavi', 'KPN')).status, 404, 'a marketing person with nothing to do with it does not answer');
 
   const answered = await reply(asked.json.data._id, 'admin', 'KPN — they have the rate card');
   assert.equal(answered.status, 200, answered.json.message);
@@ -205,4 +205,72 @@ test('a buyer’s query thread takes its subject from the same list, and a new o
   assert.equal(created.status, 201, created.json.message);
   assert.equal(created.json.data.subject, 'Rate revision');
   assert.ok((await api('/api/query-subjects', { as: 'nandhini' })).json.data.some((row) => row.name === 'Rate revision'));
+});
+
+const replyOn = (taskId, as, body) => api(`/api/workspace/todos/${taskId}/reply`, { method: 'POST', as, body: { body } });
+
+test('Admin and the buyer’s marketing person reply on a task from its timeline — answering its open query, or writing to the team', async () => {
+  const given = await teamTask('admin', { kind: 'invoice_dispatch', note: 'Send the lot', customer: customer._id, brief: { schedule: 'Tomorrow Dispatch' } });
+  assert.equal(given.status, 201, given.json.message);
+  const task = given.json.data.task || given.json.data;
+
+  /* Who may reply: Admin and the buyer's marketing person — not the team working it, not another marketing person. */
+  assert.equal((await api(`/api/workspace/todos/${task._id}/queries`, { as: 'nandhini' })).json.mayReply, true, 'the buyer’s marketing person');
+  assert.equal((await api(`/api/workspace/todos/${task._id}/queries`, { as: 'admin' })).json.mayReply, true);
+  assert.equal((await api(`/api/workspace/todos/${task._id}/queries`, { as: 'ravi' })).json.mayReply, false, 'the team asks, it does not reply');
+  assert.equal((await api(`/api/workspace/todos/${task._id}/queries`, { as: 'kavi' })).status, 404);
+  assert.equal((await replyOn(task._id, 'kavi', 'Pack in 50s')).status, 404);
+  assert.equal((await replyOn(task._id, 'ravi', 'Pack in 50s')).status, 403);
+  assert.equal((await replyOn(task._id, 'nandhini', 'ok')).status, 400, 'a reply has a few words');
+
+  /* No question waiting: the reply goes onto the task for the team. */
+  const wrote = await replyOn(task._id, 'nandhini', 'Pack in bundles of 50, the buyer asked');
+  assert.equal(wrote.status, 200, wrote.json.message);
+  assert.equal(wrote.json.data.replied, true);
+  let back = await Todo.findById(task._id);
+  assert.equal(back.updates.at(-1).kind, 'reply');
+  assert.equal(back.updates.at(-1).statusLabel, 'Reply from marketing');
+  assert.equal(back.updates.at(-1).text, 'Pack in bundles of 50, the buyer asked');
+  assert.equal(back.attention.kind, 'reply');
+  assert.ok((await attention('ravi')).replies.some((row) => row._id === task._id), 'on Despatch’s Replies');
+
+  /* A question waiting — put to Admin, who gave the task — is answered by the buyer’s marketing person from the same box. */
+  const asked = await ask(task._id, 'ravi', 'Bundles of 50 or 100 for the big model?');
+  assert.equal(asked.json.data.to.name, 'Navin R');
+  const listed = (await api(`/api/workspace/todos/${task._id}/queries`, { as: 'nandhini' })).json.data;
+  assert.equal(listed.find((row) => row._id === asked.json.data._id).mayAnswer, true, 'the buyer’s marketing person answers it too');
+  const answered = await replyOn(task._id, 'nandhini', '50 for every model');
+  assert.equal(answered.status, 200, answered.json.message);
+  assert.equal(answered.json.data.answered, asked.json.data._id);
+  const query = await TaskQuery.findById(asked.json.data._id);
+  assert.equal(query.status, 'answered');
+  assert.equal(String(query.answeredBy), ids.nandhini);
+  back = await Todo.findById(task._id);
+  assert.match(back.updates.at(-1).note, /Reply from Nandhini S: 50 for every model/);
+});
+
+test('the SO team’s Needs Clarification held from before queries: a reply on the task answers it and puts the task back', async () => {
+  const fresh = (await api('/api/enquiries', {
+    method: 'POST', as: 'nandhini',
+    body: { customer: customer._id, items: [{ modelNumber: 'NPT-412', colour: 'Red' }], nextAction: 'Call', nextFollowUpDate: new Date(Date.now() + 3 * 86400000).toISOString() },
+  })).json.data;
+  const sent = await api(`/api/enquiries/${fresh._id}/handoffs`, {
+    method: 'POST', as: 'nandhini',
+    body: { kind: 'po_so', note: 'PO in', brief: { contactPerson: 'Sasi', mobile: '9876543210', paymentTerms: '100% advance', items: [{ model: 'NPT-412', material: 'PP Red', quantity: '5000', price: '2.1' }] } },
+  });
+  assert.equal(sent.status, 201, sent.json.message);
+  const task = await Todo.findOne({ enquiry: fresh._id, kind: 'po_so' });
+  assert.equal((await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'priya', body: { status: 'preparing', note: 'On it' } })).status, 200);
+  const held = await api(`/api/workspace/todos/${task._id}/status`, { method: 'POST', as: 'priya', body: { status: 'clarification', note: 'Which GST number goes on the SO?' } });
+  assert.equal(held.status, 200, held.json.message);
+  /* As it was before queries: held at Needs Clarification, no query behind it. */
+  await TaskQuery.deleteMany({ task: task._id });
+
+  const wrote = await replyOn(task._id, 'nandhini', 'The Tiruppur one — 33AABCS1429P1ZQ');
+  assert.equal(wrote.status, 200, wrote.json.message);
+  const back = await Todo.findById(task._id);
+  assert.equal(back.status, 'preparing', 'back where it was');
+  assert.equal(back.clarifications.at(-1).answer, 'The Tiruppur one — 33AABCS1429P1ZQ');
+  const read = await api(`/api/enquiries/${fresh._id}`, { as: 'nandhini' });
+  assert.equal(read.json.data.clarifications.at(-1).answer, 'The Tiruppur one — 33AABCS1429P1ZQ', 'kept on the enquiry');
 });
