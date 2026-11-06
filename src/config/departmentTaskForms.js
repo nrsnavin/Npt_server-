@@ -140,6 +140,16 @@ const SO_COLUMNS = [
   { key: 'edd', label: 'EDD', type: 'date' },
 ];
 
+/** A small order's lines: each model as the buyer wants it, and how many. */
+const SMALL_ORDER_COLUMNS = [
+  { key: 'model', label: 'Model', required: true, register: 'moulds' },
+  { key: 'material', label: 'Material & colour', register: 'materials' },
+  { key: 'hook', label: 'Hook', register: 'hooks' },
+  { key: 'clip', label: 'Clip', register: 'clips' },
+  { key: 'print', label: 'Print', register: 'prints' },
+  { key: 'quantity', label: 'Qty (pcs)', type: 'number', required: true },
+];
+
 /** A PP sample's lines: each model as the order has it, and how many pieces of the sample [services/ppSample.service.js]. */
 const PP_COLUMNS = [
   { key: 'model', label: 'Model', required: true, register: 'moulds' },
@@ -763,6 +773,23 @@ export const TASK_FORMS = {
       { key: 'corrected', label: 'Corrected' },
       { key: 'closed', label: 'Task Closed', done: true },
     ],
+  },
+  /* A small order: Dispatch checks the stock per model [services/smallOrder.service.js]. */
+  small_order: {
+    team: 'Dispatch Team',
+    asks: [
+      { key: 'items', label: 'Models and quantities', section: 'Small order', type: 'items', add: '+ Add Model', columns: SMALL_ORDER_COLUMNS, required: true },
+      { key: 'deliveryNote', label: 'Delivery / packing instructions', placeholder: 'Where it goes, how it is packed' },
+    ],
+    note: { label: 'Note for Dispatch', placeholder: 'Small order — check the godown and send what is there' },
+    statuses: [
+      { key: 'received', label: 'Check Stock' },
+      /* Reached only through the stock check, which raises Dispatch and Production [smallOrder.service `checkStock`]. */
+      { key: 'checked', label: 'Stock Checked', done: true, byApp: true, byAppSays: 'Say what is in stock with Check stock — it sends what is there and asks Production for the rest' },
+    ],
+    taskActions: ['escalate'],
+    /* The stock check on the task [web: StockCheckDialog]. */
+    stockCheck: true,
   },
   /* The PP sample: Production makes it [services/ppSample.service.js]. */
   pp_sample: {

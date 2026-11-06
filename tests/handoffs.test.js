@@ -135,7 +135,7 @@ test('the buttons and the stages come from the server', async () => {
   const drawn = json.data.buttons.filter((button) => !button.hidden);
   assert.deepEqual(drawn.map((button) => button.label), [
     'Photos Sent', 'Create Quotation', 'Sample Request', 'Price Negotiation', 'PO & SO', 'Ask EDD',
-    'Ask Assembly EDD', 'Ask Printing', 'Mould Issue', 'Team Payment Follow-up', 'Invoice & Dispatch', 'LR Copy',
+    'Ask Assembly EDD', 'Ask Printing', 'Mould Issue', 'Team Payment Follow-up', 'Invoice & Dispatch', 'Small Order — Check Stock', 'LR Copy',
     'Quality Check', 'Quality Issue', 'GST / Invoice Audit', 'A/C Clarify', 'PRT Recovery', 'My Payment Follow-up', 'Task Closed',
   ]);
   /* The form a Sample Request asks whoever raises it: a row per model [config/departmentTaskForms.js]. */

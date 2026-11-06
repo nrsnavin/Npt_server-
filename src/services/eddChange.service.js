@@ -81,19 +81,27 @@ async function teamPeople(change) {
   return [...members.map((row) => idOf(row._id)), idOf(change.requestedBy)];
 }
 
-async function tell(change, recipients, user, { label, note }) {
+/*
+ * `notice: false` — an open ask or a reply already sits under "Needs your action" as its own card
+ * [handoff.service `attentionFor`]; only the phone is rung, so it is not said twice on the screen.
+ */
+async function tell(change, recipients, user, { label, note, notice = true }) {
   const ids = [...new Set(recipients.filter(Boolean).map(String))].filter((id) => id !== idOf(user._id));
   if (!ids.length) return;
+  if (notice) await noticeTo(change, ids, user, { label, note });
+  const link = change.enquiry ? `/enquiries/${idOf(change.enquiry)}` : '/departments/mine';
+  afterCommit(() => import('./push.service.js')
+    .then(({ sendPush }) => sendPush(ids, { title: label, body: String(note || '').slice(0, 200), link, kind: 'edd-change' }))
+    .catch((error) => console.error(`[edd-change] push not sent: ${error.message}`)));
+}
+
+async function noticeTo(change, ids, user, { label, note }) {
   const { default: TaskNotice } = await import('../models/TaskNotice.js');
   await TaskNotice.insertMany(ids.map((recipient) => ({
     recipient, task: idOf(change.task), enquiry: change.enquiry ? idOf(change.enquiry) : undefined, customer: change.customer ? idOf(change.customer) : undefined,
     department: change.department, kind: 'edd_change', status: 'edd_change', statusLabel: label, note: String(note || '').slice(0, 2000),
     by: user._id, at: new Date(), ...(change.enquiry ? {} : { link: '/departments/mine' }),
   })));
-  const link = change.enquiry ? `/enquiries/${idOf(change.enquiry)}` : '/departments/mine';
-  afterCommit(() => import('./push.service.js')
-    .then(({ sendPush }) => sendPush(ids, { title: label, body: String(note || '').slice(0, 200), link, kind: 'edd-change' }))
-    .catch((error) => console.error(`[edd-change] push not sent: ${error.message}`)));
 }
 
 /** A line on the task that asked, where its history is. */
@@ -137,6 +145,7 @@ export async function requestEddChange(task, user, { date, reason, model }) {
   await tell(change, [...(await admins()), ...(await officeOf(change))], user, {
     label: `${departmentName(task.department)} asks to change the EDD${enquiry?.number ? ` — ${enquiry.number}` : ''}`,
     note: `${what} — ${user.name}: ${why}`,
+    notice: false,
   });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   return change;
@@ -165,7 +174,7 @@ export async function replyEddChange(change, user, { body, date }) {
   await change.save();
   await noteOnTask(change, user, side === 'office' ? 'EDD change — reply' : 'EDD change — the team answers', `${said}${day ? ` (${prettyDay(day)})` : ''}`);
   const to = side === 'office' ? await teamPeople(change) : [...(await admins()), ...(await officeOf(change))];
-  await tell(change, to, user, { label: side === 'office' ? `${user.name} replied on your EDD change` : `${departmentName(change.department)} answered on the EDD change`, note: `${said}${day ? ` — ${prettyDay(day)}` : ''}` });
+  await tell(change, to, user, { label: side === 'office' ? `${user.name} replied on your EDD change` : `${departmentName(change.department)} answered on the EDD change`, note: `${said}${day ? ` — ${prettyDay(day)}` : ''}`, notice: false });
   return change;
 }
 

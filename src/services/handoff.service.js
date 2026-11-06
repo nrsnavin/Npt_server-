@@ -4971,7 +4971,27 @@ async function unroutedModels(start, { id = null, onTask = null } = {}) {
   });
 }
 
-export async function modelReadiness(enquiryId, { task: onTask = null } = {}) {
+/**
+ * Which models are ready to go, and which are still with a team [modelReadinessFromTeams] — and
+ * the models a small order found in the godown, which are ready without any team
+ * [smallOrder.service `checkStock`]: their pieces are on the shelf, so Dispatch can send them now.
+ */
+export async function modelReadiness(enquiryId, options = {}) {
+  const base = await modelReadinessFromTeams(enquiryId, options);
+  const id = enquiryId?._id || enquiryId || null;
+  const where = id ? { enquiry: id } : options.task ? jobFilter(options.task) : null;
+  if (!where) return base;
+  const checks = await Todo.find({ ...where, kind: 'small_order', 'brief.stockCheck': { $exists: true } }).select('brief.stockCheck').lean();
+  const stocked = new Map();
+  for (const check of checks) for (const row of check.brief?.stockCheck || []) if (row.available > 0) stocked.set(String(row.model).trim().toLowerCase(), row.model);
+  if (!stocked.size) return base;
+  const key = (model) => String(model || '').trim().toLowerCase();
+  const ready = [...(base.ready || [])];
+  for (const [name, model] of stocked) if (!ready.some((entry) => key(entry) === name)) ready.push(model);
+  return { ...base, ready, waiting: (base.waiting || []).filter((row) => !stocked.has(key(row.model))) };
+}
+
+async function modelReadinessFromTeams(enquiryId, { task: onTask = null } = {}) {
   const id = enquiryId?._id || enquiryId || null;
   /* An enquiry's job, or — raised from the customer — the team job's chain [journey.service `jobFilter`]. */
   const where = id ? { enquiry: id } : onTask ? jobFilter(onTask) : null;

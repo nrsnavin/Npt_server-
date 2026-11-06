@@ -148,6 +148,15 @@ const BUTTONS = [
     opens: 'dispatches',
   },
   {
+    /*
+     * A small order that may not need the press [services/smallOrder.service.js]: Dispatch checks
+     * the godown, model by model — what is in stock goes out as a Dispatch request, what is short
+     * goes to Production. No PO & SO step. Raised on the enquiry, or as a team task.
+     */
+    key: 'small_order', label: 'Small Order — Check Stock', department: 'despatch', stage: 'invoice_dispatch', quietDone: true,
+    hint: 'A small quantity: Dispatch checks the stock — sends what is there, Production makes the rest',
+  },
+  {
     /* Reception's: the LR copy and the dispatch details once the goods have gone. */
     key: 'lr_copy', label: 'LR Copy', department: 'reception', stage: 'lr_copy',
     /*
