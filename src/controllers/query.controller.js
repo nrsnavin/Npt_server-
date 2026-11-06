@@ -348,8 +348,8 @@ export const queryUnread = asyncHandler(async (req, res) => {
   const threads = await Query.find({
     $and: [...(seesEveryQuery(req.user) ? [] : [roomFilter(req.user)]), { status: { $ne: 'closed' } }],
   })
-    .select('number subject isUrgent status question raisedBy participants messages createdAt updatedAt')
-    .populate([{ path: 'raisedBy', select: 'name' }, { path: 'messages.by', select: 'name' }])
+    .select('number subject isUrgent status question raisedBy participants messages customer createdAt updatedAt')
+    .populate([{ path: 'raisedBy', select: 'name' }, { path: 'messages.by', select: 'name' }, { path: 'customer', select: 'name' }])
     .sort({ updatedAt: -1 })
     .limit(200);
   const cursors = new Map(
@@ -362,6 +362,8 @@ export const queryUnread = asyncHandler(async (req, res) => {
     return {
       _id: query._id,
       number: query.number,
+      /* The buyer first on every row of the panel, in the fluorescent tone [web: QueriesPanel]. */
+      customer: query.customer?.name ? { _id: query.customer._id, name: query.customer.name } : null,
       subject: query.subject,
       isUrgent: Boolean(query.isUrgent),
       unread: unreadFor(query, cursor, me),
