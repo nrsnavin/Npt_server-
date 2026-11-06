@@ -14,6 +14,7 @@ import recordsRoutes from './records.routes.js';
 import fieldRoutes from './field.routes.js';
 import taskQueryRoutes from './taskQuery.routes.js';
 import ppSampleRoutes from './ppSample.routes.js';
+import eddChangeRoutes from './eddChange.routes.js';
 import { getPlant, getSecurity, putFloorPlanning, putHandoverLead, putPlant, putSecurity } from '../controllers/settings.controller.js';
 import { floorPlanningSchema, handoverLeadSchema, plantCalendarSchema, securityPolicySchema } from '../validators/schemas.js';
 import { downloadAttachment } from '../controllers/sampleLog.controller.js';
@@ -34,6 +35,8 @@ const router = Router();
 router.use(taskQueryRoutes);
 /* The PP sample and its DCs [routes/ppSample.routes.js]. */
 router.use(ppSampleRoutes);
+/* EDD change requests from Production, Printing and Assembly [routes/eddChange.routes.js]. */
+router.use(eddChangeRoutes);
 router.use('/auth', authRoutes);
 router.use('/users', userRoutes);
 router.use('/workspace', workspaceRoutes);

@@ -3646,8 +3646,10 @@ export async function attentionFor(user, department) {
   /* Queries put to this person (Admin: and to nobody), and answers to their own the task's Replies do not carry [taskQuery.service]. */
   const { questionsFor, answersFor } = await import('./taskQuery.service.js');
   const [queries, answers] = await Promise.all([questionsFor(user), answersFor(user)]);
+  /* EDD change requests waiting on this person — the office's to answer, or the team's to reply to [eddChange.service]. */
+  const { forOffice: eddChanges, forTeam: eddReplies } = await (await import('./eddChange.service.js')).eddChangesFor(user);
   /* And what departments did on this person's enquiries — Admin's, every enquiry's. */
-  return { questions, replies, queries, answers, notices: await noticesFor(user) };
+  return { questions, replies, queries, answers, eddChanges, eddReplies, notices: await noticesFor(user) };
 }
 
 /** The department corrects what it was told — the questions marked `editable` (contact details). */
