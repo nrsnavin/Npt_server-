@@ -73,6 +73,7 @@ test('a new query rings Production on its phone, and waits unread on its panel',
   assert.equal(siva.unread, 1);
   assert.equal(siva.threads, 1);
   assert.equal(siva.rows[0].number, made.json.data.number);
+  assert.ok(siva.rows[0].customer?.name, 'the buyer is on the row, for the panel to lead with');
   assert.ok(siva.latestAt);
   assert.equal((await unread('nandhini')).unread, 0, 'the asker has read their own question');
   assert.equal((await unread('kavitha')).rows.length, 0, 'not Dispatch’s query');
