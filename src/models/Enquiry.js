@@ -408,6 +408,8 @@ const enquirySchema = new mongoose.Schema(
         kind: { type: String, trim: true },
         department: { type: String, trim: true },
         task: { type: mongoose.Schema.Types.ObjectId, ref: 'Todo' },
+        /* The query it was asked and answered in [models/TaskQuery.js]; absent on the old SO Clarification tasks. */
+        query: { type: mongoose.Schema.Types.ObjectId, ref: 'TaskQuery' },
         question: { type: String, trim: true, maxlength: 2000 },
         answer: { type: String, trim: true, maxlength: 2000 },
         askedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

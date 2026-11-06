@@ -448,7 +448,12 @@ export const TASK_FORMS = {
     statuses: [
       { key: 'waiting', label: 'SO Waiting' },
       { key: 'preparing', label: 'SO Preparing' },
-      { key: 'clarification', label: 'Needs Clarification', comment: true, raises: 'so_clarification' },
+      /*
+       * A question for whoever raised the request — its creator, else the enquiry's marketing
+       * person, else Admin — opened as a query on the task [services/taskQuery.service.js]. The
+       * answer comes back onto the task, which goes back to where it was.
+       */
+      { key: 'clarification', label: 'Needs Clarification', comment: true, opensQuery: true },
       { key: 'prepared', label: 'SO Prepared', pdf: true, done: true, next: 'ask_edd' },
     ],
     resultLabel: 'Upload Sales Order PDF',

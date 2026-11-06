@@ -124,6 +124,21 @@ async function questionOf(task) {
   /* Shown while the request waits on the answer, and after it comes until the team says Got it. */
   if (task.status !== 'clarification' && task.attention?.kind !== 'reply') return null;
   const asked = [...(task.statusHistory || [])].reverse().find((entry) => entry.status === 'clarification');
+  /* Asked as a query to whoever raised the request [taskQuery.service] — the old SO Clarification task below, before. */
+  const { default: TaskQuery } = await import('../models/TaskQuery.js');
+  const query = await TaskQuery.findOne({ task: task._id, 'workflow.status': 'clarification' }).sort({ createdAt: -1 })
+    .populate('to', 'name').lean();
+  if (query) {
+    const reply = task.attention?.kind === 'reply' ? task.attention : null;
+    const last = [...(query.messages || [])].reverse().find((message) => message.side === 'answer');
+    return {
+      question: query.question,
+      askedAt: query.createdAt,
+      queryId: query._id,
+      answer: reply ? { text: reply.note, at: reply.at } : last && query.status !== 'open' ? { text: last.body, at: last.at } : null,
+      waitingOn: !reply && query.status === 'open' ? { name: query.to?.name || 'Admin', since: query.createdAt } : null,
+    };
+  }
   const child = await Todo.findOne({ kind: 'so_clarification', parentTask: task._id }).sort({ createdAt: -1 })
     .select('completed completedAt outcome user createdAt').populate('user', 'name').lean();
   const reply = task.attention?.kind === 'reply' ? task.attention : null;

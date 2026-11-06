@@ -726,9 +726,11 @@ test('a team task’s enquiry-only steps say so; the rest finish normally', asyn
   assert.equal(answered.status, 200, answered.json.message);
 
   const so = await teamTask('nandhini', { kind: 'po_so', note: 'Sales order for the walk-in buyer', brief: { paymentTerms: 'Credit — nothing before dispatch', productionConfirmed: true } });
+  /* No enquiry, but somebody gave the task: Needs Clarification asks them, as a query [taskQuery.service]. */
   const clarify = await api(`/api/workspace/todos/${so.json.data.task._id}/status`, { method: 'POST', as: 'admin', body: { status: 'clarification', note: 'Which GSTIN?' } });
-  assert.equal(clarify.status, 400);
-  assert.match(clarify.json.message, /no enquiry/);
+  assert.equal(clarify.status, 200, clarify.json.message);
+  const query = await mongoose.connection.collection('taskqueries').findOne({ task: new mongoose.Types.ObjectId(so.json.data.task._id) });
+  assert.equal(query.question, 'Which GSTIN?');
 
   const closed = await api(`/api/workspace/todos/${id}/status`, { method: 'POST', as: 'ravi', body: { status: 'closed', note: 'Handed to the courier' } });
   assert.equal(closed.status, 200, closed.json.message);

@@ -1404,6 +1404,8 @@ export async function completeHandoff(task, user, { note, fields = {}, next, sys
   await task.save();
   /* A field visit still planned on it is cancelled, and the visitor told [fieldVisit.service]. */
   await (await import('./fieldVisit.service.js')).cancelVisitsOfTask(task._id, user, 'Task closed');
+  /* A question still open on it holds nothing up now [taskQuery.service]. */
+  await (await import('./taskQuery.service.js')).closeQueriesOfTask(task, user, 'task closed');
 
   /* The sample collected at the desk is with the buyer now; the record says who took it. */
   if (task.kind === 'sample_collect') await collectedAtDesk(task, user, kept);
@@ -1682,6 +1684,8 @@ export async function setTaskStatus(task, user, { status, note, date, dates, fie
     }];
     task.attention = undefined;
     await task.save();
+    /* Needs Clarification again, with another question: another query, the task still held for it. */
+    if (step.opensQuery && text) await (await import('./taskQuery.service.js')).askFromWorkflow(task, user, step, text);
     if (form.notifyStatus) await noticeStatus(task, user, { step: { ...step, label: againLabel }, note: text });
     if (step.readyForDispatch) await tellDispatchReady(task, user, { ...step, label: againLabel }, text, { partial });
     await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
@@ -1707,6 +1711,8 @@ export async function setTaskStatus(task, user, { status, note, date, dates, fie
     : step.label;
 
   if (step.raises) await raiseFromStatus(task, user, step, text, asked);
+  /* Needs Clarification: a query to whoever raised the task, its answer back here [taskQuery.service]. */
+  if (step.opensQuery) await (await import('./taskQuery.service.js')).askFromWorkflow(task, user, step, text);
   /* The sample handed at the desk: written onto the sample first, so a refusal leaves the task where it was. */
   if (step.handsOver) await handedAtDesk(task, user, asked);
   /* Payment Collection confirms the money in: the receipt first, so a refusal (more than owed) leaves the task where it was. */
@@ -3559,6 +3565,8 @@ export async function markResultSent(task, user, results) {
 /** "Got it": the department has seen the answer on its task, and the highlight goes. */
 export async function markAttentionSeen(task, user) {
   openHandoff(task, user);
+  /* The answers to its queries are read with it [taskQuery.service]. */
+  await (await import('./taskQuery.service.js')).seeQueriesOfTask(task._id);
   if (!task.attention?.kind) return task;
   task.attention = undefined;
   await task.save();
@@ -3585,8 +3593,11 @@ export async function attentionFor(user, department) {
     }).sort({ createdAt: 1 }).limit(50).populate(populate),
     Todo.find({ 'attention.kind': 'reply', completed: false, department: Array.isArray(department) ? { $in: department } : department }).sort({ 'attention.at': -1 }).limit(50).populate(populate),
   ]);
+  /* Queries put to this person (Admin: and to nobody), and answers to their own the task's Replies do not carry [taskQuery.service]. */
+  const { questionsFor, answersFor } = await import('./taskQuery.service.js');
+  const [queries, answers] = await Promise.all([questionsFor(user), answersFor(user)]);
   /* And what departments did on this person's enquiries — Admin's, every enquiry's. */
-  return { questions, replies, notices: await noticesFor(user) };
+  return { questions, replies, queries, answers, notices: await noticesFor(user) };
 }
 
 /** The department corrects what it was told — the questions marked `editable` (contact details). */
@@ -3741,6 +3752,7 @@ export async function closeByAdmin(task, user, { reason }) {
   }];
   await task.save();
   await (await import('./fieldVisit.service.js')).cancelVisitsOfTask(task._id, user, `Closed by Admin: ${why}`);
+  await (await import('./taskQuery.service.js')).closeQueriesOfTask(task, user, `closed by Admin: ${why}`);
   await noticeStatus(task, user, { step: { key: 'closed_by_admin', label: 'Closed by Admin' }, note: why, also: await peopleOn(task), onlyAlso: true });
   await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   return task;

@@ -109,9 +109,28 @@ async function taskItems(user) {
   }));
 }
 
+/** Questions on tasks and enquiries put to me, and answers to mine [services/taskQuery.service.js]. */
+async function taskQueryItems(user) {
+  const { questionsFor, answersFor } = await import('../services/taskQuery.service.js');
+  const [questions, answers] = await Promise.all([questionsFor(user), answersFor(user)]);
+  const where = (query) => (query.enquiry ? `/enquiries/${query.enquiry._id || query.enquiry}` : '/task-queries');
+  return [
+    ...questions.map((query) => ({
+      id: `task-query-${query._id}`, kind: 'task_query', at: query.updatedAt, link: '/task-queries',
+      title: `${query.askedBy?.name || 'Somebody'} asks: ${query.question}`.slice(0, 160),
+      detail: [query.enquiry?.number, query.task?.title].filter(Boolean).join(' · ') || undefined,
+    })),
+    ...answers.map((query) => ({
+      id: `task-answer-${query._id}`, kind: 'task_query', at: query.answeredAt, link: where(query),
+      title: `${query.answeredBy?.name || 'Your query'} answered: ${query.lastAnswer?.body || ''}`.slice(0, 160),
+      detail: query.question.slice(0, 120),
+    })),
+  ];
+}
+
 export const inbox = asyncHandler(async (req, res) => {
   const parts = await Promise.all([
-    queryItems(req.user), approvalItems(req.user), sampleItems(req.user), taskItems(req.user),
+    queryItems(req.user), approvalItems(req.user), sampleItems(req.user), taskItems(req.user), taskQueryItems(req.user),
   ]);
   const items = parts.flat().sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, MOST);
   res.json({ success: true, data: { items, count: items.length } });
