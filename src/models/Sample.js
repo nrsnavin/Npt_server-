@@ -232,6 +232,24 @@ const itemSchema = new mongoose.Schema(
     photoAt: Date,
     photoBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     /**
+     * What the finished piece was actually made with, said by the bench at Sample Ready
+     * [sample.controller `setSampleStatus`]: the material, the hook (or none), any clip, and the
+     * pieces made — picked from the registers, pre-filled from what was asked. The request says
+     * what was wanted; this says what is in the bag.
+     */
+    madeWith: {
+      type: new mongoose.Schema({
+        materialRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Material' },
+        hookRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
+        noHook: { type: Boolean, default: undefined },
+        clipRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Component' },
+        pieces: { type: Number, min: 0 },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        at: Date,
+      }, { _id: false }),
+      default: undefined,
+    },
+    /**
      * The finished piece checked against the reference and the spec [sampleVision.llm.js
      * `checkFinishedPiece`]: a finding the bench reads under the photo, never a gate on its own.
      * A difference is ticked past with a reason at Sample Ready [`checkAccepted`].
@@ -436,6 +454,16 @@ const sampleSchema = new mongoose.Schema(
     referencePhoto: { type: mongoose.Schema.Types.ObjectId, ref: 'Attachment' },
     remarks: String,
 
+    /**
+     * Sample Ready without the material, hook or pieces of every finished piece [setSampleStatus]:
+     * allowed with a reason, as a missing photo is.
+     */
+    readyWithoutDetails: {
+      reason: { type: String, trim: true, maxlength: 300 },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      at: Date,
+      _id: false,
+    },
     /**
      * Sample Ready without a photo of every finished piece [setSampleStatus]. The rule is firm —
      * a photo per model row — but a piece already in the bag is not held for it: the bench ticks

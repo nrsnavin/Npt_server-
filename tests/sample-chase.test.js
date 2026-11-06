@@ -25,7 +25,7 @@ let Sample;
 
 const DAY = 86400000;
 const HOUR = 3600000;
-const NO_PHOTO = { noPhoto: true, noPhotoReason: 'No camera on the test bench' };
+const NO_PHOTO = { noPhoto: true, noPhotoReason: 'No camera on the test bench', noDetails: true, noDetailsReason: 'Not recorded in this test' };
 
 const api = async (path, { method = 'GET', body, as } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -91,7 +91,7 @@ test('a nudge: sitting at a status well past the usual time — the usual from t
   const usual = await usualHoursAtStatus({ now });
   assert.equal(usual.checking_stock, DEFAULT_USUAL_HOURS.checking_stock, 'no history yet: the default');
   for (let i = 0; i < 6; i += 1) {
-    await Sample.create({ number: `SMP-U-${i}`, enquiry: new mongoose.Types.ObjectId(), customer: customerId, requestedBy: new mongoose.Types.ObjectId(), modelNumber: 'X', status: 'sample_ready', statusHistory: [{ to: 'checking_stock', at: at(40) }, { to: 'sample_available', at: at(16) }, { to: 'sample_ready', at: at(2) }] });
+    await Sample.create({ number: `SMP-U-${i}`, enquiry: new mongoose.Types.ObjectId(), customer: customerId, requestedBy: new mongoose.Types.ObjectId(), modelNumber: 'X', status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test', statusHistory: [{ to: 'checking_stock', at: at(40) }, { to: 'sample_available', at: at(16) }, { to: 'sample_ready', at: at(2) }] });
   }
   const learned = await usualHoursAtStatus({ now });
   assert.equal(learned.checking_stock, 24, 'a day at checking stock is this bench’s usual');
@@ -130,7 +130,7 @@ test('the feedback reminder writes a chase draft onto the sample; the message di
   const { runFeedbackReminders } = await import('../src/services/escalation.service.js');
   const { chaseByRules } = await import('../src/services/samplingSummary.llm.js');
   const { sample } = await requested();
-  for (const body of [{ status: 'checking_stock' }, { status: 'sample_available' }, { status: 'sample_ready', ...NO_PHOTO }]) assert.equal((await move(sample._id, body)).status, 200);
+  for (const body of [{ status: 'checking_stock' }, { status: 'sample_available' }, { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test', ...NO_PHOTO }]) assert.equal((await move(sample._id, body)).status, 200);
   const sent = await move(sample._id, { status: 'dispatched', courier: 'DTDC', awbNumber: 'D7721390', dispatchedQuantity: 3 });
   assert.equal(sent.status, 200, sent.json.message);
   await settle();

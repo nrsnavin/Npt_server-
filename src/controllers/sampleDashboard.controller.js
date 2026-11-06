@@ -489,6 +489,8 @@ export const sampleQueue = asyncHandler(async (req, res) => {
         quantity: item.quantity || 1,
         photo: item.photo?.key || null,
         referencePhoto: item.referencePhoto?.key || null,
+        /* What the bench said it was made with at Sample Ready [Sample `madeWith`] — the Sent form reminds what is missing. */
+        madeWith: item.madeWith ? { material: Boolean(item.madeWith.materialRef), hook: Boolean(item.madeWith.hookRef || item.madeWith.noHook), pieces: item.madeWith.pieces || 0 } : null,
       })),
       /* Finished pieces photographed, out of the models in the bag [the sampling audit, item 1]. */
       photos: { taken: items.filter((item) => item.photo?.key).length, of: items.length },

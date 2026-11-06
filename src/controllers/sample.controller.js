@@ -97,6 +97,9 @@ const LINKED = [
   { path: 'collection.photo', select: 'key filename mimeType' },
   { path: 'items.photoBy', select: 'name' },
   { path: 'readyWithoutPhoto.by', select: 'name' },
+  { path: 'items.madeWith.materialRef', select: 'name code type colour' },
+  { path: 'items.madeWith.hookRef', select: 'name code colour kind' },
+  { path: 'items.madeWith.clipRef', select: 'name code colour kind' },
 ];
 
 /**
@@ -818,6 +821,45 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
     if (without.length) sample.readyWithoutPhoto = { reason, by: req.user._id, at: new Date() };
 
     /*
+     * And what each piece was made with — the material, the hook (or none), any clip, the pieces
+     * [Sample `madeWith`]. Pre-filled from the request on the screen; the bench confirms or
+     * corrects it. Missing on a row: refused, unless the bench says why, as for a photo.
+     */
+    const made = new Map((req.body.itemsMade || []).map((entry) => [String(entry.item), entry]));
+    const now = new Date();
+    for (const row of rows) {
+      const said = made.get(String(row._id));
+      if (!said) continue;
+      row.madeWith = {
+        materialRef: said.materialRef || undefined,
+        hookRef: said.noHook ? undefined : said.hookRef || undefined,
+        noHook: said.noHook ? true : undefined,
+        clipRef: said.clipRef || undefined,
+        pieces: Number.isFinite(said.pieces) ? said.pieces : undefined,
+        by: req.user._id,
+        at: now,
+      };
+    }
+    if (made.size) sample.markModified('items');
+    const lacking = rows.filter((row) => {
+      const known = row.madeWith || {};
+      return !known.materialRef || (!known.hookRef && !known.noHook) || !(known.pieces > 0);
+    });
+    const detailsReason = String(req.body.noDetailsReason || '').trim();
+    if (lacking.length && !(req.body.noDetails === true && detailsReason.length >= BACKWARD_REASON_MIN)) {
+      const named = lacking.map((row) => {
+        const known = row.madeWith || {};
+        const gaps = [!known.materialRef && 'material', !known.hookRef && !known.noHook && 'hook', !(known.pieces > 0) && 'pieces'].filter(Boolean);
+        return `${row.modelNumber || 'a piece'} (${gaps.join(', ')})`;
+      }).join('; ');
+      throw ApiError.badRequest(
+        `Sample Ready needs what each piece was made with — ${named}. ` +
+          'Pick the material, the hook (or No hook), any clip and the pieces made, or tick Details not known and say why.'
+      );
+    }
+    if (lacking.length) sample.readyWithoutDetails = { reason: detailsReason, by: req.user._id, at: now };
+
+    /*
      * A difference the check found [sampleVision.llm.js] never blocks on its own — the model
      * suggests, a person decides — but the bench decides out loud: it ticks past with a reason,
      * which stays on the row and on the move, and marketing sees the note on the dispatch draft.
@@ -899,8 +941,10 @@ export const setSampleStatus = asyncHandler(transactional(async (req, res) => {
   sample.status = status;
   /* The bench has moved on: a problem it flagged in the log is answered, one way or the other. */
   await clearProblem(sample);
-  const noPhotoNote = status === 'sample_ready' && sample.readyWithoutPhoto?.reason && sample.isModified('readyWithoutPhoto')
-    ? `No photo: ${sample.readyWithoutPhoto.reason}` : null;
+  const noPhotoNote = [
+    status === 'sample_ready' && sample.readyWithoutPhoto?.reason && sample.isModified('readyWithoutPhoto') && `No photo: ${sample.readyWithoutPhoto.reason}`,
+    status === 'sample_ready' && sample.readyWithoutDetails?.reason && sample.isModified('readyWithoutDetails') && `Details not known: ${sample.readyWithoutDetails.reason}`,
+  ].filter(Boolean).join(' — ') || null;
   const colourNote = stepped ? `Exact colour stepped past — sent in ${sample.colourOverride.sent}, asked ${sample.colourOverride.asked}: ${sample.colourOverride.reason}` : null;
   sample.statusHistory.push({ from, to: status, by: req.user._id, note: [note?.trim(), noPhotoNote, checkedPast, colourNote].filter(Boolean).join(' — ') || undefined });
   /*
@@ -1055,6 +1099,33 @@ export const handOverSample = asyncHandler(async (req, res) => {
     if (key) await remove(key).catch(() => null);
     if (photo) await Attachment.deleteOne({ _id: photo._id }).catch(() => null);
     throw ApiError.badRequest(error.message);
+  }
+  res.json({ success: true, data: await withRefs(sample) });
+});
+
+/**
+ * A photo of the sample as it was handed over, taken afterwards — from the hand-over details on
+ * the sample's page [web: HandoverCard "Take photo"]. Added where the hand-over had none, or put
+ * in place of the one it had; the earlier one stays among the sample's documents.
+ */
+export const setHandoverPhoto = asyncHandler(async (req, res) => {
+  const sample = await Sample.findById(req.params.id);
+  if (!sample || !owns(req.user, sample)) throw ApiError.notFound('Sample not found');
+  if (!sample.collection?.collectedAt) throw ApiError.badRequest(`${sample.number} has not been handed over yet — the photo goes with the hand-over`);
+  if (!req.file) throw ApiError.badRequest('Take a photo of the sample, or choose one');
+  if (!['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif'].includes(req.file.mimetype)) throw ApiError.badRequest('Attach a photo — JPEG, PNG, WebP or HEIC');
+  const key = await put({ buffer: req.file.buffer, mimeType: req.file.mimetype });
+  try {
+    const photo = await Attachment.create({
+      key, filename: req.file.originalname, mimeType: req.file.mimetype, size: req.file.size, uploadedBy: req.user._id,
+      sample: sample._id, docType: 'handover_photo', title: 'Hand-over photo',
+    });
+    sample.collection.photo = photo._id;
+    sample.markModified('collection');
+    await sample.save();
+  } catch (error) {
+    await remove(key).catch(() => null);
+    throw error;
   }
   res.json({ success: true, data: await withRefs(sample) });
 });

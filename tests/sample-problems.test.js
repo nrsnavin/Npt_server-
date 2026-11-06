@@ -23,7 +23,7 @@ let Sample;
 let Todo;
 
 const DAY = 86400000;
-const NO_PHOTO = { noPhoto: true, noPhotoReason: 'No camera on the test bench' };
+const NO_PHOTO = { noPhoto: true, noPhotoReason: 'No camera on the test bench', noDetails: true, noDetailsReason: 'Not recorded in this test' };
 
 const api = async (path, { method = 'GET', body, as } = {}) => {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -178,7 +178,7 @@ test('the analytics say what the buyer said by model, purpose and bench member, 
   for (const [model, outcome, colour, colourMandatory, dispatchedColour, override] of outcomes) {
     const { sample } = await requested({ modelNumber: model, colour, colourMandatory });
     await api(`/api/samples/${sample._id}/assign`, { method: 'POST', as: 'meera', body: {} });
-    for (const body of [{ status: 'checking_stock' }, { status: 'sample_available' }, { status: 'sample_ready', ...NO_PHOTO }]) assert.equal((await move(sample._id, body)).status, 200);
+    for (const body of [{ status: 'checking_stock' }, { status: 'sample_available' }, { status: 'sample_ready', noDetails: true, noDetailsReason: 'Not recorded in this test', ...NO_PHOTO }]) assert.equal((await move(sample._id, body)).status, 200);
     const sent = await move(sample._id, { status: 'dispatched', courier: 'DTDC', awbNumber: `D${Math.floor(Math.random() * 1e8)}`, dispatchedQuantity: 1, dispatchedColour, ...(override ? { colourOverride: true, colourOverrideReason: override } : {}) });
     assert.equal(sent.status, 200, sent.json.message);
     await settle();
