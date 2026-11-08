@@ -4924,6 +4924,9 @@ export async function eddsFromOrderRows(enquiry, user, items = []) {
  * task working to it — Production, Printing, Assembly, the dispatch request — is told, its people
  * under "Needs your action" and on their phones. The plant's completion dates stay as they were.
  */
+/** Whose EDD it is said to be: the Production in charge's when they changed it from their task [eddChange.service `changeEddDirect`], else marketing's (Admin's too). */
+const settersSide = (user) => (inDepartment(user, 'production') && !isManagement(user) && !inDepartment(user, 'marketing') ? 'Production' : 'marketing');
+
 export async function setModelEdds(enquiry, user, { models, note }) {
   if (enquiry.stage === CLOSED_STAGE) fail('The enquiry is closed');
   const known = (enquiry.eddByModel || []).map((row) => row.model);
@@ -4937,12 +4940,13 @@ export async function setModelEdds(enquiry, user, { models, note }) {
   if (!rows.length) fail('Give an EDD for at least one model');
   const text = String(note || '').trim();
   await writeMarketingEdds(enquiry._id, rows, user, text);
-  const said = `EDD set by ${user.name} (marketing): ${rows.map((row) => `${row.model} ${prettyDay(row.date)}`).join(' · ')}${text ? ` — ${text}` : ''}`;
+  const who = settersSide(user);
+  const said = `EDD set by ${user.name} (${who}): ${rows.map((row) => `${row.model} ${prettyDay(row.date)}`).join(' · ')}${text ? ` — ${text}` : ''}`;
   const tasks = await Todo.find({ enquiry: enquiry._id, kind: { $in: SHOWS_EDD_KINDS }, completed: false });
   for (const task of tasks) {
     task.updates = [...(task.updates || []), { kind: 'note', text: said, note: said, by: user._id, at: new Date() }];
     await task.save();
-    await noticeStatus(task, user, { step: { key: task.status || 'edd', label: 'EDD set by marketing' }, note: said, also: await peopleOn(task), onlyAlso: true });
+    await noticeStatus(task, user, { step: { key: task.status || 'edd', label: `EDD set by ${who}` }, note: said, also: await peopleOn(task), onlyAlso: true });
     await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   }
   return { models: (await Enquiry.findById(enquiry._id).select('eddByModel edd').lean()), told: tasks.length };
@@ -5281,7 +5285,7 @@ export async function tellEddSet(enquiry, user, { day, note }) {
   const text = String(note || '').trim();
   for (const task of tasks) {
     task.updates = [...(task.updates || []), {
-      kind: 'note', text: `EDD ${prettyDay(day)} set by ${user.name} (marketing)${text ? `: ${text}` : ''}`,
+      kind: 'note', text: `EDD ${prettyDay(day)} set by ${user.name} (${settersSide(user)})${text ? `: ${text}` : ''}`,
       note: `EDD ${prettyDay(day)} set by marketing${text ? `: ${text}` : ''}`, date: day, dateLabel: 'EDD', by: user._id, at: new Date(),
     }];
     await task.save();
