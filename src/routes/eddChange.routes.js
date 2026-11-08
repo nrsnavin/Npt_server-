@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import {
-  agreeOnEddChange, askEddChange, enquiryEddTrack, keepOnEddChange, listTaskEddChanges, replyOnEddChange, withdrawOnEddChange,
+  agreeOnEddChange, askEddChange, enquiryEddTrack, keepOnEddChange, listTaskEddChanges, replyOnEddChange, withdrawOnEddChange, changeEddNow,
 } from '../controllers/eddChange.controller.js';
 import { eddChangeAgreeSchema, eddChangeAskSchema, eddChangeKeepSchema, eddChangeReplySchema } from '../validators/eddChange.schemas.js';
 
@@ -14,6 +14,7 @@ const router = Router();
 
 router.get('/workspace/todos/:id/edd-changes', authenticate, listTaskEddChanges);
 router.post('/workspace/todos/:id/edd-changes', authenticate, validate(eddChangeAskSchema), askEddChange);
+router.post('/workspace/todos/:id/edd-changes/direct', authenticate, validate(eddChangeAskSchema), changeEddNow);
 router.get('/enquiries/:id/edd-track', authenticate, enquiryEddTrack);
 router.post('/edd-changes/:id/reply', authenticate, validate(eddChangeReplySchema), replyOnEddChange);
 router.post('/edd-changes/:id/agree', authenticate, validate(eddChangeAgreeSchema), agreeOnEddChange);

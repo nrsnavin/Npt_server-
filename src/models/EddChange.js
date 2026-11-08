@@ -45,6 +45,8 @@ const eddChangeSchema = new mongoose.Schema(
     agreedDate: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
     decidedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     decidedAt: Date,
+    /* Changed outright by the Production in charge (or Admin) from the task — no ask, no answer [eddChange.service `changeEddDirect`]. */
+    direct: { type: Boolean, default: undefined },
   },
   { timestamps: true },
 );

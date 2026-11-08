@@ -6,7 +6,7 @@ import { transactional } from '../utils/transaction.js';
 import { mayReadEnquiry, mayReadTaskQueries } from '../services/taskQuery.service.js';
 import {
   CHANGE_POPULATE, EDD_CHANGE_KINDS, agreeEddChange, changesOnTask, eddTrack, keepEdd, mayAnswerChange, onTeamSide, readableChange,
-  replyEddChange, requestEddChange, withdrawEddChange,
+  replyEddChange, requestEddChange, withdrawEddChange, changeEddDirect,
 } from '../services/eddChange.service.js';
 
 /** EDD change requests [services/eddChange.service.js] — each row says what this person may do with it. */
@@ -36,6 +36,15 @@ export const askEddChange = asyncHandler(transactional(async (req, res) => {
   const task = await Todo.findById(req.params.id);
   if (!task) throw ApiError.notFound('Task not found');
   const change = await requestEddChange(task, req.user, req.body);
+  await change.populate(CHANGE_POPULATE);
+  res.status(201).json({ success: true, data: (await withRights([change], req.user))[0] });
+}));
+
+/** The Production in charge (or Admin) changes the EDD from the Production task — now, with why. */
+export const changeEddNow = asyncHandler(transactional(async (req, res) => {
+  const task = await Todo.findById(req.params.id);
+  if (!task) throw ApiError.notFound('Task not found');
+  const change = await changeEddDirect(task, req.user, req.body);
   await change.populate(CHANGE_POPULATE);
   res.status(201).json({ success: true, data: (await withRights([change], req.user))[0] });
 }));

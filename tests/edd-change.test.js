@@ -58,9 +58,9 @@ test.before(async () => {
   await api('/api/auth/register', { method: 'POST', body: { name: 'Navin R', email: 'admin@np.com', password: 'Admin@12345', department: 'management' } });
   token.admin = (await api('/api/auth/login', { method: 'POST', body: { email: 'admin@np.com', password: 'Admin@12345' } })).json.data.token;
   for (const [key, name, department] of [
-    ['nandhini', 'Nandhini S', 'marketing'], ['kavi', 'Kavi M', 'marketing'], ['priya', 'Priya Orders', 'order_confirmation'], ['siva', 'Sivakumar', 'production'],
+    ['nandhini', 'Nandhini S', 'marketing'], ['kavi', 'Kavi M', 'marketing'], ['priya', 'Priya Orders', 'order_confirmation'], ['siva', 'Sivakumar', 'production'], ['mani', 'Mani Press', 'production'],
   ]) {
-    const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department, productionInCharge: department === 'production' } });
+    const made = await api('/api/users', { method: 'POST', as: 'admin', body: { name, email: `${key}@np.com`, password: 'Pass@123456', department, productionInCharge: key === 'siva' } });
     assert.equal(made.status, 201, made.json.message);
     ids[key] = made.json.data.id;
     token[key] = (await api('/api/auth/login', { method: 'POST', body: { email: `${key}@np.com`, password: 'Pass@123456' } })).json.data.token;
@@ -161,4 +161,32 @@ test('kept: the EDD stands with why; a withdrawn ask is gone', async () => {
   const list = await api(`/api/workspace/todos/${task._id}/edd-changes`, { as: 'siva' });
   assert.equal(list.json.data.length, 3);
   assert.equal(list.json.mayAsk, true);
+});
+
+test('the Production in charge changes the EDD outright from the task, with why; marketing and Admin are told; an open ask closes', async () => {
+  const task = await openTask('ask_edd');
+  const asked = await api(`/api/workspace/todos/${task._id}/edd-changes`, { method: 'POST', as: 'mani', body: { date: day(22), reason: 'Second press needed' } });
+  assert.equal(asked.status, 201, asked.json.message);
+  const direct = (as, body) => api(`/api/workspace/todos/${task._id}/edd-changes/direct`, { method: 'POST', as, body });
+  assert.equal((await direct('mani', { date: day(21), reason: 'Two shifts' })).status, 403, 'not the in charge — they ask');
+  assert.equal((await direct('nandhini', { date: day(21), reason: 'Mine' })).status, 403, 'marketing sets it on the enquiry, not here');
+  assert.equal((await direct('siva', { date: day(21) })).status, 400, 'says why');
+  assert.equal((await direct('siva', { date: day(-1), reason: 'Back-dated' })).status, 400, 'not a past day');
+  const changed = await direct('siva', { date: day(21), reason: 'Mould back from repair on the 19th' });
+  assert.equal(changed.status, 201, changed.json.message);
+  assert.equal(changed.json.data.status, 'agreed');
+  assert.equal(changed.json.data.direct, true);
+  assert.equal(changed.json.data.currentEdd, day(14));
+  const saved = await mongoose.connection.collection('enquiries').findOne({ _id: new mongoose.Types.ObjectId(enquiry._id) });
+  assert.equal(saved.edd.date, day(21), 'the EDD moved now');
+  assert.equal(saved.edd.department, 'production');
+  assert.equal((await EddChange.findById(asked.json.data._id)).status, 'withdrawn', 'the open ask is closed by it');
+  const { default: TaskNotice } = await import('../src/models/TaskNotice.js');
+  for (const who of ['admin', 'nandhini']) {
+    assert.ok(await TaskNotice.exists({ recipient: ids[who] || (await mongoose.connection.collection('users').findOne({ email: 'admin@np.com' }))._id, kind: 'edd_change', statusLabel: /Production changed the EDD/ }), `${who} told`);
+  }
+  assert.ok((await openTask('ask_edd')).updates.some((entry) => entry.statusLabel === 'EDD changed'), 'said on the task');
+  const track = (await api(`/api/enquiries/${enquiry._id}/edd-track`, { as: 'admin' })).json.data;
+  assert.equal(track.current, day(21));
+  assert.equal((await direct('siva', { date: day(21), reason: 'Same again' })).status, 400, 'already that date');
 });

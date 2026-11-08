@@ -4,7 +4,7 @@ import Enquiry from '../models/Enquiry.js';
 import User from '../models/User.js';
 import ApiError from '../utils/ApiError.js';
 import { afterCommit } from '../utils/transaction.js';
-import { inDepartment, isManagement, MANAGEMENT_QUERY } from '../utils/departments.js';
+import { inDepartment, isManagement, isProductionInCharge, MANAGEMENT_QUERY } from '../utils/departments.js';
 import { findDepartment } from '../config/modules.js';
 import { EVENTS, publish } from './events.service.js';
 
@@ -20,6 +20,9 @@ import { EVENTS, publish } from './events.service.js';
  *            the EDD stays, with why.
  *   reply    The team answers a reply, with a new date if it has one — back with the office.
  *   withdraw The team takes its ask back.
+ *   direct   The Production in charge (or Admin), from the Production task: the EDD moves now, with
+ *            why — Admin and the enquiry's marketing person are told, and it stands in the EDD's
+ *            history like an agreed change. An ask still open for it is closed by it.
  */
 
 const fail = (message) => { throw ApiError.badRequest(message); };
@@ -178,6 +181,25 @@ export async function replyEddChange(change, user, { body, date }) {
   return change;
 }
 
+/** The EDD moved to `day` for the change's model or the whole enquiry (or the job), through marketing's own doors. */
+async function moveEdd(change, user, day, why, department = 'marketing', { ownModelEdd = false } = {}) {
+  const handoff = await import('./handoff.service.js');
+  if (change.enquiry) {
+    const enquiry = await Enquiry.findById(idOf(change.enquiry));
+    /* A model named: its own EDD — where it already has one, or (`ownModelEdd`) given one now. */
+    const byModel = change.model && (ownModelEdd || (enquiry.eddByModel || []).some((row) => row.model === change.model));
+    if (byModel) await handoff.setModelEdds(enquiry, user, { models: [{ model: change.model, date: day }], note: why });
+    else {
+      await handoff.writeEnquiryEdd(enquiry._id, { day, user, department, note: why });
+      await handoff.tellEddSet(enquiry, user, { day, note: why });
+    }
+  } else {
+    const task = await Todo.findById(idOf(change.task));
+    const { setJobEdd } = await import('./eddAsk.service.js');
+    await setJobEdd(task, user, { date: day, note: why });
+  }
+}
+
 /**
  * Agreed: the EDD moves — to the office's own date if it names one, else the team's ask — for
  * the model or the whole enquiry (or the job), through the same doors marketing's EDD always goes
@@ -191,19 +213,7 @@ export async function agreeEddChange(change, user, { date, note } = {}) {
   if (day < new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date())) fail('That date has passed — agree a date from today on');
   const text = String(note || '').trim();
   const why = `EDD change agreed — ${departmentName(change.department)} asked: ${change.reason}${text ? ` · ${text}` : ''}`;
-  if (change.enquiry) {
-    const enquiry = await Enquiry.findById(idOf(change.enquiry));
-    const byModel = change.model && (enquiry.eddByModel || []).some((row) => row.model === change.model);
-    if (byModel) await handoff.setModelEdds(enquiry, user, { models: [{ model: change.model, date: day }], note: why });
-    else {
-      await handoff.writeEnquiryEdd(enquiry._id, { day, user, department: 'marketing', note: why });
-      await handoff.tellEddSet(enquiry, user, { day, note: why });
-    }
-  } else {
-    const task = await Todo.findById(idOf(change.task));
-    const { setJobEdd } = await import('./eddAsk.service.js');
-    await setJobEdd(task, user, { date: day, note: why });
-  }
+  await moveEdd(change, user, day, why);
   change.status = 'agreed';
   change.agreedDate = day;
   change.decidedBy = user._id;
@@ -213,6 +223,60 @@ export async function agreeEddChange(change, user, { date, note } = {}) {
   await change.save();
   await noteOnTask(change, user, 'EDD change agreed', `${change.model ? `${change.model}: ` : ''}EDD now ${prettyDay(day)}${text ? ` — ${text}` : ''}`);
   await tell(change, await teamPeople(change), user, { label: `EDD change agreed — now ${prettyDay(day)}`, note: `${user.name}${text ? `: ${text}` : ''}` });
+  return change;
+}
+
+/**
+ * The Production in charge (or Admin) changes the EDD from the Production task — one model's, or
+ * the whole enquiry's — with why. It moves now; an ask still open for the same EDD is closed by it;
+ * Admin and the enquiry's marketing person are told on screen and on the phone.
+ */
+export async function changeEddDirect(task, user, { date, reason, model }) {
+  const handoff = await import('./handoff.service.js');
+  if (task.kind !== 'ask_edd') fail('The EDD is changed from the Production task');
+  if (!isProductionInCharge(user)) throw ApiError.forbidden('Only the Production in charge or Admin changes the EDD — ask for a change instead');
+  if (task.completed) fail('This task is closed');
+  const day = handoff.eddDay(date);
+  if (day < new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date())) fail('That date has passed — pick a date from today on');
+  const why = clean(reason, 'why the EDD changes');
+  const enquiry = task.enquiry ? await Enquiry.findById(idOf(task.enquiry)).select('edd eddByModel customer assignedTo number') : null;
+  const named = String(model || '').trim() || undefined;
+  /* The task's models: its model rows, its routing, its brief — and the enquiry's per-model EDDs. */
+  const known = new Set([
+    ...(task.modelStatuses || []).map((row) => row.model),
+    ...(task.routing?.models || []).map((row) => row.model),
+    ...(task.brief?.items || []).map((row) => row.model),
+    ...(enquiry?.eddByModel || []).map((row) => row.model),
+  ].filter(Boolean));
+  if (named && known.size && !known.has(named)) fail(`${named} is not one of this task’s models`);
+  const current = await standingEdd({ enquiry, task, model: named });
+  if (current && current === day) fail(`The EDD is already ${prettyDay(day)}`);
+  const now = new Date();
+  const change = await EddChange.create({
+    enquiry: enquiry?._id, task: task._id, chain: enquiry ? undefined : chainOf(task), customer: task.customer?._id || task.customer || enquiry?.customer,
+    department: task.department, model: named, currentEdd: current || undefined, requestedDate: day, reason: why, requestedBy: user._id,
+    status: 'agreed', agreedDate: day, decidedBy: user._id, decidedAt: now, waitingOn: undefined, direct: true,
+    messages: [{ side: 'team', body: why, date: day, by: user._id }],
+  });
+  /* With a model named on an enquiry with no EDD for it, the model gets its own; else the enquiry's. */
+  const label = `EDD ${current ? `${prettyDay(current)} → ` : ''}${prettyDay(day)}`;
+  await moveEdd(change, user, day, `EDD changed by ${user.name} (Production) — ${why}`, 'production', { ownModelEdd: true });
+  /* An ask for the same EDD, still open, is answered by this. */
+  const where = enquiry ? { enquiry: enquiry._id } : { chain: chainOf(task) };
+  const open = await EddChange.find({ ...where, status: 'open', _id: { $ne: change._id }, model: named || { $exists: false } });
+  for (const ask of open) {
+    ask.status = 'withdrawn';
+    ask.waitingOn = undefined;
+    ask.decidedAt = now;
+    ask.messages.push({ side: 'team', body: `Closed — ${user.name} changed the EDD to ${prettyDay(day)}`, by: user._id });
+    await ask.save();
+  }
+  await noteOnTask(change, user, 'EDD changed', `${named ? `${named}: ` : ''}${label} — ${why}`);
+  await tell(change, [...(await admins()), ...(await officeOf(change))], user, {
+    label: `Production changed the EDD${enquiry?.number ? ` — ${enquiry.number}` : ''}`,
+    note: `${named ? `${named}: ` : ''}${label} — ${user.name}: ${why}`,
+  });
+  await publish(EVENTS.HANDOFF_UPDATED, { task, by: user });
   return change;
 }
 
