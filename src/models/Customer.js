@@ -43,6 +43,8 @@ const roleContactSchema = new mongoose.Schema(
     sameAsOrder: { type: Boolean, default: false },
     name: { type: String, trim: true, maxlength: 120 },
     phone: { type: String, trim: true, set: (v) => normalisePhone(v) || v || undefined },
+    /* Their own email — statements and invoices to accounts [services/customerImport.service.js, the customer form]. */
+    email: { type: String, lowercase: true, trim: true, maxlength: 160 },
   },
   { _id: false }
 );

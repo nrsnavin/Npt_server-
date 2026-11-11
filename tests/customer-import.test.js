@@ -69,7 +69,8 @@ test('the template is an Excel file with every column and one sample row that im
   assert.match(template.type, /spreadsheetml/);
   const { sheetRows } = await import('../src/services/sheetRows.js');
   const rows = sheetRows(template.buffer);
-  assert.deepEqual(rows[0].slice(0, 8), ['Customer name *', 'Customer type', 'Contact person', 'Designation', 'Mobile *', 'WhatsApp', 'Email', 'GST number']);
+  assert.deepEqual(rows[0].slice(0, 7), ['Customer name *', 'Customer type', 'Contact person', 'Designation', 'Mobile *', 'WhatsApp', 'Email']);
+  for (const heading of ['Purchase contact', 'Purchase mobile', 'Purchase email', 'Accounts contact', 'Accounts mobile', 'Accounts email', 'GST number', 'Address', 'Pincode', 'Marketing owner']) assert.ok(rows[0].includes(heading), heading);
   assert.equal(rows[1][0], 'Sri Lakshmi Garments');
 
   /* The sample row, uploaded as downloaded, with an owner picked on the screen. */
@@ -83,7 +84,10 @@ test('the template is an Excel file with every column and one sample row that im
   const made = await Customer.findOne({ name: 'Sri Lakshmi Garments' }).lean();
   assert.match(made.code, /^CUST-/);
   assert.equal(made.gstin, '33ABCDE1234F1Z5');
-  assert.equal(made.email, 'purchase@srilakshmigarments.in');
+  assert.equal(made.email, 'info@srilakshmigarments.in');
+  const purchase = made.contacts.find((contact) => contact.designation === 'Purchase');
+  assert.deepEqual([purchase.name, purchase.mobile, purchase.email, purchase.isPrimary], ['M. Priya', '+919894012345', 'purchase@srilakshmigarments.in', false]);
+  assert.deepEqual([made.accountsContact.name, made.accountsContact.phone, made.accountsContact.email, made.accountsContact.sameAsOrder], ['K. Ramesh', '+919894054321', 'accounts@srilakshmigarments.in', false]);
   assert.equal(made.city, 'Tiruppur');
   assert.equal(made.pincode, '641603');
   assert.equal(made.customerType, 'garment_factory');
@@ -149,4 +153,23 @@ test('who may: a customers writer imports; the template needs the customers scre
   const noHeader = await upload('admin', csv([['Foo', 'Bar'], ['1', '2']]));
   assert.equal(noHeader.status, 400);
   assert.match(noHeader.json.message, /Customer name column/);
+});
+
+test('purchase and accounts contacts: checked like the rest; a purchase contact alone is the primary one', async () => {
+  const sheet = csv([
+    ['Customer name', 'Mobile', 'Purchase contact', 'Purchase mobile', 'Purchase email', 'Accounts contact', 'Accounts mobile', 'Accounts email'],
+    ['Velan Fashions', '9840022001', 'S. Anand', '9840022002', 'anand@velan.in', 'P. Lakshmi', '9840022003', 'accounts@velan.in'],
+    ['Broken Contacts Co', '9840022011', 'X', '123', 'no-mail', '', '', 'bad@'],
+  ]);
+  const preview = await upload('admin', sheet, { defaultOwner: ids.nandhini });
+  const byRow = Object.fromEntries(preview.json.data.plan.map((entry) => [entry.row, entry]));
+  assert.equal(byRow[2].action, 'create');
+  assert.match(byRow[3].problems.join(' '), /Purchase mobile "123"/);
+  assert.match(byRow[3].problems.join(' '), /Purchase email "no-mail"/);
+  assert.match(byRow[3].problems.join(' '), /Accounts email "bad@"/);
+  await upload('admin', sheet, { defaultOwner: ids.nandhini, commit: true });
+  const made = await Customer.findOne({ name: 'Velan Fashions' }).lean();
+  assert.equal(made.contacts.length, 1);
+  assert.deepEqual([made.contacts[0].name, made.contacts[0].designation, made.contacts[0].isPrimary], ['S. Anand', 'Purchase', true]);
+  assert.equal(made.accountsContact.email, 'accounts@velan.in');
 });

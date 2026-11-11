@@ -17,6 +17,8 @@ import { xlsxBuffer } from '../utils/xlsxWriter.js';
  * the same headings reads too. Nothing is written until the person has seen what would happen:
  * the same call answers a preview first, and creates only when asked to.
  *
+ *   contacts the contact person (primary), a Purchase contact and an Accounts contact — each
+ *            with name, mobile and email; the accounts one is Accounts & Payments on the card
  *   needed   Customer name, Mobile, and a marketing owner — the Marketing owner column (their
  *            email or name), or one picked on the upload screen for every row that leaves it blank
  *   checked  the GST number's shape, the email, a 6-digit pincode, the drop-down words
@@ -29,10 +31,16 @@ export const COLUMNS = [
   { field: 'name', heading: 'Customer name', also: ['customer', 'company', 'company name', 'name', 'buyer', 'party', 'party name', 'customer name'], required: true, help: 'The company name, as on the GST certificate', sample: 'Sri Lakshmi Garments' },
   { field: 'customerType', heading: 'Customer type', also: ['type', 'business type', 'category'], help: 'One of: Garment factory, Exporter, Buying house, Retailer, Domestic distributor, Overseas buyer. Blank = Garment factory', sample: 'Garment factory' },
   { field: 'contactPerson', heading: 'Contact person', also: ['contact', 'contact name', 'person'], help: 'Who you talk to there', sample: 'R. Senthil Kumar' },
-  { field: 'designation', heading: 'Designation', also: ['role', 'position'], help: 'Their role — Purchase manager, Owner', sample: 'Purchase manager' },
+  { field: 'designation', heading: 'Designation', also: ['role', 'position'], help: 'Their role — Owner, Director, Manager', sample: 'Owner' },
   { field: 'mobile', heading: 'Mobile', also: ['mobile number', 'mobile no', 'phone', 'phone number', 'contact number', 'cell'], required: true, help: '10-digit mobile number (a +country code for an overseas buyer)', sample: '9876543210' },
   { field: 'whatsapp', heading: 'WhatsApp', also: ['whatsapp number', 'whatsapp no'], help: 'Blank = same as Mobile', sample: '9876543210' },
-  { field: 'email', heading: 'Email', also: ['email id', 'mail', 'e mail', 'email address'], help: 'For quotations, invoices and statements', sample: 'purchase@srilakshmigarments.in' },
+  { field: 'email', heading: 'Email', also: ['email id', 'mail', 'e mail', 'email address'], help: 'The company’s main email', sample: 'info@srilakshmigarments.in' },
+  { field: 'purchaseName', heading: 'Purchase contact', also: ['purchase person', 'purchase name', 'purchase contact name', 'purchase manager'], help: 'Who places the orders — saved as a contact marked Purchase', sample: 'M. Priya' },
+  { field: 'purchaseMobile', heading: 'Purchase mobile', also: ['purchase phone', 'purchase number', 'purchase contact mobile'], help: 'Their mobile number', sample: '9894012345' },
+  { field: 'purchaseEmail', heading: 'Purchase email', also: ['purchase mail', 'purchase contact email'], help: 'Their email — purchase orders and quotations', sample: 'purchase@srilakshmigarments.in' },
+  { field: 'accountsName', heading: 'Accounts contact', also: ['accounts person', 'accounts name', 'accounts contact name', 'accountant', 'payments contact'], help: 'Who settles the bills — shown as Accounts & Payments on the buyer’s contact card', sample: 'K. Ramesh' },
+  { field: 'accountsMobile', heading: 'Accounts mobile', also: ['accounts phone', 'accounts number', 'accounts contact mobile'], help: 'Their mobile number — payment follow-ups', sample: '9894054321' },
+  { field: 'accountsEmail', heading: 'Accounts email', also: ['accounts mail', 'accounts contact email'], help: 'Their email — invoices and statements', sample: 'accounts@srilakshmigarments.in' },
   { field: 'gstin', heading: 'GST number', also: ['gstin', 'gst', 'gst no', 'gstin no', 'gst number'], help: '15 characters, like 33ABCDE1234F1Z5. Blank if the buyer has none (overseas, unregistered)', sample: '33ABCDE1234F1Z5' },
   { field: 'address', heading: 'Address', also: ['address line', 'address 1', 'street', 'door no', 'billing address'], help: 'Door number and street — where a lorry delivers', sample: 'No. 12, 3rd Street, Kumaran Nagar' },
   { field: 'area', heading: 'Area', also: ['locality'], help: 'Locality or industrial estate', sample: 'Avinashi Road' },
@@ -51,6 +59,7 @@ export const COLUMNS = [
 ];
 
 const FIELDS = COLUMNS.map((column) => column.field);
+const LABEL = Object.fromEntries(COLUMNS.map((column) => [column.field, column.heading]));
 const squeeze = (text) => String(text || '').toLowerCase().replace(/\(.*?\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
 const words = (key) => key.replace(/_/g, ' ');
 /** "Garment factory", "garment-factory", "GARMENT FACTORY" → garment_factory; "IndiaMART" → indiamart. */
@@ -129,15 +138,19 @@ export function readRow(cells, map) {
         break;
       }
       case 'email':
-        if (EMAIL.test(value)) fields.email = value.toLowerCase();
-        else problems.push(`Email "${value}" is not an email address`);
+      case 'purchaseEmail':
+      case 'accountsEmail':
+        if (EMAIL.test(value)) fields[field] = value.toLowerCase();
+        else problems.push(`${LABEL[field]} "${value}" is not an email address`);
         break;
       case 'mobile':
-      case 'whatsapp': {
+      case 'whatsapp':
+      case 'purchaseMobile':
+      case 'accountsMobile': {
         const number = normalisePhone(value.replace(/\.0+$/, ''));
         const digits = String(number || '').replace(/\D/g, '');
         if (number && digits.length >= 10 && digits.length <= 15) fields[field] = number;
-        else problems.push(`${field === 'mobile' ? 'Mobile' : 'WhatsApp'} "${value}" is not a phone number`);
+        else problems.push(`${LABEL[field]} "${value}" is not a phone number`);
         break;
       }
       case 'pincode': {
@@ -161,13 +174,21 @@ export function readRow(cells, map) {
 
 /** A customer's record from a row's fields: the contact person as the primary contact. */
 function recordOf(fields, assignedTo) {
-  const { contactPerson, designation, owner, ...rest } = fields;
+  const {
+    contactPerson, designation, owner, purchaseName, purchaseMobile, purchaseEmail, accountsName, accountsMobile, accountsEmail, ...rest
+  } = fields;
+  const contacts = [];
+  if (contactPerson) contacts.push({ name: contactPerson, designation, mobile: fields.mobile, whatsapp: fields.whatsapp, email: fields.email, isPrimary: true });
+  /* The purchase contact: a contact of its own, marked Purchase — the primary one when no contact person is given. */
+  if (purchaseName || purchaseMobile || purchaseEmail) {
+    contacts.push({ name: purchaseName || 'Purchase', designation: 'Purchase', mobile: purchaseMobile, whatsapp: purchaseMobile, email: purchaseEmail, isPrimary: !contacts.length });
+  }
   return {
     ...rest,
     source: rest.source || 'manual',
-    ...(contactPerson ? {
-      contacts: [{ name: contactPerson, designation, mobile: fields.mobile, whatsapp: fields.whatsapp, email: fields.email, isPrimary: true }],
-    } : {}),
+    ...(contacts.length ? { contacts } : {}),
+    /* Accounts & Payments on the buyer's contact card [Customer `accountsContact`]. */
+    ...(accountsName || accountsMobile || accountsEmail ? { accountsContact: { sameAsOrder: false, name: accountsName, phone: accountsMobile, email: accountsEmail } } : {}),
     assignedTo,
   };
 }
