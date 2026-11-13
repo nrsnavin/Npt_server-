@@ -2,7 +2,7 @@ import { dashboardFollowUps, dashboardOverview, dashboardParties, dashboardTasks
 import { customerFollowUp, customerFollowUpHistory } from '../controllers/customerFollowUp.controller.js';
 import { customerPanel, delegateCustomerTo } from '../controllers/customerPanel.controller.js';
 import { Router } from 'express';
-import { customerImportTemplate, importCustomers } from '../controllers/customerImport.controller.js';
+import { customerImportTemplate, customerRoutes, importCustomers } from '../controllers/customerImport.controller.js';
 import { enquiryTimeline, listEnquiryMessages, sendEnquiryMessage, listEnquiryDocuments, listEnquiryPapers, enquiryPaperFile } from '../controllers/enquiryMessage.controller.js';
 import {
   listBuyerCards, draftModels, draftSuggestions, getBuyerCard, buyerCardImage, enquirySource, enquirySourceImage, uploadBuyerCard, confirmBuyerCard, discardBuyerCard,
@@ -147,6 +147,8 @@ router.patch('/components/:id', requireModule('materials', 'write'), validate(co
 router.get('/customers/export', requireModule('customers'), exportCustomers);
 /* Customers from Excel: the template, and the upload (preview, then import) [customerImport.service]. */
 router.get('/customers/import/template', requireModule('customers'), customerImportTemplate);
+/* The delivery routes, for the customer form's drop-down — readable without the Dispatch module. */
+router.get('/customers/delivery-routes', requireModule('customers'), customerRoutes);
 router.post('/customers/import', requireModule('customers', 'write'), singleSheet('file'), importCustomers);
 router.get('/customers/check-duplicate', requireModule('customers'), checkDuplicateCustomer);
 /*

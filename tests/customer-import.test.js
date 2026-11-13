@@ -44,6 +44,7 @@ test.before(async () => {
   await mongoose.connect(process.env.MONGO_URI);
   const { default: app } = await import('../src/app.js');
   ({ default: Customer } = await import('../src/models/Customer.js'));
+  await (await import('../src/services/defaultRoutes.service.js')).ensureDefaultRoutes();
   server = app.listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -91,7 +92,10 @@ test('the template is an Excel file with every column and one sample row that im
   assert.equal(made.city, 'Tiruppur');
   assert.equal(made.pincode, '641603');
   assert.equal(made.customerType, 'garment_factory');
-  assert.equal(made.deliveryMode, 'transport');
+  assert.equal(made.deliveryMode, 'own_vehicle');
+  const { default: DeliveryRoute } = await import('../src/models/DeliveryRoute.js');
+  assert.equal(String(made.deliveryRoute), String((await DeliveryRoute.findOne({ name: 'Avinashi Road' }))._id), 'the delivery route by name');
+  assert.equal(made.landmark, 'Opp. Bus Stand', 'the landmark is plain text');
   assert.equal(made.creditTermsDays, 30);
   assert.equal(String(made.assignedTo), ids.nandhini);
   assert.equal(made.contacts[0].name, 'R. Senthil Kumar');
@@ -172,4 +176,19 @@ test('purchase and accounts contacts: checked like the rest; a purchase contact 
   assert.equal(made.contacts.length, 1);
   assert.deepEqual([made.contacts[0].name, made.contacts[0].designation, made.contacts[0].isPrimary], ['S. Anand', 'Purchase', true]);
   assert.equal(made.accountsContact.email, 'accounts@velan.in');
+});
+
+test('delivery routes: the eight roads are added once, readable from the customer screens; an unknown route is refused; an old landmark road becomes the route', async () => {
+  const { ensureDefaultRoutes } = await import('../src/services/defaultRoutes.service.js');
+  const { default: DeliveryRoute } = await import('../src/models/DeliveryRoute.js');
+  const legacy = await Customer.create({ code: 'CUST-OLD-1', name: 'Old Landmark Co', landmark: 'palladam road', assignedTo: ids.nandhini });
+  const again = await ensureDefaultRoutes();
+  assert.equal(again.added, 0, 'already there — nothing added twice');
+  assert.equal(await DeliveryRoute.countDocuments({}), 8);
+  assert.equal(String((await Customer.findById(legacy._id)).deliveryRoute), String((await DeliveryRoute.findOne({ name: 'Palladam Road' }))._id));
+  const list = await api('/api/customers/delivery-routes', { as: 'nandhini' });
+  assert.equal(list.status, 200, list.json.message);
+  assert.deepEqual(list.json.data.map((row) => row.name).slice(0, 2), ['Avinashi Road', 'College Road']);
+  const bad = await upload('admin', csv([['Customer name', 'Mobile', 'Delivery route'], ['Route Co', '9840033001', 'Moon Road']]), { defaultOwner: ids.nandhini });
+  assert.match(bad.json.data.plan[0].problems.join(' '), /Delivery route "Moon Road" is not one of the routes/);
 });

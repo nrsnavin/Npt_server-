@@ -49,7 +49,8 @@ export const COLUMNS = [
   { field: 'state', heading: 'State', also: [], help: 'Blank = read from the GST number', sample: 'Tamil Nadu' },
   { field: 'pincode', heading: 'Pincode', also: ['pin', 'pin code', 'postal code', 'zip'], help: '6 digits', sample: '641603' },
   { field: 'country', heading: 'Country', also: [], help: 'Blank = India', sample: 'India' },
-  { field: 'deliveryMode', heading: 'Delivery mode', also: ['delivery', 'dispatch mode', 'mode of delivery'], help: 'One of: Own vehicle, Transport, Party collects, Courier', sample: 'Transport' },
+  { field: 'deliveryMode', heading: 'Delivery mode', also: ['delivery', 'dispatch mode', 'mode of delivery'], help: 'One of: Own vehicle, Transport, Party collects, Courier', sample: 'Own vehicle' },
+  { field: 'routeName', heading: 'Delivery route', also: ['route', 'road', 'delivery road'], help: 'For our own vehicle — one of the routes in the app: Kangeyam Road, Uthukuli Road, Dharapuram Road, Palladam Road, College Road, Mangalam Road, PN Road, Avinashi Road', sample: 'Avinashi Road' },
   { field: 'creditTermsDays', heading: 'Credit days', also: ['credit', 'credit period', 'credit terms', 'credit terms days'], help: 'Number of days, like 30. Blank = 0', sample: '30' },
   { field: 'paymentTerms', heading: 'Payment terms', also: ['terms'], help: 'In words — 30 days from invoice, 50% advance', sample: '30 days from invoice' },
   { field: 'rating', heading: 'Rating', also: ['grade'], help: 'A, B or C', sample: 'A' },
@@ -175,7 +176,7 @@ export function readRow(cells, map) {
 /** A customer's record from a row's fields: the contact person as the primary contact. */
 function recordOf(fields, assignedTo) {
   const {
-    contactPerson, designation, owner, purchaseName, purchaseMobile, purchaseEmail, accountsName, accountsMobile, accountsEmail, ...rest
+    contactPerson, designation, owner, routeName, purchaseName, purchaseMobile, purchaseEmail, accountsName, accountsMobile, accountsEmail, ...rest
   } = fields;
   const contacts = [];
   if (contactPerson) contacts.push({ name: contactPerson, designation, mobile: fields.mobile, whatsapp: fields.whatsapp, email: fields.email, isPrimary: true });
@@ -218,6 +219,9 @@ export async function planImport(rows, { defaultOwner = null } = {}) {
     .filter((entry) => Object.values(entry.fields).some(Boolean) && !(Object.keys(entry.fields).length === 1 && entry.fields.state));
 
   const owners = await ownersByWord();
+  /* Delivery routes by name, any case [defaultRoutes.service]. */
+  const { activeRoutes } = await import('./defaultRoutes.service.js');
+  const routes = new Map((await activeRoutes()).map((route) => [route.name.toLowerCase(), route]));
   const fallback = defaultOwner ? await User.findById(defaultOwner).select('name email department role isActive').lean() : null;
   if (defaultOwner && !(fallback && (await canOwnBuyer(fallback)))) {
     return { error: 'The owner picked is not an active marketing person or administrator — pick another.' };
@@ -238,6 +242,11 @@ export async function planImport(rows, { defaultOwner = null } = {}) {
     if (match) return { ...out, action: 'exists', existing: { _id: match._id, code: match.code, name: match.name } };
     const ownerWord = String(fields.owner || '').trim().toLowerCase();
     const owner = ownerWord ? owners.get(ownerWord) : fallback;
+    if (fields.routeName) {
+      const route = routes.get(fields.routeName.toLowerCase());
+      if (route) fields.deliveryRoute = route._id;
+      else problems.push(`Delivery route "${fields.routeName}" is not one of the routes — use ${[...routes.values()].map((entry) => entry.name).join(', ')}`);
+    }
     if (ownerWord && !owner) problems.push(`Marketing owner "${fields.owner}" is not a marketing person in the app — use their email`);
     else if (!owner) problems.push('No marketing owner — fill the column, or pick an owner on the upload screen');
     if (problems.length) return { ...out, action: 'error', problems };

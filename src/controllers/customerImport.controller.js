@@ -26,3 +26,9 @@ export const importCustomers = asyncHandler(async (req, res) => {
   const written = await applyImport(result.plan);
   res.json({ success: true, data: { ...result, ...written, committed: true } });
 });
+
+/** The active delivery routes, for the customer form — anybody who opens customers reads them [defaultRoutes.service]. */
+export const customerRoutes = asyncHandler(async (req, res) => {
+  const { activeRoutes } = await import('../services/defaultRoutes.service.js');
+  res.json({ success: true, data: await activeRoutes() });
+});
