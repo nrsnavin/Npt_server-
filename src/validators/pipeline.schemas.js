@@ -441,3 +441,12 @@ export const customerFollowUpSchema = z.discriminatedUnion('action', [
     note: z.string().trim().max(1000).optional(),
   }),
 ]);
+
+/** Admin closing an enquiry with how it ended [services/enquiryClosure.service.js]. */
+export const enquiryCloseOutSchema = z.object({
+  outcome: z.string().trim().min(1, 'Choose how the enquiry ended').max(40),
+  date: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Give the date as a day'), z.literal('')]).optional(),
+  reference: z.string().trim().max(120).optional(),
+  lostReason: z.string().trim().max(40).optional(),
+  note: z.string().trim().max(1000).optional(),
+});

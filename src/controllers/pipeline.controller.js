@@ -1092,7 +1092,7 @@ export const getEnquiry = asyncHandler(async (req, res) => {
     .populate('activities.by', 'name')
     .populate('handovers.from handovers.to handovers.by', 'name')
     /* The SO team's questions and marketing's answers [handoff.service `answerParent`]. */
-    .populate('clarifications.askedBy clarifications.answeredBy', 'name')
+    .populate('clarifications.askedBy clarifications.answeredBy closure.by', 'name')
     .populate('checkedBy', 'name');
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   /*
@@ -1453,6 +1453,8 @@ async function moveEnquiry(enquiry, body, user) {
   if (reopening) {
     enquiry.lostReason = undefined;
     enquiry.lostNote = undefined;
+    /* And what Admin recorded on closing it [enquiryClosure.service]. */
+    enquiry.closure = undefined;
   }
   if (status !== 'hold') enquiry.holdReason = undefined;
 
@@ -2021,3 +2023,17 @@ export const enquiryClosePreviewHandler = asyncHandler(async (req, res) => {
   const { enquiryClosePreview } = await import('../services/handoff.service.js');
   res.json({ success: true, data: await enquiryClosePreview(enquiry) });
 });
+
+/** The outcomes Admin picks from when closing an enquiry [config/enquiryClosure.js]. */
+export const enquiryCloseOutcomes = asyncHandler(async (req, res) => {
+  const { closeOutcomes } = await import('../services/enquiryClosure.service.js');
+  res.json({ success: true, data: closeOutcomes() });
+});
+
+/** Admin closes the enquiry and records how it ended [enquiryClosure.service `closeEnquiryWithOutcome`]. */
+export const closeEnquiryOut = asyncHandler(transactional(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id).populate('customer', 'name code');
+  if (!enquiry) throw ApiError.notFound('Enquiry not found');
+  const { closeEnquiryWithOutcome } = await import('../services/enquiryClosure.service.js');
+  res.json({ success: true, data: await closeEnquiryWithOutcome(enquiry, req.user, req.body) });
+}));

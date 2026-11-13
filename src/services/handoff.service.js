@@ -159,6 +159,8 @@ async function moveStage(enquiry, to, { user, task, note, heldBy, marketing: sai
     : null;
   if (entry) set.stage = to;
 
+  /* Reopened: what Admin recorded on closing it no longer stands [enquiryClosure.service]. */
+  if (entry && enquiry.stage === CLOSED_STAGE && to !== CLOSED_STAGE && enquiry.closure) unset.closure = 1;
   const update = {};
   if (Object.keys(set).length) update.$set = set;
   if (Object.keys(unset).length) update.$unset = unset;
