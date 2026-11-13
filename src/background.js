@@ -216,6 +216,11 @@ export function startBackground() {
       if (written) console.log(`GST: place of supply written on ${written} earlier order(s)${assumed ? ` — ${assumed} assumed the plant's state, the buyer having no state or GSTIN on record` : ''}`);
     })
     .catch((error) => console.error('GST place-of-supply backfill failed:', error.message));
+  /* The roads the vehicle runs, as delivery routes for the customer form [defaultRoutes.service]. Idempotent. */
+  import('./services/defaultRoutes.service.js')
+    .then(({ ensureDefaultRoutes }) => ensureDefaultRoutes())
+    .then(({ added, linked }) => { if (added || linked) console.log(`Delivery routes: ${added} added${linked ? `, ${linked} customer(s) linked from their landmark` : ''}`); })
+    .catch((error) => console.error('Delivery routes set-up failed:', error.message));
   /* Enquiries whose sales stage fell behind (or ran ahead of) their task stage, brought in line once [salesStage.service]. Idempotent. */
   import('./services/salesStage.service.js')
     .then(({ realignSalesStatuses }) => realignSalesStatuses())

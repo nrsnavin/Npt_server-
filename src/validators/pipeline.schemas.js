@@ -120,6 +120,7 @@ const roleContact = z
     sameAsOrder: z.boolean().optional(),
     name: z.string().trim().max(120).optional(),
     phone: z.string().trim().max(40).optional(),
+    email: z.union([z.string().trim().email('Not an email address'), z.literal('')]).optional(),
   })
   .optional();
 
