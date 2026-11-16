@@ -13,7 +13,7 @@ import {
   marketingRoster,
   enquiryOwners,
   customerOwners,
-  listEnquiries, getEnquiry, enquiryDeletionPreview, deleteEnquiryHandler, enquiryClosePreviewHandler, createEnquiry, createEnquiryGroup, updateEnquiry,
+  listEnquiries, getEnquiry, enquiryDeletionPreview, deleteEnquiryHandler, enquiryClosePreviewHandler, enquiryCloseOutcomes, closeEnquiryOut, createEnquiry, createEnquiryGroup, updateEnquiry,
   setEnquiryStatus, applyEnquiryAction, listEnquiryActions,
   logEnquiryActivity, setEnquiryMarketingStatus, checkEnquiry, setEnquiryEdd, setEnquiryModelEdds, setEnquiryDispatchPlan, listEnquiryActivities, enquiryActivityTypes, delegateEnquiryTo, listDelegationTargets, promoteToMould, enquiryPipeline,
   enquiryBoard,
@@ -45,6 +45,7 @@ import {
   bulkReassignSchema,
   enquiryConvertSchema,
   customerFollowUpSchema,
+  enquiryCloseOutSchema,
 } from '../validators/pipeline.schemas.js';
 import { mouldSchema, mouldUpdateSchema, promoteMouldSchema } from '../validators/mould.schemas.js';
 import { materialBulkRatesSchema, materialSchema, materialUpdateSchema } from '../validators/material.schemas.js';
@@ -256,6 +257,9 @@ router.post('/enquiries/group', requireModule('enquiries', 'write'), validate(en
 router.get('/enquiries/:id', getEnquiry);
 router.get('/enquiries/:id/deletion', adminOnly, enquiryDeletionPreview);
 router.get('/enquiries/:id/closing', adminOnly, enquiryClosePreviewHandler);
+/* Admin closes an enquiry and records how it ended — dispatched, completed, cancelled [enquiryClosure.service]. */
+router.get('/enquiry-close-outcomes', adminOnly, enquiryCloseOutcomes);
+router.post('/enquiries/:id/close-out', adminOnly, validate(enquiryCloseOutSchema), closeEnquiryOut);
 router.delete('/enquiries/:id', adminOnly, deleteEnquiryHandler);
 router.patch('/enquiries/:id', requireModule('enquiries', 'write'), validate(enquiryUpdateSchema), updateEnquiry);
 // A prospect's enquiry becomes a customer's: a new customer from the form, or one already on the register.

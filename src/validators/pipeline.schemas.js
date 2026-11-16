@@ -406,6 +406,8 @@ export const enquiryDispatchPlanSchema = z.object({
 export const enquiryCheckSchema = z.object({
   company: z.string().trim().min(1, 'Name the company').max(160).optional(),
   contactPerson: z.string().trim().max(120).optional(),
+  /* The number read off the chat box; WhatsApp is the same unless the form says otherwise. */
+  mobile: z.string().trim().max(30).optional(),
   whatsapp: z.string().trim().max(30).optional(),
   modelNumber: z.string().trim().max(120).optional(),
   quantity: z.union([z.null(), z.coerce.number().min(0).max(100000000)]).optional(),
@@ -441,3 +443,12 @@ export const customerFollowUpSchema = z.discriminatedUnion('action', [
     note: z.string().trim().max(1000).optional(),
   }),
 ]);
+
+/** Admin closing an enquiry with how it ended [services/enquiryClosure.service.js]. */
+export const enquiryCloseOutSchema = z.object({
+  outcome: z.string().trim().min(1, 'Choose how the enquiry ended').max(40),
+  date: z.union([z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Give the date as a day'), z.literal('')]).optional(),
+  reference: z.string().trim().max(120).optional(),
+  lostReason: z.string().trim().max(40).optional(),
+  note: z.string().trim().max(1000).optional(),
+});

@@ -531,6 +531,26 @@ const enquirySchema = new mongoose.Schema(
     lostNote: String,
     holdReason: String,
 
+    /**
+     * How it ended, as Admin recorded it on closing an enquiry whose statuses were never kept up
+     * [services/enquiryClosure.service.js, config/enquiryClosure.js]: Order completed, Dispatched,
+     * Order in production, Cancelled after quotation, Enquiry cancelled — with when, a reference
+     * and a note. Cleared when the enquiry is reopened.
+     */
+    closure: {
+      type: new mongoose.Schema({
+        outcome: { type: String, required: true },
+        label: { type: String, trim: true, maxlength: 80 },
+        /* The day it happened, as the business knows it — not the day it was recorded. */
+        date: { type: String, match: /^\d{4}-\d{2}-\d{2}$/ },
+        reference: { type: String, trim: true, maxlength: 120 },
+        note: { type: String, trim: true, maxlength: 1000 },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        at: { type: Date, default: Date.now },
+      }, { _id: false }),
+      default: undefined,
+    },
+
     source: { type: String, enum: CUSTOMER_SOURCES, default: 'manual' },
 
     /**

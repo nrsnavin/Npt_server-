@@ -252,3 +252,16 @@ test('the owner of a draft may hand it on while it is a draft; once checked, onl
   const refused = await api(`/api/enquiries/${enquiry._id}/delegate`, { method: 'POST', token: priya, body: { to: ids.nandhini } });
   assert.equal(refused.status, 403);
 });
+
+test('the check saves the mobile number read off the chat box, and a WhatsApp of its own when it differs', async () => {
+  const enquiry = await unchecked();
+  const checked = await api(`/api/enquiries/${enquiry._id}/check`, {
+    method: 'POST', token: nandhini,
+    body: { mobile: '98658 70001', whatsapp: '98658 70002' },
+  });
+  assert.equal(checked.status, 200, checked.json.message);
+  const buyer = checked.json.data.customer && typeof checked.json.data.customer === 'object' ? checked.json.data.customer : null;
+  const where = buyer || checked.json.data.prospect;
+  assert.equal(where.mobile, buyer ? '+919865870001' : '98658 70001');
+  assert.match(String(where.whatsapp), /9865870002|98658 70002/);
+});

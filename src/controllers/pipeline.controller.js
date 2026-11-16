@@ -1092,7 +1092,7 @@ export const getEnquiry = asyncHandler(async (req, res) => {
     .populate('activities.by', 'name')
     .populate('handovers.from handovers.to handovers.by', 'name')
     /* The SO team's questions and marketing's answers [handoff.service `answerParent`]. */
-    .populate('clarifications.askedBy clarifications.answeredBy', 'name')
+    .populate('clarifications.askedBy clarifications.answeredBy closure.by', 'name')
     .populate('checkedBy', 'name');
   if (!enquiry) throw ApiError.notFound('Enquiry not found');
   /*
@@ -1453,6 +1453,8 @@ async function moveEnquiry(enquiry, body, user) {
   if (reopening) {
     enquiry.lostReason = undefined;
     enquiry.lostNote = undefined;
+    /* And what Admin recorded on closing it [enquiryClosure.service]. */
+    enquiry.closure = undefined;
   }
   if (status !== 'hold') enquiry.holdReason = undefined;
 
@@ -1510,7 +1512,7 @@ export const checkEnquiry = asyncHandler(transactional(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);
   if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
   expectVersion(enquiry, req.body);
-  const { company, contactPerson, whatsapp, modelNumber, quantity, materialColour, remarks, assignedTo } = withoutVersion(req.body);
+  const { company, contactPerson, mobile, whatsapp, modelNumber, quantity, materialColour, remarks, assignedTo } = withoutVersion(req.body);
   const before = snapshot(enquiry);
   const firstCheck = !enquiry.checkedAt;
   let buyer = null;
@@ -1520,11 +1522,19 @@ export const checkEnquiry = asyncHandler(transactional(async (req, res) => {
     buyer = customer;
     if (customer) {
       const buyerBefore = snapshot(customer);
-      const touches = company !== undefined || contactPerson !== undefined || whatsapp !== undefined;
+      const touches = company !== undefined || contactPerson !== undefined || whatsapp !== undefined || mobile !== undefined;
       if (touches && !ownsRecord(req.user, customer)) {
         throw ApiError.forbidden(`${customer.name} belongs to another marketing person — they correct the customer`);
       }
       if (company) customer.name = company;
+      if (mobile !== undefined) {
+        const number = normalisePhone(mobile) || mobile || undefined;
+        if (number && number !== customer.mobile) {
+          const known = await findDuplicateCustomer({ mobile: number }, customer._id);
+          if (known) throw ApiError.conflict(`${known.name} (${known.code}) already has that number`);
+        }
+        customer.mobile = number;
+      }
       if (whatsapp !== undefined) {
         const number = normalisePhone(whatsapp) || whatsapp || undefined;
         if (number && number !== customer.whatsapp) {
@@ -1549,6 +1559,7 @@ export const checkEnquiry = asyncHandler(transactional(async (req, res) => {
       ...(enquiry.prospect?.toObject?.() ?? enquiry.prospect ?? {}),
       ...(company ? { name: company } : {}),
       ...(contactPerson !== undefined ? { contactPerson: contactPerson || undefined } : {}),
+      ...(mobile !== undefined ? { mobile: mobile || undefined } : {}),
       ...(whatsapp !== undefined ? { whatsapp: whatsapp || undefined } : {}),
     };
   }
@@ -2021,3 +2032,17 @@ export const enquiryClosePreviewHandler = asyncHandler(async (req, res) => {
   const { enquiryClosePreview } = await import('../services/handoff.service.js');
   res.json({ success: true, data: await enquiryClosePreview(enquiry) });
 });
+
+/** The outcomes Admin picks from when closing an enquiry [config/enquiryClosure.js]. */
+export const enquiryCloseOutcomes = asyncHandler(async (req, res) => {
+  const { closeOutcomes } = await import('../services/enquiryClosure.service.js');
+  res.json({ success: true, data: closeOutcomes() });
+});
+
+/** Admin closes the enquiry and records how it ended [enquiryClosure.service `closeEnquiryWithOutcome`]. */
+export const closeEnquiryOut = asyncHandler(transactional(async (req, res) => {
+  const enquiry = await Enquiry.findById(req.params.id).populate('customer', 'name code');
+  if (!enquiry) throw ApiError.notFound('Enquiry not found');
+  const { closeEnquiryWithOutcome } = await import('../services/enquiryClosure.service.js');
+  res.json({ success: true, data: await closeEnquiryWithOutcome(enquiry, req.user, req.body) });
+}));
