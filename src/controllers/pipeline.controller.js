@@ -1512,7 +1512,7 @@ export const checkEnquiry = asyncHandler(transactional(async (req, res) => {
   const enquiry = await Enquiry.findById(req.params.id);
   if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
   expectVersion(enquiry, req.body);
-  const { company, contactPerson, whatsapp, modelNumber, quantity, materialColour, remarks, assignedTo } = withoutVersion(req.body);
+  const { company, contactPerson, mobile, whatsapp, modelNumber, quantity, materialColour, remarks, assignedTo } = withoutVersion(req.body);
   const before = snapshot(enquiry);
   const firstCheck = !enquiry.checkedAt;
   let buyer = null;
@@ -1522,11 +1522,19 @@ export const checkEnquiry = asyncHandler(transactional(async (req, res) => {
     buyer = customer;
     if (customer) {
       const buyerBefore = snapshot(customer);
-      const touches = company !== undefined || contactPerson !== undefined || whatsapp !== undefined;
+      const touches = company !== undefined || contactPerson !== undefined || whatsapp !== undefined || mobile !== undefined;
       if (touches && !ownsRecord(req.user, customer)) {
         throw ApiError.forbidden(`${customer.name} belongs to another marketing person — they correct the customer`);
       }
       if (company) customer.name = company;
+      if (mobile !== undefined) {
+        const number = normalisePhone(mobile) || mobile || undefined;
+        if (number && number !== customer.mobile) {
+          const known = await findDuplicateCustomer({ mobile: number }, customer._id);
+          if (known) throw ApiError.conflict(`${known.name} (${known.code}) already has that number`);
+        }
+        customer.mobile = number;
+      }
       if (whatsapp !== undefined) {
         const number = normalisePhone(whatsapp) || whatsapp || undefined;
         if (number && number !== customer.whatsapp) {
@@ -1551,6 +1559,7 @@ export const checkEnquiry = asyncHandler(transactional(async (req, res) => {
       ...(enquiry.prospect?.toObject?.() ?? enquiry.prospect ?? {}),
       ...(company ? { name: company } : {}),
       ...(contactPerson !== undefined ? { contactPerson: contactPerson || undefined } : {}),
+      ...(mobile !== undefined ? { mobile: mobile || undefined } : {}),
       ...(whatsapp !== undefined ? { whatsapp: whatsapp || undefined } : {}),
     };
   }
