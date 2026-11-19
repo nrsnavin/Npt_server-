@@ -14,6 +14,7 @@ import recordsRoutes from './records.routes.js';
 import fieldRoutes from './field.routes.js';
 import taskQueryRoutes from './taskQuery.routes.js';
 import ppSampleRoutes from './ppSample.routes.js';
+import enquiryShotsRoutes from './enquiryShots.routes.js';
 import eddChangeRoutes from './eddChange.routes.js';
 import smallOrderRoutes from './smallOrder.routes.js';
 import { getPlant, getSecurity, putFloorPlanning, putHandoverLead, putPlant, putSecurity } from '../controllers/settings.controller.js';
@@ -36,6 +37,8 @@ const router = Router();
 router.use(taskQueryRoutes);
 /* The PP sample and its DCs [routes/ppSample.routes.js]. */
 router.use(ppSampleRoutes);
+/* The enquiry's screenshots on its tasks [routes/enquiryShots.routes.js]. */
+router.use(enquiryShotsRoutes);
 /* EDD change requests from Production, Printing and Assembly [routes/eddChange.routes.js]. */
 router.use(eddChangeRoutes);
 /* A small order's stock check: in stock to Dispatch, the rest to Production [routes/smallOrder.routes.js]. */

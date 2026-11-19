@@ -12,6 +12,7 @@ import { cardModelConfigured } from '../services/buyerCard.llm.js';
 import { catalogue, shortlist } from '../services/modelCatalogue.service.js';
 import { customerSuggestions, modelSuggestions } from '../services/draftSuggestions.service.js';
 import { transactional } from '../utils/transaction.js';
+import { forwardShotsTo, imageOf, mayViewEnquiryShots, shotsOf, sourceCardOf as enquiryCard } from '../services/enquiryShots.service.js';
 
 /**
  * Cards to confirm: photos of new buyers the model has read, waiting for a person [BuyerCard.js].
@@ -116,28 +117,25 @@ export const buyerCardImage = asyncHandler(async (req, res) => {
 });
 
 /**
- * The picture an enquiry was read from — the chat screenshot or the card — for whoever works the
- * enquiry, who is not always the colleague who sent it in [the dashboard's "View screenshot"].
+ * The pictures an enquiry was read from — the chat screenshots or the card — for its marketing
+ * person, Admin, and whoever works a task they were forwarded to [services/enquiryShots.service.js];
+ * shown in the Screenshots column of the enquiry and on its check card.
  */
 async function sourceCardOf(req) {
   const enquiry = await Enquiry.findById(req.params.id).select('assignedTo customer');
-  if (!enquiry || !ownsRecord(req.user, enquiry)) throw ApiError.notFound('Enquiry not found');
-  return BuyerCard.findOne({ enquiry: enquiry._id }).sort({ createdAt: 1 });
+  if (!enquiry || !(await mayViewEnquiryShots(req.user, enquiry))) throw ApiError.notFound('Enquiry not found');
+  return enquiryCard(enquiry._id);
 }
 
 export const enquirySource = asyncHandler(async (req, res) => {
   const card = await sourceCardOf(req);
-  res.json({
-    success: true,
-    data: card ? { kind: card.kind || 'card', images: 1 + (card.moreImages?.length || 0), at: card.createdAt } : null,
-  });
+  res.json({ success: true, data: shotsOf(card) });
 });
 
-export const enquirySourceImage = asyncHandler(async (req, res) => {
-  const card = await sourceCardOf(req);
+/** Streams one picture of a card: `n` 0 the first, 1, 2… the later screenshots. */
+export function sendCardImage(res, card, n) {
   if (!card) throw ApiError.notFound('This enquiry was not read from a picture');
-  const n = Number(req.query.n) || 0;
-  const image = n === 0 ? card : card.moreImages?.[n - 1];
+  const image = imageOf(card, n);
   if (!image) throw ApiError.notFound('Photo not found');
   const stream = streamOf(image.imageKey);
   if (!stream) throw ApiError.notFound('Photo not found');
@@ -145,6 +143,10 @@ export const enquirySourceImage = asyncHandler(async (req, res) => {
   res.setHeader('Cache-Control', 'private, max-age=3600');
   stream.on('error', () => res.destroy());
   stream.pipe(res);
+}
+
+export const enquirySourceImage = asyncHandler(async (req, res) => {
+  sendCardImage(res, await sourceCardOf(req), req.query.n);
 });
 
 export const uploadBuyerCard = asyncHandler(async (req, res) => {
@@ -187,6 +189,8 @@ export const confirmBuyerCard = asyncHandler(transactional(async (req, res) => {
     await enquiry.save();
     if (task) {
       raised = await sendHandoff({ enquiry, kind: task.kind, note: task.note, brief: task.brief, user: req.user });
+      /* The screenshots the draft was read from go with its first task unless the person unticked it. */
+      if (task.forwardShots !== false) await forwardShotsTo(raised, { card });
     }
     made.enquiry = enquiry;
   }

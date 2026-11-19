@@ -106,6 +106,11 @@ export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) =>
     : [];
   /* A hanger that needs assembly: Assembly is tasked beside Production, on the same enquiry. */
   const assembly = req.body.kind === 'ask_edd' ? await raiseAssemblyWith(task, req.user) : null;
+  /* The screenshots the enquiry was made from, forwarded on the form — to Assembly's task too, raised beside it. */
+  if (req.body.forwardShots === true && task?.department) {
+    const { forwardShotsTo } = await import('../services/enquiryShots.service.js');
+    if (await forwardShotsTo(task) && assembly) await forwardShotsTo(assembly);
+  }
   /*
    * Create Quotation raises the costing sheet on the enquiry [handoff `openWorkRecord`]. The
    * reply names it, so somebody who costs quotations themselves can be taken straight to it.

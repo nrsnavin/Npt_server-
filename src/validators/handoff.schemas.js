@@ -24,6 +24,8 @@ export const handoffSchema = z.object({
   order: z.string().regex(/^[0-9a-f]{24}$/i, 'Not a valid id').optional().or(z.literal('')).transform((value) => value || undefined),
   /** Marketing's EDD, given on the form of a task the queues run by [services/eddAsk.service.js]. */
   edd: z.string().trim().max(10).optional().or(z.literal('')),
+  /** Forward the screenshots the enquiry was made from to this task [services/enquiryShots.service.js]. */
+  forwardShots: z.boolean().optional(),
 });
 
 /** A department task raised for a team without an enquiry; a customer may be named. */

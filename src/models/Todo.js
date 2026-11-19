@@ -87,6 +87,11 @@ const todoSchema = new mongoose.Schema(
      */
     brief: { type: mongoose.Schema.Types.Mixed, default: undefined },
     /**
+     * The screenshots the enquiry was made from (WhatsApp chat, email, visiting card) were forwarded
+     * to this task, so its card shows them [services/enquiryShots.service.js].
+     */
+    shotsForwarded: { type: Boolean, default: undefined },
+    /**
      * Where the goods go after this team [handoff.service `decideRouting`]. On Production's task:
      * which models need printing or assembly (`models`), the teams it hands to (`handsTo`), when it
      * was decided and the hand-over date it gave. On Printing's and Assembly's: the models they
