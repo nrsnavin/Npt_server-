@@ -107,9 +107,10 @@ export const sendEnquiryHandoff = asyncHandler(transactional(async (req, res) =>
   /* A hanger that needs assembly: Assembly is tasked beside Production, on the same enquiry. */
   const assembly = req.body.kind === 'ask_edd' ? await raiseAssemblyWith(task, req.user) : null;
   /* The screenshots the enquiry was made from, forwarded on the form — to Assembly's task too, raised beside it. */
-  if (req.body.forwardShots === true && task?.department) {
-    const { forwardShotsTo } = await import('../services/enquiryShots.service.js');
-    if (await forwardShotsTo(task) && assembly) await forwardShotsTo(assembly);
+  if (typeof req.body.forwardShots === 'boolean' && task?.department) {
+    const { applyShotsChoice } = await import('../services/enquiryShots.service.js');
+    await applyShotsChoice(task, req.body.forwardShots, req.user);
+    if (assembly) await applyShotsChoice(assembly, req.body.forwardShots, req.user);
   }
   /*
    * Create Quotation raises the costing sheet on the enquiry [handoff `openWorkRecord`]. The
@@ -643,6 +644,11 @@ export const handoffDocuments = asyncHandler(async (req, res) => {
 /* Dispatch's "Ask Production": that department's task, raised from this one. */
 export const handoffAsk = asyncHandler(transactional(async (req, res) => {
   const { task, raised, addedTo } = await askFromTask(await taskFor(req), req.user, req.body);
+  /* Forward the screenshots, as ticked on the ask's form — a team that has them passes them on [enquiryShots.service]. */
+  if (typeof req.body.forwardShots === 'boolean' && raised?._id) {
+    if (addedTo) raised.$locals.addedTo = true;
+    await (await import('../services/enquiryShots.service.js')).applyShotsChoice(raised, req.body.forwardShots, req.user);
+  }
   /* Asked from a task with changed details, and the enquiry to follow them [itemDetails.service]. */
   const enquiryId = task.enquiry?._id || task.enquiry;
   if (req.body.updateEnquiry && enquiryId && Array.isArray(req.body.brief?.items)) {

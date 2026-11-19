@@ -209,6 +209,8 @@ export const listFinishingQueue = asyncHandler(async (req, res) => {
         dueDate: task.dueDate || null, late: Boolean(task.dueDate && task.dueDate < now), priority: task.priority || 'normal',
         brief: task.brief || {}, createdAt: task.createdAt, updatedAt: task.updatedAt, raisedBy: person(task.createdBy), latest: latestOf(task),
         modelStatuses: task.modelStatuses || [], modelDates: task.modelDates || [], routing: task.routing || null, customer: task.customer || null,
+        /* The enquiry's screenshots were forwarded to it — a small picture on the row [enquiryShots.service]. */
+        shotsForwarded: task.shotsForwarded || undefined,
         attention: task.attention ? { kind: task.attention.kind, note: task.attention.note, at: task.attention.at } : null,
         /*
          * What the task panel opened from the row shows [web: components/TaskPanel.jsx]: the enquiry

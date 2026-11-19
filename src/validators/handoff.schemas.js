@@ -154,6 +154,8 @@ export const taskAskSchema = z.object({
   brief: z.record(z.string(), z.unknown()).optional(),
   priority: z.enum(['low', 'normal', 'high']).optional(),
   requiredDate: z.string().trim().max(40).optional().or(z.literal('')),
+  /** Pass the enquiry's screenshots on to the task asked for, or not [services/enquiryShots.service.js]. */
+  forwardShots: z.boolean().optional(),
 });
 
 /** Correcting what the task was told — only the questions marked `editable`; checked by the service. */

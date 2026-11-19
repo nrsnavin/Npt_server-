@@ -529,6 +529,17 @@ todoSchema.pre('save', function keepOpenKey() {
 });
 
 /*
+ * The enquiry's screenshots carry down the chain [services/enquiryShots.service.js]: once they were
+ * forwarded to one of its tasks, every department task raised on it afterwards — by a form or by
+ * the app itself (Production after the SO, Printing and Assembly beside it, Dispatch when the goods
+ * are ready) — shows them too. A form left unticked takes them off its own task after the save.
+ */
+todoSchema.pre('save', async function carryScreenshots() {
+  if (!this.isNew || !this.enquiry || !this.kind || this.shotsForwarded !== undefined) return;
+  if (await this.constructor.exists({ enquiry: this.enquiry, shotsForwarded: true })) this.shotsForwarded = true;
+});
+
+/*
  * A task just raised for a department rings its team — push and email, once the transaction that
  * raised it has committed [services/taskAlert.service.js]. Loaded on the first task rather than
  * with the model, so the model owes the alert service nothing at start-up.

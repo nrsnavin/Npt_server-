@@ -122,7 +122,7 @@ export async function askForUrgency(task) {
  */
 export async function deliveryQueue({ now = new Date(), user = null } = {}) {
   const tasks = await Todo.find({ kind: 'invoice_dispatch', completed: false })
-    .select('title kind department fromDepartment notes enquiry customer order brief status statusHistory updates user createdAt createdBy delivery priority chain dueDate completed modelStatuses')
+    .select('title kind department fromDepartment notes enquiry customer order brief status statusHistory updates user createdAt createdBy delivery priority chain dueDate completed modelStatuses shotsForwarded')
     .populate([
       { path: 'order', select: 'number' },
       { path: 'updates.by', select: 'name' },

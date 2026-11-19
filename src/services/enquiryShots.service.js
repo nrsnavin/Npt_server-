@@ -62,3 +62,23 @@ export async function forwardShotsTo(task, { card } = {}) {
   }
   return true;
 }
+
+/**
+ * The Forward the screenshots tick on a form that raised a task: ticked, they go to it (when this
+ * person may see them — the enquiry's marketing person, Admin, or a team that was forwarded them);
+ * unticked, a task the form just raised goes without them, even when they carry down the chain.
+ * Left out (an older screen), the chain decides.
+ */
+export async function applyShotsChoice(task, choice, user) {
+  if (!task?._id || !task.enquiry || choice === undefined) return;
+  if (choice === true) {
+    const Enquiry = (await import('../models/Enquiry.js')).default;
+    const enquiry = await Enquiry.findById(idOf(task.enquiry)).select('assignedTo customer');
+    if (enquiry && (await mayViewEnquiryShots(user, enquiry))) await forwardShotsTo(task);
+    return;
+  }
+  if (choice === false && task.shotsForwarded && !task.$locals?.addedTo) {
+    await Todo.updateOne({ _id: task._id }, { $unset: { shotsForwarded: 1 } });
+    task.shotsForwarded = undefined;
+  }
+}
