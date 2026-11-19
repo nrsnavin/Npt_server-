@@ -361,6 +361,8 @@ export const buyerCardConfirmSchema = z.object({
     kind: z.enum(['sample_request', 'create_quotation']),
     note: z.string().trim().max(1000).optional(),
     brief: z.record(z.string(), z.any()).optional(),
+    /** Forward the draft's screenshots to the task [services/enquiryShots.service.js]; on unless false. */
+    forwardShots: z.boolean().optional(),
   }).optional(),
 });
 
