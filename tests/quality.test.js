@@ -29,6 +29,9 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import { withEnquiries } from './support/onEnquiry.js';
 
+/* The app's own reminder to-dos are off in the plant [task.service `autoTodos`]; these tests describe them, so they run with them on. */
+process.env.AUTO_TODOS = 'on';
+
 process.env.JWT_SECRET = 'quality-test-secret';
 /*
  * The strict policy, on for this file only.

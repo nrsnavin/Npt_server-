@@ -15,6 +15,9 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import { dispatchLoad } from './support/dispatchLoad.mjs';
 
+/* The app's own reminder to-dos are off in the plant [task.service `autoTodos`]; these tests describe them, so they run with them on. */
+process.env.AUTO_TODOS = 'on';
+
 process.env.RATE_LIMIT_MAX = '100000';
 process.env.JWT_SECRET = 'records-test-secret';
 process.env.WHATSAPP_WEBHOOK_TOKEN = 'records-webhook-token';

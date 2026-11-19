@@ -221,6 +221,11 @@ export function startBackground() {
     .then(({ ensureDefaultRoutes }) => ensureDefaultRoutes())
     .then(({ added, linked }) => { if (added || linked) console.log(`Delivery routes: ${added} added${linked ? `, ${linked} customer(s) linked from their landmark` : ''}`); })
     .catch((error) => console.error('Delivery routes set-up failed:', error.message));
+  /* The to-dos the app wrote by itself, cleared from everyone's list — it writes none any more [task.service `clearAutoTodos`]. Idempotent. */
+  import('./services/task.service.js')
+    .then(({ clearAutoTodos }) => clearAutoTodos())
+    .then(({ cleared }) => { if (cleared) console.log(`To-dos: ${cleared} written by the app cleared`); })
+    .catch((error) => console.error('Clearing app to-dos failed:', error.message));
   /* Enquiries whose sales stage fell behind (or ran ahead of) their task stage, brought in line once [salesStage.service]. Idempotent. */
   import('./services/salesStage.service.js')
     .then(({ realignSalesStatuses }) => realignSalesStatuses())

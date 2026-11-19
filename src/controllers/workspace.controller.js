@@ -74,7 +74,18 @@ function dayBounds(reference = new Date()) {
  * hands takes its tasks with it, and a marketing person still sees only their own book. An
  * admin is not scoped, as everywhere else.
  */
+/*
+ * An enquiry's holding record — New enquiry, Back to Marketing, My payment follow-up — says whose
+ * the enquiry is; it is the enquiry, on the Enquiries list, not a to-do. Kept off the To-do list
+ * [the plant's call: no to-dos the app writes by itself], as the desks already keep it off theirs.
+ */
+const NOT_A_HOLDER = { $nor: [{ holds: true, kind: { $in: ['new_enquiry', 'back_to_marketing', 'my_payment_followup'] } }] };
+
 async function todoScopeFilter(req) {
+  return { $and: [await scopeOf(req), NOT_A_HOLDER] };
+}
+
+async function scopeOf(req) {
   const scope = req.query.scope || 'mine';
 
   if (scope === 'department') {
@@ -186,7 +197,8 @@ export const needsMeToday = asyncHandler(async (req, res) => {
     return;
   }
 
-  const mine = { department: { $in: departmentsOf(req.user) }, completed: false };
+  /* Not an enquiry's holding record — it is the enquiry, not a job [NOT_A_HOLDER]. */
+  const mine = { department: { $in: departmentsOf(req.user) }, completed: false, $and: [NOT_A_HOLDER] };
   const startOfToday = dayBounds().start;
 
   const [handedOver, urgent, asked] = await Promise.all([
@@ -553,7 +565,8 @@ export const reminders = asyncHandler(async (req, res) => {
    * every screen, and it used to load every open dated task — on a long-running account, hundreds
    * of rows on each page change, to draw a badge and three short lists.
    */
-  const mine = { user: req.user._id, completed: false };
+  /* Not an enquiry's holding record [NOT_A_HOLDER]: the reminders are to-dos, not the enquiries. */
+  const mine = { user: req.user._id, completed: false, $and: [NOT_A_HOLDER] };
   const bands = {
     overdue: { ...mine, dueDate: { $lt: start } },
     today: { ...mine, dueDate: { $gte: start, $lt: end } },

@@ -30,6 +30,9 @@ import {
   POD_GRACE_DAYS, byDispatchUrgency, dispatchUrgencyOf,
 } from '../src/services/dispatchUrgency.service.js';
 
+/* The app's own reminder to-dos are off in the plant [task.service `autoTodos`]; these tests describe them, so they run with them on. */
+process.env.AUTO_TODOS = 'on';
+
 process.env.JWT_SECRET = 'dispatch-day-test-secret';
 
 let mongo;

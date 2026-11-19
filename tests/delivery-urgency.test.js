@@ -15,6 +15,9 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import { dueByFor, urgencyFromSchedule, SCHEDULE_CHOICES } from '../src/config/deliveryUrgency.js';
 
+/* The app's own reminder to-dos are off in the plant [task.service `autoTodos`]; these tests describe them, so they run with them on. */
+process.env.AUTO_TODOS = 'on';
+
 process.env.RATE_LIMIT_MAX = '100000';
 process.env.JWT_SECRET = 'delivery-urgency-test-secret';
 

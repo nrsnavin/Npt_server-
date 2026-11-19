@@ -13,6 +13,9 @@ import assert from 'node:assert/strict';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 
+/* The app's own reminder to-dos are off in the plant [task.service `autoTodos`]; these tests describe them, so they run with them on. */
+process.env.AUTO_TODOS = 'on';
+
 process.env.JWT_SECRET = 'handoffs-test-secret';
 
 /* What went to WhatsApp — printed, as no provider is configured here. */

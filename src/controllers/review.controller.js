@@ -160,6 +160,8 @@ export const raiseFinding = asyncHandler(async (req, res) => {
     link: finding.link,
     /* One open task per problem per department, however many people press it. */
     originKey: `review:${finding.department}:${finding.kind}`,
+    /* A person pressed Raise task — the one to-do still written on request. */
+    byHand: req.user._id,
   });
 
   res.status(201).json({ success: true, data: task });
