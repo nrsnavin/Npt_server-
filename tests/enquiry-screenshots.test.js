@@ -149,3 +149,34 @@ test('an enquiry typed in has nothing to forward', async () => {
   const forward = await api(`/api/workspace/todos/${sent.json.data.task._id}/screenshots/forward`, { method: 'POST', token: nandhini });
   assert.equal(forward.status, 400);
 });
+
+test('once forwarded, later tasks on the enquiry carry them; unticked on a form, that task goes without', async () => {
+  const enquiry = await fromScreenshots();
+  const quoted = await quote(enquiry._id, { forwardShots: true });
+  assert.equal(quoted.json.data.task.shotsForwarded, true);
+  const Todo = mongoose.model('Todo');
+
+  /* A task the app raises itself, with no form: it carries them. */
+  const later = await Todo.create({ title: 'Production', department: 'production', kind: 'ask_edd', enquiry: enquiry._id });
+  assert.equal(later.shotsForwarded, true, 'carried down the chain');
+
+  /* A form with the tick left off: that task only goes without. */
+  const sample = await api(`/api/enquiries/${enquiry._id}/handoffs`, {
+    method: 'POST', token: nandhini,
+    body: { kind: 'sample_request', brief: { items: [{ model: 'NH-420', quantity: '2' }] }, forwardShots: false },
+  });
+  assert.equal(sample.status, 201, sample.json.message);
+  assert.ok(!sample.json.data.task.shotsForwarded, 'unticked');
+  assert.equal((await Todo.findById(sample.json.data.task._id)).shotsForwarded, undefined);
+  assert.equal((await Todo.findById(quoted.json.data.task._id)).shotsForwarded, true, 'the earlier task keeps them');
+
+  /* A team that was forwarded them sees them on the enquiry too, so its own forms can pass them on. */
+  assert.equal((await api(`/api/enquiries/${enquiry._id}/source`, { token: quoter })).json.data.images, 2);
+});
+
+test('nothing forwarded yet: tasks raised later carry nothing', async () => {
+  const enquiry = await fromScreenshots();
+  const Todo = mongoose.model('Todo');
+  const later = await Todo.create({ title: 'Production', department: 'production', kind: 'ask_edd', enquiry: enquiry._id });
+  assert.equal(later.shotsForwarded, undefined);
+});

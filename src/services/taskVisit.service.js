@@ -43,7 +43,7 @@ export async function samplingTasksFor(enquiryIds) {
   const { default: Todo } = await import('../models/Todo.js');
   const ids = [...new Set((enquiryIds || []).filter(Boolean).map(String))];
   if (!ids.length) return new Map();
-  const tasks = await Todo.find({ enquiry: { $in: ids }, kind: 'sample_request' }).select('enquiry completed createdAt visits').sort({ completed: 1, createdAt: -1 }).lean();
+  const tasks = await Todo.find({ enquiry: { $in: ids }, kind: 'sample_request' }).select('enquiry completed createdAt visits shotsForwarded').sort({ completed: 1, createdAt: -1 }).lean();
   const byEnquiry = new Map();
   for (const task of tasks) if (!byEnquiry.has(String(task.enquiry))) byEnquiry.set(String(task.enquiry), task);
   return byEnquiry;

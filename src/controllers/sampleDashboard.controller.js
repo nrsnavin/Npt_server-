@@ -526,6 +526,8 @@ export const sampleQueue = asyncHandler(async (req, res) => {
       /* Record location from the row: the enquiry's Sampling task, and the visits on it — none for a sample with no enquiry or no Sampling task. */
       visit: visitTask ? visitSummary(visitTask) : null,
       fieldVisit: visitTask ? fieldVisits.get(String(visitTask._id)) || null : null,
+      /* The enquiry's screenshots, forwarded to its Sampling task — a small picture on the row [enquiryShots.service]. */
+      shotsTask: visitTask?.shotsForwarded ? { _id: visitTask._id, shotsForwarded: true } : null,
       link: `/samples/${sample._id}`,
     };
   });

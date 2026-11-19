@@ -12,7 +12,7 @@ import { cardModelConfigured } from '../services/buyerCard.llm.js';
 import { catalogue, shortlist } from '../services/modelCatalogue.service.js';
 import { customerSuggestions, modelSuggestions } from '../services/draftSuggestions.service.js';
 import { transactional } from '../utils/transaction.js';
-import { forwardShotsTo, imageOf, mayViewEnquiryShots, shotsOf, sourceCardOf as enquiryCard } from '../services/enquiryShots.service.js';
+import { applyShotsChoice, forwardShotsTo, imageOf, mayViewEnquiryShots, shotsOf, sourceCardOf as enquiryCard } from '../services/enquiryShots.service.js';
 
 /**
  * Cards to confirm: photos of new buyers the model has read, waiting for a person [BuyerCard.js].
@@ -191,6 +191,7 @@ export const confirmBuyerCard = asyncHandler(transactional(async (req, res) => {
       raised = await sendHandoff({ enquiry, kind: task.kind, note: task.note, brief: task.brief, user: req.user });
       /* The screenshots the draft was read from go with its first task unless the person unticked it. */
       if (task.forwardShots !== false) await forwardShotsTo(raised, { card });
+      else await applyShotsChoice(raised, false, req.user);
     }
     made.enquiry = enquiry;
   }

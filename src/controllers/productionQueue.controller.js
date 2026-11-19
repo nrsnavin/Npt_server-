@@ -219,6 +219,8 @@ export const listProductionQueue = asyncHandler(async (req, res) => {
         _id: task._id, status: task.status, statusLabel: statusLabelOf(task), issue: issueOf(task), with: person(task.user),
         dueDate: task.dueDate || null, late: Boolean(task.dueDate && task.dueDate < now), priority: task.priority || 'normal',
         brief: task.brief || {}, createdAt: task.createdAt, raisedBy: person(task.createdBy), latest: latestOf(task), recent: recentOf(task),
+        /* The enquiry's screenshots were forwarded to it — a small picture on the row [enquiryShots.service]. */
+        shotsForwarded: task.shotsForwarded || undefined,
         attention: task.attention ? { note: task.attention.note, at: task.attention.at } : null,
       },
       enquiry: {
