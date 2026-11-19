@@ -42,11 +42,23 @@ async function departmentOf(user) {
  * them having to know. A user with no department gets no task rather than an unfiled one: the
  * alternative is a row on a queue nobody reads.
  */
+/*
+ * The app no longer writes to-dos by itself [the plant's call]: the reminders it used to raise —
+ * EDD asks, payment confirmations, sample and production escalations, maintenance, things that
+ * came back — each still show on the task, the enquiry, the sample or the Payments screen they
+ * are about, and the To-do list holds only what people write, and the department tasks they work.
+ * Off unless AUTO_TODOS=on (kept switchable, and on in the tests that describe those reminders).
+ * `raiseTask` and `raiseDepartmentTask` answer null, which every caller already reads as "nobody
+ * to ask"; `byHand` is a person pressing a button to raise one (the review's Raise task).
+ */
+export const autoTodos = () => process.env.AUTO_TODOS === 'on';
+
 export async function raiseTask({
   user, title, notes, dueDate, priority = 'normal', link, originKey,
-  department, customer, order,
+  department, customer, order, byHand = null,
 }) {
   if (!user || !title) return null;
+  if (!autoTodos() && !byHand) return null;
 
   const onQueue = department || (await departmentOf(user));
   if (!onQueue) return null;
@@ -58,7 +70,7 @@ export async function raiseTask({
 
   return createOnce({
     user, department: onQueue, title, notes, dueDate, priority, link, originKey,
-    customer, order, system: true,
+    customer, order, ...(byHand ? { createdBy: byHand, system: false } : { system: true }),
   }, { user, originKey, completed: false });
 }
 
@@ -88,9 +100,10 @@ async function createOnce(fields, sameTask) {
  * who has already started.
  */
 export async function raiseDepartmentTask({
-  department, title, notes, dueDate, priority = 'normal', link, originKey, customer, order, enquiry,
+  department, title, notes, dueDate, priority = 'normal', link, originKey, customer, order, enquiry, byHand = null,
 }) {
   if (!department || !title) return null;
+  if (!autoTodos() && !byHand) return null;
 
   if (originKey) {
     const existing = await Todo.findOne({ department, originKey, completed: false });
@@ -98,7 +111,7 @@ export async function raiseDepartmentTask({
   }
 
   return createOnce(
-    { department, title, notes, dueDate, priority, link, originKey, customer, order, enquiry, system: true },
+    { department, title, notes, dueDate, priority, link, originKey, customer, order, enquiry, ...(byHand ? { createdBy: byHand, system: false } : { system: true }) },
     { department, originKey, completed: false }
   );
 }
@@ -115,4 +128,16 @@ export async function resolveTasks(originKey) {
     { $set: { completed: true, completedAt: new Date() }, $unset: { openKey: 1 } }
   );
   return result.modifiedCount || 0;
+}
+
+/**
+ * The to-dos the app wrote by itself before it stopped [`autoTodos`], cleared from everyone's list
+ * once at start: written by the app (`system`) and not a department workflow task (no `kind`).
+ * What people typed, and every Sample, Production, Dispatch, SO… task, stay. Idempotent — with
+ * nothing raised automatically any more, a second run finds nothing.
+ */
+export async function clearAutoTodos() {
+  if (autoTodos()) return { cleared: 0 };
+  const result = await Todo.deleteMany({ system: true, kind: { $exists: false } });
+  return { cleared: result.deletedCount || 0 };
 }

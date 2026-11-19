@@ -27,6 +27,9 @@ import {
   PIECES_PER_DAY, SOON_DAYS, byUrgency, urgencyOf,
 } from '../src/services/productionUrgency.service.js';
 
+/* The app's own reminder to-dos are off in the plant [task.service `autoTodos`]; these tests describe them, so they run with them on. */
+process.env.AUTO_TODOS = 'on';
+
 process.env.JWT_SECRET = 'production-day-test-secret';
 
 let mongo;

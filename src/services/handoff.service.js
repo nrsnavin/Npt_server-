@@ -126,6 +126,9 @@ export async function mayHandOff(user, enquiry) {
 /** Where a sender's "it came back" task goes: to them, on their own department's list. */
 async function backToSender(task, { title, notes, user }) {
   if (!task.createdBy || idOf(task.createdBy) === idOf(user._id)) return null;
+  /* No to-do written by the app any more [task.service `autoTodos`]: the sender hears it, and sees it on the task. */
+  const { autoTodos } = await import('./task.service.js');
+  if (!autoTodos()) return null;
   return Todo.create({
     user: task.createdBy,
     department: task.fromDepartment || 'marketing',

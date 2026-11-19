@@ -23,6 +23,9 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import mongoose from 'mongoose';
 import { withEnquiries } from './support/onEnquiry.js';
 
+/* The app's own reminder to-dos are off in the plant [task.service `autoTodos`]; these tests describe them, so they run with them on. */
+process.env.AUTO_TODOS = 'on';
+
 /* This file now drives several hundred calls in a few seconds — each `released()` books an
    order, ticks eight checks and releases it — which the deployed ceiling of 300 a minute
    correctly refuses. The limiter stays mounted; only the number moves. */
