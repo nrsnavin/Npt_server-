@@ -1932,6 +1932,49 @@ export function closesModel(task, key) {
   return EDD_TASK_KINDS.includes(task.kind) && Boolean(step.handsTo || step.readyForDispatch);
 }
 
+/**
+ * Ready for all, from the Production, Printing and Assembly queues [web: the tick on each job]:
+ * every open model on the task moves on in one go — to the team after this one where Production
+ * routed it there (Handed to Printing / Handed to Assembly), Ready for Dispatch where it ends here.
+ * On Printing's and Assembly's tasks, goods not yet marked received are received first: they are
+ * ready, so they came. No remark is asked; the move says who pressed it. Returns what moved.
+ */
+export async function readyAllOnTask(task, user) {
+  if (!EDD_TASK_KINDS.includes(task.kind)) fail('Ready for all is for Production, Printing and Assembly jobs');
+  if (task.completed) fail('This job is already closed');
+  openHandoff(task, user);
+  const note = `Marked ready from the queue by ${user.name}`;
+  const has = (key) => statusesOf(task).some((entry) => entry.key === key);
+  const all = modelsOfTask(task);
+  if (!all.length) {
+    const done = await setTaskStatus(task, user, { status: 'ready_dispatch', note });
+    return { task: done, moved: [{ status: 'ready_dispatch', models: [] }] };
+  }
+  const rows = modelStatusesOf(task);
+  const open = rows.length ? all.filter((model) => !closesModel(task, rows.find((row) => row.model === model)?.status)) : all;
+  if (!open.length) return { task, moved: [] };
+  const routes = await modelRoutes(task);
+  const groups = [['handed_printing', []], ['handed_assembly', []], ['ready_dispatch', []]];
+  for (const model of open) {
+    const row = routes.get(model);
+    const to = goesTo(task, row, 'printing') && has('handed_printing') ? 0 : goesTo(task, row, 'assembling') && has('handed_assembly') ? 1 : 2;
+    groups[to][1].push(model);
+  }
+  let current = task;
+  if (GOODS_FROM[task.kind] && task.routing?.byProduction && has('goods_received')) {
+    const received = task.routing?.receivedModels || {};
+    const missing = open.filter((model) => !received[model]);
+    if (missing.length) current = await setTaskStatus(current, user, { status: 'goods_received', note, models: missing });
+  }
+  const moved = [];
+  for (const [status, models] of groups) {
+    if (!models.length) continue;
+    current = await setTaskStatus(current, user, { status, note, models });
+    moved.push({ status, models });
+  }
+  return { task: current, moved };
+}
+
 /** Production's routing rows by model — on its own task, or the enquiry's latest Production task. */
 async function modelRoutes(task) {
   const rows = task.kind === 'ask_edd'

@@ -119,6 +119,22 @@ test('a new request is on the queue with who asked, what for, and the tiles coun
   assert.deepEqual(data.statuses.map((entry) => entry.key), ['received', 'not_available', 'under_process', 'ready', 'sent', 'closed']);
 });
 
+test('each row says where it goes: the buyer’s delivery road, area and landmark from the customer master', async () => {
+  const DeliveryRoute = mongoose.model('DeliveryRoute');
+  const Customer = mongoose.model('Customer');
+  const road = await DeliveryRoute.create({ name: `Avinashi Road ${Date.now()}`, areas: 'Kumar Nagar, SAP Theatre', days: ['mon', 'thu'] });
+  await Customer.updateOne({ _id: customerId }, { $set: { deliveryRoute: road._id, area: 'Kumar Nagar', landmark: 'Opp. Murugan Temple', city: 'Tiruppur' } });
+  const { sample } = await requestSample();
+  const row = (await queue()).rows.find((entry) => String(entry._id) === String(sample._id));
+  assert.equal(row.delivery.route.name, road.name);
+  assert.equal(row.delivery.route.areas, 'Kumar Nagar, SAP Theatre');
+  assert.deepEqual(row.delivery.route.days, ['mon', 'thu']);
+  assert.deepEqual([row.delivery.area, row.delivery.landmark, row.delivery.city], ['Kumar Nagar', 'Opp. Murugan Temple', 'Tiruppur']);
+  await Customer.updateOne({ _id: customerId }, { $unset: { deliveryRoute: 1 } });
+  const bare = (await queue()).rows.find((entry) => String(entry._id) === String(sample._id));
+  assert.equal(bare.delivery.route, null, 'no road set: it says so');
+});
+
 test('the tiles count exactly what they are called: late, due today, ready to send', async () => {
   const Sample = mongoose.model('Sample');
   const { sample: late } = await requestSample();

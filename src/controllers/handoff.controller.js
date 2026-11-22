@@ -28,7 +28,7 @@ import { deliveryRiskFor } from '../services/deliveryRisk.service.js';
 import { DEPARTMENTS, DEPARTMENT_KEYS, deskOf } from '../config/modules.js';
 import {
   allDepartmentFigures, completeHandoff, departmentDashboard, enquiriesHeldBy, enquiriesAtStages, mayHandOff, mayMove,
-  WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, closeByAdmin, escalateToAdmin, resolveEscalation, sendHandoff, setTaskEdd, setTaskStatus, taskPrefill,
+  WAITING_ON_POPULATE, askFromTask, attentionFor, dispatchBaskets, raiseTeamTask, teamTaskPrefill, markResultSent, dismissNotice, editTaskBrief, noticesFor, readNotice, productionDates, finishWithResult, markAttentionSeen, rescheduleHandoff, resultStepFor, returnHandoff, closeByAdmin, escalateToAdmin, resolveEscalation, sendHandoff, setTaskEdd, setTaskStatus, readyAllOnTask, taskPrefill,
   updateHandoff, mayWorkOnHandoff, mayReleaseHeld, modelReadiness, registerLists, raiseAssemblyWith, routingFor, decideRouting, addToProductionQueue, addToWorkQueue,
   dispatchSheet, recordDispatchLoad, addLoadProof, shipmentsOf, shipmentForLr, attachShipmentLr, markShipmentSent,
 } from '../services/handoff.service.js';
@@ -530,6 +530,30 @@ export const handoffStatus = asyncHandler(withRequestLock(moneyMoveKey, transact
   const shown = floorDone.length ? await Todo.findById(task._id) : task;
   res.json({ success: true, data: await taskWithClosable(await shown.populate(TASK_POPULATE)), floor: floorDone });
 })));
+
+/**
+ * Ready for all, from the Production, Printing and Assembly queues: the ticked jobs move on in one
+ * press [handoff.service `readyAllOnTask`] — each in its own transaction, so one that cannot move
+ * (a job another team holds, goods still on their way…) says why without holding up the rest.
+ */
+export const handoffReadyAll = asyncHandler(async (req, res) => {
+  const ids = [...new Set(req.body.tasks.map(String))];
+  const results = [];
+  for (const id of ids) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const { task, moved } = await inTransaction(async () => {
+        const found = await Todo.findById(id);
+        if (!found) throw ApiError.notFound('Task not found');
+        return readyAllOnTask(found, req.user);
+      }, { label: 'ready-all' });
+      results.push({ _id: id, ok: true, title: task.title, status: task.status, moved });
+    } catch (error) {
+      results.push({ _id: id, ok: false, message: error.message });
+    }
+  }
+  res.json({ success: true, data: { results, moved: results.filter((row) => row.ok).length, refused: results.filter((row) => !row.ok).length } });
+});
 
 /** What the move form asks before a Production status move: the press, the run, the presses free [productionStep.service]. */
 export const handoffPressStep = asyncHandler(async (req, res) => {

@@ -441,7 +441,8 @@ export const sampleQueue = asyncHandler(async (req, res) => {
     )
     .populate('requestedBy', 'name')
     .populate('assignedTo', 'name')
-    .populate('customer', 'name')
+    /* The buyer's road, area and landmark — the By road view groups the bag by where it goes [web: SampleRoads]. */
+    .populate({ path: 'customer', select: 'name mobile area landmark city address deliveryRoute', populate: { path: 'deliveryRoute', select: 'name areas days active' } })
     .populate('enquiry', 'number status')
     /* Each row's two pictures, as thumbnails on the queue — marketing sees the piece without opening it. */
     .populate('items.photo', 'key')
@@ -477,6 +478,18 @@ export const sampleQueue = asyncHandler(async (req, res) => {
       _id: sample._id,
       number: sample.number,
       customer: sample.customer ? { _id: sample.customer._id, name: sample.customer.name } : null,
+      /* Where it goes: the buyer's delivery road from the customer master, and the area and landmark a driver asks for. */
+      delivery: sample.customer ? {
+        route: sample.customer.deliveryRoute?._id ? {
+          _id: sample.customer.deliveryRoute._id, name: sample.customer.deliveryRoute.name,
+          areas: sample.customer.deliveryRoute.areas || null, days: sample.customer.deliveryRoute.days || [],
+        } : null,
+        area: sample.customer.area || null,
+        landmark: sample.customer.landmark || null,
+        city: sample.customer.city || null,
+        address: sample.customer.address || null,
+        mobile: sample.customer.mobile || null,
+      } : null,
       enquiry: sample.enquiry ? { _id: sample.enquiry._id, number: sample.enquiry.number, status: sample.enquiry.status } : null,
       requestedBy: sample.requestedBy?.name || null,
       assignedTo: sample.assignedTo ? { _id: sample.assignedTo._id, name: sample.assignedTo.name } : null,

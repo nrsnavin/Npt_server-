@@ -40,10 +40,10 @@ import {
 import { notificationStatus, pushKey, renewPush, sendTestNotification, subscribePush, unsubscribePush } from '../controllers/push.controller.js';
 import { createView, deleteView, listViews, updateView } from '../controllers/savedView.controller.js';
 import {
-  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffWorkQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, setTaskJobEdd, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments, listTaskPdfs, handoffDispatchSheet, handoffDispatchLoad, handoffLoadProof, handoffReceipts, handoffSendResult, handoffShipments, handoffDues, handoffLinkOptions, handoffLinkEnquiry, handoffStartFrom, listTeamJobsHandler, teamJobHandler, nameJobBuyerHandler, closeTeamJobHandler, handoffPressStep, shipmentPaper,
+  handoffBrief, handoffDone, handoffEdd, handoffConfirmEdd, productionInChargeList, handoffRouting, handoffRoute, handoffQueue, handoffWorkQueue, handoffSeen, handoffReschedule, handoffResult, handoffSendBack, handoffAdminClose, handoffEscalate, handoffResolveEscalation, handoffDeliveryUrgency, handoffStatus, handoffUpdate, listNotices, markNoticeRead, removeNotice, handoffAsk, createTeamTask, setTaskJobEdd, teamTaskFormPrefill, taskRegisters, attachTeamTaskPdf, handoffDocument, handoffDocuments, listTaskPdfs, handoffDispatchSheet, handoffDispatchLoad, handoffLoadProof, handoffReceipts, handoffSendResult, handoffShipments, handoffDues, handoffLinkOptions, handoffLinkEnquiry, handoffStartFrom, listTeamJobsHandler, teamJobHandler, nameJobBuyerHandler, closeTeamJobHandler, handoffPressStep, shipmentPaper, handoffReadyAll,
 } from '../controllers/handoff.controller.js';
 import {
-  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, handoffAdminCloseSchema, handoffEscalateSchema, handoffEscalationResolveSchema, deliveryUrgencySchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, jobEddSchema, taskRoutingSchema, taskStatusSchema, productionQueueAddSchema, workQueueAddSchema,
+  handoffDoneSchema, handoffUpdateSchema, handoffRescheduleSchema, handoffReturnSchema, handoffAdminCloseSchema, handoffEscalateSchema, handoffEscalationResolveSchema, deliveryUrgencySchema, taskAskSchema, teamTaskSchema, taskBriefSchema, taskEddSchema, jobEddSchema, taskRoutingSchema, taskStatusSchema, productionQueueAddSchema, workQueueAddSchema, readyAllSchema,
 } from '../validators/handoff.schemas.js';
 import { singlePdf, singleTaskResult } from '../middleware/upload.js';
 
@@ -96,6 +96,8 @@ router.post('/todos/:id/escalate-admin', validate(handoffEscalateSchema), handof
 router.post('/todos/:id/escalate-admin/resolve', validate(handoffEscalationResolveSchema), handoffResolveEscalation);
 router.post('/todos/:id/delivery', validate(deliveryUrgencySchema), handoffDeliveryUrgency);
 router.post('/todos/:id/reschedule', validate(handoffRescheduleSchema), handoffReschedule);
+/* Ready for all: the ticked jobs on a Production, Printing or Assembly queue move on in one press. */
+router.post('/todos/ready-all', validate(readyAllSchema), handoffReadyAll);
 router.post('/todos/:id/status', validate(taskStatusSchema), handoffStatus);
 /* The EDD from the Production / Assembly / Printing task, without a status move. */
 router.post('/todos/:id/edd', validate(taskEddSchema), handoffEdd);

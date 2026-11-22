@@ -188,3 +188,8 @@ export const handoffRescheduleSchema = z.object({
   dueDate: z.coerce.date(),
   reason: z.string().trim().min(5, 'Say why the date is moving').max(500),
 });
+
+/** Ready for all: the jobs ticked on a Production, Printing or Assembly queue [handoff.controller `handoffReadyAll`]. */
+export const readyAllSchema = z.object({
+  tasks: z.array(z.string().regex(/^[0-9a-f]{24}$/i, 'Not a valid id')).min(1, 'Tick at least one job').max(100, 'At most 100 jobs at once'),
+});
