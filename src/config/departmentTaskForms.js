@@ -8,7 +8,8 @@ import { SCHEDULE_CHOICES } from './deliveryUrgency.js';
  * THE LIST TO EDIT. One entry per button in config/handoffs.js; a button without one asks only
  * for the common fields. Every form also has, unless it says otherwise:
  *   priority       Low / Normal / High                       (`priority: false` to leave out)
- *   required date  the task's due date, never in the past     (`requiredDate: false`)
+ *   required date  not asked on any form [the plant's call: only Production's EDD is a date that
+ *                  must be given] — `requiredDate: true` would bring the optional due date back
  *   attach PDF     optional, 1 MB at most
  *   instruction    the note to the department, with `note` as its label and placeholder
  *
@@ -63,7 +64,7 @@ import { SCHEDULE_CHOICES } from './deliveryUrgency.js';
  * names the button — "Edit dispatch details").
  */
 
-const PRIORITY_DEFAULTS = { priority: true, requiredDate: true };
+const PRIORITY_DEFAULTS = { priority: true, requiredDate: false };
 
 /* The enquiry's first model, its material and colour, and the order's quantity — all editable. */
 const modelAndQuantity = [
@@ -101,7 +102,7 @@ const readinessQuery = (team, placeholder) => ({
   team,
   query: true,
   priority: true,
-  requiredDate: true,
+  requiredDate: false,
   asks: modelAndQuantity,
   remarkRequired: true,
   notifyStatus: true,
